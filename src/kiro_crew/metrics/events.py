@@ -238,6 +238,11 @@ PROCESS_CPU_UTILIZATION = "kirocrew.process.cpu.utilization"
 NON_MS_HISTOGRAM_UNITS: dict[str, str] = {
     PROCESS_RSS_SAMPLED: "By",
     PROCESS_CPU_UTILIZATION: "1",
+    # Session-tree depth: a dimensionless count of creators above a session, not a
+    # duration. Spelled as the literal the crew-log export records under (its own
+    # SESSION_TREE_DEPTH_METRIC) -- events.py sits below metrics.crew_log_export, so it
+    # names the string rather than importing it.
+    "kirocrew.crew.session.tree.depth": "1",
 }
 
 #: One observation per recovered unit: seconds from its first failure at

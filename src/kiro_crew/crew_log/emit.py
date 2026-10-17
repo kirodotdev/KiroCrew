@@ -2181,6 +2181,7 @@ def on_session_opened(
     resumed: bool = False,
     parent_slot: str = "",
     parent_sid: str = "",
+    depth: int | None = None,
     memory: str = "",
     app: str = "",
     channel: bool = False,
@@ -2240,6 +2241,26 @@ def on_session_opened(
     crew log in an entry that can never be corrected. Both empty means nobody
     created this session (a person's own tab, a fork) and no ``parent`` is
     written at all, so a fold can tell "no creator" from "creator unknown".
+
+    ``depth`` is how many creators stand ABOVE this session: ``0`` for a session
+    nobody created, and a child's creator's depth plus one. It is the caller's
+    reading, resolved before the call and passed in rather than derived here,
+    which is the whole point of the field. The creator chain lives across OTHER
+    sessions' logs, so the only two ways to answer are to join those logs or to
+    ask the tree a reader already holds in memory -- and this runs on the writer
+    thread, where neither belongs. The caller is where the no-I/O read already
+    happens (the same fold ``parent_slot`` itself can come from), so the depth
+    arrives as a value and this function only records it.
+
+    ``None`` -- the default -- writes no key, and that is the honest answer for
+    every caller and every state that cannot establish the number: a writer that
+    does not resolve one, and a session whose creator is KNOWN to exist while the
+    tree could not place it. It is deliberately NOT inferred from ``parent_slot``
+    being empty, which would be the obvious shortcut and is wrong: an empty
+    creator covers both a session nobody made and one whose creator this entry
+    may not cite, and writing ``0`` for the second would record a child as the
+    root of its own tree in an entry nothing rewrites. A caller that knows there
+    is no creator says ``0`` and says it on purpose.
 
     ``memory``, ``app`` and ``channel`` record WHAT KIND of session this log
     belongs to: the slot's memory mode verbatim, the app that owns it if one does,
@@ -2518,6 +2539,17 @@ def on_session_opened(
             if parent_sid:
                 parent["sid"] = parent_sid
             data["parent"] = parent
+        if isinstance(depth, int) and not isinstance(depth, bool) and depth >= 0:
+            # Written only for a reading the caller actually made. ``None`` is the
+            # ordinary absence and costs nothing to check; the type and sign checks
+            # cover a caller handing over something that is not a depth at all --
+            # a bool, which is an int in Python and would land as 0 or 1, or a
+            # negative, which no walk of a tree can produce. Each of those would be
+            # a number in an append-only entry that no later read can correct, and
+            # the alternative to refusing them here is a counting reader learning to
+            # distrust the field. A depth that cannot be stated is simply absent,
+            # which every reader of this field already has to handle.
+            data["depth"] = depth
         if memory:
             # The class of session this log belongs to, as facts. Written only when
             # the caller supplied ``memory``, which every live slot has: that makes

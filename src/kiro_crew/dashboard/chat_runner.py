@@ -172,6 +172,7 @@ from kiro_crew.dashboard.chat_turn.crew_log_attribution import (
     _crew_log_lineage,
     _crew_log_model,
     _crew_log_seed_tree,
+    _crew_log_tree_depth,
     _crew_log_workspace,
     _slot_predecessor_store,
 )
@@ -9271,6 +9272,12 @@ async def _run_chat(
             resumed=bool(resumed),
             parent_slot=_creator_key,
             parent_sid=_creator_sid,
+            # Resolved from the SAME creator this entry cites, after both sources
+            # for it are settled, so the depth and the `parent` cannot describe
+            # two different edges. One in-memory read of the tree the fold already
+            # holds, never a disk read, and it answers `None` -- no key written --
+            # whenever the chain above this session cannot be established.
+            depth=_crew_log_tree_depth(slot, _creator_key),
             memory=_class_memory,
             app=_class_app,
             channel=_class_channel,

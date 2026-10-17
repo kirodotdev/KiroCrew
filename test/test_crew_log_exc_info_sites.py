@@ -65,6 +65,14 @@ VETTED: frozenset[tuple[str, str]] = frozenset(
         ("session_tree_projection.py", "retract_unit_parent"),
         ("store.py", "remove_unit"),
         ("store.py", "sweep_expired"),
+        # The OTel roots gauge's collect-time read, run on the SDK's own collection
+        # thread -- never the emitter's writer frame. It names no handle, opens none,
+        # and takes none: it reads only the in-memory session-tree projection (a pure
+        # fold over records another writer committed), so no frame of its own holds a
+        # handle and no caller of its own does either. Its ``exc_info`` log pins no
+        # lease, which is why it joins the list with the same standing as the
+        # projection's own in-memory reads above.
+        ("otel_session_tree_roots.py", "read_roots_with_children"),
     }
 )
 
