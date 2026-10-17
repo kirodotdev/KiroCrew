@@ -2862,9 +2862,15 @@ Telegram and the shared rollback step by `test_channel_env_write_off_loop.py`, a
 for the watcher itself by `test_config_live.py`.
 
 Tests: `test/test_config_live.py` (diff, registry, lifecycle, fingerprint,
-dispatch order and scope, every write path, the schema/handler agreement, the
-`dashboard/server_runtime/config_watch.py` appliers, and the owned-applier shapes `watch_section` /
-`watch_object` / `bind`) and `test/test_channels_a_hot_reload.py` (every
+dispatch order and scope, every write path, the schema/handler agreement), its
+parts `test/test_config_live_server_appliers.py` (the
+`dashboard/server_runtime/config_watch.py` appliers),
+`test/test_config_live_subscriptions.py` (cancellation, the owned-applier shapes
+`watch_section` / `watch_object` / `bind`, and replay on registration),
+`test/test_config_live_restart_hint.py` (the `restart_required` hint, also over
+HTTP) and `test/test_config_live_untrusted_documents.py` (the point-of-use
+read's fallbacks and the bounded applier dispatch), and
+`test/test_channels_a_hot_reload.py` (every
 channel's applier, its fail-closed degrade refusal and its point-of-use reads,
 parametrized over the case table in `test/_hot_reload_helpers.py`;
 `test_channels_b_hot_reload.py` and `test_channels_c_hot_reload.py` carry the

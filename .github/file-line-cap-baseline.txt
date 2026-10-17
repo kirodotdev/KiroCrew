@@ -147,7 +147,6 @@
 2288 test/test_cloud_source.py
 2106 test/test_computer_use_api.py
 2166 test/test_computer_use_snapshot_macos.py
-2260 test/test_config_live.py
 2868 test/test_connections_mint.py
 2418 test/test_context.py
 2226 test/test_context_composition_contract.py
@@ -164,7 +163,6 @@
 11203 test/test_denied_commands_security.py
 2194 test/test_deploy_web_handlers.py
 2020 test/test_discord_resumed_busy.py
-2240 test/test_eager_spawn.py
 2861 test/test_embeddings.py
 2417 test/test_ephemeral_sessions.py
 2765 test/test_fargate_launch_engine.py
@@ -188,7 +186,6 @@
 2549 test/test_lesson_write_outcome.py
 2118 test/test_llm_helpers.py
 2631 test/test_llm_pool.py
-2248 test/test_markdown_link_parentheses.py
 2117 test/test_mcp_cron_security.py
 7022 test/test_mcp_discovery.py
 5650 test/test_mcp_gateway_backend_coverage.py
@@ -250,7 +247,6 @@
 5831 test/test_vector_memory.py
 2014 test/test_vector_memory_coverage.py
 3521 test/test_webex_dispatch.py
-2238 test/test_wheel_engine.py
 2944 website/electron/gateway-supervisor.js
 2903 website/scripts/lib/ui-index.mjs
 2967 website/src/App.tsx
