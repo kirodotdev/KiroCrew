@@ -262,7 +262,11 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # ``/api/file-search`` fallback walk, ``_browse_dirs_sync`` and
     # ``_browse_files_sync``), each handing it the ``os.path.realpath`` computed
     # on the same line from a worker thread; one rebuild of a large index
-    # otherwise queued a pool hop per entry ahead of the loop's own checks.
+    # otherwise queued a pool hop per entry ahead of the loop's own checks;
+    # and ``agent._pinned_spec_documents``, handing it a name listed through a
+    # pin of the gate-admitted (canonical) agents directory, an entry no link
+    # can redirect (the per-turn stale-config fingerprint resolves its spec
+    # this way, off the event loop).
     # ``test_artifacts_pathres.py`` and ``test_agent_discovery_pathres.py`` pin
     # the canonical spelling and the thread split for each caller. The store's
     # root check and ``source_path`` pointers, and the reader module's project

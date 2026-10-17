@@ -69,6 +69,7 @@ ADMISSION_SITES: dict[Site, frozenset[str]] = {
     ("acp/runtime.py", "AcpRuntime._resolve_spawn_plan"): frozenset({FRESH}),
     ("acp/runtime.py", "AcpRuntime._activate_mode_bracketed"): frozenset({FRESH}),
     ("acp/session_mcp.py", "_agent_spec_and_snapshot_for"): frozenset({FRESH}),
+    ("dashboard/config_staleness.py", "spawn_config_fingerprint"): frozenset({FRESH}),
 }
 
 # Per admission site: (gates it does not reference, whether something else covers it).
@@ -94,6 +95,11 @@ KNOWN_GAPS: dict[Site, tuple[frozenset[str], str]] = {
         frozenset({FORK}),
         "not a start path: it resolves the spec whose MCP servers a session mounts, "
         "and the spawn that consumes it runs its own admission",
+    ),
+    ("dashboard/config_staleness.py", "spawn_config_fingerprint"): (
+        frozenset({FORK}),
+        "not a start path: it replays a spawn's pre-start steps only to fingerprint "
+        "the config that spawn will read, and the spawn runs its own admission",
     ),
 }
 

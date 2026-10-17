@@ -17,7 +17,7 @@
  *    embeds, and the trailing menu in every embed.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, act, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor, cleanup, within } from '@testing-library/react'
 import type { ComponentProps, ReactNode } from 'react'
 
 vi.mock('../pages/chat/ChatHeaderMenu', () => ({
@@ -119,6 +119,28 @@ describe('leading cell', () => {
     expect(slot.querySelector('[data-testid="mobile-topbar-title"]')).not.toBeNull()
     expect(screen.getByLabelText(i18nT('pages.chatPage.incognito_memory_writes_disabled'))).toBeInTheDocument()
     expect(screen.getByTestId('trigger-label')).toHaveTextContent('Release notes')
+  })
+
+  it('carries a changed-config cue inside the title trigger, only while stale', () => {
+    const { unmount } = render(<MobileTopBar {...props({ currentSlot: { key: 'slot-a', config_stale: true, config_stale_inputs: '.kiro/settings/mcp.json' } as ChatSlot })} />)
+    const cue = within(screen.getByTestId('trigger-label')).getByTestId('stale-config-cue')
+    expect(cue).toHaveTextContent('Config · Reload')
+    expect(cue.querySelector('.lucide-circle-alert')).toHaveAttribute(
+      'aria-label', '.kiro/settings/mcp.json changed since this session started. Reload the session to apply.',
+    )
+    unmount()
+    render(<MobileTopBar {...props()} />)
+    expect(screen.queryByTestId('stale-config-cue')).toBeNull()
+  })
+
+  it('adds no control of its own to the centre cell: the cue is not a button', () => {
+    render(<MobileTopBar {...props({ currentSlot: { key: 'slot-a', config_stale: true } as ChatSlot })} />)
+    expect(screen.queryByTestId('stale-config-reload')).toBeNull()
+    const cue = screen.getByTestId('stale-config-cue')
+    expect(cue.closest('button')).toBeNull()
+    expect(within(cue).queryByRole('button')).toBeNull()
+    expect(cue).not.toHaveAttribute('tabindex')
+    expect(cue).not.toHaveAttribute('role')
   })
 
   it('marks a temporary session', () => {

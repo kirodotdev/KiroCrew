@@ -20,7 +20,11 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.session_lifecycle_parts.parked_queue import _park_queue
-from kiro_crew.session_lifecycle_parts.stop_decline import StopOutcome, _compaction_waits_for_turn
+from kiro_crew.session_lifecycle_parts.stop_decline import (
+    StopOutcome,
+    _compaction_waits_for_turn,
+    _logger,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.session_lifecycle import SessionLifecycleService
@@ -446,10 +450,48 @@ async def _eager_respawn(self: SessionLifecycleService, key: str) -> None:
     wakes the adopted entries' channel drains.
     """
     try:
-        await self._owner.get_or_create(key)
+        spawn_config = await self._respawn_config(key)
+        started = await self._owner.get_or_create(key)
         self._owner.release(key)
     except Exception:
         self._deps.logger.debug("Eager respawn failed for %s", key, exc_info=True)
+        return
+    if isinstance(started, tuple) and len(started) == 3:
+        self._carry_respawn_config(started[0], started[1], spawn_config)
+
+
+async def _respawn_config(self: SessionLifecycleService, key: str) -> Any:
+    """The owner's ``respawn_config_reader`` answer for *key*, or ``None``.
+
+    Taken BEFORE the successor starts, as a chat start takes its own, so an
+    edit landing while it starts is a difference the chat's badge shows.
+    ``None`` when no reader is wired (the CLI, tests) or it fails: the
+    chat's next turn then records the successor, as before.
+    """
+    reader = getattr(self._owner, "respawn_config_reader", None)
+    if reader is None:
+        return None
+    try:
+        return await reader(key)
+    except Exception:  # noqa: BLE001 - a change detector never fails a respawn
+        self._deps.logger.debug("Respawn config fingerprint failed for %s", key, exc_info=True)
+        return None
+
+
+def _carry_respawn_config(provider: Any, is_new: bool, spawn_config: Any) -> None:
+    """Attach *spawn_config* to a successor this respawn started.
+
+    Carried as ``pool_spawn_config``, the receipt a chat records for a
+    process it did not start itself. A process that already carries one (a
+    warm-pool claim) keeps it: that one was taken before its own start.
+    """
+    if spawn_config is None or not is_new:
+        return
+    try:
+        if provider.pool_spawn_config is None:
+            provider.pool_spawn_config = spawn_config
+    except Exception:  # noqa: BLE001 - a change detector never fails a respawn
+        _logger.debug("Respawn config not carried", exc_info=True)
 
 
 async def _respawn_as(self: SessionLifecycleService, key: str, identity: dict[str, Any]) -> None:
@@ -464,12 +506,14 @@ async def _respawn_as(self: SessionLifecycleService, key: str, identity: dict[st
     still reads as a fresh start and the queued turn replays the history.
     """
     owner = self._owner
+    spawn_config = await self._respawn_config(key)
     try:
         provider, is_new, resumed = await owner.get_or_create(key, **identity)
     except Exception:
         self._deps.logger.debug("Reset respawn failed for %s", key, exc_info=True)
         return
     try:
+        self._carry_respawn_config(provider, is_new, spawn_config)
         live = owner._sessions.get(key)
         constants = self._deps.constants()
         if (

@@ -97,6 +97,7 @@ globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.res
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as never
 
 import ChatPage from '../pages/ChatPage'
+import { api } from '../api/client'
 
 /** The shell's side of the hand-off: the two slot elements, as `App.tsx`
  *  renders them on the phone chat route. Appended to `document.body` so the
@@ -116,11 +117,11 @@ const railSpy = vi.fn((opts: MobileNavRailOptions) => (
   </nav>
 ))
 
-function renderChat({ rail = true }: { rail?: boolean } = {}) {
+function renderChat({ rail = true, stale = false }: { rail?: boolean; stale?: boolean } = {}) {
   const store = createTestStore()
   act(() => {
     store.dispatch(sseConnected())
-    store.dispatch(sseSlots([{ key: 'slot-0', title: 'Liquid Glass Library Recap' }] as never))
+    store.dispatch(sseSlots([{ key: 'slot-0', title: 'Liquid Glass Library Recap', ...(stale ? { config_stale: true } : {}) }] as never))
     store.dispatch(setActiveSlot('slot-0'))
   })
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
@@ -236,6 +237,23 @@ describe('ChatPage on the phone: its share of the single top bar', () => {
     expect(await within(trail).findByRole('button', { name: 'More actions' })).toHaveClass('mc-touch-hit')
   })
 
+  it('puts the changed-config cue inside the bar\'s title trigger and the Reload button after the inline title', async () => {
+    const { slot } = mountShellSlots()
+    renderChat({ stale: true })
+    const trigger = await within(slot).findByTestId('session-title-menu')
+    expect(within(trigger).getByTestId('stale-config-cue')).toHaveTextContent('Config · Reload')
+    // The bar's centre cell keeps two controls: no Reload button beside the trigger.
+    expect(within(slot).queryByTestId('stale-config-reload')).toBeNull()
+    cleanup()
+    slot.remove()
+    document.getElementById('mobile-topbar-trail-slot')?.remove()
+    renderChat({ stale: true })
+    const inline = await screen.findByRole('button', { name: 'Config changed · Reload' })
+    const titleGroup = inline.previousElementSibling as HTMLElement
+    expect(titleGroup).toContainElement(screen.getByRole('button', { name: 'Session options' }))
+    expect(titleGroup).not.toContainElement(inline)
+  })
+
   it('keeps the inline title row when the shell rendered no slot', async () => {
     renderChat()
     // No portal target → today's layout: the row is inline, with its own toggle
@@ -251,5 +269,118 @@ describe('ChatPage on the phone: its share of the single top bar', () => {
     // The inline row's 24px toggle (and the empty-chat corner button, when it
     // shows) carry the same touch hit area.
     for (const toggle of screen.getAllByLabelText('Toggle sessions')) expect(toggle).toHaveClass('mc-touch-hit')
+  })
+})
+
+describe('ChatPage on desktop: the header row beside a stale chat\'s Reload button', () => {
+  beforeEach(() => {
+    viewport.isMobile = false
+    Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 1280 })
+    localStorage.clear()
+  })
+  afterEach(() => {
+    cleanup()
+    viewport.isMobile = true
+  })
+
+  // The controls the title row offers: every button in the title cluster other
+  // than the title itself (the combined title/rename trigger), plus the Reload
+  // button that follows it.
+  const rowControls = (menu: HTMLElement) => {
+    const cluster = menu.closest('.group\\/header') as HTMLElement
+    const own = within(cluster).getAllByRole('button').filter((b) => !b.hasAttribute('data-ui-location'))
+    const reload = screen.queryAllByTestId('stale-config-reload')
+    return [...own, ...reload]
+  }
+
+  it('holds the session menu and Reload only while stale: no hover Rename or Auto-title', async () => {
+    renderChat({ stale: true, rail: false })
+    const menu = await screen.findByRole('button', { name: 'Session options' })
+    const cluster = menu.closest('.group\\/header') as HTMLElement
+    fireEvent.mouseEnter(cluster)
+    expect(rowControls(menu).map((b) => b.getAttribute('data-testid') ?? b.getAttribute('aria-label'))).toEqual(['Session options', 'stale-config-reload'])
+    expect(screen.queryByRole('button', { name: /Regenerate title/ })).toBeNull()
+    expect(cluster.querySelector('svg.lucide-pen')).toBeNull()
+    // Both stay reachable from the session menu.
+    fireEvent.pointerDown(menu, { button: 0, ctrlKey: false })
+    fireEvent.click(menu)
+    expect(await screen.findByRole('menuitem', { name: /Rename/ })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /^Regenerate title/ })).toBeInTheDocument()
+  })
+
+  it('withholds the inline Reload while the title\'s Undo is offered, so the row never holds four controls', async () => {
+    vi.mocked(api.generateTitle).mockResolvedValue({ title: 'Generated title' } as never)
+    const store = renderChat({ stale: false, rail: false })
+    const menu = await screen.findByRole('button', { name: 'Session options' })
+    const cluster = menu.closest('.group\\/header') as HTMLElement
+    fireEvent.mouseEnter(cluster)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Regenerate title/ })) })
+    const undo = await screen.findByRole('button', { name: /^Undo/ })
+    // The chat goes stale while the Undo window is open: Undo is a control the
+    // row cannot hide, so Reload stays in the session menu.
+    act(() => { store.dispatch(sseSlots([{ key: 'slot-0', title: 'Generated title', config_stale: true }] as never)) })
+    expect(screen.queryByTestId('stale-config-reload')).toBeNull()
+    expect(rowControls(menu)).toHaveLength(2)
+    // Once the offer ends the button returns.
+    await act(async () => { fireEvent.click(undo) })
+    expect(await screen.findByTestId('stale-config-reload')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Undo/ })).toBeNull()
+  })
+
+  const pickMenuAutoTitle = async () => {
+    const menu = await screen.findByRole('button', { name: 'Session options' })
+    fireEvent.pointerDown(menu, { button: 0, ctrlKey: false })
+    fireEvent.click(menu)
+    await act(async () => { fireEvent.click(await screen.findByRole('menuitem', { name: /^Regenerate title/ })) })
+  }
+
+  it('runs the session menu\'s Regenerate title while stale, writing the new title through the store', async () => {
+    vi.mocked(api.generateTitle).mockReset().mockResolvedValue({ title: 'Generated while stale' } as never)
+    const store = renderChat({ stale: true, rail: false })
+    await pickMenuAutoTitle()
+    expect(api.generateTitle).toHaveBeenCalledWith('slot-0')
+    expect(store.getState().dashboard.slots.find((s) => s.key === 'slot-0')?.title).toBe('Generated while stale')
+    expect(screen.queryByTestId('action-error')).toBeNull()
+  })
+
+  it('reports a failed menu Regenerate title in the header\'s action-error notice, titled', async () => {
+    vi.mocked(api.generateTitle).mockReset().mockRejectedValue(new Error('model offline'))
+    renderChat({ stale: true, rail: false })
+    await pickMenuAutoTitle()
+    const notice = await screen.findByTestId('action-error')
+    expect(notice).toHaveTextContent("Couldn't generate a title")
+    expect(notice).toHaveTextContent('model offline')
+  })
+
+  it('ignores a second menu Regenerate title while the first is still running', async () => {
+    let resolve!: (v: { title: string }) => void
+    vi.mocked(api.generateTitle).mockReset().mockReturnValue(new Promise((r) => { resolve = r }) as never)
+    renderChat({ stale: true, rail: false })
+    await pickMenuAutoTitle()
+    await pickMenuAutoTitle()
+    expect(api.generateTitle).toHaveBeenCalledTimes(1)
+    await act(async () => { resolve({ title: 'Only one' }) })
+  })
+
+  it('reports a failed header Reload in the action-error notice, not a notice of its own', async () => {
+    const reloadMock = vi.fn().mockRejectedValue(new Error('gateway down'))
+    ;(api as unknown as Record<string, unknown>).chatSlotReload = reloadMock
+    renderChat({ stale: true, rail: false })
+    await act(async () => { fireEvent.click(await screen.findByTestId('stale-config-reload')) })
+    expect(reloadMock).toHaveBeenCalledWith('slot-0')
+    expect(await screen.findByTestId('action-error')).toHaveTextContent('Session reload failed')
+    expect(screen.queryByTestId('stale-config-reload-error')).toBeNull()
+    expect(screen.getByTestId('stale-config-reload')).not.toBeDisabled()
+  })
+
+  it('keeps the hover Rename and Auto-title buttons on a chat running current config', async () => {
+    renderChat({ stale: false, rail: false })
+    const menu = await screen.findByRole('button', { name: 'Session options' })
+    const cluster = menu.closest('.group\\/header') as HTMLElement
+    fireEvent.mouseEnter(cluster)
+    expect(screen.queryByTestId('stale-config-reload')).toBeNull()
+    expect(screen.getByRole('button', { name: /Regenerate title/ })).toBeInTheDocument()
+    expect(cluster.querySelector('svg.lucide-pen')).not.toBeNull()
+    expect(rowControls(menu)).toHaveLength(2)
   })
 })

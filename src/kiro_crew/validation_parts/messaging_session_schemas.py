@@ -555,3 +555,10 @@ SESSION_SUMMARY_SCHEMA = ToolSchema(
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
     ],
 )
+
+SESSION_CONFIG_STATUS_SCHEMA = ToolSchema(
+    tool_name="session_config_status",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)

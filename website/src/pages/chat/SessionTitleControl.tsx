@@ -81,6 +81,8 @@ export default function SessionTitleControl({
   onEditingChange,
   onError,
   onAttempt,
+  hoverActions = true,
+  onUndoOfferedChange,
 }: {
   slotKey: string
   title: string
@@ -96,6 +98,20 @@ export default function SessionTitleControl({
    * beside the spinner of the attempt that supersedes it.
    */
   onAttempt?: () => void
+  /**
+   * Whether the hover-revealed Pen and Auto-title button render. A host whose
+   * row already holds another action beside the title turns them off to keep
+   * the row at two controls; clicking the title still opens the editor, and
+   * the session menu keeps Rename and Auto-title.
+   */
+  hoverActions?: boolean
+  /**
+   * The Auto-title Undo offer appeared (`true`) or ended (`false`, also on
+   * unmount). A host whose row is already at its control cap holds back
+   * another action while it stands, since Undo is a control the host cannot
+   * hide.
+   */
+  onUndoOfferedChange?: (offered: boolean) => void
 }) {
   const dispatch = useAppDispatch()
   const store = useAppStore()
@@ -126,6 +142,11 @@ export default function SessionTitleControl({
   // header re-targeting to another session does not offer the wrong name back.
   const [undoable, setUndoable] = useState<{ slot: string; previous: string; next: string } | null>(null)
   const undo = undoable && undoable.slot === slotKey && undoable.next === title ? undoable : null
+  const undoOffered = undo !== null
+  useEffect(() => {
+    onUndoOfferedChange?.(undoOffered)
+    return () => onUndoOfferedChange?.(false)
+  }, [undoOffered, onUndoOfferedChange])
   // The title moving on ENDS the offer, it does not merely hide it: a title
   // that bounces away and back to the generated string (two remote renames
   // inside the window) must not bring a stale Undo back, because pressing it
@@ -425,7 +446,7 @@ export default function SessionTitleControl({
             ? 'text-[13px] font-semibold text-text-strong font-body truncate min-w-0'
             : 'session-header-title text-sm font-semibold text-muted font-body truncate min-w-0 md:max-w-[50vw]'}
         />
-        <Pen size={compact ? 12 : 13} className="shrink-0 text-muted opacity-0 group-hover/header:opacity-60 group-focus-visible/title:opacity-60 transition-opacity" />
+        {hoverActions && <Pen size={compact ? 12 : 13} className="shrink-0 text-muted opacity-0 group-hover/header:opacity-60 group-focus-visible/title:opacity-60 transition-opacity" />}
       </Clickable>
       {undo
         ? (
@@ -457,7 +478,7 @@ export default function SessionTitleControl({
             <span className={compact ? 'text-[11px] leading-none whitespace-nowrap' : 'text-xs leading-none whitespace-nowrap'}>{i18nT('pages.chatPage.regenerating_title')}…</span>
           </span>
         )
-        : (
+        : hoverActions && (
           <Btn
             aria-label={i18nT('pages.chatPage.regenerate_title_with_llm')}
             title={i18nT('pages.chatPage.regenerate_title_with_llm')}
