@@ -77,6 +77,8 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_LOCAL_CLEAR,
+    Routing,
+    routing_for,
 )
 from kiro_crew.agent_capabilities import CapabilityError
 from kiro_crew.agent_discovery import (
@@ -86,7 +88,11 @@ from kiro_crew.agent_discovery import (
     warm_project_agent_names,
 )
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name  # noqa: F401
-from kiro_crew.agent_sdk.capabilities import capabilities_for, capabilities_of
+from kiro_crew.agent_sdk.capabilities import (
+    SessionCapabilities,
+    capabilities_for,
+    capabilities_of,
+)
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.agent_sdk.spec_hooks import (
     crew_fired_spec_hooks,
@@ -1315,6 +1321,43 @@ def _app_agent_start_dirs(
         pool_cwd if isinstance(pool_cwd, str) else None,
         str(_session_work_dir(session_key)),
     )
+
+
+def _app_agent_host_allowed(provider: Any) -> bool:
+    """Whether *provider*'s backend launches its agent from the agent spec.
+
+    An app's own agent runs only where the spec is what the harness mounts
+    (``Routing.AGENT_SPEC``); any other backend would run the app-authored
+    prompt without the app's spec. A provider that carries no real
+    :class:`SessionCapabilities` -- a wrapper, a test double, a future adapter --
+    names no backend, so it is refused rather than read as the default id.
+    """
+    caps = getattr(provider, "capabilities", None)
+    if not isinstance(caps, SessionCapabilities):
+        return False
+    return routing_for(caps.backend) is Routing.AGENT_SPEC
+
+
+async def _app_agent_turn_host_allowed(
+    state: "DashboardState", session_key: str, cfg: "KiroCrewConfig | None"
+) -> bool:
+    """Whether the turn about to be claimed for *session_key* would run on an allowed backend.
+
+    A live provider registered under the key is the one the claim reuses, so its
+    own identity answers. Otherwise the claim allocates through the same
+    member-aware selector this reads. The claimed provider is checked again after
+    the claim; this read only spares a refused turn its cold start.
+    """
+    sessions = state.sessions
+    provider = sessions.get_provider(session_key)
+    if provider is not None and await sessions.is_provider_alive(session_key) is True:
+        return _app_agent_host_allowed(provider)
+    if cfg is None:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    backend = select_provider_backend(
+        session_key, cfg.agent.member_acp_backend, cfg.agent.acp_backend
+    )
+    return routing_for(backend) is Routing.AGENT_SPEC
 
 
 async def _retire_app_agent_session(
@@ -6267,11 +6310,16 @@ async def _run_chat(
         # spec's tools and auto-approvals.
         owner_app, _, owner_agent = (slot.app_agent_owner or "").partition("/")
         if app_agent_binding_applies(slot):
-            from kiro_crew.apps.manager import app_command_agent_refusal
+            from kiro_crew.apps.manager import app_agent_backend_refusal, app_command_agent_refusal
 
             _owner_project = selected_binding[1] or None
+            _owner_host_allowed = await _app_agent_turn_host_allowed(state, session_key, loaded_cfg)
 
             def _check_owner() -> str | None:
+                # Only kiro-cli and KAS launch the app's named spec; checked first,
+                # since the name check below means nothing on another backend.
+                if not _owner_host_allowed:
+                    return app_agent_backend_refusal(owner_app)
                 # Both halves touch the filesystem (the work-dir root, the specs).
                 dirs = _app_agent_start_dirs(state, session_key, _owner_project)
                 return app_command_agent_refusal(owner_app, owner_agent, *dirs)
@@ -6694,6 +6742,38 @@ async def _run_chat(
                 state.sessions.allocation_requested_model(session_key) or _requested_model
             )
         _acquired = True
+        # The acquired provider is the final authority on the backend, as it is
+        # for the slash gates below: the pre-claim check above read the config's
+        # selection, which can move before the claim. An app-owned turn on a
+        # backend that does not launch from the agent spec would run the
+        # app-authored prompt without the app's spec, so it is refused here
+        # before anything is sent, and the session is reset so the next turn
+        # allocates afresh from the current selection.
+        if app_agent_binding_applies(slot) and not _app_agent_host_allowed(client):
+            from kiro_crew.apps import manager as app_manager
+
+            refusal = await asyncio.to_thread(app_manager.app_agent_backend_refusal, owner_app)
+            logger.warning(
+                "refusing an app-owned agent turn for slot %s: backend not allowed",
+                redact_log_via_context(slot.key),
+            )
+            try:
+                sel().log_api_access(
+                    caller=f"slot={slot.key}",
+                    operation="chat_runner.app_command_agent",
+                    outcome="denied",
+                    source="app_command",
+                    resources=f"slot={slot.key} app={owner_app} agent={owner_agent}",
+                    error=refusal,
+                )
+            except Exception:  # noqa: BLE001 - auditing must not unblock the turn
+                logger.warning(
+                    "SEL denial audit failed for an app-owned agent turn -- refusal stands",
+                    exc_info=True,
+                )
+            needs_session_reset = True
+            slot.append("error", refusal, "msg msg-err", meta={"kind": APP_AGENT_REFUSED_KIND})
+            return
         # The acquired provider is the final authority for harness-specific slash
         # gates. A dead live row can be replaced during the get_or_create call
         # above. The positive capability fails closed for unknown adapters and
