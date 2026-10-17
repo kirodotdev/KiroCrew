@@ -211,7 +211,10 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "destroy": ("function", True, "958babeb61c8", "teardown"),
     "destroy_if": ("function", True, "b2e16ab8f2dd", "teardown"),
     "detach_queue": ("function", False, "197b82a5019f", "claims"),
+    "conversation_root": ("function", False, "9ef9a3097b9d", "claims"),
+    "default_conversation_roots": ("function", False, "e7b04283cd3a", "claims"),
     "discard_conversation": ("function", True, "b225e6bcbd95", "teardown"),
+    "discard_conversation_root": ("function", False, "d0fd9a4c01a2", "claims"),
     "drain_active_turns": ("function", True, "5944c6af44b2", "teardown"),
     "drain_all_providers": ("function", True, "f5423acdeebc", "teardown"),
     "drain_warm_pool": ("function", True, "f5423acdeebc", "runtimes"),
@@ -233,7 +236,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "get_bg_session": ("function", True, "c8c03f90e44b", "runtimes"),
     "get_channel": ("function", False, "4b576121a346", "links"),
     "get_mirror_link": ("function", False, "cdc6a6d31d8b", "links"),
-    "get_or_create": ("function", True, "c9826b33d6da", "claims"),
+    "get_or_create": ("function", True, "4150c7b446a8", "claims"),
     "get_origin_link": ("function", False, "cdc6a6d31d8b", "links"),
     "get_pid": ("function", False, "1290edeed1b6", "claims"),
     "get_provider": ("function", False, "c66f77f7d253", "claims"),
@@ -286,7 +289,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "replace_mirror_link_if": ("function", False, "7cf643151494", "links"),
     "reserve_generation": ("function", False, "57eca86d38c3", "links"),
     "reserve_inbound_callback": ("function", False, "b58e9cc18136", "claims"),
-    "reset": ("function", True, "023cf44b43c3", "teardown"),
+    "reset": ("function", True, "45c6ca96f2ef", "teardown"),
     "restore_queue": ("function", False, "e233ef2976f2", "claims"),
     "resumable_hint": ("function", False, "1eda252b53bd", "claims"),
     "resumable_sid": ("function", False, "4b576121a346", "claims"),
@@ -418,7 +421,13 @@ _SERVED = frozenset(
 )
 
 #: Classes that moved to an owner and must keep the facade's module name.
-_MOVED_CLASSES = ("FirstTurnState", "_Session", "_CompactCallback", "_RecycleCallback")
+_MOVED_CLASSES = (
+    "ConversationRoot",
+    "FirstTurnState",
+    "_Session",
+    "_CompactCallback",
+    "_RecycleCallback",
+)
 
 _PACKAGE = "kiro_crew.session_parts"
 
@@ -930,12 +939,14 @@ _STAR_EXPORTS = frozenset("""
     BackgroundSessionRuntime BindListener COMPACT_OUTCOME_COMPACTED
     COMPACT_WAIT_TIMEOUT_SECS CONSOLIDATE_KEY CONTEXT_WARN_MARGIN_PCT Callable CancelOutcome
     ChannelLink ClaudeCodeProvider CleanupDeps CleanupHook CleanupState
-    CompactionCoordinator CompactionDeps CompactionState ConfigChange Enum FirstTurnState
+    CompactionCoordinator CompactionDeps CompactionState ConfigChange ConversationRoot Enum
+    FirstTurnState
     HEARTBEAT_KEY InboundCallbackReservation Iterator KiroCrewConfig LLMProvider Literal
     MIRROR_OPT_OUT_FLAG POOL_DECISIONS POOL_SIZE_MAX PROVIDER_LABEL_CLAUDE
     PROVIDER_LABEL_DEFAULT PYCACHE_GC_INTERVAL_SECS Path PidRefcount PrioritySemaphore
     Protocol ProviderFactory SESSION_IDLE_EXPIRED SUPPRESS_REPLAY_FLAG
     SessionAllocationService SessionBusyError SessionCleanup SessionClosingError
+    SessionCwdMismatch
     SessionEndingError SessionLifecycleConstants SessionLifecycleDeps
     SessionLifecycleService SessionLifecycleState SessionManager SessionMap
     SessionRegistryState SessionWatchdog SpeculativeResumeRefused StartPriority Stats

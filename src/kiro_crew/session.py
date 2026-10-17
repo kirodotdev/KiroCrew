@@ -109,6 +109,7 @@ from kiro_crew.session_allocation import SessionBusyError as SessionBusyError  #
 from kiro_crew.session_allocation import (  # noqa: F401
     SessionClosingError,
 )
+from kiro_crew.session_allocation import SessionCwdMismatch as SessionCwdMismatch  # noqa: F401
 from kiro_crew.session_allocation import SessionEndingError as SessionEndingError  # noqa: F401
 from kiro_crew.session_allocation import (  # noqa: F401
     SessionRegistryState,
@@ -207,6 +208,7 @@ from kiro_crew.session_parts.provider_probes import (  # noqa: F401
     _watchdog_handle_of,
 )
 from kiro_crew.session_parts.record import (  # noqa: F401
+    ConversationRoot,
     FirstTurnState,
     _Session,
     _unlink_session_queue,
@@ -575,6 +577,9 @@ class SessionManager:
     mark_lifecycle_lease = _claims.mark_lifecycle_lease
     has_session = _claims.has_session
     get_provider = _claims.get_provider
+    default_conversation_roots = _claims.default_conversation_roots
+    conversation_root = _claims.conversation_root
+    discard_conversation_root = _claims.discard_conversation_root
     session_generation = _claims.session_generation
     _advance_session_generation = _claims._advance_session_generation
     session_keys = _claims.session_keys

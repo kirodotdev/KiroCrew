@@ -273,6 +273,8 @@ class _AllocationOwner(Protocol):
 
     def get_provider(self, key: str) -> LLMProvider | None: ...
 
+    def default_conversation_roots(self, key: str | None = None) -> list[str]: ...
+
     async def get_subagent_runtime(
         self,
         parent_session_key: str,
@@ -1449,6 +1451,7 @@ _SERVED_NAMES: frozenset[str] = frozenset(
         "START_QUEUE_COMPANION",
         "START_QUEUE_LOG_MIN_MS",
         "SessionBusyError",
+        "SessionCwdMismatch",
         "SpeculativeResumeRefused",
         "_collect_parent_runtime_kwargs",
         "acquire_session_lease",
@@ -1498,6 +1501,7 @@ if TYPE_CHECKING:  # the names in _SERVED_NAMES, for type checkers and IDEs
     )
     from kiro_crew.session_allocation_parts.errors import (  # noqa: F401
         SessionBusyError,
+        SessionCwdMismatch,
         SpeculativeResumeRefused,
     )
     from kiro_crew.start_priority import (  # noqa: F401

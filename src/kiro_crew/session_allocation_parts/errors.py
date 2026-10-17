@@ -64,9 +64,30 @@ class SpeculativeResumeRefused(RuntimeError):
     """A speculative allocation may not consume an unrequested native resume."""
 
 
+class SessionCwdMismatch(RuntimeError):
+    """A ``require_cwd`` claim found the live session rooted at another directory.
+
+    Raised under the registry lock, so it is atomic with the reuse decision:
+    no window exists between "the caller checked where the session is rooted"
+    and "the caller was handed the session". The live provider's cwd is a
+    cold-start argument the reuse path otherwise ignores, so a caller whose
+    work MUST run in the requested directory (a project-scoped cron wake) asks
+    for this refusal rather than a provider rooted somewhere else.
+    """
+
+    def __init__(self, key: str, requested: str, live: str) -> None:
+        super().__init__(
+            f"session {key!r} is live at {live!r}, not the requested cwd {requested!r}"
+        )
+        self.key = key
+        self.requested = requested
+        self.live = live
+
+
 # Named by the path callers import them from, so a traceback or an error chain renders
 # them exactly as before they moved here.
 SessionClosingError.__module__ = "kiro_crew.session_allocation"
 SessionEndingError.__module__ = "kiro_crew.session_allocation"
 SessionBusyError.__module__ = "kiro_crew.session_allocation"
 SpeculativeResumeRefused.__module__ = "kiro_crew.session_allocation"
+SessionCwdMismatch.__module__ = "kiro_crew.session_allocation"

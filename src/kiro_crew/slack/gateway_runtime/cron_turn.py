@@ -206,6 +206,8 @@ async def _cron_run_sequence(
                     step.crew,
                     execution=_seq_execution,
                     replace_execution=True,
+                    cron_cwd=cap.cron_cwd,
+                    rescoped=cap.rescoped,
                 )
                 _seq_downgraded = _seq_downgraded or _downgraded
                 _acq = True
@@ -239,6 +241,10 @@ async def _cron_run_sequence(
                     resumed=_resumed,
                     needs_reinjection=_seq_reinjection,
                     minimal_context=job.minimal_context,
+                    # The [PROJECT] line names the directory the session
+                    # is rooted in, exactly as for an interactive chat
+                    # scoped to the project; unset stays unset.
+                    project=job.project_dir or None,
                 )
                 # Wall clock for the cron agent turn: acp never assigns
                 # TurnUsage.duration_ms, so the row falls back to this.
@@ -400,6 +406,9 @@ async def _cron_run_sequence(
                 )
                 raise AcpError(f"{SESSION_NOT_FOUND_GIVE_UP_TEXT} {_seq_snf_err}")
             await self.sessions.reset(agent_session_key)
+    # Every agent key of this wake has been retired-or-confirmed
+    # against the rescope, so the store's marker has done its job.
+    await self._settle_rescope(job, cap)
     if _seq_downgraded:
         result_text = _annotate_model_downgrade(job, result_text)
     result_text = _annotate_partial_block(result_text, _gate)
@@ -568,10 +577,18 @@ async def _cron_run_single(
                 rebind_cron_session_template, session_key, cron_execution, job.name
             )
         client, is_new, _resumed, _model_downgraded = await self._acquire_with_model_fallback(
-            job, cron_execution, session_key, _dispatch_agent, _single_cwd, _single_crew
+            job,
+            cron_execution,
+            session_key,
+            _dispatch_agent,
+            _single_cwd,
+            _single_crew,
+            cron_cwd=cap.cron_cwd,
+            rescoped=cap.rescoped,
         )
         _acquired = True
         _run_provider = client
+        await self._settle_rescope(job, cap, alias_cwd=_single_cwd)
         # Same identity publish as the sequential site above — the
         # single-agent cron turn must publish its pidfile mapping or
         # spawn_run's parent resolution has no source to walk to.
@@ -601,6 +618,10 @@ async def _cron_run_single(
             needs_reinjection=_needs_reinjection,
             provider_type=_provider,
             minimal_context=job.minimal_context,
+            # The [PROJECT] line names the directory the session is
+            # rooted in, exactly as for an interactive chat scoped to
+            # the project; unset stays unset.
+            project=job.project_dir or None,
         )
 
         # Wall clock for the cron agent turn — see the sequential site

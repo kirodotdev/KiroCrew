@@ -58,6 +58,21 @@ class FirstTurnState(Enum):
         return self is FirstTurnState.RESUMED
 
 
+@dataclass(frozen=True, slots=True)
+class ConversationRoot:
+    """One observation of where a key's resumable conversation is rooted.
+
+    Returned by :meth:`SessionManager.conversation_root` and handed back to
+    :meth:`SessionManager.discard_conversation_root`, so the discard names the
+    exact conversation the caller judged -- by its ``sid`` as well as its
+    ``cwd`` -- rather than whatever the key holds by then. ``sid == ""`` means
+    the key had nothing to resume; ``cwd`` is then ``""`` too.
+    """
+
+    sid: str
+    cwd: str
+
+
 @dataclass
 class _Session:
     provider: LLMProvider
@@ -282,5 +297,6 @@ def _unlink_session_queue(session: "_Session") -> None:
 # Named by the path callers import them from: a class renders as
 # ``module.qualname`` in reprs, pickles and tracebacks, so this module's name
 # must not leak into them.
+ConversationRoot.__module__ = "kiro_crew.session"
 FirstTurnState.__module__ = "kiro_crew.session"
 _Session.__module__ = "kiro_crew.session"

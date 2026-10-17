@@ -61,7 +61,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_fold_key": ("function", False, "f1d40e624ae4", "facade"),
     "_generation_key": ("function", False, "f1d40e624ae4", "facade"),
     "_get_or_bootstrap_run_runtime": ("function", True, "dc9735619fc4", "companions"),
-    "_get_or_create_impl": ("function", True, "746de0f75f44", "get_or_create"),
+    "_get_or_create_impl": ("function", True, "c152f5ce378a", "get_or_create"),
     "_get_session_agent": ("function", False, "48f8c3736da9", "companions"),
     "_held_start_permit": ("function", False, "00575ac64dc4", "get_or_create"),
     "_inbound_callback_reservations": ("property", False, "71f690cdd0d7", "facade"),
@@ -107,7 +107,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "get_agent": ("function", False, "f1d40e624ae4", "facade"),
     "get_agent_selection": ("function", False, "b3496bff0391", "facade"),
     "get_approval_policy": ("function", False, "f1d40e624ae4", "facade"),
-    "get_or_create": ("function", True, "c9826b33d6da", "get_or_create"),
+    "get_or_create": ("function", True, "ee7d6b536b8b", "get_or_create"),
     "get_pid": ("function", False, "1290edeed1b6", "facade"),
     "get_provider": ("function", False, "c66f77f7d253", "facade"),
     "get_subagent_runtime": ("function", True, "23c9947d4e41", "companions"),
@@ -393,6 +393,7 @@ def test_each_owner_names_the_fields_it_writes_and_reads(owner: str) -> None:
 _REFUSALS = (
     "SessionBusyError",
     "SessionClosingError",
+    "SessionCwdMismatch",
     "SessionEndingError",
     "SpeculativeResumeRefused",
 )

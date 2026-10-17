@@ -28,9 +28,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import threading
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -50,6 +51,7 @@ from kiro_crew.runtime_ownership import acquire_session_lease, release_session_l
 from kiro_crew.session_allocation_parts.errors import (
     SessionBusyError,
     SessionClosingError,
+    SessionCwdMismatch,
     SessionEndingError,
     SpeculativeResumeRefused,
 )
@@ -63,6 +65,79 @@ from kiro_crew.start_priority import (
 
 if TYPE_CHECKING:
     from kiro_crew.session_allocation import LLMProvider, ProviderFactory, SessionAllocationService
+
+
+def _compare_key(path: str) -> str:
+    """The spelling two cwds are compared under: ``realpath``, case-folded.
+
+    Filesystem I/O: call OFF the registry lock.
+    """
+    return os.path.normcase(os.path.realpath(path))
+
+
+def _canonical_roots(roots: Sequence[str]) -> list[str]:
+    """Realpath each non-empty root. Filesystem I/O: call OFF the registry lock."""
+    return [_compare_key(r) for r in roots if r]
+
+
+def _canonical_default_roots(owner: Any, key: str) -> tuple[list[str], list[str]]:
+    """``(canonical, raw)`` default roots for a cwd-less ``require_cwd`` claim.
+
+    ``owner.default_conversation_roots(key)`` resolves the workspace root by
+    name -- an uncached stat, a read and a possible ``mkdir`` -- so it is
+    filesystem I/O in its own right, not just the ``realpath`` that follows;
+    both run in the ONE thread hop the caller already makes. Call OFF the loop.
+    """
+    raw = list(owner.default_conversation_roots(key))
+    return _canonical_roots(raw), raw
+
+
+def _refuse_unless_rooted_at(
+    key: str,
+    provider: Any,
+    allowed_roots: Sequence[str],
+    *,
+    canonical_cwd: str | None = None,
+    display_roots: Sequence[str] | None = None,
+) -> None:
+    """Raise SessionCwdMismatch when a ``require_cwd`` claim would hand back
+    a provider rooted outside *allowed_roots*.
+
+    One check for EVERY path that hands an already-live provider to the
+    caller: the lock-held reuse branch, the won-race return (another claimant
+    installed the session while this one was building) and, through the
+    forwarded flag, each recursive retry. An empty *allowed_roots* is a claim
+    that did not ask (``require_cwd=False``). A provider with no cwd of its
+    own is not refused: nothing says it is elsewhere.
+
+    Both sides are compared CANONICAL. *allowed_roots* arrive realpath'd
+    (:func:`_canonical_roots`, run off the lock); the provider's cwd is stored
+    verbatim -- the spelling it was rooted with, which may be a symlink to the
+    same directory (``/tmp`` on macOS, a symlinked repo layout) -- so the
+    caller passes its realpath as *canonical_cwd* when it could compute one
+    off the lock. Without it the compare falls back to ``normpath`` of the
+    verbatim cwd: no filesystem I/O is ever performed here, because the reuse
+    branch runs under the registry lock. That fallback can refuse an
+    equivalent spelling for one claim; the caller re-reads on the next.
+
+    The refusal names *display_roots* -- the roots as the caller spelled
+    them -- rather than their compare keys, which on Windows are case-folded
+    and would misreport the directory the caller asked for.
+    """
+    if not allowed_roots:
+        return
+    live_cwd = str(getattr(provider, "cwd", "") or "")
+    if not live_cwd:
+        return
+    # Both sides FOLDED the same way: the roots arrive already through
+    # ``_compare_key`` (case-folded), so an un-folded cwd on the fallback
+    # branch would refuse ``C:\Repo`` against ``c:\repo`` on every attempt --
+    # and the fallback IS the branch the caller cannot re-read past, since the
+    # next claim takes it again. Still no filesystem I/O.
+    here = os.path.normcase(os.path.normpath(canonical_cwd or live_cwd))
+    if all(here != os.path.normcase(os.path.normpath(root)) for root in allowed_roots if root):
+        shown = display_roots if display_roots is not None else allowed_roots
+        raise SessionCwdMismatch(key, " | ".join(r for r in shown if r), live_cwd)
 
 
 async def _reacquire_and_validate(
@@ -295,6 +370,7 @@ async def get_or_create(
     speculative: bool = False,
     speculative_resume: bool = False,
     wait_if_busy: bool = True,
+    require_cwd: bool = False,
     _won_race_retries: int = 0,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     **extra_factory_kwargs: Any,
@@ -343,6 +419,7 @@ async def get_or_create(
                 speculative=speculative,
                 speculative_resume=speculative_resume,
                 wait_if_busy=wait_if_busy,
+                require_cwd=require_cwd,
                 _won_race_retries=_won_race_retries,
                 _reservation=token,
                 start_priority=start_priority,
@@ -401,6 +478,7 @@ async def _get_or_create_impl(
     wait_if_busy: bool = True,
     _won_race_retries: int = 0,
     _reservation: object | None = None,
+    require_cwd: bool = False,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     **extra_factory_kwargs: Any,
 ) -> tuple[LLMProvider, bool, bool]:
@@ -421,6 +499,35 @@ async def _get_or_create_impl(
     execution = await asyncio.to_thread(read_session_execution, key)
     member_context = execution is not None and execution.member_id is not None
     memory_mode = execution.memory_mode if execution is not None else "persistent"
+    # Where a ``require_cwd`` claim allows a live session to be rooted: the
+    # requested cwd, or -- for a cwd-less claim -- any gateway default root,
+    # since that is where this claim's own cold start would land. Resolved
+    # and CANONICALISED before the lock (realpath is filesystem I/O, and
+    # config_dir's first call can mkdir) and applied under it, so a
+    # cleared-project cron wake gets the same lock-held refusal a
+    # project-scoped one does instead of reusing a session installed at
+    # the old repository between its retire and this claim. The session
+    # live on the key NOW is peeked for the same reason: its verbatim cwd
+    # is realpath'd here, off the lock, and used under it only if that same
+    # entry is still the one being reused.
+    allowed_roots: list[str] = []
+    raw_roots: list[str] = []
+    observed_entry: Any | None = None
+    observed_canonical_cwd: str | None = None
+    if require_cwd:
+        if cwd:
+            raw_roots = [cwd]
+            allowed_roots = await asyncio.to_thread(_canonical_roots, raw_roots)
+        else:
+            # ``default_conversation_roots`` stats, reads and may mkdir the
+            # workspace root (its docstring says "call off the loop"), so
+            # it resolves inside the same thread hop as the canonicalising.
+            allowed_roots, raw_roots = await asyncio.to_thread(_canonical_default_roots, owner, key)
+        observed_entry = self._sessions.get(key)
+        if observed_entry is not None:
+            observed_cwd = str(getattr(observed_entry.provider, "cwd", "") or "")
+            if observed_cwd:
+                observed_canonical_cwd = await asyncio.to_thread(_compare_key, observed_cwd)
     stale_provider: LLMProvider | None = None
     stale_session: Any | None = None
     claimed: Any | None = None
@@ -467,6 +574,21 @@ async def _get_or_create_impl(
                         # a crash rather than an eviction.
                         await record_session_ended(key, end_reason=END_REASON_EVICTED)
                 if alive:
+                    # Atomic with the reuse decision (same lock hold): the
+                    # reuse path hands back the live provider without
+                    # looking at ``cwd``, so a caller whose work must run
+                    # in the requested directory asks for this refusal.
+                    # The canonical cwd computed off the lock applies only
+                    # if this is still the entry it was computed for.
+                    _refuse_unless_rooted_at(
+                        key,
+                        session.provider,
+                        allowed_roots,
+                        canonical_cwd=(
+                            observed_canonical_cwd if session is observed_entry else None
+                        ),
+                        display_roots=raw_roots,
+                    )
                     session.last_used = time.monotonic()
                     if (
                         self._deps.is_claude_provider(session.provider)
@@ -543,6 +665,7 @@ async def _get_or_create_impl(
             speculative=speculative,
             speculative_resume=speculative_resume,
             wait_if_busy=wait_if_busy,
+            require_cwd=require_cwd,
             _won_race_retries=_won_race_retries + 1,
             start_priority=start_priority,
             **extra_factory_kwargs,
@@ -1178,6 +1301,24 @@ async def _get_or_create_impl(
                     key,
                     exc_info=True,
                 )
+        # Another claimant installed this session while ours was building;
+        # it is handed back exactly like a reused one, so it answers to the
+        # same cwd requirement -- decided BEFORE waiting on its lease: a
+        # session this claim must refuse is not one worth queueing behind,
+        # and an entry's provider never changes while it stays registered
+        # (a reset pops the entry), so the reading cannot go stale across
+        # the wait that follows. Off the lock here, so the winner's verbatim
+        # cwd can be canonicalised for the compare.
+        if allowed_roots:
+            _won_cwd = str(getattr(won_race_session.provider, "cwd", "") or "")
+            _won_canonical = await asyncio.to_thread(_compare_key, _won_cwd) if _won_cwd else None
+            _refuse_unless_rooted_at(
+                key,
+                won_race_session.provider,
+                allowed_roots,
+                canonical_cwd=_won_canonical,
+                display_roots=raw_roots,
+            )
         if await owner._reacquire_and_validate(
             key,
             won_race_session,
@@ -1209,6 +1350,7 @@ async def _get_or_create_impl(
             speculative=speculative,
             speculative_resume=speculative_resume,
             wait_if_busy=wait_if_busy,
+            require_cwd=require_cwd,
             _won_race_retries=_won_race_retries + 1,
             start_priority=start_priority,
             **extra_factory_kwargs,

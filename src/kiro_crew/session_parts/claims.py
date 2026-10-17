@@ -11,7 +11,7 @@ on an instance reaches every caller.
 
 Instance fields written: ``_allocation``.
 
-Instance fields read: none.
+Instance fields read: ``_session_map``.
 """
 
 from __future__ import annotations
@@ -22,9 +22,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew import shutdown_event
+from kiro_crew.config.loader import _session_work_dir, config_dir
 from kiro_crew.session_allocation import SessionAllocationService, _collect_parent_runtime_kwargs
 from kiro_crew.session_allocation import parent_work_scratch_dir as _parent_work_scratch_dir
 from kiro_crew.session_parts.policy import BACKGROUND_AGENT, BACKGROUND_KEY
+from kiro_crew.session_parts.record import ConversationRoot
 from kiro_crew.start_priority import StartPriority
 
 if TYPE_CHECKING:
@@ -245,12 +247,22 @@ async def get_or_create(
     wait_if_busy: bool = True,
     _won_race_retries: int = 0,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    require_cwd: bool = False,
     **extra_factory_kwargs: Any,
 ) -> tuple[LLMProvider, bool, bool]:
     """Claim or allocate a session and return its held lease.
 
     ``start_priority`` orders a cold start in the start queues; a caller passes
     FOREGROUND only where a person waits on it (rule: ``kiro_crew.start_priority``).
+
+    ``require_cwd``: refuse (``SessionCwdMismatch``) to hand back a live
+    session whose cwd is not the requested ``cwd`` -- or, for a cwd-less
+    claim, not one of :meth:`default_conversation_roots`, where this claim's
+    own cold start would land. Decided under the registry lock on every
+    hand-back path (reuse, won-race, retries) so no acquisition can slip a
+    differently-rooted session in between a caller's own check and this
+    claim. Off by default: the reuse path otherwise ignores ``cwd``, which
+    is what every existing caller expects.
     """
     if key == BACKGROUND_KEY:
         # ``_bg`` is one persistent session shared by every background job,
@@ -277,8 +289,93 @@ async def get_or_create(
         wait_if_busy=wait_if_busy,
         _won_race_retries=_won_race_retries,
         start_priority=start_priority,
+        require_cwd=require_cwd,
         **extra_factory_kwargs,
     )
+
+
+def default_conversation_roots(self: SessionManager, key: str | None = None) -> list[str]:
+    """The cwd(s) a session created with no explicit ``cwd`` can land on.
+
+    A cwd-less cold start roots at the pool cwd when a warm-pool process
+    is claimed; on a pool miss the provider factory roots it at *key*'s
+    own per-session work dir under the workspace root (``_session_work_dir``,
+    the factory's fallback for ``cwd=None``); the ACP runtime's own default
+    work dir is the last fallback. A caller that must tell "rooted at the
+    gateway default" from "rooted at a stale project" (e.g. a cron job whose
+    ``project_dir`` was cleared) compares the conversation root against this
+    list rather than hardcoding any one path. All are returned because which
+    one a given cold start used depends on whether a pooled process was
+    available at the time. Pass the session *key* the caller is judging:
+    without it the per-key directory cannot be named, and a conversation
+    legitimately rooted there would read as "elsewhere". Filesystem: the
+    workspace root is resolved (and created) by name; call off the loop.
+    """
+    roots = []
+    pool_cwd = str(self._pool_cwd or "")
+    if pool_cwd:
+        roots.append(pool_cwd)
+    if key:
+        roots.append(str(_session_work_dir(key)))
+    roots.append(str(config_dir() / "workspace"))
+    return roots
+
+
+def conversation_root(self: SessionManager, key: str) -> ConversationRoot:
+    """Where *key*'s RESUMABLE conversation is rooted, as an observation.
+
+    ``.cwd`` is the directory a later ``get_or_create(key, cwd=None)``
+    would root a cold start at, because a cwd-less acquisition falls back
+    to the cwd the session map persisted for the key's stored session id.
+    It is durable — it survives a process recycle (a plain ``reset`` keeps
+    the sid) and a gateway restart (the map is on disk) — so a caller that
+    rooted a session at a directory and later needs to know whether the
+    conversation is STILL rooted there reads it here rather than trusting
+    an in-process note. ``.cwd`` is ``""`` when the key has no stored
+    session (nothing to resume) so the caller cold-starts freely. A LIVE
+    provider's own cwd outranks this, and the caller that has one should
+    prefer it; this answers for the no-live-provider case the live cwd
+    cannot.
+
+    The record also carries the sid it read, so the observation names ONE
+    conversation: :meth:`discard_conversation_root` acts only on exactly
+    this one, never on a successor that happens to share the cwd.
+    """
+    # One locked read for both fields (``SessionMap.get_sid_and_cwd``): two
+    # reads could interleave with a writer and yield a sid from one state of
+    # the entry and a cwd from another -- an observation of no conversation
+    # that ever existed, which the compare-and-clear would then judge by.
+    sid, cwd = self._session_map.get_sid_and_cwd(key)
+    return ConversationRoot(sid=sid, cwd=cwd)
+
+
+def discard_conversation_root(
+    self: SessionManager, key: str, *, observed: ConversationRoot
+) -> bool:
+    """Drop the key's resume pointer, if it is still the conversation *observed*.
+
+    For the no-live-provider counterpart of an ``ends_conversation`` reset:
+    with a live session that reset ends the conversation and clears the sid,
+    but when nothing is live there is no session to reset and the durable
+    sid still points at a conversation rooted at a directory the caller has
+    moved away from. Clearing the sid (via the same stash-and-clear a
+    provider switch uses) makes the stored record inert — the entry and its
+    cwd note survive for diagnosis, but a resume cannot restore it, so the
+    next wake cold-starts at the caller's chosen cwd.
+
+    A compare-and-clear on BOTH the sid and the cwd the caller observed
+    (:meth:`conversation_root`), read and cleared under the map's own lock.
+    A concurrent cold start publishes its sid on the key AFTER building its
+    provider, so a caller that looked before that publication cannot see
+    it; and because a cwd-less cold start adopts the stored cwd and
+    republishes it, the successor ordinarily carries the SAME cwd -- the
+    sid is what tells the two apart, so the newer conversation keeps its
+    pointer. Returns whether a pointer was dropped; ``False`` for an
+    observation that named no conversation.
+    """
+    if not observed.sid:
+        return False
+    return self._session_map.clear_sid_if(key, sid=observed.sid, cwd=observed.cwd)
 
 
 @contextmanager

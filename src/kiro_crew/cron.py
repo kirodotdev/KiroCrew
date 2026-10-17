@@ -96,9 +96,14 @@ from kiro_crew.cron_service.fields import (  # noqa: F401 -- re-exported
     _CHAT_FOLDER_NEEDS_PERSISTENT,
     _CRON_STRING_FIELD_CAPS,
     _MIN_INTERVAL_SECS,
+    _PROJECT_DIR_NEEDS_AGENT_JOB,
+    PROJECT_DIR_OUT_OF_SCOPE,
+    CronProjectDirOutOfScope,
+    _project_dir_within,
     _validate_cron_string_fields,
     apply_job_update,
     build_job,
+    validate_cron_project_dir,
     validate_managed_by,
 )
 from kiro_crew.cron_service.folders import (  # noqa: F401 -- re-exported
@@ -216,6 +221,7 @@ from kiro_crew.runtime_ownership import authorize_runtime_kill  # noqa: F401 -- 
 from kiro_crew.validation import (  # noqa: F401 -- re-exported
     CHANNEL_MAX_LEN,
     MAX_CRON_MESSAGE,
+    MAX_PROJECT_DIR_LEN,
     MAX_SHORT_STRING,
 )
 
@@ -863,6 +869,14 @@ class CronService:
         # registrar already applied a manifest to this job, and fields computed
         # against the old one would overwrite whatever has been written since.
         expect_stamp = kwargs.pop("expect_app_manifest_digest", None)
+        # Same shape for the project scope: the gateway clears the rescope
+        # marker only if the job is still scoped exactly as the wake it just
+        # re-rooted read it -- ``(project_dir, project_dir_was)``. A rescope
+        # that landed DURING that wake (a clear-to-unset the store kept the
+        # first marker through) must survive the clear, or the next wake's
+        # never-scoped short-circuit would leave the conversation in the old
+        # repository with nothing left to notice.
+        expect_scope = kwargs.pop("expect_project_scope", None)
         # Optional OUT-parameter, owned by the caller: a dict this pass fills with
         # ``{"chat_folder_was": <prior folder, possibly "">}`` when the update
         # actually changes ``chat_folder_id``.
@@ -878,6 +892,10 @@ class CronService:
         # to, and clobberable by, the others. A dict the caller allocated is seen
         # by that caller alone.
         chat_folder_out = kwargs.pop("chat_folder_transition_out", None)
+        # Surface identity for the SEL event a sensitive project_dir refusal
+        # emits (see validate_cron_project_dir); never a stored field.
+        audit_caller = str(kwargs.pop("audit_caller", "") or "cron_store")
+        project_dir_allowed_roots = kwargs.pop("project_dir_allowed_roots", None)
         with self._file_lock():
             self._sync_for_write()
             for job in self._jobs:
@@ -895,6 +913,10 @@ class CronService:
                     raise CronPendingMismatch("active grant pin changed concurrently")
                 if expect_stamp is not None and job.app_manifest_digest != expect_stamp:
                     raise CronPendingMismatch("manifest stamp changed concurrently")
+                if expect_scope is not None and (job.project_dir, job.project_dir_was) != tuple(
+                    expect_scope
+                ):
+                    raise CronPendingMismatch("project scope changed concurrently")
                 # The cached record is published to every reader the moment it
                 # is mutated (``list_jobs`` hands out these very objects), so a
                 # save that fails must put it back: otherwise the cache says the
@@ -905,7 +927,13 @@ class CronService:
                 # reload-on-change in ``_sync_for_write`` cannot do this, since a
                 # failed save changes nothing on disk.
                 before = copy.copy(job)
-                apply_job_update(job, kwargs, chat_folder_out)
+                apply_job_update(
+                    job,
+                    kwargs,
+                    chat_folder_out,
+                    audit_caller=audit_caller,
+                    project_dir_allowed_roots=project_dir_allowed_roots,
+                )
                 try:
                     self._save()
                 except BaseException:

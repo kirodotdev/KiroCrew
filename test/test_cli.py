@@ -53,6 +53,8 @@ def _add_job_kwargs(**overrides):
         timezone="",
         hide_in_chat=False,
         folder_id="",
+        project_dir="",
+        audit_caller="cli",
         command="",
         script="",
         persistent_session=True,
@@ -891,7 +893,9 @@ class TestCronCli:
                 approval_mode="auto",
             )
             _cron(args)
-            mock_svc.update_job.assert_called_once_with("abc123", approval_mode="auto")
+            mock_svc.update_job.assert_called_once_with(
+                "abc123", audit_caller="cli", approval_mode="auto"
+            )
             mock_sel.return_value.log_api_access.assert_called_once_with(
                 caller="cli",
                 operation="cron.update",
@@ -1115,7 +1119,9 @@ class TestCronCli:
                 agent="oncall-agent",
             )
             _cron(args)
-            mock_svc.update_job.assert_called_once_with("abc123", agent_id="oncall-agent")
+            mock_svc.update_job.assert_called_once_with(
+                "abc123", audit_caller="cli", agent_id="oncall-agent"
+            )
             mock_sel.return_value.log_api_access.assert_called_once_with(
                 caller="cli",
                 operation="cron.update",
@@ -1147,7 +1153,7 @@ class TestCronCli:
                 agent="",
             )
             _cron(args)
-            mock_svc.update_job.assert_called_once_with("abc123", agent_id="")
+            mock_svc.update_job.assert_called_once_with("abc123", audit_caller="cli", agent_id="")
 
     def test_cron_update_agent_omitted_skipped(self, tmp_path, capsys):
         """When --agent is omitted (None), agent_id is not in update_job kwargs."""
@@ -1172,7 +1178,9 @@ class TestCronCli:
                 agent=None,
             )
             _cron(args)
-            mock_svc.update_job.assert_called_once_with("abc123", name="renamed")
+            mock_svc.update_job.assert_called_once_with(
+                "abc123", audit_caller="cli", name="renamed"
+            )
             assert "agent_id" not in mock_svc.update_job.call_args.kwargs
 
     def test_cron_add_invalid_agent_name_rejected(self, tmp_path, capsys):
@@ -1246,7 +1254,9 @@ class TestCronCli:
                 agent="  oncall-agent  ",
             )
             _cron(args)
-            mock_svc.update_job.assert_called_once_with("abc123", agent_id="oncall-agent")
+            mock_svc.update_job.assert_called_once_with(
+                "abc123", audit_caller="cli", agent_id="oncall-agent"
+            )
 
     def test_cli_argparse_cron_add_agent_flag(self) -> None:
         """`kirocrew cron add ... --agent NAME` parses into args.agent."""

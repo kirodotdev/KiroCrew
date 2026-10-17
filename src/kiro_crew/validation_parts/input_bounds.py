@@ -100,6 +100,9 @@ MAX_ACP_SESSION_ID_LEN = 128
 # (_build_job/update_job), so the CLI and apps SDK cannot admit a larger value
 # than the validated surfaces.
 MAX_CRON_MESSAGE = 50_000
+# Filesystem path fields (a cron job's project_dir). 4096 = Linux PATH_MAX; the
+# store resolves the path and enforces absolute / existing / not-sensitive.
+MAX_PROJECT_DIR_LEN = 4096
 MAX_RESPONSE_LEN = 100_000  # truncate tool responses
 
 # Allowed categories for lessons

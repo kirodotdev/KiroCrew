@@ -124,6 +124,8 @@ class TestInitCron:
         job.id = "j1"
         job.name = "test-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -197,6 +199,8 @@ class TestInitCron:
         job.id = "j1"
         job.name = "test-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -275,6 +279,8 @@ class TestInitCron:
         job.id = "j1"
         job.name = "test-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -351,6 +357,8 @@ class TestInitCron:
         job.id = "j1"
         job.name = "test-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = ["planner", "worker"]
         job.agent_id = None
         job.channel = ""
@@ -443,6 +451,8 @@ class TestInitCron:
         job.id = "j1"
         job.name = "test-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = ["planner", "worker"]
         job.agent_id = None
         job.channel = ""
@@ -529,6 +539,8 @@ class TestInitCron:
         job.id = "j1"
         job.name = "test-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = ["planner", "worker"]
         job.agent_id = None
         job.channel = ""
@@ -607,6 +619,8 @@ class TestInitCron:
         job.id = "j1"
         job.name = f"nightly {secret} sweep"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -676,6 +690,8 @@ class TestInitCron:
         job.id = "j2"
         job.name = "dedup-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -745,6 +761,8 @@ class TestInitCron:
         job.id = "j3"
         job.name = "silent-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -849,6 +867,8 @@ class TestCronFailurePaths:
         job.id = "jfail"
         job.name = "fail-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -922,6 +942,8 @@ class TestCronFailurePaths:
         job.id = "jfail2"
         job.name = "fail-dedup"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -996,6 +1018,8 @@ class TestCronFailurePaths:
         job.id = "jmulti"
         job.name = "multi-agent"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = ["agent-a", "agent-b"]
         job.agent_id = None
         job.channel = ""
@@ -1074,6 +1098,8 @@ class TestCronSuccessReminder:
         job.id = "j_remind"
         job.name = "reminder-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -1150,6 +1176,8 @@ class TestCronAcpRetry:
         job.id = "jacp"
         job.name = "acp-retry"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -1228,6 +1256,8 @@ class TestCronAckedItems:
         job.id = "jack"
         job.name = "acked-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -1308,6 +1338,8 @@ class TestCronSlackDeliveryFailure:
         job.id = "jslack"
         job.name = "slack-fail"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""

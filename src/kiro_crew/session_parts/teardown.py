@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, cast
 from kiro_crew.session_lifecycle import SessionLifecycleService
 
 if TYPE_CHECKING:
-    from kiro_crew.session import CancelOutcome, SessionManager
+    from kiro_crew.session import CancelOutcome, LLMProvider, SessionManager
     from kiro_crew.session_lifecycle import TornDown
     from kiro_crew.session_parts.policy import _RecycleCallback
     from kiro_crew.session_parts.record import StopOutcome, _Session
@@ -41,6 +41,7 @@ async def reset(
     key: str,
     *,
     expect_session: _Session | None = None,
+    expect_provider: LLMProvider | None = None,
     skip_if_busy: bool = False,
     skip_if_injecting: bool = False,
     refuse_only_on_active_turn: bool = False,
@@ -49,6 +50,15 @@ async def reset(
     scope: Any | None = None,
 ) -> bool:
     """Reset a live session while preserving its persistence entry.
+
+    ``expect_provider``: reset only if the key's live session is still the
+    one whose provider the caller observed (via :meth:`get_provider`);
+    otherwise return ``False`` and touch nothing. The public counterpart of
+    ``expect_session`` for a caller that decided on a snapshot taken before
+    an ``await``: a session that replaced the observed one in that gap --
+    possibly a correctly-rooted one with live child work -- is not the one
+    the caller judged, so it is left for the caller to judge afresh. The
+    identity check itself runs under the registry lock, atomic with the pop.
 
     The session the reset pops stays readable through :meth:`tearing_down`
     for exactly the life of its teardown: the scope opened here records it at
@@ -59,11 +69,18 @@ async def reset(
     released here all the same, and what its ``on_pop(session)`` hook read
     off that session in the pop's lock hold survives the release.
     """
+    expect = expect_session
+    if expect_provider is not None:
+        folded = self._fold_key(key)
+        entry = self._sessions.get(folded)
+        if entry is None or entry.provider is not expect_provider:
+            return False
+        expect = entry
     lifecycle = self._lifecycle_boundary()
     with scope if scope is not None else lifecycle.teardown_scope() as opened:
         return await lifecycle.reset(
             key,
-            expect_session=cast(Any, expect_session),
+            expect_session=cast(Any, expect),
             skip_if_busy=skip_if_busy,
             skip_if_injecting=skip_if_injecting,
             refuse_only_on_active_turn=refuse_only_on_active_turn,

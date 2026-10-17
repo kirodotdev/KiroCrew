@@ -395,6 +395,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         MAX_CRON_MESSAGE,
         MAX_LONG_STRING,
         MAX_MEDIUM_STRING,
+        MAX_PROJECT_DIR_LEN,
         MAX_RESPONSE_LEN,
         MAX_SESSION_STATUS_ROWS,
         MAX_SESSION_STATUS_TITLE_CHARS,

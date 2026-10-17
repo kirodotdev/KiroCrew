@@ -24,14 +24,19 @@ from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
     import asyncio
+    import os
 
     from kiro_crew.execution_context import ExecutionContext
     from kiro_crew.slack.gateway import (
         CronJob,
+        CronPendingMismatch,
         CronService,
+        CronStoreBusy,
+        CronStoreUnreadable,
         GatewayOrchestrator,
         LLMProvider,
         Path,
+        SessionCwdMismatch,
         _await_cron_fire_time_gate,
         _pre_create_cron_slot,
         _retire_sessions_on_identity_change,
@@ -46,6 +51,7 @@ if TYPE_CHECKING:
         redact_credentials,
         redact_exfiltration_urls,
         sel,
+        validate_cron_project_dir,
     )
 
 
@@ -59,6 +65,14 @@ class _CronCapture(NamedTuple):
     cron_memory_store: str
     cron_agent: str
     default_substituted: bool
+    #: The validated project directory the job's session is rooted at, or None for
+    #: a job that is not project-scoped; and the store's rescope reading taken
+    #: ONCE per wake (``(project_dir, project_dir_was)`` and whether a rescope
+    #: marker is set), so every agent key of a sequence wake is judged against the
+    #: same reading. See ``_retire_session_if_cwd_moved`` and ``_settle_rescope``.
+    cron_cwd: str | None
+    scope_snapshot: tuple[str, str]
+    rescoped: bool
 
 
 def _cron_extra_env(job: CronJob) -> dict[str, str] | None:
@@ -504,6 +518,50 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
         else:
             cron_agent = _default_agent
             _default_substituted = True
+
+    # ── Per-job project directory ──
+    # Captured ONCE per wake, BEFORE the validation below awaits: the
+    # project the wake roots at and the store's rescope marker (this
+    # job's project_dir was changed or cleared since its conversation
+    # began). A dashboard rescope landing during that await would
+    # otherwise pair the OLD validated cwd with a NEW ``(project_dir,
+    # project_dir_was)`` reading, and ``_settle_rescope`` would clear a
+    # marker for a re-rooting this wake never did. A sequence job retires
+    # every agent key on this wake against the same reading, so the clear
+    # afterwards cannot hide the rescope from the keys that follow; the
+    # pair is also the precondition of that clear.
+    scope_snapshot = (job.project_dir, job.project_dir_was)
+    rescoped = bool(job.project_dir_was)
+    project_dir = scope_snapshot[0]
+    # The cwd the job's session is rooted at, so kiro-cli loads THAT
+    # repo's ``.kiro/steering/**/*.md`` and the ``[PROJECT]`` context
+    # line names it -- the same scoping a dashboard chat gets from its
+    # slot project. Re-validated at every fire (the store's check ran
+    # at authoring; the directory can vanish or a hand-edited store can
+    # point somewhere sensitive) and the run FAILS on a refusal rather
+    # than falling back to the default cwd: a repo-scoped job silently
+    # running without its repo's policy is the drift this field exists
+    # to prevent. ``revalidate=True``: the persisted value is the
+    # canonical spelling the store judged (and, for an agent-authored
+    # job, confined to ``agent.subagent_cwd_allowed_roots``), so a
+    # component relinked since authoring is refused rather than followed
+    # past a confinement the wake does not re-run. Off-loop: realpath/isdir
+    # touch the filesystem. Validates the CAPTURED project, so the cwd and
+    # the scope pair describe the same reading.
+    cron_cwd: str | None = None
+    if project_dir:
+        try:
+            cron_cwd = await asyncio.to_thread(
+                validate_cron_project_dir,
+                project_dir,
+                audit_caller=f"cron:{job.id}",
+                revalidate=True,
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"project_dir {project_dir!r} is not usable: {exc}. "
+                "Fix the directory or update the job's project_dir."
+            ) from exc
     return _CronCapture(
         session_key,
         msg,
@@ -512,6 +570,9 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
         cron_memory_store,
         cron_agent,
         _default_substituted,
+        cron_cwd,
+        scope_snapshot,
+        rescoped,
     )
 
 
@@ -688,6 +749,207 @@ def _resolve_cron_agent(
         return None, None, None
 
 
+async def _settle_rescope(
+    self: GatewayOrchestrator, job: CronJob, cap: _CronCapture, *, alias_cwd: str | None = None
+) -> None:
+    """Clear the store's rescope marker once this wake has re-rooted.
+
+    Compare-and-swap against the scope this wake read: a rescope that landed
+    DURING the wake (the store keeps the first marker through a second one)
+    makes the precondition fail, and the marker is left for the next wake to
+    act on -- otherwise this clear would erase evidence of a change it never
+    re-rooted for, and the never-scoped short-circuit would leave the
+    conversation in the old repository for good. Off-loop store write via the
+    service; a busy store leaves the marker too, which is harmless: a
+    conversation already at its target is only re-confirmed. *alias_cwd* is the
+    workspace the job's agent alias resolved to, when it has one: the root a
+    cleared job's stable-key conversation legitimately sits at, the same
+    ``cron_cwd or cwd`` the claim itself targets.
+    """
+    if not cap.rescoped or self.cron_svc is None:
+        return
+    stable_key = f"cron:{job.id}"
+    if cap.session_key != stable_key:
+        # A stateless wake ran on a throwaway key, so the retire above judged
+        # only that key -- and the STABLE key may still hold a conversation
+        # rooted in the previous project (a live one with child runs, or a
+        # stored one a resume would restore). Re-enabling persistence later
+        # would wake that key with no marker left to police it, so it is
+        # judged here, and a declined retire keeps the marker for the next
+        # wake rather than clearing it over an unjudged conversation.
+        try:
+            await self._retire_session_if_cwd_moved(
+                job,
+                stable_key,
+                cap.cron_cwd or alias_cwd,
+                cron_cwd=cap.cron_cwd,
+                rescoped=True,
+            )
+        except RuntimeError as exc:
+            logger.warning("Cron '%s': rescope marker kept: %s", job.name, exc)
+            return
+    try:
+        await self.cron_svc.update_job_async(
+            job.id, project_dir_was="", expect_project_scope=cap.scope_snapshot
+        )
+    except CronPendingMismatch:
+        logger.info(
+            "Cron '%s': project scope changed during the wake; rescope marker kept",
+            job.name,
+        )
+    except (CronStoreBusy, CronStoreUnreadable):
+        logger.warning("Cron '%s': store busy, rescope marker kept for the next wake", job.name)
+
+
+async def _retire_session_if_cwd_moved(
+    self: GatewayOrchestrator,
+    job: CronJob,
+    key: str,
+    claim_cwd: str | None,
+    *,
+    cron_cwd: str | None,
+    rescoped: bool,
+) -> None:
+    """End the job's conversation when it is rooted outside the project.
+
+    get_or_create reuses a live session as-is, and with no live session it
+    RESUMES the key's stored conversation at the cwd the session map persisted
+    for it -- ``cwd=None`` falls back to that stored path. So a persistent job
+    whose project_dir was set, changed or CLEARED after its conversation began
+    would keep running in the old directory: across resets (a plain reset keeps
+    the resume sid) and across gateway restarts (the map is on disk). The
+    durable record is therefore the signal read here, through the session
+    manager's public ``conversation_root`` / ``discard_conversation_root``
+    surface rather than its internals, so a session-layer refactor cannot
+    silently disable this guard.
+
+    Only a job that IS project-scoped, or WAS until a rescope the store still
+    holds the marker for, is policed. A job that never opted in is left
+    wherever its session sits -- its tab's own project control may have put it
+    there on purpose -- so a moved default root never ends a legacy job's
+    conversation.
+
+    A conversation rooted elsewhere is ENDED, not recycled: ``clear_conversation``
+    drops the resume sid so the acquisition that follows cold-starts a fresh
+    conversation at the project (or at the gateway default when cleared), and
+    ``ends_conversation`` says so, since its sub-agent runs end with it. Only the
+    session this wake OBSERVED is ended (``expect_provider``): one that replaced
+    it during the awaits is judged afresh, never torn down on a stale reading. A
+    DECLINED reset fails the wake: another surface holds the session in the
+    wrong directory, and a repository-writing prompt run there would edit or
+    commit in the previous project. The claim that follows passes
+    ``require_cwd`` for the same reason, so a session installed AFTER this
+    retire is refused under the claim's own lock rather than reused.
+    """
+    if self.sessions is None:
+        return
+    if not cron_cwd and not rescoped:
+        return
+    # Where it MUST be rooted: the project; else the agent alias's
+    # workspace when the dispatch resolved one; else -- a cleared
+    # field with no alias workspace -- any gateway default root FOR
+    # THIS KEY: the pool cwd, the key's own per-session work dir (a
+    # pool-miss cold start lands there), or the runtime default.
+    # The same order the claim's ``cwd`` follows. Off-loop: the
+    # workspace root is resolved by name.
+    targets = (
+        [claim_cwd]
+        if claim_cwd
+        else await asyncio.to_thread(self.sessions.default_conversation_roots, key)
+    )
+    for _attempt in range(3):
+        live_provider = self.sessions.get_provider(key)
+        live_cwd = getattr(live_provider, "cwd", None) if live_provider is not None else None
+        if not isinstance(live_cwd, str):
+            live_cwd = None
+        # Where the conversation IS rooted: the live provider knows
+        # best; otherwise the durable record of what a cold start
+        # would resume. Off-loop: the map read stats its store.
+        stored = await asyncio.to_thread(self.sessions.conversation_root, key)
+        rooted_at = live_cwd if live_provider is not None else stored.cwd
+
+        def _compare_key(path: str) -> str:
+            # The spelling two cwds are compared under: realpath, case-folded.
+            return os.path.normcase(os.path.realpath(path))
+
+        def _rooted_at_a_target() -> bool:
+            # Off-loop caller: realpath touches the filesystem.
+            if not rooted_at:
+                # No recorded root: a pre-tracking conversation. Only
+                # a project can be certain it is elsewhere.
+                return not cron_cwd
+            here = _compare_key(rooted_at)
+            return any(here == _compare_key(t) for t in targets if t)
+
+        if await asyncio.to_thread(_rooted_at_a_target):
+            return
+        target = cron_cwd or "<default>"
+        logger.info(
+            "Cron '%s': conversation rooted at %r != project_dir %r; ending it",
+            job.name,
+            rooted_at or "<default>",
+            target,
+        )
+        if live_provider is None:
+            if not stored.sid:
+                # Nothing recorded to resume: the claim that follows
+                # cold-starts at its own cwd. (Reached only for a
+                # project, since the cleared case returned above.)
+                return
+            # Nothing to end; drop the durable resume pointer so a
+            # cwd-less cold start cannot restore the old cwd -- but
+            # only the pointer this wake JUDGED: a concurrent cold
+            # start publishes its sid after building its provider,
+            # invisible to the reads above, and it must keep its
+            # pointer even when it adopted the same cwd. Naming
+            # the observed (sid, cwd) is what makes this a
+            # compare-and-clear of one conversation.
+            if await asyncio.to_thread(
+                self.sessions.discard_conversation_root,
+                key,
+                observed=stored,
+            ):
+                return
+            # Missed: the key records a DIFFERENT conversation now
+            # -- a successor another surface published (and maybe
+            # already closed) after the reads above. It is not
+            # judged yet, and a cwd-less claim would RESUME it at
+            # whatever cwd it stored, so re-read and judge it on
+            # its own root rather than proceeding as if the key
+            # were clear. A successor that is live is caught by the
+            # claim's ``require_cwd`` too; a closed one only here.
+            continue
+        # Ends exactly the observed session (identity checked under
+        # the session lock, atomic with the pop) and, with it, the
+        # stored sid -- so nothing is discarded unless the retire
+        # actually happened.
+        if await self.sessions.reset(
+            key,
+            expect_provider=live_provider,
+            skip_if_busy=True,
+            clear_conversation=True,
+            ends_conversation=True,
+        ):
+            return
+        # Declined: the observed session is still there and busy on
+        # another surface, or it was replaced. reset's bool cannot
+        # tell the two apart, the provider identity can.
+        if self.sessions.get_provider(key) is live_provider:
+            raise RuntimeError(
+                f"session for cron '{job.name}' is busy on another surface and "
+                f"rooted at {rooted_at!r}, not the job's project_dir "
+                f"{target!r}; skipping this run rather than "
+                "executing in the previous project."
+            )
+        # Replaced under the snapshot: re-read and judge the
+        # replacement on its own root rather than the stale one.
+    raise RuntimeError(
+        f"session for cron '{job.name}' kept changing while its root was "
+        "being checked; skipping this run rather than executing in an "
+        "unverified directory."
+    )
+
+
 async def _acquire_with_model_fallback(
     self: GatewayOrchestrator,
     job: CronJob,
@@ -699,6 +961,8 @@ async def _acquire_with_model_fallback(
     *,
     execution: ExecutionContext | None = None,
     replace_execution: bool = False,
+    cron_cwd: str | None = None,
+    rescoped: bool = False,
 ) -> "tuple[LLMProvider, bool, bool, bool]":
     """get_or_create honoring job.model; if that model is
     unavailable, retry once with the registry default.
@@ -714,9 +978,16 @@ async def _acquire_with_model_fallback(
     store and member identity must remain the captured run's.
     ``replace_execution`` admits a sequence step's template switch
     only while the durable record still matches the fresh read.
+
+    A job's own ``project_dir`` (``cron_cwd``, validated by the capture)
+    outranks the alias workspace: the operator named a repository for
+    THIS job, so its session roots there and the alias's workspace is
+    the fallback for a job that did not. ``rescoped`` is the capture's
+    reading of the store's rescope marker.
     """
 
     assert self.sessions is not None
+    claim_cwd = cron_cwd or cwd
     from kiro_crew.execution_context import (
         bind_session_execution,
         read_session_execution,
@@ -780,6 +1051,17 @@ async def _acquire_with_model_fallback(
     # unreadable store) the fire touches no session, since it could
     # not tell a stale one from a healthy one on any fire.
     await _retire_sessions_on_identity_change(self.dashboard_state, unattended=True)
+    # Outside the try below: its handler classifies by substring
+    # ("model" in the message), and the declined-reset error embeds
+    # project paths, so a repo path containing "model" would route a
+    # cwd refusal into a fallback that reuses the mis-rooted session.
+    await self._retire_session_if_cwd_moved(
+        job, key, claim_cwd, cron_cwd=cron_cwd, rescoped=rescoped
+    )
+    # require_cwd closes the last window: a session installed on
+    # this key between the retire above and the claim's own lock
+    # (a dashboard follow-up on the job's tab) is refused UNDER that
+    # lock instead of reused with the requested cwd ignored.
     try:
         client, is_new, resumed = await self.sessions.get_or_create(
             key,
@@ -788,8 +1070,9 @@ async def _acquire_with_model_fallback(
             channel_id=job.channel,
             approval_policy=job.approval_mode,
             model=job.model or None,
+            cwd=claim_cwd,
             extra_env=_cron_extra_env(job),
-            cwd=cwd,
+            require_cwd=bool(cron_cwd) or rescoped,
         )
         await _rebind_prepared_execution(client)
         # A config-option backend refuses a pin without raising and
@@ -801,6 +1084,14 @@ async def _acquire_with_model_fallback(
             resumed,
             bool(job.model) and provider_model_pin_refused(client),
         )
+    except SessionCwdMismatch as exc:
+        # Never a model failure, whatever the paths in its message
+        # contain: the run must not proceed in the other directory.
+        raise RuntimeError(
+            f"session for cron '{job.name}' was claimed by another surface at "
+            f"{exc.live!r} while this wake targeted project_dir {exc.requested!r}; "
+            "skipping this run rather than executing in the previous project."
+        ) from exc
     except Exception as model_exc:
         if not job.model:
             raise
@@ -823,8 +1114,9 @@ async def _acquire_with_model_fallback(
             crew_agent=crew_agent,
             channel_id=job.channel,
             approval_policy=job.approval_mode,
+            cwd=claim_cwd,
             extra_env=_cron_extra_env(job),
-            cwd=cwd,
+            require_cwd=bool(cron_cwd) or rescoped,
         )
         await _rebind_prepared_execution(client)
         return client, is_new, resumed, True
