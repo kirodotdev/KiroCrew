@@ -12379,6 +12379,7 @@
       "older_sessions": "이전 세션",
       "older_sessions_2": "이전 세션",
       "open_source_link_in_side_panel": "{{url}}을(를) 사이드 패널에서 열기 ({{modifier}}(으)로 누르면 브라우저에서 열기)",
+      "open_named_source_link_in_side_panel": "{{provider}} {{ref}}: {{url}}을(를) 사이드 패널에서 열기 ({{modifier}}(으)로 누르면 브라우저에서 열기)",
       "bulk_switch_keeps_conversation": "모든 세션의 모델을 선택합니다. 대화는 유지되며 새 모델로 이어집니다.",
       "bulk_switch_stops_running_reply": "실행 중인 세션도 전환되며 현재 응답은 중단됩니다.",
       "pinned": "고정됨",

@@ -542,12 +542,49 @@ describe('ChatSidebar – chip label and provider mark', () => {
     // tanuki and GitLab's `!` numbering. Misattributing one vendor's work to
     // another is the one thing a wayfinding chip must not do.
     renderSidebar({ rows: foreignRows })
-    const el = chip('https://review.acme.internal/c/4821')
+    // No mark of its own, so the tooltip names the provider (here only its id is
+    // known) and the chip's own label, never a `#4821` the chip does not show.
+    const el = screen.getByTitle(`acme-review CR-4821: ${chipTitle('https://review.acme.internal/c/4821').replace(/^Open/, 'open')}`)
     expect(el.querySelector('[data-provider-mark="gitlab"]')).toBeNull()
     expect(el.querySelector('[data-provider-mark="github"]')).toBeNull()
     expect(el.querySelector('[data-testid="jira-provider-mark"]')).toBeNull()
+    expect(el.querySelector('[data-provider-mark="neutral"]')).not.toBeNull()
     expect(el).toHaveTextContent('CR-4821')
     expect(el).not.toHaveTextContent('!4821')
+  })
+
+  /** Bitbucket Server ships no logo: the first built-in drawn with the neutral
+   *  glyph. Its chip number reads like GitHub's, so nothing but the tooltip can
+   *  say which provider it is. */
+  const bitbucketUrl = 'https://bitbucket.example.test/projects/PROJ/repos/svc/pull-requests/42'
+  const bitbucketRows = [
+    {
+      key: 's1', title: 'Bitbucket review', messages: 1, running: false, mode: '', created: '', last_ts: '2026-01-01T00:00:00Z',
+      source_links: [
+        { provider: 'bitbucket_server', number: 42, label: '#42', url: bitbucketUrl, state: 'open', kind: 'change' },
+      ],
+      source_links_total: 1,
+    },
+  ] as unknown as ChatSlot[]
+
+  it('names a logo-less provider in the chip tooltip and draws the shared neutral mark', () => {
+    renderSidebar({ rows: bitbucketRows })
+    const el = screen.getByTitle(`Bitbucket Server PR #42: ${chipTitle(bitbucketUrl).replace(/^Open/, 'open')}`)
+    expect(el).toHaveTextContent('#42')
+    // The same neutral glyph the Changes panel tab draws for this provider
+    // (PullRequestPanel.test.tsx), so the chip and its tab read as one item.
+    const mark = el.querySelector('[data-provider-mark="neutral"]')
+    expect(mark).not.toBeNull()
+    expect(mark!.getAttribute('class')).toContain('lucide-link-2')
+    expect(mark!.getAttribute('width')).toBe('10')
+  })
+
+  it('leaves the tooltip of a chip that wears its provider logo as it was', () => {
+    renderSidebar()
+    // `chip()` finds the GitHub chip by the plain tooltip: a provider named by
+    // its logo is not named again in words.
+    expect(chip().querySelector('[data-provider-mark="github"]')).not.toBeNull()
+    expect(chip().getAttribute('title')).not.toMatch(/^GitHub/)
   })
 
   it('keeps each known provider on its own mark', () => {

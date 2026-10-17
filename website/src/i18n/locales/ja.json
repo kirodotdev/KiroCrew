@@ -12350,6 +12350,7 @@
       "more_pull_request_in_this_session_other": "このセッションにはほかに {{count}} 件のプルリクエストがあります",
       "more_pull_request_or_issue_in_this_session_other": "このセッションにはほかに {{count}} 件のプルリクエストまたは Issue があります",
       "open_source_link_in_side_panel": "{{url}} をサイドパネルで開く ({{modifier}} するとブラウザーで開く)",
+      "open_named_source_link_in_side_panel": "{{provider}} {{ref}}：{{url}} をサイドパネルで開く ({{modifier}} するとブラウザーで開く)",
       "move_folder_to": "フォルダーの移動先",
       "needs_approval": "承認が必要です",
       "running_marker": "実行中",

@@ -9,7 +9,6 @@
  * unchanged. The owner map is in website/docs/frontend-conventions.md.
  */
 import React, { useContext, memo, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useState } from 'react'
-import { GitPullRequest } from 'lucide-react'
 import { capWhitespaceRuns, rehypeBoundRawDepth } from '../utils/markdownDepthBound'
 import { REMARK_BASE_PLUGINS } from './markdown/remarkBase'
 import { canonicalChatHref, chatHrefSid, namesASession } from '../utils/sessionKeys'
@@ -32,12 +31,10 @@ import { safeHttpUrl } from '../lib/safeUrl'
 import { useLinkMeta, type LinkMeta } from '../lib/linkMeta'
 import { LinkChip, LinkCard } from './LinkPreview'
 import { parseSourceLinkUrl, forgeChipLabel, type PullRequestLink } from '../utils/pullRequestLinks'
-import { sourceProviderMeta } from '../utils/sourceProviderMeta'
 import { JiraHostsCtx } from '../lib/jiraHosts'
 import { rearmConfigScanBudget } from '../utils/autolinkRules'
 import JiraLogo from './icons/JiraLogo'
-import GithubLogo from './icons/GithubLogo'
-import GitlabLogo from './icons/GitlabLogo'
+import SourceProviderMark from './SourceProviderMark'
 import DiffBlock from './DiffBlock'
 import ErrorNotice from './ErrorNotice'
 import {
@@ -327,8 +324,6 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   }
   const forgeLabel = source ? forgeChipLabel(source) : null
   if (source && forgeLabel) {
-    const forgeMeta = sourceProviderMeta(source.provider)
-    const ForgeIcon = forgeMeta.icon
     return keep(
       <span className="group inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-accent/10 px-1.5 py-px align-baseline text-[13px] mc-md-ref-chip transition-colors hover:border-border hover:bg-accent/20 focus-within:border-border">
         <a
@@ -338,16 +333,9 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
           title={href}
           className="inline-flex min-w-0 items-center gap-1.5 text-text no-underline focus-ring"
         >
-          {forgeMeta.logo === 'github'
-            ? <GithubLogo size={12} className="shrink-0" />
-            : forgeMeta.logo === 'gitlab'
-              ? <GitlabLogo size={12} className="shrink-0" />
-              : ForgeIcon
-                // A registered provider's own mark, when its descriptor ships one.
-                ? <ForgeIcon size={12} className="shrink-0" />
-                // A registered provider with no bundled logo uses the neutral
-                // glyph rather than borrowing GitLab's mark.
-                : <GitPullRequest className="lucide-inline shrink-0" />}
+          {/* The provider's logo, a registered provider's own mark, or the one
+              neutral glyph every source-link surface shares. */}
+          <SourceProviderMark provider={source.provider} size={12} />
           <span className="truncate max-w-[32ch]">{forgeLabel}</span>
         </a>
       </span>,

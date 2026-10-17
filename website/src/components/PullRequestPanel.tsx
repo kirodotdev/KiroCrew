@@ -36,8 +36,7 @@ import {
 import { sourceProviderMeta, sourceTabQualifier } from '../utils/sourceProviderMeta'
 import CopyBranchButton from './CopyBranchButton'
 import { PierrePatch } from '../pierre'
-import GithubLogo from './icons/GithubLogo'
-import GitlabLogo from './icons/GitlabLogo'
+import SourceProviderMark from './SourceProviderMark'
 import { timeAgo } from '../utils/timeAgo'
 import MarkdownRenderer from './MarkdownRenderer'
 import CommentThreads from './CommentThreads'
@@ -1135,16 +1134,7 @@ export default function PullRequestPanel({
             className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border-none cursor-pointer text-[12px] transition-colors ${item.url === selected?.url ? 'bg-bg-hover text-text' : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover/60'}`}
             title={item.url}
           >
-            {itemMeta.logo === 'github'
-              ? <GithubLogo size={13} className="shrink-0" />
-              : itemMeta.logo === 'gitlab'
-                ? <GitlabLogo size={13} className="shrink-0" />
-                : itemMeta.icon
-                  ? <itemMeta.icon size={13} className="shrink-0" />
-                  // Explicit 13 to match its siblings: `lucide-inline` sizes at
-                  // `1em`, which is 12px in this tab strip, so the neutral glyph
-                  // rendered a pixel smaller than every branded one beside it.
-                  : <GitPullRequest size={13} className="lucide-inline shrink-0" />}
+            <SourceProviderMark provider={item.provider} size={13} />
             {/* No CSS truncation here: sourceTabQualifier shortens deep paths
                 to their minimal unique trailing suffix, so the discriminating
                 segment is always visible. The full url stays on the Btn's

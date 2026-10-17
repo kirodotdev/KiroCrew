@@ -12952,6 +12952,7 @@
       "older_sessions": "Более старые сессии",
       "older_sessions_2": "Более старые сессии",
       "open_source_link_in_side_panel": "Открыть {{url}} в боковой панели ({{modifier}} — открыть в браузере)",
+      "open_named_source_link_in_side_panel": "{{provider}} {{ref}}: открыть {{url}} в боковой панели ({{modifier}} — открыть в браузере)",
       "bulk_switch_keeps_conversation": "Выбери модель для всех сессий. Диалог сохраняется и продолжается на новой модели.",
       "bulk_switch_stops_running_reply": "Активные сессии тоже переключатся, а их текущий ответ будет прерван.",
       "pinned": "Закреплено",

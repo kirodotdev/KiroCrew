@@ -172,6 +172,32 @@ describe('PullRequestPanel', () => {
     expect(gitlabTab.querySelector('[data-provider-mark="gitlab"]')).toBeInTheDocument()
   })
 
+  it('draws a logo-less provider tab with the same neutral mark as its sidebar chip', async () => {
+    // Bitbucket Server ships no logo. Its tab and its session chip
+    // (ChatSidebar.sourceLinkChip.test.tsx) draw one shared neutral glyph, so a
+    // reader can tell they are the same item.
+    const bitbucketUrl = 'https://bitbucket.example.test/projects/PROJ/repos/svc/pull-requests/42'
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets' },
+            { url: bitbucketUrl, provider: 'bitbucket_server', number: 42, repo: 'svc' },
+          ]}
+          selectedUrl={github.url}
+          onSelect={() => {}}
+        />
+      </QueryClientProvider>,
+    )
+    const tab = await screen.findByRole('tab', { name: /PR #42/i })
+    const mark = tab.querySelector('[data-provider-mark="neutral"]')
+    expect(mark).not.toBeNull()
+    expect(mark!.getAttribute('class')).toContain('lucide-link-2')
+    expect(mark!.getAttribute('width')).toBe('13')
+    expect(tab.querySelector('.lucide-git-pull-request')).toBeNull()
+  })
+
   it('copies the head branch name to the clipboard when the branch chip is clicked', async () => {
     const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
     const writeText = vi.fn().mockResolvedValue(undefined)

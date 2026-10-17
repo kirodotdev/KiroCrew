@@ -12761,6 +12761,7 @@
       "older_sessions": "Sesiones anteriores",
       "older_sessions_2": "Sesiones anteriores",
       "open_source_link_in_side_panel": "Abrir {{url}} en el panel lateral ({{modifier}} para abrirlo en el navegador)",
+      "open_named_source_link_in_side_panel": "{{provider}} {{ref}}: abrir {{url}} en el panel lateral ({{modifier}} para abrirlo en el navegador)",
       "bulk_switch_keeps_conversation": "Elige un modelo para todas las sesiones. La conversación se conserva y continúa con el nuevo modelo.",
       "bulk_switch_stops_running_reply": "Las sesiones en ejecución también cambian, y se detiene la respuesta que están generando.",
       "pinned": "Fijadas",
