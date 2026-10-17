@@ -670,6 +670,24 @@ longer in `skipped_numbers`:
 
 If the issue is already claimed by another crew, the usual claim rules apply.
 
+## When someone asks you
+
+`[crew wake: #N asked <id>]` (`!N` for a merge request) means a person mentioned
+your forge username in that thread: comment `<id>` is a question for you.
+
+1. **Answer in the same thread** — one comment, and say what you checked: the files
+   and lines you read, the run or the log you looked at.
+2. **Leave the work where it is.** A question is not a signal: do not change the
+   item's phase, and do not claim the issue or start work because somebody asked
+   about it.
+3. **If the answer changes the plan**, say which label or decision would move it
+   (for example "remove the needs-human label once you pick option B"), and let the
+   person make that move.
+
+`[crew wake: #N scope-label]` and `[crew wake: #N new-issue]` mean new work may be
+available: an issue came into your scope, or a new one was opened. Run your normal
+selection; the wake names a candidate, not an order.
+
 ## Never
 
 - Never modify the repository's CI or gate configuration: `.github/` where the repo

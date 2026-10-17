@@ -33,7 +33,8 @@ Nothing here writes to the forge, and nothing here writes a work item: a change
 detector that touched ``last_progress_at`` would renew the very claim TTL the
 protocol measures from it. The one ledger write it makes is a human ANSWER to a
 needs-human pass (:func:`detect_human_answers`), which patches no work item. Its own
-state lives in ``crew-signals.json`` and ``crew-answer-checks.json``, beside
+state lives in ``crew-signals.json``, ``crew-answer-checks.json`` and
+``crew-wake-checks.json`` (new work and mentions, :func:`detect_new_work`), beside
 the crews dir rather than inside it — ``crew_store.list_crews`` globs ``*.json``
 there, so a state file dropped in that directory would read back as a phantom crew.
 """
@@ -44,6 +45,7 @@ import asyncio
 import importlib as _importlib
 import json
 import logging
+import re
 import sys as _sys
 import time
 from collections.abc import Mapping, Sequence
@@ -119,8 +121,10 @@ SIGNALS_SCHEMA = 1
 
 #: How often an item in each phase is re-read. The forge is the mover for some
 #: phases and the crew is the mover for others, and paying a CI-grade cadence for
-#: a phase waiting on a human is pure rate limit. ``selected`` is pre-claim and
-#: purely local — there is nothing public to watch yet.
+#: a phase the crew itself moves is pure rate limit. ``awaiting-reply`` is read
+#: every minute anyway: the requester's reply is a conversation the crew is in, and
+#: one issue-detail read per item is cheap next to a five-minute pause in it.
+#: ``selected`` is pre-claim and purely local — there is nothing public to watch yet.
 RECHECK_SEC = {
     "awaiting-ci": 60,
     "addressing-review": 60,
@@ -128,7 +132,7 @@ RECHECK_SEC = {
     "claimed": 300,
     "investigating": 300,
     "implementing": 300,
-    "awaiting-reply": 300,
+    "awaiting-reply": 60,
 }
 _DEFAULT_RECHECK_SEC = 300
 
@@ -761,6 +765,402 @@ async def detect_human_answers(
     return out
 
 
+# ── new work and mentions ───────────────────────────────────────────────────
+#
+# Without these a crew finds new work only on its own idle clock, a model turn per
+# tick, and that clock is the only knob: fast reaction meant paying for a turn every
+# 30 s to hear "nothing new". The sweep already reads the forge for free, so it now
+# says three more things itself:
+#
+#   ``#N scope-label`` an open issue carries a label in the crew's scope, is not
+#                      claimed, not waiting on a human, not in the shared skip index
+#                      and not one of the crew's own items -- and the crew has not
+#                      been woken for it before;
+#   ``#N new-issue``   the same, for a crew with an EMPTY scope, on an issue numbered
+#                      above the crew's high-water mark;
+#   ``#N asked <id>``  a comment by someone other than the crew's forge identity
+#                      mentions that identity (``!N`` for a GitLab merge request).
+#
+# Each one seeds on first observation, like every other signal here: a crew seen for
+# the first time (or whose scope changed) records what is already there and wakes for
+# nothing, so connecting a repo cannot wake a crew for its whole backlog. And each is
+# committed only when the wake STARTED a turn: ``wake_crew`` drops a wake on a crew
+# that is mid-turn, so a signal recorded as handled then would be lost until the idle
+# clock. Uncommitted, the next sweep finds it again. A mention is kept as a pending
+# reason instead, because its comment cursor has already moved past it.
+#
+# Cost, per sweep and repo with a live crew: one open-issues read (by update time,
+# labels included); for mentions on GitHub one repository-comments read, on GitLab one
+# open-MRs read plus one notes read per thread updated since the cursor, at most
+# :data:`MAX_MENTION_THREADS_PER_SWEEP`. State lives in ``crew-wake-checks.json``.
+
+SIG_SCOPE_LABEL = "scope-label"
+SIG_NEW_ISSUE = "new-issue"
+SIG_ASKED = "asked"
+
+WAKE_CHECKS_SCHEMA = 1
+
+#: Notes reads (GitLab) one sweep may spend on mentions. The cursor stops at the last
+#: thread read, so a burst is worked through over a few cycles.
+MAX_MENTION_THREADS_PER_SWEEP = 10
+
+#: Bounds on what the state file remembers: issues a crew was woken for (per crew),
+#: comment ids already read, and mention reasons still waiting on a free crew.
+_MAX_WAKE_SEEN = 500
+_MAX_COMMENT_IDS = 500
+_MAX_PENDING_ASKS = 20
+
+
+def wake_checks_path(owner: str, repo: str, root: Path | None = None) -> Path:
+    """Beside ``crew-signals.json`` and for the same reason: not inside ``crews/``."""
+    return store.repo_data_dir(owner, repo, root) / "crew-wake-checks.json"
+
+
+def read_wake_checks(owner: str, repo: str, root: Path | None = None) -> dict[str, Any]:
+    """The state, with every section present. A missing or foreign file is empty,
+    which seeds rather than wakes on the next sweep."""
+    out: dict[str, Any] = {"scope": {}, "new_mark": {}, "mentions": {}}
+    path = wake_checks_path(owner, repo, root)
+    if not path.is_file():
+        return out
+    doc = read_json_or(path, None, logger=logger, what="crew wake checks")
+    if not isinstance(doc, dict) or doc.get("schema") != WAKE_CHECKS_SCHEMA:
+        return out
+    for section in out:
+        value = doc.get(section)
+        if isinstance(value, dict):
+            out[section] = value
+    return out
+
+
+def write_wake_checks(
+    owner: str, repo: str, checks: dict[str, Any], root: Path | None = None
+) -> None:
+    atomic_write(
+        wake_checks_path(owner, repo, root),
+        json.dumps({"schema": WAKE_CHECKS_SCHEMA, **checks}, indent=2, sort_keys=True),
+    )
+
+
+def mentions(body: str, identity: str) -> bool:
+    """Whether *body* addresses ``@identity`` (case-insensitive, whole username)."""
+    if not identity:
+        return False
+    pattern = rf"(?<![\w@.-])@{re.escape(identity)}(?![\w-])"
+    return re.search(pattern, str(body or ""), re.IGNORECASE) is not None
+
+
+def _now_stamp() -> str:
+    from datetime import datetime, timezone
+
+    return crew_store.normalize_forge_time(datetime.now(timezone.utc).isoformat())
+
+
+def _issue_rows(issues: Sequence[Any]) -> list[tuple[int, set[str], str]]:
+    """``(number, casefolded labels, normalized updated_at)`` per well-formed row."""
+    out: list[tuple[int, set[str], str]] = []
+    for issue in issues:
+        if not isinstance(issue, Mapping):
+            continue
+        number = issue.get("number")
+        if isinstance(number, int) and not isinstance(number, bool):
+            stamp = crew_store.normalize_forge_time(issue.get("updated_at"))
+            out.append((number, _label_names(issue), stamp))
+    return out
+
+
+def _crew_scope(crew: Mapping[str, Any]) -> list[str]:
+    labels = crew.get("labels") or []
+    return sorted({str(label).strip().casefold() for label in labels if str(label).strip()})
+
+
+def _read_open_issues(key: provider.RepoKey) -> list[dict[str, Any]] | None:
+    """One page of open issues, newest UPDATE first: the same forge read the answer
+    sweep makes (``list_open_issues_first_page``, kept to number, labels and
+    ``updated_at``).
+
+    ``None`` when the read failed: unknown is not "no issues", and a sweep that cannot
+    see the list leaves every mark as it was.
+    """
+    return _read_updated_open_issues(key)
+
+
+def _recent_comments(
+    key: provider.RepoKey, cursor: str, rows: list[tuple[int, set[str], str]]
+) -> tuple[list[dict[str, Any]], str]:
+    """Comments that may be newer than *cursor*, and the cursor to store next.
+
+    Each comment is ``{id, number, is_pr, actor, created_at, body}``. GitHub serves
+    every thread's comments from one endpoint. GitLab has no project-wide notes read,
+    so the threads updated after *cursor* (from the open-issues page already read and
+    one open-MRs page) are read one by one, oldest update first, up to the per-sweep
+    cap; the next cursor then stops at the last thread read. A failed read stops
+    there too, so nothing past it is skipped.
+    """
+    client = provider.client_for(key)
+    kwargs = provider.call_kwargs(key)
+    owner, repo = key.owner, key.repo
+    repo_reader = getattr(client, "list_repo_comments_since", None)
+    if callable(repo_reader):
+        found = repo_reader(owner, repo, cursor[:19] + "Z", **kwargs)
+        out = [dict(c) for c in found or [] if isinstance(c, dict)]
+        stamps = [crew_store.normalize_forge_time(c.get("created_at")) for c in out]
+        return out, max([cursor, *[st for st in stamps if st]])
+    thread_reader = getattr(client, "list_thread_comments", None)
+    if not callable(thread_reader):
+        return [], cursor
+    threads: list[tuple[str, int, bool]] = [
+        (stamp, number, False) for number, _labels, stamp in rows if stamp and stamp > cursor
+    ]
+    pull_reader = getattr(client, "list_open_pulls_first_page", None)
+    if callable(pull_reader):
+        pulls = pull_reader(owner, repo, **kwargs)
+        for number, _labels, stamp in _issue_rows(pulls or []):
+            if stamp and stamp > cursor:
+                threads.append((stamp, number, True))
+    threads.sort()
+    next_cursor = cursor
+    out = []
+    for done, (stamp, number, is_pr) in enumerate(threads):
+        if done >= MAX_MENTION_THREADS_PER_SWEEP:
+            break
+        try:
+            notes = thread_reader(owner, repo, number, pr=is_pr, **kwargs)
+        except Exception:
+            logger.debug("issue-radar: notes read for %s#%s failed", owner, number, exc_info=True)
+            break
+        for note in notes or []:
+            if isinstance(note, dict):
+                out.append({**note, "number": number, "is_pr": is_pr})
+        next_cursor = max(next_cursor, stamp)
+    return out, next_cursor
+
+
+async def detect_new_work(
+    state: Any,
+    key: provider.RepoKey,
+    live: list[dict[str, Any]],
+    scope: Path | None,
+) -> tuple[dict[str, list[str]], dict[str, Any]]:
+    """Scope-label, new-issue and mention wakes for *live* crews (see the section note).
+
+    Returns ``(reasons, plan)``: the wake reasons per crew id, and what
+    :func:`settle_new_work` commits once the wakes have run. Nothing it detects is
+    recorded as handled here; only seeding and the mention cursor are written.
+    """
+    # The prompt owner holds the claim label; read through the owner so the facade
+    # does not rebind a name it already serves from it.
+    from . import crew_runtime_prompt as _prompt
+
+    owner, repo = key.owner, key.repo
+    checks = await asyncio.to_thread(partial(read_wake_checks, owner, repo, scope))
+    before = json.dumps(checks, sort_keys=True)
+    reasons: dict[str, list[str]] = {}
+    staged: dict[str, dict[str, Any]] = {}
+    live_ids = [str(c.get("id")) for c in live]
+
+    issues = await asyncio.to_thread(partial(_read_open_issues, key))
+    rows = _issue_rows(issues) if issues is not None else []
+    if issues is not None:
+        settings = await asyncio.to_thread(partial(crew_store.read_settings, owner, repo, scope))
+        needs_human = str(settings.get("needs_human_label") or "").strip().casefold()
+        blocked = {_prompt.CLAIM_LABEL.casefold()} | ({needs_human} if needs_human else set())
+        skips = await asyncio.to_thread(partial(crew_store.read_skips, owner, repo, scope))
+        skipped = {int(k) for k in skips if str(k).isdigit()}
+        # One page: an issue missing from it may be older, not closed, so no mark is
+        # dropped for being absent (the marks are bounded by _MAX_WAKE_SEEN).
+        complete = False
+        for crew in live:
+            cid = str(crew.get("id"))
+            items = await asyncio.to_thread(
+                partial(crew_store.list_work_items, owner, repo, cid, scope)
+            )
+            mine = {n for it in items if isinstance(n := it.get("number"), int)}
+            free = [
+                (number, labels)
+                for number, labels, _stamp in rows
+                if not labels & blocked and number not in skipped and number not in mine
+            ]
+            crew_scope = _crew_scope(crew)
+            if crew_scope:
+                _scope_wakes(checks, cid, crew_scope, free, rows, complete, reasons, staged)
+            else:
+                _new_issue_wakes(checks, cid, free, rows, reasons, staged)
+
+    await _detect_mentions(key, live, checks, rows, issues is not None, reasons)
+
+    # Crews that are gone (retired, deleted, paused) keep no state here.
+    for section in ("scope", "new_mark"):
+        for cid in [c for c in checks[section] if c not in live_ids]:
+            checks[section].pop(cid, None)
+    pending = checks["mentions"].get("pending")
+    if isinstance(pending, dict):
+        for cid in [c for c in pending if c not in live_ids]:
+            pending.pop(cid, None)
+
+    if json.dumps(checks, sort_keys=True) != before:
+        await asyncio.to_thread(partial(write_wake_checks, owner, repo, checks, scope))
+    return reasons, {"checks": checks, "staged": staged}
+
+
+def _scope_wakes(
+    checks: dict[str, Any],
+    cid: str,
+    crew_scope: list[str],
+    free: list[tuple[int, set[str]]],
+    rows: list[tuple[int, set[str], str]],
+    complete: bool,
+    reasons: dict[str, list[str]],
+    staged: dict[str, dict[str, Any]],
+) -> None:
+    wanted = set(crew_scope)
+    matching = sorted((n, lab) for n, lab in free if lab & wanted)
+    entry = checks["scope"].get(cid)
+    if not isinstance(entry, dict) or entry.get("labels") != crew_scope:
+        # First sight of this crew, or of this scope: seed, wake nobody.
+        checks["scope"][cid] = {
+            "labels": crew_scope,
+            "seen": {str(n): sorted(lab) for n, lab in matching},
+        }
+        return
+    seen = entry.setdefault("seen", {})
+    if complete:
+        # A short page is the whole open list: what is absent is closed.
+        open_numbers = {str(number) for number, _labels, _stamp in rows}
+        for k in [k for k in seen if k not in open_numbers]:
+            seen.pop(k, None)
+    fresh = [(n, lab) for n, lab in matching if str(n) not in seen]
+    if fresh:
+        reasons.setdefault(cid, []).extend(f"#{n} {SIG_SCOPE_LABEL}" for n, _ in fresh)
+        staged.setdefault(cid, {})["seen"] = {str(n): sorted(lab) for n, lab in fresh}
+
+
+def _new_issue_wakes(
+    checks: dict[str, Any],
+    cid: str,
+    free: list[tuple[int, set[str]]],
+    rows: list[tuple[int, set[str], str]],
+    reasons: dict[str, list[str]],
+    staged: dict[str, dict[str, Any]],
+) -> None:
+    top = max((number for number, _labels, _stamp in rows), default=0)
+    mark = checks["new_mark"].get(cid)
+    if not isinstance(mark, int) or isinstance(mark, bool):
+        checks["new_mark"][cid] = top  # first sight: seed, wake nobody
+        return
+    fresh = sorted(n for n, _ in free if n > mark)
+    if fresh:
+        reasons.setdefault(cid, []).extend(f"#{n} {SIG_NEW_ISSUE}" for n in fresh)
+        staged.setdefault(cid, {})["mark"] = max(top, mark)
+    elif top > mark:
+        # Everything new is claimed, skipped or waiting on a human: nothing to say.
+        checks["new_mark"][cid] = top
+
+
+async def _detect_mentions(
+    key: provider.RepoKey,
+    live: list[dict[str, Any]],
+    checks: dict[str, Any],
+    rows: list[tuple[int, set[str], str]],
+    issues_known: bool,
+    reasons: dict[str, list[str]],
+) -> None:
+    """Fold new ``@identity`` comments into the pending asks and *reasons*, in place.
+
+    The crew's own comments never count, and neither does anything when the forge
+    identity cannot be read: a mention nobody can tell from the crew's own is skipped.
+    """
+    identity = await asyncio.to_thread(partial(_forge_identity, key))
+    if not identity:
+        return
+    state = checks["mentions"]
+    cursor = state.get("cursor")
+    pending = state.get("pending") if isinstance(state.get("pending"), dict) else {}
+    state["pending"] = pending
+    if not isinstance(cursor, str) or not cursor:
+        # First observation of the repo: start from now, wake for nothing older.
+        state["cursor"] = _now_stamp()
+        state["seen"] = []
+        return
+    client = provider.client_for(key)
+    if not issues_known and not callable(getattr(client, "list_repo_comments_since", None)):
+        return  # GitLab finds threads on the open-issues page; without it, wait
+    try:
+        comments, next_cursor = await asyncio.to_thread(
+            partial(_recent_comments, key, cursor, rows)
+        )
+    except Exception:
+        logger.debug("issue-radar: mention read failed", exc_info=True)
+        comments, next_cursor = [], cursor
+    seen_ids = [str(i) for i in state.get("seen") or []]
+    seen = set(seen_ids)
+    labels_by_number = {number: labels for number, labels, _stamp in rows}
+    by_scope = {str(c.get("id")): set(_crew_scope(c)) for c in live}
+    gitlab = key.provider == provider.GITLAB
+    for comment in sorted(comments, key=lambda c: str(c.get("created_at") or "")):
+        note_id = str(comment.get("id") or "")
+        stamp = crew_store.normalize_forge_time(comment.get("created_at"))
+        if not note_id or not stamp or note_id in seen or stamp < cursor:
+            continue
+        seen.add(note_id)
+        seen_ids.append(note_id)
+        actor = str(comment.get("actor") or "").strip()
+        if not actor or actor.casefold() == identity.casefold():
+            continue
+        number = comment.get("number")
+        if not isinstance(number, int) or not mentions(str(comment.get("body") or ""), identity):
+            continue
+        labels = labels_by_number.get(number, set())
+        targets = [cid for cid, wanted in by_scope.items() if wanted & labels] or list(by_scope)
+        sigil = "!" if comment.get("is_pr") and gitlab else "#"
+        reason = f"{sigil}{number} {SIG_ASKED} {note_id}"
+        for cid in targets:
+            queue = pending.setdefault(cid, [])
+            if reason not in queue:
+                queue.append(reason)
+            del queue[:-_MAX_PENDING_ASKS]
+    state["seen"] = seen_ids[-_MAX_COMMENT_IDS:]
+    state["cursor"] = next_cursor
+    for cid, queue in pending.items():
+        for reason in queue:
+            if reason not in reasons.get(cid, []):
+                reasons.setdefault(cid, []).append(reason)
+
+
+async def settle_new_work(
+    key: provider.RepoKey, plan: dict[str, Any], results: Mapping[str, bool], scope: Path | None
+) -> None:
+    """Commit what :func:`detect_new_work` found, for the crews whose wake STARTED a turn.
+
+    A crew that was mid-turn keeps everything: its scope issues stay unseen, its mark
+    stays where it was, its asks stay pending, and the next sweep wakes it again.
+    """
+    checks = plan.get("checks")
+    if not isinstance(checks, dict):
+        return
+    changed = False
+    for cid, staged in (plan.get("staged") or {}).items():
+        if not results.get(cid):
+            continue
+        entry = checks["scope"].get(cid)
+        if "seen" in staged and isinstance(entry, dict):
+            seen = entry.setdefault("seen", {})
+            seen.update(staged["seen"])
+            for k in sorted(seen, key=int)[: max(0, len(seen) - _MAX_WAKE_SEEN)]:
+                seen.pop(k, None)
+            changed = True
+        if "mark" in staged:
+            checks["new_mark"][cid] = staged["mark"]
+            changed = True
+    pending = checks["mentions"].get("pending")
+    if isinstance(pending, dict):
+        for cid in [c for c in pending if results.get(c)]:
+            pending.pop(cid, None)
+            changed = True
+    if changed:
+        await asyncio.to_thread(partial(write_wake_checks, key.owner, key.repo, checks, scope))
+
+
 # ── the sweep ───────────────────────────────────────────────────────────────
 
 
@@ -830,6 +1230,18 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
             reasons.setdefault(crew_id, []).append(f"#{number} {SIG_HUMAN_ANSWERED} by @{actor}")
     crews_by_id = {str(c.get("id")): c for c in live}
 
+    # New work and mentions: same footing as the answers, no work item needed.
+    plan: dict[str, Any] = {}
+    if state is not None:
+        found: dict[str, list[str]] = {}
+        try:
+            found, plan = await detect_new_work(state, key, live, scope)
+        except Exception:
+            logger.warning("issue-radar: new-work detection failed", exc_info=True)
+        for crew_id, why in found.items():
+            woken.setdefault(crew_id, []).extend(r.split(" ")[1] for r in why)
+            reasons.setdefault(crew_id, []).extend(why)
+
     stored = await asyncio.to_thread(partial(read_signals, key.owner, key.repo, scope))
     # WALL clock, not the loop's monotonic one: this value is persisted, and a
     # monotonic reading restarts near zero on the next gateway launch — every
@@ -869,7 +1281,7 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
     if not due:
         if stale:
             await asyncio.to_thread(partial(write_signals, key.owner, key.repo, stored, scope))
-        await _wake_for(state, key, crews_by_id, reasons, scope)
+        await _wake_and_settle(state, key, crews_by_id, reasons, scope, plan)
         return woken
 
     prs = sorted({pr for _, it in due if isinstance(pr := it.get("pr_number"), int) and pr > 0})
@@ -912,8 +1324,25 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
         reasons.setdefault(crew_id, []).append(f"#{item.get('number')} {', '.join(signals)}")
 
     await asyncio.to_thread(partial(write_signals, key.owner, key.repo, stored, scope))
-    await _wake_for(state, key, crews_by_id, reasons, scope)
+    await _wake_and_settle(state, key, crews_by_id, reasons, scope, plan)
     return woken
+
+
+async def _wake_and_settle(
+    state: Any,
+    key: provider.RepoKey,
+    crews_by_id: dict[str, dict[str, Any]],
+    reasons: dict[str, list[str]],
+    scope: Path | None,
+    plan: dict[str, Any],
+) -> None:
+    """Wake each crew once, then commit the new-work signals whose wake started a turn."""
+    results = await _wake_for(state, key, crews_by_id, reasons, scope)
+    if plan:
+        try:
+            await settle_new_work(key, plan, results, scope)
+        except Exception:
+            logger.warning("issue-radar: recording new-work wakes failed", exc_info=True)
 
 
 async def _wake_for(
@@ -922,28 +1351,34 @@ async def _wake_for(
     crews_by_id: dict[str, dict[str, Any]],
     reasons: dict[str, list[str]],
     scope: Path | None,
-) -> None:
-    """ONE wake per crew, carrying every reason.
+) -> dict[str, bool]:
+    """ONE wake per crew, carrying every reason. Returns whether each STARTED a turn.
 
     Two items signalling in the same sweep is one turn's worth of work, and the second
     call would be dropped as mid-turn anyway — so the crew would have been told about
-    only the first.
+    only the first. A crew that was mid-turn (or whose wake failed) maps to ``False``,
+    which is what makes :func:`settle_new_work` keep its signals for the next sweep.
     """
+    results: dict[str, bool] = {}
     if state is None:
-        return
+        return results
     for crew_id, why in reasons.items():
+        results[crew_id] = False
         try:
-            await wake_crew(
-                state,
-                key.owner,
-                key.repo,
-                crews_by_id[crew_id],
-                "; ".join(why),
-                scope,
-                key,
+            results[crew_id] = bool(
+                await wake_crew(
+                    state,
+                    key.owner,
+                    key.repo,
+                    crews_by_id[crew_id],
+                    "; ".join(why),
+                    scope,
+                    key,
+                )
             )
         except Exception:  # pragma: no cover - defensive
             logger.warning("issue-radar: waking crew %s failed", crew_id, exc_info=True)
+    return results
 
 
 async def _enrich(key: provider.RepoKey, prs: list[int]) -> dict[int, dict[str, Any]]:
@@ -1024,6 +1459,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _slot_title,
         _turn_model_items,
         autoapprove_scope,
+        crew_idle_secs,
         dispatch_crew_turn,
         ensure_crew_session,
         launch_crew,

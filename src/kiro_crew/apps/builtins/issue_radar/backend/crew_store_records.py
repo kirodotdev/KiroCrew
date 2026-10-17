@@ -182,7 +182,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     #: (:func:`_validated_label`), not trusted because a settings form produced it.
     "needs_human_label": "crew: needs human",
     "commit_trailer": "Crew: {name} (Kiro Crew Issue Radar)",
+    #: Seconds between the crew's FALLBACK idle turns (its auto-nudge loop). The
+    #: watcher wakes a crew on every signal it can see without a model -- an unblock,
+    #: a human answer, a scope label or new issue, a mention -- so this clock only
+    #: covers what the watcher misses, and every tick is a full model turn. Repo-wide
+    #: like the TTL; clamped to :data:`CREW_IDLE_SECS_RANGE` on read and write.
+    "crew_idle_secs": 300,
 }
+
+#: The bounds ``crew_idle_secs`` is clamped to: auto-nudge's own interval range.
+CREW_IDLE_SECS_RANGE = (15, 86400)
 
 _DEFAULT_CREW: dict[str, Any] = {
     "labels": [],
@@ -312,6 +321,17 @@ def _validated_ttl_hours(value: Any) -> int | None:
     if number is None or number <= 0:
         return None
     return number
+
+
+def _validated_idle_secs(value: Any) -> int | None:
+    """``crew_idle_secs`` clamped to :data:`CREW_IDLE_SECS_RANGE`, or ``None`` for
+    "keep the default" (not a number). Clamped rather than refused: a too-short value
+    is a cost the operator asked for, bounded at the floor the loop itself enforces."""
+    number = _finite_int(value)
+    if number is None:
+        return None
+    low, high = CREW_IDLE_SECS_RANGE
+    return max(low, min(high, number))
 
 
 def coerce_skip_scope(scope: Any) -> str:
@@ -505,6 +525,9 @@ def read_settings(owner: str, repo: str, root: Path | None = None) -> dict[str, 
             ttl = _validated_ttl_hours(stored.get("claim_ttl_hours"))
             if ttl is not None:
                 out["claim_ttl_hours"] = ttl
+            idle = _validated_idle_secs(stored.get("crew_idle_secs"))
+            if idle is not None:
+                out["crew_idle_secs"] = idle
             for key in _TEXT_SETTINGS:
                 text = _validated_text_setting(stored.get(key))
                 if text is not None:
@@ -525,6 +548,10 @@ def write_settings(
                 ttl = _validated_ttl_hours(patch["claim_ttl_hours"])
                 if ttl is not None:
                     record["claim_ttl_hours"] = ttl
+            if "crew_idle_secs" in patch:
+                idle = _validated_idle_secs(patch["crew_idle_secs"])
+                if idle is not None:
+                    record["crew_idle_secs"] = idle
             for key in _TEXT_SETTINGS:
                 if key in patch:
                     text = _validated_text_setting(patch[key])
