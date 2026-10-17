@@ -2464,7 +2464,7 @@ Deliberately narrow, so a restart is never gratuitous:
 
 The response carries `sessions_reset` so the panel can EXPLAIN the restart — an
 unexplained session reset reads as a crash. Pinned by
-`test_computer_use_api.py::TestEnableRestartsSessions`.
+`test_computer_use_api_keystone.py::TestEnableRestartsSessions`.
 
 ## Known limitations
 

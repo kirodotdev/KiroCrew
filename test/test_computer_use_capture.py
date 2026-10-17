@@ -675,7 +675,7 @@ def test_capture_uses_no_subprocess_and_no_image_library():
 # successful capture offers the frame it just encoded to the relay, and that a
 # suppressed capture offers nothing at all. The relay's own three suppressions
 # (no surface scope / secure window / screenshot-denied ceiling) are covered in
-# ``test_computer_use_api.py::TestLiveViewSuppression``.
+# ``test_computer_use_api_frame.py::TestLiveViewSuppression``.
 
 
 @pytest.fixture

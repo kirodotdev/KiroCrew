@@ -17,7 +17,7 @@ class TestSlotProbeWrapsSharedRestoreBody:
     llm_helpers.probe_fallback_restore — only the slot pick-gen/heal/clear
     logic lives locally. These tests pin the delegation and the slot-specific
     hooks it hands over; the probe mechanics themselves are pinned in
-    test_llm_helpers.py and the end-to-end behavior in
+    test_llm_helpers_fallback_restore.py and the end-to-end behavior in
     TestRunChatModelFallback (test_dashboard_chat.py)."""
 
     @staticmethod
