@@ -206,6 +206,11 @@ def _settle_consumed_steers(
         responsive_chat.forget_steer(slot, settled_msg)
         slot._steer_attachment_meta.pop(settled_msg, None)
         slot._steer_act_now.discard(settled_msg)
+        # Consumed by this turn, so no requeue will read them. The successful steer
+        # RPC leaves the admission and both origin marks in place for that requeue.
+        slot._steer_admissions.pop(settled_msg, None)
+        slot._steer_user_origin.pop(settled_msg, None)
+        slot._steer_channel_origin.pop(settled_msg, None)
         slot._steer_decision_strips.pop(settled_msg, None)
         slot._steer_possibly_delivered.discard(settled_msg)
 
