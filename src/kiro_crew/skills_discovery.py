@@ -341,9 +341,18 @@ _PROJECT_DIR_OPEN_FLAGS = (
 
 #: (base, refused component, errno) triples already warned about, so a project
 #: whose chain is refused is named once per process rather than on every catalog
-#: build. Bounded: past the cap the warning is still emitted, just not recorded.
+#: build. The linked-entry warning (a symlinked child under a real ``.kiro/skills``
+#: that the walk skips) shares this one set under a distinct marker
+#: ``(project_root, _LINKED_ENTRIES_MARKER, 0)`` -- keyed on the project root
+#: alone, so a project whose skills are a tree of links is named once rather than
+#: once per link. Bounded: past the cap the warning is still emitted, just not
+#: recorded.
 _CHAIN_REFUSALS_WARNED: set[tuple[str, str, int]] = set()
 _CHAIN_REFUSALS_WARNED_CAP = 256
+
+#: Sentinel "component" that marks a linked-entry warning in the shared set,
+#: distinct from any real path component (a NUL cannot appear in a filename).
+_LINKED_ENTRIES_MARKER = "\x00linked-entries"
 
 
 def _note_chain_refusal(base: Path, component: str, exc: OSError) -> None:
@@ -378,6 +387,46 @@ def _note_chain_refusal(base: Path, component: str, exc: OSError) -> None:
         base,
         component,
         reason,
+    )
+
+
+def _note_linked_skill_entries(project_root: str, link_paths: list[Path]) -> None:
+    """Warn once per project root, naming every linked top-level entry skipped.
+
+    A top-level child of a trusted ``.kiro/skills`` that is a symlink is neither
+    descended nor read, because the confined walk follows no links and keeps only
+    real directories and regular files -- a link target can leave the project or,
+    on Windows, be a UNC path whose descent would leak credentials. A whole skill
+    kept elsewhere and linked in at the top level is then dropped without a word,
+    the silent skip this names. It fires only for a top-level child: the walk is
+    otherwise recursive and discovers a nested ``family/leaf/SKILL.md`` as a real
+    skill, so a symlink deeper in the tree is that skill's own internal structure,
+    not a lost top-level skill, and a nested skill directory whose own ``SKILL.md``
+    is itself a symlink stays silent -- naming that case would mean warning on
+    every file-level link at every depth, which this warn-only change does not do.
+    The message states the rule rather than guessing each entry's type: a project
+    skill loads only from a real directory holding ``SKILL.md``, so the fix is a
+    real directory (a linked plain file was never a skill either way). Each entry's
+    own no-follow ``lstat`` is all this needs; a link is never resolved, so an
+    automount or network target is not reached. The warning fires once per project
+    root but names EVERY skipped top-level link in that one line, so an operator
+    who replaces one link is not left with the others skipped silently.
+    """
+    if not link_paths:
+        return
+    marker = (project_root, _LINKED_ENTRIES_MARKER, 0)
+    if marker in _CHAIN_REFUSALS_WARNED:
+        return
+    if len(_CHAIN_REFUSALS_WARNED) < _CHAIN_REFUSALS_WARNED_CAP:
+        _CHAIN_REFUSALS_WARNED.add(marker)
+    named = ", ".join(str(p) for p in link_paths)
+    logger.warning(
+        "project skills under %s: linked entries (%s) directly under "
+        ".kiro/skills were not loaded; project skills are walked without "
+        "following links and load only from a real directory holding SKILL.md, "
+        "so replace each link with a real directory",
+        project_root,
+        named,
     )
 
 
@@ -423,6 +472,28 @@ def _walk_confined_skill_fd(
 
     dirs = sorted(name for name, st in entries if stat.S_ISDIR(st.st_mode))
     files = sorted(name for name, st in entries if stat.S_ISREG(st.st_mode))
+    # A child whose lstat is a symlink is never descended, nor read as a file
+    # (the walk follows no links and keeps only real directories and regular
+    # files), so a linked entry directly under .kiro/skills is dropped. That is
+    # the lost skill the operator put there, and dropping it in SILENCE is what
+    # hides it, so name it once per project root -- and in that one line name
+    # EVERY such link, so replacing one does not leave the rest skipped silently.
+    # Only the TOP level (depth 0) is named: a link deeper inside a real, loaded
+    # skill -- a skill's own myskill/references -> shared-docs link, say -- is
+    # that skill's internal structure, not a lost top-level skill, and must not
+    # warn. At depth 0 `current` IS the confined base <root>/.kiro/skills, so the
+    # project root is current.parent.parent -- no separate parameter needed. Each
+    # entry's own no-follow lstat is all the warning needs; no link is resolved,
+    # so a target that is an automount or a network path is not reached, and the
+    # message does not claim an entry is a directory (it may be a linked file).
+    # A dot-link (an editor/tooling artifact, never a skill) stays quiet.
+    if depth == 0:
+        linked = [
+            current / name
+            for name, st in entries
+            if stat.S_ISLNK(st.st_mode) and not name.startswith(".")
+        ]
+        _note_linked_skill_entries(str(current.parent.parent), sorted(linked))
     if depth >= _PROJECT_SKILL_MAX_DEPTH:
         dirs = []
     # The consumer prunes dot-directories in place before traversal resumes.
@@ -460,7 +531,12 @@ def project_skill_tree_present(project_dir: str | Path | None) -> bool:
 
 
 def _walk_confined_skill_tree(base: Path) -> Iterator[tuple[str, list[str], list[str]]]:
-    """Walk a project tree without path-based traversal or link following."""
+    """Walk a project tree without path-based traversal or link following.
+
+    The walk names a linked top-level entry under ``.kiro/skills`` it skips; at
+    the top level *base* is ``<root>/.kiro/skills``, so the project root the
+    warning keys on is derived from it, not passed in.
+    """
     fd = _open_project_dir_chain(base)
     if fd is None:
         # A project without .kiro/skills is the common case. Missing, linked,
