@@ -26,6 +26,7 @@ import CollapsibleToolGroup from '../pages/chat/CollapsibleToolGroup'
 import TurnBlock from '../pages/chat/TurnBlock'
 import { createDisplayItemReconciler } from '../pages/chat/groupDisplayItems'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
+import { isSupersededSteerRow } from '../pages/chat/groupDisplayItems'
 import {
   type MessageRenderer,
   type MessageRenderContext,
@@ -234,6 +235,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       // A sub-agent completion the card cannot parse stays internal — the model
       // sees it, the reader does not.
       if (messages[i].role === 'subagent' && !isSubagentCompletionMessage(messages[i])) continue
+      if (isSupersededSteerRow(messages[i])) continue
       if (GROUPED_ROLES.includes(messages[i].role)) {
         if (!group.length) groupStart = i
         group.push(messages[i])
