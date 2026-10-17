@@ -1,8 +1,9 @@
 import { Fragment, useState, type ReactNode, type SyntheticEvent } from 'react'
-import { Link, Type } from 'lucide-react'
+import { Image as ImageIcon, Link, Type } from 'lucide-react'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from '../../components/ui/context-menu'
 import { isTouchDevice } from '../../utils/isTouchDevice'
-import { copyToClipboard } from '../../utils/clipboard'
+import { copyImageToClipboard, copyToClipboard, imageBlobToPng } from '../../utils/clipboard'
+import { clipboardRelayAvailable, clipboardWriteBlockedByPolicy } from '../../lib/paneClipboardRelay'
 import { i18nT } from '../../i18n/t'
 
 export interface MessageMenuItem {
@@ -28,6 +29,31 @@ function linkAt(event: SyntheticEvent<HTMLElement>): LinkTarget | null {
   const anchor = target.closest('a[href]')
   if (!(anchor instanceof HTMLAnchorElement) || !event.currentTarget.contains(anchor)) return null
   return { href: anchor.href, text: (anchor.textContent ?? '').trim() }
+}
+
+/** The loaded image under the gesture, bounded by the bubble. An image that
+ *  failed to load has nothing to copy. */
+function imageAt(event: SyntheticEvent<HTMLElement>): string | null {
+  const target = event.target
+  if (!(target instanceof HTMLImageElement) || !event.currentTarget.contains(target)) return null
+  if (!target.complete || target.naturalWidth === 0) return null
+  return target.currentSrc || target.src || null
+}
+
+/** Whether a copy can fetch the image's bytes. A cross-origin image usually
+ *  answers without CORS headers, so only the native menu can copy it. */
+function fetchableImage(src: string): boolean {
+  try {
+    const url = new URL(src, location.href)
+    return url.protocol === 'data:' || url.protocol === 'blob:' || url.origin === location.origin
+  } catch {
+    return false
+  }
+}
+
+function canWriteImages(): boolean {
+  if (typeof navigator === 'undefined' || !navigator.clipboard?.write || typeof ClipboardItem === 'undefined') return false
+  return !clipboardWriteBlockedByPolicy() || clipboardRelayAvailable()
 }
 
 /** Whether the page's selection is non-empty text inside `root`. */
@@ -64,6 +90,12 @@ function selectionInside(root: HTMLElement): boolean {
  * opens the menu. A touch device gets no menu, so its native long-press keeps
  * the platform's own link actions.
  *
+ * A gesture on a loaded image adds Copy image, for the same reason. Where the
+ * copy can only fail (no async Clipboard API on a plain-HTTP gateway, or a
+ * cross-origin image whose bytes CORS hides) the menu yields to the native one
+ * on that image instead: the desktop app's Copy Image copies the rendered
+ * bitmap through Electron and works in both cases.
+ *
  * `yieldToSelection`: a right-click on a bubble holding a text selection gets
  * the browser's own menu instead, so Copy, Search and the rest act on what
  * was selected rather than on the whole message. Read on pointerdown, before
@@ -71,6 +103,7 @@ function selectionInside(root: HTMLElement): boolean {
  */
 export default function MessageContextMenu({ items, children, onOpenChange, onCopyFailed, yieldToSelection = false }: { items: MessageMenuItem[]; children: ReactNode; onOpenChange?: (open: boolean) => void; onCopyFailed?: () => void; yieldToSelection?: boolean }) {
   const [link, setLink] = useState<LinkTarget | null>(null)
+  const [image, setImage] = useState<string | null>(null)
   const [selectionHeld, setSelectionHeld] = useState(false)
   if (!items.length || isTouchDevice()) return <>{children}</>
   // Functional and identity-preserving, so a pointerdown that does not change
@@ -78,6 +111,7 @@ export default function MessageContextMenu({ items, children, onOpenChange, onCo
   const track = (event: SyntheticEvent<HTMLElement>) => {
     const next = linkAt(event)
     setLink(prev => (prev?.href === next?.href && prev?.text === next?.text ? prev : next))
+    setImage(imageAt(event))
   }
   const trackPointer = (event: SyntheticEvent<HTMLElement>) => {
     track(event)
@@ -86,16 +120,30 @@ export default function MessageContextMenu({ items, children, onOpenChange, onCo
   const copy = (text: string) => {
     copyToClipboard(text).then(ok => { if (!ok) onCopyFailed?.() }, () => onCopyFailed?.())
   }
-  const linkItems: MessageMenuItem[] = link ? [
-    { id: 'copy-link-address', label: i18nT('pages.chat.messageContextMenu.copy_link_address'), icon: <Link size={14} />, onSelect: () => copy(link.href) },
-    ...(link.text ? [{ id: 'copy-link-text', label: i18nT('pages.chat.messageContextMenu.copy_link_text'), icon: <Type size={14} />, onSelect: () => copy(link.text) }] : []),
-  ] : []
-  const all = linkItems.length
-    ? [...linkItems, { ...items[0], separatorBefore: true }, ...items.slice(1)]
+  // The bytes go in unawaited: WebKit checks user activation when write() is
+  // called, so awaiting the fetch first would spend the click.
+  const copyImage = (src: string) => {
+    const png = fetch(src).then(res => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.blob()
+    }).then(imageBlobToPng)
+    copyImageToClipboard(png).then(ok => { if (!ok) onCopyFailed?.() }, () => onCopyFailed?.())
+  }
+  const imageCopyable = !!image && canWriteImages() && fetchableImage(image)
+  const targetItems: MessageMenuItem[] = [
+    ...(link ? [
+      { id: 'copy-link-address', label: i18nT('pages.chat.messageContextMenu.copy_link_address'), icon: <Link size={14} />, onSelect: () => copy(link.href) },
+      ...(link.text ? [{ id: 'copy-link-text', label: i18nT('pages.chat.messageContextMenu.copy_link_text'), icon: <Type size={14} />, onSelect: () => copy(link.text) }] : []),
+    ] : []),
+    ...(image && imageCopyable ? [{ id: 'copy-image', label: i18nT('components.markdownRenderer.copy_image'), icon: <ImageIcon size={14} />, onSelect: () => copyImage(image) }] : []),
+  ]
+  const all = targetItems.length
+    ? [...targetItems, { ...items[0], separatorBefore: true }, ...items.slice(1)]
     : items
+  const yieldToNative = (yieldToSelection && selectionHeld) || (!!image && !imageCopyable)
   return (
     <ContextMenu onOpenChange={onOpenChange}>
-      <ContextMenuTrigger asChild disabled={yieldToSelection && selectionHeld} onContextMenu={track} onPointerDown={trackPointer}>{children}</ContextMenuTrigger>
+      <ContextMenuTrigger asChild disabled={yieldToNative} onContextMenu={track} onPointerDown={trackPointer}>{children}</ContextMenuTrigger>
       <ContextMenuContent className="min-w-[220px]" data-testid="message-context-menu">
         {all.map(item => (
           <Fragment key={item.id}>
