@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 /* Render framer-motion elements as plain DOM. jsdom cannot run the height
    animation, and a real AnimatePresence keeps the exiting body mounted for the
    duration of its exit transition — which would make "folded hides the options"
@@ -731,5 +731,182 @@ describe('QuestionCard — paging', () => {
     // The action row is a sibling of the scroller, never inside it.
     const submitRow = screen.getByText('Submit').closest('div')!
     expect(scroller!.contains(submitRow)).toBe(false)
+  })
+})
+
+/* A single-select pick that completes the card is the answer, so the card
+   submits it without a separate Submit click. Fake timers, because the submit
+   waits a beat for the selected state to paint. */
+describe('QuestionCard — submit on the completing pick', () => {
+  const DELAY = 200
+  const twoQuestions = [
+    { question: 'Trust model', options: [{ label: 'Carve-out' }, { label: 'Public only' }] },
+    { question: 'Environments', options: [{ label: 'staging' }, { label: 'prod' }] },
+  ]
+  const option = (label: string) => screen.getByText(label).closest('button')!
+  const elapse = (ms: number) => act(() => { vi.advanceTimersByTime(ms) })
+
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('submits a one-question card from the pick alone, once, after the selection paints', () => {
+    const onSubmit = vi.fn()
+    render(<QuestionCard questions={singleQuestion} onSubmit={onSubmit} />)
+    fireEvent.click(option('Blue'))
+    // Not yet: the chosen option has to be seen selected before the card goes.
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(option('Blue')).toHaveAttribute('aria-pressed', 'true')
+    elapse(DELAY)
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).toHaveBeenCalledWith({ 'What is your favorite color?': 'Blue' })
+  })
+
+  it('submits only from the pick that answers the last open question', () => {
+    const onSubmit = vi.fn()
+    render(<QuestionCard questions={twoQuestions} onSubmit={onSubmit} />)
+    fireEvent.click(option('Carve-out'))
+    elapse(DELAY * 5)
+    // The first pick advanced the walk; the second question is still open.
+    expect(onSubmit).not.toHaveBeenCalled()
+    fireEvent.click(option('prod'))
+    elapse(DELAY)
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).toHaveBeenCalledWith({ 'Trust model': 'Carve-out', Environments: 'prod' })
+  })
+
+  it('does not submit from an earlier page, even when that pick completes the card', () => {
+    // Answer the last question first, then page back and settle the first one.
+    // Submit belongs at the end of the walk, so the card waits for it there.
+    const onSubmit = vi.fn()
+    render(<QuestionCard questions={twoQuestions} onSubmit={onSubmit} />)
+    fireEvent.click(screen.getByLabelText('Next question'))
+    fireEvent.click(option('prod'))
+    // Q1 is still open, so this pick advanced back to it instead of submitting.
+    expect(screen.getByText('Carve-out')).toBeInTheDocument()
+    fireEvent.click(option('Carve-out'))
+    elapse(DELAY * 5)
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(screen.getByText('Question 1 of 2')).toBeInTheDocument()
+  })
+
+  it('does not submit when a revisited earlier answer is changed', () => {
+    // The last question is a multi-select, so the card is complete without
+    // having submitted. Going back to change the first answer is a review.
+    const onSubmit = vi.fn()
+    const endsInMulti = [
+      twoQuestions[0],
+      { question: 'Regions', options: [{ label: 'east' }, { label: 'west' }], multiSelect: true },
+    ]
+    render(<QuestionCard questions={endsInMulti} onSubmit={onSubmit} />)
+    fireEvent.click(option('Carve-out'))
+    fireEvent.click(option('east'))
+    fireEvent.click(screen.getByLabelText('Previous question'))
+    fireEvent.click(option('Public only'))
+    elapse(DELAY * 5)
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not submit when the answer on the last page of a complete card is changed', () => {
+    // Answer out of order so the card completes on page 1 without submitting,
+    // then come back to the last page to revise. That is a review, not a pick.
+    const onSubmit = vi.fn()
+    render(<QuestionCard questions={twoQuestions} onSubmit={onSubmit} />)
+    fireEvent.click(screen.getByLabelText('Next question'))
+    fireEvent.click(option('prod'))
+    fireEvent.click(option('Carve-out'))
+    fireEvent.click(screen.getByLabelText('Next question'))
+    fireEvent.click(option('staging'))
+    elapse(DELAY * 5)
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(option('staging')).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('never submits from a multi-select click, which one pick does not finish', () => {
+    const onSubmit = vi.fn()
+    const multi = [{ question: 'Which?', options: [{ label: 'A' }, { label: 'B' }], multiSelect: true }]
+    render(<QuestionCard questions={multi} onSubmit={onSubmit} />)
+    fireEvent.click(option('A'))
+    elapse(DELAY * 5)
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not submit when the second click deselects the pick', () => {
+    const onSubmit = vi.fn()
+    render(<QuestionCard questions={singleQuestion} onSubmit={onSubmit} />)
+    fireEvent.click(option('Red'))
+    fireEvent.click(option('Red'))
+    elapse(DELAY * 5)
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('lets a second pick inside the window replace the first, submitting once', () => {
+    const onSubmit = vi.fn()
+    render(<QuestionCard questions={singleQuestion} onSubmit={onSubmit} />)
+    fireEvent.click(option('Red'))
+    elapse(DELAY - 50)
+    fireEvent.click(option('Green'))
+    elapse(DELAY - 50)
+    // The window restarted on the second pick.
+    expect(onSubmit).not.toHaveBeenCalled()
+    elapse(50)
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).toHaveBeenCalledWith({ 'What is your favorite color?': 'Green' })
+  })
+
+  it('cancels when the user starts typing a custom answer instead', () => {
+    const onSubmit = vi.fn()
+    render(<QuestionCard questions={singleQuestion} onSubmit={onSubmit} />)
+    fireEvent.click(option('Red'))
+    fireEvent.change(screen.getByPlaceholderText('Or type a custom answer...'), { target: { value: 'Te' } })
+    elapse(DELAY * 5)
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not submit twice when Submit is clicked inside the window', () => {
+    const onSubmit = vi.fn()
+    render(<QuestionCard questions={singleQuestion} onSubmit={onSubmit} />)
+    fireEvent.click(option('Red'))
+    fireEvent.click(screen.getByText('Submit').closest('button')!)
+    elapse(DELAY * 5)
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not submit after Dismiss inside the window', () => {
+    const onSubmit = vi.fn()
+    const onDismiss = vi.fn()
+    render(<QuestionCard questions={singleQuestion} onSubmit={onSubmit} onDismiss={onDismiss} />)
+    fireEvent.click(option('Red'))
+    fireEvent.click(screen.getByLabelText('Dismiss question without answering'))
+    elapse(DELAY * 5)
+    expect(onDismiss).toHaveBeenCalledTimes(1)
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not submit once the card has unmounted', () => {
+    const onSubmit = vi.fn()
+    const { unmount } = render(<QuestionCard questions={singleQuestion} onSubmit={onSubmit} />)
+    fireEvent.click(option('Red'))
+    unmount()
+    elapse(DELAY * 5)
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not submit while a submission is already in flight', () => {
+    const onSubmit = vi.fn()
+    const { rerender } = render(<QuestionCard questions={singleQuestion} onSubmit={onSubmit} />)
+    fireEvent.click(option('Red'))
+    rerender(<QuestionCard questions={singleQuestion} onSubmit={onSubmit} busy />)
+    elapse(DELAY * 5)
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not submit a pick made on a question set that has since been replaced', () => {
+    const onSubmit = vi.fn()
+    const replacement = [{ question: 'Proceed?', options: [{ label: 'Yes' }, { label: 'No' }] }]
+    const { rerender } = render(<QuestionCard questions={singleQuestion} onSubmit={onSubmit} />)
+    fireEvent.click(option('Red'))
+    rerender(<QuestionCard questions={replacement} onSubmit={onSubmit} />)
+    elapse(DELAY * 5)
+    expect(onSubmit).not.toHaveBeenCalled()
   })
 })
