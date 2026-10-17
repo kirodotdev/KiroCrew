@@ -43,7 +43,7 @@ runs all three in the same order, reporting which one decided:
 |---|---|---|
 | `sensitive-bash` | `is_sensitive_bash_command` — scan ceiling, IMDS reach, env-credential detector | `security/paths.py` |
 | `exfil` | `audit_bash_exfiltration` — egress and reverse-shell shapes | `security/exfil.py` |
-| `deny-rules` | `is_denied` — the rule catalog and the argv-structural floors | `security/__init__.py` |
+| `deny-rules` | `is_denied` — the rule catalog and the argv-structural floors | `security/deny_gate.py` |
 
 Measuring only the last one would be the specific way this gate could ship a
 meaningless green: its trigger paths cover `paths.py` and `exfil.py`, so a
