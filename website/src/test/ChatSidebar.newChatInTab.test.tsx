@@ -12,6 +12,9 @@
  *       active slot must NOT move — and hands the new key to
  *       `onOpenSlotInNewTab` in background mode;
  *   (3) middle-click does the same;
+ *   (3a) Ctrl+Shift-click also creates with `activate: false` but opens the
+ *       tab in FOREGROUND mode, which adds it and then switches to it; if the
+ *       user moved while the create was in flight it falls back to background;
  *   (4) the platform split holds: Cmd on mac opens a tab, Ctrl on mac does not
  *       (Ctrl+click IS a right-click there);
  *   (5) without an `onOpenSlotInNewTab` (embedded hosts have no tab strip) the
@@ -141,6 +144,52 @@ describe('ChatSidebar – New button open-as-tab gestures', () => {
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: true }))
     // The whole point: the user is still on the session they were reading.
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
+  })
+
+  it('Ctrl+Shift-click creates WITHOUT activating and opens the new session as a foreground tab', async () => {
+    const onOpen = vi.fn()
+    const store = renderSidebar(onOpen)
+    fireEvent.click(newButton(), { ctrlKey: true, shiftKey: true })
+    await created()
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    // The create did not activate: the switch is the tab opener's job, after
+    // the tab exists, so the tab the user was on is kept rather than replaced.
+    expect(store.getState().chat.activeSlot).toBe(ORIGIN)
+  })
+
+  it('Ctrl+Shift-click whose create resolves after the user moved to another session opens a BACKGROUND tab', async () => {
+    // A foreground open switches the view. If the user picked another session
+    // while the create was in flight, switching would take them off it, so the
+    // tab still opens but stays in the background.
+    let resolveCreate: (v: unknown) => void = () => {}
+    mocks.createChatSlot.mockReset().mockReturnValue(new Promise(r => { resolveCreate = r }))
+    const onOpen = vi.fn()
+    const store = renderSidebar(onOpen)
+    fireEvent.click(newButton(), { ctrlKey: true, shiftKey: true })
+    await created()
+    store.dispatch({ type: 'chat/setActiveSlot', payload: 'elsewhere' })
+    resolveCreate({ key: NEW_KEY })
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: true }))
+    expect(onOpen).not.toHaveBeenCalledWith(NEW_KEY, { background: false })
+  })
+
+  it('on mac, Cmd+Shift-click opens a foreground tab', async () => {
+    platform.mac = true
+    const onOpen = vi.fn()
+    const store = renderSidebar(onOpen)
+    fireEvent.click(newButton(), { metaKey: true, shiftKey: true })
+    await created()
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    expect(store.getState().chat.activeSlot).toBe(ORIGIN)
+  })
+
+  it('Alt added to Ctrl+Shift-click is no tab gesture: plain activating create', async () => {
+    const onOpen = vi.fn()
+    const store = renderSidebar(onOpen)
+    fireEvent.click(newButton(), { ctrlKey: true, shiftKey: true, altKey: true })
+    await created()
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_KEY))
+    expect(onOpen).not.toHaveBeenCalled()
   })
 
   it('middle-click creates WITHOUT activating and opens a background tab', async () => {

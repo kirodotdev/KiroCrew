@@ -182,6 +182,59 @@ describe('ChatSidebar - list-view folder create open-as-tab gestures', () => {
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
   })
 
+  it('Ctrl+Shift-click on the folder "+" creates WITHOUT activating and opens a foreground tab', async () => {
+    const onOpen = vi.fn()
+    const store = renderSidebar(onOpen)
+    fireEvent.click(plusButton(), { ctrlKey: true, shiftKey: true })
+    await created()
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    // The create did not activate: the switch is the tab opener's job, after
+    // the tab exists, so the tab the user was on is kept rather than replaced.
+    expect(store.getState().chat.activeSlot).toBe(ORIGIN)
+  })
+
+  it('Ctrl+Shift-click whose create resolves after the user moved to another session opens a BACKGROUND tab', async () => {
+    // A foreground open switches the view. If the user picked another session
+    // while the create was in flight, switching would take them off it, so the
+    // tab still opens but stays in the background.
+    let resolveCreate: (v: unknown) => void = () => {}
+    mocks.createChatSlot.mockReset().mockReturnValue(new Promise(r => { resolveCreate = r }))
+    const onOpen = vi.fn()
+    const store = renderSidebar(onOpen)
+    fireEvent.click(plusButton(), { ctrlKey: true, shiftKey: true })
+    await created()
+    store.dispatch({ type: 'chat/setActiveSlot', payload: 'elsewhere' })
+    resolveCreate({ key: NEW_KEY, folder_id: FOLDER_ID })
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: true }))
+    expect(onOpen).not.toHaveBeenCalledWith(NEW_KEY, { background: false })
+  })
+
+  it('on mac, Cmd+Shift-click on the folder "+" opens a foreground tab', async () => {
+    platform.mac = true
+    const onOpen = vi.fn()
+    const store = renderSidebar(onOpen)
+    fireEvent.click(plusButton(), { metaKey: true, shiftKey: true })
+    await created()
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    expect(store.getState().chat.activeSlot).toBe(ORIGIN)
+  })
+
+  it('Ctrl+Shift-click on the empty-folder row opens a foreground tab', async () => {
+    const onOpen = vi.fn()
+    const store = renderSidebar(onOpen)
+    fireEvent.click(emptyRow(), { ctrlKey: true, shiftKey: true })
+    await created()
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    expect(store.getState().chat.activeSlot).toBe(ORIGIN)
+  })
+
+  it('without a tab strip (no onOpenSlotInNewTab) a Ctrl+Shift-click on the "+" is an ordinary activating create', async () => {
+    const store = renderSidebar(undefined)
+    fireEvent.click(plusButton(), { ctrlKey: true, shiftKey: true })
+    await created()
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_KEY))
+  })
+
   it('middle-click on the folder "+" creates WITHOUT activating and opens a background tab', async () => {
     const onOpen = vi.fn()
     const store = renderSidebar(onOpen)

@@ -179,6 +179,26 @@ describe('ChatSidebar - board-view folder create open-as-tab gestures', () => {
     await waitFor(() => expect(mocks.dropSlotToColumn).toHaveBeenCalledWith(NEW_KEY, COL_A))
   })
 
+  it('Ctrl+Shift-click on the column folder "+" opens a foreground tab and still drops into the column', async () => {
+    const onOpen = vi.fn()
+    const { container, store } = renderSidebar(onOpen)
+    fireEvent.click(colPlus(container), { ctrlKey: true, shiftKey: true })
+    await created()
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    // The create itself did not activate; the tab opener switches after the tab exists.
+    expect(store.getState().chat.activeSlot).toBe(ORIGIN)
+    await waitFor(() => expect(mocks.dropSlotToColumn).toHaveBeenCalledWith(NEW_KEY, COL_A))
+  })
+
+  it('Ctrl+Shift-click on the column empty-folder row opens a foreground tab', async () => {
+    const onOpen = vi.fn()
+    const { container, store } = renderSidebar(onOpen)
+    fireEvent.click(colEmptyRow(container), { ctrlKey: true, shiftKey: true })
+    await created()
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    expect(store.getState().chat.activeSlot).toBe(ORIGIN)
+  })
+
   it('middle-click on the column folder "+" creates WITHOUT activating and opens a background tab', async () => {
     const onOpen = vi.fn()
     const { container, store } = renderSidebar(onOpen)

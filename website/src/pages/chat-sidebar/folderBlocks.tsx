@@ -25,7 +25,7 @@ import { PrivateChatRow } from './PrivateChatRow'
 import { ParentFolderDropTarget, SortableSubfolderBlock } from './dnd/targets'
 import type { Slot } from './types'
 import { detectFolderConductor } from './folderConductor'
-import { DisclosureChevron, FOLDER_BODY_CLS, FOLDER_BODY_OPEN_PADDING, FOLDER_ROW_STICKY_Z, PinnedSessionDivider, isOpenInTabModifierClick } from './chrome'
+import { DisclosureChevron, FOLDER_BODY_CLS, FOLDER_BODY_OPEN_PADDING, FOLDER_ROW_STICKY_Z, PinnedSessionDivider, createTabModeForClick } from './chrome'
 import type { LaneRows } from './laneRows'
 import type { SidebarScope } from './scope'
 import OfflineMenuReason from '../../components/OfflineMenuReason'
@@ -590,7 +590,8 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
           </DropdownMenu>
           {/* Same three-gesture contract as the header New button: plain click
            *  creates and switches; Cmd/Ctrl-click and middle-click create the
-           *  session as a background TAB. Gated on `onOpenSlotInNewTab` --
+           *  session as a background TAB; Cmd/Ctrl+Shift-click opens it in a
+           *  new active tab. Gated on `onOpenSlotInNewTab` --
            *  embedded hosts have no tab strip, so the modifier is ignored. */}
           <button type="button" data-testid={`folder-new-chat-${folder.id}`} className="cursor-pointer p-[4px] rounded text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none" title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name }))}
             onMouseDownCapture={onOpenSlotInNewTab ? (e => { if (e.button === 1) e.preventDefault() }) : undefined}
@@ -598,9 +599,9 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
               if (e.button !== 1) return
               e.preventDefault()
               e.stopPropagation()
-              createChatInFolder(folder.id, { inNewTab: true })
+              createChatInFolder(folder.id, { inNewTab: 'background' })
             }) : undefined}
-            onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, { inNewTab: !!onOpenSlotInNewTab && isOpenInTabModifierClick(e) }) }}><MessageSquarePlus size={12} /></button>
+            onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, { inNewTab: onOpenSlotInNewTab ? createTabModeForClick(e) : false }) }}><MessageSquarePlus size={12} /></button>
           {/* Third control: the conductor's own chat, on the row itself.
            *
            *  This is the one place in the sidebar over the two-controls-per-row
@@ -934,9 +935,9 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
           onAuxClick={onOpenSlotInNewTab ? (e => {
             if (e.button !== 1) return
             e.preventDefault()
-            createChatInFolder(folder.id, { inNewTab: true })
+            createChatInFolder(folder.id, { inNewTab: 'background' })
           }) : undefined}
-          onClick={e => createChatInFolder(folder.id, { inNewTab: !!onOpenSlotInNewTab && isOpenInTabModifierClick(e) })}
+          onClick={e => createChatInFolder(folder.id, { inNewTab: onOpenSlotInNewTab ? createTabModeForClick(e) : false })}
           title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name }))}
           className="w-full flex items-center gap-2.5 pl-3.5 pr-3 py-2 rounded-md text-[12px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
           <span>{i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}</span><MessageSquarePlus size={13} className="shrink-0 ml-auto" />

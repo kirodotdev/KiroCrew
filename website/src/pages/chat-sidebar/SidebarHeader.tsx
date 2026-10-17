@@ -12,7 +12,7 @@ import { loadChatConfig, saveChatConfig } from '../chat/ChatSettings'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { PrivateChatRow } from './PrivateChatRow'
-import { isOpenInTabModifierClick } from './chrome'
+import { createTabModeForClick } from './chrome'
 import type { SidebarScope } from './scope'
 import OfflineMenuReason from '../../components/OfflineMenuReason'
 import { offlineMenuRow, offlineProps } from '../../utils/offline'
@@ -131,9 +131,11 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
               // dim here would fade only the label, and dimming the wrapper would
               // drag down the caret, whose menu still opens offline.
               className={`mc-touch-hit-y flex items-center h-7 rounded-s-md cursor-pointer bg-transparent border-none text-accent-fg transition-all disabled:opacity-70 disabled:cursor-wait disabled:active:scale-100 ${connected ? 'hover:bg-accent-hover active:scale-95' : ''} ${compactHeader ? 'justify-center w-7' : 'gap-1.5 pl-2 pr-2.5 text-[12px] font-semibold'}`}
-              // Same three-gesture contract as a session row: plain click
-              // creates and switches; Cmd/Ctrl-click and middle-click create the
-              // session as a background TAB and leave the user where they are.
+              // Same gesture contract as a session row: plain click creates and
+              // switches; Cmd/Ctrl-click and middle-click create the session as
+              // a background TAB and leave the user where they are. Create
+              // controls add Cmd/Ctrl+Shift-click, which opens the new session
+              // in a new tab and switches to it (createTabModeForClick).
               // Both tab gestures are gated on `onOpenSlotInNewTab` — without a
               // tab strip (embedded hosts) there is nothing to open into, so the
               // modifier is ignored and the click stays an ordinary create.
@@ -145,9 +147,9 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
                 // The same create as the caret menu's New chat row, which dims
                 // and refuses offline; refused on both gestures, with the reason.
                 if (!connected) { refuseCreateOffline(); return }
-                createChatMutation.mutate({ inNewTab: true })
+                createChatMutation.mutate({ inNewTab: 'background' })
               }) : undefined}
-              onClick={e => { if (!connected) { refuseCreateOffline(); return } createChatMutation.mutate({ inNewTab: !!onOpenSlotInNewTab && isOpenInTabModifierClick(e) }) }}
+              onClick={e => { if (!connected) { refuseCreateOffline(); return } createChatMutation.mutate({ inNewTab: onOpenSlotInNewTab ? createTabModeForClick(e) : false }) }}
               title={i18nT('pages.chatSidebar.new_chat')}
               aria-label={i18nT('pages.chatSidebar.new_chat_session')}
               // Spread only while offline: this button also carries

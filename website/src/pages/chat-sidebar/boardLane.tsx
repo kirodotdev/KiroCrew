@@ -27,7 +27,7 @@ import { BoardUnfileDropStrip, SortableColumnFolder, FolderDragGhost } from './d
 import type { Slot } from './types'
 import { FOLDERS_SHELVED_LS_KEY } from './persistence'
 import { sessionRowIdentity } from './rowIdentity'
-import { BOARD_FOLDER_BODY_CLS, FOLDER_BODY_OPEN_PADDING, PinnedSessionDivider, isOpenInTabModifierClick } from './chrome'
+import { BOARD_FOLDER_BODY_CLS, FOLDER_BODY_OPEN_PADDING, PinnedSessionDivider, createTabModeForClick } from './chrome'
 import type { LaneRows } from './laneRows'
 import type { FolderBlocks } from './folderBlocks'
 import type { SidebarScope } from './scope'
@@ -249,13 +249,13 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
              *  existing stopPropagation stays so the header click/drag
              *  handlers never see the press. */}
             <button type="button" data-testid={`col-${columnId}-folder-${folder.id}-new-chat`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer p-[2px]" title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name }))}
-              onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, { columnId, inNewTab: !!onOpenSlotInNewTab && isOpenInTabModifierClick(e) }) }}
+              onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, { columnId, inNewTab: onOpenSlotInNewTab ? createTabModeForClick(e) : false }) }}
               onMouseDown={e => { e.stopPropagation(); if (e.button === 1 && onOpenSlotInNewTab) e.preventDefault() }}
               onAuxClick={onOpenSlotInNewTab ? (e => {
                 if (e.button !== 1) return
                 e.preventDefault()
                 e.stopPropagation()
-                createChatInFolder(folder.id, { columnId, inNewTab: true })
+                createChatInFolder(folder.id, { columnId, inNewTab: 'background' })
               }) : undefined}
               onKeyDown={e => { e.stopPropagation() }}>
               <MessageSquarePlus size={11} />
@@ -283,9 +283,9 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                 onAuxClick={onOpenSlotInNewTab ? (e => {
                   if (e.button !== 1) return
                   e.preventDefault()
-                  createChatInFolder(folder.id, { columnId, inNewTab: true })
+                  createChatInFolder(folder.id, { columnId, inNewTab: 'background' })
                 }) : undefined}
-                onClick={e => createChatInFolder(folder.id, { columnId, inNewTab: !!onOpenSlotInNewTab && isOpenInTabModifierClick(e) })}
+                onClick={e => createChatInFolder(folder.id, { columnId, inNewTab: onOpenSlotInNewTab ? createTabModeForClick(e) : false })}
                 title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name }))}
                 className="w-full flex items-center gap-2.5 px-4 py-2 rounded-md text-[11px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
                 <span>{i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}</span><MessageSquarePlus size={11} className="shrink-0 ml-auto" />

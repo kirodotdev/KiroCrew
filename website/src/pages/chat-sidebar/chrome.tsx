@@ -18,6 +18,18 @@ export function isOpenInTabModifierClick(e: React.MouseEvent): boolean {
   return (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.shiftKey && !e.altKey
 }
 
+/** Tab mode for a click on a CREATE control (the header New button, a folder
+ *  `+`, an empty-folder row). Cmd/Ctrl-click opens the new chat as a background
+ *  tab, the same as on a session row. Cmd/Ctrl+Shift-click opens it as the
+ *  active tab, the browser's convention for a foreground open, and the only
+ *  one-step foreground gesture on a trackpad. Any other click returns false.
+ *  See docs/decisions/2026-10-17-sidebar-create-controls-shift-opens-the-active-tab.md. */
+export function createTabModeForClick(e: React.MouseEvent): 'foreground' | 'background' | false {
+  if (isOpenInTabModifierClick(e)) return 'background'
+  const tabModifier = IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
+  return tabModifier && e.shiftKey && !e.altKey ? 'foreground' : false
+}
+
 /** Quiet boundary between manually ordered pins and automatically sorted rows.
  *  Starts 2px left of the row content column: `mx-3` 12 against the rows' 14px
  *  pad (`ROW_BOX_CLS` `pl-3.5`), which is the same pad inside a folder body, so
