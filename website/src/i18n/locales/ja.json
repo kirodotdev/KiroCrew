@@ -6884,7 +6884,16 @@
       "default_destination_global_unset": "グローバル設定を使用（なし）",
       "default_destination_not_registered": "{{id}}（未登録）",
       "default_destination_load_failed": "crew を読み込めませんでした。",
-      "default_destination_retry": "再試行"
+      "default_destination_retry": "再試行",
+      "default_crew": "デフォルト Crew",
+      "default_crew_hint": "このフォルダーから開始した新しいチャットは、この Crew で実行されます。既存のチャットをここに移動しても、実行場所は変わりません。",
+      "default_crew_offline_notice": "この Crew はオフラインです。このフォルダーで新しいチャットを開始すると、その旨を表示し、そのチャットだけローカルで開始する選択肢を提示します。",
+      "default_crew_not_registered_notice": "この Crew は登録されていません。このフォルダーで新しいチャットを開始すると、その旨を表示し、そのチャットだけローカルで開始する選択肢を提示します。再び Crew で開始するには、別の Crew を選んでください。",
+      "default_agent_hint_with_crew": "ローカルで開始する新しいチャット用に事前に選択されます。フォルダーの Crew で実行するチャットは、その Crew 自身の既定エージェントを使います。",
+      "crew_local": "ローカル",
+      "crew_online": "{{name}}（オンライン）",
+      "crew_offline": "{{name}}（オフライン）",
+      "crew_not_registered": "{{id}}（未登録）"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "フォルダーの提案",
@@ -12754,7 +12763,13 @@
       "broadcast_open_unknown": "未確認・開く",
       "broadcast_delivery_hint": "実行中の作業は中断されません。実行中のターンは現在のツール呼び出しの後に読み、待機中のセッションは新しいターンを始めます。",
       "broadcast_retry": "失敗した {{n}} 件を再試行",
-      "folder_renamed_to": "フォルダー名を {{name}} に変更しました"
+      "folder_renamed_to": "フォルダー名を {{name}} に変更しました",
+      "folder_crew_offline": "{{name}} がオフラインのため、チャットを開始しませんでした。このフォルダーの新しいチャットは、その Crew で実行されます。",
+      "folder_crew_offline_use_local": "このチャットをローカルで開始する",
+      "folder_crew_starting": "{{name}} でチャットを開始しています…",
+      "folder_crew_started_background": "{{name}} でチャットを開始しました。サイドバーの {{name}} の下に表示されます。",
+      "folder_crew_not_registered": "{{name}} は登録済みの Crew ではなくなったため、チャットを開始しませんでした。フォルダー設定で別の Crew を選ぶか、このチャットをローカルで開始してください。",
+      "folder_crew_new_on_local": "「{{name}}」で新しいチャットをローカルで開始"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

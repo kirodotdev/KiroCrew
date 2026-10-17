@@ -171,8 +171,12 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
   // crew's pane IS its outcome. The LIVE peer rows above no longer use it — they
   // adopt (see `adoptPeerSession` in ChatSidebar).
   const { selectInstance } = useSelectInstance(instancesList)
+  // Whether `instancesList` is the real registry or the empty stand-in for a
+  // list that is pending or failed. Read from `data` alone, like
+  // `instancesUnanswered`, so it adds no fetch-status subscription.
+  const instancesLoaded = instancesData !== undefined
   return {
-    historySearchResults, instancesList, instanceSessions, remoteSessionsError, allRows, allLiveSlots,
+    historySearchResults, instancesList, instancesLoaded, instanceSessions, remoteSessionsError, allRows, allLiveSlots,
     selectInstance, crewGroups,
   }
 }

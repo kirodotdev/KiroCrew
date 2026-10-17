@@ -3,6 +3,7 @@ import { X } from 'lucide-react'
 
 import ErrorBoundary from '../../../components/ErrorBoundary'
 import ErrorNotice from '../../../components/ErrorNotice'
+import StatusNotice from '../../../components/StatusNotice'
 import VoicePlaybackNotice from '../../../components/VoicePlaybackNotice'
 import { Btn } from '../../../components/ui'
 import { fmtDate } from '../../../i18n/format'
@@ -132,8 +133,8 @@ interface ChatPaneNoticesProps {
   selectionCapabilitiesQ: { isError: boolean; error?: unknown }
   /** For the model-default notice: the Settings default model read failed. */
   chipDefault: { failed: boolean }
-  actionError: { title?: string; message: string; preserveOnSwitch?: boolean; report?: ErrorReport } | null
-  setActionError: Dispatch<SetStateAction<{ title?: string; message: string; preserveOnSwitch?: boolean; report?: ErrorReport } | null>>
+  actionError: { title?: string; message: string; preserveOnSwitch?: boolean; report?: ErrorReport; status?: boolean; action?: { label: string; onClick: () => void } } | null
+  setActionError: Dispatch<SetStateAction<{ title?: string; message: string; preserveOnSwitch?: boolean; report?: ErrorReport; status?: boolean; action?: { label: string; onClick: () => void } } | null>>
   switchSlotGone: RootState['chat']['switchSlotGone']
   setVoiceRecoverySlot: (slot: string | null) => void
   pinError: string | null
@@ -244,12 +245,29 @@ export default function ChatPaneNotices({
       />
       <ErrorNotice
         title={actionError?.title}
-        message={actionError?.message}
+        message={actionError?.status ? '' : actionError?.message}
         report={actionError?.report}
         onDismiss={() => setActionError(null)}
         askAgent
         className="mx-4 mt-2 mb-0 animate-rise"
         testId="action-error"
+      />
+      {/* The same slot for a state, not a failure (a folder's crew is offline):
+          the warn tone, and nothing for an agent to diagnose. */}
+      <StatusNotice
+        message={actionError?.status ? actionError.message : ''}
+        onDismiss={() => setActionError(null)}
+        className="mx-4 mt-2 mb-0 animate-rise"
+        testId="action-status"
+        action={actionError?.status && actionError.action ? {
+          label: actionError.action.label,
+          testId: 'action-status-action',
+          onClick: () => {
+            const run = actionError.action?.onClick
+            setActionError(null)
+            run?.()
+          },
+        } : undefined}
       />
       {/* A click on a listed-but-gone session (#6372): the fact at the click
           locus, through the required ErrorNotice surface. The store carries

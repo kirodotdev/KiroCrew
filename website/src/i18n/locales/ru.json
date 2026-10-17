@@ -7250,7 +7250,16 @@
       "default_destination_global_unset": "Использовать глобальное значение (нет)",
       "default_destination_not_registered": "{{id}} (не зарегистрирована)",
       "default_destination_load_failed": "Не удалось загрузить crew.",
-      "default_destination_retry": "Повторить"
+      "default_destination_retry": "Повторить",
+      "default_crew": "Crew по умолчанию",
+      "default_crew_hint": "Новые чаты, начатые из этой папки, выполняются на этом Crew. Существующий чат, перенесённый сюда, продолжает работать там же, где работал.",
+      "default_crew_offline_notice": "Этот Crew не в сети. Новый чат в этой папке сообщит об этом и предложит Локально только для этого чата.",
+      "default_crew_not_registered_notice": "Этот Crew больше не зарегистрирован. Новый чат в этой папке сообщит об этом и предложит Локально только для этого чата. Выбери другой Crew, чтобы новые чаты снова запускались там.",
+      "default_agent_hint_with_crew": "Предварительно выбран для новых чатов, запущенных локально. Чат на Crew этой папки использует агента по умолчанию этого Crew.",
+      "crew_local": "Локально",
+      "crew_online": "{{name}} (в сети)",
+      "crew_offline": "{{name}} (не в сети)",
+      "crew_not_registered": "{{id}} (не зарегистрирован)"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Предложение папки",
@@ -13402,7 +13411,13 @@
       "broadcast_open_unknown": "Не подтверждено · открыть",
       "broadcast_delivery_hint": "Текущая работа не прерывается: активный ход прочитает сообщение после текущего вызова инструмента, простаивающая сессия начнёт новый ход.",
       "broadcast_retry": "Повторить неудавшиеся ({{n}})",
-      "folder_renamed_to": "Папка переименована в {{name}}"
+      "folder_renamed_to": "Папка переименована в {{name}}",
+      "folder_crew_offline": "{{name}} не в сети, поэтому чат не начат. Новые чаты в этой папке выполняются на этом Crew.",
+      "folder_crew_offline_use_local": "Начать этот чат локально",
+      "folder_crew_starting": "Запуск чата на {{name}}…",
+      "folder_crew_started_background": "На {{name}} начат чат. Он есть в боковой панели под {{name}}.",
+      "folder_crew_not_registered": "{{name}} больше не зарегистрированный Crew, поэтому чат не начат. Выбери другой Crew в настройках папки или начни этот чат локально.",
+      "folder_crew_new_on_local": "Новый чат в {{name}} локально"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",

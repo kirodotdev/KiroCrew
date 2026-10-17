@@ -38,7 +38,7 @@ interface ChatPaneChromeProps {
   slotRunning: boolean
   splitMode: boolean
   selectionCapabilitiesQ: ReturnType<typeof useModelPickerModels>['selectionCapabilitiesQ']
-  actionError: { title?: string; message: string; preserveOnSwitch?: boolean; report?: ErrorReport; } | null
+  actionError: { title?: string; message: string; preserveOnSwitch?: boolean; report?: ErrorReport; status?: boolean } | null
   setActionError: ReturnType<typeof useSteerDelivery>['setActionError']
   setUploadError: Dispatch<SetStateAction<string>>
   setUploadHint: Dispatch<SetStateAction<string>>

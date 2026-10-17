@@ -77,13 +77,15 @@ export function useSteerDelivery({
   // ErrorNotice; the newest failure wins, the same shape as `refusedPress`.
   // `title` is optional because several sites already own a whole-sentence
   // message ("Fork failed: …") that must stay intact for the error-journal match.
-  const [actionError, setActionError] = useState<{ title?: string; message: string; preserveOnSwitch?: boolean; report?: ErrorReport } | null>(null)
-  const showActionError = useCallback((message: string, title?: string, report?: ErrorReport) => {
+  const [actionError, setActionError] = useState<{ title?: string; message: string; preserveOnSwitch?: boolean; report?: ErrorReport; status?: boolean; action?: { label: string; onClick: () => void } } | null>(null)
+  const showActionError = useCallback((message: string, title?: string, report?: ErrorReport, status?: boolean, action?: { label: string; onClick: () => void }) => {
     // The report is part of the identity: a retry failing the same way carries its
     // OWN diagnostic context, so matching on the copy alone would pin the first one.
+    // An action is a fresh closure every call, so a notice that carries one is
+    // always replaced: the button must run the latest click's remedy.
     setActionError(prev => (
-      prev && prev.message === message && prev.title === title && prev.report === report
-    ) ? prev : { title, message, report })
+      !action && prev && !prev.action && prev.message === message && prev.title === title && prev.report === report && !!prev.status === !!status
+    ) ? prev : { title, message, report, ...(status ? { status } : {}), ...(action ? { action } : {}) })
   }, [])
   // NOT fire-and-forget: the receipt is the only thing that knows whether the
   // text reached the running turn, and the optimistic bubble asserts that it did.
