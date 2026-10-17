@@ -12379,6 +12379,7 @@
       "older_sessions": "较早的会话",
       "older_sessions_2": "较早的会话",
       "open_source_link_in_side_panel": "在侧边面板中打开 {{url}} ({{modifier}} 在浏览器中打开)",
+      "open_named_source_link_in_side_panel": "{{provider}} {{ref}}：在侧边面板中打开 {{url}} ({{modifier}} 在浏览器中打开)",
       "bulk_switch_keeps_conversation": "为所有会话选择一个模型。对话会保留，并在新模型上继续。",
       "bulk_switch_stops_running_reply": "运行中的会话也会切换，当前回复会被中断。",
       "pinned": "已置顶",

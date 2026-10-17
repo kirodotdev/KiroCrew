@@ -2,7 +2,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
-import { parseSourceLinkUrl, forgeChipLabel } from '../utils/pullRequestLinks'
+import {
+  parseSourceLinkUrl,
+  forgeChipLabel,
+  registerSourceProvider,
+  resetSourceProvidersForTests,
+  type SourceProviderDescriptor,
+} from '../utils/pullRequestLinks'
 
 // In-message GitHub / GitLab chips (#2579): a forge issue / PR / MR URL in a
 // message body renders as a chip (provider mark + reference) built
@@ -124,5 +130,45 @@ describe('forgeChipLabel', () => {
 
   it('returns null for Jira links (they label themselves with the issue key)', () => {
     expect(forgeChipLabel(parse('https://acme.atlassian.net/browse/PROJ-9'))).toBeNull()
+  })
+})
+
+describe('MarkdownRenderer forge chips — a registered provider', () => {
+  const descriptor = (icon?: SourceProviderDescriptor['icon']): SourceProviderDescriptor => ({
+    id: 'acme',
+    displayName: 'Acme Review',
+    parse(url) {
+      const match = url.hostname === 'review.acme.example' ? /^\/cr\/(\d+)$/.exec(url.pathname) : null
+      return match
+        ? { url: url.href, provider: 'acme', number: Number(match[1]), repo: 'acme', kind: 'change' }
+        : null
+    },
+    chipLabel: link => `CR-${link.number}`,
+    refLabel: n => `CR-${n}`,
+    capabilities: { checks: false, mergeState: false, resolveThreads: false, comment: false },
+    ...(icon ? { icon } : {}),
+  })
+
+  afterEach(() => resetSourceProvidersForTests())
+
+  it('draws the one neutral mark the sidebar chip and Changes tab use when it ships no icon', () => {
+    registerSourceProvider(descriptor())
+    render(<MarkdownRenderer content="See https://review.acme.example/cr/123 for the change" />)
+    const link = screen.getByRole('link')
+    expect(link.textContent).toContain('CR-123')
+    const mark = link.querySelector('[data-provider-mark="neutral"]')
+    expect(mark).not.toBeNull()
+    expect(mark!.getAttribute('class')).toContain('lucide-link-2')
+    expect(mark!.getAttribute('width')).toBe('12')
+    expect(link.querySelector('.lucide-git-pull-request')).toBeNull()
+  })
+
+  it('draws the provider its own icon when its descriptor ships one', () => {
+    const AcmeGlyph = ({ size }: { size?: number }) => <span data-testid="acme-glyph" data-size={size} />
+    registerSourceProvider(descriptor(AcmeGlyph))
+    render(<MarkdownRenderer content="See https://review.acme.example/cr/123 for the change" />)
+    const link = screen.getByRole('link')
+    expect(link.querySelector('[data-testid="acme-glyph"]')?.getAttribute('data-size')).toBe('12')
+    expect(link.querySelector('[data-provider-mark="neutral"]')).toBeNull()
   })
 })

@@ -44,12 +44,14 @@ export interface SourceProviderMeta {
   /** Short reference, for the title suffix where the title already precedes it:
    *  `#12`, `!12`, `CR-123`. */
   numberLabel: (n: number) => string
-  /** Which bundled logo to draw, or null for a provider that ships none. */
+  /** Which bundled logo to draw, or null for a provider that ships none. Read by
+   *  `SourceProviderMark`, the one resolver every source-link surface draws through. */
   logo: 'github' | 'gitlab' | null
   /** A registered provider's own glyph component, carried verbatim from its
-   *  descriptor. Checked by renderers BEFORE the `logo` name so an edition mark
-   *  wins over the neutral fallback; built-ins never set it. Still "no JSX in
-   *  this util": it is a component reference the renderer instantiates. */
+   *  descriptor. Drawn when there is no bundled `logo` (a registered provider
+   *  never has one), ahead of the neutral fallback, so an edition mark wins over
+   *  it; built-ins never set it. Still "no JSX in this util": it is a component
+   *  reference the renderer instantiates. */
   icon?: SourceProviderIcon
   /** True when this provider's objects are "pull requests" rather than "merge
    *  requests". Selects between the EXISTING catalog key pairs rather than

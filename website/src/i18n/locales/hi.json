@@ -12570,6 +12570,7 @@
       "older_sessions": "पुराने सत्र",
       "older_sessions_2": "पुराने सत्र",
       "open_source_link_in_side_panel": "{{url}} को साइड पैनल में खोलें (इसे ब्राउज़र में खोलने के लिए {{modifier}})",
+      "open_named_source_link_in_side_panel": "{{provider}} {{ref}}: {{url}} को साइड पैनल में खोलो (इसे ब्राउज़र में खोलने के लिए {{modifier}})",
       "bulk_switch_keeps_conversation": "हर सत्र के लिए मॉडल चुनो। बातचीत बनी रहती है और नए मॉडल पर जारी रहती है।",
       "bulk_switch_stops_running_reply": "चल रहे सत्र भी बदल जाएँगे, और उनका मौजूदा जवाब रुक जाएगा।",
       "pinned": "पिन किए गए",

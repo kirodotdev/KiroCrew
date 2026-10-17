@@ -12570,6 +12570,7 @@
       "older_sessions": "Ältere Sitzungen",
       "older_sessions_2": "Ältere Sitzungen",
       "open_source_link_in_side_panel": "{{url}} im Seitenpanel öffnen ({{modifier}} zum Öffnen im Browser)",
+      "open_named_source_link_in_side_panel": "{{provider}} {{ref}}: {{url}} im Seitenpanel öffnen ({{modifier}} zum Öffnen im Browser)",
       "bulk_switch_keeps_conversation": "Wähle ein Modell für alle Sitzungen. Die Unterhaltung bleibt erhalten und läuft mit dem neuen Modell weiter.",
       "bulk_switch_stops_running_reply": "Laufende Sitzungen wechseln ebenfalls, und ihre aktuelle Antwort wird abgebrochen.",
       "pinned": "Angepinnt",
