@@ -115,8 +115,9 @@ export const CodeBlock = memo(function CodeBlock(
           A prose block no longer scrolls horizontally, but it keeps the focus stop:
           conditioning tabIndex on the tag would move keyboard behavior with content
           type, and a focusable non-scrolling region is harmless. */}
+      {/* data-anchorable-code: a comment may anchor inside these rows (utils/composedText). */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
-      <div ref={contentRef} className="pierre-surface scroll-fade" tabIndex={0} role="region" aria-label={lang ? `${lang} code` : 'code'}>
+      <div ref={contentRef} className="pierre-surface scroll-fade" tabIndex={0} role="region" aria-label={lang ? `${lang} code` : 'code'} data-anchorable-code="">
         {complete && highlighted ? (
           <PierreCode file={file} langHint={lang} options={prose ? PROSE_CODE_OPTIONS : undefined} />
         ) : (

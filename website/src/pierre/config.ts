@@ -85,6 +85,20 @@ export const PIERRE_SEPARATOR_BG_CSS = `
 [data-separator]{background-color:var(--diffs-bg-separator)}
 `
 
+/** Paints the comment highlights on code rows.
+ *
+ *  The CSS Custom Highlight registry is document-wide, but a `::highlight()`
+ *  rule only styles text in the tree whose stylesheet carries it, and code rows
+ *  live in Pierre's shadow root: without these the passage an open comment box
+ *  annotates (`mc-annotate`, utils/annotationHighlight.ts) and the file
+ *  viewer's anchored comments (`mc-comment`, MarkdownPanel) are registered on
+ *  code but never painted. Same tokens as index.css and MarkdownPanel's rule;
+ *  custom properties inherit across the shadow boundary. */
+export const PIERRE_ANNOTATION_HIGHLIGHT_CSS = `
+::highlight(mc-annotate){background-color:var(--accent-subtle)}
+::highlight(mc-comment){background-color:var(--accent-subtle);text-decoration-line:underline;text-decoration-color:var(--accent);text-decoration-thickness:2px;text-decoration-skip-ink:none;text-underline-offset:2px}
+`
+
 /** Removes the phantom horizontal scroll on `overflow: 'wrap'` surfaces.
  *
  *  The `overflow` option controls line WRAPPING, not the container: the code

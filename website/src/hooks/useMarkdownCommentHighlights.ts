@@ -9,6 +9,7 @@
  * Highlight API because that API does not paint reliably in the dashboard
  * browser and can't do the overlay's box-shadow / persistent active state.
  */
+import { indexComposedText, rangeForTextSpan, type TextIndex } from '../utils/composedText'
 
 export interface AnchoredComment {
   id: string
@@ -23,32 +24,12 @@ export interface AnchoredComment {
   startOffset?: number
 }
 
-/** Concatenate the container's text nodes, recording each node's start offset
- *  so a character index in the joined text maps back to a (node, offset).
- *  Exported for tests. */
-export function indexTextNodes(root: Node): { text: string; nodes: { node: Text; start: number }[] } {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-  const nodes: { node: Text; start: number }[] = []
-  let text = ''
-  let n: Node | null
-  while ((n = walker.nextNode())) {
-    const t = n as Text
-    nodes.push({ node: t, start: text.length })
-    text += t.nodeValue ?? ''
-  }
-  return { text, nodes }
-}
-
-function locate(
-  nodes: { node: Text; start: number }[],
-  off: number,
-): { node: Text; offset: number } | null {
-  for (const nd of nodes) {
-    if (off <= nd.start + (nd.node.nodeValue?.length ?? 0)) {
-      return { node: nd.node, offset: off - nd.start }
-    }
-  }
-  return null
+/** The container's rendered text with each Text node's start offset, so a
+ *  character index in the joined text maps back to a (node, offset). Reaches
+ *  into highlighted code blocks' shadow trees (see `indexComposedText`), so an
+ *  anchor on code resolves like one on prose. Exported for tests. */
+export function indexTextNodes(root: Node): TextIndex {
+  return indexComposedText(root)
 }
 
 /** Best DOM Range for an anchor's quote when it appears multiple times.
@@ -60,10 +41,10 @@ function locate(
  *  and ties resolve to the first occurrence. Mirrors the
  *  in-iframe bridge's `findRange`. Exported for tests. */
 export function rangeForAnchor(
-  idx: { text: string; nodes: { node: Text; start: number }[] },
+  idx: TextIndex,
   a: AnchoredComment,
 ): Range | null {
-  const { text, nodes } = idx
+  const { text } = idx
   if (!a.quote) return null
   let from = 0
   let best = -1
@@ -89,17 +70,7 @@ export function rangeForAnchor(
     from = i + 1
   }
   if (best < 0) return null
-  const s = locate(nodes, best)
-  const e = locate(nodes, best + a.quote.length)
-  if (!s || !e) return null
-  try {
-    const r = document.createRange()
-    r.setStart(s.node, s.offset)
-    r.setEnd(e.node, e.offset)
-    return r
-  } catch {
-    return null
-  }
+  return rangeForTextSpan(idx, best, best + a.quote.length)
 }
 
 /** Find the character offset of the best-matching occurrence of `anchor` in

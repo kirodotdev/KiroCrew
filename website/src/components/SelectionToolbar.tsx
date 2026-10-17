@@ -5,6 +5,7 @@ import { MessageSquareQuote, MessageCircleQuestionMark, MessageSquarePlus, X, Co
 import { copyToClipboard } from '../utils/clipboard'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { containedSelectionRange } from '../utils/selectionContainment'
+import { composedTextOffset, indexComposedText, liveSelectionRange, rangeForTextSpan } from '../utils/composedText'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { measureAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 import ErrorNotice from './ErrorNotice'
@@ -101,25 +102,19 @@ const COMPOSER_STACK_BELOW_PX = 480
  */
 export function rangeFromTextOffset(root: Node, start: number, length: number): Range | null {
   if (length <= 0) return null
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-  const range = document.createRange()
-  let seen = 0
-  let startSet = false
-  const end = start + length
-  let node: Node | null
-  while ((node = walker.nextNode())) {
-    const len = (node as Text).data.length
-    if (!startSet && start < seen + len) {
-      range.setStart(node, start - seen)
-      startSet = true
-    }
-    if (startSet && end <= seen + len) {
-      range.setEnd(node, end - seen)
-      return range
-    }
-    seen += len
-  }
-  return null
+  // The composed index, so a passage inside a highlighted code block (whose
+  // offset `checkSelection` measured in the same space) is put back too.
+  const idx = indexComposedText(root)
+  if (start < 0 || start + length > idx.text.length) return null
+  return rangeForTextSpan(idx, start, start + length)
+}
+
+/** The trimmed text of `range` in `root`'s composed text index. */
+function composedSliceOf(root: Node, range: Range): string {
+  const idx = indexComposedText(root)
+  const from = composedTextOffset(idx, range.startContainer, range.startOffset)
+  const to = composedTextOffset(idx, range.endContainer, range.endOffset)
+  return from != null && to != null ? idx.text.slice(from, to).trim() : range.toString().trim()
 }
 
 export interface SelectionAction {
@@ -587,7 +582,12 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     // stays where it is until the draft is submitted or discarded.
     if (visibleRef.current && composerRef.current && composerDraftRef.current) return
     const sel = window.getSelection()
-    if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+    // `liveSelectionRange` rather than `isCollapsed` + `getRangeAt(0)`: a
+    // selection inside a highlighted code block (Pierre's shadow tree) is
+    // reported collapsed at the block's host, with its text still in
+    // `toString()`, and only the composed range says what was selected.
+    const range = sel && sel.toString().trim() ? liveSelectionRange(sel) : null
+    if (!sel || !range) {
       // Only dismiss if toolbar was shown by DOM selection (not external/editor).
       // An OPEN composer is the exception: its selection is collapsed by design
       // (focus, or the host's <mark> wrapping), so an empty selection is not a
@@ -607,7 +607,6 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     // returns it clamped to the container: an accepted overhang's boundary point
     // would otherwise pull the next block's line box into the rect and park the
     // toolbar one line below the selection on the touch/keyboard paths.
-    const range = sel.getRangeAt(0)
     const measureRange = containedSelectionRange(range, container)
     if (!measureRange) {
       setVisible(false)
@@ -620,9 +619,15 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     // describe passages the offsets do not, and the highlight would land on
     // the wrong span. Plain actions (Copy) keep every selected chunk.
     const composerMode = !!composerRef.current
-    const text = composerMode && sel.rangeCount > 1
-      ? measureRange.toString().trim()
-      : selectionTextFrom(sel)
+    // A range `liveSelectionRange` resolved through a code block (or cropped
+    // at a block's edge) is not what `sel` stringifies: the composer quotes
+    // that range, measured in the composed index the anchor uses.
+    const resolved = range !== sel.getRangeAt(0)
+    const text = composerMode && resolved
+      ? composedSliceOf(container, measureRange)
+      : composerMode && sel.rangeCount > 1
+        ? measureRange.toString().trim()
+        : selectionTextFrom(sel)
     if (!text) { setVisible(false); return }
 
     selectedTextRef.current = text
@@ -653,17 +658,21 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       // Offsets first, then the host's `onOpen`: the host may wrap the selection
       // in <mark>s, and a live range would not survive that (offsets do).
       try {
-        const pre = document.createRange()
-        pre.setStart(container, 0)
-        pre.setEnd(measureRange.startContainer, measureRange.startOffset)
+        // Measured in the composed text index, the space `anchorFromRange` and
+        // `rangeFromTextOffset` use, so the offset is right inside a code
+        // block's shadow tree too (a light-DOM pre-range cannot reach there).
         // The passage the host is told about (`text`) is TRIMMED, and the hosts'
         // own `anchorFromRange` keys its offset on the quote's first character —
         // so the slot offset skips whatever whitespace the drag started on. An
         // untrimmed start would file a draft typed after selecting " beta" under
         // a key that re-selecting "beta" can never read back.
-        const raw = measureRange.toString()
+        const idx = indexComposedText(container)
+        const from = composedTextOffset(idx, measureRange.startContainer, measureRange.startOffset)
+        const to = composedTextOffset(idx, measureRange.endContainer, measureRange.endOffset)
+        if (from == null || to == null) throw new Error('selection outside the text index')
+        const raw = idx.text.slice(from, to)
         const lead = raw.length - raw.trimStart().length
-        savedSelectionRef.current = { start: pre.toString().length + lead, length: raw.trim().length }
+        savedSelectionRef.current = { start: from + lead, length: raw.trim().length }
       } catch {
         savedSelectionRef.current = null
       }
