@@ -25,7 +25,11 @@ from kiro_crew.acp.runtime_models import (
     model_is_unusable,
     resolve_pin_spelling_on,
 )
-from kiro_crew.acp.types import ACP_BACKENDS_HOST_AUTH_CALLBACK, ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
+from kiro_crew.acp.types import (
+    ACP_BACKEND_KIRO,
+    ACP_BACKENDS_HOST_AUTH_CALLBACK,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+)
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.credential_errors import is_credential_propagation_delay
 from kiro_crew.sandbox import (
@@ -654,6 +658,25 @@ _RE_THROTTLE_NAMED = re.compile(
     r"\b(ThrottlingException|TooManyRequestsException|ServiceQuotaExceededException)\b"
 )
 _RE_THROTTLE_GENERIC = re.compile(r"\b(rate.?limit|throttl(?:e|ed|ing))\b", re.IGNORECASE)
+
+
+def _throttle_subject(backend: str) -> str:
+    """Name the thing that is rate-limiting a throttled request, by backend.
+
+    Only the kiro-cli harness (``ACP_BACKEND_KIRO``) reaches the model through
+    AWS Bedrock, so only it may name Bedrock — a Claude seat, Codex, goose and
+    the rest do not, and telling their users to chase AWS throttling sends them
+    after a service they never call. The identity is POSITIVE
+    (``== ACP_BACKEND_KIRO``), per AGENTS.md "Harness parity": a negative
+    ``not claude`` test fails toward the Bedrock answer for every harness it was
+    never checked against. Every other backend gets neutral wording naming the
+    model provider, which is true whoever serves it.
+    """
+    if backend == ACP_BACKEND_KIRO:
+        return "Bedrock"
+    return "The model provider"
+
+
 _RE_AUTH = re.compile(
     r"\b(AccessDenied(?:Exception)?|UnauthorizedException|ExpiredToken(?:Exception)?"
     r"|InvalidSignatureException|UnrecognizedClientException)\b"
@@ -1023,12 +1046,35 @@ def registration_rate_limited_error(base: str, cause: str) -> "AcpRegistrationRa
 
 # Account/plan capacity is EXHAUSTED — terminal. Distinct from a throttle: a
 # throttle clears in seconds and a retry is the right move, whereas a spent
-# monthly allowance does not come back until it resets, so retrying only adds
-# latency before the same rejection. Checked BEFORE the throttle branch because
-# some limit messages also carry rate-limit-ish wording.
+# allowance does not come back until it resets, so retrying only adds latency
+# before the same rejection. Checked BEFORE the throttle branch because some
+# limit messages also carry rate-limit-ish wording.
+#
+# Three vocabularies are covered, because a Claude seat (claude-agent-acp) does
+# not go through Bedrock and words its limits in Anthropic's own terms, not
+# AWS's:
+#   * The window-named limits every plan can hit: monthly / daily / weekly, plus
+#     Anthropic's rolling SESSION limit and its "5-hour" (a.k.a. five-hour) spelling
+#     of the same window. Anthropic's own wording is "5-hour limit reached -
+#     resets <time>", "You've reached your weekly limit. It resets ...", and
+#     "You've hit your session limit · resets <time>" — so the bare
+#     "<window> limit" phrase is the stable part and the reset clause is quoted
+#     verbatim by the formatter (_provider_detail), never parsed here.
+#   * The "reached / hit your [...] limit" phrasing, which carries the window in
+#     a word between the verb and "limit" ("reached your usage limit", "hit your
+#     session limit"); kept scoped to a trailing "limit" so it cannot swallow an
+#     unrelated sentence.
+#   * The named exceptions some backends raise (MonthlyLimitError,
+#     FreeTierLimitExceeded).
+# Anthropic's API `rate_limit_error` / HTTP 429 WITHOUT any of the limit wording
+# above is deliberately NOT matched here: a bare short-term rate limit clears on
+# its own and a retry is right, so it stays a throttle. It is the limit wording,
+# not the 429, that marks a SPENT allowance that a retry cannot recover.
 _RE_USAGE_LIMIT = re.compile(
-    r"\b(?:monthly|daily|weekly)\s+(?:usage\s+)?limit\b"
+    r"\b(?:monthly|daily|weekly|session)\s+(?:usage\s+)?limit\b"
+    r"|\b(?:5|five)[\s-]?hour\s+limit\b"
     r"|\busage\s+limit\s+has\s+been\s+reached\b"
+    r"|\b(?:reached|hit)\s+your\s+(?:\w+\s+){0,3}limit\b"
     r"|\b(?:MonthlyLimitError|FreeTierLimitExceeded)\b",
     re.IGNORECASE,
 )
@@ -1627,11 +1673,20 @@ def _format_acp_error_worded(
                 f"{req_id_suffix}"
             )
         elif _RE_THROTTLE_NAMED.search(haystack) or _RE_THROTTLE_GENERIC.search(haystack):
-            # Bedrock throttle / rate limit. Cover both AWS service exception
-            # names and the generic phrasing the ACP backend sometimes uses.
+            # Throttle / rate limit — distinct from a spent usage limit above,
+            # which was checked first. Covers both AWS service-exception names
+            # and the generic phrasing the ACP backend sometimes uses. WORDED BY
+            # BACKEND: only kiro-cli reaches the model through Bedrock, so only
+            # it names Bedrock (positive identity, _throttle_subject); every
+            # other harness gets neutral "the model provider" wording rather
+            # than being sent after AWS throttling it never touches. The verb
+            # stays "throttling" in both forms so llm_helpers._TRANSIENT_MARKERS
+            # ("throttl") still classifies the formatted message as transient —
+            # a throttle IS retryable, unlike the usage-limit branch.
             formatted = (
-                "Bedrock is throttling requests. Try: (1) wait a few seconds and "
-                "retry, or (2) switch to a different model in the picker (e.g. sonnet)."
+                f"{_throttle_subject(backend)} is throttling requests. Try: "
+                "(1) wait a few seconds and retry, or (2) switch to a different "
+                "model in the picker."
                 f"{req_id_suffix}"
             )
         elif is_credential_propagation_delay(haystack):
