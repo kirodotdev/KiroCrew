@@ -5961,8 +5961,17 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "Registros de fallo nuevos guardados en este equipo: {{n}}. Adjúntalos al informar del problema.",
       "dismiss": "Descartar",
+      "native_log_off": "El registro de la última vez no se pudo apartar, así que no se inició uno nuevo. Tus registros de fallos no se ven afectados. Si reportas el problema, esta información se añade a tu informe.",
+      "native_log_off_cause_error": "Detalle técnico: algo salió mal al procesar el registro anterior.",
+      "native_log_off_cause_not_regular_file": "Detalle técnico: el registro anterior no es un archivo normal y no se pudo eliminar.",
+      "native_log_off_cause_replace_failed": "Detalle técnico: no se pudo reemplazar el registro anterior.",
+      "native_log_off_cause_rotate_failed": "Detalle técnico: no se pudo mover el registro anterior para dejar sitio a uno nuevo.",
+      "native_log_off_cause_unknown": "Detalle técnico: no se registró la causa.",
+      "native_log_off_cause_unreadable": "Detalle técnico: no se pudo leer el registro anterior.",
+      "native_log_off_cause_unsupported_fs": "Detalle técnico: este sistema no pudo procesar el registro anterior.",
       "report_issue": "Reportar problema",
       "report_note": "La aplicación se cerró inesperadamente. Nuevos registros de fallos guardados en este equipo: {{n}}.",
+      "report_note_native_log_off": "El registro detallado de la aplicación no se pudo iniciar en la sesión de la que procede este informe, así que no contiene nada de esa sesión. Un archivo de registro dejado por una sesión anterior aún puede cubrir el fallo; revisa sus últimas marcas de tiempo antes de descartarlo.",
       "reveal_failed": "No se pudo abrir la carpeta: busca crashes.log en el directorio de registros de la aplicación.",
       "show_diagnostics": "Mostrar diagnósticos",
       "the_app_closed_unexpectedly": "La aplicación se cerró de forma inesperada"

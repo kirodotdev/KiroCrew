@@ -468,6 +468,7 @@ const ipcRegistrar = createIpcRegistrar({
   closeCrewCompanionForUpdate,
   reopenCrewCompanionAfterUpdate,
   crashScan: scanCrashArtifacts,
+  nativeLogStatus: () => nativeLogging,
   downloadExpectations,
   readInternalSecret,
 });

@@ -112,16 +112,24 @@ const {
   MAX_INSPECT_PER_RUN,
   MAX_PENDING_ATTEMPTS,
 } = require("./runtime/crash/scan");
+const { NATIVE_LOG_OFF_REASONS } = require("./native-logging");
 
 /**
  * The renderer-facing view of a scan.
  *
- * Deliberately narrow: ONE number. No paths, filenames, module names, exception
+ * Deliberately narrow: ONE number, plus at most one code saying the native file
+ * log was kept off this launch. No paths, filenames, module names, exception
  * codes, timestamps, or logs directory — all of which describe the machine (down
  * to the account name in a home directory) and none of which the notice needs.
  * A connection window pointed at a remote gateway shares this preload, so the
  * smaller this payload is, the less the sender gate has to carry. The detail
  * lives in `crashes.log`, which the user reveals and hands over deliberately.
+ *
+ * The code is the one extra field because it answers a question the count
+ * cannot: whether the `chromium.log` a reporter attaches was written during
+ * this launch. It is taken only from {@link NATIVE_LOG_OFF_REASONS}; anything
+ * else collapses to `unknown`, so the field can never carry a path or a log
+ * fragment, and the key is absent while the sink is armed.
  *
  * It carried `lastCrashAt` and `hasLog` too, until a review pointed out that no
  * consumer read either one: the banner's text is a count, and the reveal button
@@ -130,10 +138,16 @@ const {
  * because a crash is only counted once its line is durably on disk. Fields the
  * UI does not read are not free here: every one is another thing crossing the
  * boundary this channel's three gates exist to protect.
+ *
+ * @param {object|null} scan       A `collectCrashReports` result.
+ * @param {object|null} [nativeLog] The `initNativeLogging` result for this launch.
  */
-function crashNoticeSummary(scan) {
+function crashNoticeSummary(scan, nativeLog) {
   const newCrashes = (scan && scan.newCrashes) || [];
-  return { newCount: newCrashes.length };
+  const summary = { newCount: newCrashes.length };
+  const off = nativeLog && nativeLog.offReason;
+  if (off) summary.nativeLogOff = NATIVE_LOG_OFF_REASONS.includes(off) ? off : "unknown";
+  return summary;
 }
 
 module.exports = {

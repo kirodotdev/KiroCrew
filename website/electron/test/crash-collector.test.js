@@ -23,6 +23,7 @@ const {
   CRASH_STATE_BASENAME,
   MAX_CRASH_LOG_LINES,
 } = require("../crash-collector");
+const { NATIVE_LOG_OFF_REASONS } = require("../native-logging");
 
 // `path.normalize` here, not a bare literal: every file key below is built
 // with `path.join`, which on Windows collapses `/reports` to `\reports` — a
@@ -1269,6 +1270,59 @@ describe("crashNoticeSummary", () => {
 
   it("is safe on a scan that never ran", () => {
     assert.deepEqual(crashNoticeSummary(null), { newCount: 0 });
+  });
+
+  // The one extra fact the renderer is told: the native file sink was kept off for
+  // this launch, and which of a fixed set of causes did it.
+  it("adds why the native file log is off, as a code from the closed vocabulary", () => {
+    assert.deepEqual(crashNoticeSummary({ newCrashes: [{}] }, { offReason: "unreadable" }), {
+      newCount: 1,
+      nativeLogOff: "unreadable",
+    });
+    for (const reason of NATIVE_LOG_OFF_REASONS) {
+      assert.equal(
+        crashNoticeSummary({ newCrashes: [{}] }, { offReason: reason }).nativeLogOff,
+        reason,
+        `${reason} is part of the vocabulary and must pass through`,
+      );
+    }
+  });
+
+  it("leaves the summary a bare count while the sink is armed or the status is absent", () => {
+    for (const status of [undefined, null, {}, { offReason: null }, { offReason: "" }]) {
+      assert.deepEqual(
+        crashNoticeSummary({ newCrashes: [{}] }, status),
+        { newCount: 1 },
+        `status ${JSON.stringify(status)} must not add a key`,
+      );
+    }
+  });
+
+  it("never forwards a value outside the vocabulary: a path or a bulk string becomes unknown", () => {
+    const hostile = [
+      "/Users/alice/Library/Logs/chromium.log",
+      "C:\\Users\\alice\\chromium.log",
+      "x".repeat(10000),
+      "UNREADABLE",
+      42,
+      true,
+      { path: "/Users/alice" },
+      ["unreadable"],
+    ];
+    for (const offReason of hostile) {
+      const summary = crashNoticeSummary({ newCrashes: [{}] }, { offReason });
+      assert.equal(summary.nativeLogOff, "unknown");
+      const wire = JSON.stringify(summary);
+      assert.equal(wire.includes("alice"), false, "no path may cross to the renderer");
+      assert.ok(wire.length < 80, "no bulk value may cross to the renderer");
+    }
+  });
+
+  it("still reports the reason when the scan itself failed", () => {
+    assert.deepEqual(crashNoticeSummary(null, { offReason: "rotate-failed" }), {
+      newCount: 0,
+      nativeLogOff: "rotate-failed",
+    });
   });
 });
 

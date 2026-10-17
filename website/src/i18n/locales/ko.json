@@ -5759,8 +5759,17 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "이 컴퓨터에 새 크래시 기록 {{n}}개를 저장했습니다. 문제를 보고할 때 첨부해 주세요.",
       "dismiss": "닫기",
+      "native_log_off": "지난번 로그를 따로 옮겨 두지 못해 새 로그를 시작하지 않았습니다. 충돌 기록에는 영향이 없습니다. 문제를 신고하면 이 내용이 보고에 추가됩니다.",
+      "native_log_off_cause_error": "기술 세부 정보: 이전 로그를 처리하는 중에 문제가 발생했습니다.",
+      "native_log_off_cause_not_regular_file": "기술 세부 정보: 이전 로그가 일반 파일이 아니어서 삭제할 수 없었습니다.",
+      "native_log_off_cause_replace_failed": "기술 세부 정보: 이전 로그를 교체할 수 없었습니다.",
+      "native_log_off_cause_rotate_failed": "기술 세부 정보: 새 로그를 위한 공간을 마련하려고 이전 로그를 옮기지 못했습니다.",
+      "native_log_off_cause_unknown": "기술 세부 정보: 원인이 기록되지 않았습니다.",
+      "native_log_off_cause_unreadable": "기술 세부 정보: 이전 로그를 읽을 수 없었습니다.",
+      "native_log_off_cause_unsupported_fs": "기술 세부 정보: 이 시스템에서는 이전 로그를 처리할 수 없었습니다.",
       "report_issue": "문제 신고",
       "report_note": "앱이 예기치 않게 종료되었습니다. 이 기기에 저장된 새 충돌 기록: {{n}}개.",
+      "report_note_native_log_off": "이 보고를 작성한 세션에서는 앱의 상세 로그를 시작하지 못했으므로 그 세션의 내용은 로그에 없습니다. 이전 세션이 남긴 로그 파일에 이 충돌 내용이 아직 있을 수 있으니, 무시하기 전에 마지막 타임스탬프를 확인하세요.",
       "reveal_failed": "폴더를 열 수 없습니다. 앱의 로그 디렉터리에서 crashes.log를 확인하세요.",
       "show_diagnostics": "진단 정보 보기",
       "the_app_closed_unexpectedly": "앱이 예기치 않게 종료되었습니다"

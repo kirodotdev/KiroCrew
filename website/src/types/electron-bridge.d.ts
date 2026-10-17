@@ -78,7 +78,12 @@ declare global {
   }
 
   interface CrashReportsAPI {
-    get: () => Promise<{ newCount: number }>
+    /**
+     * `newCount` is the number of new crash records. `nativeLogOff` is present
+     * only when Chromium's file log was kept off for this launch, and is one of
+     * a fixed set of cause codes, never a path or log text.
+     */
+    get: () => Promise<{ newCount: number; nativeLogOff?: string }>
     reveal: () => Promise<{ ok: boolean; error?: string }>
   }
 

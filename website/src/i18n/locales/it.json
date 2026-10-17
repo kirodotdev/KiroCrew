@@ -5961,8 +5961,17 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "Nuovi record di arresto anomalo salvati su questo computer: {{n}}. Allegali quando segnali il problema.",
       "dismiss": "Ignora",
+      "native_log_off": "Non è stato possibile mettere da parte il log dell’ultima volta, quindi non ne è stato avviato uno nuovo. I tuoi registri di arresto anomalo non sono interessati. Se segnali il problema, questa informazione viene aggiunta alla tua segnalazione.",
+      "native_log_off_cause_error": "Dettaglio tecnico: si è verificato un problema durante l’elaborazione del log precedente.",
+      "native_log_off_cause_not_regular_file": "Dettaglio tecnico: il log precedente non è un file ordinario e non è stato possibile rimuoverlo.",
+      "native_log_off_cause_replace_failed": "Dettaglio tecnico: non è stato possibile sostituire il log precedente.",
+      "native_log_off_cause_rotate_failed": "Dettaglio tecnico: non è stato possibile spostare il log precedente per fare spazio a uno nuovo.",
+      "native_log_off_cause_unknown": "Dettaglio tecnico: la causa non è stata registrata.",
+      "native_log_off_cause_unreadable": "Dettaglio tecnico: non è stato possibile leggere il log precedente.",
+      "native_log_off_cause_unsupported_fs": "Dettaglio tecnico: questo sistema non è riuscito a elaborare il log precedente.",
       "report_issue": "Segnala un problema",
       "report_note": "L'app si è chiusa inaspettatamente. Nuovi registri di arresto anomalo salvati su questo computer: {{n}}.",
+      "report_note_native_log_off": "Non è stato possibile avviare il log dettagliato dell’app nella sessione da cui proviene questa segnalazione, quindi non contiene nulla di quella sessione. Un file di log lasciato da una sessione precedente potrebbe comunque coprire l’arresto anomalo: controlla i suoi ultimi timestamp prima di scartarlo.",
       "reveal_failed": "Impossibile aprire la cartella: cerca crashes.log nella directory dei log dell’app.",
       "show_diagnostics": "Mostra diagnostica",
       "the_app_closed_unexpectedly": "L’app si è chiusa in modo inaspettato"

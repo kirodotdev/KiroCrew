@@ -5759,8 +5759,17 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "已在本机保存 {{n}} 条新的崩溃记录。反馈问题时请一并附上。",
       "dismiss": "忽略",
+      "native_log_off": "上次的日志未能移到一旁，因此没有启动新的日志。崩溃记录不受影响。反馈问题时，这一信息会一并添加到反馈中。",
+      "native_log_off_cause_error": "技术细节：处理上一份日志时出现了问题。",
+      "native_log_off_cause_not_regular_file": "技术细节：上一份日志不是普通文件，且无法删除。",
+      "native_log_off_cause_replace_failed": "技术细节：无法替换上一份日志。",
+      "native_log_off_cause_rotate_failed": "技术细节：无法移动上一份日志来为新日志腾出位置。",
+      "native_log_off_cause_unknown": "技术细节：未记录原因。",
+      "native_log_off_cause_unreadable": "技术细节：无法读取上一份日志。",
+      "native_log_off_cause_unsupported_fs": "技术细节：此系统无法处理上一份日志。",
       "report_issue": "反馈问题",
       "report_note": "应用意外退出。本机新保存的崩溃记录：{{n}} 条。",
+      "report_note_native_log_off": "生成此反馈时，详细应用日志未能在当前会话中启动，因此其中没有该会话的任何内容。早先会话遗留的日志文件仍可能记录了此次崩溃，请先查看其最后时间戳，再决定是否忽略。",
       "reveal_failed": "无法打开文件夹——请在应用的日志目录中查找 crashes.log。",
       "show_diagnostics": "查看诊断文件",
       "the_app_closed_unexpectedly": "应用意外退出"

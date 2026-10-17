@@ -5759,8 +5759,17 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "この端末に新しいクラッシュ記録を {{n}} 件保存しました。問題を報告する際に添付してください。",
       "dismiss": "閉じる",
+      "native_log_off": "前回のログを退避できなかったため、新しいログは開始されませんでした。クラッシュ記録には影響しません。問題を報告すると、この情報が報告に追加されます。",
+      "native_log_off_cause_error": "技術的な詳細: 前回のログの処理中に問題が発生しました。",
+      "native_log_off_cause_not_regular_file": "技術的な詳細: 前回のログが通常のファイルではなく、削除できませんでした。",
+      "native_log_off_cause_replace_failed": "技術的な詳細: 前回のログを置き換えられませんでした。",
+      "native_log_off_cause_rotate_failed": "技術的な詳細: 新しいログの場所を空けるために、前回のログを移動できませんでした。",
+      "native_log_off_cause_unknown": "技術的な詳細: 原因は記録されていません。",
+      "native_log_off_cause_unreadable": "技術的な詳細: 前回のログを読み取れませんでした。",
+      "native_log_off_cause_unsupported_fs": "技術的な詳細: このシステムでは前回のログを処理できませんでした。",
       "report_issue": "問題を報告",
       "report_note": "アプリが予期せず終了しました。このマシンに保存された新しいクラッシュ記録: {{n}} 件。",
+      "report_note_native_log_off": "この報告を作成したセッションでは詳細なアプリログを開始できなかったため、そのセッションの内容は含まれていません。以前のセッションが残したログファイルが、クラッシュ時の記録をまだ含んでいる可能性があります。無視する前に、最後のタイムスタンプを確認してください。",
       "reveal_failed": "フォルダーを開けませんでした。アプリのログディレクトリにある crashes.log を確認してください。",
       "show_diagnostics": "診断情報を表示",
       "the_app_closed_unexpectedly": "アプリが予期せず終了しました"
