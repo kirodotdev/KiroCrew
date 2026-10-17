@@ -327,7 +327,7 @@ class WatchdogSettings:
     tool_stall_suspect_secs: float = 5400.0
     tool_stall_hard_cap_secs: float = 7200.0
     model_silent_probe_secs: float = 1800.0
-    remote_flat_probe_secs: float = 0.0
+    remote_flat_probe_secs: float = 900.0
     wellness_sample_secs: float = 3.0
     # Whether a per-agent watchdog_tool_stall_* override was applied to this
     # snapshot. Telemetry-only (the kirocrew.watchdog.action attr): a BOOLEAN,

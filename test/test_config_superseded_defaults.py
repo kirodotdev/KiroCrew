@@ -387,6 +387,23 @@ def test_the_decision_budget_row_says_adopting_is_bounded_by_consent():
     assert not row.meaning_moved
 
 
+def test_a_materialized_zero_remote_call_window_is_reported_and_stays_off(tmp_path, monkeypatch):
+    """0 is the remote-call window's off switch, so a stored 0 is reported as the
+    superseded default and keeps loading as 0 rather than being adopted."""
+    row = _row("watchdog.remote_flat_probe_secs")
+    assert (row.old_default, row.new_default, row.auto_adopt) == (0.0, 900.0, False)
+
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"watchdog": {"remote_flat_probe_secs": 0.0}})
+    assert superseded_default_drift(_on_disk(tmp_path)) == [row]
+    cfg = KiroCrewConfig.load()
+    assert cfg.watchdog.remote_flat_probe_secs == 0.0
+    assert _on_disk(tmp_path)["watchdog"]["remote_flat_probe_secs"] == 0.0
+
+    assert superseded_default_drift({"watchdog": {"remote_flat_probe_secs": 900.0}}) == []
+    assert superseded_default_drift({"watchdog": {"remote_flat_probe_secs": 1200.0}}) == []
+
+
 def test_v060_materialized_values_load_unchanged_and_are_named_once(tmp_path, monkeypatch, caplog):
     _point_home(tmp_path, monkeypatch)
     _write_config(tmp_path, _V060_MATERIALIZED)
@@ -1045,6 +1062,7 @@ def test_only_unpinned_broken_budgets_adopt_themselves():
         "watchdog.tool_stall_hard_cap_secs",
         "watchdog.model_silent_probe_secs",
         "agent.session_start_concurrency",
+        "watchdog.remote_flat_probe_secs",
     }
 
 

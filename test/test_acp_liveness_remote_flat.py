@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import json
 import struct
 import sys
 import time
@@ -540,8 +541,10 @@ def test_handle_declares_its_launch_roster_while_the_window_is_on():
 
 
 def test_handle_declares_no_roster_while_the_window_is_off():
-    """Off by default means no tag at all: the evidence and metric bucket stay put."""
-    handle = AcpSessionHandle("sA", asyncio.Queue(), MagicMock(), watchdog=WatchdogSettings())
+    """A 0 window means no tag at all: the evidence and metric bucket stay put."""
+    handle = AcpSessionHandle(
+        "sA", asyncio.Queue(), MagicMock(), watchdog=WatchdogSettings(remote_flat_probe_secs=0.0)
+    )
     handle.record_mcp_launches({"mcpServers": {"srv": {"command": "node"}}}, None)
 
     assert handle._oracle._launch_roster() is None
@@ -793,11 +796,59 @@ def test_remote_flat_has_its_own_metric_bucket():
     assert _watchdog_evidence_class(evidence) == "remote_flat"
 
 
-def test_remote_flat_narrowing_is_off_by_default():
-    """Opt-in: turning it on by default ships as a new default value, so an
-    operator who already set the key keeps exactly the seconds they set."""
-    assert WatchdogConfig().remote_flat_probe_secs == 0.0
-    assert WatchdogSettings().remote_flat_probe_secs == 0.0
+def test_remote_flat_narrowing_is_on_by_default_at_900():
+    """The scan reads only the in-flight tool's own server, so the window is safe
+    to run on every install; the key keeps meaning the seconds it is set to."""
+    assert WatchdogConfig().remote_flat_probe_secs == 900.0
+    assert WatchdogSettings().remote_flat_probe_secs == 900.0
+
+
+def _load_watchdog_from_file(tmp_path, monkeypatch, document: dict) -> WatchdogSettings:
+    """Load a real ``config.json`` and snapshot it the way a handle does."""
+    from kiro_crew.acp.session_handle import _load_watchdog_settings
+    from kiro_crew.config import loader as config_loader
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    base = tmp_path / "config.json"
+    base.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(config_loader, "config_path", lambda: base)
+    monkeypatch.setattr(config_loader, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(config_loader, "config_local_path", lambda: tmp_path / "config.local.json")
+    config_loader._invalidate_config_cache()
+    try:
+        cfg = KiroCrewConfig.load()
+    finally:
+        config_loader._invalidate_config_cache()
+    return _load_watchdog_settings(cfg=cfg)
+
+
+def test_an_unset_key_resolves_to_the_900_second_window(tmp_path, monkeypatch):
+    wd = _load_watchdog_from_file(tmp_path, monkeypatch, {"watchdog": {"stale_window_secs": 600.0}})
+    assert wd.remote_flat_probe_secs == 900.0
+
+    handle = AcpSessionHandle("sA", asyncio.Queue(), MagicMock(), watchdog=wd)
+    handle.record_mcp_launches({"mcpServers": {"srv": {"command": "node"}}}, None)
+    assert handle._oracle._launch_roster() == {"srv": (("node",),)}
+
+
+def test_a_stored_zero_still_turns_the_window_off(tmp_path, monkeypatch):
+    """0 is the off switch: no roster is declared, so the oracle never tags
+    ``remote_flat`` and the tool keeps the full tool-stall window."""
+    wd = _load_watchdog_from_file(
+        tmp_path, monkeypatch, {"watchdog": {"remote_flat_probe_secs": 0}}
+    )
+    assert wd.remote_flat_probe_secs == 0.0
+
+    handle = AcpSessionHandle("sA", asyncio.Queue(), MagicMock(), watchdog=wd)
+    handle.record_mcp_launches({"mcpServers": {"srv": {"command": "node"}}}, None)
+    assert handle._oracle._launch_roster() is None
+
+
+def test_an_operator_value_is_kept_as_set(tmp_path, monkeypatch):
+    wd = _load_watchdog_from_file(
+        tmp_path, monkeypatch, {"watchdog": {"remote_flat_probe_secs": 1200}}
+    )
+    assert wd.remote_flat_probe_secs == 1200.0
 
 
 # ── Watchdog window ──────────────────────────────────────────────────────────
