@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ntpath
 import os
+from pathlib import Path
 
 import pytest
 
@@ -41,7 +42,13 @@ def _aliases(path: str) -> list[str]:
 
 
 @pytest.fixture
-def windows(monkeypatch: pytest.MonkeyPatch) -> None:
+def windows(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    # Off Windows ``HOME`` is a RELATIVE name here, and the home overrides the suite
+    # isolates through are removed, so anything that writes under the home while this
+    # fixture holds (``config_dir()`` mkdirs ``~/.kiro/crew``; a teardown or a thread
+    # left over from an earlier test can call it) writes relative to the CWD. Pin the
+    # CWD to ``tmp_path`` so that write lands there, not in the repository root.
+    monkeypatch.chdir(tmp_path)
     for env in ("KIROCREW_HOME", "KIRO_HOME", "KIROCREW_OS_HOME", "XDG_CONFIG_HOME"):
         monkeypatch.delenv(env, raising=False)
     monkeypatch.setenv("HOME", HOME)
@@ -160,6 +167,14 @@ def test_without_the_fold_the_alias_spellings_are_allowed(
     """Mutation check: the fold is what refuses these, not some other candidate."""
     monkeypatch.setattr(security.paths, "_fold_windows_alias", lambda p: p)
     assert not security.is_sensitive_path(path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="HOME is a real absolute path on Windows")
+@pytest.mark.usefixtures("windows")
+def test_a_write_under_the_home_lands_in_tmp_path(tmp_path) -> None:
+    """The write ``config_dir()`` makes under the home stays out of the checkout."""
+    (Path.home() / ".kiro" / "crew").mkdir(parents=True)
+    assert (tmp_path / HOME / ".kiro" / "crew").is_dir()
 
 
 @pytest.mark.parametrize(
