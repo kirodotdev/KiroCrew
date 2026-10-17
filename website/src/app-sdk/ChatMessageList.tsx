@@ -71,6 +71,10 @@ export interface ChatMessageListProps {
    *  navigation would drop (ChatEmbed's composer draft) passes `false`.
    *  Default `true`. Renderers read it as `ctx.handOff`. */
   handOff?: boolean
+  /** Whether a tool row opens its input/output panel on click. Default
+   *  `true`; `false` leaves each tool row a status pill with no panel.
+   *  Renderers read it as `ctx.toolDetails`; a `renderTool` row ignores it. */
+  toolDetails?: boolean
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
   /** Open an artifact link in the host's side panel; see
    *  `MessageRenderContext.onArtifactOpen`. */
@@ -199,6 +203,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   onApproveBatch,
   canTrust,
   handOff = true,
+  toolDetails = true,
   onFileOpen,
   onArtifactOpen,
   onQuote,
@@ -349,13 +354,14 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       threads,
       hideCardOwnedOAuth,
       handOff,
+      toolDetails,
       autoDeniedIds,
       renderTool,
       wrapper,
       row,
     }
     return entry.render(m, ctx)
-  }, [versioned, running, contentWidth, onFileOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, activeRenderers])
+  }, [versioned, running, contentWidth, onFileOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers])
 
 
   // Render a TurnItem (single or group)

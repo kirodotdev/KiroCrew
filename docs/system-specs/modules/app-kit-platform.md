@@ -24,6 +24,28 @@ The slot key remains the header's hover title for debugging; `frameless` embeds
 have no title strip. `ChatEmbed.title.test.tsx` covers the delayed first read,
 fresh and resumed untitled pages, later title arrival and a slot change.
 
+## Embedded chat `hide`
+
+`ChatEmbed`'s `hide` prop takes `ChatEmbedHideKey` values (`header`, `attach`,
+`stop`, `queue`, `toolDetails`, `followUps`), a closed union exported from the
+SDK, so an unknown key is a type error. Each key gates the one place its part
+mounts in `ChatEmbed.tsx`, and a hidden part is not mounted. Hiding only
+removes:
+
+- `attach` passes through `useEmbedAttachments` as an ungranted host, so a
+  paste or drop is refused with the existing notice and never uploads, and the
+  upload grant check still decides the visible case.
+- `stop` removes Stop and its press hints; Send keeps its place and its
+  disabled-when-empty and queue-while-running rules.
+- `toolDetails` reaches `ChatMessageList`'s `toolDetails` prop and the render
+  context, so built-in tool rows draw `ToolCallPill` with `expandable={false}`:
+  no toggle, and an open panel closes. A host `renderTool` row is its own.
+- `header`, `queue` and `followUps` gate their strips; the sent message, the
+  queue and the options themselves are unchanged.
+
+No key grants a capability, and voice stays off. `ChatEmbed.hide.test.tsx`
+checks each key both ways and compiles the union against an unknown key.
+
 ## Scoped frontend HTTP transport
 
 `useAppApi()` exposes `raw(path, RequestInit)`, `request(path, RequestInit)` and

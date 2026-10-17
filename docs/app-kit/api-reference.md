@@ -127,6 +127,33 @@ shown as text, only as the header's hover tooltip.
 | `composerMaxHeight` | `number` (px) | `240` | Cap for the composer's auto-grow (see below). |
 | `onFileOpen` | `(path: string, opts?: { line?: number; endLine?: number }) => void` | none | Opens a file the transcript names; without it the tool-row file chip is hidden and path links stay plain (see below). |
 | `onArtifactOpen` | `(slug: string) => void` | none | Opens a saved artifact from a link in a reply; without it artifact links follow their href. |
+| `hide` | `readonly ChatEmbedHideKey[]` | none | Parts of the embed not to mount (see [Hiding parts](#hiding-parts)). |
+
+### Hiding parts
+
+`hide` removes parts of the embed. A hidden part is not mounted at all.
+
+```tsx
+import { ChatEmbed, type ChatEmbedHideKey } from '@kirocrew/app-sdk'
+
+const HIDE: ChatEmbedHideKey[] = ['header', 'stop', 'toolDetails']
+
+<ChatEmbed slotKey="coder-abc123" hide={HIDE} />
+```
+
+| Key | What goes away |
+|---|---|
+| `header` | The title strip. The same strip `frameless` drops, without changing the frame. |
+| `attach` | The attach button. A pasted or dropped file is refused with the same notice an app without the upload grant shows, so nothing is uploaded. |
+| `stop` | The Stop button and its hints. Send stays in its place: it is disabled while the draft is empty and queues a typed draft. The user then has no way to halt a running turn from the embed, so hide it only where the host offers its own stop or turns are short. |
+| `queue` | The queued-message cards above the composer. A message sent while the agent works is still queued; it shows once the turn reaches it. Until then nothing in the embed shows it was kept, so a user may send it again; hide it only where the host shows its own pending state or sends while idle. |
+| `toolDetails` | The panel a tool row opens on click. Each tool row stays as a status pill. An open panel closes when the key is added. |
+| `followUps` | The follow-up suggestion chips above the composer. |
+
+Any other string is a type error. Hiding only removes: it never shows a part
+the app has no grant for (`attach` still needs `/api/upload/file`, approvals
+still need `/api/chat`), and voice input stays off either way. The transcript
+and the message box cannot be hidden.
 
 ### Required permissions and limitations
 

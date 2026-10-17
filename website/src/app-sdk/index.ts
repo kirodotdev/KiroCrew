@@ -481,6 +481,8 @@ export { default as ChatPanel } from './ChatPanel'
 // `[STEERING …]` without rendering our transcript components.
 export * from './protocol'
 export { default as ChatEmbed } from './ChatEmbed'
+// The keys `ChatEmbed`'s `hide` prop accepts; any other string is a type error.
+export type { ChatEmbedHideKey } from './chatEmbedHide'
 export { default as ChatMessageList } from './ChatMessageList'
 // The transcript's row registry, so an app can add a row type or replace one
 // instead of forking the message list.

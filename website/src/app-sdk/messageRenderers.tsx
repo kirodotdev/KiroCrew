@@ -101,6 +101,10 @@ export interface MessageRenderContext {
   handOff?: boolean
   /** tool_call_ids whose call a policy or hook blocked. */
   autoDeniedIds: Set<string>
+  /** Whether a tool row opens its input/output panel on click. Absent =
+   *  `true`; `false` draws the bare status pill (ChatEmbed's
+   *  `hide={['toolDetails']}`). A `renderTool` row is the host's own. */
+  toolDetails?: boolean
   /** Host-injected tool row, kept as a shorthand for replacing the tool entries. */
   renderTool?: (message: ChatMessage) => React.ReactNode
   /** Reply threads on this transcript's messages (a crewmate's chat). Absent
@@ -192,8 +196,10 @@ const TOOL_PANEL_COLLAPSED_CHARS = 800
  */
 const TOOL_PANEL_EXPANDED_MAX_H = 'max-h-[500px]'
 
-/** Prop-driven tool row. The store-connected variant is a host entry. */
-export const ToolCallPill = memo(function ToolCallPill({ message, running, onFileOpen, autoDenied, askAgent = true }: { message: ChatMessage; running: boolean; onFileOpen?: (path: string) => void; autoDenied?: boolean; askAgent?: boolean }) {
+/** Prop-driven tool row. The store-connected variant is a host entry.
+ *  `expandable={false}` draws the pill as a plain status label: no toggle and
+ *  no input/output panel. */
+export const ToolCallPill = memo(function ToolCallPill({ message, running, onFileOpen, autoDenied, askAgent = true, expandable = true }: { message: ChatMessage; running: boolean; onFileOpen?: (path: string) => void; autoDenied?: boolean; askAgent?: boolean; expandable?: boolean }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [expanded, setExpanded] = React.useState(false)
   // Second axis, deliberately separate from `expanded`: the pill toggles whether
@@ -214,7 +220,7 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
   const isRejected = isRejectedDecision(message.meta?.resolved)
   const hasPendingPerm = message.role === 'permission' && !message.meta?.resolved
   // A running or opened pill never folds into its turn's fold (rowActivity).
-  useReportRowActive(!isDone || hasPendingPerm || expanded)
+  useReportRowActive(!isDone || hasPendingPerm || (expandable && expanded))
 
   // Prefer the backend-stamped purpose ("Add teams_data dict guard…") over the
   // raw command, matching the main chat. The raw label is the fallback, and is
@@ -338,16 +344,33 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
         ? i18nT('appSdk.chatMessageList.copy_input_and_output')
         : i18nT('appSdk.chatMessageList.copy')
 
+  const pillBody = (
+    <>
+      <Icon size={12} className={iconClass} />
+      <span className="truncate">{label}</span>
+    </>
+  )
+
+  // The two pill shapes repeat their classes inline: a class string held in a
+  // variable is read as copy by the i18n gate.
   return (
     <div className="animate-scale-in flex items-center gap-2 flex-wrap">
-      <button
-        onClick={() => setExpanded(e => !e)}
-        aria-expanded={expanded}
-        className={`inline-flex items-center gap-2 text-[13px] leading-5 font-mono px-2 py-0.5 rounded-md cursor-pointer transition-all max-w-[min(600px,90%)] hover:brightness-110 ${tone}`}
-      >
-        <Icon size={12} className={iconClass} />
-        <span className="truncate">{label}</span>
-      </button>
+      {expandable ? (
+        <button
+          onClick={() => setExpanded(e => !e)}
+          aria-expanded={expanded}
+          className={`inline-flex items-center gap-2 text-[13px] leading-5 font-mono px-2 py-0.5 rounded-md cursor-pointer transition-all max-w-[min(600px,90%)] hover:brightness-110 ${tone}`}
+        >
+          {pillBody}
+        </button>
+      ) : (
+        <span
+          className={`inline-flex items-center gap-2 text-[13px] leading-5 font-mono px-2 py-0.5 rounded-md transition-all max-w-[min(600px,90%)] ${tone}`}
+          data-testid="tool-pill-static"
+        >
+          {pillBody}
+        </span>
+      )}
       {filePath && onFileOpen && (
         <button
           onClick={() => onFileOpen(filePath)}
@@ -359,7 +382,9 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
           <PanelRight size={11} />
         </button>
       )}
-      {expanded && (hasPayload || message.content) && (
+      {/* Gated on `expandable` too, not only through the missing toggle: a
+          host that turns details off while a panel is open must close it. */}
+      {expandable && expanded && (hasPayload || message.content) && (
         <div className="w-full mt-1 ml-4" data-testid={hasPayload ? 'tool-pill-details' : undefined}>
           {/* Not `compact`: that form caps the payload at 160px, which is what
               the main transcript reserves for the composer's approval mirror.
@@ -448,7 +473,7 @@ function toolRow(m: ChatMessage, ctx: MessageRenderContext, autoDenied?: boolean
   return ctx.row(
     ctx.renderTool
       ? ctx.renderTool(m)
-      : <ToolCallPill message={m} running={ctx.running} onFileOpen={ctx.onFileOpen} autoDenied={autoDenied} askAgent={ctx.handOff !== false} />,
+      : <ToolCallPill message={m} running={ctx.running} onFileOpen={ctx.onFileOpen} autoDenied={autoDenied} askAgent={ctx.handOff !== false} expandable={ctx.toolDetails !== false} />,
     true,
   )
 }
