@@ -318,8 +318,21 @@ export function useComposerSend({
     // restores (fork GPT review): a queued send cancelled after this clear
     // restored text + chips whose mentions reconciliation could no longer
     // see -- hand-deleting one left a stale chip that the next send silently
-    // re-attached.
-    const sentSlotTokens = !isolated && !optionText && uiSlot ? pickedFileTokens.current[uiSlot] : undefined
+    // re-attached. On the optionText path the live map is mutated in place
+    // below (only the SENT paths are dropped, since the draft survives), so
+    // snapshot a COPY of just those paths' aliases here -- a reference would be
+    // emptied by that delete before a recovery path could re-merge it. The
+    // `!optionText` path keeps the whole map by reference: it deletes the slot
+    // KEY, leaving the referenced object intact for the merge.
+    const sentSlotTokens = !isolated && uiSlot
+      ? (!optionText
+          ? pickedFileTokens.current[uiSlot]
+          : (stagedFilesAtSend.length && pickedFileTokens.current[uiSlot]
+              ? Object.fromEntries(stagedFilesAtSend
+                  .filter(p => pickedFileTokens.current[uiSlot]![p])
+                  .map(p => [p, pickedFileTokens.current[uiSlot]![p]]))
+              : undefined))
+      : undefined
     if (!isolated && !optionText) {
       // Drops only THIS slot's own token sub-map (`pickedFileTokens` is
       // slot-scoped -- see useFileMentionTokens), never another slot's: a
@@ -331,6 +344,32 @@ export function useComposerSend({
       // sent, clear the seed so a later slot-restore can't re-fill the (now
       // empty) composer with the already-sent text.
       try { sessionStorage.removeItem(PREFILL_STORAGE_KEY) } catch { /* sessionStorage unavailable */ }
+    } else if (!isolated && stagedFilesAtSend.length) {
+      // An optionText send (a follow-up chip's Send-now / double-click, or a
+      // decision-card choice) skips the full clear above so it does not wipe the
+      // user's TYPED draft -- the forceNew/autoSend path reuses send(optionText)
+      // and that draft must survive. But staged attachments ARE consumed and
+      // transmitted on this path exactly as on a normal send (`sentFiles` ->
+      // buildOutgoingTurn -> meta, all ungated on optionText), so leaving them
+      // staged re-attaches the same media to the NEXT human turn. Clear only
+      // what this send actually carried, plus its slot-scoped file-token and
+      // file-draft bookkeeping, and leave the typed text, pastes and session
+      // refs untouched.
+      const sent = new Set(stagedFilesAtSend)
+      setPendingFiles(prev => prev.filter(p => !sent.has(p)))
+      if (uiSlot) {
+        // Drop only the SENT paths' aliases, not the whole slot map: the typed
+        // draft survives this branch, so an alias for a file NOT in this send
+        // (e.g. a mention the user hand-deleted that undo could revive) must
+        // stay. `sentSlotTokens` captured the pre-delete map above, so the
+        // create-failure and queued-cancel recovery paths still re-merge the
+        // sent files' aliases and keep their restored chips reconcilable with
+        // the surviving draft text.
+        const m = pickedFileTokens.current[uiSlot]
+        if (m) for (const p of sent) delete m[p]
+        const draft = fileDrafts.current[uiSlot]
+        if (draft) { setFileDraft(fileDrafts.current, uiSlot, draft.filter(p => !sent.has(p))); saveDrafts() }
+      }
     }
     // Target the slot the user is actually looking at (uiSlot, from the ref),
     // not the stale closure `activeSlot`. See the uiSlot note above.
