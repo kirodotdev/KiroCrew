@@ -1149,7 +1149,7 @@ const dashboardSlice = createSlice({
     // is keyed by URL and may touch any slot that links that PR.
     patchSlotSourceLinks(
       state,
-      action: PayloadAction<{ url: string; state?: NonNullable<ChatSlot['source_links']>[number]['state']; ci?: NonNullable<ChatSlot['source_links']>[number]['ci'] }>,
+      action: PayloadAction<{ url: string; state?: NonNullable<ChatSlot['source_links']>[number]['state']; ci?: NonNullable<ChatSlot['source_links']>[number]['ci']; ciPending?: string }>,
     ) {
       const { url } = action.payload
       if (!url) return
@@ -1159,7 +1159,14 @@ const dashboardSlice = createSlice({
         for (const link of slot.source_links) {
           if (link.url !== url) continue
           if (action.payload.state !== undefined) { link.state = action.payload.state; touched = true }
-          if (action.payload.ci !== undefined) { link.ci = action.payload.ci; touched = true }
+          if (action.payload.ci !== undefined) {
+            link.ci = action.payload.ci
+            // The marker describes the same rollup as `ci`, so a delta that
+            // carries `ci` without it means nothing is still running.
+            if (action.payload.ciPending) link.ciPending = action.payload.ciPending
+            else delete link.ciPending
+            touched = true
+          }
         }
         // A row that links no matching URL was not written, so it is not stamped
         // — otherwise one delta would outrank a reply for every slot on screen.

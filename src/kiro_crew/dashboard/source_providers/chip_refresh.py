@@ -336,7 +336,7 @@ async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None
         # `checks` section: a degraded read must not erase a glyph the cache
         # already knows — but a SUCCESSFUL rollup with zero checks (no marker)
         # must still be allowed to clear a stale one.
-        status = {**status, "ci": previous[1]["ci"]}
+        status = chip_status.carry_known_ci(status, previous[1])
     # Re-read the cache AFTER the provider await. The turn-boundary design makes
     # a concurrent full fetch the COMMON case: on `chat_done` the client
     # invalidates the detail payload (starting a full fetch) at the same moment
@@ -437,15 +437,28 @@ async def _fetch_check_status(url: str) -> dict[str, str] | None:
             raise plugins._plugin_setup_error(plugin, exc) from exc
         if not isinstance(status, dict):
             return None
-        # Same redaction and key discipline as a built-in read: only the two
-        # fields the chip renders survive, and each must be a short string.
+        # Same redaction and key discipline as a built-in read: only the fields
+        # the chip renders survive, and each must be a short string.
+        # ``ciPending`` survives only for a provider in ``CI_PENDING_PROVIDERS``,
+        # the providers ``status_from_full_payload`` projects it for, so the
+        # chip read and the write-through agree; for any other plugin it is
+        # dropped.
         projected = sanitize._redact_provider_data(
             {
                 key: value
                 for key, value in status.items()
-                if key in {"ci", "state"} and isinstance(value, str) and len(value) <= 32
+                if key in {"ci", "state", projection.CI_PENDING_KEY}
+                and isinstance(value, str)
+                and len(value) <= 32
             }
         )
+        # The marker only means something beside a failed rollup.
+        if (
+            plugin.id not in projection.CI_PENDING_PROVIDERS
+            or projected.get("ci") != "failed"
+            or projected.get(projection.CI_PENDING_KEY) != "1"
+        ):
+            projected.pop(projection.CI_PENDING_KEY, None)
         return projected or None
     if ref.provider == "github":
         # The rollup is read separately from the core fields: `gh` resolves a
@@ -491,10 +504,7 @@ async def _fetch_check_status(url: str) -> dict[str, str] | None:
                 # `_github_rollup_read`), so the chip glyph cannot disagree
                 # with the panel's own rollup — a superseded CANCELLED row must
                 # not paint either red.
-                buckets = [check["bucket"] for check in checks]
-                ci = projection._rollup_ci(buckets)
-                if ci is not None:
-                    result["ci"] = ci
+                projection._record_ci(result, checks)
         raw_state = str(data.get("state") or "").upper()
         state = projection._project_state(raw_state, draft=bool(data.get("isDraft")))
         if state is not None:
