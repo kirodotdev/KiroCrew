@@ -26,8 +26,7 @@ class TestApiChatDrainOnDisconnect:
         async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
             assert _directive_user_origin is True
             sl.append("chunk", "partial answer", "chunk")
-            # flake-ok: the fake turn parks here until the disconnect cancels it
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the fake turn parks here until the disconnect cancels it
+            # nosemgrep: kirocrew.test-sleep-as-barrier -- not a barrier: the fake turn parks here until the disconnect cancels it; nothing waits on this sleep
             await asyncio.sleep(60)
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
@@ -45,9 +44,12 @@ class TestApiChatDrainOnDisconnect:
                     break
 
             resp.close()
-            # flake-ok: the SSE handler's finally block drains after the close and sets no signal to await
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the SSE handler's finally block drains after the close and sets no signal to await
-            await asyncio.sleep(0.1)
+            # The SSE handler's finally block drains after the close and sets no
+            # signal to await, so poll the drained state the asserts below check.
+            await async_wait_until(
+                lambda: slot._pending == [] and slot._has_reader is False,
+                describe=lambda: f"_pending={slot._pending!r} _has_reader={slot._has_reader!r}",
+            )
 
         assert slot._pending == []
         assert slot._has_reader is False
@@ -86,9 +88,12 @@ class TestApiChatMemoryModeForwarding:
             async for _chunk in resp.content.iter_any():
                 break  # only need to drive slot creation
             resp.close()
-            # flake-ok: the closed request's handler sets no signal to await before the slot is read
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the closed request's handler sets no signal to await before the slot is read
-            await asyncio.sleep(0.05)
+            # The closed request's handler sets no signal before it creates the
+            # slot, so poll until the auto-created slot appears.
+            await async_wait_until(
+                lambda: state._slots.get("agentrock-skill-1") is not None,
+                describe=lambda: f"slots={list(state._slots)}",
+            )
 
         slot = state._slots.get("agentrock-skill-1")
         assert slot is not None
@@ -113,9 +118,12 @@ class TestApiChatMemoryModeForwarding:
             async for _chunk in resp.content.iter_any():
                 break
             resp.close()
-            # flake-ok: the closed request's handler sets no signal to await before the slot is read
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the closed request's handler sets no signal to await before the slot is read
-            await asyncio.sleep(0.05)
+            # The closed request's handler sets no signal before it creates the
+            # slot, so poll until the auto-created slot appears.
+            await async_wait_until(
+                lambda: state._slots.get("default-slot") is not None,
+                describe=lambda: f"slots={list(state._slots)}",
+            )
 
         slot = state._slots.get("default-slot")
         assert slot is not None
@@ -144,9 +152,12 @@ class TestApiChatMemoryModeForwarding:
             async for _chunk in resp.content.iter_any():
                 break
             resp.close()
-            # flake-ok: the closed request's handler sets no signal to await before the slot is read
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the closed request's handler sets no signal to await before the slot is read
-            await asyncio.sleep(0.05)
+            # The closed request's handler sets no signal before it creates the
+            # slot, so poll until the auto-created slot appears.
+            await async_wait_until(
+                lambda: state._slots.get("garbage-mode-slot") is not None,
+                describe=lambda: f"slots={list(state._slots)}",
+            )
 
         slot = state._slots.get("garbage-mode-slot")
         assert slot is not None

@@ -46,8 +46,7 @@ class TestRegenerateAndVariants:
 
         # Simulate running task
         async def _noop():
-            # flake-ok: a stand-in task that keeps the slot busy; nothing waits on it
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- a stand-in task that keeps the slot busy; nothing waits on it
+            # nosemgrep: kirocrew.test-sleep-as-barrier -- not a barrier: a stand-in task that keeps the slot busy; nothing waits on this sleep
             await asyncio.sleep(10)
 
         slot.task = asyncio.create_task(_noop())
@@ -276,8 +275,7 @@ class TestRegenerateAndVariants:
         ]
 
         async def _noop():
-            # flake-ok: a stand-in task that keeps the slot busy; nothing waits on it
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- a stand-in task that keeps the slot busy; nothing waits on it
+            # nosemgrep: kirocrew.test-sleep-as-barrier -- not a barrier: a stand-in task that keeps the slot busy; nothing waits on this sleep
             await asyncio.sleep(10)
 
         slot.task = asyncio.create_task(_noop())
@@ -480,8 +478,7 @@ class TestRegenerateAndVariants:
         slot.drain()
 
         async def _hang(*a, **kw):
-            # flake-ok: the stubbed turn hangs so the request finds a turn in flight
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed turn hangs so the request finds a turn in flight
+            # nosemgrep: kirocrew.test-sleep-as-barrier -- not a barrier: the stubbed turn hangs so the request finds a turn in flight; nothing waits on this sleep
             await asyncio.sleep(999)
 
         with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_hang):
@@ -539,8 +536,7 @@ class TestRegenerateAndVariants:
         slot.drain()
 
         async def _hang(*a, **kw):
-            # flake-ok: the stubbed turn hangs so the request finds a turn in flight
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed turn hangs so the request finds a turn in flight
+            # nosemgrep: kirocrew.test-sleep-as-barrier -- not a barrier: the stubbed turn hangs so the request finds a turn in flight; nothing waits on this sleep
             await asyncio.sleep(999)
 
         with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_hang):
