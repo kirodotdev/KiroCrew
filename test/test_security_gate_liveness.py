@@ -372,7 +372,16 @@ def _url_payload_command(n: int) -> str:
 #: stall still refuses everywhere it did; only the words a refused agent reads moved.
 #: The prefix is named only while its cooldown is open, since most stall raises never
 #: charge it.
-_PACKAGE_LINE_BUDGET = 29_607
+#:
+#: Raised again, from 29,607, for the split of ``__init__.py`` and ``shell_normalizer.py``
+#: under the 2,000-line cap. No rule, pattern or pass changed, and every moved definition
+#: keeps its syntax tree but one docstring's wording. The 457 lines are glue only:
+#: 205 are the eight new modules' docstrings and imports; 85 are
+#: ``shell_normalizer.py``'s re-imports of the names its callers import from it and the
+#: docstring naming its owners; 146 are the facade's ``_EXPORTS`` and
+#: ``TYPE_CHECKING`` rows for the moved names and the owner import at its foot; and
+#: 21 are the moved privates added to the frozen manifest.
+_PACKAGE_LINE_BUDGET = 30_064
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
