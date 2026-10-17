@@ -29,7 +29,11 @@ export function useForkSession({
   activeSlot, dispatch, showActionError,
 }: ForkSessionOptions) {
   const { data: forkCfg } = useQuery<{ tail_fork_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
-  const handleFork = useCallback(async (visibleIndex: number, messageId?: string) => {
+  // While Tail-only Fork is on the plain entry forks the tail, so the menu also offers a fork with
+  // history; with it off the plain entry already forks with history. A primitive, so it can sit in
+  // the transcript renderer's dependency list.
+  const forkDirectionChoice = forkCfg?.tail_fork_enabled === true
+  const handleFork = useCallback(async (visibleIndex: number, messageId?: string, explicitDirection?: 'head') => {
     if (!activeSlot) return
     let direction: 'head' | 'tail' = 'head' // hoisted so the catch advises the same way
     try {
@@ -45,7 +49,8 @@ export function useForkSession({
       // — which would downgrade an intended tail-fork to a head-fork whenever
       // the query has errored or settled with no data, not just while loading.
       const resolvedCfg = forkCfg ?? await api.dashboardConfig()
-      direction = resolvedCfg?.tail_fork_enabled ? 'tail' : 'head'
+      // A direction named by a menu entry wins; a plain fork follows the setting.
+      direction = explicitDirection ?? (resolvedCfg?.tail_fork_enabled ? 'tail' : 'head')
       const result = await dispatch(forkSlot({ slot: activeSlot, atIndex: visibleIndex, messageId, direction })).unwrap()
       if (result.ok) {
         await dispatch(switchSlot(result.key))
@@ -58,7 +63,7 @@ export function useForkSession({
     }
   }, [activeSlot, dispatch, forkCfg, showActionError])
   return {
-    handleFork,
+    handleFork, forkDirectionChoice,
   }
 }
 

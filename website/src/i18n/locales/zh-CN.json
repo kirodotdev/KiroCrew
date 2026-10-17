@@ -11119,6 +11119,11 @@
         "needs_active_chat": "此对话完成打开后可用",
         "needs_earlier_history_count_other": "选择以加载更早的历史记录 — 还剩 {{count}} 条更早的消息",
         "share_message": "分享为图片",
+        "fork_with_history": "带更早的消息分叉",
+        "fork_later_messages_only": "仅带之后的消息分叉",
+        "fork_with_history_hint": "用此消息及之前的消息开始新对话。当前对话保持不变。",
+        "fork_later_messages_only_hint": "仅用此消息之后的消息开始新对话，不含此消息。当前对话保持不变。",
+        "fork_no_later_messages": "此消息之后还没有消息。",
         "copy_failed": "复制失败",
         "quote_message": "引用消息"
       },

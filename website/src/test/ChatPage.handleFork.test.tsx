@@ -83,12 +83,12 @@ function useHandleForkUnderTest(store: ReturnType<typeof makeStore>) {
   const { data: forkCfg } = useQuery<{ tail_fork_enabled?: boolean }>({
     queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000,
   })
-  return async (activeSlot: string, visibleIndex: number, messageId?: string) => {
+  return async (activeSlot: string, visibleIndex: number, messageId?: string, explicitDirection?: 'head') => {
     // forkCfg is undefined until the dashboardConfig query resolves for the
     // first time. Use the cache when warm; otherwise fetch a fresh value
     // directly so direction never silently falls back to an undefined config.
     const resolvedCfg = forkCfg ?? await api.dashboardConfig()
-    const direction = resolvedCfg?.tail_fork_enabled ? 'tail' : 'head'
+    const direction = explicitDirection ?? (resolvedCfg?.tail_fork_enabled ? 'tail' : 'head')
     return store.dispatch(forkSlot({ slot: activeSlot, atIndex: visibleIndex, messageId, direction })).unwrap()
   }
 }
@@ -144,6 +144,17 @@ describe('handleFork direction wiring (zejiangg #5)', () => {
     expect(forkChatSlotMock).toHaveBeenCalledWith(
       'chat-1-100', 7, undefined, undefined, 'head', 'row-42',
     )
+  })
+
+  it('lets the direction named by the menu entry win over tail_fork_enabled', async () => {
+    dashboardConfigMock.mockResolvedValue({ tail_fork_enabled: true })
+    const store = makeStore()
+    const { result } = renderHook(() => useHandleForkUnderTest(store), { wrapper: makeWrapper(store) })
+
+    await waitFor(() => expect(dashboardConfigMock).toHaveBeenCalled())
+    await result.current('chat-1-100', 7, 'row-42', 'head')
+
+    expect(forkChatSlotMock).toHaveBeenCalledWith('chat-1-100', 7, undefined, undefined, 'head', 'row-42')
   })
 })
 

@@ -11119,6 +11119,11 @@
         "needs_active_chat": "このチャットを開き終えると利用できます",
         "needs_earlier_history_count_other": "選択すると以前の履歴を読み込みます（残り{{count}}件）",
         "share_message": "画像として共有",
+        "fork_with_history": "以前のメッセージ付きでフォーク",
+        "fork_later_messages_only": "後のメッセージだけでフォーク",
+        "fork_with_history_hint": "このメッセージとそれ以前のメッセージで新しい会話を始めます。この会話は変更されません。",
+        "fork_later_messages_only_hint": "このメッセージより後のメッセージだけで新しい会話を始めます。このメッセージは含まれません。この会話は変更されません。",
+        "fork_no_later_messages": "このメッセージより後のメッセージはまだありません。",
         "copy_failed": "コピーに失敗しました",
         "quote_message": "メッセージを引用"
       },

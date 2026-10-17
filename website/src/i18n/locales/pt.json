@@ -11443,6 +11443,11 @@
         "needs_earlier_history_count_many": "Selecione para carregar o histórico anterior: restam {{count}} mensagens anteriores",
         "needs_earlier_history_count_other": "Selecione para carregar o histórico anterior: restam {{count}} mensagens anteriores",
         "share_message": "Compartilhar como imagem",
+        "fork_with_history": "Bifurcar com as mensagens anteriores",
+        "fork_later_messages_only": "Bifurcar só com as mensagens posteriores",
+        "fork_with_history_hint": "Inicia uma nova conversa com esta mensagem e as anteriores. Esta conversa não é alterada.",
+        "fork_later_messages_only_hint": "Inicia uma nova conversa só com as mensagens posteriores a esta, sem esta mensagem. Esta conversa não é alterada.",
+        "fork_no_later_messages": "Ainda não há mensagens depois desta.",
         "copy_failed": "Falha ao copiar",
         "quote_message": "Citar mensagem"
       },

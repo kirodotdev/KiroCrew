@@ -11281,6 +11281,11 @@
         "needs_earlier_history_count_one": "Auswählen, um früheren Verlauf zu laden – noch {{count}} frühere Nachricht",
         "needs_earlier_history_count_other": "Auswählen, um früheren Verlauf zu laden – noch {{count}} frühere Nachrichten",
         "share_message": "Als Bild teilen",
+        "fork_with_history": "Mit früheren Nachrichten verzweigen",
+        "fork_later_messages_only": "Nur mit späteren Nachrichten verzweigen",
+        "fork_with_history_hint": "Startet eine neue Unterhaltung mit dieser und allen früheren Nachrichten. Diese Unterhaltung bleibt unverändert.",
+        "fork_later_messages_only_hint": "Startet eine neue Unterhaltung nur mit den Nachrichten nach dieser, ohne diese Nachricht. Diese Unterhaltung bleibt unverändert.",
+        "fork_no_later_messages": "Nach dieser Nachricht gibt es noch keine Nachrichten.",
         "copy_failed": "Kopieren fehlgeschlagen",
         "quote_message": "Nachricht zitieren"
       },
