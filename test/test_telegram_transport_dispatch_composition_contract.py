@@ -843,7 +843,7 @@ async def test_a_facade_patch_reaches_each_moved_reader(monkeypatch: pytest.Monk
     owners read, each answered by the facade's stand-in. The turn engine's facade reads
     (``TurnDriver``, ``TelegramRenderer``, ``Stats``, ``cleanup_attachments``,
     ``publish_turn_identity``) are driven through whole turns by test_telegram.py,
-    test_telegram_parity.py and test_close_guard_parity.py, which patch them on the facade."""
+    test_telegram_parity_turns.py and test_close_guard_parity.py, which patch them on the facade."""
     reached: list[str] = []
 
     rows: list[dict[str, Any]] = []

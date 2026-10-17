@@ -344,7 +344,7 @@
  2 test_taskrunner_execution_capture_async.py
  2 test_taskrunner_execution_context.py
  3 test_telegram_album.py
- 1 test_telegram_parity.py
+ 1 test_telegram_parity_inbound.py
  1 test_telegram_turn_lifecycle.py
  1 test_terminal_commands.py
  1 test_terminal_ctty_shim.py

@@ -229,8 +229,6 @@
 3177 test/test_subagent_scale.py
 2820 test/test_subagent_turn_resilience.py
 2460 test/test_taskq_runner_adapter.py
-5921 test/test_taskrunner.py
-6082 test/test_telegram_parity.py
 8129 test/test_terminal_handler.py
 4193 test/test_transcribe.py
 5831 test/test_vector_memory.py

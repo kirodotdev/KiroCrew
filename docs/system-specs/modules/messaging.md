@@ -51,7 +51,7 @@ legacy metadata do not override a canonical execution.
 > already point at sub-commands that are not registered. A channel may have ALIASES
 > (several spellings resolving to one canonical command name), which is a different
 > thing: an alias does not tell the user to type something else. Pinned by
-> `test/test_telegram_parity.py::TestNoChannelLocalGrantOrRedirectSeam`.
+> `test/test_telegram_parity_approvals.py::TestNoChannelLocalGrantOrRedirectSeam`.
 
 | File | Purpose |
 |------|---------|
@@ -3058,7 +3058,7 @@ that had just promised not to. Telegram's `_handle_title` now gates on
 `/title`. The predicate is the channel's in-process tracker and NOT the transcript's
 `memory_mode` header alone. Both dashboard and channel Incognito/Temporary
 sessions suppress Crew transcript/body persistence; the canonical execution
-carrier supplies privacy to child work before dispatch. `test_telegram_parity.py`
+carrier supplies privacy to child work before dispatch. `test_telegram_parity_privacy.py`
 enumerates the title writes in every dispatcher that reaches `privacy_mode` and
 requires each to consult the predicate — scoped that way because the eight channels
 that do not offer the modes have no session that can BE restricted.
