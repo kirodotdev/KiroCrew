@@ -130,6 +130,7 @@ async def api_instances_list(request: web.Request) -> web.Response:
     # connection order. Registered crews cannot race, and the count rises by
     # itself when a crew is added.
     eligible = len(items)
+    instances_cfg = KiroCrewConfig.load().instances
     _audit("list", "success")
     return web.json_response(
         {
@@ -140,9 +141,10 @@ async def api_instances_list(request: web.Request) -> web.Response:
             # active, the UI shows a "restart the gateway to activate" hint.
             "active": getattr(state, "instances_manager", None) is not None,
             "instances": items,
-            "warm_set_cap": resolve_warm_set_cap(
-                KiroCrewConfig.load().instances.warm_set_cap, eligible
-            ),
+            "warm_set_cap": resolve_warm_set_cap(instances_cfg.warm_set_cap, eligible),
+            # Served as stored: the menu resolves it against ``instances`` above,
+            # so an id naming no registered crew simply marks nothing.
+            "default_destination": instances_cfg.default_destination,
         }
     )
 

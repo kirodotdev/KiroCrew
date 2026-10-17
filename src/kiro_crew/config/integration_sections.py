@@ -843,6 +843,18 @@ class InstancesConfig:
             "one below the number of configured crews.",
         ),
     )
+    default_destination: str = field(
+        default="",
+        metadata=_meta(
+            "Default Destination Crew",
+            "Instance id of the crew that Send a copy to lists first, marked as the "
+            "default. Empty (the default) keeps every crew in registry order with no "
+            "default. A folder's own default destination crew overrides this for "
+            "sessions in that folder. Nothing is sent without a click: this only "
+            "orders and marks the menu, and an id that names no registered crew is "
+            "ignored.",
+        ),
+    )
     tunnel_base_port: int = field(
         default=_DEFAULT_TUNNEL_BASE_PORT,
         metadata=_meta(
