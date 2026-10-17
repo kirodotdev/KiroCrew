@@ -97,6 +97,9 @@ class _ChatTurn:
     regenerate_hint: "str"
     _on_consumed: "Callable[[bool], None] | None"
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None"
+    _on_discarded: "Callable[[], None] | None"
+    _on_lifecycle_recovery_retained: "Callable[[], None] | None"
+    _on_completion_registered: "Callable[[], None] | None"
     monitor_completion: "MonitorCompletionHook | None"
     _current_message: "dict | None"
     # The agent started this turn on its own between prompts: it reads the
@@ -148,9 +151,13 @@ class _ChatTurn:
     _deferred_options_expiry: "bool"
     _deny_override: "DenyOverrideOffer | None"
     _dir_consumed_out: "dict[str, str]"
+    _discard_transferred: "bool"
     _dispatch_lock: "Lock"
     _dispatch_lock_held: "bool"
     _engine_fallback_walk: "EngineFallbackWalk"
+    _drained_pending_context: "list[dict[str, Any]]"
+    _drained_prev_turn_cancelled: "bool"
+    _drained_subagent_failures: "list[str]"
     _escalation: "PoisonedConversationEscalation"
     _failed_write_calls: "set[str]"
     _first_turn_history_assembled: "bool"
@@ -360,6 +367,9 @@ class _ChatTurn:
         regenerate_hint: "str",
         _on_consumed: "Callable[[bool], None] | None",
         _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None",
+        _on_discarded: "Callable[[], None] | None",
+        _on_lifecycle_recovery_retained: "Callable[[], None] | None",
+        _on_completion_registered: "Callable[[], None] | None" = None,
         monitor_completion: "MonitorCompletionHook | None",
         _current_message: "dict | None",
         _agent_started: "bool" = False,
@@ -394,6 +404,9 @@ class _ChatTurn:
         self.regenerate_hint = regenerate_hint
         self._on_consumed = _on_consumed
         self._on_irreversibly_consumed = _on_irreversibly_consumed
+        self._on_discarded = _on_discarded
+        self._on_lifecycle_recovery_retained = _on_lifecycle_recovery_retained
+        self._on_completion_registered = _on_completion_registered
         self.monitor_completion = monitor_completion
         self._current_message = _current_message
         self._agent_started = _agent_started

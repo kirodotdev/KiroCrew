@@ -54,6 +54,7 @@ from kiro_crew.discord.transport_dispatch import (
     _queued_origin,
     _QueuedOrigin,
 )
+from kiro_crew.messaging import dispatch as messaging_dispatch
 from kiro_crew.messaging.attachments import cleanup
 from kiro_crew.messaging.link import ChannelLink, legacy_dashboard_mirror_key
 from kiro_crew.messaging.transport import InboundMessage
@@ -90,6 +91,35 @@ class TestDispatcher:
         await d.handle_message(self._msg("!help"))
         assert "Kiro Crew" in cli.sent[-1][0]
         assert "!sessions [query]" in cli.sent[-1][0]
+
+    @pytest.mark.asyncio
+    async def test_slotless_directive_consumer_gets_live_subagent_manager(
+        self, monkeypatch
+    ) -> None:
+        """A turn with no attached dashboard state still fences agent stops.
+
+        Without ``dashboard_state`` the directive consumer falls back to the
+        minimal channel stand-in, and that stand-in only sees child work through
+        the manager handed to ``build_directive_consumer``. The live manager the
+        gateway attached must reach it.
+        """
+        manager = object()
+        d, _cli, _sess = _dispatcher({"u1"})
+        d.subagent_manager = manager
+        seen: list[dict[str, Any]] = []
+        real_builder = messaging_dispatch.build_directive_consumer
+
+        def _capture(**kwargs: Any):
+            seen.append(kwargs)
+            return real_builder(**kwargs)
+
+        monkeypatch.setattr(messaging_dispatch, "build_directive_consumer", _capture)
+
+        await d.handle_message(self._msg("hello world"))
+
+        assert getattr(d, "dashboard_state", None) is None
+        assert len(seen) == 1
+        assert seen[0]["subagents"] is manager
 
     @pytest.mark.asyncio
     async def test_a_shutdown_refusal_is_not_spooled_for_a_restricted_session(

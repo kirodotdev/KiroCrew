@@ -1572,15 +1572,26 @@ def test_no_owner_captures_a_name_tests_rebind_on_the_facade() -> None:
 
 # ── the path-keyed guards keep their reach ────────────────────────────────────
 
-#: Constructs that repository guards read by path, mapped to the files that hold them
-#: (the facade ``chat_handlers`` or a ``chat_api`` owner). Each set is exact: a construct
-#: that moved files would leave its guard's sight.
+#: Constructs repository guards read by path or through module source, each mapped
+#: to the files that hold it -- the facade (``chat_handlers``) or an owner -- which
+#: are the files those guards read: the agent-SDK boundary's three baselined
+#: imports, the stop chokepoints and the synthesis boundary the frontend mirrors in
+#: the facade; the app-actor turn kwargs and the hold-branch persist in
+#: ``chat_api/chat_send.py``; the queue-clear the session-control doc counts in
+#: ``chat_api/turn_stop.py`` through its discard repository; the hand-over drain's fence opt-out in
+#: ``chat_api/handover_drain.py``; the approval-mode writers
+#: ``test_approval_modes_enforcement``'s ``WRITERS`` keys to
+#: ``chat_api/slot_approval.py``; and the permission-resolution sites with their
+#: dirty flags and the approval-resolved broadcasts, whose guards read
+#: ``chat_api/turn_stop.py`` and ``chat_api/slot_approval.py``. A holder that grew
+#: one, or lost one, would move it out of such a guard's sight, so each set is
+#: exact.
 _GUARDED_CONSTRUCT_HOMES: dict[str, frozenset[str]] = {
     r"(?m)^from kiro_crew\.acp\.client import AcpModelUnavailable$": frozenset({"chat_handlers"}),
     r"(?m)^from kiro_crew\.providers\.acp import AcpProvider$": frozenset({"chat_handlers"}),
     r"(?m)^from kiro_crew\.providers\.base import LLMProvider$": frozenset({"chat_handlers"}),
     r"safety_override\(\)\.activate": frozenset({"slot_approval"}),
-    r"\._queue\.clear\(\)": frozenset({"turn_stop"}),
+    r"\.queue_discard_all\(\)": frozenset({"turn_stop"}),
     r'_turn_kwargs\["_turn_actor"\]': frozenset({"chat_send"}),
     r"warn_if_not_durable\(slot\._queue, qid, slot\.key\)": frozenset({"chat_send"}),
     r"(?m)^def _unblock_pending_waits\(": frozenset({"chat_handlers"}),

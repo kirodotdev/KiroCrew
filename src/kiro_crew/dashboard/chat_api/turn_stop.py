@@ -462,6 +462,9 @@ async def stop_slot_turn(
     """
     name = slot.key
     cancel_key = cancel_key or _cancel_target(slot)
+    # A Stop is a person acting: it releases a failed completion's held retry.
+    if isinstance(held := getattr(slot, "_held_completion_retries", None), set):
+        held.clear()
 
     # The second press after a DECLINED Stop (the session was compacting) is
     # the user's escape hatch and takes the escalation branch below, which is
@@ -538,8 +541,7 @@ async def stop_slot_turn(
         # acknowledged as queued; a clear after the await would discard it with
         # nothing settled and nothing said. The kill discards what was queued
         # when it was pressed, and a later send stays queued for the next turn.
-        discarded = list(slot._queue)
-        slot._queue.clear()
+        discarded = slot.queue_discard_all()
         # A drop reported while the settle below suspends must find no take-back,
         # or Queue instead would queue text this kill already discarded.
         from kiro_crew.dashboard import steer_retract

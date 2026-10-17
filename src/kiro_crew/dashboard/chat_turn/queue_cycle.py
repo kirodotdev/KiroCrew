@@ -13,6 +13,8 @@ from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, RESTOR
 from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.dashboard.chat_runner import (
         SYNTHESIS_CLEAR,
         DashboardState,
@@ -34,8 +36,10 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.queue_drain import (
         _arm_parked_queue_drain,
         _mark_turn_end,
+        _next_drain_is_completion_retry,
         _start_next_queued_turn,
         idle_slot_admits_drain,
+        release_held_completion_retries,
     )
     from kiro_crew.dashboard.chat_turn.regenerate_swap import settle_regenerate
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
@@ -589,6 +593,7 @@ class _TurnExit:
 
     __slots__ = (
         "actor",
+        "completion_retry_held",
         "depth",
         "handed_off",
         "local_command",
@@ -596,6 +601,7 @@ class _TurnExit:
         "reached_provider",
         "responsive_owner",
         "stop_reason",
+        "settle_completion",
         "turn_id",
     )
 
@@ -604,6 +610,18 @@ class _TurnExit:
         # this turn's own recovery from a new turn (``_start_next_queued_turn``).
         self.actor = ""
         self.turn_id = ""
+        # An unconsumed completion is still owned by its producer unless a user
+        # or teardown explicitly removes it. Errors and system cancellations
+        # retain that ownership on an exact held queue row, and the hand-off
+        # then holds the queue so the retry is not walked straight back into
+        # the failure that produced it.
+        self.completion_retry_held = False
+        # One-shot settlement of that ownership, registered before the turn's
+        # first exit. The exit guard calls it when the turn returns above its
+        # main ``try`` or a cancel cuts the teardown short before the turn's own
+        # call, so a popped completion always ends with a retry row or an
+        # explicit discard.
+        self.settle_completion: "Callable[[], None] | None" = None
         self.depth = 0
         self.handed_off = False
         self.local_command = ""
@@ -771,11 +789,23 @@ async def _end_turn_tail(
     if slot._responsive is not None and slot._responsive.owner is turn_exit.responsive_owner:
         slot._responsive.owner = None
         slot._responsive.cancel_grace()
+    retry_held = turn_exit.completion_retry_held
+    if not retry_held and turn_exit.stop_reason:
+        # A turn that reached its end without failing releases every held
+        # retry, so this exit's drain runs them in order.
+        release_held_completion_retries(slot)
+    elif retry_held:
+        # Unconsumed steers outrank the queue, and the hand-off puts them at its
+        # head, so the hold decided when the retry was queued is read again with
+        # them in place: a steer ahead of the retry drains as usual.
+        _requeue_unconsumed_steers(state, slot)
+        retry_held = _next_drain_is_completion_retry(state, slot)
     await _hand_off_queue(
         state,
         slot,
-        drain=memory_admitted and not slot._last_turn_auth_required and not setup_failed,
-        allow_automatic_successor=memory_admitted and not setup_failed,
+        # The drain itself skips a held retry and runs the rows behind it.
+        drain=(memory_admitted and not slot._last_turn_auth_required and not setup_failed),
+        allow_automatic_successor=memory_admitted and not setup_failed and not retry_held,
         predecessor_actor=turn_exit.actor,
         predecessor_turn_id=turn_exit.turn_id,
     )

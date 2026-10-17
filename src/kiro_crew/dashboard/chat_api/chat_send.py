@@ -1082,6 +1082,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     _race_answer = await _settle_send_race(request, state, slot, body, message)
     if _race_answer is not None:
         return _race_answer
+    if _person_send and isinstance(held := getattr(slot, "_held_completion_retries", None), set):
+        # A person's send releases a failed completion's held retry.
+        held.clear()
 
     if _send_writes_persona(body):
         slot.color_theme = color_theme

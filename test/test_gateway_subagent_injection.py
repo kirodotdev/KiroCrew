@@ -310,7 +310,7 @@ async def test_an_idle_tab_queues_the_completion_and_drains_it_at_once(done: _Do
 
 
 @pytest.mark.asyncio
-async def test_a_failed_solo_run_owes_nothing_to_the_tab_turn(done: _Done) -> None:
+async def test_a_failed_solo_run_owes_no_tombstone_to_the_tab_turn(done: _Done) -> None:
     slot = done.tab("main")
 
     await done.done(make_info(error="boom"))
@@ -318,6 +318,11 @@ async def test_a_failed_solo_run_owes_nothing_to_the_tab_turn(done: _Done) -> No
 
     assert len(done.chats) == 1
     assert [ids for _content, ids in slot.owed] == [[]]
+    # No result-file debt is armed, but the queued row still carries the
+    # manager's completion ownership to the turn that consumes the report.
+    ((_slot, _text, kwargs),) = done.chats
+    assert callable(kwargs["_on_consumed"])
+    assert callable(kwargs["_on_discarded"])
 
 
 @pytest.mark.asyncio
@@ -633,6 +638,45 @@ async def test_a_queued_sibling_keeps_the_cron_session(
 
     assert not any(c[0] == "reset" for c in done.calls)
     done.orch.cron_svc.retire_finished_session_key.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_queued_sibling_that_starts_during_the_count_keeps_the_cron_session(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reset decision reads ``running`` before it awaits the queued count.
+
+    A queued incognito sibling that starts during that await is in neither the
+    running list already read nor the window the count reads after it, and has
+    no store row. The real queued count must still see it, or the cron session
+    resets under a running child.
+    """
+    from kiro_crew.slack.gateway_runtime.subagent_wiring import _subagent_queued_count
+    from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+    key = "cron:j1:r1"
+    real = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+    real._queue.append({"id": "sibling", "parent_session_key": key})
+    started: list[str] = []
+
+    async def _store_count_while_the_sibling_starts(_self: Any, parent_session_key: Any = None):
+        real._queue.pop()
+        done.mgr.running.append(SubagentInfo(id="sibling", task="t", parent_session_key=key))
+        started.append(parent_session_key)
+        return 0
+
+    # The admission coordinator has ``__slots__``, so the double goes on its class.
+    monkeypatch.setattr(
+        type(real._admission), "taskq_overflow_async", _store_count_while_the_sibling_starts
+    )
+    done.mgr.queued_count_for_async = real.queued_count_for_async
+    monkeypatch.setattr(gw_mod, "_subagent_queued_count", _subagent_queued_count)
+
+    await done.done(make_info(parent=key))
+
+    assert started == [key]
+    assert not any(c[0] == "reset" for c in done.calls)
+    done.orch.cron_svc.clear_active_session_key.assert_not_called()
 
 
 @pytest.mark.asyncio

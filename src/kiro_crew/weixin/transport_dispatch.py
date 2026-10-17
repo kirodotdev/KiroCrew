@@ -148,6 +148,9 @@ class WeixinDispatcher:
         self.agent = agent
         self.conv_log = conv_log
         self.approval_mode = approval_mode
+        # Set by maybe_start_weixin after construction. Needed when a channel turn
+        # has no attached dashboard state.
+        self.subagent_manager: Any = None
         self.client: "WeixinClient | None" = None
         # Set by maybe_start_weixin after construction; the config applier pushes
         # reloaded authorization fields at it.

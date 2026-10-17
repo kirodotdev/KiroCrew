@@ -289,7 +289,10 @@ from kiro_crew.dashboard.chat_turn.turn_failures import (  # noqa: F401
     _on_prompt_busy,
     _on_session_closing,
 )
-from kiro_crew.dashboard.chat_turn.turn_ledgers import _replay_owes_delivery
+from kiro_crew.dashboard.chat_turn.turn_ledgers import (
+    _replay_owes_delivery,
+    _settle_unconsumed_completion,
+)
 from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
 from kiro_crew.dashboard.chat_turn.turn_marker import (  # noqa: F401
     _clear_local_turn_marker,
@@ -743,6 +746,15 @@ def _hands_off_queue_on_exit(
                 setup_failed = not turn_exit.local_command
             raise
         finally:
+            if not closing and turn_exit.settle_completion is not None:
+                try:
+                    turn_exit.settle_completion()
+                except Exception:
+                    logger.warning(
+                        "completion settlement failed for slot %s",
+                        getattr(slot, "key", "?"),
+                        exc_info=True,
+                    )
             if not closing and not turn_exit.handed_off:
                 try:
                     # A cancel landing inside the tail is deferred until the
@@ -922,6 +934,9 @@ async def _run_chat(
     regenerate_hint: str = "",
     _on_consumed: "Callable[[bool], None] | None" = None,
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None" = None,
+    _on_discarded: "Callable[[], None] | None" = None,
+    _on_lifecycle_recovery_retained: "Callable[[], None] | None" = None,
+    _on_completion_registered: "Callable[[], None] | None" = None,
     monitor_completion: MonitorCompletionHook | None = None,
     _current_message: dict | None = None,
 ) -> None:
@@ -957,6 +972,9 @@ async def _run_chat(
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,
         _on_irreversibly_consumed=_on_irreversibly_consumed,
+        _on_discarded=_on_discarded,
+        _on_lifecycle_recovery_retained=_on_lifecycle_recovery_retained,
+        _on_completion_registered=_on_completion_registered,
         monitor_completion=monitor_completion,
         _current_message=_current_message,
         _agent_started=_agent_started,
@@ -1358,6 +1376,10 @@ async def _run_chat(
             stop_reason=turn._stop_reason,
             cancelled=turn._crew_log_error == "CancelledError",
         )
+        # The popped completion's settlement stays registered from before the
+        # turn's first exit. The teardown below awaits, and a cancel there skips
+        # this frame's own call; the exit guard then runs it before the tail, so
+        # the ownership is never stranded.
         await _turn_close_crew_log(turn)
         # Dead-turn bell, fired at this ONE choke point so every terminal arm --
         # stop-reason and exception alike -- rings through the same site, and a
@@ -1386,6 +1408,9 @@ async def _run_chat(
                 await _clear_local_turn_marker(state, slot, _local_turn_marker_generation)
             except Exception:
                 logger.debug("_clear_local_turn_marker failed", exc_info=True)
+        # A popped completion's owner is decided before the hand-off reads the
+        # hold it may set.
+        _settle_unconsumed_completion(turn)
         # The per-exit duties and the queue hand-off, in their one order. Run to
         # completion: a cancel landing inside the tail (a turn deadline during
         # the deferred-reset consume) is deferred until the hand-off ran, then

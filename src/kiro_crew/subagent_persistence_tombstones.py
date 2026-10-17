@@ -290,6 +290,32 @@ def write_tombstone(
     _write_tombstone_file(agent_id, cause, recovery_action, extra, owed_retry=False)
 
 
+def _persisting_tombstone_state(agent_id: str, cause: str) -> dict | None:
+    """The run state a *cause* tombstone is written from, or None when none persists."""
+    if _live_run_key(agent_id) in _LIVE_RUN_STATES:
+        return None
+    _agent_dir(agent_id)  # an invalid id raises before anything is skipped
+    state = read_state(agent_id)
+    # A delayed delivery acknowledgement cannot recreate a released transient
+    # run. Abnormal-exit diagnostics may still record missing state.
+    if state is None and cause == "delivered":
+        return None
+    state = state or {}
+    execution = state.get("execution_context")
+    if isinstance(execution, dict) and execution.get("memory_mode") in ("incognito", "temporary"):
+        return None
+    return state
+
+
+def tombstone_persists(agent_id: str, *, cause: str) -> bool:
+    """Whether :func:`write_tombstone` would write a *cause* tombstone for *agent_id*.
+
+    The writer's own skip rules: a live or non-persistent run, or a delivery for
+    a run with no state, never gets a file, so nothing durable is owed for it.
+    """
+    return _persisting_tombstone_state(agent_id, cause) is not None
+
+
 def _write_tombstone_file(
     agent_id: str,
     cause: str,
@@ -299,18 +325,10 @@ def _write_tombstone_file(
     owed_retry: bool,
 ) -> None:
     """:func:`write_tombstone`'s body; *owed_retry* marks a retry of a failed write."""
-    if _live_run_key(agent_id) in _LIVE_RUN_STATES:
+    state = _persisting_tombstone_state(agent_id, cause)
+    if state is None:
         return
     d = _agent_dir(agent_id)
-    state = read_state(agent_id)
-    # A delayed delivery acknowledgement cannot recreate a released transient
-    # run. Abnormal-exit diagnostics may still record missing state.
-    if state is None and cause == "delivered":
-        return
-    state = state or {}
-    execution = state.get("execution_context")
-    if isinstance(execution, dict) and execution.get("memory_mode") in ("incognito", "temporary"):
-        return
     cleanup_identity = {
         key: state[key] for key in ("session_id", "provider", "cwd") if state.get(key)
     }

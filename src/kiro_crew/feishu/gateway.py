@@ -72,6 +72,7 @@ async def maybe_start_feishu(orch: "GatewayOrchestrator") -> "LarkClient | None"
             conv_log=getattr(orch, "conv_log", None),
             approval_mode=_resolve_approval_mode(orch),
         )
+        dispatcher.subagent_manager = getattr(orch, "subagent_mgr", None)
         client = LarkClient(
             app_id=orch._feishu_app_id,
             app_secret=orch._feishu_app_secret,

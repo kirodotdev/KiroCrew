@@ -456,10 +456,15 @@ class TestSynthesisAfterAOneTurnBatch:
         try:
             from kiro_crew.dashboard import chat_runner
 
+            def _stub_turn(*_args, _on_completion_registered=None, **_kwargs):
+                # The stub's body runs, so it registers the completion as a turn does.
+                if _on_completion_registered is not None:
+                    _on_completion_registered()
+
             with (
                 # An idle tab drains the completion through the real queue
                 # drain, which starts a stub completion turn.
-                patch.object(chat_runner, "_run_chat", new=AsyncMock()),
+                patch.object(chat_runner, "_run_chat", new=AsyncMock(side_effect=_stub_turn)),
                 patch.object(
                     chat_runner,
                     "spawn_guarded_turn",
@@ -753,9 +758,13 @@ class TestSubagentDone:
         await on_done(info)
         from kiro_crew.slack.gateway import SUBAGENT_COMPLETION_KIND
 
-        slot.queue_append.assert_called_once()
-        assert "queued result" in slot.queue_append.call_args.args[0]
-        assert slot.queue_append.call_args.kwargs["kind"] == SUBAGENT_COMPLETION_KIND
+        slot.queue_insert.assert_called_once()
+        queued = slot.queue_insert.call_args
+        assert queued.args[0] == 0
+        assert "queued result" in queued.args[1]
+        assert queued.kwargs["kind"] == SUBAGENT_COMPLETION_KIND
+        assert callable(queued.kwargs["on_consumed"])
+        assert callable(queued.kwargs["on_discarded"])
         orch.dashboard_state.notify.assert_not_called()
 
     @pytest.mark.asyncio

@@ -26,6 +26,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.apps.builtins.spec_builder.tests.routes_facade import routes as r
+from kiro_crew.dashboard.slot_queue_repository import SlotQueueRepository
 
 
 def _can_create_symlink() -> bool:
@@ -154,6 +155,11 @@ class _Slot:
         # app slot records app=True so its own queued turns keep draining.
         assert isinstance(meta, dict)
         self._queue.append(message)
+
+    def queue_discard_all(self) -> list:
+        # The slot's own repository call: it empties the queue and retires each
+        # row's discard callback once.
+        return SlotQueueRepository().queue_discard_all(self)
 
     def append(self, role: str, content: str) -> None:
         self.messages.append({"role": role, "content": content, "ts": ""})
