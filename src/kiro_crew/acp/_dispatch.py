@@ -3434,6 +3434,14 @@ class _MetaIdentityChannel(NamedTuple):
     #: server field reads as "an MCP server served this" on a shell command. Matching it
     #: means two things at once: the call is a shell command, and it has no MCP server.
     builtin_shell: tuple[str, str] | None = None
+    #: Server names of the harness's OWN non-shell builtins, served under the same field
+    #: an MCP call fills. These are harness-owned like ``builtin_shell[0]``, so they are
+    #: NOT foreign to a session Crew never placed them on (``meta_builtin_server_names``);
+    #: but unlike the shell they ARE genuine MCP-served tools, so they are NOT folded into
+    #: ``builtin_shell`` -- that pair empties the server to mean "a command, no MCP
+    #: server", which would mis-classify a real served builtin. A separate field keeps the
+    #: two meanings apart: trusted-as-own, yet still a served tool with a non-empty server.
+    other_builtin_servers: frozenset[str] = frozenset()
     #: Whether this channel's halves are bounded at retention by the MCP-name
     #: bound Crew's own tool surface admits (``mcp_identity_name``), with a
     #: PRESENT half over it reported as unreadable. True for the KAS spelling
@@ -3503,6 +3511,14 @@ _MCP_IDENTITY_META_CHANNELS: tuple[_MetaIdentityChannel, ...] = (
         # carries no ``kind`` -- so this pair is the only thing on the wire that says
         # "this is a command".
         builtin_shell=("developer", "shell"),
+        # ``extensionmanager`` is goose's own builtin extension (``manage_extensions``),
+        # present since at least 1.50.1. It is served under ``extensionName`` like any MCP
+        # tool and IS a real served tool (non-empty server), so it is not a ``builtin_shell``
+        # pair; it is listed here so it reads as the harness's own rather than as a foreign
+        # server Crew never mounted (``meta_builtin_server_names``). It still reaches
+        # ``session/request_permission`` and is gated there -- trusting it as non-foreign
+        # does not auto-approve it.
+        other_builtin_servers=frozenset({"extensionmanager"}),
     ),
 )
 
@@ -3580,17 +3596,22 @@ def _meta_identity(update: dict[str, Any]) -> tuple[str, str]:
 
 
 def meta_builtin_server_names() -> frozenset[str]:
-    """The ``server`` half of every channel's builtin-shell pair.
+    """The ``server`` half of every channel's builtin-shell pair, plus each channel's
+    other builtin servers.
 
     A harness that models its builtins as extensions names one under the same field an
     MCP call fills, so these are the identities that are NOT foreign to a session even
-    though Crew never placed them on its server array: they are the harness's own.
+    though Crew never placed them on its server array: they are the harness's own. This
+    covers both kinds the table distinguishes -- the shell (``builtin_shell[0]``, which
+    is ALSO classified as a command) and non-shell builtins (``other_builtin_servers``,
+    which stay genuine MCP-served tools).
     """
-    return frozenset(
-        channel.builtin_shell[0]
-        for channel in _MCP_IDENTITY_META_CHANNELS
-        if channel.builtin_shell is not None
-    )
+    names: set[str] = set()
+    for channel in _MCP_IDENTITY_META_CHANNELS:
+        if channel.builtin_shell is not None:
+            names.add(channel.builtin_shell[0])
+        names |= channel.other_builtin_servers
+    return frozenset(names)
 
 
 def meta_builtin_shell(update: dict[str, Any]) -> bool:

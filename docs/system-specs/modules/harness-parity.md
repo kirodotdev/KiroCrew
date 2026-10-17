@@ -202,6 +202,26 @@ cannot carry one, and heartbeat is the one session with nobody to catch a forged
 name. Heartbeat tool use on such a harness returns when its adapter's channel joins
 the identity table on a recorded corpus, not through a title or `kind` fallback.
 
+### A harness's own builtins are not foreign servers
+
+On the backends whose session MCP array Crew builds (`ACP_BACKENDS_SESSION_MCP_ARRAY`),
+Crew knows that session's whole server universe: the names it placed on the array, plus
+the harness's own builtins. `_foreign_mcp_identity` (`acp/client_permissions.py`) refuses
+a trusted identity naming anything else -- that is the fail-closed guard against a harness
+release that renames a builtin so its call would read as MCP-served, skip the command tier,
+and be approved. The allowlist of harness-owned names it consults is
+`meta_builtin_server_names` (`acp/_dispatch.py`), derived from two fields of each
+`_MCP_IDENTITY_META_CHANNELS` row. goose fills both: `builtin_shell` names the shell
+(`developer`), which is ALSO classified as a command and reported with an empty server;
+`other_builtin_servers` names its non-shell builtins (`extensionmanager`, goose's
+`manage_extensions`, present since at least 1.50.1), which stay genuine MCP-served tools
+with a non-empty server. The two kinds are separate fields because folding a non-shell
+builtin into `builtin_shell` would empty its server and mis-classify it as a command.
+Being on the allowlist only stops the foreign refusal; the call still reaches
+`session/request_permission` and is gated there, so trusting it as non-foreign does not
+auto-approve it. `test_acp_goose_backend.py` pins both builtins as non-foreign and the
+allowlist's membership.
+
 ## Group C: the Kiro path keeps its own machinery
 
 An adapter that lands by *generalizing* a Kiro-specific step to a

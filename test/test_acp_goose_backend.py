@@ -1057,6 +1057,42 @@ def test_a_placed_server_and_the_builtin_extension_are_not_foreign() -> None:
     assert client._foreign_mcp_identity(untrusted) is False
 
 
+def test_the_builtin_server_allowlist_carries_both_goose_builtins() -> None:
+    """``meta_builtin_server_names`` names goose's shell AND its non-shell builtins.
+
+    ``developer`` is the shell extension (``builtin_shell[0]``); ``extensionmanager`` is a
+    non-shell builtin (``other_builtin_servers``). Both are the harness's own, so both are
+    in the allowlist, but they arrive by different fields because only the shell is also a
+    command -- ``extensionmanager`` stays a genuine MCP-served tool with a non-empty server.
+    """
+    from kiro_crew.acp._dispatch import meta_builtin_server_names
+
+    names = meta_builtin_server_names()
+    assert {"developer", "extensionmanager"} <= names
+
+
+def test_the_goose_extensionmanager_builtin_is_not_foreign() -> None:
+    """Regression for #20519: ``extensionmanager__manage_extensions`` is goose's own.
+
+    goose serves its builtin extension manager under ``extensionName: extensionmanager``,
+    present since at least 1.50.1. Crew never places it on the session MCP array, so with
+    only ``developer`` in the allowlist ``_foreign_mcp_identity`` refused every call to it
+    as a drifted foreign server -- which also refused unrelated MCP tools on the same
+    session. It must read as the harness's own, exactly as the ``developer`` shell does.
+    """
+    from kiro_crew.acp.types import AcpEvent
+
+    client = _deny_set_client(GOOSE, placed=[])
+    builtin = AcpEvent(
+        kind="permission_request",
+        request_id="em",
+        mcp_server_name="extensionmanager",
+        tool_name="manage_extensions",
+        mcp_identity_trusted=True,
+    )
+    assert client._foreign_mcp_identity(builtin) is False
+
+
 def test_the_foreign_server_check_is_scoped_to_array_backends() -> None:
     """kiro-cli's servers reach it through the agent file, so its array is not the universe."""
     from kiro_crew.acp.types import AcpEvent
