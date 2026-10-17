@@ -3,8 +3,8 @@ title: Mate-owned agent config — a copied custom agent in its own folder
 status: draft
 author: gjjnn
 created: 2026-10-16
-last-audited: 2026-10-16
-audited-at: 0600e2804476
+last-audited: 2026-10-17
+audited-at: 8892889b91
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -16,7 +16,7 @@ superseded-by: []
 
 - Status: draft — a proposal, not a description of what the code does today.
   "Exists today" claims cite symbols verified against the working tree at
-  `0600e2804476`; re-verify at implementation time.
+  `8892889b91`; re-verify at implementation time.
 - Author: gjjnn
 - Related: [rfc-crewmates-launch.md](rfc-crewmates-launch.md) (the product
   vocabulary — "crewmate", "custom agent", "built from" — kept separate from the
@@ -27,6 +27,16 @@ superseded-by: []
   and the create/edit paths live; the one path still awaiting live confirmation
   is the in-place capability SAVE (§5.4, built and offline-proven, pending a pod
   it can run against).
+- Amended 2026-10-17 after the team's conductor/worker architecture meeting.
+  The amendment settles what each of the two agents IS (§5.0), makes the file's
+  `prompt` load-bearing for the worker (§5.1), adds the conductor-raised,
+  card-confirmed capability change (§5.4), and records that step 1 is a
+  behaviour change rather than a sourcing move (§6). Where the amendment
+  changed an earlier reading, the change is called out inline (search
+  "2026-10-17"). The open step-1 pull request
+  [#21463](https://github.com/kirodotdev/KiroCrew/pull/21463) predates this
+  amendment: it names a `kirocrew-mate-conductor` spec but derives it from the
+  default template, so its shape is the one §6 step 1 now says not to use.
 
 ## 1. Summary
 
@@ -41,11 +51,13 @@ user-editable config file that extends the worker.** This is a restructure of
 the mates feature that already exists, not a new concept: the conductor and
 worker are how today's mate behaviour is re-expressed, with its definition moved
 into source code. The conductor the user chats with has its system prompt,
-tools, MCP servers and skills defined 100% in Crew's source code; it delegates
+tools, MCP servers and skills defined 100% in Crew's source code, and it **only
+plans and dispatches** — it never does the work itself (§5.0). It delegates
 tasks to a worker whose system prompt, tools, MCP servers and skills are *also*
 defined 100% in source — that full set is the worker's base. Neither base is
-user-editable. The one thing a user can change is the worker's **additional** MCP
-servers and skills, and those live in a per-mate file Crew owns:
+user-editable. The one thing a user can change is the worker's **additional**
+prompt text, MCP servers and skills, and those live in a per-mate file Crew
+owns:
 
 ```
 ~/.kiro/mates/agents/<id>.json
@@ -53,17 +65,20 @@ servers and skills, and those live in a per-mate file Crew owns:
 
 To the user this still reads as "edit what my mate can do." Under the hood the
 edit targets the delegated **worker**, and it is *additive*: the worker runs its
-source-defined base plus whatever `mcpServers` and `skills` this file adds.
+source-defined base plus whatever `prompt`, `mcpServers` and `skills` this file
+adds.
 
 This RFC gives each crewmate that file, written at creation time into a new
 folder on purpose. It is a custom-agent file in the **exact format already
-written to `~/.kiro/agents/`** — no new schema. In this design only its
+written to `~/.kiro/agents/`** — no new schema. In this design its `prompt`,
 `mcpServers` and `skills` fields are load-bearing (they extend the worker);
-every other field (`prompt`, `tools`, `model`, `permissions`) is written with a
+every other field (`tools`, `model`, `permissions`) is written with a
 default/placeholder value, reserved so a future design may use it without a
-schema change. The folder relocation is the mechanism: it gives the mate a
-config Crew owns and can edit directly, without touching any source and without
-adding the file to the user-level agent catalog the session agent picker reads.
+schema change. (2026-10-17: `prompt` joined the load-bearing set; the
+pre-amendment text held only `mcpServers` and `skills` there.) The folder
+relocation is the mechanism: it gives the mate a config Crew owns and can edit
+directly, without touching any source and without adding the file to the
+user-level agent catalog the session agent picker reads.
 
 Crewmate-specific data (identity, avatar, memory store, workspace, model) does
 **not** move into this file; it stays on the binding record, where it already
@@ -89,6 +104,19 @@ lives.
 - Crew projects a config into KAS's `_meta.kiro.customAgents` array on
   `session/new`; `set_mode` then activates it. Crew does not pass a file path —
   it hands over the agent definition on the wire.
+- A crewmate's chat runs the Kiro-wide default template: the first crewmate's
+  implicit template is `kirocrew` (`first_crewmate._ORDINARY_TEMPLATE`), the
+  New Crewmate dialog's default is `kirocrew`
+  (`change_card_catalog.DEFAULT_CREWMATE_TEMPLATE`), and `kirocrew.json` is the
+  full default agent — every configured MCP server, every skill, `execute_bash`.
+  So the agent the user chats with is also the agent that does the work, with
+  the whole tool surface loaded into its context. The work it hands to
+  `spawn_run` without naming an agent runs the member's OWN template again
+  (`subagent_parts/agent_policy._inherited_member_agent`,
+  `subagent_manager/run.py`: `info.agent or execution.template_id`) — for a
+  `kirocrew`-bound crewmate, the full default once more. `kirocrew-worker`, the
+  disk mirror of that default (`agent_materialization/worker_agent.py`), is
+  what a plain session's unnamed spawn runs.
 - A copy mechanism already exists, but it is **copy-on-write and lazy**:
   `api_agent_fork` (`dashboard/agent_admin/fork_publish.py`) forks a private
   copy on the *first edit*, names it `crew-<hex>`, writes it into the user-level
@@ -111,17 +139,32 @@ lives.
 4. **The copy lands in the shared catalog.** Because the fork writes into the
    same single-valued directory the picker reads, the private copy must then be
    *hidden* from the picker by a lineage filter.
+5. **The chat agent is busy doing the work** (2026-10-17). Because the agent
+   the user talks to is the one running the task, a new message arriving
+   mid-task lands on a busy turn. The steer path's outcome is not guaranteed:
+   the agent may try to serve both, prefer the new one, or drop work, depending
+   on whether the two are related. A user cannot rely on the mate answering.
+6. **Every user MCP server lands in the chat agent's context** (2026-10-17). A
+   user with many servers pays for all of them on every conversational turn,
+   whether or not the turn needs any.
 
 ## 3. Goals
 
-- A mate owns its editable config outright: adding an MCP server or a skill to
-  one mate's file affects only that mate's worker, no other mate and no source.
+- A mate owns its editable config outright: adding prompt text, an MCP server
+  or a skill to one mate's file affects only that mate's worker, no other mate
+  and no source.
 - The conductor and the worker's base — system prompt, tools, MCP servers AND
   skills — stay 100% source-defined and are not user-editable; the disk file is
   strictly *additional* config layered on top of the worker's source base.
+- The conductor stays responsive: it plans, dispatches and reports. Work its
+  tool set excludes (a write, a shell, a user server) it cannot run inline;
+  the rest it hands off as a best-effort prompt rule (§5.0).
+- The conductor carries no user-configured MCP server. It can *see* what the
+  gateway has configured, so it can ask for a worker addition, without loading
+  any of it (§5.0, §5.4).
 - Reuse the existing custom-agent file format and its whole projection +
-  governance pipeline unchanged — no new schema, no field split, no merge step.
-  Only `mcpServers` and `skills` are load-bearing now; the rest carry defaults.
+  governance pipeline unchanged — no new schema, no field split. `prompt`,
+  `mcpServers` and `skills` are load-bearing; the rest carry defaults.
 - No live link back to a source: the file is a stamp, not a parent.
 - The mate's config is **not** offered in the session agent picker.
 - Crewmate-specific data stays on the binding, as today.
@@ -144,8 +187,102 @@ lives.
   config?" is a DERIVED fact (does `kiro_agent` resolve under
   `mates/agents/`), never a stored flag — an `is_mate` boolean would be the
   actual mistake, able to drift from where the file lives.
+- **Dynamic worker assembly** (2026-10-17). The conductor composing a worker
+  per task from the gateway's live catalog of MCP servers and skills, with no
+  predefined file, is the agreed direction but is P1. P0 is the predefined
+  per-mate file this RFC describes. The P0 shape must not need a rewrite to
+  get there: the file IS one assembled worker config, and the conductor's
+  catalog view (§5.4) is the input P1 reads.
+- **A dedicated decision model** (2026-10-17). A lightweight model for
+  dispatch and routing decisions is in development. This RFC does not assume
+  the conductor LLM holds all routing intelligence; the dispatch step is one
+  seam, so that model can take it over later. Designing that model is out of
+  scope.
 
 ## 5. Design
+
+### 5.0 The two roles — a dispatch-only conductor and a worker that does the work
+
+*(2026-10-17, from the architecture meeting. The pre-amendment text named the
+two agents without saying what each is for.)*
+
+```
+Crewmate (container)
+├─ runtime
+│  ├─ conductor / main agent
+│  │    prompt:  in source code, not JSON; the user cannot edit it
+│  │    tools:   read-only file tool + spawn worker + work ledger
+│  │             + the dashboard/widget servers; NO shell, NO user MCP server
+│  │    job:     understand the user, plan, dispatch, report. Never does the work
+│  └─ worker
+│       prompt:  in source code + the file's `prompt`
+│       mcp/skill: source base set + the file's `mcpServers` and `skills`
+│       job:     one concrete task, reported back to the conductor. Never touches the file
+├─ ~/.kiro/mates/agents/<id>.json    the mate's own copy, no parent link
+└─ surrounding systems: goal, schedule, heartbeat, memory, workspace   configurable
+```
+
+**The conductor only dispatches.** Any substantive work — a code review, a
+research pass, a code change — is spawned to a worker. The conductor
+acknowledges, queues, dispatches and answers; it is free whenever a user
+message arrives.
+
+Two mechanisms carry that, and they are not the same kind. **The spec
+enforces** what the conductor cannot do at all: it has no tool that writes a
+file (no `fs_write`, no `code`), no shell (`execute_bash` is not mounted), no
+user MCP server, and its one file tool is read-only (§10 question 7 is settled
+read-only here, for this reason). A conductor so equipped cannot run a code
+change, a build or a user-server task inline, whatever its prompt says. **The
+prompt carries** the rest as a best-effort rule: that a long read (`fs_read`,
+`web_fetch`) or a long think is handed to a worker too, so a turn stays short.
+A rule in a prompt is weighed, not guaranteed, so §2 problem 5 is REDUCED by the
+prompt and REMOVED only for the work the tool set excludes; the design accepts
+that residue rather than pretending the prompt closes it.
+
+**The conductor's prompt is a source-code string.** It names: who the mate is
+and how it talks to the user; what Kiro Crew can do (render a widget, set a
+schedule, keep memory); how to use the work ledger; how to spawn a worker and
+what to put in the brief; and that the conductor never runs a task inline. It
+is not a JSON file and it reads no `~/.kiro/crew/prompt.md` override. The
+per-member inputs it reads are the member's own briefing, rules and goal, and
+the project guides a crewmate's startup context already loads
+(`member_essential_context.py`: AGENTS.md / SOUL.md in the member's workspace)
+stay what they are — project context for the member's work, not a contract that
+can replace or reorder the charter.
+
+**The conductor's tools are a minimal set fixed in code.** A read-only file
+tool, the spawn/dispatch verbs, the work ledger (`kirocrew-work`), the
+member's own servers (`kirocrew-mate`, the dashboard/widget set), memory. No
+user-configured MCP server is mounted on it, and no shell is mounted. The exact
+grant tuple is the step-1 PR's to pin, following the shape the three existing
+conductors already have
+(`agent_materialization/conductor_agents.py::_conductor_spec`). The meeting
+named "basic file read/write"; the design takes read-only, because a conductor
+that writes files can do work inline, which is the case the tool set exists to
+exclude (§10 question 7, settled).
+
+**The conductor can see the gateway's catalog without loading it.** It needs
+to know which MCP servers and skills the gateway has configured, so it can
+notice a worker lacks one and ask for it (§5.4). That is a read of a catalog,
+not a mount of a server.
+
+**The worker does the work.** Its prompt (how a mate worker works, how it
+reports back) and its base MCP servers and skills are source-defined. The
+file's `prompt`, `mcpServers` and `skills` are layered on top at spawn time
+(§5.4). A worker never edits the file; when it lacks a capability it says so in
+its report.
+
+**A worker does not promote itself.** A worker that finds its task too large
+reports back to its conductor; the conductor decides whether to spin up a
+sub-conductor. The dispatch tools a worker holds and the ones a conductor holds
+are separate, so the roles cannot blur.
+
+**P0 and P1.**
+
+| | P0 (launch) | P1 |
+|---|---|---|
+| Worker configuration | predefined in `mates/agents/<id>.json` | the conductor assembles a worker per task from the gateway catalog |
+| Dispatch decision | the conductor LLM | a dedicated decision model; dispatch keeps a seam for it |
 
 ### 5.1 The worker-extension config file
 
@@ -158,13 +295,25 @@ The file is a custom-agent JSON file — the same schema written to
 
 It carries the full custom-agent shape (`prompt`, `tools` / `allowedTools`,
 `mcpServers`, `skills`, `model`, `permissions`), but **in this design only
-`mcpServers` and `skills` are load-bearing**: they are the user's *additions* to
-the delegated worker. Every other field is written with a default/placeholder
-value — the schema is kept whole on purpose so a future design can start reading,
-say, `model` or `permissions` without a format migration. The worker's own
-system prompt and tools come from Crew's source code, not from this file's
-`prompt`/`tools`; those fields staying default is what makes the base
+`prompt`, `mcpServers` and `skills` are load-bearing**: they are the user's
+*additions* to the delegated worker. Every other field is written with a
+default/placeholder value — the schema is kept whole on purpose so a future
+design can start reading, say, `model` or `permissions` without a format
+migration. The worker's own base system prompt and its tools come from Crew's
+source code; the file's `tools` staying default is what makes the tool base
 non-editable while the additions are editable.
+
+**How `prompt` is applied** (2026-10-17). The worker's source prompt comes
+first and whole. The file's `prompt` is appended after it as a clearly labelled
+section ("instructions from this mate's configuration"). It adds to the
+worker's instructions; it cannot remove or reorder the source base, because
+the base is not in the file, and the source charter states that where the two
+conflict the charter wins (the worker reports back rather than following an
+appended instruction that contradicts its base — the same precedence a
+custom-agent prompt has against the host contract today). Its trust level is that of any custom-agent prompt
+today: user-authored text that reaches the model, with no grant attached to
+it — grants come only from `mcpServers` and `skills`, under the ceiling (§8).
+Nothing from the file reaches the conductor.
 
 **The folder is machine-wide, alongside `~/.kiro/agents/` — a settled team
 decision.** It sits under the Kiro home (`kiro_home()`), not under a per-instance
@@ -262,8 +411,9 @@ even when it starts effectively empty:
 ```
 name the crewmate
 → write ~/.kiro/mates/agents/<id>.json                (atomic, 0o600)
-   with the full custom-agent schema: mcpServers = [] and skills = [] (the
-   user's additions, empty to start), every other field a default/placeholder
+   with the full custom-agent schema: prompt = "", mcpServers = [] and
+   skills = [] (the user's additions, empty to start), every other field a
+   default/placeholder
 → write the binding (kiro_agent = <id>, crewmate-specific fields set fresh)
 → grant the mate's own additions (see below) by editing that owned file IN PLACE
 ```
@@ -298,13 +448,14 @@ crewmate chat opens; binding has kiro_agent = <id>
 → when the conductor delegates, the WORKER is projected:
    source-defined worker base = prompt + tools + mcpServers + skills
    + resolve kiro_agent: look in ~/.kiro/agents/ then ~/.kiro/mates/agents/
-     └ found in mates/agents/ → read its mcpServers + skills → ADD to the
-       worker's base → project to KAS customAgents → apply security ceiling
+     └ found in mates/agents/ → read its prompt + mcpServers + skills → ADD to
+       the worker's base → project to KAS customAgents → apply security ceiling
 ```
 
-The worker's effective config is `source base ∪ (file's mcpServers + skills)`.
-The projection and the governance ceiling are the existing ones — the file is
-the same shape they already handle, so adding its two lists to the worker's base
+The worker's effective config is `source base ∪ (file's prompt + mcpServers +
+skills)`: the two lists are unioned, the prompt is appended (§5.1). The
+projection and the governance ceiling are the existing ones — the file is the
+same shape they already handle, so adding its three fields to the worker's base
 needs no new projection path, only the union at delegation time. The ceiling
 still applies to the merged result, so a user-added server or skill cannot lift
 the worker above its governed grants.
@@ -333,6 +484,31 @@ requires, on both layers:
   lifecycle UI (there is no parent to show); the capability view reports a
   `mode: "mate"` the pane renders as an owned, in-place editor.
 
+**Conductor-raised capability change — a card the user presses** (2026-10-17).
+The second way the file changes starts from the conductor, not the editor:
+
+```
+conductor
+  1. reads the gateway catalog: which MCP servers and skills are configured
+     (a read-only tool, new; it mounts nothing)
+  2. notices the worker it is about to spawn lacks X
+  3. raises a change card: "add X to this mate"
+     (kirocrew-mate.request_capabilities, the existing card-backed tool)
+  4. the user presses → the gateway writes mates/agents/<id>.json in place,
+     through the same backend path the editor uses (governance sanitizer,
+     optimistic lock)
+  5. the next worker spawn carries X
+```
+
+The conductor never writes the file: it runs inside the sandbox, and §8 keeps
+every writer on the gateway's side. The card is the user's decision, as it is
+for every capability change today (`crewmate.capabilities` is card-backed in
+[rfc-crewmate-guides-and-mate.md](rfc-crewmate-guides-and-mate.md)); the
+conductor only names the ask. Because an MCP server cannot be unloaded from a
+running session, the change takes effect at the next spawn, never mid-session —
+which is also why the conductor, not the worker, is the one that asks: the
+worker's own session cannot gain X.
+
 **Subagents** — a crewmate can spawn helper agents; a helper has no `member_id`,
 so it resolves by name through the ordinary spawn path, unchanged.
 
@@ -348,49 +524,110 @@ identical file format, so the projection pipeline needs no change.
 ## 6. Migration plan
 
 Three independently shippable steps, each its own PR landing something testable.
-Steps 1 and 2 are **behaviour-preserving** — they move the conductor and worker
-onto source definitions without changing what a mate can do — so neither reads or
-writes `~/.kiro/mates/agents/` and neither can leak config between instances.
-Step 3 is the only one that introduces the file, and therefore the only one that
-carries the user-facing capability (configurable worker additions) and the
-cross-instance write question (§8).
+Steps 1 and 2 do not read or write `~/.kiro/mates/agents/`, so neither can leak
+config between instances. Step 3 is the only one that introduces the file, and
+therefore the only one that carries the user-facing capability (configurable
+worker additions) and the cross-instance write question (§8).
 
-### Step 1 — the conductor is source-defined
+(2026-10-17: the pre-amendment text called steps 1 and 2 "behaviour-preserving".
+Step 1 is not. Today the agent the user chats with does the work itself with
+the full default tool surface; after step 1 it dispatches and keeps a minimal
+tool set (§5.0). That is a user-visible change in what a crewmate chat does,
+and the step owns it.)
 
-Take the mate conductor (the agent the user chats with) as it behaves in today's
-mates feature and give its identity and whole definition — system prompt, tools,
-MCP servers, skills — from Crew's source code instead of a file on disk. This is
-a sourcing move on the existing conductor behaviour, not a new agent. Nothing
-else moves.
+### Step 1 — the conductor is source-defined and dispatch-only
+
+Give the mate conductor (the agent the user chats with) its whole definition —
+system prompt, tools, MCP servers, skills — from Crew's source code instead of
+a file the user can edit, with the charter in §5.0: plan and dispatch, never
+run a task inline, no user MCP server mounted. The spec is derived the way the
+three existing conductors are (`conductor_agents._conductor_spec`):
+`build_agent_config()` supplies the resolved MCP invocations and the security
+hooks, and the prompt, `tools`, `allowedTools` and `mcpServers` are then
+replaced — the server map narrowed to the Crew servers
+(`_conductor_mcp_servers`), the grants filtered through the ceiling. One
+narrowing beyond its siblings: `_conductor_spec` mounts `execute_bash`
+un-approved for the goal conductor's bundled evaluator script; the mate
+conductor has no such script, so its `tools` list omits the shell entirely
+(§5.0). What it is NOT is a copy of the default template's surface, which is what a spec that
+keeps `build_agent_config()`'s `tools` and `mcpServers` and changes only the
+name would be: that shape hands the conductor every user MCP server and the
+full tool surface, the shape §2 problems 5 and 6 describe.
+
+**What rebinds, and what does not.** The three DEFAULTS move to the mate
+conductor: the first crewmate's implicit template, the New Crewmate dialog's
+"Built from" default and the `crewmate.create` card's template. A stored
+binding is not rewritten: a crewmate whose `kiro_agent` names `kirocrew` or a
+custom agent keeps it until step 3's migration (which carries its additions
+into the per-mate file before it repoints anything). The mate conductor is
+withheld from the "Built from" picker as a choice, but a binding that names it
+still shows there, so the editor can rebind.
+
+**Reversal.** Per crewmate: the crew editor's "Built from" still offers
+`kirocrew` and every custom agent, so a crewmate whose conductor dispatches
+badly is rebound to the full-surface template in one edit, with no restart.
+Per install: step 1 is a sourcing change with no setting of its own, and
+reverting it is reverting the PR; the step does not add a switch that would
+keep two shapes of crewmate chat alive, because every later step builds on the
+conductor shape.
 
 Exit criteria:
-- A mate's conductor behaves identically to today; only its definition source
-  changed (source code, not a disk agent file).
+- A mate's chat runs the source-defined conductor: its prompt text and grant
+  tuple come from source, and editing `~/.kiro/agents/kirocrew.json` or
+  `~/.kiro/crew/prompt.md` changes nothing about it.
+- The conductor mounts no user-configured MCP server and does not mount
+  `execute_bash` at all (a spec that copied `_conductor_spec`'s un-approved
+  shell would fail this criterion).
+- A mate-conductor-bound member's unnamed `spawn_run` runs `kirocrew-worker`,
+  not the member's own template: the member-template inheritance that today
+  re-runs `kirocrew` for a `kirocrew`-bound member would otherwise run the
+  dispatch-only conductor as its own worker, with no write tool and no shell.
+  The step maps that one template to the worker spec at the two inheritance
+  sites; every other member template inherits as before.
+- Asked to do substantive work, the conductor dispatches it (`spawn_run`)
+  rather than running it inline — pinned by a prompt-contract test, the way
+  the goal conductor's charter is.
+- A crewmate bound to `kirocrew` or to a custom agent before the step still
+  runs that binding after it; only the defaults moved.
 - No conductor path reads or writes `~/.kiro/mates/agents/`.
-- No user-visible behaviour change (this is a pure sourcing move).
 
 ### Step 2 — the delegated worker is source-defined
 
 Make the worker the conductor delegates to — the one that does today's mates work
-under the hood — start from a source-defined base: system prompt, tools, MCP
+under the hood — exist as a source-defined base: system prompt, tools, MCP
 servers AND skills, all from source code. Still no file on disk; the worker's
-whole config is its source base. Like step 1, this re-expresses existing mate
-behaviour from source, adding no new capability.
+whole config is its source base. Its prompt carries the worker charter of §5.0:
+do the one task, report back, do not promote yourself.
+
+**The route does not flip here.** A crewmate's unnamed `spawn_run` keeps
+dispatching to `kirocrew-worker` (the mapping step 1 introduces) — the mirror of
+the default template, which carries the user's MCP servers today — until step 3
+lands the per-mate file. Flipping the
+route in this step would run every crewmate's work on a worker with no user
+server for as long as the gap between the two steps lasts; the interim shape is
+therefore: conductor from source (step 1), the user's servers still reached
+through `kirocrew-worker`, and the source-defined worker installed but not yet
+dispatched to. Step 3 flips the route and layers the file in the same change.
 
 Exit criteria:
-- Delegating to the worker projects exactly its source-defined base.
+- The source-defined worker spec is installed and, dispatched to directly,
+  projects exactly its source-defined base.
 - No worker path reads `~/.kiro/mates/agents/` yet.
-- No user-visible behaviour change beyond the worker now existing as a
-  source-defined delegate.
+- A crewmate's `spawn_run` still routes to `kirocrew-worker`; no user-visible
+  behaviour change in what a crewmate's work can reach.
 
 ### Step 3 — the worker reads its per-mate file as *additional* config
 
 Now introduce `~/.kiro/mates/agents/<id>.json`. It is eager-created when a mate is
-created (full schema, empty `mcpServers`/`skills`, defaults elsewhere — §5.1), and
-at delegation the worker's effective config becomes `source base ∪ (file's
-mcpServers + skills)` (§5.4). This is the step that adds the user-facing
-capability ("edit what my mate can do"), the folder resolution (§5.3), the
-in-place edit path (§5.4), and the create-time eager copy. The governance ceiling
+created (full schema, empty `prompt`/`mcpServers`/`skills`, defaults elsewhere —
+§5.1), and at delegation the worker's effective config becomes `source base ∪
+(file's prompt + mcpServers + skills)` (§5.4). This is the step that adds the
+user-facing capability ("edit what my mate can do"), the folder resolution
+(§5.3), the in-place edit path (§5.4), the conductor's catalog read and the
+card-confirmed change it raises (§5.4), the create-time eager copy, and the
+route flip: a crewmate's `spawn_run` moves from `kirocrew-worker` to the
+source-defined worker in the same change that gives that worker the file, so
+no release ships a worker without the user's servers. The governance ceiling
 (§8) applies to the merged result.
 
 **The cross-instance write guard is settled in THIS step, not before.** Because
@@ -406,29 +643,38 @@ question for step 3's design (§10), not for steps 1–2.
 
 Exit criteria:
 - A newly created mate has a file in `~/.kiro/mates/agents/`, and a delegated
-  worker projects its source base plus the file's `mcpServers` + `skills`.
-- Adding a skill or MCP server writes only that mate's file; no other mate's file
-  and no source is touched.
+  worker projects its source base plus the file's `prompt`, `mcpServers` and
+  `skills`.
+- Adding prompt text, a skill or an MCP server writes only that mate's file; no
+  other mate's file and no source is touched.
 - A mate is **not** offered in the session agent picker (folder split, §5.3).
 - No `crew-*.json` is written and `agent_state` records no `forked_from`: edits
   are in place, never forked (§5.4).
+- The conductor can list the gateway's configured MCP servers and skills
+  without any of them being mounted on it, and a capability it asks for lands
+  in the file only after the user presses the card.
 - The cross-instance write guard is in place: an instance with a non-default data
   home cannot clobber another instance's `<id>.json` (mechanism chosen per §10).
 
 ### Migrating existing crewmates (within step 3)
 
 Existing crewmates move when step 3 lands. The conductor and worker base are
-source-defined by then, so migration copies no prompt or tools; it carries over
-only what the file may hold — the user's **additions**. For a crewmate whose
-`kiro_agent` points at a shared `~/.kiro/agents/` agent, those are whatever
-`mcpServers`/`skills` that agent carried beyond the worker's source base; a
-crewmate with nothing extra gets an empty file. Leave the shared agent in place.
+source-defined by then, so migration copies no tools; it carries over only what
+the file may hold — the user's **additions**. For a crewmate whose `kiro_agent`
+points at a shared `~/.kiro/agents/` agent, those are whatever
+`mcpServers`/`skills` that agent carried beyond the worker's source base, and
+that agent's `prompt` when it differs from the default template's — copied
+WHOLE and verbatim into the file's `prompt`, not excerpted: the migration does
+not read a prompt for intent, and the appended section's precedence (§5.1, the
+charter wins on conflict) is what bounds a copied prompt that argues with the
+worker's base. A crewmate with nothing extra gets an empty file. Leave the
+shared agent in place.
 
 Prove it before flipping pointers:
 
 ```
 for each crewmate:
-  additions = (shared agent's mcpServers + skills) minus the worker's source base
+  additions = (shared agent's prompt, mcpServers, skills) minus the worker's source base
   write ~/.kiro/mates/agents/<id>.json  with those additions, defaults elsewhere
   after = project(worker source base ∪ file additions)
   assert after grants exactly: source base + the carried-over additions
@@ -463,6 +709,14 @@ audit does not gate steps 1–2 and is not blocking for step 3's own exit criter
 - **Existing crewmates** are migrated in Phase 2 rather than reinterpreted; their
   identity and memory are preserved and the dry-run proves each migrated worker
   grants its source base plus exactly the additions carried over.
+- **A crewmate chat stops doing the work itself after step 1** (2026-10-17).
+  The answers still arrive in the same chat; the worker's result comes back
+  through the dispatch path the conductor already uses. What a user loses is
+  the chat agent holding every user MCP server directly — those move to the
+  worker, where the task runs. Between steps 1 and 3 that worker is
+  `kirocrew-worker`, which mirrors the default template and so still carries
+  the user's servers; a crewmate bound to `kirocrew` or a custom agent before
+  step 1 keeps that binding until step 3's migration (§6).
 
 ## 8. Security considerations
 
@@ -473,14 +727,16 @@ audit does not gate steps 1–2 and is not blocking for step 3's own exit criter
   governance is not bypassed. The in-place edit path (§5.4) runs the governance
   sanitizer on the way to disk as well.
 - **Who writes the file, and the disposition that follows.** The writers are
-  gateway/dashboard handlers that run **unsandboxed** — the create path (§5.4)
-  and the in-place Capabilities edit path — exactly like today's
-  fork/publish/reset writers (`dashboard/agent_admin/fork_publish.py`). No
-  in-sandbox agent code writes `mates/agents/<id>.json`; it is written on the
-  gateway's side of the sandbox and then projected onto the wire. So the earlier
-  reasoning "`VISIBLE` because the in-sandbox agent writes it" is wrong: nothing
-  in the sandbox needs write access to this folder. The only in-sandbox question
-  is whether a sandboxed session must be able to READ the folder at all. Because
+  gateway/dashboard handlers that run **unsandboxed** — the create path (§5.4),
+  the in-place Capabilities edit path, and the change-card apply that a
+  conductor-raised card runs (§5.4) — exactly like today's fork/publish/reset
+  writers (`dashboard/agent_admin/fork_publish.py`). No in-sandbox agent code
+  writes `mates/agents/<id>.json`; the conductor raises a card and the gateway
+  writes after the user presses it. The file is written on the gateway's side
+  of the sandbox and then projected onto the wire. So the earlier reasoning
+  "`VISIBLE` because the in-sandbox agent writes it" is wrong: nothing in the
+  sandbox needs write access to this folder. The only in-sandbox question is
+  whether a sandboxed session must be able to READ the folder at all. Because
   the config reaches the session as a projected KAS payload, not by the session
   reading the file, the default disposition should be to **not expose the folder
   to the sandbox** — treat it like the other gateway-owned config under the Kiro
@@ -489,6 +745,14 @@ audit does not gate steps 1–2 and is not blocking for step 3's own exit criter
   found, ensure a session cannot reach a *different* crewmate's file than the one
   it is bound to.
 - The file is written `0o600`, atomically, by those gateway writers.
+- **The conductor's catalog read is a read, not a grant** (2026-10-17). The
+  tool that lists the gateway's configured MCP servers and skills returns names
+  and descriptions; it mounts nothing and approves nothing. A server reaches a
+  worker only through the file, after the card, under the ceiling.
+- **The file's `prompt` carries no grant** (2026-10-17). It is user-authored
+  text the worker reads, at the trust level of a custom-agent prompt today. It
+  reaches only the worker; the conductor's prompt is source and takes nothing
+  from the file.
 - **Cross-instance writes to the shared folder.** Because the folder is
   machine-wide and `member_id` is unique only within one instance (§5.1), two
   instances can resolve to the same `<id>.json`; left unguarded, one instance's
@@ -529,6 +793,21 @@ audit does not gate steps 1–2 and is not blocking for step 3's own exit criter
   the parent connection the design deliberately severs (§9a), so a later edit to
   the source would raise "parent changed / Review changes" on a config that is
   supposed to be standalone.
+- **One identity for conductor and worker** (2026-10-17). The chat agent spins
+  up copies of itself for complex tasks; same prompt, same tools. Rejected at
+  the architecture meeting: the chat agent then holds every user MCP server in
+  its context on every turn (§2 problem 6), and nothing stops it from running
+  the task inline and going unresponsive (§2 problem 5). Two prompts and two
+  tool sets are what make "always free to answer" enforceable.
+- **Load the user's MCP servers on the conductor, with a dispatch rule**
+  (2026-10-17). Keep one full-surface chat agent and tell it to delegate.
+  Rejected: the context cost is paid whether or not the rule is followed, and a
+  rule a model weighs is not a guarantee. The conductor gets a catalog view
+  instead, which costs a tool result only when it asks.
+- **Let the conductor write the file directly** (2026-10-17). Rejected: it runs
+  inside the sandbox, and §8 keeps every writer of this file on the gateway's
+  side; and a capability change is the user's decision, so it goes through the
+  card the editor's own path already uses.
 
 ## 9a. The fork / inheritance lifecycle we deliberately do NOT use
 
@@ -597,15 +876,18 @@ only if mates are ever redefined as living templates that track a source.
    backend session, or is next-rebuild acceptable? This is the least-proven path
    — the spike confirmed the editor now loads and (offline) saves a mate's file;
    whether a live session picks up the edit on next rebuild is the one live-only
-   unknown.
-2. **Default additions for a new worker file.** The conductor and worker base are
-   source-defined, so a new file starts with empty `mcpServers`/`skills`. Should
-   create seed any default additions (e.g. the `kirocrew-mate` server), and if
-   so, which — versus leaving the file empty until the user adds something?
-3. **Harness abstraction.** `kiro_agent` is KAS/custom-agent-shaped. Should the
+   unknown. (2026-10-17: for the worker this is settled — the file is read at
+   spawn, so the next spawn sees it. The question remains only for the
+   Capabilities editor's own live view.)
+3. **Default additions for a new worker file.** The conductor and worker base are
+   source-defined, so a new file starts with empty `prompt`/`mcpServers`/`skills`.
+   Should create seed any default additions (e.g. the `kirocrew-mate` server),
+   and if so, which — versus leaving the file empty until the user adds
+   something?
+4. **Harness abstraction.** `kiro_agent` is KAS/custom-agent-shaped. Should the
    binding abstract one layer up to support other harnesses before this lands, or
    after?
-4. **Crewmate visibility in the session-start switcher (new, from the spike).**
+5. **Crewmate visibility in the session-start switcher (new, from the spike).**
    Crewmates appear in the session-start crewmate switcher via
    `/api/agents/catalog` + `useAgents.withoutCoveredCrewmates`. This is
    PRE-EXISTING member-listing — the switcher lists crew *members*, not
@@ -613,6 +895,16 @@ only if mates are ever redefined as living templates that track a source.
    governs the Kiro-wide `/set_mode` picker. Noted as out-of-scope-but-adjacent
    so it is not conflated with this RFC; hiding crewmates there is a separate
    crewmate-visibility product decision with global blast radius.
-5. **Per-crewmate file isolation.** If a crewmate's in-sandbox session must be
+6. **Per-crewmate file isolation.** If a crewmate's in-sandbox session must be
    prevented from reading *another* crewmate's file in `mates/agents/`, that is a
    sandbox-scoping requirement §8 must pin, not assume.
+7. **The conductor's file tools: read-only or read/write?** (2026-10-17, step
+   1.) Settled: read-only (§5.0). The meeting named "basic file read/write";
+   the three existing conductors carry no file-writing tool, and a conductor
+   that writes files can do work inline, which is the case the tool set exists
+   to exclude. Recorded here so the question is not reopened in review.
+8. **What the catalog tool returns** (2026-10-17, step 3). Names and
+   descriptions of the gateway's configured MCP servers and skills, or also
+   the tool list each server exposes? The smaller answer keeps the conductor's
+   context small, which is the point; the larger one lets it pick better. Start
+   small.
