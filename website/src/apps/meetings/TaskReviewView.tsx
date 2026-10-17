@@ -5,9 +5,10 @@
 // anything is still pending — that is the whole point of the step, and it is why
 // upstream called this view the task review.
 
-import { Archive, ArchiveRestore, CheckCheck, CircleCheck, ExternalLink, Send } from 'lucide-react'
+import { Archive, ArchiveRestore, CheckCheck, CircleCheck, ExternalLink, Loader2, Send } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 import { Badge, Btn, Card, CardTitle, EmptyState, SendBtn, StatCard } from '../../components/ui'
 import { PRIORITY_LABEL_KEY, type Task, type TranscriptSegment } from './api'
 import TranscriptPanel from './components/TranscriptPanel'
@@ -33,6 +34,10 @@ interface Props {
   transcriptFull: boolean
   provider: string
   filing: string | null
+  /** True while the stop that End asked for is in flight, its flush included. */
+  closing: boolean
+  /** Why the last End failed, shown beside the close control until End is tried again. */
+  closeError: string | null
   onBack: () => void
   onClose: () => void
   onFile: (taskId: string) => void
@@ -47,6 +52,8 @@ export default function TaskReviewView({
   transcriptFull,
   provider,
   filing,
+  closing,
+  closeError,
   onBack,
   onClose,
   onFile,
@@ -62,7 +69,9 @@ export default function TaskReviewView({
     <div className="flex flex-col lg:flex-row h-full overflow-hidden">
       <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
         <div className="flex-none px-4 md:px-6 py-4 border-b border-border flex items-center gap-3">
-          <Btn onClick={onBack}>{i18nT('apps.meetings.review.backToMeeting')}</Btn>
+          {/* Disabled while the stop End asked for is in flight: the two exits
+              would otherwise race, a status change against a stop. */}
+          <Btn onClick={onBack} disabled={closing}>{i18nT('apps.meetings.review.backToMeeting')}</Btn>
           <h2 className="text-lg font-semibold text-text-strong">
             {i18nT('apps.meetings.review.title')}
           </h2>
@@ -208,16 +217,32 @@ export default function TaskReviewView({
           )}
         </div>
 
-        <div className="flex-none px-4 md:px-6 py-4 border-t border-border flex justify-center">
+        <div className="flex-none px-4 md:px-6 py-4 border-t border-border flex flex-col items-center gap-3">
+          {/* Hand-off on: every decision in this view is already saved, and
+              retrying End is the only other action a failed stop leaves. Hidden
+              while that retry is in flight: the control says what it is waiting
+              for, and the notice returns if this stop fails too. */}
+          <ErrorNotice message={closing ? null : closeError} askAgent className="w-full max-w-md" />
           <SendBtn
             onClick={onClose}
-            disabled={!canClose}
-            aria-label={i18nT('apps.meetings.review.closeMeeting')}
+            // Disabled while the stop it asked for is in flight: End flushes the
+            // held finals first, and a repeat inside that window must not queue
+            // a second stop. `aria-busy` is the pending state itself, and the
+            // label says what the wait is for.
+            disabled={!canClose || closing}
+            aria-busy={closing}
+            aria-label={closing
+              ? i18nT('apps.meetings.review.closing')
+              : i18nT('apps.meetings.review.closeMeeting')}
           >
-            <CheckCheck className="lucide-inline" />
-            {canClose
-              ? i18nT('apps.meetings.review.closeMeeting')
-              : i18nT('apps.meetings.review.closeBlocked', { count: pending.length })}
+            {closing
+              ? <Loader2 className="lucide-inline animate-spin" aria-hidden="true" />
+              : <CheckCheck className="lucide-inline" />}
+            {closing
+              ? i18nT('apps.meetings.review.closing')
+              : canClose
+                ? i18nT('apps.meetings.review.closeMeeting')
+                : i18nT('apps.meetings.review.closeBlocked', { count: pending.length })}
           </SendBtn>
         </div>
       </div>
