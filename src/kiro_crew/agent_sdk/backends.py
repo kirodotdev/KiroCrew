@@ -166,6 +166,9 @@ with no row here.
    * - ``ACP_BACKENDS_LOCAL_CLEAR``
      - pre-session registry query (whether the dashboard answers ``/clear``
        itself rather than handing it to the harness as prompt text)
+   * - ``ACP_BACKENDS_EFFORT_OVERLAY``
+     - driver-internal (whether the workspace ``cli.json`` effort keys are written,
+       read back at construction and cleared)
    * - ``ACP_BACKENDS_TOOL_SEARCH_OVERLAY``
      - driver-internal (whether the workspace ``cli.json`` Tool Search keys are written)
    * - ``ACP_BACKENDS_CLIENT_META_SETTINGS``
@@ -2384,11 +2387,9 @@ def model_registry_namespace(backend: str) -> str:
 # slash commands go through ``session/prompt`` and are interpreted by the adapter
 # (or degrade to prompt text) instead of returning -32601 for the whole call.
 #
-# The same membership decides who reads the workspace ``cli.json`` overlay for
-# EFFORT: the kiro-family harnesses take ``chat.modelDefaults`` from that file at
-# spawn, and writing it for a harness that never reads it leaves a stale file in
-# the user's workspace that no later clear can reach. Tool Search has its own,
-# narrower set below -- the two hosts read that setting from different places.
+# This membership does NOT decide who reads the workspace ``cli.json`` overlay: KAS
+# speaks this dialect but never opens that file, so its effort keys and its Tool
+# Search keys each have their own, narrower set below.
 # opencode is not a member: it has no ``_kiro.dev`` verb, and it publishes its own
 # command list as an ``available_commands_update`` on ``session/update`` instead.
 # pi is not a member for the same reason: pi-acp publishes its built-ins the same
@@ -2495,6 +2496,18 @@ ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
 # (``test/fixtures/acp_frames/deepseek/mcp-stdio-rollback-live.jsonl``). Both run on
 # ``AcpClient``, which is where the prune is applied.
 ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP = frozenset({ACP_BACKEND_GOOSE, ACP_BACKEND_DEEPSEEK})
+
+# Backends that read reasoning effort from the workspace ``cli.json`` overlay
+# (``chat.modelDefaults.<model>.<key>.effort``) at spawn. Only kiro-cli's Rust engine
+# does. The file's scope is the WORK DIRECTORY, so every session in one project
+# shares one entry per model: on kiro-cli that sharing is the engine's own, and Crew
+# reads the file back at construction so its map names the level the engine will
+# run. KAS never opens it -- its level travels as the ``effortLevel`` config option
+# -- so reading it back there ran a new chat at whatever level another chat in the
+# same work dir picked last. A non-member's level comes from the provider factory
+# (the slot's own pick, persisted per slot, else the crew, role or global default),
+# and the file is neither written, read back, nor cleared for it.
+ACP_BACKENDS_EFFORT_OVERLAY = frozenset({ACP_BACKEND_KIRO})
 
 # Backends that read the MCP Tool Search setting from the workspace ``cli.json``
 # overlay (``toolSearch.*`` keys). Only kiro-cli's Rust engine does. KAS shares

@@ -262,12 +262,30 @@ async def test_the_restarted_session_keeps_the_callers_env_and_effort():
 
 
 @pytest.mark.asyncio
-async def test_a_live_effort_pick_retires_the_recorded_override():
-    """Restarted on the recorded level, the successor overrides the live pick."""
+async def test_a_live_effort_pick_replaces_the_recorded_override():
+    """Started on the allocation's level, the successor would undo the live pick.
+
+    The record is the only carrier of that pick: KAS reads no workspace file, so
+    nothing else hands the successor the level the session runs.
+    """
     starts: list[dict] = []
     mgr, key, runs, _order, _notices = await _setup(starts=starts, **_CALLER_INPUTS)
-    mgr.retire_effort_override(key)
-    mgr.retire_effort_override("dashboard:no-such-chat")
+    mgr.record_effort_override(key, "max")
+    mgr.record_effort_override("dashboard:no-such-chat", "low")
+
+    assert await _restart(mgr, key, runs) == "recycled"
+
+    assert starts[-1].get("extra_env") == _CALLER_INPUTS["extra_env"]
+    assert starts[-1].get("reasoning_effort_override") == "max"
+    await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_a_live_clear_drops_the_recorded_override():
+    """Cleared live, the successor starts on the default, not the allocation's level."""
+    starts: list[dict] = []
+    mgr, key, runs, _order, _notices = await _setup(starts=starts, **_CALLER_INPUTS)
+    mgr.record_effort_override(key, "")
 
     assert await _restart(mgr, key, runs) == "recycled"
 

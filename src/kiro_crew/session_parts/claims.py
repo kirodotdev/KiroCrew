@@ -344,15 +344,19 @@ def allocation_requested_model(self: SessionManager, key: str) -> str:
     return session.requested_model if session is not None else ""
 
 
-def retire_effort_override(self: SessionManager, key: str) -> None:
-    """Drop *key*'s recorded ``reasoning_effort_override``; no-op if unknown.
+def record_effort_override(self: SessionManager, key: str, level: str) -> None:
+    """Record *level*, picked on *key*'s live session, as its effort override.
 
-    A level picked on the live session supersedes the allocation's record,
-    so a restart or reset successor must not start on the recorded level.
+    The pick supersedes the level the allocation recorded, so a restart or
+    reset successor (``allocation_identity``) starts on the level the session
+    runs. This record is the pick's only carrier there: only kiro-cli also
+    reads a level back from the workspace ``cli.json``, and KAS and the adapter
+    harnesses take theirs from the allocation alone. ``""`` (back to the
+    default) drops the record. No-op if *key* is unknown.
     """
     session = self._sessions.get(self._fold_key(key))
     if session is not None:
-        session.reasoning_effort_override = None
+        session.reasoning_effort_override = level or None
 
 
 # ── Circuit breaker ──
