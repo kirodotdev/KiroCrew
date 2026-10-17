@@ -747,7 +747,7 @@ The sidebar tree the person organizes their sessions in.
 | `chat_folder_tree` | none | Every folder (id, human path, project dir, default agent, declared steering directories) with the live sessions nested under it, plus an `(unfiled)` group. Listed in **sidebar order**, not alphabetically |
 | `chat_folder_create` | `name` (required), `parent` | Create a folder. `parent` is an id or a `/`-separated path; missing segments are created (`mkdir -p`). Omit or pass `root` for top level. Creating never moves anything. An app agent or crew member may nest only under a folder it owns or the folder its own session is filed in. A same-name sibling it owns is reused; any other same-name sibling is refused `409 folder_name_exists` |
 | `chat_folder_move` | `folder` (required), `new_parent`, `before`, `after` | Reparent a folder and/or set its position among siblings. Moves everything inside it; cycle-guarded |
-| `chat_folder_update` | `folder` (required), `name`, `icon`, `color` | Rename a folder, set its emoji icon, or set its palette color. Cannot set `project_dir`, `default_agent` or `steering_dirs`; for steering, `propose_change(kind="folder.steering")` asks the person on a change card |
+| `chat_folder_update` | `folder` (required), `name`, `icon`, `color` | Rename a folder, set its emoji icon, or set its palette color. Cannot set `project_dir`, `default_agent`, `default_crew` or `steering_dirs`; for steering, `propose_change(kind="folder.steering")` asks the person on a change card |
 | `chat_folder_move_session` | `session` (required), `folder` | File another live session into a folder, or omit `folder` to unfile it to the top level |
 | `chat_folder_delete` | `folder` (required) | Delete an **empty** folder **this session created**. Refused for the person's folders, and while it holds a subfolder, a live session or an archived session |
 | `chat_folder_file_self` | `folder` | File **this** session — the caller — into a folder. Writes only its own placement |
@@ -767,7 +767,7 @@ characters, checked after credential redaction.
 `color` (a folder palette value); an empty string clears either back to the
 default. It refuses a name a sibling folder already has, since the two
 would be indistinguishable by path. It is metadata only. It cannot set
-`project_dir`, `default_agent` or `steering_dirs`, which it refuses as unknown
+`project_dir`, `default_agent`, `default_crew` or `steering_dirs`, which it refuses as unknown
 fields: those settings reach
 every future session filed in the folder, changing its working directory, agent
 and memory boundary, or its standing instructions, so the person sets them in the

@@ -17,6 +17,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.chat_folder_default_crew import clean_default_crew
 from kiro_crew.dashboard.chat_folders_icons import _is_single_emoji, _is_valid_folder_color
 from kiro_crew.dashboard.chat_folders_paths import (
     _folder_project_overlap_denied,
@@ -476,6 +477,7 @@ async def create_folder_record(
     parent_id: str = "",
     project_dir: str = "",
     default_agent: str = "",
+    default_crew: str = "",
     color: str = "",
     icon: str = "",
     request_app: str = "",
@@ -632,6 +634,7 @@ async def create_folder_record(
         "parent_id": parent_id,
         "project_dir": project_dir,
         "default_agent": default_agent,
+        "default_crew": clean_default_crew(default_crew),
         # Epoch seconds, a JSON number, so the sidebar and the MCP tree read it
         # with the same rule they read ``order`` by. It is what the sidebar's
         # ``created`` folder sort orders on; a row from before this key existed
