@@ -222,8 +222,14 @@ from kiro_crew.acp.client_tool_events import _ACP_SHELL_KIND  # noqa: F401
 from kiro_crew.acp.client_tool_events import _MAX_CACHED_TOOL_PARAMS  # noqa: F401
 from kiro_crew.acp.client_tool_events import _is_shell_kind  # noqa: F401
 from kiro_crew.acp.client_tool_events import _make_unified_diff  # noqa: F401
+from kiro_crew.acp.client_transport import _AGENT_ACTIVITY_UPDATE_KINDS  # noqa: F401
+from kiro_crew.acp.client_transport import _AGENT_STARTED_REQUEST_ID  # noqa: F401
+from kiro_crew.acp.client_transport import _CLAUDE_AUTONOMOUS_ORIGIN_KINDS  # noqa: F401
+from kiro_crew.acp.client_transport import _ends_agent_started_turn  # noqa: F401
 from kiro_crew.acp.client_transport import _is_safe_oauth_url  # noqa: F401
 from kiro_crew.acp.client_transport import _jsonrpc_error_code  # noqa: F401
+from kiro_crew.acp.client_transport import _session_update_kind  # noqa: F401
+from kiro_crew.acp.client_transport import _starts_agent_turn  # noqa: F401
 from kiro_crew.acp.client_turn import _TOOL_INTERRUPTED_MARKER  # noqa: F401
 from kiro_crew.acp.client_turn import _is_tool_interrupted_marker  # noqa: F401
 from kiro_crew.acp.client_turn_control import _CLIENT_STEERING_REQUEST_METHODS  # noqa: F401

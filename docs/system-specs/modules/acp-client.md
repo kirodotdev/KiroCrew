@@ -57,12 +57,12 @@ through it reaches every owner binding the same object (`kiro_crew._facade_mirro
 | `acp/client_model_selection.py` | the session's model: advertised list and entitlement re-probe, served-default correction, `set_model`, the config-option push ladder (`_push_model_via_effort_split`, `_is_config_value_rejection`) and effort levels |
 | `acp/client_permissions.py` | permission requests and in-band tool restrictions: the permission event, approve and reject, the auto-approve identity gate, zero-tool and spec-disabled refusals, identity-drift refusals, the pi, DeepSeek and goose-mode tripwires and the routing read-back |
 | `acp/client_mcp_array.py` | the session's `mcpServers` array: member mounts, pooled broker stubs, the per-harness translations, the pi handoff, pruning of servers that cannot start, the MCP registration report and the spec's zero-tools answer |
-| `acp/client_transport.py` | JSON-RPC over the child's stdio: request ids, bounded request and response writes, frame reads, waiting for a response while deferring other frames, and draining notifications |
+| `acp/client_transport.py` | JSON-RPC over the child's stdio: request ids, bounded request and response writes, frame reads, waiting for a response while deferring other frames, draining notifications, and the idle reader between turns with its stdout claims |
 | `acp/client_tool_events.py` | tool-call frames: text chunk, tool call, update and refinement extraction with their provenance caches, the ACP-layer SEL audit record, the Pre/PostToolUse hook fires and the tool results read back from kiro-cli's session JSONL |
 | `acp/client_usage.py` | usage, metadata and compaction frames: usage and prompt-token updates, context-window metadata, claude and codex inline compaction and `wait_for_compaction` |
 | `acp/client_turn_control.py` | a turn controlled from outside it: kiro, claude, goose and opencode steers, cancel, slash commands and the turn-state queries callers poll |
 | `acp/client_start.py` | the session start: the spawn (kiro-cli's own arm, and every other host's plan through the launch tail both drivers share), the `initialize` handshake and its params, new, loaded, forked and substituted sessions, and `ensure_ready` |
-| `acp/client_turn.py` | the turn loop: sending the prompt, `_prompt_loop`, reading the prompt response, dispatching and processing frames, `send_message`, `send_message_stream` and `stream_events`, the tool-interrupted marker, OpenCode's deferred shell permission and the liveness consult |
+| `acp/client_turn.py` | the turn loop: sending the prompt, `_prompt_loop`, reading the prompt response, dispatching and processing frames, `send_message`, `send_message_stream`, `stream_events` and `stream_unsolicited`, the tool-interrupted marker, OpenCode's deferred shell permission and the liveness consult |
 | `acp/client_class.py` | the class statement: the constructor, the properties, the class defaults, the member table that binds every owner's members, and the members that stay class-resident |
 | `acp/client_lifecycle.py` | the child after it is spawned: the stderr drain, process-tree tracking, kill, failed-start classification, state reset, the workspace and sandbox discards, re-binding a live process, and shutdown |
 
@@ -1760,6 +1760,68 @@ A re-attempt opens no consent URL, but the engine might still send one, so a re-
 
 The session MCP report carries `restart_to_load`: failed servers whose reason reads as a missing or rejected credential and that the session does not re-attempt itself (kiro-cli, which has no per-server reset, or KAS once the budget is spent). The handle decides which applies from `AcpRuntime.reattempts_mcp_servers`, the same capability `begin_mcp_reattempt` checks, not from whether the method exists. The MCP panel shows a "start a new session" hint under each, and `problem_summary` names them without their reason.
 
+### Idle reader and agent-started turns (`AcpClient`)
+
+On a backend in `ACP_BACKENDS_AGENT_STARTED_TURNS` (claude), Claude Code can
+start a turn by itself after a prompt's turn has ended, for example when a
+`run_in_background` command exits, and claude-agent-acp writes that turn to
+stdout while no request waits. Design record:
+`docs/request-for-change/rfc-agent-started-turns.md`.
+
+- **Bound by the claude adapter.** `ClaudeLaunch.resolve_spawn`
+  (`acp/harness/claude.py`) calls `_install_idle_reader()` on the session it
+  launches when its backend is in `ACP_BACKENDS_AGENT_STARTED_TURNS`; a respawn
+  calls it again and it binds nothing twice. On that instance it wraps
+  `ensure_ready`, `_initialize_session`, `_wait_for_response`,
+  `_drain_notifications`, `wait_for_compaction`,
+  `_drain_post_compaction_metadata`, `_read_steer_answers` and `_prompt_loop`
+  in a stdout claim, and
+  makes `_kill_process` and `_reset_state` drop the reader first. The first
+  call runs inside the first `ensure_ready`, so only the `_initialize_session`
+  claim covers that handshake; the `ensure_ready` claim stops the reader when a
+  later prompt starts. The kiro-cli
+  arm of `_spawn` reaches no adapter, so a Kiro client's constructor and read
+  methods are main's and it never reads between turns (harness-parity H13).
+- **One reader at a time.** An `asyncio.StreamReader` allows one waiting
+  `readline()`, so a claim cancels the idle reader and waits for it to exit;
+  the last release restarts it. `_prompt_loop` is claimed before it takes
+  `_turn_lock`. `test/test_acp_client_agent_started_turns.py` fails when a new
+  `_read_message` caller in `client.py` or one of its owner modules is not
+  wrapped.
+- **The idle reader.** It runs while no claim is held, the turn is done, the
+  process is alive, no hand-off is pending and `on_agent_turn` is set. It holds
+  what it reads locally, because `_read_message` pops `_buffer` first, and puts
+  it back at the front of `_buffer` in arrival order when it stops, unless
+  `_cancel_idle_reader` dropped it on a kill or reset. It reads with the
+  cancel-grace check off, since `_cancelled` belongs to the turn that ended,
+  and it stops once `_buffer` is full (its `maxlen`, 100), leaving the rest in
+  the pipe.
+- **Hand-off.** A request from the agent, or a `session/update` of kind
+  `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`
+  or `plan`, ends the reader: it records that frame as the turn's start and
+  calls `on_agent_turn(client)`. A frame that only reports state
+  (`usage_update`, `session_info_update`) starts nothing. The hand-off stays
+  pending while the start frame is still in `_buffer`, so whichever reader
+  takes it ends the hand-off. A request wait files a start `session/update` in
+  `_mcp_notifications`, as it files every agent frame it reads, and the
+  restarted reader hands off the next activity frame; a start request (a
+  permission request) goes back to `_buffer`, and the hand-off stands.
+- **Reading the turn.** `stream_unsolicited()` reads the pending turn through
+  `_dispatch_events` under request id `-1` and sends nothing. After the turn's
+  first activity frame, the bound `_prompt_loop` ends it on the `usage_update`
+  whose `_meta["_claude/origin"].kind` is `task-notification`, `peer`,
+  `coordinator`, `observer` or `observer-activity` (a user turn's is `human`,
+  which ends nothing), or on any response: no request is sent under `-1`, so a
+  response answers a request whose wait already ended, usually a prompt whose
+  turn ended here, and the frames were that prompt's tail; such a response
+  keeps its own `stopReason`. Process death, the stale-turn gate and the prompt
+  timeout end it too. A prompt that starts first reads the frames as its own,
+  which ends the hand-off, and `stream_unsolicited()` then yields nothing, as it
+  does while any prompt is in flight.
+
+No production caller registers `on_agent_turn`; until one does, the reader
+never starts.
+
 ## Key APIs
 
 | Method | Purpose |
@@ -1836,7 +1898,7 @@ When the ACP agent acknowledges a cancel, the `session/prompt` response carries 
 
 ### Cancel Grace Window
 
-Setting `_cancelled = True` does not short-circuit `_read_message`. Instead, a 10-second grace window (`_CANCEL_GRACE_SECS = 10.0`) allows the agent to deliver its `stopReason` acknowledgement. If no response arrives within the window, `_read_message` raises `AcpError("Cancel grace window exceeded; agent unresponsive")`. This preserves the escape hatch for broken agents without sabotaging cooperative cancels.
+Setting `_cancelled = True` does not short-circuit `_read_message`. Instead, a 10-second grace window (`_CANCEL_GRACE_SECS = 10.0`) allows the agent to deliver its `stopReason` acknowledgement. If no response arrives within the window, `_read_message` raises `AcpError("Cancel grace window exceeded; agent unresponsive")`. This preserves the escape hatch for broken agents without sabotaging cooperative cancels. The idle reader reads with this check off (`check_cancel=False`): it starts only after the cancelled turn has ended.
 
 `_cancel_ts` is set to `time.monotonic()` inside `cancel_session()`.
 

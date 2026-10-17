@@ -1,8 +1,8 @@
 """Run an ``AcpClient`` prompt turn and dispatch the frames it reads.
 
-The kiro prompt loop, ``send_message`` and ``send_message_stream``, ``stream_events``, the frame classifier
-and dispatcher, the prompt response reader, the opencode shell-permission deferral and the liveness
-consult.
+The kiro prompt loop, ``send_message`` and ``send_message_stream``, ``stream_events`` and
+``stream_unsolicited``, the frame classifier and dispatcher, the prompt response reader, the
+opencode shell-permission deferral and the liveness consult.
 
 Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -48,7 +48,7 @@ from kiro_crew.acp.client_timeouts import (
     _TOOL_STALL_TIMEOUT,
     _effective_prompt_timeout_async,
 )
-from kiro_crew.acp.client_transport import _is_safe_oauth_url
+from kiro_crew.acp.client_transport import _AGENT_STARTED_REQUEST_ID, _is_safe_oauth_url
 from kiro_crew.acp.client_turn_control import format_command_result
 from kiro_crew.acp.liveness import EVIDENCE_SAMPLING, VERDICT_WORKING, consult_offloaded
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
@@ -753,6 +753,24 @@ async def stream_events(
     async with aclosing(self._dispatch_prompt_events(req_id, timeout)) as events:
         async for event in events:
             yield event
+
+
+async def stream_unsolicited(
+    self: AcpClient, timeout: float | None = None
+) -> AsyncIterator[AcpEvent]:
+    """Yield the events of a turn the agent started on its own, sending nothing.
+
+    Yields nothing when no such turn is pending, or when a prompt is in
+    flight: that prompt's turn reads those frames as its own.
+    """
+    timeout = await _effective_prompt_timeout_async(timeout)
+    # Checked after the await, so a prompt that started meanwhile is seen.
+    if not self._agent_turn_pending() or not self._turn_done.is_set():
+        return
+    self._cancelled = False
+    self._turn_done.clear()
+    async for event in self._dispatch_events(_AGENT_STARTED_REQUEST_ID, timeout):
+        yield event
 
 
 async def _dispatch_events(
