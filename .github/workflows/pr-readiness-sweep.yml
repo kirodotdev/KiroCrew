@@ -821,8 +821,37 @@ jobs:
           [ -s "$stale_file" ] && stale_total="$(wc -l <"$stale_file" | tr -d ' ')"
           echo "Found $stale_total stale PR Readiness status(es); dispatching oldest-first."
 
+          # Skip set for the saturation-cancel loop. When a dispatched run is
+          # still QUEUED -- waiting for a runner -- the next sweep tick dispatches
+          # again into the same concurrency group, which GitHub cancels the queued
+          # run to satisfy: only one pending run is kept per group, regardless of
+          # cancel-in-progress. Build a set of (pr, sha) pairs that already have a
+          # queued or in-progress workflow_dispatch run and skip them.
+          #
+          # pr-readiness.yml stamps its run-name as "PR-wd-{pr}-{sha}" for
+          # workflow_dispatch events; display_title reflects that in the list
+          # endpoint response directly, with no per-run follow-up call. Active
+          # Paginated with --slurp across all pages so no active run is missed.
+          # Runs dispatched before run-name was on the default branch carry
+          # display_title: 'PR Readiness' and do not match; the first sweep tick
+          # after this merges behaves the old way for those. From the second tick
+          # on, newly dispatched runs carry PR-wd-{pr}-{sha} and the set is live.
+          active_wd_json="$(gh api \
+            "repos/$REPO/actions/workflows/pr-readiness.yml/runs?event=workflow_dispatch&per_page=100" \
+            --paginate --slurp 2>/dev/null)" \
+            || { echo "::warning::Failed to list active dispatch runs; active-run skip check disabled for this tick."; active_wd_json="[]"; }
+          active_wd_pairs="$(mktemp)"
+          jq -r '[.[].workflow_runs[]?
+                   | select(.status == "queued" or .status == "in_progress")
+                   | .display_title
+                   | select(test("^PR-wd-[0-9]+-[0-9a-f]{40}$"))
+                   | capture("^PR-wd-(?<pr>[0-9]+)-(?<sha>[0-9a-f]+)$")
+                   | "\(.pr)::\(.sha)"]
+                 | .[]' <<<"$active_wd_json" >>"$active_wd_pairs" || true
+
           dispatched=0
           skipped_cap=0
+          skipped_active=0
 
           # Second pass: dispatch OLDEST-stale-first (numeric sort ascending on
           # the staleness epoch in column 1). The longest-frozen PR is always
@@ -831,6 +860,12 @@ jobs:
             [ -n "$number" ] || continue
             if [ "$dispatched" -ge "$MAX_DISPATCH" ]; then
               skipped_cap=$(( skipped_cap + 1 ))
+              continue
+            fi
+            # Skip this pair if an active dispatch already covers it.
+            if grep -Fxq "${number}::${sha}" "$active_wd_pairs" 2>/dev/null; then
+              echo "PR #$number: a dispatch for $sha is already queued or in progress; skipping."
+              skipped_active=$(( skipped_active + 1 ))
               continue
             fi
             echo "PR #$number: PR Readiness $reason at $sha -> re-firing recompute."
@@ -842,6 +877,6 @@ jobs:
             fi
           done < <(sort -n -k1,1 "$stale_file")
 
-          rm -f "$stale_file"
+          rm -f "$stale_file" "$active_wd_pairs"
 
-          echo "Re-fired $dispatched recompute(s); $skipped_cap stale PR(s) deferred to next sweep by MAX_DISPATCH=$MAX_DISPATCH."
+          echo "Re-fired $dispatched recompute(s); $skipped_active stale PR(s) skipped (dispatch already active); $skipped_cap stale PR(s) deferred to next sweep by MAX_DISPATCH=$MAX_DISPATCH."

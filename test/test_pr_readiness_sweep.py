@@ -88,6 +88,14 @@ if [ "$1 ${2:-}" = "api graphql" ]; then
 fi
 if [ "$1" = "api" ]; then
   case "${2:-}" in
+    *"/actions/workflows/"*)
+      # Active workflow_dispatch runs for pr-readiness.yml; display_title
+      # is set by pr-readiness.yml run-name and carries pr+sha.
+      if [ -f "$FIXTURES/active_wd_runs.json" ]; then
+        cat "$FIXTURES/active_wd_runs.json"
+      else
+        printf '{"workflow_runs":[]}'
+      fi; exit 0 ;;
     *"/comments")
       printf '%s\n' "$*" >> "$FIXTURES/comments_read.txt"
       cat "$FIXTURES/comments.json"; exit 0 ;;
@@ -356,6 +364,7 @@ class Runner:
         description: str = "11 readiness check(s) still pending; waiting on CI (not started)",
         status_read_fails: bool = False,
         review_at: str | None = None,
+        active_wd_runs: list[dict] | None = None,
     ) -> list[str]:
         """Run the sweep over ONE pull request; return the dispatches recorded.
 
@@ -377,6 +386,12 @@ class Runner:
         degrades when it cannot classify a pending.
 
         `review_at` is the newest human review submission or dismissal.
+
+        `active_wd_runs` is a list of dicts each with keys ``id`` (int),
+        ``pr`` (str), ``sha`` (str) and ``status`` (``queued`` or
+        ``in_progress``). The stub serves them as existing workflow_dispatch
+        runs so the sweep's skip set is exercised. ``None`` means no active
+        runs (the normal case), which the stub answers with an empty list.
         """
         comment_times = [
             at
@@ -392,6 +407,23 @@ class Runner:
         (self.fixtures / "reviews_timeline.json").write_text(json.dumps(reviews))
         if review_at is not None:
             pr_updated_at = max(pr_updated_at, review_at)
+        # Fixtures for the active-dispatch skip set. display_title mirrors
+        # pr-readiness.yml run-name: "PR-wd-{pr}-{sha}" for dispatch events.
+        if active_wd_runs:
+            run_list = [
+                {
+                    "id": r["id"],
+                    "status": r["status"],
+                    "event": "workflow_dispatch",
+                    "display_title": f"PR-wd-{r['pr']}-{r['sha']}",
+                }
+                for r in active_wd_runs
+            ]
+            (self.fixtures / "active_wd_runs.json").write_text(
+                json.dumps([{"workflow_runs": run_list}])
+            )
+        else:
+            (self.fixtures / "active_wd_runs.json").unlink(missing_ok=True)
         (self.fixtures / "prs.json").write_text(
             json.dumps([{"number": pr, "headRefOid": sha, "updatedAt": pr_updated_at}])
         )
@@ -1880,3 +1912,92 @@ def test_a_terminal_verdict_younger_than_the_lag_is_not_examined_for_reviews(
         return (now - timedelta(seconds=seconds_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     assert runner.sweep(state=state, status_at=stamp(60), review_at=stamp(30)) == []
+
+
+# ── The saturation-cancel loop: skip already-active dispatches ──────────────
+
+
+def test_a_queued_dispatch_prevents_another_dispatch(runner: Runner) -> None:
+    """Core property of the fix.
+
+    The sweep sees a stale PR and wants to dispatch. But a workflow_dispatch run
+    for this exact (pr, sha) is already QUEUED in the same concurrency group
+    (pr-readiness-wd-{pr}-{sha}). Dispatching again would cancel that queued run
+    -- GitHub always evicts the pending slot when a new run enters the group,
+    regardless of cancel-in-progress. The sweep must skip the pair.
+    """
+    sha = "4328fd0f941f09ff10f245fbdb4accf7c246febe"
+    dispatched = runner.sweep(
+        state="pending",
+        status_at="2020-01-01T00:00:00Z",
+        check_completed_at="2020-01-01T00:30:00Z",
+        sha=sha,
+        active_wd_runs=[{"id": 9900001, "pr": "2064", "sha": sha, "status": "queued"}],
+    )
+    assert dispatched == []
+    assert "already queued or in progress" in runner.last_stdout
+
+
+def test_an_in_progress_dispatch_prevents_another_dispatch(runner: Runner) -> None:
+    """An in-progress run holds the concurrency slot; re-dispatching is wasteful."""
+    sha = "4328fd0f941f09ff10f245fbdb4accf7c246febe"
+    dispatched = runner.sweep(
+        state="pending",
+        status_at="2020-01-01T00:00:00Z",
+        check_completed_at="2020-01-01T00:30:00Z",
+        sha=sha,
+        active_wd_runs=[{"id": 9900002, "pr": "2064", "sha": sha, "status": "in_progress"}],
+    )
+    assert dispatched == []
+    assert "already queued or in progress" in runner.last_stdout
+
+
+def test_a_completed_active_run_does_not_block_dispatch(runner: Runner) -> None:
+    """Only queued/in_progress runs indicate an active slot; completed ones do not."""
+    sha = "4328fd0f941f09ff10f245fbdb4accf7c246febe"
+    dispatched = runner.sweep(
+        state="pending",
+        status_at="2020-01-01T00:00:00Z",
+        check_completed_at="2020-01-01T00:30:00Z",
+        sha=sha,
+        active_wd_runs=[{"id": 9900003, "pr": "2064", "sha": sha, "status": "completed"}],
+    )
+    assert len(dispatched) == 1
+    assert "pr=2064" in dispatched[0]
+
+
+def test_a_queued_dispatch_for_a_different_sha_does_not_block(runner: Runner) -> None:
+    """The skip is keyed on the exact sha, not just the PR number.
+
+    A queued run for (pr=2064, sha=OLD) must not suppress a dispatch for
+    (pr=2064, sha=NEW): a new push was made and the stale verdict is for the
+    new head, which has no active run covering it.
+    """
+    sha = "4328fd0f941f09ff10f245fbdb4accf7c246febe"
+    dispatched = runner.sweep(
+        state="pending",
+        status_at="2020-01-01T00:00:00Z",
+        check_completed_at="2020-01-01T00:30:00Z",
+        sha=sha,
+        active_wd_runs=[
+            {
+                "id": 9900004,
+                "pr": "2064",
+                "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "status": "queued",
+            }
+        ],
+    )
+    assert len(dispatched) == 1
+    assert "sha=%s" % sha in dispatched[0]
+
+
+def test_no_active_runs_fixture_dispatches_normally(runner: Runner) -> None:
+    """When active_wd_runs is None (the normal case) the skip set is empty."""
+    dispatched = runner.sweep(
+        state="pending",
+        status_at="2020-01-01T00:00:00Z",
+        check_completed_at="2020-01-01T00:30:00Z",
+    )
+    assert len(dispatched) == 1
+    assert "pr=2064" in dispatched[0]

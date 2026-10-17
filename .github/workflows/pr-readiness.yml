@@ -1,4 +1,10 @@
 name: PR Readiness
+run-name: >-
+  ${{
+    github.event_name == 'workflow_dispatch'
+    && format('PR-wd-{0}-{1}', inputs.pr, inputs.sha)
+    || ''
+  }}
 
 # One current-SHA verdict for the otherwise wide PR workflow fan-out. The
 # commit status is the branch-protection handle; the label is the at-a-glance
