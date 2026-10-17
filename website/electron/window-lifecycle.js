@@ -926,13 +926,31 @@ function createWindowLifecycle(options) {
     }
   }
 
+  // A focused show answers an explicit user gesture (a relaunch, the tray's
+  // Show item, a notification click) that usually reaches the app while another
+  // app is frontmost. On macOS 14+ `win.focus()` alone orders the window in
+  // without activating the app, so the other app keeps the keyboard and stays
+  // in front; steal activation the way the summon hotkey and the gateway-error
+  // reveal do. A show without `focus` never activates the app.
+  function activateApp() {
+    if (!IS_MAC || typeof app.focus !== "function") return;
+    try {
+      app.focus({ steal: true });
+    } catch {
+      /* best effort — the window is already shown and focused */
+    }
+  }
+
   function showMainWindow({ focus = false } = {}) {
     if (!mainWindow || mainWindow.isDestroyed()) return false;
     cancelPendingTrayHide(mainWindow);
     unhideApp();
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
-    if (focus) mainWindow.focus();
+    if (focus) {
+      mainWindow.focus();
+      activateApp();
+    }
     return true;
   }
 
