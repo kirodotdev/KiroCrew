@@ -296,7 +296,6 @@ line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	dashboard/se
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	dashboard/server.py:652-660
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	dashboardSlice.ts:280-292
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	governance_profiles.py:190
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	llm_helpers.py:299
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	mcp_core.py:228,357,288,318
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	platform/governance_profiles.py:212-220
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	runtime.py:522

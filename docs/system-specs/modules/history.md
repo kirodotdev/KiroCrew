@@ -1295,7 +1295,7 @@ no longer destroy older turns.
   cleanup probes), the abort latches — every later save of new activity is
   skipped, which is why the skip logs at WARNING with the slot key.
 - **Turn persistence is offloaded through ONE choke point**
-  (`save_conversation_turn_off_loop`, `llm_helpers.py`): `save_conversation_turn`
+  (`save_conversation_turn_off_loop`, `llm_helpers_parts/turn_results.py`): `save_conversation_turn`
   makes TWO `append` calls, so an on-loop caller pays ~24 ms of loop time per turn
   AND takes `_locked`'s single non-blocking acquire — dropping the durable copy
   exactly when another writer is active. Every async caller (the Slack handler,

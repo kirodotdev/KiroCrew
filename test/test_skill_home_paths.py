@@ -131,6 +131,7 @@ def test_migration_exemption_is_narrow() -> None:
 AGENT_INSTRUCTION_FILES = (
     "src/kiro_crew/config/prompt.md",
     "src/kiro_crew/mcp_cron.py",
+    "src/kiro_crew/mcp_cron_tool_list.py",
     "AUTOSDE.yaml",
     "website/AUTOSDE.yaml",
 )

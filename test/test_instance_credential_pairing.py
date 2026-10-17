@@ -1558,6 +1558,7 @@ class TestTheServingResolverIsTheOneGatewaySideChokepoint:
             "computer_use/screencast.py",
             "cron_script.py",
             "mcp_cron.py",
+            "mcp_cron_list_render.py",
         ):
             text = (src / rel).read_text(encoding="utf-8")
             if "resolve_client_port_ex" in text:

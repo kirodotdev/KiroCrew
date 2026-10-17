@@ -1690,7 +1690,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 
 | Server | Process | Tools |
 |--------|---------|-------|
-| `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request` |
+| `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py` + `mcp_cron_*.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_core_parts/` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
 | `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`, `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `session_move_to_column`, `chat_session_pin`, `chat_session_pin_move`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_retry`, `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_close`, `session_revive`, `session_history_list`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_release`, `session_read_message`, `session_summary` |
@@ -2495,6 +2495,19 @@ to the owner of its responsibility:
 | `crew` | Crew Mode's `route_crew` and `select_crew` bodies |
 | `history` | the chat-history search tools' scoping, redaction and snippet helpers |
 | `radar_crew` | the Issue Radar crew tools' identity, ledger view and write scrubbing |
+
+`mcp_cron.py` keeps the cron server itself — argument validation, the call path, the
+caller's identity and ownership checks, the tool bodies (`_call_tool_inner`) and the
+stdio entry point — and is a mirror facade over four sibling owners, so every name
+still reads and patches as `mcp_cron.<name>`. New cron-server code goes to the owner of
+its responsibility:
+
+| Owner | Owns |
+|---|---|
+| `mcp_cron_shell_scan` | the lexical scanners the cron shell gate runs: the protected-path and secret-environment matchers, quote states, `$` expansions, extglob and brace expansion, and whether a glob can reach a credential directory |
+| `mcp_cron_vet` | the cron gate: the governance, command and script vets, the fire-time re-vet `vet_job_at_fire_time`, the storage-time denial audit, and the folder `cron_add` names |
+| `mcp_cron_tool_list` | the tool catalogue `tools/list` returns |
+| `mcp_cron_list_render` | `cron_list`'s full, compact and JSON renderings and the run-history fold |
 
 The remaining upward dependency is known: the plumbing could move to a module the
 handlers own, which would make `mcp_tools` a leaf. That is a separate change —

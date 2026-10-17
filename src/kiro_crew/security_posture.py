@@ -1997,7 +1997,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # human only through the delivering surfaces (the cron/heartbeat alert
         # paths composed into slack/gateway.py and the sub-agent completion path
         # in subagent_parts/run_output.py), which are the registered sinks.
-        "llm_helpers.py",
+        "llm_helpers_parts/model_fallback.py",
+        "llm_helpers_parts/tool_approval.py",
         # Shared in-band deny-notice builder: redacts the provider-authored tool
         # title ONCE, centrally, before the notice is steered back into the
         # model's own turn (not to a person). It owns no egress — the steer goes
@@ -2420,6 +2421,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # crosses, not this module.
         "mcp_debug.py",
         "mcp_cron.py",
+        "mcp_cron_list_render.py",
+        "mcp_cron_vet.py",
         # Same class as mcp_core.py: an MCP stdio server redacts tool RESULTS and
         # agent-authored names before they are persisted or returned, but the
         # egress boundary itself is the transport the result crosses, not this
