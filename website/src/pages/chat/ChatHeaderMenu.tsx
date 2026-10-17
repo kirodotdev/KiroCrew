@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, MessageSquarePlus, Plug } from 'lucide-react'
+import { ChevronDown, ChevronRight, MessageSquarePlus, Plug, Rows2 } from 'lucide-react'
 
 import { api } from '../../api/client'
 import SessionActionsMenu from '../../components/SessionActionsMenu'
@@ -24,7 +24,7 @@ import McpToolsPanel from './McpToolsPanel'
 /** The session header's dropdown: reveal, rename, auto-title, mode, the MCP
  *  servers submenu and the rest of SessionActionsMenu. Header chrome, so it
  *  lives beside the page, not in the message-content module. */
-export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTitle, mode, sidebarOnScreen, omitPopout, triggerLabel, newSessionHere }: {
+export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTitle, mode, sidebarOnScreen, omitPopout, triggerLabel, newSessionHere, onSplitDown }: {
   activeSlot: string | null; agent?: string; onReveal?: () => void; onRename?: () => void; onAutoTitle?: () => void; mode?: string
   /** Whether the sidebar (and its folder-order banner) is on screen -- see SessionActionsMenu. */
   sidebarOnScreen?: boolean
@@ -39,6 +39,14 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
    *  session's folder. It lives in this menu, not beside it, because the phone
    *  bar's centre cell holds two controls (AUTOSDE `max-two-buttons-per-row`). */
   newSessionHere?: { label: string; disabled?: boolean; onSelect: () => void }
+  /** Desktop only: start split view with the new pane below this session. The
+   *  split view button already starts the side-by-side one, so this menu has no
+   *  Split right row. The Split down row sits after Pop out to window, not at the
+   *  top, so Rename and Pin keep their place. It lives in this menu, not beside the
+   *  split view button, because that header group already holds three buttons (the
+   *  `max-two-buttons-per-row` rule). Absent when split view is off or the session
+   *  already belongs to a saved split. */
+  onSplitDown?: () => void
 }) {
   // Controlled open state: lets the colour-swatch row (not a Radix menu item)
   // close the menu after a pick, via the onColorPicked hook passed below.
@@ -145,6 +153,11 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
               </DropdownMenuSubContent>
             </DropdownMenuSub>,
           ]}
+          layoutSlot={onSplitDown ? (
+            <DropdownMenuItem key="split-down" onSelect={() => onSplitDown()}>
+              <Rows2 size={13} className="shrink-0 text-muted" /> {i18nT('components.chatPane.split_down')}
+            </DropdownMenuItem>
+          ) : undefined}
           onReveal={onReveal}
           onAutoTitle={onAutoTitle}
           onRename={onRename}

@@ -78,6 +78,10 @@ export interface SessionActionsMenuProps {
   /** Extra items rendered in the top "informational" group (header-only today:
    *  the MCP-servers submenu). Generic so the shared menu stays surface-agnostic. */
   infoSlots?: React.ReactNode[]
+  /** One extra item rendered in the navigation group, directly after the pop-out rows
+   *  (header-only today: Split down). It changes the window layout the way pop-out
+   *  does, so it sits beside it, and no row above it moves. */
+  layoutSlot?: React.ReactNode
   /** Called after a colour pick; lets a caller that controls its own menu close it (the header does). */
   onColorPicked?: () => void
   /**
@@ -134,12 +138,12 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  * with dividers auto-collapsing between them):
  *   [informational]  MCP servers ▸  (header only)
  *   [tab modifiers]  Rename · Mark read/unread · Pin · Move to folder ▸ · Tags…
- *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Copy link · Send a copy ▸ · Export for import (JSON) · Export as readable Markdown · Connected surfaces
+ *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Pop out · Split down (header only) · Copy link · Send a copy ▸ · Export for import (JSON) · Export as readable Markdown · Connected surfaces
  *   [colour]         colour swatches
  *   [close]          Close session
  */
 export default function SessionActionsMenu({
-  variant, slotKey, mode, onReveal, onRename, onAutoTitle, onOpenInNewTab, onDuplicate, closeHint, closeLabel, closeNeutral = false, infoSlots, onColorPicked, sidebarOnScreen = false, omitPopout = false,
+  variant, slotKey, mode, onReveal, onRename, onAutoTitle, onOpenInNewTab, onDuplicate, closeHint, closeLabel, closeNeutral = false, infoSlots, layoutSlot, onColorPicked, sidebarOnScreen = false, omitPopout = false,
 }: SessionActionsMenuProps) {
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
@@ -396,6 +400,7 @@ export default function SessionActionsMenu({
           <Undo2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.bring_back_to_main')}
         </Item>
       ),
+      layoutSlot,
       <Item key="copy" onSelect={() => copyLink(slotKey)}>
         <Link2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.copy_link')}
       </Item>,
