@@ -10,7 +10,7 @@ enable path consults that field". A builtin whose block is absent is therefore
 enableable on every platform the gateway runs on, Windows included.
 
 That is why the invariant pinned here is about HONESTY, not access. The default is
-`["macos", "linux"]` (`apps/manifest.py`), so an app that omits the block
+`["macos", "linux"]` (`apps/manifest_sections.py`), so an app that omits the block
 silently publishes "does not run on Windows" — indistinguishable, to a reader,
 from a deliberate statement. Twenty-two of twenty-four builtins were publishing
 exactly that, and none of them meant it.

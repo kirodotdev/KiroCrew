@@ -761,7 +761,7 @@ The Windows-specific contract lives in these places:
   `rmtree(..., ignore_errors=True)` would silently leave `.git/objects` behind
   while the handler answered `ok: true`, keeping the project name taken. Delete
   reports `project_delete_incomplete` if the tree survives.
-- **`PlatformConfig`** (`apps/manifest.py`) carries a `windows` row in
+- **`PlatformConfig`** (`apps/manifest_sections.py`) carries a `windows` row in
   `_OS_TO_PLATFORM`/`_PLATFORM_TO_OS`, so `"windows"` is expressible in a
   manifest and `current_os()` maps `"win32"` to it. The default stays
   `["macos", "linux"]`: an app opts in by naming `windows`.

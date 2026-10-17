@@ -144,7 +144,7 @@ def _app_namespace_root(app_name: str) -> str:
     """Build the synthetic top-level package name that owns one app's modules.
 
     Per-app isolation rests on the app-name grammar: ``KEBAB_RE`` in
-    ``apps/manifest.py`` admits only ``[a-z0-9]`` and ``-``, so a name can never
+    ``apps/manifest_names.py`` admits only ``[a-z0-9]`` and ``-``, so a name can never
     contain a dot. That is what keeps one app's root from becoming a dotted
     prefix of another's -- ``_kirocrew_app_foo`` and ``_kirocrew_app_foo-bar``
     are separated by ``-``, so neither is under the other's ``root + "."``

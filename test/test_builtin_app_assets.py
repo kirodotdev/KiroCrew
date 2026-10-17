@@ -24,7 +24,7 @@ _APP_ASSETS_DIR = _REPO_ROOT / "website" / "public" / "app-assets"
 #: never checked — a typo in a ``heroImageDetail`` path would have shipped the
 #: broken-image placeholder on the app's own detail page with CI green.
 #: ``iconInactiveUrl`` is in the list for the same reason and not because a
-#: builtin uses it today: it is a real ``AppManifest`` field (manifest.py), so the
+#: builtin uses it today: it is a real ``AppManifest`` field (manifest_sections.py), so the
 #: first builtin to declare one must be covered by the guard already, rather than
 #: by whoever notices the omission after a dead ref ships.
 _ASSET_FIELDS = (
