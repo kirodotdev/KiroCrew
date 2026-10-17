@@ -156,12 +156,15 @@ export default function SideChat({ slot }: { slot: string }) {
   const isStreaming = reduxSide?.streaming ?? false
   const isStreamingLast = lastMsg?.role === 'assistant' && isStreaming
 
-  /** The side buffer carries only `user` / `assistant` plus an `is_error` flag, so the
+  /** The side buffer carries `user` / `assistant` / `tool` plus an `is_error` flag, so the
    *  roles the shared transcript understands are derived here rather than stored. The last
    *  assistant message becomes `streaming` while the turn runs, which is what drives the
-   *  cursor and holds the footer back until the answer settles. */
+   *  cursor and holds the footer back until the answer settles. A `tool` row keeps its role
+   *  and meta: the transcript's own `tool` renderer draws the 🔧 pill and reads the hidden
+   *  🚫 sibling as "blocked", exactly as it does for the main chat. */
   const transcript = useMemo<ChatMessage[]>(
     () => messages.map((m, i) => {
+      if (m.role === 'tool') return { role: 'tool', content: m.content, cls: 'msg msg-tool', ts: m.ts, meta: m.meta }
       const streaming = i === lastIdx && isStreamingLast
       const role = m.role === 'user' ? 'user' : m.is_error ? 'error' : streaming ? 'streaming' : 'assistant'
       return { role, content: m.content, cls: `msg msg-${role}`, ts: m.ts }
@@ -171,10 +174,24 @@ export default function SideChat({ slot }: { slot: string }) {
 
   // Stage exactly what the transcript renders: hidden widget bodies and protocol
   // markers stay out of the composer, trailing whitespace is removed, and leading
-  // indentation remains intact for whitespace-sensitive Markdown.
-  const renderedLastAnswer = transcript[lastIdx]?.role === 'assistant'
-    ? searchableText(transcript[lastIdx])
-    : ''
+  // indentation remains intact for whitespace-sensitive Markdown. A tool row
+  // splits the reply into text rows, so the answer is EVERY text row of the last
+  // run, in order — not the row under the last tool call alone. The tail may be
+  // a tool row itself (a turn that ended on a tool call wrote nothing after it),
+  // so the walk starts from the tail whatever its role and stops at the user row
+  // that asked, or at an earlier run. A steer chip is a `user` row too, but one
+  // spliced INTO the run above its last answer row: it is walked past.
+  const renderedLastAnswer = useMemo(() => {
+    if (isStreaming || !lastMsg || lastMsg.role === 'user' || lastMsg.is_error) return ''
+    const runId = lastMsg.run_id
+    const parts: string[] = []
+    for (let i = lastIdx; i >= 0; i--) {
+      const m = messages[i]
+      if ((m.role === 'user' && !m.steer) || m.run_id !== runId) break
+      if (m.role === 'assistant' && !m.is_error) parts.unshift(searchableText(transcript[i]))
+    }
+    return parts.filter(p => p.trim()).join('\n\n')
+  }, [transcript, messages, lastIdx, lastMsg, isStreaming])
   const settledAnswer = renderedLastAnswer.trim() ? renderedLastAnswer : ''
   const settledAnswerKey = settledAnswer
     ? [slot, lastMsg?.run_id ?? '', lastMsg?.ts ?? '', lastIdx].join(' ')
