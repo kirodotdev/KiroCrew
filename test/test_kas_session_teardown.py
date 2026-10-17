@@ -27,6 +27,7 @@ from kiro_crew.acp.types import (
     METHOD_KAS_SESSION_DELETE,
     METHOD_SESSION_TERMINATE,
 )
+from kiro_crew.testing.wait import await_until, finished
 
 
 def _runtime(tmp_path, backend: str) -> AcpRuntime:
@@ -151,7 +152,7 @@ class TestReadinessFailureLifetime:
 
         async def wait_mcp_ready(*_a, **_k):
             entered.set()
-            await asyncio.wait_for(asyncio.Event().wait(), timeout=10.0)
+            await asyncio.Event().wait()
 
         runtime, handle, send, sibling_queue = _readiness_subject(
             tmp_path,
@@ -161,14 +162,14 @@ class TestReadinessFailureLifetime:
         params = {"sessionId": "failed"} if resumed else {}
         task = asyncio.create_task(runtime._wait_managed_mcp(handle, params, "worker", 30.0, 0))
         try:
-            await asyncio.wait_for(entered.wait(), timeout=5.0)
+            await await_until(entered, timeout=5.0)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=5.0)
+                await await_until(task, timeout=5.0)
         finally:
             if not task.done():
                 task.cancel()
-            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5.0)
+            await finished(asyncio.gather(task, return_exceptions=True), "gather", timeout=5.0)
 
         _assert_readiness_cleanup(runtime, send, sibling_queue, resumed=resumed)
 

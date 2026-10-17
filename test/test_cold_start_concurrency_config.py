@@ -30,6 +30,7 @@ from kiro_crew.recovery import ladder as lad
 from kiro_crew.session import SessionManager
 from kiro_crew.session_allocation import FOREGROUND_COLD_START_RESERVE
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.testing.wait import await_until, finished
 
 
 @pytest.fixture(autouse=True)
@@ -357,7 +358,7 @@ async def test_the_identity_sweep_drain_waits_for_every_configured_permit() -> N
     cfg.agent.cold_start_concurrency = 7
     sem = _manager(cfg)._start_sem
     for _ in range(7):
-        await asyncio.wait_for(sem.acquire(StartPriority.BACKGROUND), 5)
+        await finished(sem.acquire(StartPriority.BACKGROUND), "sem.acquire", timeout=5)
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -372,10 +373,10 @@ async def test_the_identity_sweep_drain_waits_for_every_configured_permit() -> N
     await asyncio.sleep(0)
     assert not entered.is_set()  # one of the 7 starts is still inside
     sem.release(StartPriority.BACKGROUND)
-    await asyncio.wait_for(entered.wait(), 5)
+    await await_until(entered, timeout=5)
     assert sem._drain_held == 7 + FOREGROUND_COLD_START_RESERVE
     release.set()
-    await asyncio.wait_for(task, 5)
+    await await_until(task, timeout=5)
 
 
 # --------------------------------------------------------------------------- #
@@ -474,7 +475,7 @@ async def test_spawn_enters_an_admission_of_the_configured_width(
         seen.append(runtime_start._cold_start_admission().semaphore._limit)
 
     monkeypatch.setattr(AcpRuntime, "_spawn_admitted_rederiving_once", _spawned)
-    await asyncio.wait_for(AcpRuntime().spawn(), 5)
+    await finished(AcpRuntime().spawn(), "spawn", timeout=5)
     assert seen == [5]
 
 

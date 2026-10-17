@@ -18,6 +18,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew import memory_startup
 from kiro_crew.memory_startup import MemoryStartup
+from kiro_crew.testing.wait import await_until, finished
 
 SESSION_KEY = "hook:default:1791000000"
 
@@ -80,8 +81,10 @@ async def _run(state) -> None:
 
     hooks._hook_inflight_sessions.add(SESSION_KEY)
     await hooks._hook_semaphore.acquire()
-    await asyncio.wait_for(
-        hooks._run_hook_agent(state, SESSION_KEY, "deploy finished", "ci", None, True, 300), 20
+    await finished(
+        hooks._run_hook_agent(state, SESSION_KEY, "deploy finished", "ci", None, True, 300),
+        "hook agent",
+        timeout=20,
     )
 
 
@@ -114,15 +117,15 @@ async def test_a_hook_accepted_before_memory_is_ready_runs_once_it_is(
     monkeypatch.setattr(hooks, "wait_for_memory_preparation", observed_wait)
 
     async def prepare() -> None:
-        await asyncio.wait_for(prepared.wait(), 20)
+        await await_until(prepared, timeout=20)
         assert closed_barrier.complete()
 
     state.memory_startup_task = asyncio.create_task(prepare())
     run = asyncio.create_task(_run(state))
-    await asyncio.wait_for(waiting.wait(), 5)
+    await await_until(waiting, timeout=5)
     assert sent_to_model == []  # nothing reaches the model while memory is preparing
     prepared.set()
-    await asyncio.wait_for(run, 20)
+    await await_until(run, timeout=20)
 
     assert sent_to_model == ["deploy finished"]
     assert "internal failure" not in _notified(state)

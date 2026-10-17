@@ -17,6 +17,7 @@ import pytest
 
 from kiro_crew.autonudge import AutoNudgeService, NudgeAdmissionRefused
 from kiro_crew.monitoring.models import MonitorBudgets
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 
 @pytest.fixture(autouse=True)
@@ -274,11 +275,11 @@ async def test_repeated_cancellation_cannot_leak_the_maintenance_lock(svc, monke
     try:
         await asyncio.sleep(0)
         maintenance_lock.release()
-        await asyncio.wait_for(wait_returned.wait(), 1)
+        await async_wait_until(wait_returned.is_set, timeout=1)
         assert maintenance_lock.locked()
 
         acquisition.cancel()
-        await asyncio.wait_for(cleanup_started.wait(), 1)
+        await async_wait_until(cleanup_started.is_set, timeout=1)
         acquisition.cancel()
         await asyncio.sleep(0)
         assert not acquisition.done()
@@ -322,7 +323,7 @@ async def test_maintenance_quiesce_wakes_a_firing_remove_waiter(tmp_path, monkey
     timer = asyncio.create_task(svc._timer(loop, delay=0))
     svc._timers[loop.id] = timer
     monkeypatch.setattr(an, "_INSTANCE", svc)
-    await asyncio.wait_for(entered_fire.wait(), 1)
+    await await_until(entered_fire, timeout=1)
 
     try:
         async with AutoNudgeService.maintenance_service(base_dir=tmp_path) as view:
@@ -331,7 +332,9 @@ async def test_maintenance_quiesce_wakes_a_firing_remove_waiter(tmp_path, monkey
             await asyncio.sleep(0)
             assert not timer.done()
             # remove() offloads an fsync persist; loaded Windows runners exceed 1 s.
-            assert await asyncio.wait_for(view.deactivate_and_wait(loop.id), 10)
+            assert await finished(
+                view.deactivate_and_wait(loop.id), "deactivate_and_wait", timeout=10
+            )
             assert timer.done()
             assert loop.active is False
             await view.remove(loop.id)

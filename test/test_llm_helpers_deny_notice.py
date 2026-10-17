@@ -44,6 +44,7 @@ from kiro_crew.providers.base import (
     EVENT_TEXT_CHUNK,
     LLMEvent,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _GENERIC = "User denied tool execution"
 _TAG = "[Kiro Crew host notice]"
@@ -323,10 +324,7 @@ async def test_interactive_rejection_still_audits_before_the_wire(monkeypatch):
     )
     # The scan runs off-loop (asyncio.to_thread) before the callback, so give
     # the hop real time rather than a fixed number of loop turns.
-    for _ in range(300):
-        await asyncio.sleep(0.01)
-        if provider.calls:
-            break
+    await async_wait_until(lambda: bool(provider.calls))
     assert provider.calls == ["reject"]
     assert audited == ["rejected"], "the user's no reached the pipe before the audit trail"
     task.cancel()
@@ -427,10 +425,7 @@ async def test_audit_lands_before_the_steer_and_survives_cancellation(monkeypatc
     task = asyncio.ensure_future(
         _resolve_permission(provider, _event(), ToolApprovalPolicy.REJECT_ALL, None)
     )
-    for _ in range(300):
-        await asyncio.sleep(0.01)
-        if provider.calls:
-            break
+    await async_wait_until(lambda: bool(provider.calls))
     assert provider.calls == ["steer"], provider.calls
     assert audited == ["rejected"], "the decision reached the pipe before the audit trail"
     task.cancel()
@@ -465,14 +460,11 @@ async def test_cancelled_mid_steer_does_not_hang_on_a_stalled_reject(monkeypatch
     task = asyncio.ensure_future(
         _resolve_permission(provider, _event(), ToolApprovalPolicy.REJECT_ALL, None)
     )
-    for _ in range(300):
-        await asyncio.sleep(0.01)
-        if provider.calls:
-            break
+    await async_wait_until(lambda: bool(provider.calls))
     started = time.monotonic()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=2.0)
+        await await_until(task, timeout=2.0)
     # No fixed wait stacked on top of the caller's own deadline.
     assert time.monotonic() - started < 0.5
     await asyncio.sleep(0)

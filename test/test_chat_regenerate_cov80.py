@@ -32,6 +32,7 @@ from kiro_crew.dashboard import chat_regenerate
 from kiro_crew.dashboard.chat_regenerate import (
     api_chat_slot_edit_resend,
 )
+from kiro_crew.testing.wait import async_wait_until, finished
 
 # Ceiling for the cross-thread gates below. Generous rather than tight: it is a
 # deadlock backstop, never a synchronisation point, so a slow shared runner must
@@ -1069,8 +1070,8 @@ async def test_edit_resend_cancelled_mid_save_keeps_live_and_disk_in_sync(state)
             # inner wait strands a default-executor thread that interpreter
             # shutdown then joins on. The outer 2s stays tight so a save that
             # never starts still fails this test fast.
-            await asyncio.wait_for(
-                asyncio.to_thread(save_started.wait, _GATE_TIMEOUT_SECS), timeout=2
+            await finished(
+                asyncio.to_thread(save_started.wait, _GATE_TIMEOUT_SECS), "save_started", timeout=2
             )
             handler_task.cancel()
             release.set()
@@ -1083,10 +1084,7 @@ async def test_edit_resend_cancelled_mid_save_keeps_live_and_disk_in_sync(state)
             assert saved_windows == [["edited"]]
             assert [m["content"] for m in slot.messages] == ["edited"]
             # The edited prompt is still dispatched.
-            for _ in range(50):
-                if run.await_count:
-                    break
-                await asyncio.sleep(0.02)
+            await async_wait_until(lambda: bool(run.await_count))
             run.assert_awaited_once()
             assert run.await_args.args[2] == "edited"
     finally:
@@ -1192,8 +1190,8 @@ async def test_edit_resend_repeated_cancellation_still_commits_the_landed_rewrit
 
             fake_request.json = _json  # type: ignore[method-assign]
             handler_task = asyncio.create_task(api_chat_slot_edit_resend(fake_request))
-            await asyncio.wait_for(
-                asyncio.to_thread(save_started.wait, _GATE_TIMEOUT_SECS), timeout=2
+            await finished(
+                asyncio.to_thread(save_started.wait, _GATE_TIMEOUT_SECS), "save_started", timeout=2
             )
             # First cancel: the client disconnected. The handler is now inside the
             # drain, waiting on the still-blocked worker.
@@ -1210,10 +1208,7 @@ async def test_edit_resend_repeated_cancellation_still_commits_the_landed_rewrit
             # Disk was rewritten, so the live slot MUST match it rather than
             # keeping the full original window.
             assert [m["content"] for m in slot.messages] == ["edited"]
-            for _ in range(50):
-                if run.await_count:
-                    break
-                await asyncio.sleep(0.02)
+            await async_wait_until(lambda: bool(run.await_count))
             run.assert_awaited_once()
     finally:
         release.set()

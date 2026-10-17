@@ -33,6 +33,7 @@ from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.session_handle import AcpRuntimeError
 from kiro_crew.acp.skill_projection import NativeSkillProjection
 from kiro_crew.acp.types import METHOD_SET_MODE
+from kiro_crew.testing.wait import async_wait_until, finished
 
 SPAWN_ALIAS = "kirocrew-skill-view-" + "0" * 24
 # The view prepared from the spec before the edit that revoked a grant.
@@ -163,11 +164,7 @@ def no_retry_wait(monkeypatch):
 
 
 async def _until(condition: Callable[[], bool], what: str) -> None:
-    for _ in range(1000):
-        if condition():
-            return
-        await asyncio.sleep(0.005)
-    raise AssertionError(f"timed out waiting for {what}")
+    await async_wait_until(condition, describe=lambda: f"timed out waiting for {what}")
 
 
 def _waiting_on_projection_lock(rt: AcpRuntime) -> bool:
@@ -194,7 +191,7 @@ async def _run(rt: AcpRuntime, prepare: _ScriptedPrepare, body: Callable[[], Any
             ),
             patch("kiro_crew.agent.require_unchanged_derived_spec", return_value=None),
         ):
-            await asyncio.wait_for(body(), timeout=10)
+            await finished(body(), "body", timeout=10)
     finally:
         reader.cancel()
         try:
@@ -381,7 +378,7 @@ async def test_a_retry_whose_agent_the_newer_view_refuses_fails_without_the_olde
             ),
             patch("kiro_crew.agent.require_unchanged_derived_spec", return_value=None),
         ):
-            await asyncio.wait_for(body(), timeout=10)
+            await finished(body(), "body", timeout=10)
     finally:
         reader.cancel()
         try:
@@ -547,7 +544,7 @@ async def test_a_newer_preparation_that_yields_no_view_leaves_a_pending_start_un
             ),
             patch("kiro_crew.agent.require_unchanged_derived_spec", return_value=None),
         ):
-            await asyncio.wait_for(body(), timeout=10)
+            await finished(body(), "body", timeout=10)
     finally:
         gate_b.set()
         reader.cancel()

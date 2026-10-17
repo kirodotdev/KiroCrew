@@ -15,6 +15,8 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
+from kiro_crew.testing.wait import async_wait_until
+
 
 @pytest.mark.asyncio
 async def test_fork_sees_the_tail_when_a_flush_clears_dirty_mid_read(tmp_path, monkeypatch):
@@ -62,10 +64,7 @@ async def test_fork_sees_the_tail_when_a_flush_clears_dirty_mid_read(tmp_path, m
     monkeypatch.setattr(log, "read_messages_chained", racing_read)
 
     async def racer():
-        for _ in range(200):
-            if read_entered.is_set():
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(read_entered.is_set)
         # Exactly what the flush executor does: persist the tail, then clear _dirty.
         original(key)  # touch, mirroring the flush's own read path
         log.append(key, "user", "tail-prompt")
@@ -135,11 +134,8 @@ async def test_a_reread_does_not_duplicate_a_tail_the_flush_already_persisted(
     monkeypatch.setattr(log, "read_messages_chained", racing_read)
 
     async def _await_gate(ev):
-        for _ in range(300):
-            if ev.is_set():
-                return True
-            await asyncio.sleep(0.01)
-        return False
+        await async_wait_until(ev.is_set)
+        return True
 
     async def racer():
         # While read 1 is parked: the flush persists the tail and clears _dirty,
@@ -222,11 +218,8 @@ async def test_fork_does_not_duplicate_when_an_append_re_dirties_during_the_read
     monkeypatch.setattr(log, "read_messages_chained", racing_read)
 
     async def _await_gate(ev):
-        for _ in range(300):
-            if ev.is_set():
-                return True
-            await asyncio.sleep(0.01)
-        return False
+        await async_wait_until(ev.is_set)
+        return True
 
     async def racer():
         assert await _await_gate(entered), "read 1 never entered"
@@ -549,11 +542,7 @@ async def test_a_pending_rewrite_arriving_during_the_read_forces_a_retry(tmp_pat
     monkeypatch.setattr(log, "read_messages_chained", racing_read)
 
     async def racer():
-        for _ in range(300):
-            if entered.is_set():
-                break
-            await asyncio.sleep(0.01)
-        assert entered.is_set(), "read 1 never entered"
+        await async_wait_until(entered.is_set, describe=lambda: "read 1 never entered")
         # A failed in-place rewrite: the flag is set and NOTHING else moves, so the
         # counter equality check below cannot detect it.
         slot._pending_rewrite = True
