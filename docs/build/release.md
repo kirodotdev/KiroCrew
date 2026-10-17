@@ -194,8 +194,14 @@ code.
    - *Bundled kiro-cli pin*: compare `packaging/kiro-cli-version` with the
      version the release manifest names today
      (`https://desktop-release.q.us-east-1.amazonaws.com/latest/manifest.json`)
-     and decide whether to bump it — after testing the app against the newer
-     release, never blind. A bump is two files in one commit: the version in
+     and bump to that version by default, on `main` by RC cut at the latest —
+     after testing the app against the newer release, never blind. Keep the
+     older pin only when an exception is recorded, with its reason, in the RC
+     notes or the pin-drift tracking issue (for example a regression found in
+     testing, testing not yet finished, a new major version, or an upstream
+     release still under review). An exception covers that release's RC only;
+     the update deadline below keeps running. A bump
+     is two files in one commit: the version in
      `packaging/kiro-cli-version`, and in `packaging/kiro-cli-sha256` the
      manifest's `sha256` for each staged artifact (`<version>/Kiro CLI.dmg`,
      `<version>/kirocli-x86_64-linux.zip`, `<version>/kirocli-aarch64-linux.zip`,
@@ -210,6 +216,22 @@ code.
      version prefix, which is also why a hotfix rebuild of an older tag keeps
      working after upstream releases. See [desktop-app](desktop-app.md) "Bundled
      kiro-cli".
+
+     *Update deadline.* Whenever the pin is behind, it has a deadline, counted in
+     calendar days from the date the pin-drift tracking issue first sees the
+     new kiro-cli release. A routine release: the tested bump lands on `main`
+     within **14 days**. A release the tracking issue marks for prompt adoption
+     (the fast path): an insider build carrying the new pin ships within
+     **3 days**, and stable follows through the usual soak, which the deadline
+     never shortens. A maintainer who judges a release needs prompt adoption
+     marks it by adding the `fast-path` label to the tracking issue; once the
+     scheduled pin-drift check runs, it also adds that label when the
+     release's changelog matches the check's prompt-adoption keywords. The
+     tracking issue, opened and updated by the scheduled pin-drift check, is
+     both the trigger and the record: it names the pinned and latest versions,
+     the first-seen date and the `Due:` date, and it closes once the pin
+     catches up. Until that check runs on `main`, whoever notices a newer
+     release opens the issue by hand.
 2. **Cut the RC — verify content, not PR status.** On the target commit confirm:
    `github-release` has an `if:`; `CHANGELOG.md` line 5 is `## [X.Y.Z]` with zero
    non-bare-release `##` headings; no `### Contributors` (the GitHub Release

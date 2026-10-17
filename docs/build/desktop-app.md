@@ -132,7 +132,8 @@ explicitly so the lane log names the release it bundled; `KIRO_CLI_VERSION=lates
 resolves the manifest instead and takes the version and sha it names, for a local
 build that wants the newest release (still sha256-verified). Bumping both files,
 after testing the app against the new release, is the whole procedure for
-shipping a newer kiro-cli ([release](release.md), step 1). On macOS the binary is
+shipping a newer kiro-cli ([release](release.md), "Bundled kiro-cli pin",
+which also sets the deadline for a bump). On macOS the binary is
 extracted from the universal `Kiro CLI.dmg` (one Mach-O serves both arches; the
 DMG download is ~345 MB for kiro-cli 2.27); Linux uses the matching per-arch zip
 (~150 MB); Windows uses the x64 MSI (~250 MB). Downloads are cached per user
