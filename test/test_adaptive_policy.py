@@ -43,6 +43,7 @@ from kiro_crew.adaptive.signals import (
     SIGNAL_MEMORY,
     SIGNAL_SLOW_KEYS,
     SIGNAL_TIMEOUTS,
+    SIGNAL_VRAM,
     Sample,
     SpawnGateStats,
     Thresholds,
@@ -301,6 +302,41 @@ class TestCorroboration:
         assert d.spawn_gate_capacity == 2
         assert d.effective_exec_cap == 10
         assert d.reason.startswith("spawn gate: corroborated pressure")
+
+    def test_critical_vram_cuts_the_spawn_gate_alone_and_never_the_exec_cap(self) -> None:
+        """GPU memory is the memory signal's twin: a host serving a local model
+        fills the card with KV slots long before host memory moves, so the gate
+        reads it; the exec track never does. Opt-in: the line is off at 0."""
+        th = Thresholds(vram_pressure_mb=3072.0, vram_critical_mb=1536.0)
+        pol = AdaptivePolicy(_params(gate_initial=4, thresholds=th))
+        d = pol.observe(_sample(0.0, running=10, vram_free_mb=1024.0))
+        assert d.action == ACTION_DECREASE
+        assert d.spawn_gate_capacity == 2
+        assert d.effective_exec_cap == 10
+        assert SIGNAL_VRAM in d.signals and SIGNAL_MEMORY not in d.signals
+        assert d.reason.startswith("spawn gate: corroborated pressure")
+
+    def test_vram_line_is_off_by_default_and_never_fires_unmeasured(self) -> None:
+        # Default thresholds (0 = off): a nearly full card is reported, not acted on.
+        report = classify(_sample(0.0, vram_free_mb=100.0), TH)
+        assert SIGNAL_VRAM not in report.signals and report.clear_for_increase
+        # Lines on, but no NVML on this host (-1): nothing fires, increases stay clear.
+        th = Thresholds(vram_pressure_mb=3072.0, vram_critical_mb=1536.0)
+        report = classify(_sample(0.0), th)
+        assert SIGNAL_VRAM not in report.signals
+        assert report.clear_for_increase and report.gate_clear_for_increase
+
+    def test_vram_critical_is_severe_and_pressure_blocks_increases(self) -> None:
+        th = Thresholds(vram_pressure_mb=3072.0, vram_critical_mb=1536.0)
+        critical = classify(_sample(0.0, vram_free_mb=1500.0), th)
+        assert SIGNAL_VRAM in critical.signals
+        assert critical.severe and critical.gate_severe and critical.gate_corroborated
+        assert critical.exec_signals == frozenset(), "host-only: the exec cap never reads it"
+        pressure = classify(_sample(0.0, vram_free_mb=2048.0), th)
+        assert SIGNAL_VRAM not in pressure.signals
+        assert not pressure.clear_for_increase and not pressure.gate_clear_for_increase
+        roomy = classify(_sample(0.0, vram_free_mb=8192.0), th)
+        assert roomy.clear_for_increase and roomy.gate_clear_for_increase
 
     def test_loop_lag_moves_neither_track(self) -> None:
         """The gateway's own loop lag is no evidence about the MCP daemon's

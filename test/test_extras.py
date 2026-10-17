@@ -24,7 +24,7 @@ LOCALES = _REPO_ROOT / "website" / "src" / "i18n" / "locales"
 
 #: Extras a running gateway advises installing. ``dev`` is test tooling, which
 #: no user-facing surface ever offers.
-USER_FACING = ("otlp", "perf", "teams", "whatsapp", "feishu", "voice-aws", "voice")
+USER_FACING = ("otlp", "gpu", "perf", "teams", "whatsapp", "feishu", "voice-aws", "voice")
 
 
 def _declared_extras() -> dict[str, list[str]]:

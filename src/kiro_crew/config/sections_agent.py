@@ -609,6 +609,43 @@ class AgentConfig:
             "at all. Should be <= resource_pressure_gb. 0 disables the critical tier.",
         ),
     )
+    vram_pressure_gb: float = field(
+        default=0.0,
+        metadata=_meta(
+            "GPU Memory Pressure Threshold (GB)",
+            "Free GPU memory (GB, on the most constrained NVIDIA device) below which "
+            "the adaptive controller stops raising the sub-agent spawn gate. Read "
+            "through NVML when the optional 'gpu' extra (nvidia-ml-py) is installed. "
+            "0 (the default) disables the line. It reacts to a nearly full card "
+            "whatever fills it, other programs included. It follows sub-agent load "
+            "only where a model is loaded when a request first names it and several "
+            "stay resident, as in Ollama (OLLAMA_MAX_LOADED_MODELS) or llama-server in "
+            "router mode (--models-max): sub-agents on different models each add one. "
+            "It does not follow load on vLLM, SGLang or TGI, which reserve a fixed "
+            "share of the card at start, or across sub-agents that share one model, "
+            "whose slots are sized when it loads; there it reports what else uses the "
+            "card.",
+        ),
+    )
+    vram_critical_gb: float = field(
+        default=0.0,
+        metadata=_meta(
+            "GPU Memory Critical Threshold (GB)",
+            "Free GPU memory (GB) at or below which the spawn gate is cut, the way "
+            "resource_critical_gb cuts it for host memory. Should be <= "
+            "vram_pressure_gb. 0 (the default) disables the line; it never fires on a "
+            "host without an NVIDIA driver. Same scope as vram_pressure_gb: it reacts "
+            "to a nearly full card from any cause, and follows sub-agent load only "
+            "where each model a sub-agent uses is loaded onto the card (Ollama, "
+            "llama-server in router mode), not on servers that reserve memory at start. "
+            "A cut can outlast the sub-agents that caused it: a server keeps a model "
+            "loaded after they end (Ollama for 5 minutes by default), and the gate "
+            "stays at its floor while free memory is at or below this line. Set the "
+            "line below the free memory left with the models you expect to stay "
+            "loaded. Once the server unloads one and free memory is above the line, "
+            "the gate probes and climbs again.",
+        ),
+    )
     admission_gate: bool = field(
         default=True,
         metadata=_meta(

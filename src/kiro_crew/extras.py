@@ -37,6 +37,7 @@ from kiro_crew import platform_compat
 #: absent: a running gateway never advises installing the test tooling.
 REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "otlp": ("opentelemetry-exporter-otlp-proto-http==1.44.0",),
+    "gpu": ("nvidia-ml-py>=12.570",),
     "perf": ("py-spy>=0.3,<1",),
     "teams": ("PyJWT[crypto]==2.13.0",),
     "whatsapp": ("neonize==0.4.3.post0",),

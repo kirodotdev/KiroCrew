@@ -67,6 +67,7 @@ has a "not measured" value and an unmeasured field never fires.
 |---|---|---|---|
 | `loop_lag` | how late the controller's own timer fired on the gateway loop | **neither track** for a cap decision (`HOST_ONLY_SIGNALS` for exec, `GATE_IGNORED_SIGNALS` for the gate); reported on the decision and retires slow start | `>= DEFAULT_LAG_DECREASE_MS` (250) |
 | `memory` | `resource_status._read_available_gb` (cgroup-clamped) | **spawn gate only** (`HOST_ONLY_SIGNALS`) | `<= resource_critical_gb` (2 GB); always **severe** |
+| `vram` | `adaptive.gpu_probe.read_gpu` (NVML through the optional `gpu` extra; free memory of the most constrained NVIDIA device, `-1` without a driver) | **spawn gate only** (`HOST_ONLY_SIGNALS`) | `<= vram_critical_gb` (default 0 = off, operator opt-in for a host that serves a local model); always **severe** |
 | `fds` | `/proc/self/fd` or `/dev/fd` count vs `RLIMIT_NOFILE` soft | both tracks | `>= 80 %` of the limit |
 | `procs` | daemon `stats.admission.host_budget` (`procs` / `max_procs`) | both tracks | `>= 90 %` of the budget |
 | `start_latency` | `record_start(duration_ms, ...)` hook (session/new, backend initialize) | both tracks | p95 over the window `>= 30 s` |
@@ -81,11 +82,11 @@ has a "not measured" value and an unmeasured field never fires.
 `exec_corroborated` is two or more of them in one sample: nothing is sufficient
 alone for the execution cap. The spawn gate reads `gate_signals` (the set minus
 `GATE_IGNORED_SIGNALS`, i.e. minus `loop_lag`): `gate_corroborated` is one of
-`GATE_SUFFICIENT_ALONE` (`memory`, `gate_failures`, `gate_slow_inits`) or two
-distinct gate signals, `gate_severe` is memory at the critical line, and
+`GATE_SUFFICIENT_ALONE` (`memory`, `vram`, `gate_failures`, `gate_slow_inits`) or two
+distinct gate signals, `gate_severe` is host or GPU memory at the critical line, and
 `gate_clear_for_increase` is no gate signal with memory at or above the pressure
-line. `corroborated` (which `SUFFICIENT_ALONE` still feeds) only retires slow
-start.
+line and GPU memory at or above `vram_pressure_gb` when set. `corroborated` (which
+`SUFFICIENT_ALONE` still feeds) only retires slow start.
 
 Attributable means a congestion failure: a start or turn that timed out, a
 stall, a backend that never initialised (`controller.ATTRIBUTABLE_MARKERS`).
@@ -126,14 +127,14 @@ one-increase-per-window clock.
 | Rule | When | Effect |
 |---|---|---|
 | **Decrease (exec)** | **>= 2 distinct work signals** in one sample (`exec_corroborated`) and >= `DEFAULT_DECREASE_COOLDOWN_SECS` (30) since the last exec decrease | exec cap -> `clamp(max(ceil(cap x 0.5), healthy_in_flight), floor, cap - 1)`. Successes counted before the cut are discarded on the exec track only |
-| **Decrease (gate)** | **`gate_corroborated`**: a signal from `GATE_SUFFICIENT_ALONE` (`memory`, `gate_failures`, `gate_slow_inits`) or >= 2 distinct gate signals; and >= 30 s since the last gate decrease | gate capacity -> `max(gate_floor, ceil(cap x 0.5))` at most `cap - 1`; its successes are discarded on the gate track only |
+| **Decrease (gate)** | **`gate_corroborated`**: a signal from `GATE_SUFFICIENT_ALONE` (`memory`, `vram`, `gate_failures`, `gate_slow_inits`) or >= 2 distinct gate signals; and >= 30 s since the last gate decrease | gate capacity -> `max(gate_floor, ceil(cap x 0.5))` at most `cap - 1`; its successes are discarded on the gate track only |
 | **Hold** | a single soft signal for that track, or pressure inside its cooldown, or (gate) clear but inside the hysteresis band | nothing moves on that track |
 | **Progress probe** (exec) | new stream activity since the previous sample, active work at the cap, queued ready work, no provider throttle, and the same clear 5 s / 30 s window as the current regime. Free memory is not a term: the spawn floor prices every start | at most `+1` exec slot without waiting for a whole task to finish; never doubles or relaxes the init-gate success bar |
 | **Increase (slow start)** | `adaptive_slow_start` is on AND this process has never met corroborated pressure or a pause, AND the sample is clear for the track AND >= `DEFAULT_SLOW_START_CLEAN_SECS` (5) since that track's last pressure AND last increase AND (exec) >= `DEFAULT_SLOW_START_SUCCESSES` (1) since the last change AND demand at the cap. The eased success bar is the **exec track only** -- the gate still owes its flat `increase_successes` (below) | `x DEFAULT_SLOW_START_FACTOR` (2) on the track that qualified, bounded by its ceiling |
 | **Increase (congestion avoidance)** | after the first corroborated pressure or pause: the sample is clear for the track -- exec: no work signal; gate: no gate signal AND `memory >= resource_pressure_gb` (4 GB) -- AND >= `DEFAULT_INCREASE_CLEAN_SECS` (30) since that track's last pressure AND last increase AND enough work since the last change (exec: `min(DEFAULT_INCREASE_SUCCESSES, cap)`, i.e. one wave of the CURRENT cap; gate: `DEFAULT_INCREASE_SUCCESSES` (20) backend inits) AND demand at the cap (exec: `running + queued >= cap`; gate: `queued > 0` or `in_flight >= capacity`) | `+1` on the track that qualified, bounded by its ceiling; at most one increase per window per track |
 | **Idle recovery** (exec) | the exec cap is below the fresh-start value (the ceiling), the exec track has had NO demand (`running + queued == 0`) and no work signal for `DEFAULT_IDLE_RECOVERY_SECS` (60), AND >= one window since the last exec increase | `+1` toward the fresh-start value, never past it. Demand or any work signal restarts the idle clock; loop lag and memory do not |
 | **Idle recovery** (gate) | the gate is below `spawn_concurrency_initial`, the sample is clear for the gate, and `DEFAULT_IDLE_RECOVERY_SECS` (60) have passed since its last gate signal AND its last cut, AND >= one window since its last increase. Demand is not required: a cut must not outlive its evidence because no start happens to be queued at the cap | `+1` toward `spawn_concurrency_initial`, never past it; growth beyond still earns on backend inits |
-| **Pause** (gate) | memory below critical (`gate_severe`) for `severe_samples` (2) consecutive samples; loop lag never pauses it | gate at its floor; `paused`. The exec cap is untouched; running work untouched |
+| **Pause** (gate) | host or GPU memory at the critical line (`gate_severe`) for `severe_samples` (2) consecutive samples; loop lag never pauses it | gate at its floor; `paused`. The exec cap is untouched; running work untouched |
 | **Probe** (gate) | paused and the severe condition cleared | `probing`; the gate stays at its floor |
 | **Resume** (gate) | the probe completed (completions advanced) with no signal; or the host is idle and clear for `DEFAULT_IDLE_RECOVERY_SECS` with no probe result | gate to `floor + 1` (idle: left at its floor, to earn on inits); normal AIMD resumes. A probe that meets corroborated pressure re-pauses |
 | **Fresh start** | process start | exec cap AT its ceiling (`user_max`); gate at `mcp_gateway.spawn_concurrency_initial`; the first clean window is measured from the first sample |
@@ -249,6 +250,35 @@ test_no_static_host_prediction_sits_under_the_user_ceiling`,
 `test_adaptive_controller.py::TestTick::
 test_the_climb_is_bounded_by_the_user_ceiling_alone` and
 `test_subagent_sizing.py::TestMemoryIsTheOnlyHostTerm` pin it.
+
+GPU memory is read by the tick itself, and only while
+`vram_pressure_gb` or `vram_critical_gb` is set; with both at 0 NVML is never
+imported. The read goes through `adaptive.gpu_probe` (NVML through the optional
+`gpu` extra, the most constrained device, never raising; every
+field `-1` without a driver) on a worker thread of its own, one read at a time. A
+tick waits for it at most `GPU_READ_TIMEOUT_SECS` (1 s): a read still running
+then, or found still running by a later tick, leaves the GPU fields at `-1` (not
+measured) and the rest of the tick goes on, so a stuck NVML call cannot hold up
+the host-memory decisions. `test_adaptive_gpu_probe.py::TestTheTickReadsTheGpu`
+pins it.
+
+The reading is the card's free memory, whoever holds it, so the signal follows
+sub-agent load only where each model a sub-agent uses is loaded onto the card
+when a request first names it and several stay resident: Ollama up to
+`OLLAMA_MAX_LOADED_MODELS`, `llama-server` in router mode up to `--models-max`.
+It stays flat across sub-agents that share one model, whose slots are sized when
+it loads, and on servers that reserve a fixed share of the card at start (vLLM,
+SGLang, TGI); there it reports what else is using the card.
+
+A cut caused by the card can outlast the sub-agents that caused it. The server
+keeps a model loaded after they end (Ollama for 5 minutes by default), and free
+memory comes back when the server unloads it, not when the gate cuts. While free
+memory stays at or below `vram_critical_gb` the gate is cut, and after
+`severe_samples` (2) consecutive samples it is paused at its floor (the Pause
+row above), so set `vram_critical_gb` below the free memory left with the models
+expected to stay loaded. Once the server unloads one and free memory is above the
+line, the gate recovers by the Probe, Resume and Idle recovery rows above, and
+increases wait for free memory at or above `vram_pressure_gb` when it is set.
 
 This is what makes `max_subagents = 64` on a clear host start at 64, and on a
 host short of memory run however many starts the floor admits, rather than a
@@ -380,7 +410,9 @@ in a subprocess because this suite's `sys.modules` already holds whatever else
 imported it.
 
 Memory thresholds reuse `resource_pressure_gb` / `resource_critical_gb`; they
-shape the spawn gate only. The controller subscribes to all of these (bar the
+shape the spawn gate only. GPU memory thresholds are `vram_pressure_gb` /
+`vram_critical_gb` (both default 0 = off): pressure blocks spawn-gate increases,
+critical is the `vram` signal. The controller subscribes to all of these (bar the
 inert `adaptive_initial`) through `live.watch_object` and
 re-parameterises the policy in place (`update_params`): a lowered ceiling clamps,
 a raised one does not lift the live cap (it is earned), and a mode switch to

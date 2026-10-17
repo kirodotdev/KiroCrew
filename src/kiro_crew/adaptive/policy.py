@@ -831,6 +831,8 @@ def params_from_config(
         lag_severe_ms=DEFAULT_LAG_SEVERE_MS,
         mem_pressure_mb=_f(_get("resource_pressure_gb", 4.0), 4.0) * 1024.0,
         mem_critical_mb=_f(_get("resource_critical_gb", 2.0), 2.0) * 1024.0,
+        vram_pressure_mb=_f(_get("vram_pressure_gb", 0.0), 0.0) * 1024.0,
+        vram_critical_mb=_f(_get("vram_critical_gb", 0.0), 0.0) * 1024.0,
         timeout_rate=DEFAULT_TIMEOUT_RATE,
     )
     return PolicyParams(

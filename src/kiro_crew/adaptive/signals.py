@@ -45,6 +45,13 @@ from typing import Mapping
 # summary and the audit line, never as free-form text.
 SIGNAL_LOOP_LAG = "loop_lag"
 SIGNAL_MEMORY = "memory"
+#: GPU memory on the most constrained device at or under the critical line.
+#: Fires only when the optional NVML probe measured the card AND the operator
+#: set ``agent.vram_critical_gb`` above 0 (default 0: off). A card that is full
+#: for reasons unrelated to this gateway (a game, another training job) must
+#: not throttle sub-agents on a host that serves no local model, so the
+#: operator enables it together with a local inference endpoint.
+SIGNAL_VRAM = "vram"
 SIGNAL_FDS = "fds"
 SIGNAL_PROCS = "procs"
 SIGNAL_START_LATENCY = "start_latency"
@@ -55,9 +62,9 @@ SIGNAL_GATE_FAILURES = "gate_failures"
 SIGNAL_GATE_SLOW_INITS = "gate_slow_inits"
 
 #: Signals the EXECUTION cap never reads: the gateway's own event loop and the
-#: host's free memory. They shape the spawn gate only; the per-start memory
-#: floor owns memory for subagent starts.
-HOST_ONLY_SIGNALS = frozenset({SIGNAL_LOOP_LAG, SIGNAL_MEMORY})
+#: host's free memory, host or GPU. They shape the spawn gate only; the
+#: per-start memory floor owns memory for subagent starts.
+HOST_ONLY_SIGNALS = frozenset({SIGNAL_LOOP_LAG, SIGNAL_MEMORY, SIGNAL_VRAM})
 
 #: Signals individually sufficient for a SPAWN-GATE decrease. Everything else
 #: needs corroboration (>= 2 distinct signals in one sample). Nothing is
@@ -70,8 +77,11 @@ SUFFICIENT_ALONE = HOST_ONLY_SIGNALS
 GATE_IGNORED_SIGNALS = frozenset({SIGNAL_LOOP_LAG})
 
 #: Signals individually sufficient for a spawn-gate decrease: critical memory
-#: and the daemon's own evidence that its backend starts are failing or slow.
-GATE_SUFFICIENT_ALONE = frozenset({SIGNAL_MEMORY, SIGNAL_GATE_FAILURES, SIGNAL_GATE_SLOW_INITS})
+#: (host or GPU) and the daemon's own evidence that its backend starts are
+#: failing or slow.
+GATE_SUFFICIENT_ALONE = frozenset(
+    {SIGNAL_MEMORY, SIGNAL_VRAM, SIGNAL_GATE_FAILURES, SIGNAL_GATE_SLOW_INITS}
+)
 
 
 @dataclass(frozen=True)
@@ -88,6 +98,12 @@ class Thresholds:
     lag_severe_ms: float = 2000.0
     mem_pressure_mb: float = 4096.0
     mem_critical_mb: float = 2048.0
+    #: GPU memory lines (MiB free on the most constrained device). ``0`` = the
+    #: line is off, which is the default: the operator turns them on with
+    #: ``agent.vram_pressure_gb`` / ``agent.vram_critical_gb`` when the host
+    #: serves a local model. Pressure blocks increases; critical is a signal.
+    vram_pressure_mb: float = 0.0
+    vram_critical_mb: float = 0.0
     #: Fraction of the fd / proc budget above which the signal fires.
     fd_ratio: float = 0.8
     proc_ratio: float = 0.9
@@ -164,6 +180,9 @@ class Sample:
     loop_lag_ms: float = 0.0
     rss_mb: float = -1.0
     free_mem_mb: float = -1.0
+    #: Free GPU memory on the most constrained device; ``-1`` when NVML is absent
+    #: (every host without the ``gpu`` extra or a driver).
+    vram_free_mb: float = -1.0
     fd_count: int = -1
     fd_limit: int = 0
     proc_count: int = -1
@@ -281,8 +300,8 @@ class PressureReport:
 
     @property
     def gate_severe(self) -> bool:
-        """Severe for the gate: memory at the critical line. Loop lag never is."""
-        return SIGNAL_MEMORY in self.signals
+        """Severe for the gate: host or GPU memory at the critical line. Loop lag never is."""
+        return SIGNAL_MEMORY in self.signals or SIGNAL_VRAM in self.signals
 
 
 def classify(sample: Sample, th: Thresholds) -> PressureReport:
@@ -298,6 +317,11 @@ def classify(sample: Sample, th: Thresholds) -> PressureReport:
     if sample.free_mem_mb >= 0 and th.mem_critical_mb > 0:
         if sample.free_mem_mb <= th.mem_critical_mb:
             signals.add(SIGNAL_MEMORY)
+            severe = True
+
+    if sample.vram_free_mb >= 0 and th.vram_critical_mb > 0:
+        if sample.vram_free_mb <= th.vram_critical_mb:
+            signals.add(SIGNAL_VRAM)
             severe = True
 
     if sample.fd_limit > 0 and sample.fd_count >= 0:
@@ -330,8 +354,13 @@ def classify(sample: Sample, th: Thresholds) -> PressureReport:
         or th.mem_pressure_mb <= 0
         or (sample.free_mem_mb >= th.mem_pressure_mb)
     )
-    clear = not signals and sample.loop_lag_ms < th.lag_increase_ms and mem_ok
-    gate_clear = not (signals - GATE_IGNORED_SIGNALS) and mem_ok
+    vram_ok = (
+        sample.vram_free_mb < 0
+        or th.vram_pressure_mb <= 0
+        or (sample.vram_free_mb >= th.vram_pressure_mb)
+    )
+    clear = not signals and sample.loop_lag_ms < th.lag_increase_ms and mem_ok and vram_ok
+    gate_clear = not (signals - GATE_IGNORED_SIGNALS) and mem_ok and vram_ok
 
     throttled = frozenset(
         str(scope) for scope, count in sample.per_provider_429.items() if _as_int(count) > 0

@@ -50,6 +50,7 @@ from kiro_crew.metrics.events import (
     PROCESS_CPU_UTILIZATION,
     PROCESS_RSS_SAMPLED,
 )
+from kiro_crew.testing.wait import await_until
 
 pytestmark = pytest.mark.timeout(30)
 
@@ -411,6 +412,9 @@ class TestTick:
             "fd_limit",
             "cpu_seconds",
             "cpu_clock",
+            # GPU memory is a live NVML read (optional extra), not config: see
+            # adaptive/gpu_probe.py.
+            "vram_free_mb",
         }
 
     @pytest.mark.asyncio
@@ -1156,6 +1160,54 @@ class TestVisibilityAndConfig:
         for path in AdaptiveController.LIVE_CONFIG_PATHS:
             section, leaf = path.split(".", 1)
             assert section == "agent" and leaf in known, path
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("key", "threshold"),
+        [("vram_critical_gb", "vram_critical_mb"), ("vram_pressure_gb", "vram_pressure_mb")],
+    )
+    async def test_a_live_edit_of_one_gpu_line_reaches_the_running_controller(
+        self, tmp_path, key: str, threshold: str
+    ) -> None:
+        """Only *key* changes in the file, so the reload reaches the controller only
+        when ``LIVE_CONFIG_PATHS`` subscribes to that path; the spec says both GPU
+        lines re-parameterise the running policy in place."""
+        from unittest.mock import patch
+
+        from _hot_reload_helpers import write_config
+
+        from kiro_crew.config import live
+        from kiro_crew.config.live import ConfigWatch
+
+        cfg_file = tmp_path / "config.json"
+        write_config(cfg_file, {"agent": {"resource_pressure_gb": 4.0}})
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+            patch(
+                "kiro_crew.config.loader.config_local_path",
+                return_value=tmp_path / "config.local.json",
+            ),
+            patch("kiro_crew.config.live._WATCH", ConfigWatch(poll_interval_secs=0.05)),
+        ):
+            watch = live.watch()
+            ctl = AdaptiveController(
+                FakeManager(),  # type: ignore[arg-type]
+                cfg=KiroCrewConfig.load(),
+                host_probe=HostSample,
+                clock=Clock(),
+                sleep=AsyncMock(),
+            )
+            watch.prime(KiroCrewConfig.load())
+            before = getattr(ctl._policy.params.thresholds, threshold)
+            write_config(cfg_file, {"agent": {"resource_pressure_gb": 4.0, key: 1.5}})
+            change = await await_until(
+                asyncio.ensure_future(watch.refresh_now()), what="the live config refresh"
+            )
+
+        assert change is not None and f"agent.{key}" in change.changed, change
+        after = getattr(ctl._policy.params.thresholds, threshold)
+        applied = (before, after) == (0.0, 1536.0)
+        assert applied, f"live edit of agent.{key} not applied: before={before} after={after}"
 
 
 def test_public_adaptive_keys_are_operational_controls_only():

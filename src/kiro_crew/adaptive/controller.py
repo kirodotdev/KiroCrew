@@ -78,6 +78,10 @@ SAMPLE_RING = 60
 WINDOW_SECS = 60.0
 #: Cap-changing decisions kept for the state snapshot, newest last.
 RECENT_DECISIONS = 32
+#: Longest one tick waits for its GPU read. NVML answers in milliseconds; a read
+#: still running past this leaves that tick's GPU fields at -1 (not measured), and
+#: no later tick starts a second read while it runs (``_read_gpu_into``).
+GPU_READ_TIMEOUT_SECS = 1.0
 
 #: Substrings of a run's ``error`` that mark a CONGESTION failure: a start or
 #: turn that timed out, a stall, a backend that never initialised. Anything
@@ -156,13 +160,21 @@ class HostSample:
     #: ``controller_sample_secs`` a few hundred milliseconds of it is a
     #: double-digit-percent error published as a measured value.
     cpu_clock: float = -1.0
+    #: Free GPU memory on the most constrained NVIDIA device, read through NVML
+    #: when the optional ``gpu`` extra is installed. ``-1`` on every host
+    #: without a driver, so the consumers' ``>= 0`` guards keep today's
+    #: decisions there. See :mod:`kiro_crew.adaptive.gpu_probe`.
+    vram_free_mb: float = -1.0
 
 
 def probe_host() -> HostSample:
-    """Read memory, RSS and open fds.
+    """Read memory, RSS, CPU seconds and open fds.
 
     Never raises; runs in a worker thread, so the blocking ``/proc`` read (or
-    its platform equivalent) stays off the event loop.
+    its platform equivalent) stays off the event loop. The GPU fields stay -1
+    here: the tick reads the GPU itself, only while a GPU line is set and
+    never waiting on it past ``GPU_READ_TIMEOUT_SECS``
+    (:meth:`AdaptiveController._read_gpu_into`).
     """
     out = HostSample()
     try:
@@ -234,6 +246,8 @@ class AdaptiveController:
         "agent.controller_sample_secs",
         "agent.resource_pressure_gb",
         "agent.resource_critical_gb",
+        "agent.vram_pressure_gb",
+        "agent.vram_critical_gb",
     )
 
     def __init__(
@@ -307,6 +321,8 @@ class AdaptiveController:
         self._counts = {"decrease": 0, "increase": 0, "pause": 0, "probe": 0, "resume": 0}
         self._recent: deque[dict[str, Any]] = deque(maxlen=RECENT_DECISIONS)
         self._config_sub: Any = None
+        #: The one GPU read in flight, if any (:meth:`_read_gpu_into`).
+        self._gpu_read: Optional[asyncio.Task[Any]] = None
         try:
             from kiro_crew.config import live
 
@@ -514,7 +530,9 @@ class AdaptiveController:
             return await self.step(Sample(t=self._clock()))
         if self._host_probe is None:
             host = await asyncio.to_thread(probe_host)
+            await self._read_gpu_into(host)
         else:
+            # An injected probe is the whole host, its GPU fields included.
             host = await asyncio.to_thread(self._host_probe)
         self._emit_process_histograms(host)
         gate_snap: dict[str, Any] = {}
@@ -533,6 +551,42 @@ class AdaptiveController:
             loop_lag_ms=loop_lag_ms, host=host, gate_snap=gate_snap, budget_snap=budget_snap
         )
         return await self.step(sample)
+
+    async def _read_gpu_into(self, host: HostSample) -> None:
+        """Fill *host*'s GPU fields without letting NVML stall the tick.
+
+        Nothing is read while both GPU lines are 0: the policy has no use for the
+        card, so NVML is never imported. With a line set, the read runs on its own
+        worker thread and this tick waits for it at most ``GPU_READ_TIMEOUT_SECS``.
+        A read still running then, or found still running by a later tick, leaves
+        the fields at -1 (not measured), and no second read starts while it runs:
+        a thread cannot be cancelled, so another read would only park one more
+        executor thread in the same blocked NVML call per tick. It also means
+        ``gpu_probe.read_gpu`` never runs twice at once, so the reader holds no lock.
+        """
+        th = self._policy.params.thresholds
+        if th.vram_pressure_mb <= 0 and th.vram_critical_mb <= 0:
+            return
+        if self._gpu_read is not None and not self._gpu_read.done():
+            return
+        from kiro_crew.adaptive import gpu_probe
+
+        pending = asyncio.ensure_future(asyncio.to_thread(gpu_probe.read_gpu))
+        self._gpu_read = pending
+        try:
+            gpu = await asyncio.wait_for(asyncio.shield(pending), GPU_READ_TIMEOUT_SECS)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "adaptive: GPU memory read still running after %.1f s; GPU memory is "
+                "reported as not measured until it returns",
+                GPU_READ_TIMEOUT_SECS,
+            )
+            return
+        except Exception:
+            logger.debug("adaptive: gpu probe failed", exc_info=True)
+            return
+        if gpu.measured:
+            host.vram_free_mb = gpu.vram_free_mb
 
     def build_sample(
         self,
@@ -616,6 +670,7 @@ class AdaptiveController:
             loop_lag_ms=float(loop_lag_ms),
             rss_mb=host.rss_mb,
             free_mem_mb=host.free_mem_mb,
+            vram_free_mb=host.vram_free_mb,
             fd_count=host.fd_count,
             fd_limit=host.fd_limit,
             proc_count=_as_int(budget_snap.get("procs"), -1),
@@ -869,6 +924,7 @@ class AdaptiveController:
                     "loop_lag_ms": round(last.loop_lag_ms, 1),
                     "free_mem_mb": round(last.free_mem_mb, 1),
                     "rss_mb": round(last.rss_mb, 1),
+                    "vram_free_mb": round(last.vram_free_mb, 1),
                     "fd_count": last.fd_count,
                     "running": last.running,
                     "queued": last.queued,

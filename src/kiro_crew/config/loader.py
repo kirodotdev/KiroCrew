@@ -3585,6 +3585,8 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         spawn_min_memory_gb=section.read("spawn_min_memory_gb", _safe_float),
         resource_pressure_gb=section.read("resource_pressure_gb", _safe_float),
         resource_critical_gb=section.read("resource_critical_gb", _safe_float),
+        vram_pressure_gb=section.read("vram_pressure_gb", _safe_float),
+        vram_critical_gb=section.read("vram_critical_gb", _safe_float),
         admission_gate=section.read("admission_gate", _safe_bool),
         # Durable task queue keys, adjacent to admission_gate because a
         # gated spawn is what the queue defers instead of refusing.
