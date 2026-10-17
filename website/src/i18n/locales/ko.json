@@ -6980,6 +6980,7 @@
       "opening_new_chat": "채팅 여는 중…",
       "failed_to_open_new_chat": "새 채팅을 열지 못했습니다",
       "open_new_chat_in_project": "{{path}}은(는) git 저장소가 아니므로 worktree 없이 새 채팅을 엽니다",
+      "open_new_chat_inside_repo": "{{path}}은(는) {{root}}의 git 저장소 안에 있지만 그 루트가 아니므로 worktree 없이 새 채팅을 엽니다",
       "open_new_chat": "이 세션에는 프로젝트 디렉터리가 없으므로 worktree 없이 새 채팅을 엽니다",
       "new_chat_footer_same_project_directory": "두 작업 모두 작성창을 미리 채웁니다 — 전송을 누르기 전까지는 아무것도 전송되지 않습니다. 새 채팅은 이 세션의 프로젝트 디렉터리에서 열립니다."
     },

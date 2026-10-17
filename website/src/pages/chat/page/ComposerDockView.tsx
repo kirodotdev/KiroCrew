@@ -33,7 +33,7 @@ import type { useModelPickerModels } from './sessionPicks'
 import { REFUSED_PRESS_TITLE_KEYS, type useRefusedPress } from './turnActions'
 import type { useComposerSend } from './composerSend'
 import type { useSessionControlChips } from './sessionControls'
-import type { useComposerChips } from './composerChips'
+import { enclosingRepoRootOf, type useComposerChips } from './composerChips'
 import type { useSessionAutomation } from './sessionAutomation'
 import { SELECTION_INERT_ATTR } from '../useSelectionInertOverlays'
 import { legacyCodexEffort } from '../../../hooks/useInteractiveModels'
@@ -427,6 +427,7 @@ export default function ComposerDockView({
                     items={pendingFollowup.items}
                     projectDir={currentSlot?.project || undefined}
                     projectIsRepo={projectGitError ? undefined : projectGit?.repo}
+                    enclosingRepoRoot={enclosingRepoRootOf(projectGit, projectGitError)}
                     onAddToSession={followupAddToSession}
                     onStartInWorktree={followupStartInWorktree}
                     onStartInNewChat={followupStartInNewChat}

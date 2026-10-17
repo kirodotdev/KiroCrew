@@ -222,7 +222,18 @@ def _project_git_branch(base: str) -> dict:
     # to the dashboard, so it goes through egress redaction. It is a path rather
     # than a label, so it uses the path-aware wrapper: a normal path is unchanged,
     # including a macOS temp root the bare detector would read as one secret.
-    out: dict = {"repo": True, "repoRoot": _redact_project_path(root)}
+    # ``isRepoRoot`` says whether ``base`` IS the work-tree root rather than a
+    # directory somewhere inside a larger repository. The worktree surfaces
+    # treat only the former as a worktree source: ``POST /api/worktree/create``
+    # refuses a toplevel above the session's project unless some other session
+    # is scoped to that toplevel, and branching the whole enclosing repository
+    # is not what a session scoped to one folder of it asked for. Compared here,
+    # on the unredacted realpaths, because the echoed paths may be masked.
+    out: dict = {
+        "repo": True,
+        "repoRoot": _redact_project_path(root),
+        "isRepoRoot": root == base,
+    }
     head_path = _git_head_path(root)
     if head_path is None:
         return out
