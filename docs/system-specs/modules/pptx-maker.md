@@ -366,7 +366,11 @@ and nothing else".
 So `engine_source.py` downloads
 `https://github.com/<owner>/<repo>/archive/<ENGINE_COMMIT>.tar.gz` over plain
 HTTPS and verifies a **sha256 over the received bytes**
-(`ENGINE_TARBALL_SHA256`) before anything is extracted. That digest is the trust
+(`ENGINE_TARBALL_SHA256`) before anything is extracted. The transfer is
+`asset_downloader.download_to`, shared with the embedding model, feature videos
+and Papyrus's Tectonic install: the archive reaches its path only once the digest
+matches, and redirects may change host (`/archive/` 302s to
+`codeload.github.com`) but never leave https. That digest is the trust
 anchor; the commit is the locator and `ENGINE_TAG` is display-only (it never
 appears in the URL, so it cannot influence which bytes arrive). Bumping the
 engine means bumping all three together — bumping the commit alone fails

@@ -25,11 +25,13 @@ import json
 import os
 import tarfile
 import urllib.error
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
 import pytest
 
+from kiro_crew import asset_downloader
 from kiro_crew.apps.builtins.pptx_maker.backend import engine_source
 
 
@@ -107,7 +109,7 @@ class TestUrlOverride:
 
     def test_redaction_drops_userinfo_query_and_path(self):
         """A mirror override may carry credentials, a signed query, or a PATH token."""
-        redacted = engine_source.redact_url("https://u:p@host/path?sig=secret#frag")
+        redacted = asset_downloader.redact_url("https://u:p@host/path?sig=secret#frag")
         assert "secret" not in redacted and "p@" not in redacted
         # HOST-ONLY. The path is dropped, and it is the third place a mirror can
         # hide a secret — `/artifactory/api/npm/tok-…/`, a presigned `/AKIA…/`.
@@ -118,12 +120,12 @@ class TestUrlOverride:
             ("https://artifactory.example/api/npm/tok-9f3b2c/e.tar.gz", "tok-9f3b2c"),
             ("https://mirror.example/AKIAIOSFODNN7EXAMPLE/e.tar.gz", "AKIAIOSFODNN7EXAMPLE"),
         ):
-            assert secret not in engine_source.redact_url(url)
+            assert secret not in asset_downloader.redact_url(url)
 
     def test_the_port_is_kept(self):
         """Host-only, not scheme-only: an air-gapped mirror is often on a non-default
         port, and a port holds no secret."""
-        assert engine_source.redact_url("https://mirror.example:8443/x/e.tar.gz") == (
+        assert asset_downloader.redact_url("https://mirror.example:8443/x/e.tar.gz") == (
             "https://mirror.example:8443"
         )
 
@@ -143,7 +145,7 @@ class TestDownloadVerification:
     def _patch_download(self, data: bytes):
         opener = mock.Mock()
         opener.open = mock.Mock(return_value=self._fake_response(data))
-        return mock.patch.object(engine_source.urllib.request, "build_opener", return_value=opener)
+        return mock.patch.object(urllib.request, "build_opener", return_value=opener)
 
     def _raise_on_open(self, exc: Exception):
         """Make `opener.open(...)` raise — the call INSIDE the guarded block.
@@ -154,7 +156,7 @@ class TestDownloadVerification:
         opener = mock.Mock()
         opener.open = mock.Mock(side_effect=exc)
         return mock.patch.object(
-            engine_source.urllib.request, "build_opener", return_value=opener
+            urllib.request, "build_opener", return_value=opener
         )
 
     _SIGNED = "https://mirror.example/engine.tar.gz?X-Amz-Signature=sup3rsecret"
@@ -230,14 +232,14 @@ class TestDownloadVerification:
             ),
         ):
             ok, error = engine_source.download_archive(staging)
-        assert ok is False and "implausibly small" in error
+        assert ok is False and "too small" in error
         assert not staging.exists()
 
     def test_a_network_failure_is_reported_not_raised(self, tmp_path: Path):
         """Provisioning is a detached background job; its only channel is the log."""
         opener = mock.Mock()
         opener.open = mock.Mock(side_effect=urllib.error.URLError("dns"))
-        with mock.patch.object(engine_source.urllib.request, "build_opener", return_value=opener):
+        with mock.patch.object(urllib.request, "build_opener", return_value=opener):
             ok, error = engine_source.download_archive(tmp_path / "e.tar.gz")
         assert ok is False and "download failed" in error
 
@@ -246,7 +248,7 @@ class TestDownloadVerification:
     ):
         """A test run must never be able to reach the network."""
         monkeypatch.setenv(engine_source.SKIP_DOWNLOAD_ENV, "1")
-        with mock.patch.object(engine_source.urllib.request, "build_opener") as opener:
+        with mock.patch.object(urllib.request, "build_opener") as opener:
             ok, error = engine_source.download_archive(tmp_path / "e.tar.gz")
         assert ok is False and engine_source.SKIP_DOWNLOAD_ENV in error
         assert not opener.called
@@ -259,7 +261,7 @@ class TestDownloadVerification:
 
         assert (
             "context"
-            not in inspect.signature(engine_source.urllib.request.OpenerDirector.open).parameters
+            not in inspect.signature(urllib.request.OpenerDirector.open).parameters
         )
         captured: list[object] = []
 
@@ -267,19 +269,43 @@ class TestDownloadVerification:
             captured.extend(handlers)
             return mock.Mock(open=mock.Mock(side_effect=urllib.error.URLError("stop")))
 
-        with mock.patch.object(engine_source.urllib.request, "build_opener", spy):
+        with mock.patch.object(urllib.request, "build_opener", spy):
             engine_source.download_archive(tmp_path / "kc-unused-engine.tar.gz")
-        https = [h for h in captured if isinstance(h, engine_source.urllib.request.HTTPSHandler)]
+        https = [h for h in captured if isinstance(h, urllib.request.HTTPSHandler)]
         assert https, "an HTTPSHandler carrying the SSL context must be installed"
         assert getattr(https[0], "_context", None) is not None
 
-    def test_a_non_https_redirect_is_refused(self):
-        """A hop to http:// would be a silent transport downgrade."""
-        handler = engine_source._HttpsOnlyRedirectHandler()
+    def test_redirects_may_change_host_but_never_leave_https(self, tmp_path: Path):
+        """GitHub's `/archive/` url 302s to `codeload.github.com`, so the transfer
+        must follow a cross-host hop. A hop to http:// would be a silent transport
+        downgrade, so the opener carries the shared https-only handler."""
+        captured: list[object] = []
+
+        def spy(*handlers):
+            captured.extend(handlers)
+            return mock.Mock(open=mock.Mock(side_effect=urllib.error.URLError("stop")))
+
+        with mock.patch.object(urllib.request, "build_opener", spy):
+            engine_source.download_archive(tmp_path / "kc-unused-engine.tar.gz")
+        assert asset_downloader._HttpsOnlyRedirectHandler in captured
+        handler = asset_downloader._HttpsOnlyRedirectHandler()
+        request = urllib.request.Request("https://github.com/x/y/archive/z.tar.gz")
         with pytest.raises(urllib.error.URLError):
             handler.redirect_request(
-                mock.Mock(), mock.Mock(), 302, "Found", {}, "http://evil.example/e.tar.gz"
+                request, mock.Mock(), 302, "Found", {}, "http://evil.example/e.tar.gz"
             )
+
+    def test_the_transfer_goes_through_the_shared_downloader_with_the_pin(self, tmp_path: Path):
+        """One place answers "did we verify this before installing it?"."""
+        archive = tmp_path / "engine.tar.gz"
+        with mock.patch.object(asset_downloader, "download_to", return_value=(True, "")) as shared:
+            assert engine_source.download_archive(archive) == (True, "")
+        shared.assert_called_once()
+        args, kwargs = shared.call_args
+        assert args == (archive, engine_source.archive_url())
+        assert kwargs["sha256"] == engine_source.ENGINE_TARBALL_SHA256
+        assert kwargs["min_bytes"] == engine_source._MIN_ARCHIVE_BYTES
+        assert kwargs["allow_cross_host_redirects"] is True
 
 
 class TestSafeExtraction:
@@ -489,6 +515,59 @@ class TestSourceMarker:
             encoding="utf-8",
         )
         assert engine_source.installed_tag(tmp_path) == "unknown"
+
+
+class TestInstallThroughTheSharedDownloader:
+    """`install_engine` over the REAL download path, with only the socket mocked.
+
+    The archive arrives through `asset_downloader.download_to`, so these pin the
+    order across the seam: the digest is checked before anything is extracted,
+    and the archive-shape refusals still fire on what the download hands over.
+    """
+
+    @staticmethod
+    def _serve(data: bytes):
+        response = mock.MagicMock()
+        response.__enter__ = mock.Mock(return_value=response)
+        response.__exit__ = mock.Mock(return_value=False)
+        response.read = mock.Mock(side_effect=[data, b""])
+        response.headers = {"Content-Length": str(len(data))}
+        opener = mock.Mock(open=mock.Mock(return_value=response))
+        return mock.patch.object(urllib.request, "build_opener", return_value=opener)
+
+    @staticmethod
+    def _previous_engine(root: Path) -> None:
+        (root / "mcp-local").mkdir(parents=True)
+        (root / "mcp-local" / "keep.txt").write_text("previous engine", encoding="utf-8")
+
+    def test_a_digest_mismatch_is_refused_before_extraction(self, tmp_path: Path):
+        root = tmp_path / "vendor" / "sdpm"
+        self._previous_engine(root)
+        log: list[str] = []
+        with (
+            self._serve(_benign_engine_tar() + b"\0" * engine_source._MIN_ARCHIVE_BYTES),
+            mock.patch.object(engine_source, "_extract_tar") as extract,
+        ):
+            assert engine_source.install_engine(root, log) is False
+        assert not extract.called, "unverified bytes reached the extractor"
+        assert any("REFUSING" in line and "sha256 mismatch" in line for line in log), log
+        assert (root / "mcp-local" / "keep.txt").read_text(encoding="utf-8") == "previous engine"
+
+    def test_a_corrupt_archive_that_matches_its_pin_is_still_refused(self, tmp_path: Path):
+        """The digest proves WHICH bytes arrived, not that they are a tarball."""
+        root = tmp_path / "vendor" / "sdpm"
+        self._previous_engine(root)
+        corrupt = b"not a gzip stream " * 10_000
+        log: list[str] = []
+        with (
+            self._serve(corrupt),
+            mock.patch.object(
+                engine_source, "ENGINE_TARBALL_SHA256", hashlib.sha256(corrupt).hexdigest()
+            ),
+        ):
+            assert engine_source.install_engine(root, log) is False
+        assert any(line.startswith("engine archive rejected: ") for line in log), log
+        assert (root / "mcp-local" / "keep.txt").read_text(encoding="utf-8") == "previous engine"
 
 
 class TestInstallEngine:

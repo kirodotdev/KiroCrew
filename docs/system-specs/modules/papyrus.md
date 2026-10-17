@@ -413,8 +413,9 @@ manual install path. `platform.machine()` normalization handles the
 `KIROCREW_PAPYRUS_TECTONIC_URL` overrides the download URL for a mirrored or
 air-gapped deployment. It must be `https://` (a `file://` or `http://` value is
 refused and logged), and the pin still has to match — an override changes **where**
-bytes come from, never **which** bytes are accepted. Logged URLs are redacted to
-scheme+host+path so a signed query string or userinfo never reaches a log.
+bytes come from, never **which** bytes are accepted. Logged and returned URLs are
+redacted to scheme+host, so a signed query string, userinfo or path token never
+reaches a log or the install banner.
 `KIROCREW_PAPYRUS_SKIP_TECTONIC_DOWNLOAD=1` refuses provisioning outright, which
 is how the test suite guarantees it never reaches the network.
 
@@ -485,9 +486,12 @@ immediately** and hands the work to a **daemon** thread: a transfer must not pin
 interpreter exit (a `ThreadPoolExecutor` or the loop's default executor joins its
 non-daemon workers at exit, so a Ctrl-C would hang for up to the HTTP timeout),
 and the default executor is also what the loop uses for DNS. One job at a time; a
-second click while one runs starts nothing. The sha256 is computed over the
-**stream**, so verification cannot be fooled by a file swapped between write and
-check, and the binary is `chmod`-ed and then `os.replace`-d into place, so it is
+second click while one runs starts nothing. The transfer is
+`asset_downloader.download_to`, the same one the embedding model and feature
+videos use: the sha256 is computed over the **stream**, and the archive reaches its
+path only once the digest matches, so extraction never sees unverified bytes.
+Redirects may change host (the release url 302s to GitHub's asset host) but never
+leave https. The binary is `chmod`-ed and then `os.replace`-d into place, so it is
 never observable at its final path without its exec bit.
 
 Every failure degrades cleanly and leaves the manual route working:

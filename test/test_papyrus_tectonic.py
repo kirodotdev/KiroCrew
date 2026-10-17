@@ -33,6 +33,8 @@ import hashlib
 import io
 import os
 import tarfile
+import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Iterator
@@ -41,7 +43,7 @@ from unittest import mock
 import pytest
 
 from conftest import make_dir_link, requires_symlinks
-from kiro_crew import platform_compat
+from kiro_crew import asset_downloader, platform_compat
 from kiro_crew.apps.builtins.papyrus.backend import latex, store, tectonic
 
 
@@ -136,7 +138,7 @@ def _serve(body: bytes) -> mock._patch:
     """Patch the module's opener so a download yields *body* and touches no socket."""
     opener = mock.MagicMock()
     opener.open.return_value = _FakeResponse(body)
-    return mock.patch.object(tectonic.urllib.request, "build_opener", return_value=opener)
+    return mock.patch.object(urllib.request, "build_opener", return_value=opener)
 
 
 def _pin(monkeypatch: pytest.MonkeyPatch, asset: tectonic.TectonicAsset) -> None:
@@ -335,7 +337,7 @@ class TestUrlResolution:
         assert tectonic.resolve_url(asset) == asset.url
 
     def test_redacts_userinfo_query_and_path_from_a_logged_url(self) -> None:
-        redacted = tectonic.redact_url("https://user:secret@mirror.example/t.tar.gz?sig=abc123")
+        redacted = asset_downloader.redact_url("https://user:secret@mirror.example/t.tar.gz?sig=abc123")
         assert "secret" not in redacted
         assert "abc123" not in redacted
         # HOST-ONLY. The path is dropped, and a mirror can carry its credential
@@ -353,13 +355,13 @@ class TestUrlResolution:
             ("https://artifactory.example/api/npm/tok-9f3b2c/t.tar.gz", "tok-9f3b2c"),
             ("https://mirror.example/AKIAIOSFODNN7EXAMPLE/t.tar.gz", "AKIAIOSFODNN7EXAMPLE"),
         ):
-            redacted = tectonic.redact_url(url)
+            redacted = asset_downloader.redact_url(url)
             assert secret not in redacted, f"{secret} survived in {redacted}"
 
     def test_the_port_is_kept(self) -> None:
         """Host-only, not scheme-only: the port is a real diagnostic and holds no
         secret, and an air-gapped mirror is often on a non-default one."""
-        assert tectonic.redact_url("https://mirror.example:8443/t.tar.gz") == (
+        assert asset_downloader.redact_url("https://mirror.example:8443/t.tar.gz") == (
             "https://mirror.example:8443"
         )
 
@@ -709,6 +711,58 @@ class TestProvisionSync:
         assert "archive rejected" in str(tectonic.provision_state()["error"])
         assert not (data_root.parent / "escape").exists()
 
+    def test_a_digest_mismatch_is_refused_before_extraction(
+        self, data_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The archive arrives through `asset_downloader.download_to`, which puts
+        nothing at the archive path until the pin matches. So the extractor never
+        sees the bytes of a refused transfer."""
+        _allow_download(monkeypatch)
+        body = _tar_gz({"tectonic": _payload()})
+        _pin(monkeypatch, tectonic.TectonicAsset("t.tar.gz", "0" * 63 + "1"))
+        monkeypatch.setattr(tectonic, "binary_name", lambda: "tectonic")
+        extract = mock.Mock()
+        monkeypatch.setattr(tectonic, "_extract", extract)
+        with _serve(body):
+            assert tectonic.provision_sync(attempts=1) is False
+        assert not extract.called, "unverified bytes reached the extractor"
+        assert "sha256 mismatch" in str(tectonic.provision_state()["error"])
+        assert not tectonic.binary_path().exists()
+
+    @pytest.mark.parametrize("name", ["t.tar.gz", "t.zip"])
+    def test_a_corrupt_archive_that_matches_its_pin_is_still_refused(
+        self, data_root: Path, monkeypatch: pytest.MonkeyPatch, name: str
+    ) -> None:
+        """The digest proves WHICH bytes arrived, not that they are an archive.
+        `tarfile.TarError` and `zipfile.BadZipFile` still end in "archive rejected"."""
+        _allow_download(monkeypatch)
+        body = b"not an archive " * 1_000
+        _pin(monkeypatch, _asset_for(body, name=name))
+        monkeypatch.setattr(tectonic, "binary_name", lambda: "tectonic")
+        with _serve(body):
+            assert tectonic.provision_sync(attempts=1) is False
+        assert str(tectonic.provision_state()["error"]).startswith("archive rejected: ")
+        assert not tectonic.binary_path().exists()
+
+    def test_the_transfer_goes_through_the_shared_downloader_with_the_pin(
+        self, data_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One place answers "did we verify this before installing it?". Cross-host
+        redirects stay allowed: the pinned GitHub release url 302s to its asset host."""
+        asset = tectonic.TectonicAsset("t.tar.gz", "a" * 64)
+        archive = data_root / "t.tar.gz"
+        with mock.patch.object(
+            tectonic.asset_downloader,
+            "download_to",
+            return_value=(False, "HTTPS download failed: x"),
+        ) as shared:
+            ok, error = tectonic._download_to(asset, archive)
+        assert ok is False and error == "Tectonic t.tar.gz: HTTPS download failed: x"
+        args, kwargs = shared.call_args
+        assert args == (archive, tectonic.resolve_url(asset))
+        assert kwargs["sha256"] == asset.sha256
+        assert kwargs["allow_cross_host_redirects"] is True
+
     def test_an_archive_without_the_binary_is_refused(
         self, data_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -761,8 +815,8 @@ class TestProvisionSync:
         _allow_download(monkeypatch)
         _pin(monkeypatch, _asset_for(b"x", name="t.tar.gz"))
         opener = mock.MagicMock()
-        opener.open.side_effect = tectonic.urllib.error.URLError("connection reset")
-        with mock.patch.object(tectonic.urllib.request, "build_opener", return_value=opener):
+        opener.open.side_effect = urllib.error.URLError("connection reset")
+        with mock.patch.object(urllib.request, "build_opener", return_value=opener):
             assert tectonic.provision_sync(attempts=1) is False
         assert not tectonic.binary_path().exists()
         # No staging or work directory survives.
@@ -781,7 +835,7 @@ class TestProvisionSync:
         target.chmod(0o755)
         opener = mock.MagicMock()
         with mock.patch.object(
-            tectonic.urllib.request, "build_opener", return_value=opener
+            urllib.request, "build_opener", return_value=opener
         ) as build:
             assert tectonic.provision_sync(attempts=1) is True
         assert build.call_count == 0, "must not re-download an installed compiler"
@@ -790,7 +844,7 @@ class TestProvisionSync:
         """The escape hatch a test run relies on: no network, ever."""
         opener = mock.MagicMock()
         with mock.patch.object(
-            tectonic.urllib.request, "build_opener", return_value=opener
+            urllib.request, "build_opener", return_value=opener
         ) as build:
             assert tectonic.provision_sync(attempts=1) is False
         assert build.call_count == 0
@@ -806,10 +860,10 @@ class TestProvisionSync:
         monkeypatch.setattr(tectonic, "binary_name", lambda: "tectonic")
         opener = mock.MagicMock()
         opener.open.side_effect = [
-            tectonic.urllib.error.URLError("flaky"),
+            urllib.error.URLError("flaky"),
             _FakeResponse(body),
         ]
-        with mock.patch.object(tectonic.urllib.request, "build_opener", return_value=opener):
+        with mock.patch.object(urllib.request, "build_opener", return_value=opener):
             assert tectonic.provision_sync(attempts=2) is True
         assert tectonic.binary_installed() is True
         assert tectonic.provision_state()["attempt"] == 2
@@ -1020,7 +1074,7 @@ class TestErrorMessagesNeverCarryMirrorCredentials:
         def _boom(_self, *_args, **_kwargs):
             raise exc
 
-        monkeypatch.setattr(tectonic.urllib.request.OpenerDirector, "open", _boom)
+        monkeypatch.setattr(urllib.request.OpenerDirector, "open", _boom)
 
     def test_a_malformed_credentialed_override_is_handled_not_crashed(
         self, monkeypatch: pytest.MonkeyPatch, data_root: Path

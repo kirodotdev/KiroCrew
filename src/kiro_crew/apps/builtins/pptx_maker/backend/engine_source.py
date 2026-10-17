@@ -27,7 +27,8 @@ Follows :mod:`kiro_crew.embeddings` and
 :mod:`kiro_crew.apps.builtins.papyrus.backend.tectonic`, the two in-tree
 precedents for the same shape: an https-only fetch of a large third-party
 artifact, sha256-pinned, streamed and hashed as it arrives, verified BEFORE
-install, extracted with every archive member validated.
+install, extracted with every archive member validated. All three fetch through
+:func:`kiro_crew.asset_downloader.download_to`.
 
 Everything here is synchronous and BLOCKING (network + filesystem). Callers MUST
 already be off the event loop — see ``routes.off_loop`` and the
@@ -36,16 +37,11 @@ already be off the event loop — see ``routes.off_loop`` and the
 
 from __future__ import annotations
 
-import hashlib
-import http.client
 import json
 import logging
 import os
 import shutil
 import tarfile
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Callable
 
@@ -159,131 +155,47 @@ def archive_url() -> str:
     return _ARCHIVE_URL_TEMPLATE.format(repo=ENGINE_REPO, commit=ENGINE_COMMIT)
 
 
-def redact_url(url: str) -> str:
-    """Return *url* safe for logs: scheme + host only.
+def download_archive(archive: Path) -> tuple[bool, str]:
+    """Fetch the pinned archive to *archive* through the shared verified downloader.
 
-    A mirror override can carry a credential in ANY of three places — userinfo, a signed
-    query string, or a PATH SEGMENT (``/artifactory/api/npm/tok-9f3b2c/…``, a
-    presigned-style ``/AKIA…/…``). The first two were dropped and the path was kept, so a
-    path-tokenised mirror had its token written to the log and shown on the dashboard.
+    Returns ``(ok, error)``. :func:`asset_downloader.download_to` streams the
+    bytes into a staging file beside *archive*, hashes them as they arrive, and
+    renames them onto *archive* only once the digest matches
+    :data:`ENGINE_TARBALL_SHA256` and the body is at least
+    :data:`_MIN_ARCHIVE_BYTES`. A refused transfer leaves nothing at *archive*,
+    so :func:`_extract_tar` never sees unverified bytes.
 
-    The path is now dropped too. It cost the one diagnostic it carried — the artifact's
-    filename — and that is already known from the pinned constants, so nothing is lost
-    that is not recoverable from the code. Host-only is also what makes this safe by
-    CONSTRUCTION rather than by enumerating token shapes.
+    The shared function never raises. Its error string carries the exception
+    TYPE and a host-only url, never the exception text: ``InvalidURL`` and
+    ``HTTPError`` embed the url verbatim, a mirror override may hold a
+    credential, and this string reaches the dashboard.
 
-    Kept in step with ``papyrus/backend/tectonic.py``'s copy: the same omission existed in
-    both, which is what a duplicated redactor gets you.
-    """
-    try:
-        parts = urllib.parse.urlsplit(url)
-        host = parts.hostname or ""
-        if parts.port:
-            host = f"{host}:{parts.port}"
-        return urllib.parse.urlunsplit((parts.scheme, host, "", "", ""))
-    except ValueError:
-        return "<unparseable-url>"
-
-
-class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Refuse a redirect that leaves ``https``.
-
-    A GitHub ``/archive/`` URL 302s to ``codeload.github.com``, which is normal
-    and expected; a hop to ``http://`` would be a silent transport downgrade.
-    The digest pin means such a hop could not change WHICH bytes are accepted,
-    so this is defence in depth rather than the integrity control.
-    """
-
-    def redirect_request(  # type: ignore[override]
-        self,
-        req: urllib.request.Request,
-        fp: object,
-        code: int,
-        msg: str,
-        headers: object,
-        newurl: str,
-    ) -> urllib.request.Request | None:
-        if urllib.parse.urlsplit(newurl).scheme.lower() != _HTTPS_SCHEME:
-            raise urllib.error.URLError(f"refusing non-https redirect to {redact_url(newurl)}")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)  # type: ignore[arg-type]
-
-
-def download_archive(staging: Path) -> tuple[bool, str]:
-    """Stream the pinned archive to *staging*, hashing as it goes.
-
-    Returns ``(ok, error)``. The digest is computed over the STREAM rather than
-    by re-reading the file afterwards, so a file swapped between write and check
-    cannot be what gets verified. A mismatch removes the staged bytes.
+    Cross-host redirects are allowed, but only to https. The pinned archive url
+    is built from constants in this file and 302s to ``codeload.github.com``;
+    the override is the operator's own environment. Both are shapes the shared
+    module accepts for ``allow_cross_host_redirects``, and the digest still
+    decides.
 
     BLOCKING — callers are already off the loop.
     """
     if os.environ.get(SKIP_DOWNLOAD_ENV) == "1":
         return False, f"{SKIP_DOWNLOAD_ENV}=1 — the engine download was skipped"
-    url = archive_url()
-    # The SSL context goes on an HTTPSHandler, NOT on `opener.open(...)`:
-    # `OpenerDirector.open` has no `context` parameter (only the module-level
-    # `urlopen` does), so passing one there raises TypeError at request time —
-    # i.e. it would fail on every real download while every mocked test passed.
-    opener = urllib.request.build_opener(
-        urllib.request.HTTPSHandler(context=asset_downloader.make_ssl_context()),
-        _HttpsOnlyRedirectHandler,
+    ok, error = asset_downloader.download_to(
+        archive,
+        archive_url(),
+        sha256=ENGINE_TARBALL_SHA256,
+        min_bytes=_MIN_ARCHIVE_BYTES,
+        timeout_secs=DOWNLOAD_TIMEOUT,
+        chunk_bytes=_HTTP_CHUNK_BYTES,
+        allow_cross_host_redirects=True,
+        label=f"pptx-maker engine {ENGINE_COMMIT[:12]}",
     )
-    request = urllib.request.Request(url, method="GET")
-    digest = hashlib.sha256()
-    downloaded = 0
-    try:
-        logger.info("pptx-maker: downloading the engine from %s", redact_url(url))
-        staging.parent.mkdir(parents=True, exist_ok=True)
-        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- archive_url enforces https:// and the payload is sha256-pinned
-        with opener.open(request, timeout=DOWNLOAD_TIMEOUT) as resp:
-            with staging.open("wb") as out:
-                while True:
-                    chunk = resp.read(_HTTP_CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    out.write(chunk)
-                    digest.update(chunk)
-                    downloaded += len(chunk)
-    # `http.client.HTTPException` is in the tuple deliberately: `InvalidURL` derives
-    # from it, NOT from `OSError`/`URLError`/`ValueError`, so without it a malformed
-    # mirror URL passes straight through this handler to an outer catch-all.
-    except (
-        urllib.error.URLError,
-        http.client.HTTPException,
-        OSError,
-        TimeoutError,
-        ValueError,
-    ) as exc:
-        staging.unlink(missing_ok=True)
-        # The exception TEXT is not safe to return. `InvalidURL` and `HTTPError` both
-        # carry the URL verbatim, and a mirror override may hold credentials in
-        # userinfo or a SIGNED QUERY STRING — which is exactly why `redact_url` exists
-        # and why the log line above already uses it. This value goes further than a
-        # log: it reaches the dashboard.
-        #
-        # Same omission, same fix, as `papyrus/backend/tectonic.py`'s download path:
-        # the module had a redactor, applied it to the log, and interpolated `{exc}`
-        # into the return. The TYPE is what actually aids diagnosis here (malformed URL
-        # vs. timeout vs. refused) and cannot contain a credential. No `exc_info` for
-        # the same reason — a traceback renders the exception's own `str()`.
-        logger.warning(
-            "pptx-maker: engine download from %s failed: %s",
-            redact_url(url),
-            type(exc).__name__,
-        )
-        return False, f"engine download failed ({type(exc).__name__}) from {redact_url(url)}"
-    actual = digest.hexdigest()
-    if actual != ENGINE_TARBALL_SHA256:
-        staging.unlink(missing_ok=True)
+    if not ok:
+        logger.warning("pptx-maker: engine download failed: %s", error)
         return False, (
-            f"REFUSING the engine archive: sha256 got {actual[:16]}…, expected "
-            f"{ENGINE_TARBALL_SHA256[:16]}…. The published bytes for "
-            f"{ENGINE_COMMIT[:12]} are not the ones that were vetted; nothing was "
-            "extracted, built or run."
+            f"REFUSING the engine archive for {ENGINE_COMMIT[:12]}: {error}. "
+            "Nothing was extracted, built or run."
         )
-    if downloaded < _MIN_ARCHIVE_BYTES:
-        staging.unlink(missing_ok=True)
-        return False, f"engine archive implausibly small ({downloaded} bytes)"
     return True, ""
 
 
