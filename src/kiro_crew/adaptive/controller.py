@@ -253,7 +253,6 @@ class AdaptiveController:
         gate_floor: int = 1,
         gate_ceiling: int = 8,
         on_provider_throttle: Optional[Callable[[str, int], None]] = None,
-        busy_sampler: Optional[LoopBusySampler] = None,
     ) -> None:
         self._manager = manager
         self._set_gate_capacity = set_gate_capacity
@@ -296,8 +295,8 @@ class AdaptiveController:
         self._applied_gate: Optional[int] = None
         self._gate_pending: Optional[int] = None
         #: Reads the loop thread's frame when a sample's timer is late; built by
-        #: :meth:`start` when none is injected.
-        self._busy_sampler = busy_sampler
+        #: :meth:`start`.
+        self._busy_sampler: Optional[LoopBusySampler] = None
         #: What the loop was running during this tick's lag, ``""`` if it was on
         #: time or nothing was read.
         self._last_busy = ""
@@ -436,7 +435,8 @@ class AdaptiveController:
     async def stop(self) -> None:
         task, self._task = self._task, None
         if self._busy_sampler is not None:
-            self._busy_sampler.stop()
+            # Off the loop: the stop joins the sampler's thread.
+            await asyncio.to_thread(self._busy_sampler.stop)
         if task is not None and not task.done():
             task.cancel()
             try:
@@ -776,19 +776,16 @@ class AdaptiveController:
         log. A ceiling lowered meanwhile lowers the target with it, and a switch
         to fixed mode, which pins both caps, ends the period too.
         """
-        prev, self._decided_caps = self._decided_caps, (
-            decision.effective_exec_cap,
-            decision.spawn_gate_capacity,
-        )
+        # Before the first decision the policy holds its start caps, so a cut on
+        # the very first tick opens a period too.
+        params = self._policy.params
+        prev = self._decided_caps or (params.exec_start, params.gate_start)
+        self._decided_caps = (decision.effective_exec_cap, decision.spawn_gate_capacity)
         if self._cut_since is None:
-            if (
-                prev is not None
-                and decision.action in (ACTION_DECREASE, ACTION_PAUSE)
-                and (
-                    decision.paused
-                    or decision.effective_exec_cap < prev[0]
-                    or decision.spawn_gate_capacity < prev[1]
-                )
+            if decision.action in (ACTION_DECREASE, ACTION_PAUSE) and (
+                decision.paused
+                or decision.effective_exec_cap < prev[0]
+                or decision.spawn_gate_capacity < prev[1]
             ):
                 self._cut_since = self._clock()
                 self._cut_from = prev
@@ -797,9 +794,23 @@ class AdaptiveController:
             return
         from_exec, from_gate = self._cut_from
         ceiling = max(1, int(self._manager.user_max_concurrent))
-        back = decision.action == ACTION_FIXED or (
-            decision.effective_exec_cap >= min(from_exec, ceiling)
-            and decision.spawn_gate_capacity >= min(from_gate, self._gate_bounds[2])
+        # Demand can grow a cap past where the policy starts it, and with no
+        # demand left the policy only restores toward that start, so an idle
+        # return to it ends the period too; otherwise it would stay open and
+        # fold every later episode into one length.
+        last = self._samples[-1] if self._samples else None
+        idle = last is not None and last.demand == 0
+        back = (
+            decision.action == ACTION_FIXED
+            or (
+                decision.effective_exec_cap >= min(from_exec, ceiling)
+                and decision.spawn_gate_capacity >= min(from_gate, self._gate_bounds[2])
+            )
+            or (
+                idle
+                and decision.effective_exec_cap >= min(from_exec, params.exec_start)
+                and decision.spawn_gate_capacity >= min(from_gate, params.gate_start)
+            )
         )
         if not back:
             return
