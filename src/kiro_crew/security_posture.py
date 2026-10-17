@@ -1846,6 +1846,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # manifest-supplied and its path or query can carry a token, so the redaction
         # keeps that out of the log ring and /api/logs. Neither module writes to a
         # human-bound or third-party output, so neither is an egress boundary.
+        #
+        # `download_to` also RETURNS its failure string with the url cut to
+        # scheme+host and the exception reduced to its type, never `{exc}`. The
+        # callers own where that string goes: Papyrus's Tectonic install puts it in
+        # its install state and PPTX Maker's engine install in its provision log,
+        # and each app's own routes hand that to the dashboard. Those two app
+        # modules call no redactor themselves, so they are not listed.
         "asset_downloader.py",
         "feature_videos_manifest.py",
         # Same transfer-side hygiene for the KAS engine installer: a fetch failure
@@ -2586,17 +2593,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cloud/connect.py",
         "cloud/login.py",
         "embeddings.py",
-        # NOTE: papyrus's tectonic.py is deliberately NOT here — see the sinks
-        # list below. Its redacted URL does reach the dashboard, so filing it as
-        # non-egress was wrong and would have let the drift guard miss a future
-        # change that started returning `{exc}` verbatim.
-        # Same shape again: pptx-maker's digest-pinned engine download redacts the
-        # DOWNLOAD URL (userinfo + signed query) before logging it, so a
-        # mirrored/presigned KIROCREW_PPTX_ENGINE_URL override cannot leak
-        # credentials into a log. Nothing here reaches a user-facing surface — the
-        # app's own egress path (model-authored deck names and brief previews)
-        # redacts separately in pptx_maker/backend/decks.py.
-        "apps/builtins/pptx_maker/backend/engine_source.py",
         # Uses the redactor as a PREDICATE, not a transform: `resolve_deck_dir`
         # compares `redact(deck_id) != deck_id` to decide whether to refuse the deck
         # outright. A deck id cannot be scrubbed on the way out — it is the directory
@@ -2739,13 +2735,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/meetings/backend/routes/meeting_lifecycle.py",
         "apps/builtins/meetings/backend/routes/tasks.py",
         "apps/builtins/papyrus/backend/routes.py",
-        # A real egress boundary, not a log-only redaction: `_download_to` returns
-        # `f"download failed (...) from {redact_url(url)}"`, which lands in the
-        # persisted job state, rides `GET /health`, and is rendered verbatim in the
-        # dashboard's install banner. The redaction itself is host-only (so a
-        # credentialed mirror override cannot leak), but it must be REGISTERED here
-        # or the drift guard cannot notice a change that starts returning `{exc}`.
-        "apps/builtins/papyrus/backend/tectonic.py",
         "apps/builtins/pptx_maker/backend/decks.py",
         "apps/builtins/pptx_maker/backend/routes.py",
         # A behavior-preserving decomposition of the Spec Builder app backend.
