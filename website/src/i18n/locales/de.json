@@ -6315,6 +6315,7 @@
       "paused_approval_stalled": "Pausiert · wartet auf deine Freigabe",
       "paused_approval_hold": "Pausiert · eine Freigabe in diesem Chat ist abgelaufen. Drück Play oder schick eine Nachricht, um fortzufahren.",
       "waiting_on_person_hold": "Wartet auf dich · jede offene Aufgabe braucht deine Antwort in diesem Chat. Die Anstöße gehen weiter, sobald ein Worker sich zurückmeldet.",
+      "waiting_on_person_declared_hold": "Wartet auf dich · antworte in diesem Chat, um fortzufahren",
       "paused_last_cycle_failed": "Pausiert · der letzte Zyklus konnte nicht laufen",
       "clear_goal_for_good": "Leeren",
       "cancel": "Abbrechen",

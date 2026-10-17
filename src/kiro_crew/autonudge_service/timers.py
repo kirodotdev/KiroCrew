@@ -108,6 +108,16 @@ _ACTING_TIMER: contextvars.ContextVar["asyncio.Task[Any] | None"] = contextvars.
 )
 
 
+def _valid_stamp(value: object, now: float) -> bool:
+    """Whether *value* is a usable hold stamp: a positive number at or before *now*."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= now
+
+
+def _holds_for_a_person(loop: NudgeLoop) -> bool:
+    """Whether *loop* holds until a person is back: an approval hold, or a declared wait."""
+    return bool(loop.approval_stalled or (loop.person_wait_declared and loop.waiting_on_person))
+
+
 def notify_approval_stalled(self: AutoNudgeService, slot_key: str) -> None:
     """Record that a tool approval in *slot_key* went unanswered: hold the loop.
 
@@ -246,18 +256,24 @@ async def release_approval_hold(
     skipped then, and the reconciler re-arms the loop, which is not held any more.
     A structured monitor never holds (its tick path does not read the flag), so
     it is left alone.
+
+    A person-wait hold the agent declared (``person_wait_declared``) waits for the
+    same person, so it ends here too, in the same write, with its own span credited
+    under the overlap rule below.
     """
     async with self._lock:
         loop = self._find_by_slot(slot_key)
         if (
             not loop
             or not loop.active
-            or not loop.approval_stalled
+            or not _holds_for_a_person(loop)
             or is_structured_monitor_loop(loop)
         ):
             return False
+        declared = bool(loop.person_wait_declared and loop.waiting_on_person)
+        stalled = bool(loop.approval_stalled)
         now = time.time()
-        since = loop.approval_stalled_at
+        since = loop.approval_stalled_at if stalled else 0.0
         held = 0.0
         if isinstance(since, (int, float)) and not isinstance(since, bool) and 0 < since <= now:
             held = now - since
@@ -296,12 +312,25 @@ async def release_approval_hold(
         ):
             pw_since += now - max(pw_since, since)
         staged.waiting_on_person_at = pw_since
+        # A declared person-wait ends with this release: credit what remains of its
+        # span after the overlap just moved its start, then clear it.
+        pw_span = 0.0
+        if declared and person_start is not None:
+            pw_span = max(0.0, time.monotonic() - person_start)
+            if _valid_stamp(pw_since, now) and _valid_stamp(created, float("inf")):
+                created = created + (now - pw_since)
+            pw_since, person_start = 0.0, None
+            staged.created_ts = created
+            staged.waiting_on_person = staged.person_wait_declared = False
+            staged.waiting_on_person_at = 0.0
 
         def _apply(target: NudgeLoop) -> None:
             target.approval_stalled, target.approval_stalled_at = False, 0.0
             target.created_ts = created
             target.waiting_on_person_at = pw_since
-            credit_held_runtime(target, previous, span)
+            if declared:
+                target.waiting_on_person = target.person_wait_declared = False
+            credit_held_runtime(target, previous, span + pw_span)
             if person_start is not None:
                 note_hold_start(target, PERSON_WAIT_HOLD, pw_since, mono=person_start)
 
@@ -315,9 +344,10 @@ async def release_approval_hold(
             raise
         _apply(loop)
     logger.warning(
-        "AutoNudge: loop %s resumed after %.0fs paused for approval (%s)",
+        "AutoNudge: loop %s resumed after %.0fs %s (%s)",
         loop.id,
-        held,
+        held if stalled else 0.0,
+        "paused for approval" if stalled else "waiting on a person",
         why,
     )
     self._emit("updated", loop)
@@ -342,7 +372,7 @@ def _schedule_release(svc: AutoNudgeService, slot_key: str, *, why: str, arm: bo
     if not slot_key:
         return
     loop = svc._find_by_slot(slot_key)
-    if loop is None or not loop.approval_stalled:
+    if loop is None or not _holds_for_a_person(loop):
         return
     try:
         task = asyncio.ensure_future(svc.release_approval_hold(slot_key, why=why, arm=arm))
@@ -671,8 +701,8 @@ def notify_user_input(self: AutoNudgeService, slot_key: str, *, human: bool = Fa
     """Called when user sends a message — cancel the pending nudge task.
 
     *human* says a PERSON typed it (not an app token). That is proof someone is
-    back in the slot, so it also ends an approval hold (``release_approval_hold``,
-    unarmed: this turn's own completion re-arms the loop).
+    back in the slot, so it also ends an approval hold or a declared person-wait
+    (``release_approval_hold``, unarmed: this turn's own completion re-arms the loop).
 
     Cancelling the TASK defers delivery until the user's turn ends (a
     nudge must never race a human turn); the loop's ``next_due_ts`` is
@@ -967,7 +997,10 @@ def _reconcile_once(self: AutoNudgeService) -> None:
             continue
         # A legacy loop paused for approval is NOT skipped: its held tick reads the
         # subject and re-arms itself (``subject_reads.hold_tick``), so a held loop
-        # with no live timer has lost that read and is rescued like any other.
+        # with no live timer has lost that read and is rescued like any other. A hold
+        # the agent declared arms nothing by design, so it has nothing to rescue.
+        if loop.person_wait_declared and loop.waiting_on_person:
+            continue
         monitor = loop.monitor
         if monitor is not None and monitor.version != MONITOR_STATE_VERSION:
             continue

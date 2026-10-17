@@ -365,12 +365,33 @@ patrol whose people never answer stays a paused row that costs one ledger read
 per interval, never a runaway. Doubt fires: an unreadable ledger or a fresh loop
 never holds.
 
+A legacy loop's own agent can DECLARE the same hold: `monitor_update` with
+`waiting_on_person: true` (`declare_person_wait`, owner
+`autonudge_service/person_wait.py`) sets `waiting_on_person` and
+`person_wait_declared`, for a loop that has asked the user something and has
+nothing to do until they answer. `_timer` returns at the person-wait hold point
+without arming anything and the reconciler skips the loop, so a declared hold
+fires no cycle, spends neither bound and costs no read at all; the ledger
+neither holds nor releases it. A person ends it on the approval hold's signs of
+presence below, in the same write as that release, and the agent ends it with
+`false`. Only a running legacy loop can declare, `true` only from a turn a
+person sent or the loop's own live wake, and only in a dashboard chat, since a
+Slack or Discord reply does not reach the release; a structured monitor is
+refused. A person who sent a message during the declaring turn, or has one
+queued, has already answered, so the applier
+(`dashboard/session_directive_person_wait.py`) does not set the hold then.
+Release credits the held span to `created_ts` like the other holds; a span
+that overlaps an approval hold is credited once, by whichever release covers it.
+`test_autonudge_declared_person_wait.py` pins the hold, its releases and its
+refusals.
+
 An unanswered tool approval HOLDS a prompt loop rather than stopping it: it
 stays active, fires nothing and spends neither bound, and it resumes on its own
 once a person answers an approval, types into the dashboard session or presses
-fire (`release_approval_hold`); a Slack or Discord message alone does not
-release it. `monitor_inspect` reports the hold as
-`paused_for_approval` on the loop reading. A held loop is not blind: each held
+fire (`release_approval_hold`, which also ends a declared person-wait); a Slack
+or Discord message alone does not release it. `monitor_inspect` reports the hold
+as `paused_for_approval` on the loop reading, and a declared person-wait as
+`person_wait_declared` beside `waiting_on_person`. A held loop is not blind: each held
 tick reads the one pull request the loop names (`subject_reads.hold_tick`, one
 `gh pr view`, no model turn) and re-arms one read interval out, so the
 reconciler rescues a held loop whose timer died like any other. A pull request

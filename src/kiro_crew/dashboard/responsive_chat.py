@@ -93,6 +93,9 @@ class ResponsiveTurn:
     # flight, so a later send cannot write its row above an earlier one's.
     claims_in_flight: int = 0
     row_backlog: list[dict] = field(default_factory=list)
+    # The slot's turn generation when a person last sent a message here, so a loop's
+    # declared person-wait can tell that its own turn was already answered.
+    human_input_generation: int | None = None
 
     def cancel_grace(self) -> None:
         """Drop a timer still waiting; a claimed cancel finishes under its own bound."""
@@ -432,13 +435,14 @@ def notify_user_input(request: web.Request, slot: Any) -> None:
     try:
         from kiro_crew.autonudge import get_instance
 
+        human = (
+            request.get("is_dashboard_user") is True and request.get("internal_auth") is not True
+        )
+        if human:
+            turn_state(slot).human_input_generation = getattr(slot, "_turn_generation", None)
         autonudge = get_instance()
         if autonudge is not None:
-            autonudge.notify_user_input(
-                slot.key,
-                human=request.get("is_dashboard_user") is True
-                and request.get("internal_auth") is not True,
-            )
+            autonudge.notify_user_input(slot.key, human=human)
     except Exception:
         logger.warning("autonudge.notify_user_input failed", exc_info=True)
 

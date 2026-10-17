@@ -687,6 +687,13 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     expect(clearAction()).toBeNull()
   })
 
+  it('a loop whose agent declared it waits on you asks for a reply in this chat', () => {
+    renderWith(running({ waiting_on_person: true, person_wait_declared: true }))
+    expect(status()!.textContent).toBe('Waiting on you · reply in this chat to resume')
+    expect(status()!.className).toMatch(/\bbg-warn-subtle\b/)
+    expect(title()).toBe('Goal active (cycle 1/3)')
+  })
+
   it('a running loop reads its countdown in the ok box and its cycle in the title; no loop has neither', () => {
     renderWith(running({ cycle_count: 2 }))
     expect(status()!.textContent).toMatch(/^Next cycle in .+$/)
@@ -799,6 +806,12 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     expect(byLabel(PAUSE)!).toBeEnabled()
     fireEvent.change(goalBox(), { target: { value: 'edited while due' } })
     expect(byLabel(SAVE_AND_NUDGE)!).toBeEnabled()
+  })
+
+  it('a declared person-wait past its deadline keeps Nudge now live: the press is how a person releases it', () => {
+    renderWith(running({ waiting_on_person: true, person_wait_declared: true, next_due_ts: 1 }) /* any deadline long past */)
+    expect(byLabel(NUDGE_NOW)!).toBeEnabled()
+    expect(byLabel(PAUSE)!).toBeEnabled()
   })
 
   it('NO LOOP: Play alone, named Start loop, creates and starts the loop from the form, fires nothing, hands the created record up and stays open', async () => {

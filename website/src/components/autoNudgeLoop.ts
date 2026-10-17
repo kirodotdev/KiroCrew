@@ -51,6 +51,11 @@ export interface AutoNudgeLoop {
    *  the ledger changes. Carried by the REST list and the `autonudge_state`
    *  frame; `undefined` reads as not held. */
   waiting_on_person?: boolean
+  /** True with `waiting_on_person` when the loop's own agent DECLARED the wait
+   *  (`monitor_update`'s `waiting_on_person`): it fires nothing until a person
+   *  replies in this chat, answers an approval or fires it. Carried by the REST
+   *  list and the `autonudge_state` frame; `undefined` reads as not declared. */
+  person_wait_declared?: boolean
   /** Short stand-in for `message` in the visible transcript row; '' = none. */
   banner?: string
   /** The kill-switch file the server substitutes for `{{STOP_FILE}}` at fire

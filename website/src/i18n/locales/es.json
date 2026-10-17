@@ -6421,6 +6421,7 @@
       "paused_approval_stalled": "En pausa · esperando tu aprobación",
       "paused_approval_hold": "En pausa · una aprobación de este chat caducó. Pulsa Play o envía un mensaje para reanudar.",
       "waiting_on_person_hold": "Esperándote · cada tarea abierta necesita tu respuesta en este chat. Los avisos se reanudan cuando un trabajador informa.",
+      "waiting_on_person_declared_hold": "Esperándote · responde en este chat para reanudar",
       "paused_last_cycle_failed": "En pausa · el último ciclo no pudo ejecutarse",
       "clear_goal_for_good": "Borrar",
       "cancel": "Cancelar",

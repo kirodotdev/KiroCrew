@@ -558,8 +558,11 @@ async def apply_session_directive_outcome(
                 producer_is_channel=producer_is_channel,
             )
         elif kind == "monitor_update":
-            result = await _monitor_update(
+            from kiro_crew.dashboard.session_directive_person_wait import monitor_update
+
+            result = await monitor_update(
                 state,
+                slot,
                 session_key,
                 args,
                 self_arm_ok=self_arm_ok,
@@ -1300,18 +1303,15 @@ async def _monitor_update(
                 + f"). monitor_update will not resume it as a side effect: {bound}."
             )
     # CREW/MEMBER GATE for the legacy loop, the twin of the one
-    # ``authorize_and_update_monitor`` applies to a structured monitor. The
-    # legacy chokepoint ``authorize_and_update_nudge`` holds an opaque loop id
-    # and no session identity (its REST caller is user-token gated), so the mode
-    # rule has to be applied HERE, where the provenance lives: ``message`` is
-    # the instruction every future wake executes, and before this PR a
-    # crew/member slot could hold no loop at all, so a revision of one is a
-    # NEW surface. Only the session's own turn (``self_arm_ok``) may revise it;
-    # a cron injection, an app-driven turn or a sub-agent sharing the slot is
-    # refused with the same reason the arm path gives. Same predicate as the
-    # arm path (``is_self_arm``) so the two never drift apart. The mode is read
-    # off the live slot; a binding with no live slot has no mode to refuse on
-    # and keeps the pre-existing behaviour (the store's own miss handling).
+    # ``authorize_and_update_monitor`` applies to a structured monitor. The legacy
+    # chokepoint ``authorize_and_update_nudge`` holds an opaque loop id and no session
+    # identity (its REST caller is user-token gated), so the mode rule is applied HERE,
+    # where the provenance lives: ``message`` is the instruction every future wake
+    # executes. Only the session's own turn (``self_arm_ok``) may revise it; a cron
+    # injection, an app-driven turn or a sub-agent sharing the slot is refused with the
+    # same reason the arm path gives, through the same predicate (``is_self_arm``). The
+    # mode is read off the live slot; a binding with no live slot has no mode to refuse
+    # on and keeps the store's own miss handling.
     if not is_channel_key(binding):
         current = (getattr(state, "_slots", None) or {}).get(binding)
         mode = str(getattr(current, "mode", ""))

@@ -6421,6 +6421,7 @@
       "paused_approval_stalled": "Pausado · aguardando sua aprovação",
       "paused_approval_hold": "Pausado · uma aprovação neste chat expirou. Toque em Play ou envie uma mensagem para retomar.",
       "waiting_on_person_hold": "Esperando por você · cada tarefa aberta precisa da sua resposta neste chat. Os lembretes voltam quando um worker reporta.",
+      "waiting_on_person_declared_hold": "Esperando por você · responda neste chat para retomar",
       "paused_last_cycle_failed": "Pausado · o último ciclo não pôde rodar",
       "clear_goal_for_good": "Limpar",
       "cancel": "Cancelar",

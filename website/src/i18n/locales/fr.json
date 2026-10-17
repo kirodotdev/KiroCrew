@@ -6421,6 +6421,7 @@
       "paused_approval_stalled": "En pause · en attente de ton approbation",
       "paused_approval_hold": "En pause · une approbation de ce chat a expiré. Appuie sur Play ou envoie un message pour reprendre.",
       "waiting_on_person_hold": "En attente de toi · chaque tâche ouverte attend ta réponse dans ce chat. Les relances reprennent dès qu'un worker fait son rapport.",
+      "waiting_on_person_declared_hold": "En attente de toi · réponds dans ce chat pour reprendre",
       "paused_last_cycle_failed": "En pause · le dernier cycle n’a pas pu s’exécuter",
       "clear_goal_for_good": "Effacer",
       "cancel": "Annuler",

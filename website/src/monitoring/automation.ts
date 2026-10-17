@@ -113,6 +113,9 @@ export interface LegacyGoalLoop {
   /** An active work-ledger watch holding while every open item waits on a person
    *  (the REST row's and frame's `waiting_on_person`). Present only when true. */
   waitingOnPerson?: boolean
+  /** That hold declared by the loop's own agent rather than read off the ledger
+   *  (the REST row's and frame's `person_wait_declared`). Present only when true. */
+  personWaitDeclared?: boolean
   /** The kill-switch file the server substitutes for `{{STOP_FILE}}` at fire
    *  time; '' when the loop was armed with none. Carried by the REST reads
    *  (`asdict(loop)`), not by the websocket frame, which withholds paths -- so
@@ -395,6 +398,7 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
       monitorKind: text(loop.monitor_kind, text(gatedRecord?.kind)),
       ...(loop.approval_stalled === true ? { approvalStalled: true } : {}),
       ...(loop.waiting_on_person === true ? { waitingOnPerson: true } : {}),
+      ...(loop.person_wait_declared === true ? { personWaitDeclared: true } : {}),
       ...(typeof loop.stop_sentinel_path === 'string'
         ? { stopSentinelPath: loop.stop_sentinel_path }
         : {}),

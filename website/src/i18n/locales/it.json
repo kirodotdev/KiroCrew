@@ -6421,6 +6421,7 @@
       "paused_approval_stalled": "In pausa · in attesa della tua approvazione",
       "paused_approval_hold": "In pausa · un'approvazione in questa chat è scaduta. Premi Play o invia un messaggio per riprendere.",
       "waiting_on_person_hold": "In attesa di te · ogni attività aperta aspetta la tua risposta in questa chat. I solleciti riprendono quando un worker invia un aggiornamento.",
+      "waiting_on_person_declared_hold": "In attesa di te · rispondi in questa chat per riprendere",
       "paused_last_cycle_failed": "In pausa · l’ultimo ciclo non è riuscito a partire",
       "clear_goal_for_good": "Cancella",
       "cancel": "Annulla",

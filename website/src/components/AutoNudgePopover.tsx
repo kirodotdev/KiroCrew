@@ -603,7 +603,9 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     ? heldForApproval
       ? i18nT('components.autoNudgePopover.paused_approval_hold')
       : waitingOnPerson
-        ? i18nT('components.autoNudgePopover.waiting_on_person_hold')
+        ? loop.person_wait_declared === true
+          ? i18nT('components.autoNudgePopover.waiting_on_person_declared_hold')
+          : i18nT('components.autoNudgePopover.waiting_on_person_hold')
         : loop.active
         ? countdownText
         : doneLine
@@ -623,10 +625,13 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
         : i18nT('components.autoNudgePopover.loop_paused')
   /** Whether a cycle is ALREADY armed to run. Derived from the same countdown
    *  the status line renders, so the button and the text can never disagree.
-   *  Never while held: its deadline has passed but nothing is armed, and the
-   *  press is how a person resumes it. */
+   *  Never while held for an approval or a declared person-wait: the deadline
+   *  has passed but nothing is armed, and the press is how a person releases it. */
+  const declaredPersonWait = loop?.person_wait_declared === true && loop?.waiting_on_person === true
   const cycleAlreadyDue =
-    !heldForApproval && countdownText === i18nT('components.autoNudgePopover.next_cycle_due')
+    !heldForApproval &&
+    !declaredPersonWait &&
+    countdownText === i18nT('components.autoNudgePopover.next_cycle_due')
   /** Help line under the goal textarea while it carries the raw kill-switch
    *  token; '' otherwise. See the JSX comment at the render site (#10458). */
   const stopFileHelp = message.includes(STOP_FILE_TOKEN)

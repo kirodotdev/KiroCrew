@@ -269,9 +269,13 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
                 # An ACTIVE loop holding for an unanswered approval; the
                 # popover words it as paused.
                 "approval_stalled": bool(loop.approval_stalled),
-                # An ACTIVE work-ledger watch holding because every open item
-                # waits on a person; the popover says it is waiting on you.
+                # An ACTIVE loop holding for a person: every open work-ledger item
+                # waits on one, or its agent declared the wait; the popover says it
+                # is waiting on you.
                 "waiting_on_person": bool(loop.waiting_on_person),
+                # The same hold, declared by the loop's own agent: it waits for a
+                # reply in this chat rather than for the ledger to move.
+                "person_wait_declared": bool(loop.person_wait_declared),
             }
             if is_structured_monitor_loop(loop):
                 assert loop.monitor is not None

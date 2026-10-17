@@ -545,6 +545,14 @@ class NudgeLoop:
     # time is added to ``created_ts``, so the hold spends neither the runtime budget
     # nor the backstop, the same credit ``approval_stalled_at`` gives.
     waiting_on_person_at: float = 0.0
+    # The loop's own agent DECLARED the person-wait hold (``monitor_update``'s
+    # ``waiting_on_person``, through ``declare_person_wait``) rather than a ledger
+    # read finding it. Set only together with ``waiting_on_person``. A declared hold
+    # arms no timer and is skipped by the reconciler, so it costs nothing at all while
+    # it waits; the ledger never releases it. A person does, on the same signs of
+    # presence that end the approval hold (``release_approval_hold``), and so does the
+    # agent passing ``false``. Persisted, and cleared on every revival.
+    person_wait_declared: bool = False
     # How many of this loop's cycles in a row ended without ever getting a model
     # session (``session/new`` timed out or otherwise failed). Raised by
     # ``notify_cycle_start_failed`` and zeroed by ``notify_cycle_landed``, both

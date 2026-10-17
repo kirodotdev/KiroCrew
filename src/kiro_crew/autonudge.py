@@ -72,6 +72,7 @@ from kiro_crew.autonudge_service import judge_tick as _judge_tick
 from kiro_crew.autonudge_service import maintenance as _maintenance
 from kiro_crew.autonudge_service import monitor_records as _monitor_records
 from kiro_crew.autonudge_service import mutations as _mutations
+from kiro_crew.autonudge_service import person_wait as _person_wait
 from kiro_crew.autonudge_service import timers as _timers
 from kiro_crew.autonudge_service.gate import (  # noqa: F401 -- re-exported
     _JUDGE_QUIET_STREAK_FLOOR_DEFAULT,
@@ -2051,6 +2052,7 @@ class AutoNudgeService:
     _holds_for_person_wait = _firing._holds_for_person_wait
     _run_fire_cycle = _firing._run_fire_cycle
     fire_now = _firing.fire_now
+    declare_person_wait = _person_wait.declare_person_wait  # autonudge_service.person_wait
     # autonudge_service.mutations
     add = _mutations.add
     _mint_loop_id = _mutations._mint_loop_id

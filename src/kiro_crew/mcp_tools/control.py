@@ -822,11 +822,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "budgets as the watch's only bounds."
                         ),
                     },
-                    "max_tokens": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": MAX_MONITOR_TOKENS,
-                    },
+                    "max_tokens": {"type": "integer", "minimum": 1, "maximum": MAX_MONITOR_TOKENS},
                     "max_provider_errors": {
                         "type": "integer",
                         "minimum": 1,
@@ -874,9 +870,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             },
                             "quiet_when": {
                                 "type": "string",
-                                "description": (
-                                    "What is progress not worth a turn, in one " "sentence"
-                                ),
+                                "description": "What is progress not worth a turn, in one sentence",
                             },
                             "targets": {
                                 "type": "array",
@@ -901,6 +895,15 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "report of 'blocked', 'question' or 'done' pulls the next "
                             "cycle forward. Omit it to leave the "
                             "loop's current subject alone"
+                        ),
+                    },
+                    "waiting_on_person": {
+                        "type": "boolean",
+                        "description": (
+                            "Legacy loops only: true declares you are waiting on the user; "
+                            "the loop holds without spending cycles or budget until they "
+                            "reply in this chat, answer an approval or press Fire now. "
+                            "false releases it"
                         ),
                     },
                 },
@@ -2384,21 +2387,15 @@ def monitor_update(name: str, args: dict[str, Any]) -> str:
             patch[field] = int(args[field])
     if args.get("wake_instructions") is not None:
         patch["wake_instructions"] = str(args["wake_instructions"]).strip()
-    # Blank is KEPT here, unlike ``message`` above which rejects it: a loop with
-    # no instruction cannot fire, but a loop with no banner is the default state,
-    # so "" has to round-trip as a request to CLEAR. Dropping it as "unchanged"
-    # would make a banner set once impossible to remove without tearing the loop
-    # down and losing its cycle count.
+    # Blank is KEPT here, unlike ``message`` above: a loop with no banner is the default
+    # state, so "" round-trips as a request to CLEAR. Dropping it as "unchanged" would make
+    # a banner set once impossible to remove without tearing the loop down.
     if args.get("banner") is not None:
         patch["banner"] = str(args["banner"]).strip()
-    # An empty object is KEPT, for the reason a blank banner is: ``{}`` is how an
-    # owner's own CRITERIA come off a live loop, which returns it to the shipped
-    # default brief rather than taking the judge off -- ``false`` is the bypass, and
-    # it normalises to a reserved marker instead of to this shape. Dropping ``{}`` as
-    # "unchanged" would make a brief set once impossible to clear without tearing the
-    # loop down. Validated here as well as on the arm path, because this is the other
-    # door into the same stored field and an unvalidated one would be the way around
-    # the bound.
+    # An empty object is KEPT, for the reason a blank banner is: ``{}`` takes an owner's
+    # own CRITERIA off a live loop, returning it to the shipped default brief (``false``
+    # is the bypass, normalised to a reserved marker). Validated here as well as on the
+    # arm path, because this is the other door into the same stored field.
     if args.get("judge") is not None:
         try:
             patch["judge"] = validate_judge_spec(args["judge"])
@@ -2410,6 +2407,8 @@ def monitor_update(name: str, args: dict[str, Any]) -> str:
     # armed, observes nothing" state the service's own fold exists to prevent.
     if str(args.get("watch") or "").strip():
         patch["watch"] = str(args["watch"]).strip()
+    if args.get("waiting_on_person") is not None:
+        patch["waiting_on_person"] = bool(args["waiting_on_person"])
     if not patch:
         mcp_core.sel().log_tool_invocation(
             session_key=sk, source="mcp", tool_name="monitor_update", outcome="noop"
@@ -2418,7 +2417,7 @@ def monitor_update(name: str, args: dict[str, Any]) -> str:
             "monitor_update: nothing to change — pass at least one of "
             "message, interval_secs, max_cycles, max_runtime_secs, target, "
             "objective, max_agent_turns, max_tokens, max_provider_errors, "
-            "wake_instructions, banner, judge, watch."
+            "wake_instructions, banner, judge, watch, waiting_on_person."
         )
     # AFTER the empty-patch no-op so that more specific answer still wins. A
     # retained stop cannot be updated either: ``update_monitor`` answers "not found

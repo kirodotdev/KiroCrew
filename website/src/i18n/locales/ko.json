@@ -6209,6 +6209,7 @@
       "paused_approval_stalled": "일시중지됨 · 승인을 기다리고 있습니다",
       "paused_approval_hold": "일시중지됨 · 이 채팅의 승인 시간이 만료되었습니다. 다시 시작하려면 Play를 누르거나 메시지를 보내세요.",
       "waiting_on_person_hold": "당신을 기다리는 중 · 열린 작업마다 이 채팅에서 당신의 답이 필요합니다. 워커가 보고하면 넛지가 다시 시작됩니다.",
+      "waiting_on_person_declared_hold": "당신을 기다리는 중 · 다시 시작하려면 이 채팅에서 답장하세요",
       "paused_last_cycle_failed": "일시중지됨 · 마지막 주기를 실행할 수 없었습니다",
       "clear_goal_for_good": "지우기",
       "cancel": "취소",
