@@ -97,6 +97,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 import zlib
@@ -135,6 +136,10 @@ _MIN_TRIGRAM_CHARS = 3
 #: tell which one it got.
 FOLD_SEPARATOR = "\x1f"
 
+#: Any surrogate code point. A ``str`` decoded from JSON holds one only when the
+#: escape had no partner: a valid pair decodes to the single astral character.
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
 
 def fold_texts(texts: Sequence[str]) -> str:
     """Return the folded blob for one session's message *texts*.
@@ -143,8 +148,21 @@ def fold_texts(texts: Sequence[str]) -> str:
     as the old separator did, so it is replaced with ``FOLD_SEPARATOR`` first;
     the length is unchanged, so ``doc_chars`` still counts original characters.
     Both producers call this so their blobs cannot drift apart.
+
+    A lone UTF-16 surrogate (a JSON ``\\udXXX`` escape with no partner) cannot be
+    encoded as UTF-8, so SQLite refuses to bind any string holding one. Each is
+    replaced with U+FFFD, again one character for one, so the fold is storable
+    and both producers still fold identically.
     """
-    return FOLD_SEPARATOR.join(t.replace("\x00", FOLD_SEPARATOR) for t in texts).casefold()
+    folded = FOLD_SEPARATOR.join(t.replace("\x00", FOLD_SEPARATOR) for t in texts).casefold()
+    if folded.isascii():
+        return folded
+    try:
+        # Cheaper than a regex scan on the common path; only a failure pays for one.
+        folded.encode("utf-8")
+    except UnicodeEncodeError:
+        return _LONE_SURROGATE.sub("\ufffd", folded)
+    return folded
 
 
 def content_digest(texts: Sequence[str]) -> bytes:
@@ -435,13 +453,16 @@ class SessionSearchIndex:
         """
         if not self.available:
             return
-        folded = fold_texts(texts)
-        doc_chars = sum(len(t) for t in texts)
-        chunks = _chunk_texts(texts)
-        digest = content_digest(texts)
-        stored_dev = _sqlite_stat_identity(dev)
-        stored_ino = _sqlite_stat_identity(ino)
         try:
+            # Deriving the rows sits inside the guard too: a text this cannot
+            # encode would otherwise escape to the backfill and stop it at this
+            # session, leaving every older one unindexed.
+            folded = fold_texts(texts)
+            doc_chars = sum(len(t) for t in texts)
+            chunks = _chunk_texts(texts)
+            digest = content_digest(texts)
+            stored_dev = _sqlite_stat_identity(dev)
+            stored_ino = _sqlite_stat_identity(ino)
             conn = self._ensure_open()
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
@@ -878,12 +899,16 @@ def _chunk_texts(texts: Sequence[str]) -> list[tuple[int, bytes]]:
 
 
 def _encode_chunk(texts: Sequence[str]) -> bytes:
-    return zlib.compress(json.dumps(list(texts), ensure_ascii=False).encode("utf-8"), 6)
+    # ``surrogatepass`` on both sides keeps a lone surrogate in a message: the raw
+    # texts must round-trip exactly, or a snippet would differ from the scan
+    # path's. Bytes without one are plain UTF-8, so stored rows read unchanged.
+    payload = json.dumps(list(texts), ensure_ascii=False).encode("utf-8", "surrogatepass")
+    return zlib.compress(payload, 6)
 
 
 def _decode_chunk(blob: bytes) -> list[str] | None:
     try:
-        texts = json.loads(zlib.decompress(blob).decode("utf-8"))
+        texts = json.loads(zlib.decompress(blob).decode("utf-8", "surrogatepass"))
     except Exception:
         return None
     return texts if isinstance(texts, list) else None

@@ -562,3 +562,30 @@ def test_unavailable_index_answers_none_not_empty(tmp_path, opened):
     assert _candidates(index, "contention") is None
     assert index.fresh_keys({}) == {}
     assert index.document(1, "a") is None
+
+
+# What ``json.loads`` makes of an unpaired ``\ud83d`` escape: a lone high surrogate,
+# which no UTF-8 encoder accepts without ``surrogatepass``.
+LONE_SURROGATE_TEXT = "Ack Contention \ud83d cut off mid-emoji"
+
+
+def test_a_lone_surrogate_is_stored_and_its_raw_text_round_trips(tmp_path, opened):
+    """A message holding a lone surrogate must index, not raise out of ``sync``."""
+    index = _index(tmp_path, opened=opened)
+    path = tmp_path / "a.jsonl"
+    path.write_text("placeholder", encoding="utf-8")
+    st = path.stat()
+    index.sync(
+        "a",
+        mtime_ns=st.st_mtime_ns,
+        size=st.st_size,
+        dev=st.st_dev,
+        ino=st.st_ino,
+        texts=[LONE_SURROGATE_TEXT],
+    )
+    rowid = index.fresh_keys({"a": st})["a"]
+    doc_chars, folded = index.document(rowid, "a")
+    assert doc_chars == len(LONE_SURROGATE_TEXT)
+    assert folded == LONE_SURROGATE_TEXT.casefold().replace("\ud83d", "\ufffd")
+    assert _raw_texts(index, "a", st) == [LONE_SURROGATE_TEXT]
+    assert _candidates(index, "contention") == {"a"}
