@@ -328,7 +328,7 @@ class TestSelfProtectionFlagInterposition:
         # verb and the self-target cannot separate anchor from token.
         "sandbox-escape-ssh-self": "ssh {flags} localhost",
     }
-    # FLOOR-ONLY id -> command template. These four have NO catalog row: their
+    # FLOOR-ONLY id -> command template. These have NO catalog row: their
     # product-name-anywhere regex rows were deleted and the argv floor
     # (``_matches_self_subcommand``) is the whole of their enforcement, ungated.
     _UNGATED_TEMPLATES = {
@@ -337,6 +337,7 @@ class TestSelfProtectionFlagInterposition:
         "self-protection-file-delivery": "kirocrew {flags} file-delivery approve",
         "self-protection-gateway-restart": "kirocrew {flags} gateway restart",
         "self-protection-cloud": "kirocrew {flags} cloud destroy",
+        "self-protection-skills-authority-retire": ("kirocrew {flags} skills authority-retire"),
     }
     _FLAGS = ("-v", "-vv", "--verbose", "--no-jail", "-v --no-jail")
 
@@ -473,7 +474,7 @@ class TestSelfProtectionFlagInterposition:
             assert legacy not in security._RULE_ID_BY_PATTERN
             assert legacy not in golden_patterns
 
-    # The four self-protection SUBCOMMAND floors
+    # The self-protection SUBCOMMAND floors
     # (``_is_self_*`` evaluated on the de-escaped, de-quoted argv), because a
     # regex over RAW text cannot see through the shell's own de-escaping. They are
     # now the WHOLE of enforcement for these four: the regex rows that once sat
@@ -486,6 +487,7 @@ class TestSelfProtectionFlagInterposition:
         "self-protection-file-delivery": ["file-delivery", "approve"],
         "self-protection-gateway-restart": ["gateway", "restart"],
         "self-protection-cloud": ["cloud", "destroy"],
+        "self-protection-skills-authority-retire": ["skills", "authority-retire"],
     }
 
     @staticmethod
@@ -679,9 +681,61 @@ class TestSelfProtectionFlagInterposition:
         assert security._is_self_update("kirocrew \\update")
         assert security._is_self_gateway_restart("kirocrew -\\v gateway restart")
         assert security._is_self_cloud_destructive("kirocrew -\\v cloud destroy")
+        assert security._is_self_skills_authority_retire("kirocrew -\\v skills authority-retire")
         assert security._is_dev_mode_out_of_root_confirm(
             "kirocrew app dev x --confirm-out-of-install-'root'"
         )
+
+    def test_skills_authority_retire_help_only_command_is_allowed(self):
+        """Exactly ``kirocrew skills authority-retire --help`` (or ``-h``) prints the
+        recovery's usage and retires nothing: an agent reads it to tell the operator
+        what to run in their own terminal. Nothing may follow the flag."""
+        for cmd in (
+            "kirocrew skills authority-retire --help",
+            "kirocrew skills authority-retire -h",
+            "kirocrew skills authority-retire '--help'",
+            "python -m kiro_crew skills authority-retire --help",
+        ):
+            assert not security.is_denied(cmd), cmd
+
+    def test_skills_authority_retire_help_behind_a_comment_is_refused(self):
+        """The shell drops a ``#`` comment, so the retire before it runs."""
+        assert security.is_denied("kirocrew skills authority-retire my-skill # --help")
+        assert security.is_denied("kirocrew skills authority-retire # --help")
+
+    def test_skills_authority_retire_help_after_end_of_options_is_refused(self):
+        """After ``--`` the flag is a plain argument, so the parser never prints help."""
+        assert security.is_denied("kirocrew skills authority-retire my-skill -- --help")
+        assert security.is_denied("kirocrew skills authority-retire -- --help")
+        assert security.is_denied("python -m kiro_crew skills authority-retire -- --help")
+
+    def test_skills_authority_retire_help_as_an_option_value_is_refused(self):
+        """``--help`` given as another option's value is that value, not a help request."""
+        assert security.is_denied("kirocrew skills authority-retire --reason --help")
+        assert security.is_denied("kirocrew skills authority-retire --reason=--help")
+
+    def test_every_other_skills_authority_retire_form_with_help_is_refused(self):
+        """Only the exact help-only command is exempt: an operand, another flag, a
+        substitution, a redirection or a following command keeps the floor on."""
+        for cmd in (
+            "kirocrew skills authority-retire",
+            "kirocrew skills authority-retire my-skill --help",
+            "kirocrew skills authority-retire --yes --help",
+            "kirocrew skills authority-retire --help --yes",
+            "kirocrew skills authority-retire -hv",
+            "kirocrew skills authority-retire --help-me",
+            "kirocrew skills authority-retire --help=x",
+            "kirocrew skills authority-retire $(echo --help)",
+            "kirocrew skills authority-retire `echo --help`",
+            "kirocrew skills authority-retire --help > /tmp/usage.txt",
+            "kirocrew skills authority-retire --help; kirocrew skills authority-retire",
+            "kirocrew skills authority-retire --help && kirocrew skills authority-retire",
+            "kirocrew skills authority-retire && kirocrew --help",
+            "kirocrew --help skills authority-retire",
+        ):
+            assert security.is_denied(cmd), cmd
+        # The exemption is this floor's alone: the restart floor still refuses help.
+        assert security.is_denied("kirocrew restart --help")
 
     def test_self_protection_denied_under_interposed_redirection(self):
         """A redirection is removed from argv by the shell and can sit anywhere in
