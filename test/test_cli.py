@@ -1943,6 +1943,33 @@ class TestLogout:
             except SystemExit as e:
                 assert e.code == 1
 
+    @pytest.mark.parametrize(
+        "slow",
+        [
+            TimeoutError("timed out"),
+            urllib.error.URLError(TimeoutError("timed out")),
+        ],
+        ids=["read-timeout", "urlopen-timeout"],
+    )
+    def test_logout_slow_gateway_reports_busy_not_not_running(
+        self, tmp_path, monkeypatch, capsys, slow
+    ):
+        """A timeout means the gateway took the request and is still working:
+        report busy, never not-running."""
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: "test-secret"
+        )
+
+        from kiro_crew.cli_server import _logout
+
+        with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=slow):
+            with pytest.raises(SystemExit) as exc:
+                _logout(5476)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "5476" in out and "busy" in out
+        assert "not running" not in out
+
     def test_logout_error_response(self, tmp_path, monkeypatch):
         """Error response from gateway is handled."""
         secret_file = tmp_path / ".kirocrew" / ".local_secret"
@@ -2012,6 +2039,41 @@ class TestStatus:
             _status(self._make_args())
         out = capsys.readouterr().out
         assert "not running" in out
+
+    @pytest.mark.parametrize(
+        "slow",
+        [
+            TimeoutError("timed out"),
+            urllib.error.URLError(TimeoutError("timed out")),
+        ],
+        ids=["read-timeout", "urlopen-timeout"],
+    )
+    def test_status_slow_gateway_reports_busy_not_not_running(self, capsys, slow):
+        """A timeout means a gateway IS listening but slow: report busy, never
+        not-running, which would send the operator to restart a healthy one."""
+        from kiro_crew.cli_server import _status
+
+        with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=slow):
+            _status(self._make_args())
+        out = capsys.readouterr().out
+        assert "running" in out and "busy" in out
+        assert "not running" not in out
+
+    def test_status_request_timeout_is_longer_than_three_seconds(self):
+        """A slow-but-healthy gateway (12-14 s under GIL starvation) needs more
+        than the old 3 s to answer; the budget is widened so it is not misread."""
+        from kiro_crew import cli_server
+
+        seen = {}
+
+        def capture(url, timeout):
+            seen["timeout"] = timeout
+            raise urllib.error.URLError("Connection refused")
+
+        with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=capture):
+            _status = cli_server._status
+            _status(self._make_args())
+        assert seen["timeout"] > 3
 
     def test_status_success(self, capsys):
         """200 OK should display stats."""

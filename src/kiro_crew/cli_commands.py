@@ -375,8 +375,19 @@ def _spawn(args: argparse.Namespace) -> None:
             except Exception:
                 print(f"Error: {e.code} {e.reason}")
             sys.exit(1)
-        except (urllib.error.URLError, OSError):
-            print("Error: gateway not running (cannot reach dashboard on port %d)" % args.port)
+        except (urllib.error.URLError, OSError) as e:
+            # A timeout means something took the request, so the gateway is up
+            # but busy -- reporting it as not running sends the operator to
+            # restart a healthy gateway. A refused connection stays not running.
+            if app_lifecycle_client._deadline_expired(e):
+                print(
+                    "Error: gateway on port %d is up but did not answer in time "
+                    "(busy); try again in a moment" % args.port
+                )
+            else:
+                print(
+                    "Error: gateway not running (cannot reach dashboard on port %d)" % args.port
+                )
             sys.exit(1)
         agents = data.get("agents", [])
         queued = [q for q in data.get("queued") or [] if isinstance(q, dict) and q.get("id")]
@@ -447,8 +458,17 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         except Exception:
             print(f"Error: {e.code} {e.reason}")
         sys.exit(1)
-    except (urllib.error.URLError, OSError):
-        print("Error: gateway not running (cannot reach dashboard on port %d)" % args.port)
+    except (urllib.error.URLError, OSError) as e:
+        # A timeout means something took the request, so the gateway is up but
+        # busy -- reporting it as not running sends the operator to restart a
+        # healthy gateway. A refused connection stays not running.
+        if app_lifecycle_client._deadline_expired(e):
+            print(
+                "Error: gateway on port %d is up but did not answer in time "
+                "(busy); try again in a moment" % args.port
+            )
+        else:
+            print("Error: gateway not running (cannot reach dashboard on port %d)" % args.port)
         sys.exit(1)
 
     agent_id = result["id"]
