@@ -372,7 +372,24 @@ def _url_payload_command(n: int) -> str:
 #: stall still refuses everywhere it did; only the words a refused agent reads moved.
 #: The prefix is named only while its cooldown is open, since most stall raises never
 #: charge it.
-_PACKAGE_LINE_BUDGET = 29_607
+#:
+#: Raised again, from 29,607, for the quoted-newline rule in the push segment
+#: split: a newline inside quotes stays in its word, so a literal feature push after
+#: a multi-line ``git commit`` message parses as the push it is. Constructs the
+#: quote walk does not model keep the per-line split, and the per-line reading still
+#: judges every push line, dropping its ungated sentinel only behind a quoted word
+#: ``_quoted_word_is_inert`` accepts: a ``git commit`` message in a command that
+#: passes one closed lowercase allowlist (``cd <dir>``, ``git add``/``commit``/``push``
+#: with allowlisted flags, no editor, config write, pipe, redirect or expansion).
+#: Each flag in that allowlist has a real-bash oracle row. The refusal's "own line"
+#: hint is shown only when moving the push onto its own line clears the floor.
+#:
+#: Raised again, from 29,785, for the push prefix in that allowlist: a push may set
+#: ``PATH`` first, bare or after a plain ``env``, to plain text or ``$PATH``, so a
+#: feature push behind it after a multi-line message reads as on its own line. No
+#: other variable, ``env`` option or prefixed command is admitted, and each form
+#: has a real-bash oracle row.
+_PACKAGE_LINE_BUDGET = 29_806
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

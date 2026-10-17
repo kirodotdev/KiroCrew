@@ -17,8 +17,13 @@ above); it has no ``beta-braveheart``/``develop``/``prod`` integration branch
 nor a ``release/*`` namespace, so those names are ordinary feature branches here.
 """
 
+import ast
+import shlex
+import shutil
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -32,6 +37,56 @@ from kiro_crew.security import (
 
 # "git pus" + "h" keeps a literal blocked command out of the test source.
 PUSH = "git pus" + "h"
+
+
+def _multi_line_push_corpus() -> set[str]:
+    """This module's multi-line push literals plus generated head x push x tail shapes."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    corpus = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and "\n" in node.value
+        and "push" in node.value
+        and "{}" not in node.value
+    }
+    heads = (
+        "",
+        "git commit -m 'x\n\ny'\n",
+        "git push origin feat # don't\n",
+        'X="\n',
+        "trap 'x\n",
+        "sh <<E\n",
+        'echo "a\\\n',
+        "cat <\\\n<EOF\n",
+        'echo `echo "`\n',
+    )
+    pushes = (
+        "git push origin main",
+        "git push",
+        "git push origin $b",
+        "git push origin $'main'",
+        "git push origin ~",
+        "git push origin ${b}",
+        "git push --force origin main",
+        "git push origin feat",
+    )
+    tails = ("", " # it's", " '", ' "', "\necho '", "\nE", " #' EXIT git push origin f")
+    corpus |= {h + p + t for h in heads for p in pushes for t in tails}
+    assert len(corpus) > 500
+    return corpus
+
+
+#: Real-bash oracle rows for the inert-word allowlist: together they use every
+#: ``_INERT_FLAGS`` flag and segment head and every ``_INERT_PUSH_ENV`` variable,
+#: bare and after ``env``, and each pushes to a protected branch in real bash.
+_INERT_ORACLE_ROWS = (
+    "cd . && git add f && git commit -q -m 'a\n\nb' && git push -q origin main",
+    "git add -- f && git commit -qm 'a\n\nb' -- f && git push -u origin main",
+    "git commit -m 'a\n\nb' && env PATH=/x:$PATH git push origin main",
+    "git commit -m 'a\n\nb' && PATH=/x git push origin main",
+)
 
 
 class TestIsPushToProtectedBranch:
@@ -1558,6 +1613,450 @@ class TestTokenizerContractBetweenTheLayers:
         ]
         for cmd in ("git push origin ma\\\nin", 'git push origin "ma\\\nin"'):
             assert security._GIT_PUBLISH_UNGATED in security._git_publish_floor_tags(cmd), cmd
+
+    def test_a_newline_inside_quotes_stays_in_its_word(self):
+        # A multi-line commit message must not split the command mid-string: the
+        # next segment's walk would restart unquoted, read the message's CLOSING
+        # quote as an opener that swallows ``&&``, and turn a literal feature push
+        # into one unparseable word refused as target-unverifiable.
+        from kiro_crew.security import _split_push_command_segments
+
+        assert _split_push_command_segments('git commit -m "a\n\nb" && git push origin f') == [
+            'git commit -m "a\n\nb" ',
+            " git push origin f",
+        ]
+        for cmd in (
+            'git commit -q -m "subject\n\nbody" && git push -q origin feat-x',
+            "git commit -m 'a\nb'; git push -u fork fix/x",
+        ):
+            assert is_denied(cmd) is None, cmd
+        # The protected check SEES the target behind a multi-line message, and an
+        # unquoted newline still separates.
+        for cmd in (
+            'git commit -q -m "subject\n\nbody" && git push -q origin main',
+            "echo 'a\nb'\ngit push origin main",
+        ):
+            assert "git-publish-push-protected-branch-name" in security._git_publish_floor_tags(
+                cmd
+            ), cmd
+
+    def test_a_quote_the_walk_cannot_model_keeps_the_split_at_every_newline(self):
+        # The quote walk knows no comments, heredocs or substitution bodies, so a
+        # quote opened inside one is a PHANTOM that bash never sees. Kept across a
+        # newline it would swallow the next line, and a protected push there would
+        # go unjudged. Any such construct keeps the conservative per-line split.
+        for cmd in (
+            "git push origin feat # it's ready\ngit push origin main",
+            "git push origin feat <<EOF\ngit push origin feat '\nEOF\ngit push origin main\necho '",
+            'echo "$(cat <<EOF\n"\nEOF\n)"\ngit push origin feat \'\ngit push origin main\n\'',
+            'echo `echo "`\ngit push origin feat "\ngit push origin main\n"',
+            # A backslash-newline is deleted by bash before it reads quotes or an
+            # opener, and the per-line cut restarts the walk unquoted.
+            'echo "a\\\ngit push origin feat"\ngit push origin main\necho \'"\\\'',
+            "echo $\\\n'a\\'\ngit push origin feat > '\ngit push origin main\necho \\'",
+            "cat <\\\n<EOF\ngit push origin feat '\nEOF\ngit push origin main\necho \\'",
+            # A comment apostrophe merging a push the per-line reading flags only
+            # as ungated: an ANSI-C or variable target, and one behind a real
+            # multi-line quote that the per-line cut starts outside of.
+            "git push origin feature # don't\ngit push origin $'main'",
+            "b=main; git push origin feat # it's\ngit push origin $b\n# '",
+            "git push origin feat # it's\ngit push origin ~\n# '",
+            "git push origin feat # it's\nX=\"\n\" git push origin $b\n# '",
+        ):
+            assert security._git_publish_floor_tags(cmd), cmd
+        # A ``#`` inside the quoted message is data, so the message still stays whole.
+        assert is_denied('git commit -m "a\n\nFixes #1" && git push origin feat-x') is None
+
+    def test_the_unmodelled_construct_list_is_pinned_to_the_quote_walk(self):
+        # The list decides when a quoted newline is word data. Every listed
+        # construct turns that trust off, so its quoted newline splits; the
+        # per-line backstop covers a construct the list misses.
+        from kiro_crew.security import shell_normalizer as sn
+
+        assert sn._QUOTE_WALK_UNMODELLED_RE.pattern == r"<<|\$\(|\$\{|`|[<>]\(|\\\n"
+        # Every listed opener turns the trust off, so its quoted newline splits.
+        for opener in ("<<", "$(", "${", "`", "<(", ">(", "\\\n"):
+            assert len(sn._split_push_command_segments(f"echo {opener} 'a\nb'")) >= 2, opener
+            # Inside a plain single quote bash reads it literally, so the trust stays.
+            assert len(sn._split_push_command_segments(f"echo 'x{opener}\nb'")) == 1, opener
+        assert is_denied("git commit -m 'fix `foo`\n\nbody'; git push origin feat") is None
+        for cmd in (
+            "git commit -m 'fix `foo`\n\nbody'; git push origin main",
+            "git commit -m \"fix `foo`\n\nbody\"\ngit push origin feat '\ngit push origin main\n'",
+        ):
+            assert security._git_publish_floor_tags(cmd), cmd
+
+    def test_a_phantom_quote_cannot_hide_a_push_even_without_the_construct_list(self, monkeypatch):
+        # Defence in depth: the per-line reading judges every line that parses as
+        # a push on its own, so a construct missing from the list still cannot
+        # hide a protected or bare push behind a phantom quote.
+        import re
+
+        from kiro_crew.security import shell_normalizer as sn
+
+        monkeypatch.setattr(sn, "_QUOTE_WALK_UNMODELLED_RE", re.compile(r"(?!)"))
+        # Each phantom quote leaves a merged segment that still parses as a push.
+        for template in (
+            'echo "a\\\ngit push origin feat"\n{}\necho \'"\\\'',
+            "echo $\\\n'a\\'\ngit push origin feat > '\n{}\necho \\'",
+            "cat <\\\n<EOF\ngit push origin feat '\nEOF\n{}\necho \\'",
+        ):
+            for hidden in ("git push origin main", "git push", "git push origin $b"):
+                cmd = template.format(hidden)
+                assert security._git_publish_floor_tags(cmd), cmd
+        # The hidden line itself ends inside a phantom quote behind ungated-only
+        # targets, with the comment check off too: the exemption keys on the
+        # whole-text walk entering the line inside a quote, not on how it ends.
+        monkeypatch.setattr(sn, "_opens_comment", lambda text, offset: False)
+        for template in (
+            "git push origin feat # don't\n{} # won't",
+            "git commit -m 'x\n\ny'\n{} # it's\necho '",
+            "git push origin feat <<E\n'\nE\n{} # don't",
+            "sh <<E\n{} # don't\nE",
+            "b=main; trap 'x\n{} #' EXIT git push origin feat",
+        ):
+            for target in ("$b", "$'main'", "~", "${b}"):
+                cmd = template.format("git push origin " + target)
+                assert security._git_publish_floor_tags(cmd), cmd
+
+    def test_the_splitter_keeping_a_quoted_newline_is_what_allows_the_reported_command(
+        self, monkeypatch
+    ):
+        # The per-line exemption alone does not allow these: with the splitter
+        # told to split inside quotes again, each is refused. Both halves decide.
+        from kiro_crew.security import argv_floor as af
+
+        cmds = (
+            "git commit -m 'fix: x\n\nbody line'; git push -u fork fix/x",
+            "cd /r && git add f && git commit -m 'fix: x\n\nbody line' && git push origin docs/x",
+            'cd /r && git add f && git commit -m "fix: x\n\nbody line" && git push origin docs/x',
+        )
+        for cmd in cmds:
+            assert security.is_denied(cmd) is None, cmd
+        split = af._split_push_command_segments
+        monkeypatch.setattr(
+            af,
+            "_split_push_command_segments",
+            lambda text, keep_quoted_newlines=True: split(text, False),
+        )
+        for cmd in cmds:
+            assert security.is_denied(cmd) is not None, cmd
+
+    @pytest.mark.parametrize("construct_list", [True, False])
+    def test_every_per_line_deny_survives_the_whole_text_reading(self, monkeypatch, construct_list):
+        # Differential against the per-line reading: each line judged alone is the
+        # single-line verdict, so the whole text must keep every tag a line earns.
+        # Only the ungated sentinel may go, and only on a line the whole-text walk
+        # enters inside a quote. Run over this module's own multi-line push corpus
+        # plus generated head x push x tail variants, with the list on and off.
+        import re
+
+        from kiro_crew.security import shell_normalizer as sn
+
+        if not construct_list:
+            monkeypatch.setattr(sn, "_QUOTE_WALK_UNMODELLED_RE", re.compile(r"(?!)"))
+        corpus = _multi_line_push_corpus()
+        for cmd in sorted(corpus):
+            whole = security._git_publish_floor_tags(cmd)
+            entries = [0] + [s.state for s in sn._iter_shell_chars(cmd) if s.char == "\n"]
+            for line, entry in zip(cmd.split("\n"), entries):
+                if not security._is_git_publish(line):
+                    continue
+                lost = set(security._git_publish_floor_tags(line)) - whole
+                if lost == {security._GIT_PUBLISH_UNGATED}:
+                    assert entry, (cmd, line)
+                else:
+                    assert not lost, (cmd, line, lost)
+
+    def test_no_command_real_bash_runs_as_a_protected_push_is_allowed(self, monkeypatch, tmp_path):
+        # Oracle independent of ``_iter_shell_chars``: real bash parses and runs
+        # each corpus command, read from a file, with ``git`` a shell function
+        # that only logs its argv (``b=main``, ``g=git``; ``sh``/``bash`` re-enter
+        # the same bash, and PATH is an empty directory). Functions and a script
+        # file keep the stubs free of shebangs and symlinks, so Windows runs it
+        # under the shared Git Bash lookup. Any push bash really executes to a
+        # protected or bare target must be denied, with the construct list on and
+        # off. A missing bash FAILS rather than skips, on every platform.
+        import os
+        import re
+
+        from conftest import _find_posix_test_shell
+        from kiro_crew.security import shell_normalizer as sn
+
+        bash = _find_posix_test_shell() if os.name == "nt" else shutil.which("bash")
+        assert bash, "the real-bash oracle needs bash"
+        stubs = tmp_path / "stubs.sh"
+        # ``env`` exports its leading assignments and runs the rest, so the
+        # ``git`` it reaches is the stub, never a binary on a widened PATH.
+        stubs.write_bytes(
+            b'git() { printf \'%s\\037\' "$@" >> "$LOG"; printf \'\\n\' >> "$LOG"; }\n'
+            b'sh() { "$BASH_BIN" "$@"; }\nbash() { "$BASH_BIN" "$@"; }\n'
+            b'env() { while [ "${1%%=*}" != "$1" ]; do export "$1"; shift; done; "$@"; }\n'
+        )
+        empty = tmp_path / "bin"
+        empty.mkdir()
+        log = tmp_path / "log"
+        script = tmp_path / ".oracle-cmd"
+        env = {"PATH": str(empty), "LOG": log.as_posix(), "HOME": tmp_path.as_posix(), "b": "main"}
+        env.update(g="git", GIT_DIR=(tmp_path / "none").as_posix())
+        env.update(BASH_ENV=stubs.as_posix(), BASH_BIN=Path(bash).as_posix())
+        env.update({k: os.environ[k] for k in ("SYSTEMROOT",) if k in os.environ})
+        unsafe = re.compile(r"\bcd\b(?! \. )|/git|\bcommand\b|\benv\b|PATH")
+        ran_protected = []
+        # The fixed oracle rows run even with ``env``/``PATH``: their PATH holds no
+        # ``git``, and ``env`` and ``git`` are the stubs above.
+        corpus = _multi_line_push_corpus()
+        for cmd in sorted(c for c in corpus if c in _INERT_ORACLE_ROWS or not unsafe.search(c)):
+            log.write_bytes(b"")
+            script.write_bytes(cmd.encode())
+            subprocess.run(  # noqa: S603 - argv list, stubbed PATH, scratch cwd
+                [bash, "--noprofile", "--norc", script.name],
+                cwd=tmp_path,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+            for row in log.read_text().splitlines():
+                args = row.split("\x1f")[:-1]
+                while args[:1] in (["-C"], ["-c"]):
+                    args = args[2:]
+                ran = " ".join(["git", *(shlex.quote(a) for a in args)]).lower()
+                if args[:1] == ["push"] and security._is_push_to_protected_branch(ran):
+                    ran_protected.append(cmd)
+                    break
+        assert len(ran_protected) > 100
+        assert "trap $'\\x67it push origin main\n' EXIT; git push origin f" in ran_protected
+        assert set(_INERT_ORACLE_ROWS) <= set(ran_protected)
+        for walk_trust in (True, False):
+            if not walk_trust:
+                monkeypatch.setattr(sn, "_QUOTE_WALK_UNMODELLED_RE", re.compile(r"(?!)"))
+            for cmd in ran_protected:
+                assert is_denied(cmd) is not None, (walk_trust, cmd)
+
+    def test_every_inert_allowlist_entry_has_a_real_bash_oracle_row(self):
+        # Widening the inert allowlist (a flag, a segment head, a push prefix
+        # variable) needs a row in
+        # ``_INERT_ORACLE_ROWS``, which the real-bash oracle above requires to run
+        # a protected push that stays denied. This test reads the allowlist
+        # itself, so a new entry without a row fails here.
+        from kiro_crew.security import shell_normalizer as sn
+
+        flags: dict[str, set[str]] = {}
+        heads: set[str] = set()
+        prefixed: set[tuple[bool, str]] = set()
+        for row in _INERT_ORACLE_ROWS:
+            for segment in row.split("&&"):
+                words = shlex.split(segment)
+                env = words[0] == "env"
+                words = words[env:]
+                while "=" in words[0]:
+                    prefixed.add((env, words.pop(0).split("=", 1)[0].lower()))
+                heads.add(words[0])
+                if words[0] != "git":
+                    continue
+                args = words[1:]
+                verb, opts = args[0], args[1 : args.index("--") if "--" in args else None]
+                used = flags.setdefault(verb, set())
+                used |= {w.split("=", 1)[0].lower() for w in opts if w.startswith("--")}
+                used |= {
+                    "-" + c.lower() for w in opts if w[:1] == "-" and w[1:2] != "-" for c in w[1:]
+                }
+        for verb, allowed in sn._INERT_FLAGS.items():
+            assert allowed <= flags.get(verb, set()), (verb, allowed - flags.get(verb, set()))
+        assert heads == {"cd", "git"}
+        assert {(e, n) for e in (True, False) for n in sn._INERT_PUSH_ENV} <= prefixed
+
+    def test_generated_mask_edge_words_never_make_a_dash_word_inert(self):
+        # Mask-edge words (empty, dash-leading, glued, escaped quotes) generated
+        # around, beside and glued to a multi-line commit message whose body is a
+        # disguised push, then a feature push. The inert exemption may hold only
+        # where every word bash passes to ``git commit`` is non-empty and none but
+        # ``-m``/``-q`` leads with a dash, so no edge word can open the editor.
+        edges = ("''", '""', "'-e'", '"-e"', "'-'e", "-'e'", "''-e", "-e''", "'--edit'")
+        edges += ("'a'b", "a'b'", "'a'\"b\"", "'a'\\''b'", "\\'", "'a\\'", '"a\\"', "-e")
+        messages = ("'x\n$1 push origin main\n'", "'x\n\ny'", '"x\n\ny"')
+        shapes = ("git commit {w} -m {m}; ", "git commit -m {m} {w}; ", "git commit -m {w}{m}; ")
+        allowed = 0
+        for shape in shapes:
+            for word in edges:
+                for msg in messages:
+                    commit = shape.format(w=word, m=msg)
+                    if is_denied(commit + f"{PUSH} origin feat") is not None:
+                        continue
+                    allowed += 1
+                    try:
+                        words = shlex.split(commit.rstrip("; "))[2:]
+                    except ValueError:  # an unclosed quote: bash runs nothing
+                        continue
+                    assert all(w and (w[:1] != "-" or w in ("-m", "-q")) for w in words), commit
+        assert allowed > 20
+
+    def test_quoted_text_that_quotes_a_push_line_is_judged_line_by_line(self):
+        # Multi-line quoted DATA that mentions a push (printed instructions, a PR
+        # comment, a commit message quoting a retired command) is one word that
+        # does not parse as a push. It is read line by line, as before, so a quoted
+        # feature push stays allowed and a quoted protected one stays denied.
+        for cmd in (
+            'echo "To publish, run:\ngit push origin my-feature\nthen open a PR"',
+            "printf 'Next:\ngit push origin my-feature\nopen a PR\n'",
+            'gh pr comment 1 --body "rebase, then\ngit push --force-with-lease origin fix/t\nok"',
+            'git commit -m "docs: retire\nwas:\ngit push origin release-notes\ndone"',
+        ):
+            assert is_denied(cmd) is None, cmd
+        assert security._git_publish_floor_tags('echo "run:\ngit push origin main\n"')
+        # Quoted text a trap runs later is a push line that starts inside the quote,
+        # and a fragment glued to the closing quote keeps the quoted word going.
+        for cmd in (
+            "trap 'x\ngit push origin $b #' EXIT git push origin f",
+            "trap ':\n'git' push origin $b #' EXIT; git push origin f",
+            "trap ':\n'\"git push origin $b #\" EXIT; git push origin f",
+            "trap ':\n'$g' push origin $b #' EXIT; git push origin f",
+            # A word the trap decodes or expands is code, not data, however it ends.
+            "trap $'\\x67it push origin main\n' EXIT; git push origin f",
+            "trap $'\\147it push origin main\n' EXIT; git push origin f",
+            'g=git; trap "$g push origin main\n" EXIT; git push origin f',
+            "g=git; trap '$g push origin main\n' EXIT; git push origin f",
+            "echo(){ eval \"$1\"; }; echo '$g push origin main\n'; git push origin f",
+            # Inert data stops being inert once its output feeds a pipe or a file.
+            "echo '$1 push origin main\n' | bash -s git; git push origin f",
+            "git commit -m '$1 push origin main\n' | bash -s git; git push origin f",
+            "echo '$1 push origin main\n' ';' | bash -s git; git push origin f",
+            "echo '$1 push origin main\n' > x; bash x git; git push origin f",
+            "echo > x '$1 push origin main\n'; bash x git; git push origin f",
+            "printf -v x '$1 push origin main\n'; bash -c \"$x\" -- git; git push origin f",
+            "exec > x; echo '$1 push origin main\n'; bash x git; git push origin f",
+            'exec >> x && echo "$1 push origin main\n"; sh x git; git push origin f',
+            # ...on any line, and however the command spells printf -v or alias.
+            "exec > x\necho '$1 push origin main\n'; git push origin f\nbash x git",
+            "{\necho '$1 push origin main\n'; git push origin f\n} > x; bash x git",
+            "printf '-v' x '$1 push origin main\n'; git push origin f; bash -c \"$x\" -- git",
+            "shopt -s expand_aliases; ali\\as echo=eval\necho '$1 push origin main\n'; git push origin f",
+            "shopt -s expand_aliases; {ali,x}as echo=eval\necho '$1 push origin main\n'; git push origin f",
+            "shopt -s expand_aliases; a=alias; $a echo=eval\necho '$1 push origin main\n'; git push origin f",
+            # ...or changes what the owner's name runs without defining it in the text.
+            "source ./h.sh; echo $'\\x67it push origin main\n'; git push origin f",
+            ". ./h.sh && git commit -m $'\\x67it push origin main\n' && git push origin f",
+            "hash -p ./x git; git commit -m $'\\x67it push origin main\n'; git push origin f",
+            "enable -n echo; echo $'\\x67it push origin main\n'; git push origin f",
+            # ...or opens an editor or pager on it, or rewrites the config that picks one.
+            "git config core.editor sh; git commit --edit -m $'\\x67it push origin main\n'; git push origin f",
+            "git config core.editor sh; git commit -em $'\\x67it push origin main\n'; git push origin f",
+            "git commit -m $'\\x67it push origin main\n'; git commit --amend; git push origin f",
+            "gh config set editor sh; gh pr comment 1 -e -b $'\\x67it push origin main\n'; git push origin f",
+            # ...including an option bash dequotes, so a quote cannot hide '-e' from the list.
+            "git commit '-e' -n --allow-empty -m $'\\x67it push origin main\n'; git push origin f",
+            "git commit ''-e -m $'\\x67it push origin main\n'; git push origin f",
+            "git commit -m $'\\x67it push origin main\n' \"--edit\"; git push origin f",
+            # ...however the option is spelled, since bash decodes a $'…' word before
+            # the argv: \055 and \u002d are '-', cut at the \0, so each is '-e'.
+            "git commit --allow-empty $'\\x2de\\0\n' -m x; git push origin f",
+            "git commit --allow-empty $'\\055e\\0\n' -m x; git push origin f",
+            "git commit --allow-empty $'\\u002de\\0\n' -m x; git push origin f",
+            "git tag -a v1 $'\\x2de\\0\n' -m x; git push origin f",
+            # ...including an escape the lowercased text misspells
+            # (``\U`` reads as ``\u``), and a double-quoted word that expands ``$1``
+            # or drops a backslash-newline: neither body is literal, so neither is data.
+            "git commit -m x $'\\U0000002De\\0\n'; git push origin f",
+            'git commit "$1\n" -m "git push origin HEAD:main"; git push origin f',
+            'git commit -m x "$*\n"; git push origin f',
+            'git commit -m x "\\\n-e\n"; git push origin f',
+            # ...and a pathspec after ``--`` is not a flag, so a tracked file named
+            # ``--no-edit`` cannot satisfy the message rule for an editor-opening amend.
+            "git commit --allow-empty -m $'\\x67it push origin HEAD:main\n'; git commit --amend -- --no-edit; git push origin f",
+            "git commit --amend -- --no-edit -m $'\\x67it push origin main\n'; git push origin f",
+            "git commit --amend -- --no-verify -m $'\\x67it push origin main\n'; git push origin f",
+            # ...and a value-taking option outside the list cannot swallow the '-m'
+            # that would otherwise satisfy the message rule for an amend.
+            "git -c user.name=-m commit -n --allow-empty -m $'\\x67it push origin main\n'; git commit --amend --author -m; git push origin f",
+            "git commit --allow-empty -m $'\\x67it push origin main\n'; git commit --amend --date -m; git push origin f",
+            # ...and a ``--`` that is the value of ``-m`` ends no option list, so an
+            # editor option after it is still checked.
+            "git commit -m -- -e -m 'g\\it push origin main\n'; git push origin f",
+            "git commit -am -- --edit -m 'g\\it push origin main\n'; git push origin f",
+            "git commit -m 'g\\it push origin main\n' --message -- -e; git push origin f",
+            # Only ``git commit`` owns an inert word; any other owner reads as on ``main``.
+            "echo 'a\nb'; git push origin f",
+            "git tag -a v1 -m 'a\nb'; git push origin f",
+            "gh pr comment 1 -b 'a\nb'; git push origin f",
+            "git -c author.name=y commit -m 'a\nb'; git push origin f",
+            "git -c committer.name=z commit -m 'a\nb'; git push origin f",
+            # Only the flags the reported commands use are on the list; any other
+            # flag or ``git -c`` setting reads as on ``main``.
+            "git -c user.name='M Q' commit -m 'x\n\nFixes #1'; git push -u fork fix/x",
+            "git commit --message='a\n\nb' 'src/x.py'; git push origin f",
+            "git commit --quiet -m 'a\nb'; git push origin f",
+            "git commit -am 'a\nb'; git push origin f",
+            "git add --all && git commit -m 'a\nb' && git push origin f",
+            "git commit -m 'a\nb' && git push --force-with-lease origin f",
+            "git commit -m 'a\nb' && git push --set-upstream origin f",
+            # A ``$'…'`` or ``$"…"`` body is decoded or translated by bash, so it
+            # is never data, even with no escape in it.
+            "git commit -m $'a\nb'; git push origin f",
+            'git commit -m $"a\nb"; git push origin f',
+        ):
+            assert security._git_publish_floor_tags(cmd), cmd
+        # A push prefix sets only PATH, bare or after a plain ``env``, to plain text
+        # or ``$PATH``: a GIT_* or shell-startup variable, an ``env`` option, a lone
+        # assignment, a prefix on another command or ``$PATH`` elsewhere is code.
+        for cmd in (
+            "git commit -m 'a\nb' && env GIT_DIR=/x git push origin f",
+            "git commit -m 'a\nb' && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.push GIT_CONFIG_VALUE_0=f:main git push origin f",
+            "git commit -m 'a\nb' && BASH_ENV=.git/COMMIT_EDITMSG git push origin f",
+            "git commit -m 'a\nb' && PATH=/x GIT_SSH_COMMAND=sh git push origin f",
+            "git commit -m 'a\nb' && env -i PATH=/x git push origin f",
+            "git commit -m 'a\nb' && env git push origin f",
+            "git commit -m 'a\nb' && PATH=/x env git push origin f",
+            "git commit -m 'a\nb' && PATH=/x; git push origin f",
+            "git commit -m 'a\nb' && PATH=$b git push origin f",
+            "git commit -m 'a\nb' && PATH=$PATH'x' git push origin f",
+            "git commit -m 'a\nb' && PATH=/x* git push origin f",
+            "git commit -m 'a\nb' && PATH=/x git -c remote.origin.push=f:main push origin f",
+            "git commit -m 'a\nb' && PATH=/x git add f && git push origin f",
+            "PATH=/x git commit -m 'a\nb' && git push origin f",
+            "git commit -m 'a\nb' $PATH && git push origin f",
+            "cd $PATH && git commit -m 'a\nb' && git push origin f",
+            "git commit -m 'a\nb' && PATH=/x git push origin f $PATH",
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # The same word reached through ``bash -c``: the nested payload is judged too.
+        nested = 'git config core.editor sh; bash -c $\'git commit "$1\\x0a" -m "git push origin HEAD:main"; git push origin f\' -- -em'
+        assert is_denied(nested) is not None
+        for cmd in (
+            "git commit -m 'a\nb'; git push origin f",
+            "git commit -m 'a\n\nb' -- src/x.py; git push origin f",
+            "git commit -qm 'x\n\nFixes #1'; git push -u fork fix/x",
+            "cd /r && git commit -m 'a\n\nb' && git push origin feat",
+            "git commit -m 'a\n\nb' && env PATH=/x:$PATH git push origin feat",
+            "git commit -m 'a\n\nb' && PATH=/x git push -u fork fix/x",
+        ):
+            assert is_denied(cmd) is None, cmd
+        # One real-bash oracle row per allowlisted segment and flag: each runs a
+        # protected push in bash and stays denied, and its
+        # feature-branch twin is allowed.
+        for row in _INERT_ORACLE_ROWS:
+            assert is_denied(row) is not None, row
+            assert is_denied(row.replace("origin main", "origin feat")) is None, row
+        # Outside the allowlist the refusal says how to fix it, and the fix is allowed.
+        for cmd in (
+            "cd ~/r && git commit -m 'a\n\nb' && git push origin feat",
+            "git commit -m 'a\n\nb' && env GIT_DIR=/x git push origin feat",
+        ):
+            reason = is_denied(cmd)
+            assert reason is not None and "put the push on its own line" in reason, cmd
+        assert is_denied("git commit -m 'a\n\nb'\nenv GIT_DIR=/x git push origin feat") is None
+        assert is_denied("cd ~/r && git commit -m 'a\n\nb'\ngit push origin feat") is None
+        # With no line entered inside a quote, or when the push on its own line is
+        # still refused, the advice cannot apply, so it is left out.
+        for cmd in (
+            "git add .\ngit push origin $b",
+            "b=x\ngit push origin {a,main}",
+            "git commit -m 'a\nb'; git push origin $b",
+            "git commit -m 'a\nb' && git push origin {a,main}",
+        ):
+            reason = is_denied(cmd)
+            assert reason is not None and "its own line" not in reason, cmd
 
     def test_a_wrapped_payload_is_one_word_not_a_bare_git_token(self):
         # ``str.split`` tore a wrapper's quoted payload into fragments, so the

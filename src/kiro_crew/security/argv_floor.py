@@ -111,6 +111,7 @@ from .shell_normalizer import (
     _dequote_token,
     _ends_argv,
     _glob_could_expand_to,
+    _inert_quoted_line_heads,
     _is_mint_verb,
     _is_self_program,
     _iter_shell_chars,
@@ -4377,12 +4378,19 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
     """
     tags: set[str] = set()
     saw_push = False
-    for command in _split_push_command_segments(text_lower):
+    pending = _split_push_command_segments(text_lower)
+    while pending:
+        command = pending.pop(0)
         # ``_is_git_publish`` (not ``_git_push_args``) gates the checks so that
         # glue-evasion forms — which do NOT tokenize to a clean ``git`` token —
         # are still recognized as pushes and cannot slip past the ambiguity /
         # fail-closed guards below.
         if not _is_git_publish(command):
+            continue
+        # A kept quoted newline with no parseable push behind it (an ``echo`` or
+        # ``--body`` quoting a push line) is judged line by line, the conservative reading.
+        if "\n" in command and _git_push_args(command) is None:
+            pending[:0] = _split_push_command_segments(command, keep_quoted_newlines=False)
             continue
         saw_push = True
         # Substitution / expansion glue anywhere in a push command makes it
@@ -4441,6 +4449,16 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
         # A push was detected upstream (e.g. glue-evasion ``git_push``) but no
         # clean ``push`` segment survived splitting — deny to be safe.
         tags.add(_GIT_PUBLISH_UNGATED)
+    if "\n" in text_lower:
+        # The per-line reading still judges every push line as a single-line command,
+        # so a quote the walk gets wrong cannot hide one. Its ungated sentinel is
+        # dropped only behind an inert quoted head; the rest of the line is judged in full.
+        for line, close in _inert_quoted_line_heads(text_lower, _is_git_publish):
+            line_tags = set(_git_publish_floor_tags(line))
+            if close >= 0 and not _is_git_publish(line[: close + 1]):
+                line_tags.discard(_GIT_PUBLISH_UNGATED)
+                line_tags |= _git_publish_floor_tags(line[close + 1 :])
+            tags |= line_tags
     return frozenset(tags)
 
 

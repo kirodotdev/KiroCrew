@@ -2766,7 +2766,156 @@ _CMD_SEPARATOR_RE = re.compile(r"&&|\|\||[;|\n]")
 _SHELL_SEGMENT_SEPARATORS = ("&&", "||", ";", "|")
 
 
-def _split_push_command_segments(text: str) -> list[str]:
+#: Constructs the quote walk does not model (heredoc, ``$(``, ``${``, backtick and
+#: process-substitution bodies, and a backslash-newline, which bash deletes before
+#: it reads an opener or a quote and which the per-line cut restarts the walk at).
+_QUOTE_WALK_UNMODELLED_RE = re.compile(r"<<|\$\(|\$\{|`|[<>]\(|\\\n")
+
+#: A quoted word is inert data only as a ``git commit`` argument, the one owner the
+#: reported failure names. The rest of the command must then be PLAIN, one closed
+#: allowlist checked whole: once every other quoted word is masked (bash pairs
+#: ``'``/``"`` left to right when no ``\``, ``$`` or ``#`` remains), only word
+#: characters and the separators ``;``/``&``/newline may be left, and every
+#: segment must be a command in ``_inert_segment``'s closed grammar. No pipe,
+#: redirect, expansion, glob, brace, comment, definition, config write, editor or
+#: other command can then appear. The text arrives lowercased, so every flag is
+#: listed lowercase, and only ``-m`` takes a value. The flags are only the ones the
+#: reported refused commands use; a test fails on any flag here without a
+#: real-bash oracle row.
+_INERT_FLAGS = {
+    verb: frozenset(flags.split())
+    for verb, flags in {"commit": "-m -q", "add": "", "push": "-u -q"}.items()
+}
+_INERT_WORD_OWNER_RE = re.compile(r"git\s+commit\s")
+_INERT_MASK_RE = re.compile(r"'[^']*'|\"[^\"$`\\]*\"")
+_INERT_PLAIN_RE = re.compile(r"(?:[\w./:=@%+, \t\n;&-]|\$path\b)*")
+#: The variables a ``git push`` segment may set first, bare or after a plain
+#: ``env``. Only ``PATH``: it can change which ``git`` runs, not the argv the
+#: per-line floor judges, while a ``GIT_*``, ``BASH_ENV`` or ``ENV`` value can
+#: rewrite the refspec mapping or make a shell that git starts source the message
+#: file. Its value is plain characters plus ``$PATH``, the only expansion the
+#: allowlist admits, and only here.
+_INERT_PUSH_ENV = frozenset({"path"})
+_INERT_ASSIGN_RE = re.compile(r"([a-z_]\w*)=(?:[\w./:@%+,-]|\$path\b)*")
+
+
+def _quoted_line_entries(text: str) -> list[tuple[int, bool, int, int]]:
+    """Per line of *text*: the quote state it is entered in, the ANSI-C flag, the
+    offset its command segment starts at and the offset of the quote still open."""
+    entries = [(0, False, 0, 0)]
+    seg = opened = prev = 0
+    for s in _iter_shell_chars(text):
+        if s.char == "\n":
+            entries.append((s.state, s.ansi, seg, opened))
+        if s.active and s.char in ";&|(){}\n":
+            seg = s.offset + 1
+        if not prev and s.state:
+            opened = s.offset
+        prev = s.state
+    return entries
+
+
+def _quoted_word_is_inert(text: str, seg: int, opened: int, end: int) -> bool:
+    """Whether the quote opened at *opened* (segment from *seg*) holds data."""
+    head = text[seg:opened].lstrip()
+    if not _INERT_WORD_OWNER_RE.match(head):
+        return False
+    # Only a ``'…'`` or ``"…"`` word can be data. A ``$'…'`` or ``$"…"`` word is
+    # decoded or translated by bash, and no reported command needs one. A
+    # double-quoted word expands ``$1``, backticks and a backslash-newline, so it is
+    # data only when it holds no ``$``, backtick or ``\``; its body is then literal.
+    if text[opened - 1 : opened] == "$":
+        return False
+    if text[opened] == '"' and re.search(r"[$`\\]", text[opened + 1 : end]):
+        return False
+    lead = text[opened + 1 : end]
+    if text[opened - 1 : opened] not in (" ", "\t") or lead[:1] == "-":
+        return False
+    rest = (
+        _INERT_MASK_RE.sub(_inert_mask, text[:opened])
+        + "_ "
+        + _INERT_MASK_RE.sub(_inert_mask, text[end + 1 :])
+    )
+    return bool(_INERT_PLAIN_RE.fullmatch(rest)) and all(
+        _inert_segment(p.split()) for p in re.split(r"[;&\n]", rest) if p.strip()
+    )
+
+
+def _inert_quoted_line_heads(text: str, keep: "Callable[[str], bool]") -> list[tuple[str, int]]:
+    """Each line of *text* that *keep* selects, with the offset of its inert quoted
+    head's closing quote, or -1. A head is inert where the whole-text walk ENTERS the
+    line inside a quote, closes it there, the quote also ends the word, and the word
+    is inert data (``_quoted_word_is_inert``): that head is the tail of a quoted word.
+    A fragment glued to the quote keeps the word, so that line gets -1.
+    """
+    heads = []
+    start = 0
+    for line, (entry, ansi, seg, opened) in zip(text.split("\n"), _quoted_line_entries(text)):
+        line_start, start = start, start + len(line) + 1
+        if not keep(line):
+            continue
+        walk = _iter_shell_chars(line, entry, ansi) if entry else ()
+        close = next((s.offset for s in walk if not s.state), -1)
+        ends_word = line[close + 1 : close + 2] in ("", " ", "\t", ";", "&", "|")
+        inert = (
+            close >= 0
+            and ends_word
+            and _quoted_word_is_inert(text, seg, opened, line_start + close)
+        )
+        heads.append((line, close if inert else -1))
+    return heads
+
+
+def _inert_mask(m: re.Match[str]) -> str:
+    """A masked quoted word as ``_``, or a ``'`` that fails the plain check when it is
+    empty or opens with ``-``: bash dequotes ``'-e'`` and ``''-e`` into the option.
+    """
+    return "_" if m.group()[1:2] not in ("", "-", m.group()[:1]) else "'"
+
+
+def _inert_segment(words: list[str]) -> bool:
+    """Whether one masked segment is ``cd <dir>`` or an allowlisted ``git`` verb whose
+    every flag is allowlisted, so nothing opens an editor, pager or config write that
+    could run the text; a commit needs a message. A push alone may carry a
+    ``PATH`` prefix, bare or after ``env`` (``_INERT_PUSH_ENV``).
+    """
+    env = words[:1] == ["env"]
+    words = words[1:] if env else words
+    prefix = 0
+    while prefix < len(words) and (m := _INERT_ASSIGN_RE.fullmatch(words[prefix])):
+        if m.group(1) not in _INERT_PUSH_ENV:
+            return False
+        prefix += 1
+    words = words[prefix:]
+    if (env or prefix) and (not prefix or words[:2] != ["git", "push"]):
+        return False
+    if not words or any("$" in w for w in words):
+        return False
+    head, *args = words
+    if head == "cd":
+        return len(args) == 1 and not args[0].startswith("-")
+    if head != "git":
+        return False
+    verb, args = (args or [""])[0], args[1:]
+    # ``--`` ends option parsing: every later word is a pathspec, not a flag. A
+    # tracked file named ``-m`` after ``--`` must not satisfy the message
+    # requirement below. A ``--`` right after ``-m`` or a short cluster ending in
+    # ``m`` is that option's value, so it ends nothing and the words after it are
+    # still checked as flags.
+    end = len(args)
+    for i, w in enumerate(args):
+        if w == "--" and not (i and re.fullmatch(r"-[^-]*m", args[i - 1])):
+            end = i
+            break
+    opts = args[:end]
+    flags = {w.split("=", 1)[0] for w in opts if w.startswith("--")}
+    flags |= {"-" + c for w in opts if w.startswith("-") and not w.startswith("--") for c in w[1:]}
+    if verb not in _INERT_FLAGS or not flags <= _INERT_FLAGS[verb]:
+        return False
+    return verb != "commit" or "-m" in flags
+
+
+def _split_push_command_segments(text: str, keep_quoted_newlines: bool = True) -> list[str]:
     """Split *text* into the shell's TRUE command segments, honouring quoting.
 
     A separator only separates where the SHELL reads one. Inside quotes, or
@@ -2778,14 +2927,14 @@ def _split_push_command_segments(text: str) -> list[str]:
     boundary, so an ordinary unprotected refname was denied by the protective
     fallback (and by its ungated sentinel, which no catalog row can switch off).
 
-    A NEWLINE always separates, escaped or not, and the backslash is KEPT in the
+    An UNQUOTED newline separates, escaped or not, and the backslash is KEPT in the
     segment it ends. That is not an inconsistency: a backslash-newline VANISHES
     in bash, fusing the words on either side into one that neither segment can
     reconstruct (``origin ma\\`` + newline + ``in`` publishes MAIN), and the
     retained trailing escape is exactly the signal the cumulative-open-state
     check ungates on. Every other escaped separator survives as a LITERAL
     character in the word, so the fused word necessarily contains it and can
-    never equal a protected branch name.
+    never equal a protected branch name. A newline INSIDE quotes is word data.
 
     Distinct from :func:`_split_shell_segments`, which serves the ``cd``-tracking
     pass: that one wants FEWER segments (a wrong split corrupts the tracked
@@ -2801,6 +2950,19 @@ def _split_push_command_segments(text: str) -> list[str]:
     """
     segments: list[str] = []
     rest = text
+    # A quoted newline is kept as word data only when the quote walk can be trusted
+    # across lines. This only narrows allows; the per-line reading in argv_floor is
+    # the deny authority. The walk models no comment, heredoc, substitution body or
+    # backslash-newline, so any of those outside a plain single quote (where bash
+    # reads every character literally) keeps the conservative split at every newline.
+    keep_quoted_newlines = keep_quoted_newlines and not any(
+        (step.active and step.char == "#" and _opens_comment(text, step.offset))
+        or (
+            (step.active or step.state != 1 or step.ansi)
+            and _QUOTE_WALK_UNMODELLED_RE.match(text, step.offset)
+        )
+        for step in _iter_shell_chars(text)
+    )
     while True:
         buf: list[str] = []
         resume_at: int | None = None
@@ -2809,12 +2971,12 @@ def _split_push_command_segments(text: str) -> list[str]:
                 buf.append(step.text)
                 break
             if step.char == "\n":
-                # A NEWLINE always separates. When it was ESCAPED the backslash
-                # is kept, because that is the splice signal: bash makes the
-                # backslash-newline vanish, fusing the words on either side into
-                # one that neither segment can reconstruct.
+                # A quoted newline is word data; an escaped one keeps "\" (see docstring).
                 if step.text.startswith("\\"):
                     buf.append("\\")
+                elif not step.active and keep_quoted_newlines:
+                    buf.append(step.text)
+                    continue
                 resume_at = step.offset + len(step.text)
                 break
             if step.active:

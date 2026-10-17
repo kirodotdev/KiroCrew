@@ -1121,6 +1121,19 @@ def _inline_interpreter_bindings(text: str) -> str:
     return _INTERP_IDENT_RE.sub(lambda m: bindings.get(m.group(0), m.group(0)), text)
 
 
+def _own_line_fix_applies(_argv: ModuleType, lower: str) -> bool:
+    """Whether a line starts inside a quote and moving each ``git`` command after a
+    separator (behind any ``env``/assignment prefix) onto its own line clears the
+    push floor, so the hint is true."""
+    if not any(
+        entry[0] for entry in _submodule("shell_normalizer")._quoted_line_entries(lower)[1:]
+    ):
+        return False
+    return not _argv._git_publish_floor_tags(
+        re.sub(r"[ \t]*(?:;|&&?|\|\|)[ \t]*(?=(?:env\s+)?(?:\w+=\S*\s+)*git\s)", "\n", lower)
+    )
+
+
 def is_denied(
     tool_name: str,
     extra_patterns: list[str] | None = None,
@@ -1350,7 +1363,13 @@ def is_denied(
                 ungated_pattern,
                 "Matched structurally on the command's argv, not by the pattern text above: "
                 "shell substitution or expansion fuses text into the push target, so the "
-                "destination branch cannot be determined before the push runs.",
+                "destination branch cannot be determined before the push runs."
+                + (
+                    " If the push shares a line with a multi-line quoted argument, put the "
+                    "push on its own line."
+                    if _own_line_fix_applies(_argv, lower)
+                    else ""
+                ),
                 rule="git-publish-target-unverifiable",
                 component="git-publish-floor",
             )
