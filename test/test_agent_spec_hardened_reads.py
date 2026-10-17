@@ -1372,6 +1372,9 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/agent_materialization/conductor_agents.py": [
         ("conductor_spec_regeneration", "unknown"),
     ],
+    # The knowledge pool's pre-spawn repair compares Crew's own spec against its
+    # template; a link at the name is screened before it is followed.
+    "kiro_crew/agent_materialization/service_agents.py": [("knowledge_spec_repair", "unknown")],
     "kiro_crew/crewmate_prune_migration.py": [("crewmate_prune", "dashboard")],
     "kiro_crew/dashboard/handlers/sessions.py": [
         ("session_tool_policy", "dashboard"),
