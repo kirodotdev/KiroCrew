@@ -7053,7 +7053,7 @@
       "repo_is_project_dir": "Das ist bereits das Projektverzeichnis.",
       "repo_remove": "{{path}} entfernen",
       "repos": "Zusätzliche Repositorys",
-      "repos_hint": "Zusätzliche Repositorys, die dieses Projekt neben dem Projektverzeichnis enthält. Jeder Chat hier kann in allen lesen und arbeiten, und @-Erwähnungen suchen über alle hinweg.",
+      "repos_hint": "Weitere Repositorys, mit denen dieser Ordner arbeitet, neben dem Projektverzeichnis. Chats hier können Dateien in allen lesen und bearbeiten, und @-Erwähnungen suchen über alle hinweg.",
       "steering_dir_remove": "{{path}} entfernen",
       "steering_dirs": "Zusätzliches Steering",
       "steering_dirs_hint": "Zusätzliche Steering-Verzeichnisse, die für jeden Chat in diesem Ordner und seinen Unterordnern geladen werden.",

@@ -2536,7 +2536,7 @@
       "repo_is_project_dir": "That is already the project directory.",
       "repo_remove": "Remove {{path}}",
       "repos": "Additional repositories",
-      "repos_hint": "Extra repositories this project holds beside the project directory. Every chat here can read and work in all of them, and @-mentions search across them.",
+      "repos_hint": "Other repositories this folder works with, beside the project directory. Chats here can read and edit files in all of them, and @-mentions search across them.",
       "save_changes": "Save changes",
       "save_failed": "Could not save the folder.",
       "set_color_to_name": "Set color to {{name}}",

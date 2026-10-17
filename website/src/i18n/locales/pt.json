@@ -7174,7 +7174,7 @@
       "repo_is_project_dir": "Esse já é o diretório do projeto.",
       "repo_remove": "Remover {{path}}",
       "repos": "Repositórios adicionais",
-      "repos_hint": "Repositórios adicionais que este projeto mantém além do diretório do projeto. Cada conversa aqui pode ler e trabalhar em todos eles, e as @-menções pesquisam em todos.",
+      "repos_hint": "Outros repositórios com os quais esta pasta trabalha, além do diretório do projeto. As conversas aqui podem ler e editar arquivos em todos eles, e as @-menções pesquisam em todos.",
       "steering_dir_remove": "Remover {{path}}",
       "steering_dirs": "Steering adicional",
       "steering_dirs_hint": "Diretórios de steering adicionais carregados para cada chat nesta pasta e em suas subpastas.",

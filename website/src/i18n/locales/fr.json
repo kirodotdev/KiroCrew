@@ -7174,7 +7174,7 @@
       "repo_is_project_dir": "C'est déjà le répertoire du projet.",
       "repo_remove": "Retirer {{path}}",
       "repos": "Dépôts supplémentaires",
-      "repos_hint": "Dépôts supplémentaires que ce projet conserve en plus du répertoire du projet. Chaque conversation ici peut les lire et y travailler, et les @-mentions cherchent dans tous.",
+      "repos_hint": "Autres dépôts avec lesquels ce dossier travaille, en plus du répertoire du projet. Les conversations ici peuvent lire et modifier des fichiers dans chacun, et les @-mentions cherchent dans tous.",
       "steering_dir_remove": "Retirer {{path}}",
       "steering_dirs": "Steering supplémentaire",
       "steering_dirs_hint": "Répertoires de steering supplémentaires chargés pour chaque chat de ce dossier et de ses sous-dossiers.",
