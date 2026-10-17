@@ -22,12 +22,24 @@ export default function CronJobMoveMenu({ folders, currentFolderId, onMove, onNe
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
+        {/* Label-bearing, like every other button in this toolbar: the folder
+            trigger was the lone icon-only control in the row, so its purpose was
+            legible only on hover (title) or to assistive tech. It now shows the
+            same "Move to folder…" text in words. The aria-label is kept (and
+            equals the visible text, so WCAG 2.5.3 Label-in-Name holds): it is
+            the label the uiLocation control-index reads, which gen-ui-index
+            requires. Icon sized to 14 to match its toolbar siblings (Delete's
+            Trash2, New folder's FolderPlus); the gap-1.5 span mirrors their
+            layout exactly. */}
         <Btn
           aria-label={i18nT('pages.schedulePage.cronFolders.move_to_folder')}
           title={i18nT('pages.schedulePage.cronFolders.move_to_folder')}
           {...uiLocation('schedule.move-to-folder')}
         >
-          <Folder size={13} />
+          <span className="flex items-center gap-1.5">
+            <Folder size={14} />
+            {i18nT('pages.schedulePage.cronFolders.move_to_folder')}
+          </span>
         </Btn>
       </DropdownMenuTrigger>
       {/* Intentional tighter cap: the folder list can grow long, so a fixed

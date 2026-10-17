@@ -527,8 +527,10 @@ describe('SchedulePage cron folders', () => {
     fireEvent.click(checkboxes[0])
     fireEvent.click(checkboxes[1])
 
-    // Batch toolbar should show "Move to folder" button
-    const batchMoveBtn = screen.getAllByLabelText('Move to folder')
+    // Batch toolbar should show "Move to folder" button. It now carries a
+    // VISIBLE label (accessible name = the visible "Move to folder…" text), so
+    // match by role + name with a regex to tolerate the ellipsis.
+    const batchMoveBtn = screen.getAllByRole('button', { name: /move to folder/i })
     // At least one in the batch toolbar
     expect(batchMoveBtn.length).toBeGreaterThanOrEqual(1)
   })
@@ -547,7 +549,7 @@ describe('SchedulePage cron folders', () => {
     // call site. The row's own move affordance is now a submenu inside the ⋯
     // menu (see CronRowActions), which builds its items separately.
     fireEvent.click(screen.getByRole('checkbox', { name: /Select Some Job/ }))
-    const moveBtn = await screen.findByLabelText('Move to folder')
+    const moveBtn = await screen.findByRole('button', { name: /move to folder/i })
     fireEvent.keyDown(moveBtn, { key: 'Enter' })
 
     // Wait for menu to open
@@ -584,7 +586,7 @@ describe('SchedulePage cron folders', () => {
     // selection toolbar -- per-row move buttons share the same aria-label.
     const toolbarLabel = screen.getByText((_, el) => el?.tagName === 'SPAN' && el.textContent === '2 selected')
     const toolbar = toolbarLabel.parentElement as HTMLElement
-    const batchMoveBtn = within(toolbar).getByLabelText('Move to folder')
+    const batchMoveBtn = within(toolbar).getByRole('button', { name: /move to folder/i })
     fireEvent.keyDown(batchMoveBtn, { key: 'Enter' })
 
     // Click the folder option
