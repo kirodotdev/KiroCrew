@@ -169,6 +169,11 @@
     "client": {
       "accepted_body_unreadable": "Der Server hat die Anfrage angenommen, aber die Antwort konnte nicht gelesen werden.",
       "paste_token_url_or_raw_token": "Anmelde-URL einfügen…",
+      "scan_qr_code": "QR-Code scannen",
+      "scan_qr_cancel": "Scannen abbrechen",
+      "scan_qr_point_camera": "Richte die Kamera auf den Anmelde-QR-Code, der auf dem Desktop angezeigt wird.",
+      "camera_permission_denied": "Der Kamerazugriff wurde verweigert, daher konnte der QR-Code nicht gescannt werden. Erlaube die Kamera für diese Website oder füge stattdessen die Anmelde-URL ein.",
+      "camera_unavailable": "Die Kamera konnte nicht geöffnet werden, daher konnte der QR-Code nicht gescannt werden. Füge stattdessen die Anmelde-URL ein.",
       "proxy_challenge_reload": "Lade diesen Browser-Tab neu — erscheint eine Anmeldeseite, ist die Sitzung deines Zugriffsproxys abgelaufen. Wenn nicht, hat ein Proxy oder eine Firewall vor diesem Dashboard die Anfrage abgewiesen; prüfe die Protokolle des Proxys oder versuche es später erneut.",
       "proxy_challenge_framed": "Öffne {{origin}} in einem neuen Tab — erscheint eine Anmeldeseite, ist die Sitzung deines Zugriffsproxys abgelaufen. In diesem Panel funktioniert die Anmeldung nicht. Melde dich dort an und lade dann diese Seite neu.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Vom Tunnel-Edge gedrosselt (HTTP 429) — zu viele Anfragen in kurzer Folge. Das Dashboard versucht es automatisch erneut; falls das anhält, warte ein paar Sekunden und lade die Seite neu.",
