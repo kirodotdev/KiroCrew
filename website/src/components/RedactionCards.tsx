@@ -14,8 +14,9 @@
  * every retained string renders as TEXT, never HTML.
  */
 import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { flushSync } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
 import { noteInPlaceResize } from '../hooks/virtualizer/inPlaceResize'
+import { TOUCH_REPLAY_WINDOW_MS } from './InstantTip'
 import { Check, ChevronRight, Copy, Link2Off, Lock, Shield, TriangleAlert, X } from 'lucide-react'
 import { Trans } from 'react-i18next'
 import type { Element as HastElement, Root as HastRoot, RootContent, Text as HastText } from 'hast'
@@ -943,6 +944,183 @@ function TerminalAction({ title, note, command, label, primary = true, agentWrit
   )
 }
 
+// ── hover preview ────────────────────────────────────────────────────────
+
+/** How long a mouse rests on a marker before its preview opens, and how long
+ *  the preview stays after the mouse leaves, so it can cross into the panel. */
+export const PREVIEW_OPEN_MS = 300
+export const PREVIEW_CLOSE_MS = 200
+const PREVIEW_MAX_W = 340
+
+interface PreviewAnchor { left: number; top: number; below: boolean }
+
+function anchorFor(el: HTMLElement): PreviewAnchor {
+  const r = el.getBoundingClientRect()
+  const below = window.innerHeight - r.bottom >= 160 || r.top < 160
+  return { left: r.left, top: below ? r.bottom + 4 : r.top - 4, below }
+}
+
+/** Whether ``el`` still shows inside the window and inside ``scroller``, the
+ *  element that just scrolled, when that element holds it. */
+function markerInView(el: HTMLElement, scroller: EventTarget | null): boolean {
+  const r = el.getBoundingClientRect()
+  if (r.bottom < 0 || r.top > window.innerHeight) return false
+  if (scroller instanceof Element && scroller !== el && scroller.contains(el)) {
+    const box = scroller.getBoundingClientRect()
+    if (r.bottom < box.top || r.top > box.bottom) return false
+  }
+  return true
+}
+
+/**
+ * The hover/focus preview of one marker. It opens after a mouse rests on the
+ * marker, or at once on keyboard focus; a press (mouse, touch or pen) never
+ * opens it, so a tap still goes straight to the card. It stays hidden while
+ * the marker's card is open, since the card already says everything it says.
+ *
+ * The panel is read-only: it explains the marker and holds no control, so
+ * focus never enters it and no key on the marker is taken. A preview that
+ * keyboard focus opened stays while the mouse passes over and away; blur,
+ * Escape, or its marker scrolling out of view closes it. One the mouse opened
+ * keeps a short close delay so the pointer can cross into it to read.
+ *
+ * Not `useInstantTip`: that bubble closes on mouse leave, so the pointer
+ * cannot cross into it, and a focus-opened tip would close under a passing
+ * mouse. The touch-replay window is the shared one, so the two cannot drift on
+ * what counts as a tap.
+ */
+function useMarkerPreview(cardId: string) {
+  const { openId } = useRedactionUi()
+  const [open, setOpen] = useState(false)
+  const [anchor, setAnchor] = useState<PreviewAnchor | null>(null)
+  const zoneRef = useRef<HTMLElement | null>(null)
+  const buttonRef = useRef<HTMLButtonElement | null>(null)
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // A press focuses the button too, and on touch that focus lands only after
+  // the tap ends; a focus this soon after a press must not open the preview.
+  const pressedAt = useRef(-Infinity)
+  // Set while keyboard focus holds the preview open; pointer leave ignores it.
+  const byFocus = useRef(false)
+  const shown = open && openId !== cardId
+  const panelId = `${cardId}-preview`
+
+  const cancel = () => clearTimeout(timer.current)
+  const cardOpen = useRef(false)
+  cardOpen.current = openId === cardId
+  const show = useCallback((viaFocus: boolean) => {
+    clearTimeout(timer.current)
+    if (cardOpen.current) return
+    if (viaFocus) byFocus.current = true
+    if (zoneRef.current) setAnchor(anchorFor(zoneRef.current))
+    setOpen(true)
+  }, [])
+  const hide = useCallback(() => { clearTimeout(timer.current); byFocus.current = false; setOpen(false) }, [])
+  // An opening card replaces the preview, so it is not waiting behind the
+  // card to reappear when the card closes.
+  useEffect(() => { if (openId === cardId) hide() }, [openId, cardId, hide])
+  const later = (fn: () => void, ms: number) => { clearTimeout(timer.current); timer.current = setTimeout(fn, ms) }
+  useEffect(() => () => clearTimeout(timer.current), [])
+  // Keep the panel on its marker while the transcript scrolls under it, and
+  // close it once the marker scrolls out of view, so it never floats over
+  // unrelated content. Escape pressed anywhere closes it. While focus is on
+  // the marker the Escape is caught on the way down and stopped, so a drawer
+  // or dialog holding the transcript stays open and the first Escape closes
+  // only the preview. A preview opened by hover alone closes but lets the
+  // Escape through, so it still reaches the focused composer or dialog.
+  useEffect(() => {
+    if (!shown) return
+    const follow = (e: Event) => {
+      const el = zoneRef.current
+      if (!el) return
+      if (!markerInView(el, e.type === 'scroll' ? e.target : null)) { hide(); return }
+      setAnchor(anchorFor(el))
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (buttonRef.current === document.activeElement) e.stopPropagation()
+      hide()
+    }
+    window.addEventListener('scroll', follow, true)
+    window.addEventListener('resize', follow)
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      window.removeEventListener('scroll', follow, true)
+      window.removeEventListener('resize', follow)
+      window.removeEventListener('keydown', onKey, true)
+    }
+  }, [shown, hide])
+
+  const isMouse = (e: React.PointerEvent) => e.pointerType === 'mouse'
+  const leave = (e: React.PointerEvent) => { if (isMouse(e) && !byFocus.current) later(hide, PREVIEW_CLOSE_MS) }
+
+  const zoneProps = {
+    onPointerEnter: (e: React.PointerEvent) => { if (isMouse(e)) later(() => show(false), PREVIEW_OPEN_MS) },
+    onPointerLeave: leave,
+    onPointerDown: () => { pressedAt.current = performance.now(); hide() },
+  }
+  const buttonProps = {
+    'aria-describedby': shown ? panelId : undefined,
+    onFocus: (e: React.FocusEvent) => {
+      if (performance.now() - pressedAt.current < TOUCH_REPLAY_WINDOW_MS) return
+      // Focus coming back from the closing card is not a reader arriving.
+      const from = e.relatedTarget
+      if (from instanceof Node && document.getElementById(cardId)?.contains(from)) return
+      show(true)
+    },
+    onBlur: () => hide(),
+  }
+  const panelProps = {
+    onPointerEnter: (e: React.PointerEvent) => { if (isMouse(e)) cancel() },
+    onPointerLeave: leave,
+  }
+  return { shown, anchor, panelId, zoneRef, buttonRef, panelRef, zoneProps, buttonProps, panelProps }
+}
+
+type MarkerPreview = ReturnType<typeof useMarkerPreview>
+
+/**
+ * The preview panel: what was removed and the rule in plain words. It is
+ * read-only. Every action stays on the marker's card, so the card's own
+ * confirmations and outcomes are the only path that does anything.
+ */
+function PreviewPanel({ preview, title, testId, children }: {
+  preview: MarkerPreview
+  title: string
+  testId: string
+  children: React.ReactNode
+}) {
+  // Clamp against the panel's real width, so a short panel near the right
+  // edge stays under its marker instead of moving by the full maximum width.
+  const [width, setWidth] = useState(PREVIEW_MAX_W)
+  useLayoutEffect(() => {
+    const w = preview.panelRef.current?.offsetWidth
+    if (w && w !== width) setWidth(w)
+  }, [preview.shown, preview.anchor, preview.panelRef, width])
+  if (!preview.shown || !preview.anchor) return null
+  const { anchor } = preview
+  return createPortal(
+    <div
+      ref={preview.panelRef}
+      id={preview.panelId}
+      role="tooltip"
+      data-testid={testId}
+      {...preview.panelProps}
+      className="fixed z-[130] w-max rounded-lg border border-border bg-bg-elevated p-2.5 text-[12px] leading-[18px] text-card-fg shadow-lg"
+      style={{
+        maxWidth: `min(${PREVIEW_MAX_W}px, calc(100vw - 16px))`,
+        left: Math.max(8, Math.min(anchor.left, window.innerWidth - width - 8)),
+        top: anchor.below ? anchor.top : undefined,
+        bottom: anchor.below ? undefined : window.innerHeight - anchor.top,
+      }}
+    >
+      <div className="mb-0.5 font-semibold [overflow-wrap:anywhere]">{title}</div>
+      <div data-testid="redaction-preview-body" className="[overflow-wrap:anywhere]">{children}</div>
+    </div>,
+    document.body,
+  )
+}
+
 // ── credential ───────────────────────────────────────────────────────────
 
 const SESSION_TOKEN_RULES = new Set(['aws_session_token'])
@@ -967,25 +1145,41 @@ function credentialMatched(rule: string): string {
 export function CredentialTag({ ordinal, placeholder }: { ordinal: number; placeholder: string }) {
   useLanguageGeneration()
   const { credentials, firstCredential, openId, toggle } = useRedactionUi()
+  const id = `rx-cred-${ordinal}`
+  const preview = useMarkerPreview(id)
   const record = credentials.get(ordinal)
   if (!record) return <>{placeholder}</>
-  const id = `rx-cred-${ordinal}`
+  const session = SESSION_TOKEN_RULES.has(record.rule)
   return (
     <>
       {record.label}
       <button
         type="button"
+        ref={el => { preview.zoneRef.current = el; preview.buttonRef.current = el }}
         data-testid="credential-tag"
         aria-expanded={openId === id}
         aria-controls={id}
         aria-label={i18nT('components.redaction.cred_tag_aria')}
+        {...preview.zoneProps}
+        {...preview.buttonProps}
         onClick={e => toggle(id, e.currentTarget)}
         className="relative inline-flex min-h-[18px] cursor-pointer items-center gap-1 whitespace-nowrap rounded-[5px] border border-info bg-info-subtle px-1.5 align-[-1px] font-sans text-[11px] leading-4 text-card-fg hover:bg-bg-hover max-[640px]:whitespace-normal [@media(hover:none)]:after:absolute [@media(hover:none)]:after:-inset-[13px] [@media(hover:none)]:after:content-['']"
       >
         <Lock size={12} aria-hidden="true" className="shrink-0" />
-        {i18nT(SESSION_TOKEN_RULES.has(record.rule) ? 'components.redaction.cred_tag_session' : 'components.redaction.cred_tag')}
+        {i18nT(session ? 'components.redaction.cred_tag_session' : 'components.redaction.cred_tag')}
         {ordinal === firstCredential && <span className="text-muted">· {i18nT('components.redaction.cred_why')}</span>}
       </button>
+      <PreviewPanel
+        preview={preview}
+        title={i18nT(session ? 'components.redaction.preview_session_title' : 'components.redaction.preview_cred_title')}
+        testId="credential-preview"
+      >
+        {credentialMatched(record.rule)}
+        <br />
+        {/* The security floor, said instead of offering a reveal: the value
+            was never saved, so nothing here can show it. */}
+        <span data-testid="credential-preview-floor">{i18nT('components.redaction.preview_cred_floor')}</span>
+      </PreviewPanel>
     </>
   )
 }
@@ -1209,14 +1403,18 @@ export function BlockedLinkChip({ domain, placeholder, block, tail = '' }: {
 }) {
   useLanguageGeneration()
   const { blockedLinks, openId, toggle } = useRedactionUi()
+  const id = blockedLinkCardId(domain, block)
+  const preview = useMarkerPreview(id)
   const group = blockedLinksForDomain(blockedLinks, domain)
   if (group.length === 0) return <>{placeholder}{tail}</>
-  const id = blockedLinkCardId(domain, block)
   return (
+    <>
     <span
+      ref={preview.zoneRef}
       role="group"
       aria-label={i18nT('components.redaction.link_tag')}
       data-testid="blocked-link-chip"
+      {...preview.zoneProps}
       className="inline-flex min-h-[26px] max-w-full cursor-default flex-wrap items-center gap-1.5 rounded-lg border border-dashed border-warn bg-warn-subtle py-0.5 pl-2 pr-1.5 align-middle text-[12px] leading-5 text-card-fg"
     >
       <Link2Off size={12} aria-hidden="true" className="shrink-0" />
@@ -1224,8 +1422,10 @@ export function BlockedLinkChip({ domain, placeholder, block, tail = '' }: {
       <span className="break-all font-mono text-[12px] text-card-fg [text-box:trim-both_cap_alphabetic]" data-testid="blocked-link-target">{domain}</span>
       <button
         type="button"
+        ref={preview.buttonRef}
         aria-expanded={openId === id}
         aria-controls={id}
+        {...preview.buttonProps}
         onClick={e => toggle(id, e.currentTarget)}
         data-testid="blocked-link-inspect"
         className="relative inline-flex min-h-[18px] cursor-pointer items-center rounded-[5px] border border-warn bg-transparent px-1.5 text-[11px] leading-4 text-card-fg hover:bg-bg-hover [@media(hover:none)]:after:absolute [@media(hover:none)]:after:-inset-[13px] [@media(hover:none)]:after:content-['']"
@@ -1233,6 +1433,40 @@ export function BlockedLinkChip({ domain, placeholder, block, tail = '' }: {
         <span className="[text-box:trim-both_cap_alphabetic]">{i18nT('components.redaction.link_inspect')}</span>
       </button>
     </span>
+    {/* Beside the chip, not inside it: React events bubble out of a portal to
+        its React parent, and a press in the panel must not reach the chip. */}
+    <BlockedLinkPreview preview={preview} domain={domain} group={group} />
+    </>
+  )
+}
+
+/**
+ * What the chip's preview says: the rule in plain words for one address, or a
+ * pointer to the card when the host has several. It offers no action: opening
+ * a blocked link goes through the card's own confirmation and nowhere else.
+ */
+function BlockedLinkPreview({ preview, domain, group }: { preview: MarkerPreview; domain: string; group: readonly BlockedLink[] }) {
+  const single = group.length === 1 ? group[0] : null
+  return (
+    <PreviewPanel
+      preview={preview}
+      title={i18nT('components.redaction.preview_link_title', { host: domain })}
+      testId="blocked-link-preview"
+    >
+      {single ? (
+        <>
+          {/* A withheld address shows only the withheld sentence: it already
+              gives the reason, and the rule's sentence would repeat it. */}
+          {single.url === null ? (
+            <span data-testid="blocked-link-preview-withheld">
+              {i18nT(single.url_withheld === 'length' ? 'components.redaction.link_withheld_length' : 'components.redaction.link_withheld_credential')}
+            </span>
+          ) : linkReason(single)}
+        </>
+      ) : (
+        i18nT('components.redaction.preview_link_many')
+      )}
+    </PreviewPanel>
   )
 }
 
