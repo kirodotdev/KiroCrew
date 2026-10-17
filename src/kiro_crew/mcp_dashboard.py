@@ -1099,6 +1099,37 @@ def _session_tools() -> tuple[Tool, ...]:
             routes=("POST /api/session-control/rename",),
         ),
         Tool(
+            name="session_rename_self",
+            description=(
+                "Rename THIS session, the one making the call, in the sidebar. A "
+                "conductor uses it to label its own tab as its work moves between "
+                "phases. It takes a title and nothing else: the session is the one "
+                "the call comes from, so it cannot name another session. A crew "
+                "member's pinned DM thread (one thread across every goal) and a "
+                "private session are refused. To relabel a worker use "
+                "session_rename. The title rules and the effect are "
+                "session_rename's: the new title is final, so the automatic titler "
+                "stops refreshing it, and the transcript, model and any running turn "
+                "are untouched."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": (
+                            "New title, 1-200 characters after surrounding whitespace is "
+                            "stripped; no control characters."
+                        ),
+                    },
+                },
+                "required": ["title"],
+            },
+            run=_run_session_rename_self,
+            identity="strict",
+            routes=("GET /api/chat/slots", "POST /api/session-control/rename"),
+        ),
+        Tool(
             name="session_generate_title",
             description=(
                 "Regenerate the sidebar title of a live session YOU created, from its "
@@ -2526,13 +2557,44 @@ def _caller_app_scope(caller_key: str, rows: list[dict]) -> str | None:
     return ""
 
 
-def _own_chat_slot(caller_key: str, rows: list[dict]) -> tuple[dict, str | None]:
-    """The caller's OWN sidebar slot row, or why it has none to file.
+#: What ``_own_chat_slot`` answers when it refuses, as ``(no slot of its own, a
+#: crew member's pinned thread, a private session)``. The three checks are one
+#: rule for every verb that acts on the caller's own row; only what each verb
+#: tells the agent to do instead differs.
+_FILE_SELF_REFUSALS: tuple[str, str, str] = (
+    "Error: this session has no sidebar slot to file — only a dashboard "
+    "chat session can be placed in a folder.",
+    "Error: a crew member's pinned DM thread lives on the Crew page and is "
+    "not filed in a sidebar folder — it spans every goal the member runs. "
+    "Skip filing yourself; create your workers with "
+    "session_create's `folder` set to `<goal>/<agent>` instead.",
+    "Error: a private (incognito or temporary) session is kept out of the "
+    "sidebar record and cannot be filed.",
+)
+_RENAME_SELF_REFUSALS: tuple[str, str, str] = (
+    "Error: this session has no sidebar slot to rename; only a dashboard "
+    "chat session can rename itself.",
+    "Error: a crew member's pinned DM thread lives on the Crew page and spans "
+    "every goal the member runs, so it keeps one title. Skip renaming "
+    "yourself; title your workers with session_create's `title` instead.",
+    "Error: a private (incognito or temporary) session is kept out of the "
+    "sidebar record and cannot be renamed.",
+)
+
+
+def _own_chat_slot(
+    caller_key: str,
+    rows: list[dict],
+    refusals: tuple[str, str, str] = _FILE_SELF_REFUSALS,
+) -> tuple[dict, str | None]:
+    """The caller's OWN sidebar slot row, or why it has none to act on.
 
     Resolved from the VERIFIED caller key only, never from an argument: this is
-    what lets ``chat_folder_file_self`` be granted to an unattended conductor
-    where ``chat_folder_move_session`` is withheld — the one placement it can
-    write is its own.
+    what lets ``chat_folder_file_self`` and ``session_rename_self`` be granted to
+    an unattended conductor where ``chat_folder_move_session`` and
+    ``session_rename`` are withheld — the one row they can write is its own.
+    ``refusals`` is the wording of the three refusals below, in the order of the
+    checks.
 
     Only a ``dashboard:<slot>`` key qualifies, and it must name a row that is
     present. That key IS the slot: the slot key never changes for the life of
@@ -2550,13 +2612,13 @@ def _own_chat_slot(caller_key: str, rows: list[dict]) -> tuple[dict, str | None]
     member's pinned DM thread (``mode == "member"``) is one thread that spans
     every goal the member ever runs and lives on the Crew page, not in the
     sidebar tree — so a conductor running AS a member does not file itself; its
-    workers still go under ``<goal>/<agent>`` via ``session_create``.
+    workers still go under ``<goal>/<agent>`` via ``session_create``. A rename
+    is final (the automatic titler stops refreshing it), so the same thread would
+    keep one goal's phase label after that goal ends.
     """
+    no_slot, member, private = refusals
     if not caller_key.startswith("dashboard:"):
-        return {}, (
-            "Error: this session has no sidebar slot to file — only a dashboard "
-            "chat session can be placed in a folder."
-        )
+        return {}, no_slot
     slot_key = caller_key.split(":", 1)[1]
     row: dict | None = None
     for r in rows:
@@ -2564,22 +2626,11 @@ def _own_chat_slot(caller_key: str, rows: list[dict]) -> tuple[dict, str | None]
             row = r
             break
     if row is None:
-        return {}, (
-            "Error: this session has no sidebar slot to file — only a dashboard "
-            "chat session can be placed in a folder."
-        )
+        return {}, no_slot
     if str(row.get("mode") or "") == "member":
-        return {}, (
-            "Error: a crew member's pinned DM thread lives on the Crew page and is "
-            "not filed in a sidebar folder — it spans every goal the member runs. "
-            "Skip filing yourself; create your workers with "
-            "session_create's `folder` set to `<goal>/<agent>` instead."
-        )
+        return {}, member
     if str(row.get("memory_mode") or "persistent") != "persistent":
-        return {}, (
-            "Error: a private (incognito or temporary) session is kept out of the "
-            "sidebar record and cannot be filed."
-        )
+        return {}, private
     return row, None
 
 
@@ -3116,6 +3167,24 @@ def _run_session_rename(args: dict[str, Any], ctx: ToolContext) -> str:
         return redact(f"Error: could not rename that session: {resp['error']}")
     target = resp.get("target", args["target"])
     return redact(f"Renamed `{target}` to {resp.get('title', args['title'])!r}.")
+
+
+def _run_session_rename_self(args: dict[str, Any], ctx: ToolContext) -> str:
+    # The target is the caller's OWN row, found by exact key among the live
+    # sessions from the VERIFIED caller key, never from an argument: that is what
+    # lets this verb be granted to an unattended conductor where
+    # ``session_rename`` (target from the arguments) is withheld. A key that names
+    # no row, a crew member's pinned thread and a private session are refused
+    # here, as ``chat_folder_file_self`` refuses them, before any rename is sent.
+    rows, rows_err = _get_rows(ctx.client, "/api/chat/slots")
+    if rows_err:
+        return redact(f"Error: {rows_err}")
+    own_slot, own_err = _own_chat_slot(ctx.caller_key, rows, _RENAME_SELF_REFUSALS)
+    if own_err:
+        return own_err
+    # The same route and the same title rules as ``session_rename``.
+    own_key = str(own_slot.get("key") or "")
+    return _run_session_rename({"target": own_key, "title": args["title"]}, ctx)
 
 
 #: The generate-title route waits for one titling-model call, so the client

@@ -5624,6 +5624,17 @@ handle immediately.
 #:   ``/api/session-control/rename`` where the target is the session named in the
 #:   ARGUMENTS, and the rename is final, so the automatic titler never corrects a
 #:   bad one. Ingested content could relabel any session the conductor may reach.
+#: * ``session_rename_self`` — writes the CALLER'S OWN title, and only that: the
+#:   target is the row the verified ``dashboard:<slot>`` caller key names by exact
+#:   key (``mcp_dashboard._run_session_rename_self`` through ``_own_chat_slot``),
+#:   there is no ``target`` argument, so ingested content cannot aim it at a peer.
+#:   A key that names no row, a crew member's pinned DM thread (one thread across
+#:   every goal the member runs) and a private session are refused before a request
+#:   is sent, as ``chat_folder_file_self`` refuses them. It runs ``session_rename``'s
+#:   route and so its title rules. It changes one label the conductor already owns,
+#:   creates nothing and bounds itself: one title on one slot, replaced by the next
+#:   call. GRANTED here, WITHHELD from members (below): a member's DM session is
+#:   the pinned thread the runner refuses, so a grant there approves only refusals.
 #: * ``session_generate_title`` — WITHHELD. Spends a model call and replaces
 #:   another session's sidebar title through ``/api/session-control/generate-title``
 #:   where the target is the session named in the ARGUMENTS, and no conductor step
@@ -5691,21 +5702,22 @@ _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
     "@kirocrew-dashboard/chat_folder_file_self",
     "@kirocrew-dashboard/session_create",
     "@kirocrew-dashboard/session_read_message",
+    "@kirocrew-dashboard/session_rename_self",
     "@kirocrew-dashboard/session_status",
 )
 
 
 #: The dashboard verbs a CREW MEMBER's DM session may call without an approval
-#: prompt. Superset of the conductor's: the write verbs (``session_send``,
-#: ``session_stop``) join because a member's reach is SERVER-bounded in a way
-#: the conductor's is not — ``authorize_target`` refuses a member caller on any
-#: session it did not itself create (``created_by`` ownership, 403), so the
-#: worst case of an auto-approved write is confined to worker sessions the
-#: member opened, never the person's own conversations. The conductor has no
-#: such ownership fence, which is why its list withholds the writes. Without
-#: these two the dispatch loop this feature exists for (create → seed → patrol
-#: → stop) stalls on an approval prompt at its second step with nobody at the
-#: keyboard.
+#: prompt. The conductor's, except ``session_rename_self``, plus the write verbs
+#: (``session_send``, ``session_stop``), which join because a member's reach is
+#: SERVER-bounded in a way the conductor's is not — ``authorize_target`` refuses
+#: a member caller on any session it did not itself create (``created_by``
+#: ownership, 403), so the worst case of an auto-approved write is confined to
+#: worker sessions the member opened, never the person's own conversations. The
+#: conductor has no such ownership fence, which is why its list withholds the
+#: writes. Without these two the dispatch loop this feature exists for (create →
+#: seed → patrol → stop) stalls on an approval prompt at its second step with
+#: nobody at the keyboard.
 #: ``session_broadcast`` joins on exactly ``session_send``'s argument rather than a
 #: new one, and the fan-out does not widen it: the verb's DEFAULT audience is read
 #: from the same ``created_by`` field the ownership fence reads, and every delivery
@@ -5721,7 +5733,13 @@ _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
 #: And it refuses a turn that finished or was stopped (``turn_not_failed``).
 #: Restarting a worker whose turn timed out is the patrol step the verb exists
 #: for, and that step runs with nobody at the keyboard.
-_MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = _CONDUCTOR_DASHBOARD_GRANTS + (
+#: ``session_rename_self`` is the one conductor verb left out. A member's DM
+#: session is its pinned thread (``mode == "member"``), the row
+#: ``mcp_dashboard._own_chat_slot`` refuses for a rename, so every call a grant
+#: here could approve is a refusal.
+_MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = tuple(
+    g for g in _CONDUCTOR_DASHBOARD_GRANTS if g != "@kirocrew-dashboard/session_rename_self"
+) + (
     "@kirocrew-dashboard/session_send",
     "@kirocrew-dashboard/session_broadcast",
     "@kirocrew-dashboard/session_stop",

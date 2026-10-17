@@ -855,9 +855,10 @@ def to_client_custom_agent(
     ``@kirocrew-dashboard`` joins ``tools`` (the server itself arrives as a
     session-level entry, but KAS grants only what ``tools`` names), and the
     member's approval-free dashboard verbs join the ``allowedTools`` input
-    BEFORE the governance ceiling filter — the conductor grant set plus the
-    write verbs the server-side ``created_by`` ownership fence bounds, passed
-    through the same ceiling every other grant crosses.
+    BEFORE the governance ceiling filter — the conductor grant set less
+    ``session_rename_self``, plus the write verbs the server-side ``created_by``
+    ownership fence bounds, passed through the same ceiling every other grant
+    crosses.
 
     *crew_panel* widens it the same way for the member's own webview:
     ``@kirocrew-panel`` joins ``tools`` and ``agent._MEMBER_PANEL_GRANTS`` joins

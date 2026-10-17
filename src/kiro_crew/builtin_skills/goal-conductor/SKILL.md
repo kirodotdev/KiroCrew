@@ -745,7 +745,9 @@ what the composer renders:
 - **Reads and creates do not prompt; anything that touches another session does.**
   Auto-approved by name: `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_file_self` (it writes only your own placement),
-  `session_create`, `session_read_message`, `session_status`,
+  `session_create`, `session_read_message`, `session_rename_self` (it renames
+  only your own session; running as a crew member it refuses, as filing does),
+  `session_status`,
   `work_ledger_read`, `work_ledger_record`, `work_ledger_rebuild`, `work_brief`
   — so a patrol cycle that wakes on a nudge with nobody at
   the keyboard never blocks, and filing rides the create itself (the `folder`

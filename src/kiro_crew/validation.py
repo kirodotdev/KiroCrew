@@ -4149,6 +4149,16 @@ SESSION_RENAME_SCHEMA = ToolSchema(
     ],
 )
 
+SESSION_RENAME_SELF_SCHEMA = ToolSchema(
+    tool_name="session_rename_self",
+    fields=[
+        # No ``target`` field on purpose: the session is the one the verified
+        # caller key names. The title bound is the transport bound
+        # ``SESSION_RENAME_SCHEMA`` documents; the route applies the rest.
+        FieldSpec("title", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
 SESSION_CLOSE_SCHEMA = ToolSchema(
     tool_name="session_close",
     fields=[
@@ -4525,6 +4535,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_set_model": SESSION_SET_MODEL_SCHEMA,
     "session_reload": SESSION_RELOAD_SCHEMA,
     "session_rename": SESSION_RENAME_SCHEMA,
+    "session_rename_self": SESSION_RENAME_SELF_SCHEMA,
     "session_generate_title": SESSION_GENERATE_TITLE_SCHEMA,
     "session_close": SESSION_CLOSE_SCHEMA,
     "session_revive": SESSION_REVIVE_SCHEMA,
