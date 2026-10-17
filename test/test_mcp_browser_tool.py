@@ -363,35 +363,99 @@ def test_native_panel_serves_without_playwright_cli(monkeypatch: pytest.MonkeyPa
     assert out == "Browser navigate: ok"
 
 
+def _assert_dashboard_install_text(out: str) -> None:
+    assert out == mod._NOT_SET_UP_DASHBOARD_TEXT
+    assert out.startswith("Error: browsing is not set up")
+    assert mod.BROWSER_INSTALL_MARKER in out
+    assert "the card below" in out
+    # A prose fallback for when the card does not render (a mirrored channel,
+    # an older dashboard).
+    assert "Settings -> Browser" in out
+    # The card owns its button label; the tool must not quote it to the model.
+    assert "Install browser support" not in out
+    assert "Draft a message to continue" not in out
+    # The egress strip is tail-anchored, so the marker must be asked for last.
+    assert "last line of your reply" in out
+
+
+def test_dashboard_reply_carrying_the_marker_reaches_a_channel_mirror_without_it() -> None:
+    # A dashboard session mirrored to a channel: the reply the agent writes from
+    # the dashboard guidance loses its marker on channel egress.
+    from kiro_crew.messaging.renderer import display_safe
+
+    reply = f"Browser support needs a one-time install.\n\n{mod.BROWSER_INSTALL_MARKER}"
+    out = display_safe(reply)
+    assert "kirocrew:browser-install" not in out
+    assert "Browser support needs a one-time install." in out
+
+
+def _assert_channel_install_text(out: str) -> None:
+    assert out == mod._NOT_SET_UP_CHANNEL_TEXT
+    assert out.startswith("Error: browsing is not set up")
+    assert "Settings -> Browser" in out
+    assert mod.BROWSER_INSTALL_MARKER not in out
+    assert "kirocrew:browser-install" not in out
+
+
+# Every session key that is NOT a dashboard chat: a channel, an unresolved
+# session, and anything else. None of them may ever receive the marker.
+_NON_DASHBOARD_KEYS = ["slack:C123:1700000000.1", "", "chat-9-1786000000", "discord:42"]
+
+
 @pytest.mark.parametrize("status", [503, 404, None])
-def test_no_panel_and_no_cli_gives_install_guidance(
+def test_no_panel_and_no_cli_gives_dashboard_install_guidance(
     monkeypatch: pytest.MonkeyPatch, status: int | None
 ) -> None:
     monkeypatch.setattr(mod, "_browsing_available", lambda: False)
     monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
     monkeypatch.setattr(mod, "_post_command", _capture_post([], status, {}))  # type: ignore[arg-type]
-    out = mod.browser("browser", {"op": "snapshot"})
-    assert out == mod._NOT_SET_UP_TEXT
-    assert out.startswith("Error: browsing is not set up")
-    assert "Settings -> Browser" in out
+    _assert_dashboard_install_text(mod.browser("browser", {"op": "snapshot"}))
 
 
-def test_unresolved_session_without_cli_gives_install_guidance(
+@pytest.mark.parametrize("status", [503, 404, None])
+@pytest.mark.parametrize("session_key", [k for k in _NON_DASHBOARD_KEYS if k])
+def test_no_panel_and_no_cli_never_sends_the_marker_off_dashboard(
+    monkeypatch: pytest.MonkeyPatch, status: int | None, session_key: str
+) -> None:
+    monkeypatch.setattr(mod, "_browsing_available", lambda: False)
+    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: session_key)
+    monkeypatch.setattr(mod, "_post_command", _capture_post([], status, {}))  # type: ignore[arg-type]
+    _assert_channel_install_text(mod.browser("browser", {"op": "snapshot"}))
+
+
+def test_install_guidance_names_the_marker_the_dashboard_renders() -> None:
+    # The dashboard matches this exact comment (detectBrowserInstallMarker.ts);
+    # a drifted spelling would leave the agent emitting a marker nothing renders.
+    assert mod.BROWSER_INSTALL_MARKER == "<!-- kirocrew:browser-install -->"
+    assert mod.BROWSER_INSTALL_MARKER in mod._NOT_SET_UP_DASHBOARD_TEXT
+    assert mod.BROWSER_INSTALL_MARKER not in mod._NOT_SET_UP_CHANNEL_TEXT
+
+
+def test_unresolved_session_without_cli_never_sends_the_marker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(mod, "_browsing_available", lambda: False)
     monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "")
-    out = mod.browser("browser", {"op": "snapshot"})
-    assert out == mod._NOT_SET_UP_TEXT
+    _assert_channel_install_text(mod.browser("browser", {"op": "snapshot"}))
 
 
-def test_panel_turned_off_without_cli_gives_install_guidance(
+def test_panel_turned_off_without_cli_gives_dashboard_install_guidance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(mod, "_browsing_available", lambda: False)
     monkeypatch.setattr(mod, "_use_builtin_browser", lambda: False)
-    out = mod.browser("browser", {"op": "snapshot"})
-    assert out == mod._NOT_SET_UP_TEXT
+    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
+    _assert_dashboard_install_text(mod.browser("browser", {"op": "snapshot"}))
+
+
+@pytest.mark.parametrize("session_key", _NON_DASHBOARD_KEYS)
+def test_panel_turned_off_without_cli_never_sends_the_marker_off_dashboard(
+    monkeypatch: pytest.MonkeyPatch, session_key: str
+) -> None:
+    monkeypatch.setattr(mod, "_browsing_available", lambda: False)
+    monkeypatch.setattr(mod, "_use_builtin_browser", lambda: False)
+    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: session_key)
+    _assert_channel_install_text(mod.browser("browser", {"op": "snapshot"}))
 
 
 def test_governance_deny_wins_even_without_cli(monkeypatch: pytest.MonkeyPatch) -> None:

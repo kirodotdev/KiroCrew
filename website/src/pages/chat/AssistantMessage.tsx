@@ -18,6 +18,7 @@ import { applySearchHighlights, clearSearchHighlights } from '../../utils/domHig
 import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
 import FileChangeChips, { type FileChangeEntry } from '../../components/FileChangeChips'
 import OpenFileChips from '../../components/OpenFileChips'
+import BrowserInstallCard from './BrowserInstallCard'
 import DecisionStrip from './DecisionStrip'
 import { readDecisionRecords, readMemoryRecallInStrip } from './decisionRecord'
 import MemoryRecallStrip from './MemoryRecallStrip'
@@ -702,6 +703,9 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
         (by identity) the reply's path chips get, so a click opens the file the
         way a path-chip click does. Showing a chip opens nothing. */}
     {!isStreaming && <OpenFileChips content={steerCleaned} onFileOpen={onFileOpen} />}
+    {/* The in-chat browser-support install the agent offers with a hidden
+        marker when its browser tool is not set up. Showing it installs nothing. */}
+    {!isStreaming && <BrowserInstallCard content={steerCleaned} />}
     {!isStreaming && showFooter && turnStats && turnStats.elapsed_ms > 0 && (
       /* No `font-mono`: "1.98 credits · 59s" is a labelled measurement, not
          code, and Tailwind's `font-mono` pins `var(--mono)` — a token the Font

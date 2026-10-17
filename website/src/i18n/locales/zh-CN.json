@@ -12059,6 +12059,24 @@
         "outcome_discarded": "已丢弃。正式页面没有变化。",
         "outcome_closed": "预览已结束。现在这就是正式页面。",
         "outcome_undo": "想撤销，就让 {{name}} 恢复之前的仪表板。"
+      },
+      "browserInstallCard": {
+        "region_label": "浏览器支持",
+        "checking": "正在检查浏览器支持…",
+        "status_unavailable": "无法检查此电脑上的浏览器支持。",
+        "retry": "重试",
+        "open_settings": "打开 {{productName}} 浏览器设置",
+        "needed_title": "浏览器支持需要一次性安装",
+        "needed_body": "{{productName}} 会下载自己的浏览器和工具来为你打开网页。你平时使用的浏览器不会改变。这可能需要几分钟。",
+        "install": "安装浏览器支持",
+        "owner_only": "只有在这台电脑上设置 {{productName}} 的人才能安装。请让对方在 {{productName}} 浏览器设置中安装。",
+        "installing": "正在安装浏览器支持",
+        "installed": "浏览器支持已安装",
+        "continue": "起草一条继续消息",
+        "continue_prompt": "浏览器支持已安装。请继续我之前的请求。",
+        "continue_prefilled": "已添加到消息框。发送即可继续。",
+        "failed": "无法安装浏览器支持",
+        "failed_next_step": "{{productName}} 浏览器设置会列出缺少的组件（例如 Node.js）以及安装方法。然后再试一次。"
       }
     },
     "chatPage": {

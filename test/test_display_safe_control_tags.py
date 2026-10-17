@@ -62,6 +62,53 @@ class TestDisplaySafeStripsControlTags:
         assert "keep-visible" in out
 
 
+class TestBrowserInstallMarkerStripped:
+    """The dashboard-only browser install-card marker never reaches a channel.
+
+    A ``dashboard:`` session mirrored to Slack gets the dashboard variant of the
+    browser tool's not-set-up text, so its reply carries the marker; the mirror
+    has no card to render, so the egress strip must remove it like the other
+    control tags.
+    """
+
+    MARKER = "<!-- kirocrew:browser-install -->"
+
+    def test_trailing_marker_stripped_and_prose_survives(self) -> None:
+        text = f"Browser support needs a one-time install.\n\n{self.MARKER}\n"
+        assert strip_control_comments(text) == "Browser support needs a one-time install.\n"
+
+    def test_marker_whitespace_and_case_tolerance(self) -> None:
+        # Same tolerance as the frontend detector (/<!--\s*kirocrew:browser-install\s*-->/i).
+        for marker in (
+            "<!--kirocrew:browser-install-->",
+            "<!--   kirocrew:browser-install   -->",
+            "<!-- KIROCREW:BROWSER-INSTALL -->",
+        ):
+            assert strip_control_comments(f"done\n{marker}") == "done", marker
+
+    def test_display_safe_strips_marker(self) -> None:
+        out = display_safe(f"report body\n{self.MARKER}")
+        assert "kirocrew:browser-install" not in out
+        assert "report body" in out
+
+    def test_marker_quoted_as_code_stays_visible(self) -> None:
+        fenced = f"```\n{self.MARKER}"
+        assert strip_control_comments(fenced) == fenced
+        assert "kirocrew:browser-install" in display_safe(f"write `{self.MARKER}` to offer it")
+
+    def test_streaming_partial_marker_is_held(self) -> None:
+        assert strip_control_comments("done\n<!-- kirocrew:browser-in", hide_partial=True) == "done"
+        # A diverging sibling is an ordinary comment and is not held.
+        assert strip_control_comments("done\n<!-- kirocrew:open", hide_partial=True) == (
+            "done\n<!-- kirocrew:open"
+        )
+
+    def test_unrelated_kirocrew_comment_unchanged(self) -> None:
+        # The open-file marker is not a control tag; its behaviour does not move.
+        text = 'see the note\n<!-- kirocrew:open-file path="/a" -->'
+        assert strip_control_comments(text) == text
+
+
 class TestSharedConformanceCorpus:
     """Both recognizers assert the SAME corpus (Design round-9 parity pin).
 

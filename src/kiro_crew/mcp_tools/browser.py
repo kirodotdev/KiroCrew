@@ -96,18 +96,37 @@ _DISABLED_TEXT = (
     "`playwright-cli open <url>`, `snapshot`, `click <ref>`, `screenshot`."
 )
 
+# Hidden HTML comment the dashboard renders as the in-chat install card
+# (website/src/utils/detectBrowserInstallMarker.ts). Showing the card installs
+# nothing: its button calls the same owner-gated POST /api/browser/install.
+BROWSER_INSTALL_MARKER = "<!-- kirocrew:browser-install -->"
+
 # Returned only when the op needs the playwright-cli fallback AND the CLI is
 # absent. The native panel needs no CLI, so this never fires for a desktop
 # session whose panel is serving. Worded for relay: a customer who asked to open
 # a page has no reason to know a Settings page exists, so the agent must say what
 # is missing and where the one-click install lives rather than echo an error.
-_NOT_SET_UP_TEXT = (
+# The TOOL picks the variant from the session key, not the model: only a
+# ``dashboard:`` session renders the marker, and anywhere else it would show as
+# literal text, so every other session gets text that never contains it.
+_NOT_SET_UP_PREFIX = (
     "Error: browsing is not set up on this host -- this session has no built-in "
     "browser panel to use, and the playwright-cli fallback is not installed. "
-    "Tell the user plainly that browser support needs a one-time install and "
-    "that Settings -> Browser (/settings/browser) has an Install button; do not "
-    "assume they know that page exists. Offer to continue their request once it "
-    "is installed. For a page that only needs reading, use web_fetch meanwhile."
+    "Tell the user plainly that browser support needs a one-time install; do not "
+    "assume they know a settings page exists. "
+)
+_NOT_SET_UP_DASHBOARD_TEXT = (
+    f"{_NOT_SET_UP_PREFIX}Put `{BROWSER_INSTALL_MARKER}` on its own line as the "
+    "last line of your reply: it renders an install card below your reply that "
+    "runs the install and then offers to continue their request. Point the user "
+    "at the card below. If the card does not appear, they can install from "
+    "Settings -> Browser in the dashboard. For a page that only needs reading, use "
+    "web_fetch meanwhile."
+)
+_NOT_SET_UP_CHANNEL_TEXT = (
+    f"{_NOT_SET_UP_PREFIX}Name Settings -> Browser in the dashboard, "
+    "which has a one-click install. For a page that only needs reading, use "
+    "web_fetch meanwhile."
 )
 
 # Per-op ceilings (ms) forwarded to the bus. A page load or an explicit
@@ -440,15 +459,20 @@ def _with_own_browser_step(text: str) -> str:
     return f"{text} {own_browser.next_step()}"
 
 
-def _playwright_fallback(text: str) -> str:
+def _playwright_fallback(text: str, session_key: str) -> str:
     """The playwright-cli guidance, or the install guidance when the CLI is absent.
 
     Checked per call rather than trusted from the advertisement: kiro-cli caches
     the tool list for a session's life, so a session that started with the CLI
     installed keeps offering the tool after it is removed. Fail-CLOSED.
+
+    The install guidance carries the card marker only for a ``dashboard:``
+    session; an unresolved, channel or other key gets the marker-free text.
     """
     if not _browsing_available():
-        return _NOT_SET_UP_TEXT
+        if session_key.startswith("dashboard:"):
+            return _NOT_SET_UP_DASHBOARD_TEXT
+        return _NOT_SET_UP_CHANNEL_TEXT
     return _with_own_browser_step(text)
 
 
@@ -470,7 +494,7 @@ def browser(name: str, args: dict[str, Any]) -> str:
         logger.debug(
             "browser-cmdbus/tool: built-in browser disabled by setting -> playwright-cli fallback"
         )
-        return _playwright_fallback(_DISABLED_TEXT)
+        return _playwright_fallback(_DISABLED_TEXT, mcp_core._resolve_session_key())
     op = args.get("op")
     if not isinstance(op, str) or op not in BROWSER_OPS:
         return f"Error: op must be one of: {', '.join(BROWSER_OPS)}"
@@ -546,7 +570,7 @@ def browser(name: str, args: dict[str, Any]) -> str:
         # route's peer check with a hard 403, masking the clean fallback. Route
         # to playwright-cli instead, exactly like the no-panel (503) case below.
         logger.debug("browser-cmdbus/tool: unresolved session -> playwright-cli fallback")
-        return _playwright_fallback(_FALLBACK_TEXT)
+        return _playwright_fallback(_FALLBACK_TEXT, session_key)
     header_err = mcp_core._session_key_header_error(session_key)
     if header_err:
         return f"Error: {header_err}"
@@ -574,7 +598,7 @@ def browser(name: str, args: dict[str, Any]) -> str:
         logger.debug(
             "browser-cmdbus/tool: no native panel (status=%s) -> playwright-cli fallback", status
         )
-        return _playwright_fallback(_FALLBACK_TEXT)
+        return _playwright_fallback(_FALLBACK_TEXT, session_key)
     code = payload.get("code") if isinstance(payload, dict) else None
     err = payload.get("error") if isinstance(payload, dict) else None
     return f"Error: browser command failed (HTTP {status}{f', {code}' if code else ''}): {err or 'no detail'}"

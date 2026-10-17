@@ -13,6 +13,17 @@ import type {
   BrowserInstallJob,
 } from '../../api/client'
 
+/** The install status query key. Shared by Settings -> Browser and the in-chat
+ *  install card, so both read (and poll) one status. */
+export const INSTALL_KEY = ['browserInstall'] as const
+
+/** Fold a 409's active job into the cached status, so this tab shows what the
+ *  gateway is actually doing instead of the operation it refused. */
+export function withConflictJob(job: BrowserInstallJob) {
+  return (old: BrowserInstallData | undefined): BrowserInstallData | undefined =>
+    old ? { ...old, install_job: job, installing: true } : old
+}
+
 /** Engines the CLI can download. Mirrors `browser_cli.install.BROWSER_ENGINES`. */
 export const BROWSER_ENGINES: readonly BrowserEngine[] = ['chromium', 'firefox', 'webkit']
 

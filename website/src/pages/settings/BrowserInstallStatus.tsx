@@ -23,7 +23,7 @@ export const ENGINE_LABEL_KEY: Record<BrowserEngine, string> = {
 
 /** Stage names the gateway reports. A stage this build does not know renders no
  *  step line rather than a raw identifier. */
-const STAGE_KEY: Record<string, string> = {
+export const STAGE_KEY: Record<string, string> = {
   preparing: 'pages.settings.browserPanel.stage_preparing',
   installing_cli: 'pages.settings.browserPanel.stage_installing_cli',
   downloading_browser: 'pages.settings.browserPanel.stage_downloading_browser',

@@ -7,7 +7,6 @@ import {
   browserInstallConflictJob,
   type BrowserEngine,
   type BrowserInstallData,
-  type BrowserInstallJob,
 } from '../../api/client'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { FormSkeleton } from '../../components/ui'
@@ -23,11 +22,11 @@ import {
   finishedJob,
   installBlock,
   type InstallBlock,
+  INSTALL_KEY,
   type PendingRequest,
+  withConflictJob,
 } from './browserInstallState'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
-
-const INSTALL_KEY = ['browserInstall'] as const
 
 /**
  * Poll cadence while an install runs. The install downloads a browser, so it
@@ -69,13 +68,6 @@ function blockText(block: InstallBlock | null): string | null {
     case 'busy_generic':
       return i18nT('pages.settings.browserPanel.reason_busy_generic')
   }
-}
-
-/** Fold a 409's active job into the cached status, so this tab shows what the
- *  gateway is actually doing instead of the operation it refused. */
-function withConflictJob(job: BrowserInstallJob) {
-  return (old: BrowserInstallData | undefined): BrowserInstallData | undefined =>
-    old ? { ...old, install_job: job, installing: true } : old
 }
 
 /**

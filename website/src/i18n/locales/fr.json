@@ -12423,6 +12423,24 @@
         "outcome_discarded": "Supprimé. La page en ligne n’a pas changé.",
         "outcome_closed": "Aperçu terminé. C’est maintenant la page en ligne.",
         "outcome_undo": "Pour annuler, demande à {{name}} de remettre le tableau de bord précédent."
+      },
+      "browserInstallCard": {
+        "region_label": "Prise en charge du navigateur",
+        "checking": "Vérification de la prise en charge du navigateur…",
+        "status_unavailable": "Impossible de vérifier la prise en charge du navigateur sur cet ordinateur.",
+        "retry": "Réessayer",
+        "open_settings": "Ouvrir les paramètres du navigateur de {{productName}}",
+        "needed_title": "La prise en charge du navigateur nécessite une installation unique",
+        "needed_body": "{{productName}} télécharge son propre navigateur et ses outils pour ouvrir des pages pour vous. Votre navigateur habituel n'est pas modifié. Cela peut prendre quelques minutes.",
+        "install": "Installer la prise en charge du navigateur",
+        "owner_only": "Seule la personne qui a configuré {{productName}} sur cet ordinateur peut l'installer. Demandez-lui de l'installer depuis les paramètres du navigateur de {{productName}}.",
+        "installing": "Installation de la prise en charge du navigateur",
+        "installed": "La prise en charge du navigateur est installée",
+        "continue": "Préparer un message pour continuer",
+        "continue_prompt": "La prise en charge du navigateur est installée. Poursuis ma demande précédente.",
+        "continue_prefilled": "Ajouté à votre zone de message. Envoyez-le pour continuer.",
+        "failed": "Impossible d'installer la prise en charge du navigateur",
+        "failed_next_step": "Les paramètres du navigateur de {{productName}} indiquent ce qui manque, comme Node.js, et comment l'installer. Réessayez ensuite."
       }
     },
     "chatPage": {

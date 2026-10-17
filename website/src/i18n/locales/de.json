@@ -12241,6 +12241,24 @@
         "outcome_discarded": "Verworfen. Die Live-Seite hat sich nicht geändert.",
         "outcome_closed": "Vorschau beendet. Das ist jetzt die Live-Seite.",
         "outcome_undo": "Zum Rückgängigmachen bitte {{name}}, das vorherige Dashboard wiederherzustellen."
+      },
+      "browserInstallCard": {
+        "region_label": "Browserunterstützung",
+        "checking": "Browserunterstützung wird geprüft…",
+        "status_unavailable": "Die Browserunterstützung auf diesem Computer konnte nicht geprüft werden.",
+        "retry": "Erneut versuchen",
+        "open_settings": "Browser-Einstellungen von {{productName}} öffnen",
+        "needed_title": "Die Browserunterstützung muss einmalig installiert werden",
+        "needed_body": "{{productName}} lädt einen eigenen Browser und eigene Tools herunter, um Seiten für dich zu öffnen. Dein gewohnter Browser bleibt unverändert. Das kann einige Minuten dauern.",
+        "install": "Browserunterstützung installieren",
+        "owner_only": "Nur die Person, die {{productName}} auf diesem Computer eingerichtet hat, kann das installieren. Bitte sie, es in den Browser-Einstellungen von {{productName}} zu installieren.",
+        "installing": "Browserunterstützung wird installiert",
+        "installed": "Browserunterstützung ist installiert",
+        "continue": "Nachricht zum Fortfahren entwerfen",
+        "continue_prompt": "Die Browserunterstützung ist installiert. Bitte setze meine vorherige Anfrage fort.",
+        "continue_prefilled": "In dein Nachrichtenfeld eingefügt. Sende sie, um fortzufahren.",
+        "failed": "Die Browserunterstützung konnte nicht installiert werden",
+        "failed_next_step": "Die Browser-Einstellungen von {{productName}} zeigen, was fehlt, etwa Node.js, und wie du es installierst. Versuche es danach erneut."
       }
     },
     "chatPage": {

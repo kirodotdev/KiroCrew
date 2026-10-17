@@ -1021,10 +1021,13 @@ def relocate_glued_tail_marker(text: str) -> str:
 #
 # Agent control tags ride in HTML comments, which the dashboard's markdown
 # pipeline renders as nothing (rehype-raw emits comment nodes the react
-# renderer skips). Three families exist in ``src/``:
+# renderer skips). Four families exist in ``src/``:
 #   * ``<!-- keep-visible -->``       — collapse-all exemption
 #   * ``<!-- deliver:<route> -->``    — heartbeat routing
 #   * ``<!-- plan_task_id:<id> -->``  — task-planner Apply-to-Tasks anchor
+#   * ``<!-- kirocrew:browser-install -->`` — the dashboard's in-chat browser
+#     install card (``mcp_tools/browser.py``); a channel mirror has no card, so
+#     the marker must not reach it as literal text
 #
 # ONE GRAMMAR, TAIL-ANCHORED + FENCE-GUARDED, case-insensitive, both
 # recognizers (this regex and ``website/src/app-sdk/protocol/
@@ -1050,7 +1053,8 @@ def relocate_glued_tail_marker(text: str) -> str:
 # end-of-text on a missing ``-->`` silently deletes visible prose. A tag
 # body over the bound is not a real control tag and stays visible.
 _CONTROL_TAG_BODY = (
-    r"<!--(?:\s{0,16}keep-visible\s{0,16}|\s{0,16}(?:deliver|plan_task_id):[^>\n]{0,256})-->"
+    r"<!--(?:\s{0,16}(?:keep-visible|kirocrew:browser-install)\s{0,16}"
+    r"|\s{0,16}(?:deliver|plan_task_id):[^>\n]{0,256})-->"
 )
 _TRAILING_CONTROL_LINES_RE = re.compile(
     r"(?:(?:^|\n)[ \t]{0,3}" + _CONTROL_TAG_BODY + r"[ \t]{0,16})+\s{0,16}\Z",
@@ -1084,8 +1088,9 @@ def _prefix_closure(literal: str, tail: str = "") -> str:
 #
 # Admits only what can still extend into a complete tag: line-leading (≤3
 # indent), ``<`` ``<!`` ``<!-`` ``<!--``, then bounded whitespace, then a
-# prefix of one family literal -- ``keep-visible`` (then optional whitespace
-# and up to two dashes), ``deliver:`` / ``plan_task_id:`` (then a bounded
+# prefix of one family literal -- ``keep-visible`` or
+# ``kirocrew:browser-install`` (then optional whitespace and up to two
+# dashes), ``deliver:`` / ``plan_task_id:`` (then a bounded
 # ``>``-free body, which already covers the closing dashes). The moment a byte
 # diverges (``<!-- ordin``, ``<div``) the tail is prose or an ordinary comment
 # and is NOT held. A complete tag is not a prefix: ``>`` never appears here, so
@@ -1095,6 +1100,8 @@ _PARTIAL_CONTROL_LINE_RE = re.compile(
     r"(?:^|\n)[ \t]{0,3}"
     r"<(?:!(?:-(?:-(?:\s{0,16}(?:"
     + _prefix_closure("keep-visible", r"(?:\s{0,16}(?:-(?:-)?)?)")
+    + "|"
+    + _prefix_closure("kirocrew:browser-install", r"(?:\s{0,16}(?:-(?:-)?)?)")
     + "|"
     + _prefix_closure("deliver:", r"[^>\n]{0,258}")
     + "|"

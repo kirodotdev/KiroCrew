@@ -12423,6 +12423,24 @@
         "outcome_discarded": "Scartata. La pagina live non è cambiata.",
         "outcome_closed": "Anteprima finita. Ora questa è la pagina live.",
         "outcome_undo": "Per annullare, chiedi a {{name}} di ripristinare la dashboard precedente."
+      },
+      "browserInstallCard": {
+        "region_label": "Supporto del browser",
+        "checking": "Verifica del supporto del browser…",
+        "status_unavailable": "Impossibile verificare il supporto del browser su questo computer.",
+        "retry": "Riprova",
+        "open_settings": "Apri le impostazioni del browser di {{productName}}",
+        "needed_title": "Il supporto del browser richiede un'installazione una tantum",
+        "needed_body": "{{productName}} scarica un proprio browser e i propri strumenti per aprire le pagine per te. Il tuo browser abituale non cambia. Può richiedere alcuni minuti.",
+        "install": "Installa il supporto del browser",
+        "owner_only": "Solo chi ha configurato {{productName}} su questo computer può installarlo. Chiedigli di installarlo dalle impostazioni del browser di {{productName}}.",
+        "installing": "Installazione del supporto del browser",
+        "installed": "Il supporto del browser è installato",
+        "continue": "Prepara un messaggio per continuare",
+        "continue_prompt": "Il supporto del browser è installato. Continua con la mia richiesta precedente.",
+        "continue_prefilled": "Aggiunto alla casella del messaggio. Invialo per continuare.",
+        "failed": "Impossibile installare il supporto del browser",
+        "failed_next_step": "Le impostazioni del browser di {{productName}} indicano cosa manca, ad esempio Node.js, e come installarlo. Poi riprova."
       }
     },
     "chatPage": {
