@@ -16507,7 +16507,7 @@
         "compact_empty_folders": "Pastas vazias compactas",
         "a_folder_with_no_chats_takes_one_row_instead_of": "Uma pasta sem conversas ocupa uma linha em vez de duas, e o botão de nova conversa passa para a linha da pasta",
         "full_titles_on_scroll": "Mostrar títulos completos ao rolar",
-        "full_titles_on_scroll_description": "Ao rolar a lista de sessões, os títulos cortados aparecem completos sobre ela; somem quando o ponteiro sai ou logo depois que a rolagem para",
+        "full_titles_on_scroll_description": "Ao rolar a lista de sessões, os títulos cortados pela barra lateral aparecem completos",
         "content_width": "Largura do conteúdo",
         "context": "Contexto",
         "turns": "Turnos",

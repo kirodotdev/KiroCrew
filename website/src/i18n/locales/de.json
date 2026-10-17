@@ -16242,7 +16242,7 @@
         "compact_empty_folders": "Kompakte leere Ordner",
         "a_folder_with_no_chats_takes_one_row_instead_of": "Ein Ordner ohne Chats belegt eine Zeile statt zwei, und seine Schaltfläche für einen neuen Chat wandert in die Ordnerzeile",
         "full_titles_on_scroll": "Vollständige Titel beim Scrollen anzeigen",
-        "full_titles_on_scroll_description": "Beim Scrollen der Sitzungsliste werden abgeschnittene Titel vollständig darüber angezeigt; sie verschwinden, sobald der Zeiger die Liste verlässt oder kurz nachdem das Scrollen endet",
+        "full_titles_on_scroll_description": "Beim Scrollen der Sitzungsliste werden von der Seitenleiste abgeschnittene Titel vollständig angezeigt",
         "content_width": "Inhaltsbreite",
         "context": "Kontext",
         "turns": "Züge",

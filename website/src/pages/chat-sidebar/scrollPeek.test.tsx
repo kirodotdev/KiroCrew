@@ -113,6 +113,50 @@ describe('measureClippedTitles', () => {
 })
 
 describe('measureClippedTitles occlusion', () => {
+  function laneWith(rows: readonly (readonly [string, number])[]) {
+    const lane = document.createElement('div')
+    stubLane(lane)
+    const els: HTMLElement[] = []
+    for (const [key, top] of rows) {
+      const row = document.createElement('div')
+      row.dataset.sessionRow = key
+      const t = document.createElement('div')
+      t.setAttribute('data-session-title', '')
+      t.textContent = key
+      stubTitle(t, 100, top)
+      row.appendChild(t)
+      lane.appendChild(row)
+      els.push(row)
+    }
+    document.body.appendChild(lane)
+    return { lane, rows: els }
+  }
+
+  it('skips the row whose hover toolbar is showing, even when the pointer resolves to another row', () => {
+    const { lane, rows } = laneWith([['stale-hover', 40], ['shown', 80]])
+    const matches = rows[0].matches.bind(rows[0])
+    rows[0].matches = (sel: string) => sel === ':hover' || matches(sel)
+    const got = measureClippedTitles(lane, 1000, null)
+    lane.remove()
+    expect(got.map(t => t.text)).toEqual(['shown'])
+  })
+
+  it('stops a chip at the left edge of a peek-stop surface beside its row, and drops one it would leave empty', () => {
+    const { lane } = laneWith([['above', 40], ['beside', 200], ['tight', 240]])
+    const dock = document.createElement('div')
+    dock.setAttribute('data-scroll-peek-stop', '')
+    // The composer dock: from the sidebar edge rightward, over the lower rows.
+    dock.getBoundingClientRect = () => rect(190, 300, 300, 900)
+    document.body.appendChild(dock)
+    const narrow = document.createElement('div')
+    narrow.setAttribute('data-scroll-peek-stop', '')
+    narrow.getBoundingClientRect = () => rect(235, 265, 180, 260)
+    document.body.appendChild(narrow)
+    const got = measureClippedTitles(lane, 1000)
+    lane.remove(); dock.remove(); narrow.remove()
+    expect(got.map(t => [t.text, t.maxWidth])).toEqual([['above', 1000 - 20 - 12], ['beside', 300 - 20]])
+  })
+
   it('skips a title that something outside the lane covers', () => {
     const lane = document.createElement('div')
     stubLane(lane)
@@ -303,6 +347,16 @@ describe('useSidebarScrollPeek', () => {
     expect(root.dataset.count).toBe('0')
   })
 
+  it('counts a wheel as pointer presence when no pointerenter fired', () => {
+    const { lane, root } = setup()
+    // The cursor was already over the list when the listeners attached.
+    act(() => { wheel(lane) })
+    act(() => { vi.advanceTimersByTime(PEEK_COLLAPSE_DELAY_MS * 2) })
+    expect(root.dataset.count).toBe('1')
+    act(() => { root.dispatchEvent(new Event('pointerleave')); vi.advanceTimersByTime(PEEK_LEAVE_DELAY_MS + 1) })
+    expect(root.dataset.count).toBe('0')
+  })
+
   it('ends at once on any press in the sidebar', () => {
     const { lane, root, getByTestId } = setup()
     act(() => { root.dispatchEvent(new Event('pointerenter')); wheel(lane) })
@@ -352,6 +406,17 @@ describe('ScrollPeekLayer', () => {
     const chip = document.querySelector<HTMLElement>('[data-scroll-peek-title]')
     expect(chip?.textContent).toBe('Full title')
     expect(chip?.style.width).toBe('300px')
+    // The row's own type on a plain background: no border, shadow or bolder weight.
+    expect(chip?.className).not.toMatch(/\bborder\b|shadow|font-semibold/)
+    r.unmount()
+  })
+
+  it('removes the layer on the render the peek ends', () => {
+    const t: PeekTitle = { key: 'a', text: 'Full title', left: 20, top: 40, height: 20, width: 600, maxWidth: 300 }
+    const r = render(<ScrollPeekLayer titles={[t]} />)
+    expect(document.querySelector('[data-testid="scroll-peek-layer"]')).not.toBeNull()
+    r.rerender(<ScrollPeekLayer titles={[]} />)
+    expect(document.querySelector('[data-testid="scroll-peek-layer"]')).toBeNull()
     r.unmount()
   })
 })

@@ -16,28 +16,33 @@ const PAD_X = 4
  * under it and a click past the sidebar reaches the chat. It is decorative
  * duplication of text the row already carries (in its `title` attribute too),
  * so it is hidden from assistive technology.
+ *
+ * Each chip is a plain elevated background in the row's own type, with no
+ * border, shadow or heavier weight, so it reads as the row's title continued
+ * rather than as a new surface.
  */
 export default function ScrollPeekLayer({ titles }: { titles: readonly PeekTitle[] }) {
+  const chips = titles.map(t => (
+    <div
+      key={t.key}
+      data-scroll-peek-title=""
+      className={`absolute ${ROW_TITLE_CLS} text-text bg-bg-elevated rounded-md whitespace-nowrap overflow-hidden text-ellipsis`}
+      style={{
+        left: t.left - PAD_X,
+        top: t.top,
+        height: t.height,
+        width: Math.min(t.width + PAD_X * 2, t.maxWidth),
+        paddingLeft: PAD_X,
+        paddingRight: PAD_X,
+      }}
+    >
+      {t.text}
+    </div>
+  ))
   if (titles.length === 0) return null
   return createPortal(
-    <div aria-hidden="true" data-testid="scroll-peek-layer" className="fixed inset-0 z-[65] pointer-events-none">
-      {titles.map(t => (
-        <div
-          key={t.key}
-          data-scroll-peek-title=""
-          className={`absolute ${ROW_TITLE_CLS} font-semibold text-text bg-bg-elevated border border-border rounded-md shadow-md whitespace-nowrap overflow-hidden text-ellipsis`}
-          style={{
-            left: t.left - PAD_X - 1,
-            top: t.top - 1,
-            height: t.height + 2,
-            width: Math.min(t.width + PAD_X * 2 + 2, t.maxWidth),
-            paddingLeft: PAD_X,
-            paddingRight: PAD_X,
-          }}
-        >
-          {t.text}
-        </div>
-      ))}
+    <div aria-hidden data-testid="scroll-peek-layer" className="fixed inset-0 z-[65] pointer-events-none">
+      {chips}
     </div>,
     document.body,
   )

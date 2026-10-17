@@ -1342,7 +1342,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.show-full-titles-while-scrolling",
     "label": "Show Full Titles While Scrolling",
     "labelKey": "pages.settings.chatPanel.full_titles_on_scroll",
-    "hint": "While you scroll the session list, titles cut off by the sidebar show in full over it; they hide when the pointer leaves or shortly after scrolling stops",
+    "hint": "While you scroll the session list, titles the sidebar cuts off show in full",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1,
