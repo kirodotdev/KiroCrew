@@ -6,6 +6,7 @@ import { i18nT } from '../i18n/t'
 import { DEFAULT_PSEUDO_DEVICE_ID, defaultMicName, getPreferredMicId, listMicrophones, selectableMicrophones, stripDefaultPrefix } from '../hooks/mic'
 import { useAnchorRemeasure } from '../hooks/useAnchorRemeasure'
 import { useMenuKeyboard } from '../hooks/useMenuKeyboard'
+import { usePressActivation } from '../hooks/usePressActivation'
 
 interface Props {
   /** Label of the device actually capturing, for the trigger text. */
@@ -111,6 +112,11 @@ export default function MicSourceMenu({ deviceLabel, activeDeviceId, onSelect, r
     if (r) setRect({ left: r.left, top: r.bottom, bottom: r.top })
     setOpen(true)
   }
+  // Opens on the mouse press (usePressActivation); keyboard and touch on click.
+  // The outside-press dismiss above skips `wrapRef`, so a press on this trigger
+  // while open is a toggle, not a dismiss followed by a reopen. The menu moves
+  // focus to its first item on open, so the trigger must not take it back.
+  const bindPress = usePressActivation()
 
   const pick = (id: string) => {
     setPreferred(id)
@@ -177,7 +183,7 @@ export default function MicSourceMenu({ deviceLabel, activeDeviceId, onSelect, r
       <button
         type="button"
         ref={triggerRef}
-        onClick={toggle}
+        {...bindPress(toggle, { keepFocusOffTrigger: true })}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={i18nT('components.micSourceMenu.change_input_source')}
