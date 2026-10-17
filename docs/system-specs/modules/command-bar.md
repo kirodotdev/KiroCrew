@@ -59,9 +59,10 @@ carries no Folders tab. Reaching a folder by name is a launcher capability, so t
 it: the alternative is two implementations of the same gesture, one in the app and one in the
 surface the app replaces, differing over ranking and reveal and answering to nobody. The corpus
 is hook-free for the same reason the session and artifact engines are — the React-Query fetch and
-the `usePaletteActions` route change are wired in `CommandBarOverlay`, which is the only thing
-holding this app's seams. It still renders the host's `Result` row contract, because forking the
-row shape would fork the Enter matrix with it.
+the `usePaletteActions` route change are wired in `CommandBarOverlay` (its
+`useCommandBarOverlayEngines` owner), which is the only thing holding this app's seams. It still
+renders the host's `Result` row contract, because forking the row shape would fork the Enter
+matrix with it.
 
 The crewmates view (`apps/command-bar/matesProvider.ts`) reaches the reader's own crew: typing
 filters the roster by fuzzy name and Enter lands on that mate's pinned DM thread
@@ -151,6 +152,25 @@ eviction.
 5. **Fallback** — for any non-empty root query, offer Ask plus rows that carry the query into
    the sessions, artifacts, folders, and crewmates views; when no root row matches, also offer
    the app page that can disable Command Bar
+
+## Source layout
+
+`website/src/apps/command-bar/CommandBarOverlay.tsx` is the overlay's only import path (the
+`overlayRegistry.ts` lazy entry, the specs that mount it). It keeps the dialog: the navigation
+state, the lifecycle effects, copy, the argument state, the key handler and the rendered panel.
+It calls each owner hook at the point its code sits in the component's hook order; owners never
+import the facade, and nothing else imports an owner.
+
+| File | Holds | New work for… |
+|---|---|---|
+| `commandBarOverlayModel.ts` | `Scope`, `Slot`, the view limits, the row, header and footer labels | a slot tag, scope, limit or label |
+| `CommandBarOverlayRootRows.tsx` | the root's rows and their ranking | a root row or group |
+| `useCommandBarOverlayEngines.ts` | every view's engine (the sessions search and listing, artifacts, folders, crewmates), the cache entries read without fetching | a view's engine, a cache entry the bar reads |
+| `useCommandBarOverlaySlots.ts` | each view's read, `rowsAnswerTheQuery`, the slot list and its loading state | a view's read or a tail row |
+| `useCommandBarOverlayActivation.ts` | what Enter and a click do, the session seeding, the stale-Enter latch | a slot's activation |
+| `CommandBarOverlaySlot.tsx` | how one slot renders | a slot's look |
+
+`CommandBarOverlay.owners.test.tsx` pins this shape.
 
 ## The overlay seam
 

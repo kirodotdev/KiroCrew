@@ -88,7 +88,7 @@ const PATH_MATCH_PENALTY = 1_000_000
  * Injectable dependencies for {@link createFoldersProvider}. Keeping the corpus
  * free of React hooks makes it unit-testable with a plain mock fetch + reveal
  * callback, and leaves the real React-Query + Redux wiring in the one component
- * that owns this app's seams (`CommandBarOverlay`).
+ * that owns this app's seams (`CommandBarOverlay`, in its `useCommandBarOverlayEngines` owner).
  */
 export interface FoldersProviderDeps {
   /** Fetch the sidebar folder list (React-Query-cached by the caller). */
@@ -101,7 +101,7 @@ export interface FoldersProviderDeps {
    * `custom`, and a builder that could leave this out would list the stored order
    * under a sidebar sorted by name — the exact drift the mode parameter exists to
    * rule out. The caller reads it from the same shared config entry the sidebar's
-   * hook normalizes (`CommandBarOverlay`), so the two surfaces cannot disagree.
+   * hook normalizes (`useCommandBarOverlayEngines`), so the two surfaces cannot disagree.
    */
   mode: FolderSortMode
 }

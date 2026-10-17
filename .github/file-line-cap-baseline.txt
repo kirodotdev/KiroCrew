@@ -279,7 +279,6 @@
 2967 website/src/App.tsx
 5306 website/src/apps/aws-control/DrivePage.test.tsx
 2169 website/src/apps/command-bar/CommandBarOverlay.test.tsx
-3157 website/src/apps/command-bar/CommandBarOverlay.tsx
 2145 website/src/apps/design-tweak/DesignTweakPage.tsx
 2208 website/src/apps/issue-radar/api.ts
 2592 website/src/apps/md-notebook/MdNotebookPage.tsx
