@@ -55,6 +55,31 @@ Instructions, examples, and reference material that the agent reads when this sk
 other encoding (for example UTF-16 from PowerShell) is skipped, with one log
 warning naming the file. Re-save it as UTF-8 to load it.
 
+## Inspecting Skills from the CLI
+
+Two read-only commands show pending candidates and the live catalog:
+
+```bash
+kirocrew skills list                         # pending candidates (default)
+kirocrew skills list --live                  # active skills
+kirocrew skills list --all --json            # both sets as JSON
+kirocrew skills show <slug>                  # body, metadata, validation status
+```
+
+Neither command changes anything. Approve or dismiss a candidate in **Skills → Pending review**
+in the dashboard.
+
+Skill-derived output is redacted, stripped of terminal escapes, and redacted again, so a
+credential split by an invisible character is still hidden. This includes pending slugs and live
+keys: an identifier that looks like a secret is redacted rather than printed. Each `SKILL.md` and
+helper-script line starts with `| ` so candidate text cannot imitate the validation section. `list`
+prints at most 500 rows per section and counts the rest.
+
+`show` uses the dashboard's own bounded detail read and prints a candidate whole or not at all: a
+candidate holding a link, a hard link, an oversized file or text that is not UTF-8 exits
+`candidate_unreadable` with nothing printed. The validation block is the loader's fail-closed
+verdict; if it cannot be computed, the output says `status: unavailable` instead of a clean result.
+
 ## Creating Skills
 
 ### Via Dashboard

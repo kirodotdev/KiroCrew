@@ -469,6 +469,28 @@ Examples:
     )
 
 
+def register_skills_parser(sub: _Commands) -> None:
+    skills_parser = cli_help.add_command(
+        sub,
+        "skills",
+        epilog="""
+Examples:
+  kirocrew skills list
+  kirocrew skills list --all --json
+  kirocrew skills show candidate-slug
+""",
+        formatter_class=_fmt,
+    )
+    skills_sub = skills_parser.add_subparsers(dest="skills_action")
+    skills_list = skills_sub.add_parser("list", help="List pending or live skills")
+    skills_scope = skills_list.add_mutually_exclusive_group()
+    skills_scope.add_argument("--live", action="store_true", help="List live skills")
+    skills_scope.add_argument("--all", action="store_true", help="List pending and live skills")
+    skills_list.add_argument("--json", action="store_true", help="Print JSON")
+    skills_show = skills_sub.add_parser("show", help="Show a pending candidate")
+    skills_show.add_argument("slug", help="Pending candidate slug")
+
+
 def register_artifact_parser(sub: _Commands) -> None:
     art_parser = cli_help.add_command(
         sub,
