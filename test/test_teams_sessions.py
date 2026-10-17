@@ -800,6 +800,223 @@ class TestAClickInAResumedConversation:
             pending.cancel()
 
 
+class TestAChipRunsOnlyWhereItWasPosted:
+    """An option chip runs only in the session whose turn posted it.
+
+    The label turn runs under the conversation's CURRENT target, so the label is
+    looked up only there. Otherwise a chip posted by the native session and pressed
+    after a `/sessions` bind would run its model-written label in the dashboard
+    session.
+    """
+
+    @staticmethod
+    def _chip(client: Any, session_key: str) -> Any:
+        from kiro_crew.teams.renderer import TeamsRenderer
+        from kiro_crew.teams.transport import TEAMS_CAPABILITIES
+
+        renderer = TeamsRenderer(client, "CONV", _SVC, TEAMS_CAPABILITIES, session_key=session_key)
+        renderer._option_nonce = "n9"
+        renderer._option_labels = ["ship it", "wait"]
+        return renderer
+
+    @staticmethod
+    def _press_value() -> dict:
+        from kiro_crew.teams.cards import KIND_OPTION
+
+        return {"kc": KIND_OPTION, "nonce": "n9", "index": "0", "label": "ship it"}
+
+    @staticmethod
+    def _record(monkeypatch) -> list[tuple[str, str]]:
+        seen: list[tuple[str, str]] = []
+
+        async def _drive(turn, **_kw):
+            seen.append((turn.session_key, turn.user_text))
+
+        monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", _drive)
+        return seen
+
+    @pytest.mark.asyncio
+    async def test_a_native_chip_pressed_after_a_bind_is_refused(self, monkeypatch) -> None:
+        seen = self._record(monkeypatch)
+        client = _Client()
+        sessions = _Sessions()
+        d = _dispatcher(sessions, client, _ConversationLog(_rows("Launch plan")))
+        native = d._session_key(_OWNER)
+        renderer = self._chip(client, native)
+        d._active_renderers[native] = renderer
+        # The conversation is then bound to a dashboard session, as a `/sessions` pick does.
+        sessions.set_mirror_link(
+            "dashboard:chat-1", ChannelLink("teams", "CONV"), accepts_inbound=True
+        )
+
+        await d._handle_card_action(_inbound("", value=self._press_value()))
+
+        assert seen == [], "the native session's label must not run in the bound session"
+        assert "from an earlier reply" in client.sent[-1]
+        assert client.updated == [], "a refused chip is left as it was, not settled"
+        assert d._active_renderers.get(native) is renderer
+
+    @pytest.mark.asyncio
+    async def test_a_native_chip_still_runs_in_the_native_session(self, monkeypatch) -> None:
+        seen = self._record(monkeypatch)
+        client = _Client()
+        d = _dispatcher(_Sessions(), client, _ConversationLog(_rows("Launch plan")))
+        native = d._session_key(_OWNER)
+        d._active_renderers[native] = self._chip(client, native)
+
+        await d._handle_card_action(_inbound("", value=self._press_value()))
+
+        assert seen == [(native, "ship it")]
+
+    @pytest.mark.asyncio
+    async def test_a_binding_that_moves_before_routing_is_refused(self, monkeypatch) -> None:
+        """The card handler's check and route() are separate reads of the binding.
+
+        The new target is busy, so without the post-routing check the label would be
+        steered or queued into it rather than reaching the turn's own re-check.
+        """
+        seen = self._record(monkeypatch)
+        handed: list[str] = []
+
+        async def _no_busy_path(_inbound, session_key, *_a, **_kw) -> None:
+            handed.append(session_key)
+
+        client = _Client()
+        sessions = _Sessions()
+        monkeypatch.setattr(sessions, "is_busy", lambda key: True)
+        d = _dispatcher(sessions, client, _ConversationLog(_rows("Launch plan")))
+        monkeypatch.setattr(d, "_handle_resumed_busy", _no_busy_path)
+        monkeypatch.setattr(d, "_handle_busy", _no_busy_path)
+        sessions.set_mirror_link(
+            "dashboard:chat-1", ChannelLink("teams", "CONV"), accepts_inbound=True
+        )
+
+        await d.handle_message(
+            _inbound("ship it"),
+            interpret_commands=False,
+            option_session_key=d._session_key(_OWNER),
+        )
+
+        assert handed == [], "a stale chip must not be steered or queued into the new target"
+        assert seen == []
+        assert "NOT applied" in client.sent[-1]
+
+    @pytest.mark.asyncio
+    async def test_a_chip_is_refused_after_the_conversation_rotates(self, monkeypatch) -> None:
+        """Idle/daily rotation runs after the routing check; the turn re-checks after it."""
+        seen = self._record(monkeypatch)
+        client = _Client()
+        d = _dispatcher(_Sessions(), client, _ConversationLog(_rows("Launch plan")))
+        native = d._session_key(_OWNER)
+        monkeypatch.setattr(d._conv, "maybe_rotate", lambda key, *_a, **_kw: d._conv.bump_gen(key))
+
+        await d.handle_message(
+            _inbound("ship it"), interpret_commands=False, option_session_key=native
+        )
+
+        assert d._session_key(_OWNER) != native, "the fixture must actually rotate"
+        assert seen == []
+        assert "NOT applied" in client.sent[-1]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("idle_gap_minutes", [31, 29], ids=["due", "not-due"])
+    async def test_a_native_chip_is_refused_when_rotation_is_due(
+        self, monkeypatch, idle_gap_minutes
+    ) -> None:
+        """A press whose turn would rotate first is refused before the chips settle.
+
+        Otherwise the card says the choice was made while the turn's own
+        post-rotation check refuses it, and no live chip remains.
+        """
+        seen = self._record(monkeypatch)
+        client = _Client()
+        d = _dispatcher(_Sessions(), client, _ConversationLog(_rows("Launch plan")))
+        d.cfg.messaging.idle_reset_minutes = 30
+        monkeypatch.setattr(d, "_live_cfg", lambda: d.cfg)
+        now = 1_000_000.0
+        monkeypatch.setattr(
+            "kiro_crew.teams.transport_dispatch.time", SimpleNamespace(time=lambda: now)
+        )
+        d._conv.maybe_rotate(_OWNER, now - idle_gap_minutes * 60, idle_minutes=30)
+        native = d._session_key(_OWNER)
+        renderer = self._chip(client, native)
+        d._active_renderers[native] = renderer
+
+        await d._handle_card_action(_inbound("", value=self._press_value()))
+
+        if idle_gap_minutes < 30:
+            assert seen == [(native, "ship it")], "a chip before the boundary still runs"
+            return
+        assert seen == []
+        assert "NOT applied" in client.sent[-1]
+        assert client.updated == [], "a refused chip is left as it was, not settled"
+        assert d._active_renderers.get(native) is renderer
+        assert d._session_key(_OWNER) == native, "the check must not rotate"
+        assert d._conv.last_active(_OWNER) == now - idle_gap_minutes * 60
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bound", [False, True], ids=["native", "resumed"])
+    async def test_a_chip_into_a_busy_session_is_refused(self, monkeypatch, bound) -> None:
+        """A chip is neither steered nor queued: the queue keeps only bare text."""
+        handed: list[str] = []
+
+        async def _no_busy_path(_inbound, session_key, *_a, **_kw) -> None:
+            handed.append(session_key)
+
+        client = _Client()
+        sessions = _Sessions()
+        monkeypatch.setattr(sessions, "is_busy", lambda key: True)
+        d = _dispatcher(sessions, client, _ConversationLog(_rows("Launch plan")))
+        monkeypatch.setattr(d, "_handle_resumed_busy", _no_busy_path)
+        monkeypatch.setattr(d, "_handle_busy", _no_busy_path)
+        target = d._session_key(_OWNER)
+        if bound:
+            target = "dashboard:chat-1"
+            sessions.set_mirror_link(target, ChannelLink("teams", "CONV"), accepts_inbound=True)
+
+        await d.handle_message(
+            _inbound("ship it"), interpret_commands=False, option_session_key=target
+        )
+
+        assert handed == []
+        assert "busy with another turn" in client.sent[-1]
+
+    @pytest.mark.asyncio
+    async def test_a_busy_chip_press_leaves_the_chips_live(self, monkeypatch) -> None:
+        """Refused before settling, so the user can press it again once the turn ends."""
+        seen = self._record(monkeypatch)
+        client = _Client()
+        sessions = _Sessions()
+        monkeypatch.setattr(sessions, "is_busy", lambda key: True)
+        d = _dispatcher(sessions, client, _ConversationLog(_rows("Launch plan")))
+        native = d._session_key(_OWNER)
+        renderer = self._chip(client, native)
+        d._active_renderers[native] = renderer
+
+        await d._handle_card_action(_inbound("", value=self._press_value()))
+
+        assert seen == []
+        assert "busy with another turn" in client.sent[-1]
+        assert client.updated == [], "a refused chip is left as it was, not settled"
+        assert d._active_renderers.get(native) is renderer
+
+    @pytest.mark.asyncio
+    async def test_a_typed_message_into_a_busy_session_still_queues(self, monkeypatch) -> None:
+        handed: list[str] = []
+
+        async def _busy_path(_inbound, session_key, *_a, **_kw) -> None:
+            handed.append(session_key)
+
+        sessions = _Sessions()
+        monkeypatch.setattr(sessions, "is_busy", lambda key: True)
+        d = _dispatcher(sessions, _Client(), _ConversationLog(_rows("Launch plan")))
+        monkeypatch.setattr(d, "_handle_busy", _busy_path)
+
+        await d.handle_message(_inbound("ship it"))
+
+        assert handed == [d._session_key(_OWNER)]
+
+
 class TestLeaving:
     @pytest.mark.asyncio
     async def test_unlink_releases_the_resumed_binding(self) -> None:
