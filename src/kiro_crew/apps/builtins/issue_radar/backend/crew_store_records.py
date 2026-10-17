@@ -173,6 +173,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     #: (:func:`_validated_label`), not trusted because a settings form produced it.
     "needs_human_label": "crew: needs human",
     "commit_trailer": "Crew: {name} (Kiro Crew Issue Radar)",
+    #: Whether a comment that @mentions the gateway's forge login wakes a crew to
+    #: answer it in that thread. OFF by default: the login is often the operator's
+    #: own account, and a crew would then answer, in public and under the operator's
+    #: name, a question someone asked the operator. Turn it on only when the gateway's
+    #: CLI login is a dedicated crew account. Only a JSON ``true`` turns it on.
+    "crew_answer_mentions": False,
 }
 
 _DEFAULT_CREW: dict[str, Any] = {
@@ -495,6 +501,8 @@ def read_settings(owner: str, repo: str, root: Path | None = None) -> dict[str, 
             ttl = _validated_ttl_hours(stored.get("claim_ttl_hours"))
             if ttl is not None:
                 out["claim_ttl_hours"] = ttl
+            if isinstance(stored.get("crew_answer_mentions"), bool):
+                out["crew_answer_mentions"] = stored["crew_answer_mentions"]
             for key in _TEXT_SETTINGS:
                 text = _validated_text_setting(stored.get(key))
                 if text is not None:
@@ -515,6 +523,8 @@ def write_settings(
                 ttl = _validated_ttl_hours(patch["claim_ttl_hours"])
                 if ttl is not None:
                     record["claim_ttl_hours"] = ttl
+            if isinstance(patch.get("crew_answer_mentions"), bool):
+                record["crew_answer_mentions"] = patch["crew_answer_mentions"]
             for key in _TEXT_SETTINGS:
                 if key in patch:
                     text = _validated_text_setting(patch[key])
