@@ -104,6 +104,59 @@ export function resultKind(f: { kind?: FileKind }): FileKind {
 }
 
 /**
+ * Per-row display path for one result set.
+ *
+ * The row's sub-line cuts at the END (text-overflow ellipsis), which is right
+ * for a unique name: the cut eats the shared prefix and leaves the tail. For
+ * rows that share a NAME — search matches basenames, so one answer can hold
+ * six README.md files — the cut lands inside their common parent chain and the
+ * rows read identical down to size and age. Such a row instead shows the
+ * SHORTEST suffix of parent directories that tells it apart from the other
+ * same-named rows, head-anchored with an ellipsis (`…/core/README.md`), so the
+ * distinguishing segment is the first thing after the cut and survives even
+ * the narrowest menu width. Unique-named rows keep the full path.
+ */
+export function disambiguatedPaths(results: Array<{ path: string; name: string }>): Map<string, string> {
+  const groups = new Map<string, Array<{ path: string; name: string }>>()
+  for (const r of results) {
+    const g = groups.get(r.name)
+    if (g) g.push(r)
+    else groups.set(r.name, [r])
+  }
+  const out = new Map<string, string>()
+  for (const group of groups.values()) {
+    if (group.length === 1) {
+      out.set(group[0].path, group[0].path)
+      continue
+    }
+    // Parent segments split on the row's own separator — a native Windows
+    // answer uses `\` throughout, and the display keeps that row's shape.
+    const parents = group.map(r => {
+      const sep = r.path.includes('\\') && !r.path.includes('/') ? '\\' : '/'
+      const segs = r.path.split(sep)
+      segs.pop()
+      return { path: r.path, name: r.name, sep, segs: segs.filter(s => s !== '') }
+    })
+    const sameTail = (a: string[], b: string[], k: number): boolean => {
+      const sa = a.slice(Math.max(0, a.length - k))
+      const sb = b.slice(Math.max(0, b.length - k))
+      return sa.length === sb.length && sa.every((s, i) => s === sb[i])
+    }
+    const maxDepth = Math.max(...parents.map(p => p.segs.length))
+    for (const p of parents) {
+      // Distinct full paths always separate at k = maxDepth, so this terminates.
+      let k = 1
+      for (; k <= maxDepth; k++) {
+        if (!parents.some(q => q !== p && sameTail(p.segs, q.segs, k))) break
+      }
+      const tail = p.segs.slice(Math.max(0, p.segs.length - k)).join(p.sep)
+      out.set(p.path, tail ? `…${p.sep}${tail}${p.sep}${p.name}` : `…${p.sep}${p.name}`)
+    }
+  }
+  return out
+}
+
+/**
  * Build the payload handed to onSelect. Directory paths get a trailing slash on
  * the relative form so the inserted @-token reads unambiguously as a folder.
  */
@@ -185,6 +238,11 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     const above = anchorRef.current ? menuGeometry(anchorRef.current, raw.length, 48).above : false
     return bottomUpOrder(raw, above)
   }, [data, open, ready, anchorRef])
+
+  // Same-named rows disambiguate by their shortest distinguishing parent
+  // (see `disambiguatedPaths`); keyed on the ordered results so it recomputes
+  // exactly when the rows do. Order-independent: the grouping reads names only.
+  const displayPaths = useMemo(() => disambiguatedPaths(results), [results])
 
   // Open the highlighted file in the viewer (the eye/preview action) instead of
   // inserting an @-mention. Shared by the Cmd/Ctrl+Enter path (via onChoose's
@@ -339,7 +397,7 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
             : <FileText size={14} className="shrink-0 lucide-inline" />}
           <div className="flex-1 min-w-0">
             <div className="text-[13px] font-mono font-semibold truncate">{isDir ? f.name + '/' : f.name}</div>
-            <div className="text-[11px] text-muted truncate">{f.path}</div>
+            <div className="text-[11px] text-muted truncate">{displayPaths.get(f.path) ?? f.path}</div>
           </div>
           <span className="text-[11px] text-muted shrink-0 whitespace-nowrap">
             {isDir ? `${i18nT('components.filePickerMenu.folder_kind')} · ${formatAge(f.mtime)}` : `${formatSize(f.size)} · ${formatAge(f.mtime)}`}
