@@ -460,6 +460,32 @@ TYPES: tuple[EntryType, ...] = (
                 ),
             ),
             Field(
+                "answered",
+                JSON_OBJECT,
+                fields=(
+                    Field(
+                        "actor",
+                        JSON_STRING,
+                        required=True,
+                        note="The forge user who removed the needs-human label.",
+                    ),
+                    Field(
+                        "at",
+                        JSON_STRING,
+                        required=True,
+                        note="When the label was removed, as the forge reported it, in UTC.",
+                    ),
+                ),
+                note=(
+                    "Present when the gateway's sweep saw a HUMAN hand a needs-human pass "
+                    "back: the needs-human label was removed after the pass, by someone "
+                    "other than the crew's own forge identity, on an open issue. Written by "
+                    "the gateway only, never by the record tool. Patches no work item; a "
+                    "pass older than it leaves the shared skip index, and a pass newer than "
+                    "it indexes the number again."
+                ),
+            ),
+            Field(
                 "carried",
                 JSON_BOOL,
                 note=(

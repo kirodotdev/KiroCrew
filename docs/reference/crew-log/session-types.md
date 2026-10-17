@@ -1361,6 +1361,9 @@ every crew of the repository.
 | `skip.crew_id` | string | optional | The crew that decided the pass, when it is not the entry's own — only a carried entry sets it. | |
 | `skip.decided_at` | string | optional | When the pass was decided, when not this entry's time — carry only. | |
 | `skip.deferred` | boolean | optional | True when another crew's decision on this number already stood in the shared index as this pass was recorded. A deferred pass never stands over the decision it saw, whatever the clocks say: the writer's own observation is the first-writer token, not a timestamp. | |
+| `answered` | object | optional | Present when the gateway's sweep saw a HUMAN hand a needs-human pass back: the needs-human label was removed after the pass, by someone other than the crew's own forge identity, on an open issue. Written by the gateway only, never by the record tool, with `event_kind` `reply`. Patches no work item; a `needs-decision` / `needs-investigation` pass older than it leaves the shared skip index, and a pass newer than it indexes the number again. | |
+| `answered.actor` | string | required | The forge user who removed the needs-human label. | |
+| `answered.at` | string | required | When the label was removed, as the forge reported it, normalized to UTC `%Y-%m-%dT%H:%M:%S.%fZ`. | |
 | `carried` | bool | optional | True on an entry that carries a pre-projection on-disk record forward, once, so a crew upgraded mid-work keeps its items and the repository keeps its passes. | |
 | `claimed_at` | string | optional | The carried record's own stamp; the fold stamps every other entry itself. | |
 | `last_progress_at` | string | optional | Carry only, as `claimed_at`. | |

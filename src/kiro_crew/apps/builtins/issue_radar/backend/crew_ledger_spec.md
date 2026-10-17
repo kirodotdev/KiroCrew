@@ -190,6 +190,31 @@ stated where an operator touches the knob: the setting's own help text
 log on, Issue Radar's shared skip memory and open work items -- so shortening it
 for disk reasons is a choice made knowing what else it shortens.
 
+**A human answer hands a needs-human pass back.** A pass scoped `needs-decision`
+or `needs-investigation` stops standing in the index once a human answers it. The
+answer is the NEEDS-HUMAN LABEL being removed, on an open issue, after the pass
+was recorded, by an actor who is not the crew's own forge identity (the
+authenticated `gh` / `glab` user, cached per provider and host; unknown identity
+means nothing fires). A comment alone is not an answer, and every other scope
+stays skipped. The gateway's sweep (`crew_runtime.detect_human_answers`) finds it
+with no LLM: only numbers whose standing pass has an answerable scope, whose issue
+is open in the open-issues cache and no longer carries the label, are read -- one
+label-events call each (GitHub `issues/:n/events`, GitLab
+`issues/:iid/resource_label_events`, at most 10 per sweep), and a read that finds
+no human removal is remembered in `crew-answer-checks.json` against that pass's
+`decided_at` until the label is seen on the issue again. A found answer is ONE
+`radar/recorded` entry carrying `answered: {actor, at}` (event kind `reply`),
+written by the gateway into the log of the crew that recorded the pass when it is
+live with a session, else the crew it wakes; the record tool cannot write one. It
+patches no work item. The fold keeps the newest answer per number (`answered`,
+500 per crew, oldest evicted -- which re-indexes that pass, the safe direction). The
+pass is never deleted: the index leaves out a row of an answerable scope whose
+`decided_at` is older than the newest answer on its number across all crews, and
+a pass recorded AFTER the answer stands again -- in the crew's own fold it replaces
+the row the answer superseded, which is the one exception to first-decision-wins.
+The crew that recorded the pass is woken (else the first live crew by id) with
+`[crew wake: #N human-answered]`.
+
 **Reads are checkpointed, not cached.** Folding is O(the log), and a crew's log
 carries its message bodies, so the fold is continued rather than redone. The warm
 fold is the crew log's shared slot memo (`crew_log.projection.fold_slot_warm`, keyed

@@ -52,6 +52,12 @@ RADAR_TRIED_LIMIT: Final[int] = 100
 #: investigate again, which the spec accepts as this index's bound.
 RADAR_ITEM_LIMIT: Final[int] = 500
 RADAR_SKIP_LIMIT: Final[int] = 5000
+#: Human answers kept PER CREW, one per number (the newest). An answer only matters
+#: while the pass it answers is still held, and only needs-human passes are answered,
+#: so the working set is far below the pass bound; past it the OLDEST answer goes,
+#: which re-indexes that number's pass -- the safe direction, a re-investigation
+#: rather than a wrong pick-up.
+RADAR_ANSWERED_LIMIT: Final[int] = 500
 #: Clamp for every free-text field the fold reads. It is a SHAPE gate on bytes a
 #: reader does not control, not an input cap, so it must equal the largest value the
 #: record tool would have accepted -- ``validation.MAX_MEDIUM_STRING``, the cap on
@@ -156,6 +162,11 @@ def _radar_start() -> dict[str, Any]:
         "items": {},
         "events": [],
         "skips": {},
+        # The newest HUMAN answer per number -- a needs-human label removed by
+        # someone other than the crew (``answered`` on a ``radar/recorded`` entry).
+        # Kept beside the passes rather than on them: a pass is the first decision
+        # and stays the audit trail; the answer only says it no longer stands.
+        "answered": {},
         "phase_lines": {},
         # ``[line id, payload digest]`` pairs for the newest entries folded: the
         # collapse of a REPEATED entry keys on the whole update, not on the line's
@@ -216,12 +227,26 @@ def _radar_record_skip(
     rather than a silent edit of someone else's record. ``crew_id`` and
     ``decided_at`` on the row default to the entry's own and are overridden only by
     a carried row, which re-states a decision made elsewhere and earlier.
+
+    The one exception is a pass recorded AFTER a human answered the pass this crew
+    already holds (:func:`_radar_record_answer`): the human handed the issue back, so
+    the old decision no longer stands and the new pass is a new first decision. It
+    replaces the row, which is what puts the number back into the shared index.
     """
     if not isinstance(skip.get("reason"), str):
         return
     skips: dict[str, dict[str, Any]] = state["skips"]
     if key in skips:
-        return
+        answer = state.setdefault("answered", {}).get(key)
+        standing_at = str(skips[key].get("decided_at") or "")
+        decided_at = _radar_text(skip.get("decided_at"), 64) or ts
+        if not (
+            isinstance(answer, Mapping)
+            and str(answer.get("at") or "") > standing_at
+            and decided_at > str(answer.get("at") or "")
+        ):
+            return
+        del skips[key]
     scope = skip.get("scope")
     skips[key] = {
         "number": number,
@@ -245,6 +270,42 @@ def _radar_record_skip(
         oldest = min(skips, key=lambda k: (str(skips[k].get("decided_at") or ""), k))
         del skips[oldest]
         state["evicted_skips"] += 1
+
+
+def _radar_record_answer(
+    state: dict[str, Any],
+    key: str,
+    number: int,
+    answered: Mapping[str, Any],
+    crew_id: str,
+    ts: str,
+) -> bool:
+    """Record a human's answer to a needs-human pass; whether anything changed.
+
+    The NEWEST answer per number is kept: an answer is a latest-value fact (the label
+    was removed at this moment, by this person), and only its time is compared with a
+    pass. A repeat of the same or an older answer changes nothing, so a sweep that
+    writes one twice adds no second line.
+    """
+    actor = _radar_text(answered.get("actor"), 256)
+    at = _radar_text(answered.get("at"), 64)
+    if not actor or not at:
+        return False
+    rows: dict[str, dict[str, Any]] = state.setdefault("answered", {})
+    standing = rows.get(key)
+    if standing is not None and str(standing.get("at") or "") >= at:
+        return False
+    rows[key] = {
+        "number": number,
+        "actor": actor,
+        "at": at,
+        "crew_id": crew_id,
+        "recorded_at": ts,
+    }
+    while len(rows) > RADAR_ANSWERED_LIMIT:
+        oldest = min(rows, key=lambda k: (str(rows[k].get("at") or ""), k))
+        del rows[oldest]
+    return True
 
 
 def _radar_bound_items(state: dict[str, Any], keep: str) -> None:
@@ -341,6 +402,26 @@ def _radar_step(state: dict[str, Any], entry: Entry) -> None:
 
     key = str(number)
     line_id = _radar_event_id(ts, crew_id, number, kind, text)
+    answered = data.get("answered")
+    if isinstance(answered, Mapping):
+        # A human handed a needs-human pass back. Written by the gateway's sweep, never
+        # by the record tool, and it patches NO work item: the crew that is woken may
+        # not be the one that worked the issue, and an item would put an issue it never
+        # touched on its page. The line is kept so the crew page shows why the number
+        # left the index.
+        if _radar_record_answer(state, key, number, answered, crew_id, ts):
+            events.append(
+                {
+                    "id": line_id,
+                    "ts": ts,
+                    "crew_id": crew_id,
+                    "number": number,
+                    "kind": kind,
+                    "text": text,
+                }
+            )
+            del events[: max(0, len(events) - RADAR_EVENT_LIMIT)]
+        return
     digest = _radar_payload_digest(data)
     last_update: dict[str, str] = state["last_update"]
     skip = data.get("skip")
@@ -570,6 +651,7 @@ def _radar_render(state: dict[str, Any]) -> dict[str, Any]:
         "items": items,
         "events": [dict(line) for line in reversed(state["events"])],
         "skips": {key: dict(row) for key, row in state["skips"].items()},
+        "answered": {key: dict(row) for key, row in state.get("answered", {}).items()},
         "phase_lines": {
             key: [dict(row) for row in rows] for key, rows in state["phase_lines"].items()
         },

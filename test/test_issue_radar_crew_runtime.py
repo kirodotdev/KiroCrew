@@ -735,7 +735,12 @@ class TestProviderVocabulary(unittest.TestCase):
         # The sweep is the only production caller, and it holds the real key.
         source = inspect.getsource(cr.sweep_repo)
         self.assertIn("watchdog_cycle(state, key.owner, key.repo, crews, scope, key)", source)
-        self.assertRegex(source, r"wake_crew\(\s*state,\s*key\.owner,\s*key\.repo,[\s\S]*?\bkey,")
+        # Wakes go through one helper, so the key it forwards is pinned there.
+        self.assertIn("_wake_for(state, key,", source)
+        self.assertRegex(
+            inspect.getsource(cr._wake_for),
+            r"wake_crew\(\s*state,\s*key\.owner,\s*key\.repo,[\s\S]*?\bkey,",
+        )
 
 
 # ── provider scoping of the crew ledger ─────────────────────────────────────
@@ -758,7 +763,7 @@ class TestCrewStoreScoping(unittest.TestCase):
     """
 
     #: ``crew_store`` members that are not per-repo and take no ``root``.
-    _ROOTLESS = frozenset({"is_crew_id"})
+    _ROOTLESS = frozenset({"is_crew_id", "normalize_forge_time"})
 
     def _offenders(self, module: Any) -> list[str]:
         tree = ast.parse(Path(inspect.getfile(module)).read_text(encoding="utf-8"))
@@ -2707,6 +2712,233 @@ class TestSweep(unittest.IsolatedAsyncioTestCase):
             '{"schema": 999, "items": {"c_x:1": {"fp": {}}}}'
         )
         self.assertEqual(cr.read_signals(OWNER, REPO, self.root), {})
+
+
+# ── a human answer hands a needs-human pass back ────────────────────────────
+
+
+#: The crew log's clock, pinned per test so a pass, a label removal and a re-skip
+#: are ordered by construction rather than by how fast the test ran.
+_T0_MS = 1_800_000_000_000
+_NEEDS_HUMAN = "crew: needs human"
+
+
+def _iso(ms: int) -> str:
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class _AnswerClient(_FakeClient):
+    """The forge, as the answer detection sees it: who we are, and label events."""
+
+    def __init__(self, label_events=None, login="crew-bot"):
+        super().__init__()
+        self.label_events = list(label_events or [])
+        self.login = login
+
+    def get_current_login(self, **kw):
+        self.calls.append("login")
+        return self.login
+
+    def list_issue_label_events(self, owner, repo, number, **kw):
+        self.calls.append(f"label-events:{number}")
+        return list(self.label_events)
+
+
+def _unlabeled(actor: str, at_ms: int, label: str = _NEEDS_HUMAN) -> dict[str, Any]:
+    return {"kind": "unlabeled", "actor": actor, "created_at": _iso(at_ms), "label": {"name": label}}
+
+
+class TestHumanAnswer(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.now = [_T0_MS]
+        from kiro_crew.crew_log import store as crew_log_store
+
+        clock = mock.patch.object(crew_log_store, "now_ms", side_effect=lambda: self.now[0])
+        clock.start()
+        self.addCleanup(clock.stop)
+        unit = mock.patch.object(
+            cr, "_crew_live_unit", side_effect=lambda state, crew: _unit_for(str(crew["id"]))
+        )
+        unit.start()
+        self.addCleanup(unit.stop)
+        cr._forge_identity_cache.clear()
+        self.addCleanup(cr._forge_identity_cache.clear)
+        self.crew = _crew(self.root, unattended=True)
+        self.cid = self.crew["id"]
+
+    def _skip(self, number: int, scope: str = "needs-decision") -> None:
+        off_loop(
+            cs.commit_work_progress,
+            OWNER,
+            REPO,
+            self.cid,
+            number,
+            {"phase": "skipped"},
+            "skip",
+            "asked which fix to take",
+            skip_reason="two valid fixes; a maintainer has to pick",
+            skip_scope=scope,
+            root=self.root,
+            session_id=_unit_for(self.cid),
+        )
+
+    def _issue(self, number: int, labels: list[str]) -> None:
+        store_mod.write_issues_cache(
+            OWNER, REPO, [{"number": number, "state": "open", "labels": labels}], root=self.root
+        )
+
+    def _skipped(self) -> set[int]:
+        return {row["number"] for row in off_loop(cs.read_skips, OWNER, REPO, self.root).values()}
+
+    async def _sweep(self, client):
+        with mock.patch.object(provider, "client_for", return_value=client), \
+             mock.patch.object(cr.provider, "client_for", return_value=client), \
+             mock.patch.object(cr, "wake_crew", new=mock.AsyncMock(return_value=True)) as wake:
+            woken = await cr.sweep_repo(_app(_FakeState()), _KEY, self.root)
+        return woken, wake
+
+    async def test_label_removed_by_a_human_unskips_and_wakes_the_skipping_crew(self):
+        self._skip(7)
+        self._issue(7, labels=["bug"])
+        self.assertIn(7, self._skipped())
+        client = _AnswerClient([_unlabeled("alice", _T0_MS + 60_000)])
+        self.now[0] = _T0_MS + 120_000
+
+        woken, wake = await self._sweep(client)
+
+        self.assertEqual(woken, {self.cid: [cr.SIG_HUMAN_ANSWERED]})
+        wake.assert_awaited_once()
+        self.assertEqual(wake.await_args.args[4], "#7 human-answered")
+        self.assertNotIn(7, self._skipped())
+        answers = off_loop(cs.read_answers, OWNER, REPO, self.root)
+        self.assertEqual(answers["7"]["actor"], "alice")
+        # The pass is kept as the audit trail; only the index stops answering for it.
+        ledger = off_loop(cs.read_ledger, OWNER, REPO, self.cid, self.root)
+        self.assertIn("7", ledger["skips"])
+        # And the answer is a progress line, not a work-item change.
+        self.assertEqual(ledger["events"][0]["kind"], "reply")
+        item = off_loop(cs.read_work_item, OWNER, REPO, self.cid, 7, self.root)
+        self.assertEqual(item["phase"], "skipped")
+
+        # Recorded once: the next sweep has nothing left to read or wake.
+        client.calls.clear()
+        woken, wake = await self._sweep(client)
+        self.assertEqual(woken, {})
+        self.assertNotIn("label-events:7", client.calls)
+
+    async def test_label_removed_by_the_crews_own_identity_stays_skipped(self):
+        self._skip(7)
+        self._issue(7, labels=[])
+        client = _AnswerClient([_unlabeled("Crew-Bot", _T0_MS + 60_000)], login="crew-bot")
+        self.now[0] = _T0_MS + 120_000
+
+        woken, wake = await self._sweep(client)
+
+        self.assertEqual(woken, {})
+        wake.assert_not_awaited()
+        self.assertIn(7, self._skipped())
+        # Remembered against the pass: the same labelless issue is not re-read.
+        client.calls.clear()
+        await self._sweep(client)
+        self.assertNotIn("label-events:7", client.calls)
+
+    async def test_a_comment_alone_stays_skipped_and_costs_no_call(self):
+        self._skip(7)
+        # The human commented; the label is still on the issue.
+        self._issue(7, labels=[_NEEDS_HUMAN])
+        client = _AnswerClient([])
+
+        woken, wake = await self._sweep(client)
+
+        self.assertEqual(woken, {})
+        wake.assert_not_awaited()
+        self.assertIn(7, self._skipped())
+        self.assertEqual([c for c in client.calls if c.startswith("label-events")], [])
+
+    async def test_a_duplicate_pass_stays_skipped_whoever_removes_the_label(self):
+        self._skip(7, scope="duplicate")
+        self._issue(7, labels=[])
+        client = _AnswerClient([_unlabeled("alice", _T0_MS + 60_000)])
+        self.now[0] = _T0_MS + 120_000
+
+        woken, wake = await self._sweep(client)
+
+        self.assertEqual(woken, {})
+        wake.assert_not_awaited()
+        self.assertIn(7, self._skipped())
+        self.assertEqual([c for c in client.calls if c.startswith("label-events")], [])
+
+    async def test_a_new_feature_pass_is_handed_back_by_a_maintainer(self):
+        """A scope-gate pass asks "should we build this"; a maintainer answering it
+        on the issue and removing the label hands the issue back like a decision."""
+        self._skip(7, scope="new-feature")
+        self._issue(7, labels=[])
+        client = _AnswerClient([_unlabeled("alice", _T0_MS + 60_000)])
+        self.now[0] = _T0_MS + 120_000
+
+        woken, wake = await self._sweep(client)
+
+        self.assertNotIn(7, self._skipped())
+        wake.assert_awaited()
+
+    async def test_a_removal_before_the_pass_is_not_an_answer(self):
+        self.now[0] = _T0_MS + 60_000
+        self._skip(7)
+        self._issue(7, labels=[])
+        client = _AnswerClient([_unlabeled("alice", _T0_MS)])
+
+        woken, _ = await self._sweep(client)
+
+        self.assertEqual(woken, {})
+        self.assertIn(7, self._skipped())
+
+    async def test_a_skip_after_the_answer_indexes_the_number_again(self):
+        self._skip(7)
+        self._issue(7, labels=[])
+        client = _AnswerClient([_unlabeled("alice", _T0_MS + 60_000)])
+        self.now[0] = _T0_MS + 120_000
+        await self._sweep(client)
+        self.assertNotIn(7, self._skipped())
+
+        # Still undecided: the crew publishes the question again and skips again.
+        self.now[0] = _T0_MS + 180_000
+        self._skip(7, scope="needs-investigation")
+
+        self.assertIn(7, self._skipped())
+        row = off_loop(cs.read_skips, OWNER, REPO, self.root)["7"]
+        self.assertEqual(row["scope"], "needs-investigation")
+        # The old removal predates the new pass, so the next sweep leaves it skipped.
+        woken, wake = await self._sweep(client)
+        self.assertEqual(woken, {})
+        wake.assert_not_awaited()
+        self.assertIn(7, self._skipped())
+
+    async def test_an_unknown_forge_identity_fires_nothing(self):
+        self._skip(7)
+        self._issue(7, labels=[])
+        client = _AnswerClient([_unlabeled("alice", _T0_MS + 60_000)], login="")
+        self.now[0] = _T0_MS + 120_000
+
+        woken, _ = await self._sweep(client)
+
+        self.assertEqual(woken, {})
+        self.assertIn(7, self._skipped())
+        self.assertNotIn("label-events:7", client.calls)
+
+    def test_forge_times_normalize_to_the_folds_spelling(self):
+        self.assertEqual(
+            cs.normalize_forge_time("2026-10-16T10:00:00Z"), "2026-10-16T10:00:00.000000Z"
+        )
+        self.assertEqual(
+            cs.normalize_forge_time("2026-10-16T12:00:00.123+02:00"),
+            "2026-10-16T10:00:00.123000Z",
+        )
+        self.assertEqual(cs.normalize_forge_time("yesterday"), "")
 
 
 # ── how the sweep is gated in the poll loop ─────────────────────────────────

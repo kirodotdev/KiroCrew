@@ -211,6 +211,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ledger_step,
     )
     from kiro_crew.crew_log.projection_radar import (  # noqa: F401
+        RADAR_ANSWERED_LIMIT,
         RADAR_EVENT_LIMIT,
         RADAR_ITEM_LIMIT,
         RADAR_PHASE_LINE_LIMIT,
@@ -225,6 +226,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _radar_new_item,
         _radar_number,
         _radar_payload_digest,
+        _radar_record_answer,
         _radar_record_skip,
         _radar_render,
         _radar_start,
