@@ -234,6 +234,9 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
     self._cron_quarantine = moved if isinstance(moved, Path) else None
     if self.dashboard_state:
         self.cron_svc.set_refresh_callback(self.dashboard_state.push_refresh)
+    # A run its deadline ends never returns to _cron_callback, whose failure
+    # paths are the only ones that alert; the service hands it back here.
+    self.cron_svc.set_timeout_alert(self._alert_cron_failure)
     if self._no_crons:
         logger.info("Cron scheduler disabled (--no-crons)")
     else:

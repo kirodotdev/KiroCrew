@@ -293,6 +293,14 @@ async def _force_reap(
             park_one_shot = taken.started_monotonic is not None and run_parks_one_shot(ran)
             if park_one_shot:
                 job.enabled = False
+            # A reaped run that started counts toward auto-pause, like the
+            # wait_for timeout arm; one that never started does not. The same
+            # test decides whether the user is told (below).
+            counted = (
+                taken.started_monotonic is not None
+                and not job.failure_recorded
+                and not ran.run_never_started
+            )
             try:
                 await asyncio.to_thread(
                     self._merge_terminal_state_locked,
@@ -302,11 +310,7 @@ async def _force_reap(
                     last_run_ts=last_run_ts,
                     run_generation=generation,
                     result_produced=taken.started_monotonic is not None and job.result_produced,
-                    # A reaped run that started counts toward auto-pause, like
-                    # the wait_for timeout arm; one that never started does not.
-                    count_failure=taken.started_monotonic is not None
-                    and not job.failure_recorded
-                    and not ran.run_never_started,
+                    count_failure=counted,
                     park_one_shot=park_one_shot,
                     # Off the object the run executed on, never ``job``: a
                     # reload may have made that a store copy whose stamp,
@@ -334,6 +338,8 @@ async def _force_reap(
                     self._push_refresh("cron_history")
             except Exception:
                 logger.exception("Reaper: failed to record history for cron %s", job_id)
+            if counted:
+                self._alert_timeout(job, last_error)
 
         # SEL audit.
         try:
