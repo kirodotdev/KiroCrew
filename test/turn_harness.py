@@ -878,17 +878,18 @@ def _successor_recorder(
     def _dispatch(state: Any, slot: Any, coro: Any, **kwargs: Any) -> asyncio.Future[None]:
         # *coro* is the queue-exit guard wrapping the successor ``_run_chat``; its
         # ``args``/``kwargs`` locals are the successor's call. A guard that
-        # renamed them would fail every hand-off test here, by name.
+        # renamed them would fail every hand-off test here, by name. The queue
+        # drain dispatches its ownership wrapper instead, whose closure holds
+        # the same call as ``next_msg`` and ``_run_kwargs``.
         bound = inspect.getcoroutinelocals(coro)
         coro.close()
-        successors().append(
-            Call(
-                "turn",
-                tuple(bound.get("args", ())),
-                dict(bound.get("kwargs", {})),
-                clock.elapsed(),
-            )
-        )
+        if "_run_kwargs" in bound:
+            args: tuple[Any, ...] = (bound.get("next_msg"),)
+            kwargs_: dict[str, Any] = dict(bound.get("_run_kwargs") or {})
+        else:
+            args = tuple(bound.get("args", ()))
+            kwargs_ = dict(bound.get("kwargs", {}))
+        successors().append(Call("turn", args, kwargs_, clock.elapsed()))
         done: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         done.set_result(None)
         return done

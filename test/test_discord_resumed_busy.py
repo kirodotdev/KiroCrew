@@ -389,15 +389,13 @@ async def test_the_drain_keeps_a_stamped_entry_out_of_command_interpretation(
         return _done()
 
     def _fake_spawn(_state, _slot, coro):
-        coro.close()
-        task = MagicMock()
-        task.done.return_value = True
-        return task
+        return asyncio.create_task(coro)
 
     monkeypatch.setattr(cr, "_run_chat", _stub_run_chat)
     monkeypatch.setattr(cr, "spawn_guarded_turn", _fake_spawn)
 
     assert await cr._start_next_queued_turn(state, slot) is True
+    await slot.task
     assert captured["_commands_off"] is True
 
     captured.clear()
@@ -405,6 +403,7 @@ async def test_the_drain_keeps_a_stamped_entry_out_of_command_interpretation(
     cd.queue_for_next_turn(state, slot, "/clear", directive_user_origin=True)
     slot.task = None
     assert await cr._start_next_queued_turn(state, slot) is True
+    await slot.task
     assert "_commands_off" not in captured, "the composer's own queued command is unchanged"
 
 

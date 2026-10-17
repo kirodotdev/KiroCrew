@@ -144,13 +144,14 @@ logger = logging.getLogger("kiro_crew.messaging.dispatch")
 class _ChannelDirectiveState:
     """Minimal ``NudgeAuthzState`` stand-in for a turn with no gateway state.
 
-    Carries the one thing the monitor-trio authorizer can validate for a
-    channel session — ``sessions`` (Slack routability). The empty ``_slots`` /
-    ``channel_transports`` make every other lookup fail CLOSED (deny), never
-    crash.
+    Carries the state a channel turn can validate without a dashboard slot:
+    ``sessions`` for routability and ``subagents`` for child-work teardown guards.
+    The empty ``_slots`` / ``channel_transports`` make every other lookup fail
+    CLOSED (deny), never crash.
     """
 
     sessions: Any
+    subagents: Any = None
     channel_transports: dict[str, Any] = field(default_factory=dict)
     _slots: dict[str, Any] = field(default_factory=dict)
 
@@ -160,6 +161,7 @@ def build_directive_consumer(
     session_key: str,
     sessions: Any,
     dispatcher: Any = None,
+    subagents: Any = None,
 ) -> DirectiveConsumer:
     """Session-directive consumer for one channel turn (``TurnDriver`` injection).
 
@@ -174,9 +176,11 @@ def build_directive_consumer(
     *dispatcher* supplies the live gateway state: each channel dispatcher gets
     ``dashboard_state`` attached at boot (``register_channel_transport``), and
     it is re-read per directive so a consumer built before that attachment
-    still sees it. Slack's function-style dispatch has no dispatcher object;
-    the minimal *sessions*-backed stand-in covers the Slack routability check,
-    and everything it cannot answer fails CLOSED in the authorizer.
+    still sees it. Without that state the minimal stand-in covers routability
+    and child-work guards: *subagents* when the caller passes one (Slack's
+    function-style dispatch has no dispatcher object), otherwise the
+    dispatcher's ``subagent_manager``. Everything it cannot answer fails CLOSED
+    in the authorizer.
     """
 
     async def _consume(kind: str, args: dict[str, Any]) -> bool:
@@ -188,7 +192,15 @@ def build_directive_consumer(
 
         state: Any = getattr(dispatcher, "dashboard_state", None)
         if state is None:
-            state = _ChannelDirectiveState(sessions=sessions)
+            # Re-read like ``dashboard_state``: every channel gateway attaches the
+            # orchestrator's manager as ``dispatcher.subagent_manager``, so the
+            # child-work stop fence holds on a turn with no dashboard attached.
+            live_subagents = (
+                subagents
+                if subagents is not None
+                else getattr(dispatcher, "subagent_manager", None)
+            )
+            state = _ChannelDirectiveState(sessions=sessions, subagents=live_subagents)
         outcome = await apply_session_directive_outcome(
             state,
             None,
@@ -503,7 +515,12 @@ class ChannelTurns:
                 None
                 if Drift.NO_DIRECTIVES in self.drift
                 else build_directive_consumer(
-                    session_key=session_key, sessions=self._sessions, dispatcher=self._dispatcher
+                    session_key=session_key,
+                    sessions=self._sessions,
+                    dispatcher=self._dispatcher,
+                    # The live manager keeps the child-work stop fence armed on a
+                    # turn with no attached dashboard state.
+                    subagents=getattr(self._dispatcher, "subagent_manager", None),
                 )
             ),
             prepare=prepare,

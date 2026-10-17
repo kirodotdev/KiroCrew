@@ -30,6 +30,7 @@ from kiro_crew.acp.client import AcpError
 from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.dashboard.chat_utils import MODEL_UNENTITLED_KIND, SYNTHETIC_RECOVERY_KIND
 from kiro_crew.dashboard.recovery_replays import ReplayFamily
+from kiro_crew.subagent import SubagentDelivery
 
 _MA = ReplayFamily.MODEL_ACCESS
 _MA_REPLAY = frozenset({_MA})
@@ -386,23 +387,52 @@ async def test_an_owed_completion_is_replayed_as_a_completion_despite_a_stop(tmp
     monkeypatch.setattr(
         "kiro_crew.dashboard.chat_runner._start_next_queued_turn", AsyncMock(return_value=False)
     )
+    message = "[Subagent completion event] the child finished"
+    slot.note_pending_subagent_delivery(message, [SubagentDelivery("child", 1.0, 0.0)])
 
     await _run_chat(
         state,
         slot,
-        "[Subagent completion event] the child finished",
+        message,
         _turn_actor="subagent",
         _on_consumed=MagicMock(),
     )
 
     client.set_model.assert_awaited_once_with("claude-opus-5")
-    assert inserts == [
-        {
-            "content": "[Subagent completion event] the child finished",
-            "kind": SUBAGENT_COMPLETION_KIND,
-        }
-    ], inserts
+    assert inserts == [{"content": message, "kind": SUBAGENT_COMPLETION_KIND}], inserts
     assert not slot.replays.armed(_MA)
+
+
+@pytest.mark.asyncio
+async def test_completion_callback_without_delivery_debt_stays_cancellable(tmp_path, monkeypatch):
+    """A failed, stopped, or empty digest has lifecycle ownership but no result debt."""
+    state = _make_state_for_run_chat(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("s1")
+    client = _client_raising_always(_rejection("auto", ["claude-opus-5", "claude-sonnet-5"]))
+    rejecting_stream = client.stream
+
+    async def _stopped_then_rejected(msg):
+        slot._stop_state = "soft_pending"
+        async for event in rejecting_stream(msg):
+            yield event  # pragma: no cover - the stream raises first
+
+    client.stream = _stopped_then_rejected
+    client.stream_command = _stopped_then_rejected
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+    inserts = _record_inserts(monkeypatch, slot)
+    discarded = MagicMock()
+
+    await _run_chat(
+        state,
+        slot,
+        "[Subagent completion event] the child stopped",
+        _turn_actor="subagent",
+        _on_consumed=MagicMock(),
+        _on_discarded=discarded,
+    )
+
+    assert inserts == []
+    discarded.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -496,11 +526,13 @@ async def test_a_verbatim_recovery_of_a_completion_is_still_owed(tmp_path, monke
     monkeypatch.setattr(
         "kiro_crew.dashboard.chat_runner._start_next_queued_turn", AsyncMock(return_value=False)
     )
+    message = "[Subagent completion event] the child finished"
+    slot.note_pending_subagent_delivery(message, [SubagentDelivery("child", 1.0, 0.0)])
 
     await _run_chat(
         state,
         slot,
-        "[Subagent completion event] the child finished",
+        message,
         _turn_actor="subagent",
         _on_consumed=MagicMock(),
         _synthetic_recovery_turn=True,

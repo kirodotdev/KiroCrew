@@ -423,6 +423,21 @@ class TerminalCoordinator(ManagerComponent):
             # Owed only to the parent that ended, so this skip settles it.
             info._report_delivered = True
             return True
+
+        async def _retain_failure(reason: str) -> None:
+            retained = self._manager.notify_injection_failed(info, reason=reason)
+            if retained is None:
+                return
+            try:
+                await asyncio.shield(retained)
+            except Exception:
+                logger.debug(
+                    "%s: failed to retain completion fallback for %s",
+                    source,
+                    info.id,
+                    exc_info=True,
+                )
+
         try:
             await asyncio.wait_for(self._manager._on_done(info), timeout=_ON_DONE_TIMEOUT)
             # The outcome has REACHED the parent. Recorded before any further
@@ -545,10 +560,11 @@ class TerminalCoordinator(ManagerComponent):
                     info.parent_session_key,
                     exc_info=True,
                 )
-            self._manager.notify_injection_failed(info, reason=injection_timeout_reason)
+            await _retain_failure(injection_timeout_reason)
             return False
         except Exception:
             logger.exception("%s: announce failed for %s", source, info.id)
+            await _retain_failure("completion delivery failed before acceptance")
             return False
 
     async def _run_terminal_report_impl(
@@ -653,6 +669,55 @@ class TerminalCoordinator(ManagerComponent):
 
         task.add_done_callback(_forget)
         return task
+
+    def retain_completion_delivery_impl(self, parent_session_key: str, agent_id: str) -> None:
+        """Transfer one accepted completion from report-task to parent ownership."""
+        if not parent_session_key or not agent_id:
+            return
+        owners = self._manager._retained_completion_owners.setdefault(parent_session_key, {})
+        owners[agent_id] = owners.get(agent_id, 0) + 1
+
+    def release_completion_delivery_impl(self, parent_session_key: str, agent_id: str) -> None:
+        """Release one transferred completion after consumption or durable discard."""
+        owners = self._manager._retained_completion_owners.get(parent_session_key)
+        if not owners:
+            return
+        count = owners.get(agent_id, 0)
+        if count <= 1:
+            owners.pop(agent_id, None)
+        else:
+            owners[agent_id] = count - 1
+        if not owners:
+            self._manager._retained_completion_owners.pop(parent_session_key, None)
+
+    def release_completion_deliveries_for_impl(self, parent_session_key: str) -> int:
+        """Release every transferred completion after an authoritative human stop."""
+        owners = self._manager._retained_completion_owners.pop(parent_session_key, {})
+        return sum(owners.values())
+
+    def terminal_delivery_inflight_for_impl(self, parent_session_key: str) -> bool:
+        """Whether *parent_session_key* owns an unsettled terminal delivery.
+
+        ``info.done`` becomes true before ``_on_done`` injects the completion,
+        so the running-agent registry alone cannot represent this interval.
+        Ordinary completions own a terminal-report task; rejections and
+        lost-submission synthetics that never enter ``_run`` announce through
+        ``_safe_announce`` on a task registered in ``_announce_owners`` when it
+        is scheduled. Both task maps retain the parent identity through callback
+        acceptance or the awaited failure fallback. Once the callback accepts an
+        asynchronous dashboard handoff, the counted manager-owned ledger retains
+        the same fence beyond task completion and slot removal until consumption
+        or durable discard settlement.
+        """
+        if self._manager._retained_completion_owners.get(parent_session_key):
+            return True
+        for owners in (self._manager._report_owners, self._manager._announce_owners):
+            if any(
+                not task.done() and info.parent_session_key == parent_session_key
+                for task, info in owners.items()
+            ):
+                return True
+        return False
 
     def _release_slot_impl(self, info: SubagentInfo) -> bool:
         """Claim the exclusive right to free ``info``'s concurrency slot.
@@ -1477,7 +1542,7 @@ class TerminalCoordinator(ManagerComponent):
 
     def notify_injection_failed_impl(
         self, info: SubagentInfo, reason: str = "delivery timed out"
-    ) -> None:
+    ) -> "asyncio.Task | None":  # type: ignore[type-arg]
         """Notify UI and queue failure for LLM when injection times out.
 
         Appends a synthetic error to the dashboard slot (UI) and queues a
@@ -1499,7 +1564,7 @@ class TerminalCoordinator(ManagerComponent):
             # for every failure-announce caller (the ``_on_done`` timeout here and
             # the gateway's injection paths), so gating it once covers them all.
             logger.info("Reaper: skipping failure announce for %s — its parent ended", info.id)
-            return
+            return None
         # Every route that gives up on an injection comes through here, and most
         # then return normally from ``_on_done``, so this is where the record
         # learns its report did not reach the parent. Set before the slot check:
@@ -1516,7 +1581,7 @@ class TerminalCoordinator(ManagerComponent):
             # to and nothing to drain on the next turn.
             slot_name = dashboard_slot_key(info.parent_session_key)
             if not slot_name:
-                return
+                return None
 
             # Build failure message the LLM will see on next turn
             task_preview = _redact((info.task or "")[:100])
@@ -1554,5 +1619,7 @@ class TerminalCoordinator(ManagerComponent):
                     )
                 )
                 _task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+                return _task
         except Exception:
             logger.debug("notify_injection_failed failed for %s", info.id, exc_info=True)
+        return None

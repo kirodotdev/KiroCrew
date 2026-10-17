@@ -2002,6 +2002,52 @@ Two more reads on this area follow config without a restart:
 (`_effective_prompt_timeout_async`), so `agent.chat_turn_timeout_secs` needed no
 applier — a raised turn budget is in force on the next prompt.
 
+## Queued completion cancellation ownership
+
+A queued sub-agent completion transfers its one-shot consumption, irreversible
+consumption, discard callback, and delivery fence into the queue-drain dispatch
+when the queue row is popped. A pre-entry owner keeps the discard callback until
+the dispatched wrapper begins `chat_runner._run_chat`; cancellation or task-
+construction failure before that point invokes the durable-discard path, while
+entry transfers exclusive recovery/discard ownership into `_run_chat`. If the
+turn fails before consumption, the runner must preserve that exact ownership on
+one `lifecycle_recovery` row only when it replays the completion announce
+itself. That row carries the completion-replay mark when it queues the raw
+announce, even when drained failure notices or context enriched the prompt, so
+a second failure keeps it a completion. User-text and
+runner-written retries keep the ordinary `synthetic_recovery` kind, so stale-
+admission revalidation still applies to them. This includes the dashboard turn ceiling cancelling the inner turn,
+transport/model cancellation, and any system cancellation with no user intent.
+The settlement is registered on the turn's exit record when its main `finally`
+begins and runs once: a cancel that lands in a later teardown await (the
+forced history save, the local-turn marker clear) is caught by the exit guard,
+which runs the settlement before the tail.
+
+The retry row goes behind every entry already queued, so a user message queued
+during the failed turn drains in the ordinary hand-off and the retry runs after
+it. Only a retry that would be the next entry drained holds the queue, so the
+same failing cycle never walks it straight back into the failure; a later turn
+or the user's next action starts it. `test_completion_retry_ownership.py` pins
+both cases and the teardown cancel.
+
+A direct user Stop, explicit removal of the queued recovery row, or rewind
+remains authoritative: it discards the row and callback once. Slot teardown is
+authoritative after its history commit: it retires the callback once but keeps
+the archived queue row on the retired slot, so a late flush cannot erase queued
+work already written to History. A close that hands its key to a recreate
+commits through `_persist_handover_tail`, and retires the callbacks only when
+that write reports `rows_committed`. A failed tail leaves them unfired, so the
+manager keeps the delivery for restart orphan reconciliation. None of these
+paths recreates the recovery row. Session-mutation 409s keep their established running,
+queued, and active-handoff predicate and their `sub-agents are running` body. The goal-stop directives alone add owned
+terminal reports and accepted completion turns. A retained failure notice is
+future turn context rather than attached work. A one-shot discard first clears every report-only store marker or writes and
+reads back every result tombstone. Failure keeps ordinary manager ownership for
+restart orphan reconciliation and records its reason in the SEL, without a
+second recovery ledger or refusal state. Callback
+transfer and discard are mutually exclusive, so no completion can
+settle twice.
+
 ## Stop Orchestration
 
 `stop_turn()` is the shared orchestration layer for every stop surface (dashboard Stop button, Slack `/kirocrew stop`, transport stop verbs). Sequence:

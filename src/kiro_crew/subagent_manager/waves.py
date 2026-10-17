@@ -248,7 +248,7 @@ class WaveDigestCoordinator(ManagerComponent):
                 # for a task cancelled before its first run.
                 self._manager.arm_report_in_flight(info)
                 _lost_task = asyncio.ensure_future(self._manager._safe_announce(info))
-                self._hold_announce_task(f"lost-{info.id}", _lost_task)
+                self._hold_announce_task(f"lost-{info.id}", _lost_task, owner=info)
                 _lost_task.add_done_callback(
                     lambda _t: self._manager.consume_report_hold(info.batch_id, info.id)
                 )
@@ -484,6 +484,7 @@ class WaveDigestCoordinator(ManagerComponent):
             self._hold_announce_task(
                 f"flush-{info.id}",
                 asyncio.ensure_future(self._manager._announce_digest_flush(info)),
+                owner=info,
             )
         except RuntimeError:
             pass  # no running loop (sync/test context)
@@ -550,7 +551,12 @@ class WaveDigestCoordinator(ManagerComponent):
         gateway event loop. A memory-wait expiry's debt writes no tombstone; it
         clears the store's owed report (:meth:`_settle_owed_reports`).
         """
-        for delivery in self._settle_owed_reports(deliveries):
+        owed_reports = [delivery.agent_id for delivery in deliveries if delivery.report_owed]
+        if owed_reports:
+            await self._manager._admission.taskq_clear_owed_reports_async(owed_reports)
+        for delivery in deliveries:
+            if delivery.report_owed:
+                continue
             agent_id = delivery.agent_id
             gate = self._manager._teardown_gates.get(agent_id)
             if gate is not None and not gate.is_set():

@@ -27,17 +27,16 @@ transcript / WS / hook surfaces, it does NOT replace the model's tool result.
 That is why the tool bodies phrase their own message to not over-claim an effect
 this consumer applies (and may refuse) after the fact.
 
-IMPORTS ARE DELIBERATELY FUNCTION-LOCAL here, except for the shared session and
-Research ownership contracts plus the immutable ``AUTONUDGE_STOP_REASON``
-constant. ``sel`` is a genuine cycle
+IMPORTS ARE DELIBERATELY FUNCTION-LOCAL here, except for the shared session,
+child-work, and Research ownership contracts plus the immutable
+``AUTONUDGE_STOP_REASON`` constant. ``sel`` is a genuine cycle
 (``sel`` -> config -> apps -> dashboard, and chat_runner imports this module
-before it imports sel). The rest (autonudge, autonudge_authz, chat_utils,
-security, chat_handlers, chat_persistence, chat_tags, chat_tag_grants) are
-deferred on purpose: they keep this module cheap to
-import from the turn loop's import graph, and they resolve the symbol at CALL
-time so patching the SOURCE module is what tests (and any runtime override)
-actually observe — a module-scope ``from X import name`` would freeze a stale
-binding and silently bypass it.
+before it imports sel). The rest (autonudge, autonudge_authz, security,
+chat_handlers, chat_persistence, chat_tags, chat_tag_grants) are deferred on
+purpose: they keep this module cheap to import from the turn loop's import graph,
+and they resolve the symbol at CALL time so patching the SOURCE module is what
+tests (and any runtime override) actually observe — a module-scope ``from X
+import name`` would freeze a stale binding and silently bypass it.
 """
 
 from __future__ import annotations
@@ -61,6 +60,10 @@ from kiro_crew.autonudge import (
     is_channel_key,
 )
 from kiro_crew.autonudge_judge import screen_phrase
+from kiro_crew.dashboard.chat_utils import (
+    SUBAGENT_ATTACHMENT_RECOVERY_GUIDANCE,
+    subagent_attachment_detail_async,
+)
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.session_surface import has_dashboard_surface
 
@@ -567,6 +570,7 @@ async def apply_session_directive_outcome(
             )
         elif kind == "monitor_stop":
             result = await _monitor_stop(
+                state,
                 slot,
                 session_key,
                 args,
@@ -574,6 +578,7 @@ async def apply_session_directive_outcome(
             )
         elif kind == "autonudge_stop":
             result = await _autonudge_stop(
+                state,
                 slot,
                 session_key,
                 args,
@@ -1611,13 +1616,14 @@ async def _stop_resolved_loop(
 
 
 async def _monitor_stop(
+    state: Any,
     slot: Any,
     session_key: str,
     args: dict[str, Any],
     *,
     wake_loop_id: str = "",
 ) -> str:
-    from kiro_crew.autonudge import get_instance
+    from kiro_crew.autonudge import get_instance, is_structured_monitor_loop
 
     svc = get_instance()
     if svc is None:
@@ -1632,6 +1638,18 @@ async def _monitor_stop(
     loop = svc.get_by_slot(binding)
     if not loop:
         return _no_loop_message(svc, binding)
+    # One shared evaluation names the probe that holds the fence, the same
+    # bounded phrase the dashboard's 409 surface reports, so the agent can tell
+    # a running child (wait for it) from its own unconsumed completion turn.
+    attachment = await subagent_attachment_detail_async(state, slot, session_key, "monitor_stop")
+    if attachment is not None:
+        label = "Structured monitor" if is_structured_monitor_loop(loop) else "Auto-nudge loop"
+        guidance = SUBAGENT_ATTACHMENT_RECOVERY_GUIDANCE
+        raise _DirectiveDenied(
+            f"Error: {label} was not stopped: sub-agent work is still attached "
+            f"to this session ({attachment}); {guidance}. Stop only if "
+            "the goal is complete."
+        )
     return await _stop_resolved_loop(
         slot,
         svc,
@@ -1643,6 +1661,7 @@ async def _monitor_stop(
 
 
 async def _autonudge_stop(
+    state: Any,
     slot: Any,
     session_key: str,
     args: dict[str, Any],
@@ -1665,6 +1684,14 @@ async def _autonudge_stop(
     loop = svc.get_by_slot(binding)
     if not loop:
         return _no_loop_message(svc, binding)
+    attachment = await subagent_attachment_detail_async(state, slot, session_key, "autonudge_stop")
+    if attachment is not None:
+        guidance = SUBAGENT_ATTACHMENT_RECOVERY_GUIDANCE
+        raise _DirectiveDenied(
+            "Error: Auto-nudge loop was not stopped: sub-agent work is still attached "
+            f"to this session ({attachment}); {guidance}. Stop only if "
+            "the goal is complete."
+        )
     return await _stop_resolved_loop(
         slot,
         svc,

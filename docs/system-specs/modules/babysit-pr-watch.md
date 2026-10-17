@@ -306,8 +306,52 @@ retained outcome untouched.
 consumer applies it after the turn result is processed. The applier refuses
 with "Monitor NOT stopped" when a concurrent arm replaced the loop or the monitor
 service applied nothing (it is paused for maintenance); otherwise it removes the
-monitor loop on the calling binding, or reports an idempotent local miss. It never exposes a cross-session target; `test_autonudge_stop_auth.py`
-pins both the request wording and the local-binding behavior.
+monitor loop on the calling binding, or reports an idempotent local miss.
+Before removal, both it and the structured `monitor_stop` directive call
+the shared `chat_utils.subagent_attachment_detail_async` evaluation. This
+stop-only extension refuses while the session has running or queued children,
+an owned terminal report (including a spawn rejection), or an accepted
+completion turn not yet consumed. Other session operations keep the established
+running, queued, and active-handoff predicate. A retained failure notice in
+`_pending_subagent_failures` is future turn context, not attached work, and does
+not fence either set of operations.
+
+The terminal probe includes ownership transferred from a finished report task
+into the manager, so a slot-less channel directive remains fenced after the
+dashboard slot disappears. With no dashboard state attached, the channel
+consumer reads the manager from its caller or from the dispatcher's
+`subagent_manager`, which every channel gateway attaches at boot;
+`test_directive_consumer_subagents.py` checks every `build_directive_consumer`
+call site. Completion consumption owns a
+retractable callback, so the first empty-response requeue keeps the fence and a
+landed retry releases it exactly once. An explicit queue discard carries a
+separate terminal callback. It releases the fence and retires delivery debt only
+after every delivered tombstone reads back durable and every report-only
+store marker has cleared. A one-shot settlement failure keeps the manager-owned
+delivery for restart orphan reconciliation and records a
+`subagent_completion_discard` / `retained` SEL row with the reason. It does not
+add a second recovery ledger or a special refusal branch.
+
+This keeps a goal driver active until its delegated work has settled. Probe
+failures and retained completion ownership never extend the loop's configured
+cycle or wall-clock budgets; those budgets still deactivate it independently.
+The dashboard's
+direct Stop/Delete control remains the user-owned override and does not consult
+this agent-only fence. It releases the retained fence for the loop's binding,
+channel bindings included. It never exposes a cross-session target.
+
+No channel stop verb releases the retained fence: `stop_turn` also serves
+internal recovery, so it is not a human-stop signal for the manager's ledger.
+On a session reached only through a channel, nothing the user sends there
+releases a fence retained after a failed settlement. The loop still ends on its
+own cycle or runtime cap when it has one, on the dashboard monitor Stop or
+Delete, or on a gateway restart, which drops the in-memory ledger and leaves
+the delivery to orphan reconciliation. A loop with neither cap keeps being
+nudged, and its own stop keeps being refused, until the dashboard control or a
+restart ends it.
+`test_autonudge_stop_auth.py`, `test_monitor_directive_apply.py`, and
+`test_autonudge_handlers_cov80.py` pin the request wording, local-binding
+behavior, child-work refusal, and direct-user opposite case.
 
 ## PR fetcher
 

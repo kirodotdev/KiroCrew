@@ -225,7 +225,18 @@ def subagents_attached_now(state: "DashboardState", slot: "_ChatSlot") -> bool:
     except Exception:  # noqa: BLE001 - an unanswerable probe keeps the slot
         logger.debug("sub-agent probe failed for %s", slot.key, exc_info=True)
         return True
-    return _attached_verdict(running, 0, slot)
+    return (
+        _attached_verdict(
+            subs,
+            running,
+            0,
+            False,
+            slot,
+            effective_session_key(slot),
+            "idle_sweep",
+        )
+        is not None
+    )
 
 
 def select_idle_slot_keys(

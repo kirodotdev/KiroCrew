@@ -323,6 +323,9 @@ class DiscordDispatcher:
         self.agent = agent
         self.conv_log = conv_log
         self.approval_mode = approval_mode
+        # Set by maybe_start_discord after construction, alongside client/transport.
+        # Needed when a channel turn has no attached dashboard state.
+        self.subagent_manager: Any = None
         self.client: "DiscordClient | None" = None
         # Set by maybe_start_discord after construction (same construction-cycle
         # reason as ``client``); the config applier pushes reloaded authorization

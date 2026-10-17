@@ -118,6 +118,7 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "taskq_chip_overflow_async": ("coroutine", "d92f11a663b3", "taskq_bridge_reads"),
     "taskq_clear_owed_report_if_delivered": ("function", "2726da679e64", "taskq_bridge_expiry"),
     "taskq_clear_owed_reports": ("function", "c71df92fa7a2", "taskq_bridge_expiry"),
+    "taskq_clear_owed_reports_async": ("coroutine", "c71df92fa7a2", "taskq_bridge_expiry"),
     "taskq_defer": ("function", "97438f14bf56", "taskq_bridge_accept"),
     "taskq_defer_posted": ("function", "49f1fc64f591", "taskq_bridge_accept"),
     "taskq_dispatch_excluded_ids": ("function", "e74d1fb976c9", "taskq_bridge"),

@@ -826,6 +826,26 @@ async def api_monitor_update(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "monitor": _serialize_monitor(updated)})
 
 
+def _completion_owner_key_for_binding(binding: str) -> str:
+    """The manager-ledger parent session key for a loop's *binding*.
+
+    The completion ledger is keyed by the child's ``parent_session_key``.
+    :func:`binding_key_for` strips ``dashboard:`` from a dashboard session and
+    passes a channel session through, so this is its inverse.
+    """
+    if not binding or binding.startswith("dashboard:") or is_channel_key(binding):
+        return binding
+    return f"dashboard:{binding}"
+
+
+def _release_human_stopped_completion_ownership(state: DashboardState, binding: str) -> None:
+    """Release retained completion fences after an authoritative dashboard stop."""
+    subagents = getattr(state, "subagents", None)
+    release = getattr(subagents, "release_completion_deliveries_for", None)
+    if callable(release):
+        release(_completion_owner_key_for_binding(binding))
+
+
 async def api_monitor_stop(request: web.Request) -> web.Response:
     """POST /api/monitors/{id}/stop — retain a durable user-stop outcome."""
     denied = await _require_monitor_owner(request, "monitor_stop")
@@ -846,6 +866,7 @@ async def api_monitor_stop(request: web.Request) -> web.Response:
     )
     if error is not None:
         return _monitor_error(error, "monitor_stop_denied", status=status)
+    _release_human_stopped_completion_ownership(request.app["state"], loop.slot_key)
     return web.json_response({"ok": True, "monitor": _serialize_monitor(stopped)})
 
 
@@ -1214,6 +1235,7 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
             )
             if error is not None:
                 return _monitor_error(error, "monitor_clear_denied", status=status)
+            _release_human_stopped_completion_ownership(request.app["state"], existing.slot_key)
             return web.json_response({"ok": True})
         _stopped, error, status = await authorize_and_stop_monitor(
             svc=svc,
@@ -1224,12 +1246,15 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
         )
         if error is not None:
             return _monitor_error(error, "monitor_stop_denied", status=status)
+        _release_human_stopped_completion_ownership(request.app["state"], existing.slot_key)
         return web.json_response({"ok": True})
     # The structured branch above gates itself; this is the legacy row's gate.
     denied = await _require_monitor_owner(request, "autonudge_delete")
     if denied is not None:
         return denied
     await svc.remove(loop_id, stop_reason="dashboard_delete")
+    if existing is not None:
+        _release_human_stopped_completion_ownership(request.app["state"], existing.slot_key)
     sel().log_tool_invocation(
         session_key=existing.slot_key if existing else "",
         source="dashboard",

@@ -803,6 +803,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     EMPTY_RUNG_REPLAY,
     EMPTY_TURN_NOTICE_KIND,
     FALSE_TOOL_BLOCKER_REPLAY_KIND,
+    LIFECYCLE_RECOVERY_KIND,
     MCP_APP_MESSAGE_KIND,
     MODEL_UNENTITLED_KIND,
     SESSION_START_FAILED_KIND,
@@ -2980,7 +2981,12 @@ async def _start_next_queued_turn(
     _revalidated_ids = [
         item["id"]
         for item in consumed
-        if item.get("kind") not in (CRON_NOTIFICATION_KIND, SUBAGENT_COMPLETION_KIND)
+        if item.get("kind")
+        not in (
+            CRON_NOTIFICATION_KIND,
+            SUBAGENT_COMPLETION_KIND,
+            LIFECYCLE_RECOVERY_KIND,
+        )
     ]
     if _revalidated_ids:
         audit_queued_allow(slot, _revalidated_ids)
@@ -3140,6 +3146,9 @@ async def _start_next_queued_turn(
     _irreversible_delivery_callbacks = [
         callback for item in consumed if callable(callback := item.get("_on_irreversibly_consumed"))
     ]
+    _discard_callbacks = [
+        callback for item in consumed if callable(callback := item.get("_on_discarded"))
+    ]
 
     def _note_consumed(consumed: bool = True) -> None:
         # False is a RETRACTION: the runner re-queued this exact announce verbatim
@@ -3153,6 +3162,10 @@ async def _start_next_queued_turn(
             result = callback()
             if inspect.isawaitable(result):
                 await result
+
+    def _note_discarded() -> None:
+        for callback in _discard_callbacks:
+            callback()
 
     _run_kwargs: dict[str, Any] = {
         "_current_message": current_row,
@@ -3228,11 +3241,31 @@ async def _start_next_queued_turn(
                 if isinstance(_loop_id, str) and _loop_id:
                     _run_kwargs["_directive_loop_id"] = _loop_id
                 break
-    task = spawn_guarded_turn(
-        state,
-        slot,
-        _run_chat(state, slot, next_msg, **_run_kwargs),
-    )
+    if _discard_callbacks:
+        _run_kwargs["_on_discarded"] = _note_discarded
+
+    # The popped queue row has transferred its lifecycle callbacks. Keep a
+    # pre-entry owner until _run_chat begins; from that point its finally block
+    # owns recovery or explicit discard.
+    _runner_entered: list[None] = []
+
+    async def _run_owned_queued_turn() -> None:
+        _runner_entered.append(None)
+        await _run_chat(state, slot, next_msg, **_run_kwargs)
+
+    try:
+        task = spawn_guarded_turn(state, slot, _run_owned_queued_turn())
+    except BaseException:
+        _note_discarded()
+        raise
+
+    if _discard_callbacks:
+
+        def _discard_if_runner_never_entered(_task: "asyncio.Task[Any]") -> None:
+            if not _runner_entered:
+                _note_discarded()
+
+        task.add_done_callback(_discard_if_runner_never_entered)
     slot.task = task
     if _settleable:
         # Open the retention clock on the result files this row promises — but
@@ -3718,12 +3751,14 @@ class _TurnExit:
 
     __slots__ = (
         "actor",
+        "completion_retry_held",
         "depth",
         "handed_off",
         "local_command",
         "outcome",
         "reached_provider",
         "responsive_owner",
+        "settle_completion",
         "turn_id",
     )
 
@@ -3732,6 +3767,17 @@ class _TurnExit:
         # this turn's own recovery from a new turn (``_start_next_queued_turn``).
         self.actor = ""
         self.turn_id = ""
+        # An unconsumed completion is still owned by its producer unless a user
+        # or teardown explicitly removes it. Errors and system cancellations
+        # retain that ownership on an exact held queue row, and the hand-off
+        # then holds the queue so the retry is not walked straight back into
+        # the failure that produced it.
+        self.completion_retry_held = False
+        # One-shot settlement of that ownership, registered when the turn's main
+        # ``finally`` begins. The exit guard calls it when a cancel cuts the
+        # teardown short before the turn's own call, so a popped completion
+        # always ends with a retry row or an explicit discard.
+        self.settle_completion: "Callable[[], None] | None" = None
         self.depth = 0
         self.handed_off = False
         self.local_command = ""
@@ -3847,11 +3893,17 @@ async def _end_turn_tail(
     if slot._responsive is not None and slot._responsive.owner is turn_exit.responsive_owner:
         slot._responsive.owner = None
         slot._responsive.cancel_grace()
+    retry_held = turn_exit.completion_retry_held
     await _hand_off_queue(
         state,
         slot,
-        drain=memory_admitted and not slot._last_turn_auth_required and not setup_failed,
-        allow_automatic_successor=memory_admitted and not setup_failed,
+        drain=(
+            memory_admitted
+            and not slot._last_turn_auth_required
+            and not setup_failed
+            and not retry_held
+        ),
+        allow_automatic_successor=memory_admitted and not setup_failed and not retry_held,
         predecessor_actor=turn_exit.actor,
         predecessor_turn_id=turn_exit.turn_id,
     )
@@ -3920,6 +3972,15 @@ def _hands_off_queue_on_exit(
                 setup_failed = not turn_exit.local_command
             raise
         finally:
+            if not closing and turn_exit.settle_completion is not None:
+                try:
+                    turn_exit.settle_completion()
+                except Exception:
+                    logger.warning(
+                        "completion settlement failed for slot %s",
+                        getattr(slot, "key", "?"),
+                        exc_info=True,
+                    )
             if not closing and not turn_exit.handed_off:
                 try:
                     # A cancel landing inside the tail is deferred until the
@@ -4203,6 +4264,8 @@ async def _run_chat(
     regenerate_hint: str = "",
     _on_consumed: "Callable[[bool], None] | None" = None,
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None" = None,
+    _on_discarded: "Callable[[], None] | None" = None,
+    _on_lifecycle_recovery_retained: "Callable[[], None] | None" = None,
     monitor_completion: MonitorCompletionHook | None = None,
     _current_message: dict | None = None,
 ) -> None:
@@ -5065,6 +5128,7 @@ async def _run_chat(
     # stays consumed.
     turn._consumed_reported = False
     turn._irreversible_consumption_reported = False
+    turn._discard_transferred = False
 
     async def _report_consumed(consumed: bool = True, *, irreversible: bool = False) -> None:
         if irreversible and not turn._irreversible_consumption_reported:
@@ -5105,6 +5169,12 @@ async def _run_chat(
         channel-born session (fail-closed). The requeue is the moment its
         admission is re-affirmed, and the turn's directive provenance rides
         along so the audience exemption follows the original author.
+
+        While an unconsumed completion still supplies ``on_discarded``, the
+        callback moves onto the new row. Only a verbatim replay of this turn's
+        completion announce receives the lifecycle-owned kind. Runner-written
+        continuations and user-text recoveries remain ordinary recoveries, so
+        stale-admission revalidation still applies to them.
 
         A requeue of the sender's own text, unchanged, also keeps the sender's
         drop-notice addresses (the channel conversation or the sending session),
@@ -5148,10 +5218,24 @@ async def _run_chat(
             # without these lists the replayed transcript row falls back to a
             # whitespace-bounded path and truncates spaced attachment names.
             _recovery_meta.update(attachment_meta(_current_replay_message.get("meta")))
+        discard_callback = _on_discarded if not turn._consumed_reported else None
+        replays_completion_announce = _turn_is_completion and content == _incoming_message
+        if (
+            discard_callback is not None
+            and replays_completion_announce
+            and kind != SUBAGENT_COMPLETION_KIND
+        ):
+            queued_kind = LIFECYCLE_RECOVERY_KIND
+        elif kind == LIFECYCLE_RECOVERY_KIND:
+            # The lifecycle exemption is positive provenance for the completion
+            # announce itself, never a label a user-text recovery may inherit.
+            queued_kind = SYNTHETIC_RECOVERY_KIND
+        else:
+            queued_kind = kind
         _recovery_qid = slot.queue_insert(
             index,
             content,
-            kind=kind,
+            kind=queued_kind,
             payload=payload,
             # The turn's actor rides along with the admission stamp, and for the
             # same reason: a recovery is a SECOND TURN OF THE SAME ACTOR, so
@@ -5169,12 +5253,17 @@ async def _run_chat(
             on_irreversibly_consumed=(
                 _on_irreversibly_consumed if not turn._irreversible_consumption_reported else None
             ),
+            on_discarded=discard_callback,
             directive_user_origin=_directive_user_origin,
             directive_channel_origin=_directive_channel_origin,
         )
-        if content == turn.message and _turn_is_completion:
+        if _turn_is_completion and (replays_completion_announce or content == turn.message):
             # A verbatim requeue still replays the completion; runner-written
             # text queued after it (a continuation, a retry prompt) does not.
+            # The raw announce counts too: ``turn.message`` may carry drained
+            # failure notices or context, and the retry queues the raw bytes,
+            # so comparing against the enriched text alone would let a second
+            # failure requeue the completion as an ordinary recovery.
             for _entry in slot._queue:
                 if _entry.get("id") == _recovery_qid:
                     _entry[_REPLAYS_COMPLETION_KEY] = True
@@ -5201,7 +5290,51 @@ async def _run_chat(
                     getattr(state, "sessions", None), _refusal_key or session_key
                 ),
             )
+        if discard_callback is not None:
+            turn._discard_transferred = True
+            if _on_lifecycle_recovery_retained is not None:
+                _on_lifecycle_recovery_retained()
         return _recovery_qid
+
+    def _settle_unconsumed_completion() -> None:
+        """Give a popped, unconsumed completion its one owner at turn exit.
+
+        A completion row popped for this turn has no queue entry left to own
+        its one-shot callbacks. Error/auth/authorization exits and system
+        cancellation are not a user decision to discard the result: transfer
+        the callbacks to an exact recovery row. A direct Stop or slot teardown
+        is an explicit removal boundary and retires the callbacks immediately.
+
+        The row goes behind whatever is already queued, so a user's queued
+        message still drains in the ordinary hand-off and the retry runs after
+        it. Only when the retry would be the next entry drained is the queue
+        held, so it is not walked straight back into the failure that produced
+        it; a later turn or the user's next action starts it.
+
+        Synchronous and one-shot: the turn's ``finally`` calls it, and the exit
+        guard calls it when a cancel cut that teardown short.
+        """
+        turn_exit.settle_completion = None
+        if _on_discarded is None or turn._consumed_reported or turn._discard_transferred:
+            return
+        if _stop_pressed() or state._slots.get(slot.key) is not slot:
+            try:
+                _on_discarded()
+            except Exception:
+                logger.warning(
+                    "completion discard callback failed for slot %s",
+                    slot.key,
+                    exc_info=True,
+                )
+            return
+        queued_ahead = len(slot._queue)
+        _queue_recovery(
+            queued_ahead,
+            _incoming_message,
+            kind=SYNTHETIC_RECOVERY_KIND,
+            payload=payload_for_replay(_is_synthetic),
+        )
+        turn_exit.completion_retry_held = queued_ahead == 0
 
     def _replay_owes_delivery() -> bool:
         """Whether a verbatim requeue of this turn replays a completion still owed.
@@ -5221,6 +5354,7 @@ async def _run_chat(
             _turn_is_completion
             and _on_consumed is not None
             and not turn._consumed_reported
+            and slot.owes_subagent_delivery([_incoming_message])
             and slot._stop_state != "killing"
         )
 
@@ -5228,7 +5362,7 @@ async def _run_chat(
         """Queue this turn's owed completion again, as a completion."""
         _queue_recovery(
             0,
-            turn.message,
+            _incoming_message,
             kind=SUBAGENT_COMPLETION_KIND,
             extra_meta=(
                 _current_message.get("meta")
@@ -15995,6 +16129,10 @@ async def _run_chat(
                 "nudge_turn": _directive_self_wake and _turn_landed,
             },
         )
+        # Then register the popped completion's settlement. The teardown
+        # below awaits, and a cancel there skips this frame's own call; the exit
+        # guard then runs it before the tail, so the ownership is never stranded.
+        turn_exit.settle_completion = _settle_unconsumed_completion
         # The turn's crew log closers, in the one order a reader can trust: every
         # `message/sent` for this turn has now been flushed, so the tool closer,
         # the last step's completion and the turn's own completion land after the
@@ -16385,6 +16523,9 @@ async def _run_chat(
                 await _clear_local_turn_marker(state, slot, _local_turn_marker_generation)
             except Exception:
                 logger.debug("_clear_local_turn_marker failed", exc_info=True)
+        # A popped completion's owner is decided before the hand-off reads the
+        # hold it may set.
+        _settle_unconsumed_completion()
         # The per-exit duties and the queue hand-off, in their one order. Run to
         # completion: a cancel landing inside the tail (a turn deadline during
         # the deferred-reset consume) is deferred until the hand-off ran, then

@@ -109,6 +109,39 @@ class TestEmptyResponseRetryLadder:
         assert len(own_flushes) == 1
 
     @pytest.mark.asyncio
+    async def test_stale_user_replay_with_discard_owner_is_revalidated(
+        self, tmp_path: Path
+    ) -> None:
+        """A user replay never borrows the completion-only lifecycle exemption."""
+        from kiro_crew.dashboard.chat_runner import (
+            SYNTHETIC_RECOVERY_KIND,
+            _drop_stale_admissions,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        self._make_empty_stream(client)
+        on_discarded = MagicMock()
+        with patch(
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new=AsyncMock(return_value=False),
+        ):
+            await _run_chat(
+                state,
+                slot,
+                "user replay",
+                _on_discarded=on_discarded,
+            )
+            await self._cancel_background_tasks(state)
+
+        assert len(slot._queue) == 1
+        assert slot._queue[0]["kind"] == SYNTHETIC_RECOVERY_KIND
+        slot.linked_session_key = "C0LINKED|1700000000.000100"
+        _drop_stale_admissions(state, slot)
+
+        assert slot._queue == []
+        on_discarded.assert_called_once_with()
+
+    @pytest.mark.asyncio
     async def test_empty_response_at_depth_gt0_shows_error_immediately(
         self, tmp_path: Path
     ) -> None:

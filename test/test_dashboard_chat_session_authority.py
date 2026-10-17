@@ -828,6 +828,7 @@ class TestSessionReload:
 
         assert resp.status == 409
         assert data["code"] == "slot_subagents_running"
+        assert data["error"] == "sub-agents are running"
         state.sessions.reset.assert_not_awaited()
         assert len(slot.messages) == before
         eager.assert_not_called()
