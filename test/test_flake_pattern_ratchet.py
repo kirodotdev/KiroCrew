@@ -29,7 +29,10 @@ each file a change touches is held to its own count at the change's merge-base.
   and ``origin/<base>``, or the local ``<base>`` branch. CI's Backend Tests checkout
   is depth 2 so that first parent is readable. When none is readable (a depth-1
   clone), the ratchet warns and compares nothing: judging against a stored count
-  would red a change for sites that other, already merged changes added.
+  would red a change for sites that other, already merged changes added. The early,
+  fail-closed run is ``fast-gate.yml``'s ``flake-pattern-ratchet`` job: a depth-2
+  checkout whose first parent this resolver reads, and a ``compared nothing`` there
+  fails the job.
 * A line that keeps a shape on purpose carries ``# flake-ok: <reason>`` (``//
   flake-ok: <reason>`` in TypeScript) with a reason of ten characters or more, words
   not punctuation, on a line of the finding.

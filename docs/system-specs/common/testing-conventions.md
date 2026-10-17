@@ -140,8 +140,12 @@ change; a function edited in place, or a site a `flake-ok` still excuses, has no
 left). When no merge-base is readable, the test
 warns `compared nothing` and passes rather than judge a change by sites other merged
 changes added. CI's Backend Tests checkout is depth 2, so the merge commit's first
-parent is readable there and CI gates the comparison; run
-`python -m pytest -n0 test/test_flake_pattern_ratchet.py` before pushing to see it first. It does not
+parent is readable there and the shards gate the comparison after their 20-40 min run;
+the early, fail-closed verdict is `fast-gate.yml`'s `flake-pattern-ratchet` job, which
+checks out depth 2 on every pull request and merge group so the resolver reads that
+first parent, answers in about a minute, and fails when the ratchet still
+reports `compared nothing`. Run `python -m pytest -n0 test/test_flake_pattern_ratchet.py`
+before pushing to see the same verdict first. It does not
 count an order assertion (D4) or a network call (D10): those rest on review. A
 `flake-ok` line whose reason has ten characters or more, words and not just punctuation
 or digits, is not counted. `python test/test_flake_pattern_ratchet.py` prints each
