@@ -52,6 +52,11 @@ class _PumpMixin(ManagerComponent):
             store: "_taskq.TaskStore", agent_id: str, generation: int
         ) -> bool: ...
 
+        @staticmethod
+        def _release_untaken_claim(
+            store: "_taskq.TaskStore", agent_id: str, generation: int
+        ) -> bool: ...
+
         def _record_crew_log_spawn_started(self, info: "SubagentInfo") -> None: ...
 
         def _record_crew_log_spawn_approval_requested(
@@ -546,8 +551,11 @@ class _PumpMixin(ManagerComponent):
         claims the row again; a raising re-entry still propagates its
         exception after the release. An unavailable release retains
         the generation and reservation for the same retry path as an
-        unavailable start write. A cancelled claimer propagates its cancel;
-        during shutdown it leaves the logged row to the boot reconcile.
+        unavailable start write. A claimer cancelled while it awaits the claim
+        itself gives a row the claim took back to ``queued`` under the claim's
+        generation (``_claim_or_release_on_cancel``). A cancelled claimer
+        propagates its cancel; during shutdown it leaves the logged row to the
+        boot reconcile.
 
         While the compare-and-set is in flight and until the row is
         registered or refused, ``_starting_claims`` holds the row's answer: a
@@ -568,7 +576,7 @@ class _PumpMixin(ManagerComponent):
             claimed = (
                 (retained_generation, True, "")
                 if retained_generation is not None
-                else await store.run(self.taskq_claim, point.agent_id)
+                else await self._claim_or_release_on_cancel(store, point.agent_id)
             )
             generation, proceed, _reason = claimed
             # Generation 0 is a row the store never saw (``taskq_claim``),
@@ -723,6 +731,59 @@ class _PumpMixin(ManagerComponent):
                 raise release_cancelled
         assert not isinstance(result, ClaimPoint)
         return result
+
+    async def _claim_or_release_on_cancel(
+        self, store: "_taskq.TaskStore", agent_id: str
+    ) -> tuple[int, bool, str]:
+        """Run ``taskq_claim`` on the writer thread; release it if the claimer is cancelled.
+
+        The claim job is shielded from the claimer's cancel and awaited to its
+        answer. A cancel that arrives after the job took the row would
+        otherwise leave it ``admitted`` under this incarnation's lease with no
+        coroutine carrying it on, so it would wait for the next boot's
+        reconcile. Instead the claimer posts one generation-fenced ``admitted
+        -> queued`` write behind the claim on the same writer, asks the pump
+        for another pass, and then propagates its cancel. A claim that did not
+        take the row, or a row a stop recorded meanwhile (its report settles
+        it), writes nothing. A release the store cannot take is logged and the
+        row is left to the boot reconcile.
+        """
+        import asyncio as _asyncio
+
+        from kiro_crew import taskq as _taskq
+
+        job = _asyncio.ensure_future(store.run(self.taskq_claim, agent_id))
+        try:
+            return await _asyncio.shield(job)
+        except _asyncio.CancelledError as cancelled:
+            try:
+                generation, proceed, _reason = await job
+            except _taskq.TaskStoreUnavailable:
+                # The claim itself failed: nothing was taken, so there is
+                # nothing to give back, and the cancel still propagates.
+                _glue_logger.warning("taskq: cancelled claim of %s failed", agent_id, exc_info=True)
+                raise cancelled
+            if not (proceed and generation) or self._stopped_while_claimed(agent_id):
+                raise
+            release = _asyncio.ensure_future(
+                store.run(self._release_untaken_claim, store, agent_id, generation)
+            )
+            released = False
+            try:
+                try:
+                    released = await _asyncio.shield(release)
+                except _asyncio.CancelledError:
+                    released = await release
+            except _taskq.TaskStoreUnavailable:
+                _glue_logger.warning(
+                    "taskq: release of the cancelled claim of %s (generation %d) failed",
+                    agent_id,
+                    generation,
+                    exc_info=True,
+                )
+            if released and not self._manager._shutting_down:
+                self._manager._drain_queue()
+            raise cancelled
 
     async def _release_or_retain_taken_start(
         self,

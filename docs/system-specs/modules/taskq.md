@@ -836,9 +836,20 @@ is not shutting down, and still propagates `CancelledError`; during shutdown,
 the warning records a `starting` row for the boot reconcile. A start write that
 fails with the store unavailable under a cancelled claimer also retains the claim
 and its reservation unless the manager is shutting down. A claimer cancelled
-under the claim await itself, before any generation reached it, leaves an
-`admitted` row to the boot reconcile's requeue.
-Nothing is re-dispatched either way for a cancelled row. A process killed after
+under the claim await itself does not abandon the claim either: the claim job is
+awaited through `asyncio.shield` to its answer, and a claim that took the row is
+given back by one generation-fenced `admitted -> queued` write posted behind it
+on the same writer (`_release_untaken_claim`), unleased and eligible at once,
+before the cancel propagates; no start write is posted. A row a stop recorded
+meanwhile is left to that stop's report. When the release commits outside
+shutdown the claimer requests one more pump pass; a release the store cannot
+take is logged and leaves the `admitted` row to the boot reconcile's requeue
+(`test_taskq_claim_start.py::test_a_claimer_cancelled_under_its_claim_await_requeues_the_row`).
+A claim that fails with the store unavailable after the cancel took nothing,
+so nothing is released, and the claimer still propagates its own cancel, never
+the outage
+(`test_a_claimer_cancelled_under_a_failing_claim_still_propagates_its_cancel`).
+Apart from that pump request, nothing is re-dispatched for a cancelled row. A process killed after
 the start write's answer and before registration (the loop hop between the
 two) runs no release and leaves the row `starting` with no run folder, the
 same row the inline pump's posted `starting` mark leaves one hop after

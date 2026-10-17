@@ -89,6 +89,7 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "_refill_make_room": ("function", "91fe718552bf", "taskq_bridge_window"),
     "_refill_schedule_wake": ("function", "d2a5d800e638", "taskq_bridge_window"),
     "_release_taken_start": ("staticmethod", "88b2c6801a15", "taskq_bridge"),
+    "_release_untaken_claim": ("staticmethod", "88b2c6801a15", "taskq_bridge"),
     "_report_memory_waits_expired": ("function", "b85318a14121", "taskq_bridge_expiry"),
     "_report_retired_stage_rows": ("function", "4518b202e81c", "taskq_bridge_window"),
     "_retained_claim_ids_for": ("function", "e98ffea20ad3", "taskq_bridge_reads"),

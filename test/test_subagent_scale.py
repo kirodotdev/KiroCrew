@@ -2993,6 +2993,11 @@ class TestQueuedDepthReachesZero:
             await settle_depth_emits(mgr)
             assert depths[popped_at:] == [0], depths
             released.set()
+            # The claim and the start write are each shielded loop hops, so
+            # wait for the registration itself rather than counting barriers.
+            await async_wait_until(
+                lambda: second.id in mgr._agents, describe=lambda: "the claimed row registered"
+            )
             await settle_store_writes(mgr._taskq, rounds=4)
             await settle_depth_emits(mgr)
         assert second.id in mgr._agents

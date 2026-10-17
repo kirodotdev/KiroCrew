@@ -485,6 +485,26 @@ class _TaskqBridgeMixin(ManagerComponent):
             detail={"released": "start not carried to registration"},
         )
 
+    @staticmethod
+    def _release_untaken_claim(store: "_taskq.TaskStore", agent_id: str, generation: int) -> bool:
+        """Give back a claim whose claimer was cancelled before it used it.
+
+        One generation-fenced ``admitted -> queued`` write with no due time, so
+        the row is unleased and claimable again at once. A row that has moved on
+        (cancelled, requeued, started or settled by another owner) is refused by
+        the fence or the transition table and left alone. Safe on the writer
+        thread.
+        """
+        from kiro_crew import taskq as _taskq
+
+        return store.transition(
+            agent_id,
+            _taskq.QUEUED,
+            generation=generation,
+            next_run_at=None,
+            detail={"released": "claim not carried to its start"},
+        )
+
     def taskq_settle(self, info: SubagentInfo, *, row_settled: bool = False) -> None:
         """Write the run's terminal state from its record; fenced by generation.
 
