@@ -111,8 +111,8 @@ Cached overrides keep the existing synchronous no-I/O fast path.
 
 **Thread parent for a new Slack-born session.** A reply can open a Slack-born
 session (`slack:<ts>`) in a thread it did not start: the owner answering an
-agent's `send_message(session="slack")` DM, a reply under a cron post, a reply
-in someone else's channel thread. When that session is fresh and its transcript
+agent's `send_message(session="slack")` DM, a reply in someone else's channel
+thread. When that session is fresh and its transcript
 has no user or assistant row yet, both dispatch paths read the thread's first
 message once (`slack/thread_parent.py`, via `SlackClientOps.fetch_message_detail`;
 the native path asks through `slack/handler_runtime/turn_context.py`):
@@ -130,7 +130,14 @@ the native path asks through `slack/handler_runtime/turn_context.py`):
   parent's text is withheld from the row too, and the row's text goes through the
   prompt block's marker neutralizers. Incognito and temporary sessions get no row.
 
-Dashboard-linked threads and sessions with prior turns fetch and record nothing.
+A cron claims the thread it posts, so a reply under a cron post runs in the
+cron's own session (`cron:<id>` or `cron:<id>:<run>`), not a Slack-born one. That
+session is reset after every run, so on a fresh one the transport path reads the
+parent for the same fenced block whatever the transcript holds, and records no
+`notice` row (`thread_parent.is_cron_owned`).
+
+Dashboard-linked threads and Slack-born sessions with prior turns fetch and
+record nothing.
 The transport path persists the user's row at receipt, so it builds the prompt
 with `exclude_last_n=1`; otherwise the history fallback replays the reply as the
 thread's history.

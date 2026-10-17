@@ -81,6 +81,7 @@ from kiro_crew.slack.thread_parent import (
     ThreadParent,
     fetch_thread_parent,
     has_prior_turns,
+    is_cron_owned,
     is_slack_born,
     parent_prompt_text,
     record_thread_parent,
@@ -704,19 +705,28 @@ async def handle_message_transport(
         # answering an agent's DM, a reply under a cron post -- otherwise opens a
         # session knowing only the reply. Read once, on a fresh session with no
         # prior turns; recorded BEFORE the receipt row below so the transcript
-        # shows it above the reply. See ``slack/thread_parent.py``.
+        # shows it above the reply. A cron-owned thread reads it for the prompt
+        # only, on any fresh session. See ``slack/thread_parent.py``.
         _thread_parent: ThreadParent | None = None
         # One transcript read serves the parent and the thread-replies checks.
         _prior: bool | None = None
+        _slack_born = is_slack_born(session_key)
         if (
             is_new
             and not resumed
             and thread_ts
             and thread_ts != msg_ts
-            and is_slack_born(session_key)
-            and not (_prior := await has_prior_turns(conversation_log, session_key))
+            and (
+                is_cron_owned(session_key)
+                or (
+                    _slack_born
+                    and not (_prior := await has_prior_turns(conversation_log, session_key))
+                )
+            )
         ):
-            _record_parent = bool(conversation_log and not _is_slack_restricted(session_key))
+            _record_parent = bool(
+                conversation_log and _slack_born and not _is_slack_restricted(session_key)
+            )
             _thread_parent = await fetch_thread_parent(
                 slack, channel, thread_ts, with_author=_record_parent
             )
