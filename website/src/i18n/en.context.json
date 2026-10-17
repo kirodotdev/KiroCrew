@@ -770,6 +770,9 @@
     "components.crew.crewEditorNextDialog.env": "Column/label in the crewmate editor's MCP server row for the server's environment variables (the env key/value map passed to the process). The abbreviation 'env' for environment variables, a technical term, not the ordinary word 'environment'.",
     "components.crew.crewEditorNextDialog.off": "Approval-state value on a tool row in the crewmate editor, meaning the tool is disabled / not granted. The adjective 'off' as in switched off, paired with the sibling states (read-only, can modify/run, runs without asking); not the preposition.",
     "components.crew.crewEditorNextDialog.shared_no": "Value in the 'Shared' column of a tool/server row in the crewmate editor, meaning this entry is NOT shared. The answer 'No' (negative), not the beginning of a longer phrase.",
-    "components.crew.crewEditorNextDialog.url": "Field label in the crewmate editor's MCP server row for an HTTP/SSE server's endpoint URL. 'URL' is kept as the acronym practitioners use; do not translate or expand it."
+    "components.crew.crewEditorNextDialog.url": "Field label in the crewmate editor's MCP server row for an HTTP/SSE server's endpoint URL. 'URL' is kept as the acronym practitioners use; do not translate or expand it.",
+    "components.jobForm.time_limit": "Label of a number field in the scheduled-job (cron) form. How long one run of the job may take before it is stopped. A noun phrase, not an action.",
+    "components.jobForm.time_limit_description": "Help text under that field, also its tooltip. Explains that a run still going after this many minutes is stopped and reported as timed out, that the limit covers the whole run, and the 30-minute default.",
+    "components.jobForm.time_limit_minutes": "Accessible name of that number field; the value is a whole number of minutes."
   }
 }

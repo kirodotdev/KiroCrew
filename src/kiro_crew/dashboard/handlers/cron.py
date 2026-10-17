@@ -28,6 +28,7 @@ from kiro_crew.cron import (
     CronPendingMismatch,
     CronStoreBusy,
     CronStoreUnreadable,
+    effective_wake_budget,
     is_valid_timezone,
     parse_time_string,
 )
@@ -51,6 +52,7 @@ from kiro_crew.dashboard.cron_inject import (
     prefetch_cron_dismissed,
     restore_cron_turn_timeout,
 )
+from kiro_crew.dashboard.cron_timeout_field import timeout_secs_from_body
 from kiro_crew.dashboard.handlers._shared import (
     _owner_denial_response,
     require_owner_dashboard_request,
@@ -914,6 +916,9 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # here too, so a client that never sends the field keeps creating the same
     # persistent jobs it always did; only an explicit False opts a job out.
     persistent_session = body.get("persistent_session", True)
+    timeout_secs, timeout_err = timeout_secs_from_body(body)
+    if timeout_err is not None:
+        return timeout_err
     # Same folder_id contract as PATCH /api/crons/{id}: string or null → "",
     # anything else is a 400 so the two entry points cannot diverge.
     folder_id = body.get("folder_id", "")
@@ -990,6 +995,8 @@ async def api_crons_create(request: web.Request) -> web.Response:
     }
     if approval_mode:
         add_kwargs["approval_mode"] = approval_mode
+    if timeout_secs is not None:
+        add_kwargs["timeout_secs"] = timeout_secs
     # An app token's job is stamped as that app's, exactly as ``CronSDK`` stamps
     # it: without the stamp every later reader (the app's own PATCH/DELETE, the
     # cron session's scope, the disabled-app fire gate, uninstall cleanup) takes
@@ -1207,6 +1214,11 @@ async def api_cron_update(request: web.Request) -> web.Response:
     ):
         if key in body:
             kwargs[key] = body[key]
+    timeout_secs, timeout_err = timeout_secs_from_body(body)
+    if timeout_err is not None:
+        return timeout_err
+    if timeout_secs is not None:
+        kwargs["timeout_secs"] = timeout_secs
     # name routes through the same validator as POST (type check +
     # sanitize_string + length cap) so the two REST surfaces cannot diverge:
     # without it PATCH would pass the value through unvalidated, letting a
@@ -3530,6 +3542,9 @@ async def api_crons(request: web.Request) -> web.Response:
             # of defaulting the control to off and silently clearing the flag on
             # the next save.
             "minimal_context": j.minimal_context,
+            # What the service enforces, not the raw field: a stored value
+            # outside its range runs under the default instead.
+            "timeout_secs": effective_wake_budget(j),
             # Same reason: without it a form control for the flag would default
             # to the store's True and a save would silently re-enable the
             # persistent session on a job the user set to ephemeral.
