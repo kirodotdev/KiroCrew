@@ -254,17 +254,21 @@ class TestIsKirocrewDefaultAgent:
         assert not is_kirocrew_default_agent("kirocrew-team-lead")
 
 
-def test_the_first_crewmates_implicit_fallback_names_the_mate_conductor():
-    """``first_crewmate._ORDINARY_TEMPLATE`` and the New-crewmate default both
-    name the mate conductor on a fresh install (the three defaults RFC §Step 1
-    moves). ``DEFAULT_CREWMATE_TEMPLATE`` is kept unchanged per the team's ruling
-    (leave it as-is in this step)."""
+def test_the_three_creation_defaults_all_name_the_mate_conductor():
+    """All three crewmate-creation defaults name the mate conductor on a fresh
+    install (the three defaults RFC §6 step 1 moves): the first crewmate's
+    implicit fallback (``first_crewmate._ORDINARY_TEMPLATE`` and
+    ``_default_template()``) AND the New Crewmate dialog's / ``crewmate.create``
+    card's ``change_card_catalog.DEFAULT_CREWMATE_TEMPLATE``. The RFC amendment
+    (2026-10-17) records step 1 as a behaviour change, so every crewmate created
+    through any door runs the dispatch-only conductor rather than the
+    full-surface ``kirocrew`` template."""
     from kiro_crew import change_card_catalog
     from kiro_crew.agent_materialization import first_crewmate
 
     assert first_crewmate._ORDINARY_TEMPLATE == "kirocrew-mate-conductor"
     assert first_crewmate._default_template() == "kirocrew-mate-conductor"
-    assert change_card_catalog.DEFAULT_CREWMATE_TEMPLATE == "kirocrew"
+    assert change_card_catalog.DEFAULT_CREWMATE_TEMPLATE == "kirocrew-mate-conductor"
 
 
 class TestTheRewiredBindingDoesNotFlipDefaultAgentPathsToCustom:

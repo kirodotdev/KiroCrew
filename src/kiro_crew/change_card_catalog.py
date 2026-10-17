@@ -95,15 +95,16 @@ OP_UNDO = "undo"
 #: Crewmates page's New crewmate card builds from (``NewCrewmateDialog.tsx``
 #: ``DEFAULT_CREWMATE_TEMPLATE``).
 #:
-#: Deliberately still "kirocrew", not the mate conductor
-#: (``kirocrew-mate-conductor``, rfc-mate-owned-agent-config.md migration step
-#: 1): this constant is user-visible (the dialog's "Built from" dropdown label
-#: and the API payload it sends), and the team ruled it stays unchanged in this
-#: step. The mate conductor — a source-defined, dispatch-only conductor — is
-#: wired in as the first crewmate's implicit template
-#: (``first_crewmate._ORDINARY_TEMPLATE``); moving this user-facing default onto
-#: it is a separate decision.
-DEFAULT_CREWMATE_TEMPLATE = "kirocrew"
+#: The source-defined, dispatch-only mate conductor (``kirocrew-mate-conductor``,
+#: rfc-mate-owned-agent-config.md §6 step 1). This is one of the three creation
+#: defaults §6 moves onto the conductor — the first crewmate's implicit template
+#: (``first_crewmate._ORDINARY_TEMPLATE``), this New-crewmate default, and the
+#: ``crewmate.create`` card's template — so EVERY crewmate created, through any
+#: door, runs the conductor rather than the full-surface ``kirocrew`` template.
+#: It is user-visible: the dialog's "Built from" dropdown default label and the
+#: ``POST /api/agents`` payload both read from here. A stored binding is not
+#: rewritten by this change; only the default for NEW crewmates moves.
+DEFAULT_CREWMATE_TEMPLATE = "kirocrew-mate-conductor"
 
 REASON_MAX_CHARS = 500
 _NAME_MAX = 128

@@ -20,13 +20,14 @@ FIRST_CREWMATE_MARKER = "mate_member_created.json"
 
 #: The template a crewmate gets when the config names no default one. On a fresh
 #: install this is the source-defined, dispatch-only mate conductor
-#: (rfc-mate-owned-agent-config.md migration step 1). It intentionally DIVERGES
-#: from ``change_card_catalog.DEFAULT_CREWMATE_TEMPLATE`` (still ``kirocrew``):
-#: that one is the user-facing "Built from" default the team ruled stays
-#: unchanged in this step, while this implicit fallback — which nothing
-#: displays — moves to the conductor. Not imported from that module: it is
-#: dashboard-facing (change cards) and importing it here would pull dashboard
-#: code into boot-time crewmate creation.
+#: (rfc-mate-owned-agent-config.md §6 migration step 1). It now AGREES with
+#: ``change_card_catalog.DEFAULT_CREWMATE_TEMPLATE``: §6 step 1 moves all three
+#: creation defaults onto the conductor — this implicit fallback, the New
+#: Crewmate dialog's "Built from" default, and the ``crewmate.create`` card's
+#: template — so every crewmate created, through any door, runs the conductor.
+#: Still not imported from that module: it is dashboard-facing (change cards)
+#: and importing it here would pull dashboard code into boot-time crewmate
+#: creation, so the two name the same value independently.
 _ORDINARY_TEMPLATE = "kirocrew-mate-conductor"
 
 
