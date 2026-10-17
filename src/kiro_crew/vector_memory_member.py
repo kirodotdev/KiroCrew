@@ -29,7 +29,11 @@ from typing import TYPE_CHECKING
 
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_schema, memory_stores, platform_compat
-from kiro_crew.lesson_validation import contains_volatile_lesson_fact, extracted_lesson_applies
+from kiro_crew.lesson_validation import (
+    contains_volatile_lesson_fact,
+    extracted_lesson_applies,
+    utf8_encodable,
+)
 from kiro_crew.owner_only_files import owner_only_opener
 from kiro_crew.project_scope import canonical_scope, scope_is_admissible
 from kiro_crew.validation import normalize_lesson_category
@@ -599,6 +603,12 @@ def apply_consolidation(
                     continue
                 scope = canonical_scope(raw_scope)
                 if contains_volatile_lesson_fact(rule, negative):
+                    continue
+                # A lone surrogate is JSON-legal but not UTF-8 encodable, and
+                # ``_lesson_key`` hashes rule plus scope via ``str.encode()``; a
+                # raise here would abort the pass and roll back the whole
+                # transaction, so skip the item instead.
+                if not utf8_encodable(rule) or (scope is not None and not utf8_encodable(scope)):
                     continue
                 key = _lesson_key(rule, scope)
                 value = {

@@ -9,6 +9,21 @@ from collections.abc import Sequence
 from kiro_crew import context_omissions
 from kiro_crew.model_registry import MODEL_ID_LITERAL_PATTERN
 
+
+def utf8_encodable(value: str) -> bool:
+    """False for a string holding a lone surrogate (JSON-legal, UTF-8-illegal).
+
+    ``json.loads`` accepts a ``\\udXXX`` escape as a lone surrogate, but
+    ``str.encode()`` refuses it, so such a value crashes any path that hashes or
+    stores it as bytes. Callers screen it out before that point.
+    """
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 _MODEL_ID_TOKEN_RE = rf"{MODEL_ID_LITERAL_PATTERN}" r"(?:\w|[.-](?=\w))*" r"(?!\w|[.-](?=\w))"
 _MODEL_CLAUSE_END_RE = (
     r"(?=$|\n|[.,;:!?)\]]|\s+(?:"

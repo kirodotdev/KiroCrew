@@ -2891,6 +2891,7 @@ Model: `Qwen/Qwen3-Embedding-0.6B` Q8_0 GGUF (610MB). Apache-2.0 licensed. Serve
 ### Consolidation Integration
 
 `HistoryConsolidator._consolidate()` extracts structured data alongside existing fields:
+- A `"semantic"` item whose key is `lesson.*` is moved to the `"lessons"` array first (`_reroute_lesson_semantic_keys`, once on the shared result before it branches to either write path), so a misfiled lesson gets the lessons path's dedup, volatile-fact screen and extraction-enabled gate instead of a plain `set_semantic`/`_write_semantic` write that stores a duplicate under each model-chosen key. Only a create is rerouted (a `delete` of a `lesson.*` key stays in `"semantic"`, where the delete site already tier-protects standing lessons); the rule is the item's `value`, so a non-text or empty value is not a lesson and is dropped rather than written as a plain semantic row.
 - `"semantic"` array → `_write_semantic()` for each (max 20 per consolidation), always under `source="consolidation:<key>"`. An LLM confidence claim never grants `user_explicit` authority, so the conflict rule protects genuine user-stated facts. Extracted lesson writes likewise retain their automatic consolidation source in both versions.
 - `"episodic"` array → `write_episodic()` for each (max 10 per consolidation)
 - V1 alone retains Markdown dual writes while `config.memory.migrated` is false. V2 publishes all learned changes and its source-span receipt in one SQLite transaction.
