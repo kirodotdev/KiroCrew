@@ -8252,7 +8252,12 @@
         "source_user_explicit": "Saved by you or the agent",
         "summarize_now": "Summarize now",
         "tool": "tool",
-        "when": "When"
+        "when": "When",
+        "search_lessons": "Search lessons…",
+        "edit": "Edit",
+        "cancel": "Cancel",
+        "edit_rule": "Edit rule",
+        "edit_failed": "Could not update the lesson"
       },
       "portabilityTab": {
         "archive_contents": "Archive contents:",

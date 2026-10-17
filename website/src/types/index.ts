@@ -507,6 +507,9 @@ export interface Lesson {
   /** Where the lesson came from (`user_explicit`, `consolidation`, ...), as the
    *  store recorded it. Absent or empty when the row carries no source. */
   source?: string
+  /** Authored application tier (`standing`, `on_topic`, ...). Absent or null
+   *  defaults to a standing rule injected into every session. */
+  applies?: string | null
 }
 
 /** One row of `GET /api/memory/stores` — a declared memory store.
