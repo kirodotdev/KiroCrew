@@ -1,7 +1,10 @@
 """What an operator reviews before skill text nobody vetted goes live or loads: the pending
 auto-skill queue (list, detail, script verdict, update preview and both approve paths) and the
 consent picker's catalog of a project's skills. Every string these surfaces serve is redacted
-here, which makes this module the redaction sink ``security_posture`` registers for them.
+here, which makes this module the redaction sink ``security_posture`` registers for them. The
+redacting steps of a claimed promotion live here for the same reason: the validation and
+redaction of a captured candidate generation, the claimed update and new-skill promotions
+that publish it, and the restore of a claim a promotion could not complete.
 
 Each function here whose first parameter is ``self`` is a ``SkillsLoader`` method: the class
 binds it by name.
@@ -12,25 +15,29 @@ Instance fields read: ``_dir``.
 from __future__ import annotations
 
 import difflib
+import errno
 import json
 import logging
 import os
-import shutil
+import secrets
 import stat
-from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
+from typing import cast
 
-from kiro_crew import pinned_fs, skill_trust
-from kiro_crew.atomic_write import atomic_write
-from kiro_crew.platform_compat import pinned_directory
+from kiro_crew import pinned_fs, platform_compat, skill_trust
+from kiro_crew.platform_compat import is_link_or_junction, pinned_directory
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.sel import sel
+from kiro_crew.skills_auto_authority import auto_skill_promotion_disabled_reason
 from kiro_crew.skills_auto_model import (
     _AUTO_NAME_PATTERN,
     _PENDING_DOCUMENT_MAX_BYTES,
     AUTO_SKILL_NAMESPACE,
+    _ClaimSnapshot,
     _emit_pending_consumed,
+    _PinnedPrivateState,
+    _SkillTreeSnapshot,
+    _ValidatedCandidateSnapshot,
 )
 from kiro_crew.skills_body_reads import PROJECT_SKILL_BODY_CAP, _decode_skill_text
 from kiro_crew.skills_candidate_tree import _PENDING_SCRIPT_MAX_DEPTH, _PENDING_SCRIPT_MAX_ENTRIES
@@ -56,8 +63,11 @@ class PendingApprovalRefused(Exception):
     ``validate_scripts``), ``target_missing`` (an update candidate whose live
     target is gone), ``stale_base`` (an update merged against an older live
     version), ``invalid_layout`` (symlink / unexpected candidate entry),
-    ``redaction_failed``, or ``promotion_failed`` (an OS-level I/O failure —
-    a read or write, a refused read of the live skill's metadata included).
+    ``redaction_failed``, ``promotion_disabled`` (this host cannot stage or
+    promote auto-skills: see :func:`auto_skill_promotion_disabled_reason`), or
+    ``promotion_failed`` (an OS-level I/O failure — a read or write, a refused
+    read of the live skill's metadata included — or a claimed generation that
+    changed or could not be published).
     Raised by the ``*_checked`` approve variants so
     the dashboard can tell the user WHY the click did nothing.
     """
@@ -71,6 +81,23 @@ class PendingApprovalRefused(Exception):
 # Named by the path callers import it from: a traceback renders a raised class as
 # ``module.qualname``, so the owner module must not leak into it.
 PendingApprovalRefused.__module__ = "kiro_crew.skills"
+
+
+def _note_refusal(
+    refusal: list[PendingApprovalRefused] | None,
+    reason: PendingApprovalRefused,
+) -> None:
+    """Record why a claimed promotion refused; the first reason recorded wins.
+
+    The claim protocol returns ``None`` for every refusal so a failure can never
+    be mistaken for a partial success. The ``*_checked`` approve variants still
+    owe the dashboard the reason, so the refusal sites that have one note it
+    here and the variant raises the first one noted. Each site constructs the
+    exception with a literal reason, which the dashboard's refusal-vocabulary pin
+    reads from source.
+    """
+    if refusal is not None and not refusal:
+        refusal.append(reason)
 
 
 def catalog_project_skills(self, project_dir: str | Path) -> list[dict]:
@@ -121,7 +148,29 @@ def catalog_project_skills(self, project_dir: str | Path) -> list[dict]:
     return skills
 
 
+def _candidate_metadata_from_bytes(self, raw: bytes | None, *, redact: bool) -> dict:
+    """Parse metadata already captured from an authenticated tree snapshot."""
+    if raw is None:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    if not redact:
+        return data
+    redacted = self._redact_deep(data)
+    return redacted if isinstance(redacted, dict) else {}
+
+
 def _read_pending_meta(self, slug: str) -> dict:
+    """The pending candidate's metadata, for display and routing only.
+
+    Advisory: a writer can still change the public candidate, so nothing that
+    authorizes a promotion reads it. Promotion parses the metadata captured in
+    the claimed generation instead (``_candidate_metadata_from_bytes``).
+    """
     mf = self._pending_root() / slug / ".meta.json"
     # Never follow an LLM-planted symlink (could point at a sensitive file).
     if mf.is_symlink():
@@ -140,9 +189,180 @@ def _read_pending_meta(self, slug: str) -> dict:
     return redacted if isinstance(redacted, dict) else {}
 
 
+def _restore_claimed_update(
+    self,
+    claim: Path,
+    claim_fd: int,
+    slug: str,
+    claim_snapshot: _ClaimSnapshot | None = None,
+) -> Path | None:
+    """Requeue the exact quarantined public inode without replacement."""
+    notify = False
+    restored: Path | None = None
+    captured = claim_snapshot or _ClaimSnapshot(None, None)
+    restored_meta = self._candidate_metadata_from_bytes(
+        captured.metadata_bytes,
+        redact=False,
+    )
+    lock_state: list[_PinnedPrivateState] = []
+    with self._file_lock("pending.lock", state_out=lock_state) as acquired:
+        if not acquired or not lock_state:
+            logger.error("Could not restore claimed update %s", claim)
+            return None
+        try:
+            private_state = lock_state[0]
+            pending_parent = private_state.pending
+            if self._pinned_parent_matches(pending_parent):
+                quarantined = self._stat_pinned_child(
+                    private_state.quarantine,
+                    claim.name,
+                )
+                quarantine_linked = (
+                    stat.S_ISLNK(quarantined.st_mode)
+                    or bool(getattr(quarantined, "st_reparse_tag", 0))
+                    or is_link_or_junction(private_state.quarantine.path / claim.name)
+                )
+                quarantine_identity = self._pinned_child_identity(
+                    private_state.quarantine,
+                    claim.name,
+                )
+                if quarantine_identity is None:
+                    raise OSError("public quarantine identity is unavailable")
+                if captured.quarantine_identity is not None:
+                    if quarantine_identity != captured.quarantine_identity or (
+                        not quarantine_linked and not stat.S_ISDIR(quarantined.st_mode)
+                    ):
+                        raise OSError("public quarantine changed identity")
+                elif not quarantine_linked:
+                    raise OSError("public quarantine has no authenticated identity")
+                has_authenticated_snapshot = (
+                    self._authenticated_claim_snapshot_state(
+                        claim_fd,
+                        self._claim_lock_path(claim.name),
+                        claim.name,
+                    )
+                    is not None
+                    or self._authenticated_claim_publication(
+                        claim_fd,
+                        self._claim_lock_path(claim.name),
+                        claim.name,
+                    )
+                    is not None
+                )
+                for number in [None, *range(2, 51)]:
+                    if number is None:
+                        candidate_slug = slug
+                    else:
+                        suffix = f"-{number}"
+                        candidate_slug = f"{slug[: 64 - len(suffix)].rstrip('-')}{suffix}"
+                    notify = (
+                        restored_meta.get("notify_suppressed") is True or candidate_slug != slug
+                    )
+                    receipt_written = False
+                    if has_authenticated_snapshot:
+                        if quarantine_identity is None:
+                            raise OSError("authenticated restore has no native identity")
+                        receipt_written = self._write_claim_restore_state(
+                            claim_fd,
+                            self._claim_lock_path(claim.name),
+                            claim.name,
+                            restore_slug=candidate_slug,
+                            restore_identity=quarantine_identity,
+                        )
+                        if not receipt_written:
+                            raise OSError("claim restore receipt failed")
+                    try:
+                        if quarantine_linked:
+                            self._rename_untrusted_link_no_replace(
+                                private_state.quarantine,
+                                claim.name,
+                                pending_parent,
+                                candidate_slug,
+                                expected_identity=quarantine_identity,
+                            )
+                        else:
+                            assert quarantine_identity is not None
+                            self._rename_skill_child_no_replace(
+                                private_state.quarantine,
+                                claim.name,
+                                pending_parent,
+                                candidate_slug,
+                                expected_identity=quarantine_identity,
+                            )
+                    except OSError as exc:
+                        if exc.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+                            raise
+                        if receipt_written and not self._clear_claim_restore_state(
+                            claim_fd,
+                            self._claim_lock_path(claim.name),
+                            claim.name,
+                        ):
+                            raise OSError("could not clear refused restore receipt") from exc
+                        continue
+                    self._sync_pinned_rename_parents(
+                        private_state.quarantine,
+                        pending_parent,
+                    )
+                    restored = cast(Path, self._pending_root()) / candidate_slug
+                    restored_info = self._stat_pinned_child(
+                        pending_parent,
+                        candidate_slug,
+                    )
+                    if quarantine_linked:
+                        if (
+                            not (
+                                stat.S_ISLNK(restored_info.st_mode)
+                                or bool(getattr(restored_info, "st_reparse_tag", 0))
+                                or is_link_or_junction(restored)
+                            )
+                            or self._pinned_child_identity(
+                                pending_parent,
+                                candidate_slug,
+                            )
+                            != quarantine_identity
+                        ):
+                            raise OSError("restored pending link changed identity")
+                    else:
+                        restored_identity = self._pinned_child_identity(
+                            pending_parent,
+                            candidate_slug,
+                        )
+                        if (
+                            not stat.S_ISDIR(restored_info.st_mode)
+                            or restored_identity != quarantine_identity
+                        ):
+                            raise OSError("restored pending inode changed identity")
+                    if not self._discard_trusted_claim(claim):
+                        logger.error(
+                            "Could not remove restored trusted materialization %s",
+                            claim,
+                        )
+                    break
+        except OSError:
+            logger.error("Could not restore claimed update %s", claim, exc_info=True)
+            return None
+        if restored is None:
+            logger.error("No pending slot available to restore %s", claim)
+            return None
+    if notify:
+        notification_meta = dict(restored_meta)
+        notification_meta["slug"] = restored.name
+        notification_meta["name"] = f"{AUTO_SKILL_NAMESPACE}/{restored.name}"
+        safe_meta = self._redact_deep(notification_meta)
+        self._emit_pending_staged_metadata(
+            restored.name,
+            safe_meta if isinstance(safe_meta, dict) else {},
+        )
+    return restored
+
+
 def list_pending_skills(self) -> list[dict]:
     """Return ``{slug, name, description, triggers, has_scripts, created_at, path}``
     for every staged candidate."""
+    # A claim whose owning process died mid-transaction is restored or
+    # retired before the queue is read, so the list never omits a candidate
+    # that only an interrupted promotion is holding.
+    self._recover_abandoned_claims()
     root = self._pending_root()
     out: list[dict] = []
     if not root.is_dir():
@@ -170,10 +390,10 @@ def list_pending_skills(self) -> list[dict]:
         verdict = self._pending_scripts_verdict(child)
         entry = {
             "slug": child.name,
-            "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{child.name}"),
+            "name": f"{AUTO_SKILL_NAMESPACE}/{child.name}",
             "description": meta.get("description", ""),
             "triggers": meta.get("triggers", ""),
-            "has_scripts": bool(meta.get("has_scripts")),
+            "has_scripts": meta.get("has_scripts") is True,
             "created_at": meta.get("created_at", ""),
             "source": meta.get("source", ""),
             "kind": meta.get("kind", "new"),
@@ -622,10 +842,15 @@ def get_pending_skill(self, slug: str) -> dict | None:
     verdict = self._pending_scripts_verdict(pdir)
     for s in scripts:
         s["filename"] = self._redact_text(s.get("filename", ""))
-        s["content"] = self._redact_text(s.get("content", ""))
+        # Display-only newline folding: stored bytes, generation hashes and
+        # promotion authority keep the candidate's exact spelling.
+        content = str(s.get("content", "")).replace("\r\n", "\n").replace("\r", "\n")
+        s["content"] = self._redact_text(content)
     detail = {
         "slug": slug,
-        "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{slug}"),
+        # The directory name is authoritative: a refusal restore can land a
+        # candidate under a sibling slot without rewriting its metadata.
+        "name": f"{AUTO_SKILL_NAMESPACE}/{slug}",
         "meta": meta,
         "kind": meta.get("kind", "new"),
         "target": meta.get("target"),
@@ -642,76 +867,123 @@ def get_pending_skill(self, slug: str) -> dict | None:
     return detail
 
 
-def _restore_redacted(backup: dict[Path, bytes]) -> None:
-    """Write each file in ``backup`` back to its snapshotted bytes. A write that fails is
-    skipped, so one unwritable file does not keep the others from being restored."""
-    for fp, original in backup.items():
-        try:
-            fp.write_bytes(original)
-        except OSError:
-            pass
+def _validate_and_redact_candidate(
+    self,
+    src: Path,
+    name: str,
+    refusal: list[PendingApprovalRefused] | None = None,
+) -> _ValidatedCandidateSnapshot | None:
+    """Validate and redact one descriptor-authenticated candidate generation.
 
-
-def _validate_and_redact_candidate(self, src: Path, name: str) -> dict[Path, bytes]:
-    """Re-validate + redact a candidate's SKILL.md and scripts IN PLACE.
-
-    Shared by ``approve_pending_skill_checked`` and ``approve_pending_update_checked`` so
-    both enforce the identical discipline: validate every script (covers
-    crystallize direct-writes), snapshot each target's ORIGINAL bytes, redact
-    in place, then re-validate scripts (redacting a credential-shaped token
-    can break syntax). On ANY failure the originals are restored and a
-    ``PendingApprovalRefused`` is raised naming the reason — a validation
-    failure carries the redacted ``{filename: [findings]}`` report so the
-    refusal can tell the reviewer WHAT was flagged — and a rejected
-    candidate is never left corrupted. On success returns the
-    ``{path: original_bytes}`` snapshot so the caller can restore on a
-    LATER failure (e.g. a failed move / snapshot).
+    Never mutates the candidate: redaction is applied to the captured
+    snapshot, so a refused candidate stays byte-identical to what was staged.
+    ``refusal`` receives the reason (and a script report) for a refusal.
     """
-    sdir_src = src / "scripts"
-    # Pre-redaction script validation.
-    if sdir_src.is_dir():
-        ok, report = validate_scripts(self._collect_scripts(sdir_src))
+    if not self._candidate_layout_ok(src, name):
+        _note_refusal(refusal, PendingApprovalRefused("invalid_layout"))
+        return None
+    tree = self._skill_tree_snapshot(src)
+    if tree is None:
+        logger.warning("Refusing to approve %s: candidate snapshot is unreadable", name)
+        _note_refusal(refusal, PendingApprovalRefused("invalid_layout"))
+        return None
+    return self._validate_and_redact_snapshot(tree, name, refusal=refusal)
+
+
+def _validate_and_redact_snapshot(
+    self,
+    tree: _SkillTreeSnapshot,
+    name: str,
+    *,
+    refusal: list[PendingApprovalRefused] | None = None,
+) -> _ValidatedCandidateSnapshot | None:
+    """Validate and redact one already-captured immutable candidate tree."""
+    allowed_files = {Path("SKILL.md"), Path(".meta.json")}
+    if any(
+        relative != Path(".") and (not relative.parts or relative.parts[0] != "scripts")
+        for relative in tree.dir_modes
+    ) or any(
+        (len(relative.parts) == 1 and relative not in allowed_files)
+        or (len(relative.parts) > 1 and relative.parts[0] != "scripts")
+        for relative in tree.files
+    ):
+        logger.warning("Refusing to approve %s: unexpected candidate entry", name)
+        _note_refusal(refusal, PendingApprovalRefused("invalid_layout"))
+        return None
+    source_files = tree.files
+    redacted_files: dict[Path, bytes] = {}
+    metadata: dict[str, object] = {}
+    try:
+        for relative, raw in source_files.items():
+            if relative == Path(".meta.json"):
+                try:
+                    parsed = json.loads(raw)
+                except (TypeError, ValueError):
+                    parsed = {}
+                if isinstance(parsed, dict):
+                    redacted_meta = self._redact_deep(parsed)
+                    if isinstance(redacted_meta, dict):
+                        metadata = redacted_meta
+                continue
+            redacted_files[relative] = self._redact_text(raw.decode("utf-8")).encode("utf-8")
+    except UnicodeDecodeError:
+        logger.warning("Refusing to approve %s: candidate snapshot is unreadable", name)
+        _note_refusal(refusal, PendingApprovalRefused("redaction_failed"))
+        return None
+
+    skill_path = Path("SKILL.md")
+    if skill_path not in redacted_files:
+        _note_refusal(refusal, PendingApprovalRefused("invalid_layout"))
+        return None
+
+    def _scripts(files: dict[Path, bytes]) -> list[dict[str, str]]:
+        scripts: list[dict[str, str]] = []
+        for relative, payload in sorted(files.items(), key=lambda item: str(item[0])):
+            if not relative.parts or relative.parts[0] != "scripts":
+                continue
+            scripts.append(
+                {
+                    "filename": str(relative.relative_to("scripts")),
+                    "content": payload.decode("utf-8"),
+                }
+            )
+        return scripts
+
+    before_scripts = _scripts(source_files)
+    if before_scripts:
+        ok, report = validate_scripts(before_scripts)
         if not ok:
             logger.warning("Refusing to approve %s: script validation failed: %s", name, report)
-            raise PendingApprovalRefused(
-                "script_validation_failed", report=self._redact_validation_report(report)
+            _note_refusal(
+                refusal,
+                PendingApprovalRefused(
+                    "script_validation_failed", report=self._redact_validation_report(report)
+                ),
             )
-    # Snapshot each target FIRST so an abort after partial in-place redaction
-    # restores the candidate's ORIGINAL bytes.
-    redact_targets = [src / "SKILL.md"]
-    if sdir_src.is_dir():
-        for root, _dirs, files in os.walk(sdir_src):
-            for nm in files:
-                fp = Path(root) / nm
-                if fp.is_file() and not fp.is_symlink():
-                    redact_targets.append(fp)
-    redact_backup: dict[Path, bytes] = {}
-    for fp in redact_targets:
-        try:
-            redact_backup[fp] = fp.read_bytes()
-        except OSError:
-            pass
-
-    for fp in redact_targets:
-        if not self._redact_file_in_place(fp):
-            _restore_redacted(redact_backup)
-            logger.warning(
-                "Refusing to approve %s: could not redact %s before promotion", name, fp.name
-            )
-            raise PendingApprovalRefused("redaction_failed")
-    # Re-validate scripts AFTER redaction so a broken/altered helper never
-    # goes live and the pending draft is not corrupted.
-    if sdir_src.is_dir():
-        ok, report = validate_scripts(self._collect_scripts(sdir_src))
+            return None
+    after_scripts = _scripts(redacted_files)
+    if after_scripts:
+        ok, report = validate_scripts(after_scripts)
         if not ok:
-            _restore_redacted(redact_backup)
             logger.warning(
-                "Refusing to approve %s: scripts invalid after redaction: %s", name, report
+                "Refusing to approve %s: scripts invalid after redaction: %s",
+                name,
+                report,
             )
-            raise PendingApprovalRefused(
-                "script_validation_failed", report=self._redact_validation_report(report)
+            _note_refusal(
+                refusal,
+                PendingApprovalRefused(
+                    "script_validation_failed", report=self._redact_validation_report(report)
+                ),
             )
-    return redact_backup
+            return None
+    return _ValidatedCandidateSnapshot(
+        source_files=source_files,
+        files=redacted_files,
+        modes=tree.file_modes,
+        metadata=metadata,
+        generation_hash=tree.generation_hash,
+    )
 
 
 def _redact_validation_report(self, report: dict) -> dict:
@@ -773,11 +1045,20 @@ def preview_pending_update(self, slug: str) -> dict | None:
     if not self._is_pending_slug_safe(slug):
         return None
     src = self._pending_root() / slug
-    cand_file = src / "SKILL.md"
-    if not cand_file.exists() or cand_file.is_symlink():
+    # One snapshot supplies body and metadata, so a retained writer cannot
+    # make the preview describe two different candidate generations.
+    candidate_tree = self._skill_tree_snapshot(src)
+    if candidate_tree is None:
         return None
-    meta = self._read_pending_meta(slug)
+    meta = self._candidate_metadata_from_bytes(
+        candidate_tree.files.get(Path(".meta.json")),
+        redact=True,
+    )
     if meta.get("kind") != "update":
+        return None
+    try:
+        cand_body = candidate_tree.files[Path("SKILL.md")].decode("utf-8")
+    except (KeyError, UnicodeDecodeError):
         return None
     target = meta.get("target")
     if not isinstance(target, str) or not target:
@@ -794,10 +1075,6 @@ def preview_pending_update(self, slug: str) -> dict | None:
     # feeds the dashboard API.
     live_body = self.read_auto_skill_body(target_name)
     if live_body is None:
-        return None
-    try:
-        cand_body = cand_file.read_text(encoding="utf-8")
-    except OSError:
         return None
     try:
         current_version = self.get_auto_skill_version(target_name)
@@ -838,25 +1115,257 @@ def preview_pending_update(self, slug: str) -> dict | None:
     }
 
 
+def _promote_pending_update(
+    self,
+    slug: str,
+    *,
+    refuse_scripts: bool = False,
+    expected_candidate_binding: str | None = None,
+    claimed_out: list[bool] | None = None,
+    committed_out: list[tuple[str, int]] | None = None,
+    refusal: list[PendingApprovalRefused] | None = None,
+) -> tuple[str, int] | None:
+    """Claim and promote an update, returning its lock-authoritative version."""
+    claimed = self._claim_pending_update(slug)
+    if claimed is None:
+        return None
+    if claimed_out is not None:
+        claimed_out[:] = [True]
+    claim, claim_fd, consumed_at, claim_snapshot = claimed
+    result: tuple[str, int] | None = None
+    live_published = False
+    try:
+        if is_link_or_junction(claim):
+            return None
+        observed = self._validate_and_redact_candidate(claim, slug, refusal=refusal)
+        if (
+            observed is None
+            or claim_snapshot.generation_hash is None
+            or not secrets.compare_digest(
+                observed.generation_hash,
+                claim_snapshot.generation_hash,
+            )
+        ):
+            logger.warning("Refusing promotion of %s: claimed generation changed", slug)
+            return None
+        if claim_snapshot.tree is None:
+            logger.warning("Refusing promotion of %s: claim has no immutable authority", slug)
+            return None
+        snapshot = self._validate_and_redact_snapshot(claim_snapshot.tree, slug, refusal=refusal)
+        if snapshot is None:
+            logger.warning("Refusing promotion of %s: snapshot validation failed", slug)
+            return None
+        meta = snapshot.metadata
+        target = meta.get("target")
+        if meta.get("kind") != "update":
+            _note_refusal(refusal, PendingApprovalRefused("not_found"))
+            return None
+        if not isinstance(target, str) or not target:
+            _note_refusal(refusal, PendingApprovalRefused("target_missing"))
+            return None
+        target_slug = self._auto_slug_from_name(target)
+        if not self._is_pending_slug_safe(target_slug):
+            _note_refusal(refusal, PendingApprovalRefused("target_missing"))
+            return None
+        with self._promotion_lock(target_slug) as acquired:
+            if not acquired:
+                logger.warning("Promotion lock unavailable for %s", target)
+                return None
+            try:
+                with self._pin_private_state(
+                    create=False,
+                    require_sensitive=True,
+                ) as private_state:
+                    result = self._approve_claimed_update_locked(
+                        claim,
+                        claim_fd=claim_fd,
+                        slug=slug,
+                        meta=meta,
+                        snapshot=snapshot,
+                        refuse_scripts=refuse_scripts,
+                        expected_candidate_binding=expected_candidate_binding,
+                        private_state=private_state,
+                        refusal=refusal,
+                    )
+                    if result is None:
+                        return None
+                    name, _new_version = result
+                    live_published = True
+                    if committed_out is not None:
+                        committed_out[:] = [result]
+                    if not self._commit_claim_consumption(claim, claim_fd):
+                        result = None
+                        return None
+                    if not self._pinned_parent_matches(
+                        private_state.auto
+                    ) or not self._pinned_parent_matches(private_state.private):
+                        result = None
+                        return None
+            except (FileNotFoundError, OSError, RuntimeError, ValueError):
+                logger.warning("Promotion authority became unavailable for %s", target)
+                return None
+        if os.path.lexists(claim):
+            logger.warning(
+                "Published update evidence remains active for restart retention: %s",
+                claim,
+            )
+        _emit_pending_consumed(
+            {"slug": slug, "outcome": "approved", "name": name, "consumed_at": consumed_at}
+        )
+        return result
+    finally:
+        cleanup_claim_lock = True
+        try:
+            if result is None and not live_published:
+                cleanup_claim_lock = self._restore_failed_promotion_claim(
+                    claim,
+                    claim_fd,
+                    slug,
+                    claim_snapshot,
+                )
+        except OSError:
+            cleanup_claim_lock = False
+            logger.error("Could not restore claimed update %s", claim, exc_info=True)
+        finally:
+            platform_compat.release_lock(claim_fd)
+            os.close(claim_fd)
+            if cleanup_claim_lock:
+                self._cleanup_claim_lock(claim.name)
+
+
+def _approve_claimed_skill_locked(
+    self,
+    src: Path,
+    claim_fd: int,
+    slug: str,
+    claim_snapshot: _ClaimSnapshot,
+    private_state: _PinnedPrivateState,
+    *,
+    refusal: list[PendingApprovalRefused] | None = None,
+) -> str | None:
+    """Publish one immutable claimed snapshot while its target lock is held."""
+    name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
+    dest = private_state.auto.path / slug
+    if is_link_or_junction(src):
+        return None
+    if claim_snapshot.tree is None:
+        logger.warning("Refusing to approve %s: claim has no immutable authority", name)
+        return None
+    snapshot = self._validate_and_redact_snapshot(claim_snapshot.tree, name, refusal=refusal)
+    if snapshot is None:
+        logger.warning("Refusing to approve %s: snapshot validation failed", name)
+        return None
+    if snapshot.metadata.get("kind") == "update":
+        logger.warning("Refusing to approve %s as new: claimed candidate is an update", name)
+        _note_refusal(refusal, PendingApprovalRefused("kind_mismatch"))
+        return None
+    if self._pinned_child_exists(private_state.auto, slug):
+        logger.warning("Cannot approve %s: a live skill already exists", name)
+        _note_refusal(refusal, PendingApprovalRefused("live_exists"))
+        return None
+
+    stage, _backup = self._publication_paths(src.name)
+    if stage.parent != private_state.private.path:
+        return None
+    if self._pinned_child_exists(private_state.private, stage.name):
+        logger.error("Refusing to reuse skill publication stage for %s", name)
+        return None
+    try:
+        self._materialize_candidate_snapshot(snapshot, stage)
+        self._sync_skill_tree(stage)
+        after_hash = self._skill_tree_hash_child(private_state.private, stage.name)
+        if after_hash is None:
+            raise OSError("staged skill generation changed")
+        if not self._prepare_claim_publication(
+            claim_fd,
+            self._claim_lock_path(src.name),
+            src.name,
+            kind="new",
+            target_slug=slug,
+            before_hash=None,
+            after_hash=after_hash,
+            claim_snapshot=_ClaimSnapshot(
+                snapshot.generation_hash,
+                snapshot.source_files.get(Path(".meta.json")),
+            ),
+            live_backup_identity=None,
+            snapshot_version=None,
+            new_version=1,
+        ):
+            raise OSError("claim journal failed")
+        if (
+            self._publish_prepared_skill_tree(
+                state=private_state,
+                live_dir=dest,
+                stage=stage,
+                backup=None,
+                backup_identity=None,
+                before_hash=None,
+                after_hash=after_hash,
+            )
+            != "published"
+        ):
+            logger.warning("Refusing to approve %s: whole-tree publication did not complete", name)
+            return None
+    except (KeyError, OSError):
+        if (
+            self._authenticated_claim_publication(
+                claim_fd, self._claim_lock_path(src.name), src.name
+            )
+            is None
+        ):
+            self._cleanup_publication_artifacts(src.name)
+        logger.warning("Refusing to approve %s: could not publish validated snapshot", name)
+        return None
+
+    self._invalidate_iter_cache()
+    logger.info("Approved pending skill: %s", name)
+    return name
+
+
+def _refuse_failing_pending_scripts(self, src: Path, name: str) -> None:
+    """Raise ``script_validation_failed`` when the candidate's scripts fail.
+
+    One verdict, two surfaces: approve consults the SAME verdict function the
+    pre-click badge serves, so a computable failing verdict refuses with the
+    badge's own report and the click cannot disagree with the badge. Where no
+    verdict is computable (no pinned walk), the by-name scripts are validated
+    instead so the refusal still names the reason. Advisory either way: it
+    reads the public candidate and can only refuse; the claimed snapshot is
+    validated again before anything is published.
+    """
+    _fold = self._pending_scripts_verdict(src)
+    if _fold is None:
+        sdir = src / "scripts"
+        scripts = self._collect_scripts(sdir) if sdir.is_dir() else []
+        _fold = validate_scripts(scripts) if scripts else (True, {})
+    _fold_ok, _fold_report = _fold
+    if not _fold_ok:
+        logger.warning(
+            "Refusing to approve %s: the pending verdict this candidate's badge "
+            "serves reports failing findings",
+            name,
+        )
+        raise PendingApprovalRefused(
+            "script_validation_failed",
+            report=self._redact_validation_report(_fold_report),
+        )
+
+
 def approve_pending_update_checked(self, slug: str) -> str:
-    """Promote a pending UPDATE candidate over its live target auto-skill.
+    """Atomically claim and promote a pending UPDATE candidate over its live target.
 
-    Preconditions (all checked BEFORE any live mutation; a failure here
-    leaves BOTH the live skill and the candidate untouched and raises
-    ``PendingApprovalRefused`` with the reason): the slug is safe, the
-    candidate has a ``SKILL.md``, its ``.meta.json`` has
-    ``kind == "update"``, and ``target`` names an EXISTING live auto
-    skill. Then: the shared symlink/unexpected-entry guard runs, scripts are
-    re-validated, and SKILL.md + scripts are redacted in place (originals
-    restored on failure).
-
-    Promotion: snapshot the current live ``SKILL.md`` to
-    ``auto/<target>/.versions/v<N>-SKILL.md`` (N = current live version),
-    write the candidate over live with frontmatter rewritten (preserve live
-    ``created_at``, ``name`` = ``auto/<target>``, ``version`` = N+1), move the
-    candidate scripts into the live ``scripts/`` (exec bit set on POSIX),
-    prune ``.versions`` to the newest ``MAX_SKILL_VERSIONS``, delete the
-    pending dir, and SEL-audit. Returns ``auto/<target>`` on success.
+    Raises ``PendingApprovalRefused`` with the reason; a refusal leaves both
+    the live skill and the candidate as they were. The advisory checks below
+    read the PUBLIC candidate, which a writer can still change, so they can
+    only refuse earlier with a precise reason and never authorize anything.
+    Promotion then captures an immutable generation before the public
+    directory is renamed into the claim, and publishes only from that
+    capture: the live tree is moved aside under ``auto/.live-quarantine/``
+    and a fresh private stage holding the rewritten body, the version
+    snapshot and the validated scripts is renamed live in its place. A
+    refusal restores the claimed candidate to review without replacing a
+    newer public candidate. Returns ``auto/<target>`` on success.
     """
     if not self._is_pending_slug_safe(slug):
         raise PendingApprovalRefused("not_found")
@@ -872,283 +1381,53 @@ def approve_pending_update_checked(self, slug: str) -> str:
     target_slug = self._auto_slug_from_name(target)
     if not self._is_pending_slug_safe(target_slug):
         raise PendingApprovalRefused("target_missing")
-    live_dir = self._dir / AUTO_SKILL_NAMESPACE / target_slug
-    live_skill = live_dir / "SKILL.md"
-    if not live_skill.exists():
+    if not (self._dir / AUTO_SKILL_NAMESPACE / target_slug / "SKILL.md").exists():
         logger.warning(
             "Refusing to approve update %s: target %r is not a live auto skill", slug, target
         )
         raise PendingApprovalRefused("target_missing")
+    disabled = auto_skill_promotion_disabled_reason()
+    if disabled is not None:
+        logger.warning("Refusing to approve update %s: %s", slug, disabled)
+        raise PendingApprovalRefused("promotion_disabled")
     target_name = f"{AUTO_SKILL_NAMESPACE}/{target_slug}"
-    # The LIVE side is a write target here (unlike approve_pending_skill_checked, which
-    # moves into a fresh dest), so it needs its own symlink guard: a symlinked
-    # ``scripts/`` (or any symlinked entry) would let ``mkdir``/``copy2`` follow
-    # the link and write candidate content OUTSIDE the skill directory.
-    if self._candidate_has_symlink(live_dir):
-        logger.warning(
-            "Refusing to approve update %s: live skill directory contains a symlink",
-            target_name,
-        )
-        raise PendingApprovalRefused("invalid_layout")
-    # Shared symlink + unexpected-entry rejection.
-    if not self._candidate_layout_ok(src, target_name):
-        raise PendingApprovalRefused("invalid_layout")
-    # One verdict, two surfaces: same consult as
-    # ``approve_pending_skill_checked`` — a computable failing verdict
-    # refuses with the badge's own report, so the update click can never
-    # disagree with the badge it stood behind.
-    _fold = self._pending_scripts_verdict(src)
-    if _fold is not None:
-        _fold_ok, _fold_report = _fold
-        if not _fold_ok:
-            logger.warning(
-                "Refusing to approve update %s: the pending verdict this candidate's "
-                "badge serves reports failing findings",
-                target_name,
-            )
-            raise PendingApprovalRefused(
-                "script_validation_failed",
-                report=self._redact_validation_report(_fold_report),
-            )
-    # Read the live version and frontmatter BEFORE the candidate is redacted
-    # in place. These are rewrite reads, so a live path that does not vet
-    # raises rather than answering "no metadata", and that refusal must leave
-    # the candidate byte-identical to what was staged.
+    # The live version and frontmatter are rewrite reads, so a live path
+    # that does not vet raises rather than answering "no metadata"; refuse
+    # with the I/O reason instead of letting the claim run.
     try:
-        current_version = self.get_auto_skill_version(target_name)
-        live_fm = self._cached_frontmatter(live_skill, within=None, for_write=True)
+        self.get_auto_skill_version(target_name)
+        self._cached_frontmatter(
+            self._dir / AUTO_SKILL_NAMESPACE / target_slug / "SKILL.md",
+            within=None,
+            for_write=True,
+        )
     except OSError:
         logger.warning(
             "Refusing to approve update %s: could not read the live skill's metadata",
             target_name,
         )
         raise PendingApprovalRefused("promotion_failed")
-    # Re-validate + redact the candidate in place (restores originals on
-    # fail, raising PendingApprovalRefused with the reason).
-    redact_backup = self._validate_and_redact_candidate(src, target_name)
-
-    # Compute the new live content from the redacted candidate BEFORE any
-    # live mutation — a read failure aborts with live + candidate intact.
-    try:
-        candidate_body = (src / "SKILL.md").read_text(encoding="utf-8")
-    except OSError:
-        _restore_redacted(redact_backup)
-        raise PendingApprovalRefused("promotion_failed")
-    # Snapshot under a number that is guaranteed free, so an earlier snapshot
-    # can never be destroyed by drifted numbering.
-    versions_dir = self._versions_root(target_slug)
-    snapshot_version = (
-        self._resolve_snapshot_version(versions_dir, current_version)
-        if versions_dir.is_dir()
-        else current_version
-    )
-    new_version = snapshot_version + 1
-    # ``base_version`` records the live version the merge was computed
-    # against. If the live skill advanced since staging, this candidate's body
-    # was merged from an OLDER base, so writing it would replace whatever the
-    # intervening approval added. REFUSE rather than warn: the reviewer cannot
-    # be relied on to notice, because an already-open sibling candidate's diff
-    # is served from the frontend query cache and may still be the v1-based
-    # one. The candidate stays pending so it can be dismissed (a fresh
-    # proposal will be merged against the new base).
-    raw_base = meta.get("base_version")
-    if isinstance(raw_base, int) and raw_base != current_version:
-        # The candidate stays pending so the reviewer can dismiss it, which
-        # means it stays VISIBLE — so it must also stay byte-identical to what
-        # was staged. Redaction already ran in place above; undo it, or the
-        # rejected draft is left permanently altered and the diff the reviewer
-        # re-opens is not the one they staged.
-        _restore_redacted(redact_backup)
-        logger.warning(
-            "Refusing to approve stale update for %s: candidate based on v%s, live is v%d",
-            target_name,
-            raw_base,
-            current_version,
-        )
-        sel().log_tool_invocation(
-            session_key="skills",
-            tool_name="auto_skill_update_approve",
-            tool_kind="permission",
-            outcome="rejected",
-            metadata={
-                "target": target_name,
-                "base_version": raw_base,
-                "live_version": current_version,
-                "reason": "stale_base",
-            },
-        )
-        raise PendingApprovalRefused("stale_base")
-    live_created_at = live_fm.get("created_at", "")
-    # Carry the live skill's pin forward: a pinned skill is exempt from the
-    # lifecycle's inactivity / max-N archival, and silently dropping the flag
-    # here would expose a user-pinned skill to being archived.
-    live_pinned = str(live_fm.get("pinned", "")).strip().lower() in ("true", "1", "yes")
-    # Same for the injection opt-out: the candidate never carries it, so
-    # writing it over live without this would silently turn full-body
-    # injection back on for a skill the user had made pointer-only.
-    live_pointer_only = str(live_fm.get("inject_on_trigger", "")).strip().lower() == "false"
-    new_live_content = self._rewrite_update_frontmatter(
-        candidate_body,
-        target_name=target_name,
-        created_at=live_created_at,
-        version=new_version,
-        pinned=live_pinned,
-        pointer_only=live_pointer_only,
-    )
-    # Snapshot the current live SKILL.md into .versions/ (point-of-no-return
-    # is the live overwrite below; if the snapshot fails, live is untouched).
-    versions_dir = self._versions_root(target_slug)
-    snapshot = versions_dir / f"v{snapshot_version}-SKILL.md"
-    try:
-        versions_dir.mkdir(parents=True, exist_ok=True)
-        live_prev = live_skill.read_text(encoding="utf-8")
-        atomic_write(snapshot, live_prev)
-    except OSError:
-        _restore_redacted(redact_backup)
-        logger.warning(
-            "Refusing to approve update %s: could not snapshot live version", target_name
-        )
-        raise PendingApprovalRefused("promotion_failed")
-    # (f) Write candidate over live.
-    try:
-        atomic_write(live_skill, new_live_content)
-    except OSError:
-        # atomic_write renames into place, so a failure leaves the live
-        # SKILL.md untouched; drop the snapshot we just wrote and restore.
-        try:
-            snapshot.unlink()
-        except OSError:
-            pass
-        _restore_redacted(redact_backup)
-        logger.warning("Refusing to approve update %s: could not write live SKILL.md", target_name)
-        raise PendingApprovalRefused("promotion_failed")
-    # (g) Promote candidate scripts into the live scripts/ dir (exec bit on
-    # POSIX). COPY rather than move: the pending dir is deleted in (i), so a
-    # move that fails partway would leave the approved script in neither
-    # place. Copying keeps the candidate intact as the rollback source, and
-    # any failure aborts the whole approval — restoring the live SKILL.md
-    # from the snapshot we just wrote and leaving the candidate reviewable.
-    src_scripts = src / "scripts"
-    copied: list[Path] = []
-    # Pre-existing destinations we OVERWRITE: keep their original bytes+mode so
-    # a rollback restores them. Without this, replacing an existing live script
-    # and then failing on a later file would roll SKILL.md back while leaving
-    # the replacement script live — an internally inconsistent skill.
-    overwritten: dict[Path, tuple[bytes, int]] = {}
-    if src_scripts.is_dir():
-        live_scripts = live_dir / "scripts"
-        try:
-            live_scripts.mkdir(parents=True, exist_ok=True)
-            for root, _dirs, files in os.walk(src_scripts):
-                rel_root = Path(root).relative_to(src_scripts)
-                for nm in files:
-                    sfp = Path(root) / nm
-                    if not sfp.is_file() or sfp.is_symlink():
-                        continue
-                    dest_dir = live_scripts / rel_root
-                    dest_dir.mkdir(parents=True, exist_ok=True)
-                    dfp = dest_dir / nm
-                    if dfp.exists():
-                        # Snapshot BEFORE the overwrite; a read failure here
-                        # aborts rather than clobbering un-restorable content.
-                        _st = dfp.stat()
-                        overwritten[dfp] = (dfp.read_bytes(), _st.st_mode)
-                    else:
-                        # Only track files WE created, so a rollback never
-                        # deletes a script the live skill already shipped.
-                        copied.append(dfp)
-                    shutil.copy2(str(sfp), str(dfp))
-                    dfp.chmod(dfp.stat().st_mode | 0o111)
-        except OSError:
-            for _p in copied:
-                try:
-                    _p.unlink()
-                except OSError:
-                    pass
-            for _p, (_b, _mode) in overwritten.items():
-                try:
-                    _p.write_bytes(_b)
-                    _p.chmod(_mode)
-                except OSError:
-                    logger.error(
-                        "Update %s rollback could not restore live script %s",
-                        target_name,
-                        _p.name,
-                    )
-            try:
-                atomic_write(live_skill, live_prev)
-            except OSError:
-                logger.error(
-                    "Update %s failed mid-promotion AND the live SKILL.md could "
-                    "not be restored; the snapshot remains at %s",
-                    target_name,
-                    snapshot,
-                )
-            else:
-                try:
-                    snapshot.unlink()
-                except OSError:
-                    pass
-            _restore_redacted(redact_backup)
-            logger.warning(
-                "Refusing to approve update %s: could not promote candidate scripts",
-                target_name,
-            )
-            raise PendingApprovalRefused("promotion_failed")
-    # (h) Prune version history to the cap.
-    self._prune_versions(versions_dir)
-    # (i) Remove the pending candidate.
-    # Captured BEFORE the removal so a same-slug replacement staged after
-    # this instant keeps its notification (see approve_pending_skill_checked).
-    consumed_at = datetime.now(tz=timezone.utc).isoformat()
-    shutil.rmtree(src, ignore_errors=True)
-    # (j) Audit the approved update.
-    sel().log_tool_invocation(
-        session_key="skills",
-        tool_name="auto_skill_update_approve",
-        tool_kind="permission",
-        outcome="invoked",
-        metadata={
-            "target": target_name,
-            "from_version": current_version,
-            "to_version": new_version,
-            "base_version": raw_base,
-            "stale_base": False,
-        },
-    )
-    # (8) Make the updated live skill visible to trigger matching now.
-    self._invalidate_iter_cache()
-    logger.info(
-        "Approved pending update: %s (v%d -> v%d)", target_name, current_version, new_version
-    )
-    # The candidate cleanup above ignores rmtree errors (e.g. a Windows
-    # file lock), so the candidate can survive in the pending queue even
-    # though the update went live. Only report it consumed when the
-    # directory is really gone — otherwise the queue still shows an
-    # actionable review and its notification must stay unread.
-    if not src.exists():
-        _emit_pending_consumed(
-            {
-                "slug": slug,
-                "outcome": "approved",
-                "name": target_name,
-                "consumed_at": consumed_at,
-            }
-        )
-    return target_name
+    if not self._candidate_layout_ok(src, target_name):
+        raise PendingApprovalRefused("invalid_layout")
+    self._refuse_failing_pending_scripts(src, target_name)
+    refusal: list[PendingApprovalRefused] = []
+    result = self._promote_pending_update(slug, refusal=refusal)
+    if result is None:
+        raise refusal[0] if refusal else PendingApprovalRefused("promotion_failed")
+    return result[0]
 
 
 def approve_pending_skill_checked(self, slug: str) -> str:
-    """Promote a pending candidate to a live auto-skill.
+    """Atomically claim and publish a pending candidate as a live auto-skill.
 
-    Re-validates + redacts the candidate, then moves ``auto/.pending/<slug>``
-    → ``auto/<slug>`` and marks any bundled scripts executable. Returns the
-    live name; raises ``PendingApprovalRefused`` (with the reason, and the
-    redacted findings report for a validation failure) if the candidate is
-    missing, a live skill of that name already exists, it contains a
-    symlink, script validation fails, or redaction fails. Every check runs
-    BEFORE the move, so a rejected candidate is left untouched in the
-    pending queue.
+    Returns the live name; raises ``PendingApprovalRefused`` (with the reason,
+    and the redacted findings report for a validation failure) if the
+    candidate is missing, a live skill of that name already exists, it holds
+    a link or an unexpected entry, script validation fails, or publication
+    does not complete. The advisory checks read the PUBLIC candidate and can
+    only refuse; publication uses only the generation captured at the claim
+    rename, materialized into a fresh private stage that is renamed live
+    without replacement. A refusal restores the claimed candidate to review.
     """
     if not self._is_pending_slug_safe(slug):
         raise PendingApprovalRefused("not_found")
@@ -1171,110 +1450,18 @@ def approve_pending_skill_checked(self, slug: str) -> str:
         )
         raise PendingApprovalRefused("kind_mismatch")
     name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
-    dest = self._dir / name
-    if dest.exists():
+    if (self._dir / name).exists():
         logger.warning("Cannot approve %s: a live skill already exists", name)
         raise PendingApprovalRefused("live_exists")
-    # Reject any symlink in the candidate + any unexpected top-level entry
-    # (defense-in-depth on top of the mandatory human review); promotion +
-    # chmod must only touch known, real files. Factored into a shared helper
-    # so the update-approve path enforces the identical layout guard.
+    disabled = auto_skill_promotion_disabled_reason()
+    if disabled is not None:
+        logger.warning("Refusing to approve %s: %s", name, disabled)
+        raise PendingApprovalRefused("promotion_disabled")
     if not self._candidate_layout_ok(src, name):
         raise PendingApprovalRefused("invalid_layout")
-    # One verdict, two surfaces: approve consults the SAME verdict function
-    # the pre-click badge serves. Where a verdict is computable, a failing
-    # one refuses HERE with the verdict's own report, so the badge and the
-    # click cannot disagree on any candidate the badge judged — an
-    # ``ok: false`` badge is a refusal by construction, not by parallel
-    # re-derivation. ``None`` (no pinned opens, or a budget breach) keeps
-    # this path's own machinery as the sole authority, exactly the
-    # authority split the verdict's contract documents.
-    _fold = self._pending_scripts_verdict(src)
-    if _fold is not None:
-        _fold_ok, _fold_report = _fold
-        if not _fold_ok:
-            logger.warning(
-                "Refusing to approve %s: the pending verdict this candidate's badge "
-                "serves reports failing findings",
-                name,
-            )
-            raise PendingApprovalRefused(
-                "script_validation_failed",
-                report=self._redact_validation_report(_fold_report),
-            )
-    # Re-validate every script + redact the body + scripts before going live;
-    # snapshots each file first so a failure restores the ORIGINAL bytes and
-    # never leaves a corrupted pending draft (raising PendingApprovalRefused
-    # with the reason). Shared with the update path.
-    redact_backup = self._validate_and_redact_candidate(src, name)
-
-    # Drop pending-only bookkeeping ONLY after every check + redaction has
-    # passed and immediately before the move, so a failed approval leaves the
-    # candidate — including its .meta.json (description/triggers) — intact in
-    # the pending queue for re-review. A removal FAILURE (non-writable dir,
-    # etc.) must ABORT: otherwise the raw, possibly secret-bearing .meta.json
-    # would ride into the live skill dir and be exposed by the browser. Only
-    # an already-absent file (FileNotFoundError) is benign. We stash the meta
-    # bytes first so a subsequent MOVE failure can restore them (otherwise the
-    # candidate would be left stranded in pending without its metadata).
-    meta_path = src / ".meta.json"
-    meta_backup: bytes | None = None
-    try:
-        meta_backup = meta_path.read_bytes()
-    except FileNotFoundError:
-        meta_backup = None
-    except OSError:
-        _restore_redacted(redact_backup)
-        logger.warning(
-            "Refusing to approve %s: could not read pending .meta.json before promotion", name
-        )
-        raise PendingApprovalRefused("promotion_failed")
-    try:
-        meta_path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError:
-        _restore_redacted(redact_backup)
-        logger.warning(
-            "Refusing to approve %s: could not remove pending .meta.json before promotion",
-            name,
-        )
-        raise PendingApprovalRefused("promotion_failed")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    # Cutoff for notification resolution, captured BEFORE the candidate
-    # leaves the pending queue: staging refuses to overwrite an existing
-    # candidate, so a same-slug replacement can only be staged after this
-    # instant — its notification carries a strictly later ``ts`` and must
-    # survive the resolve.
-    consumed_at = datetime.now(tz=timezone.utc).isoformat()
-    try:
-        shutil.move(str(src), str(dest))
-    except OSError:
-        # Promotion failed after we deleted the pending bookkeeping — restore
-        # .meta.json AND the redacted files so the candidate stays intact in
-        # the pending queue for re-review instead of being left corrupted.
-        if meta_backup is not None and src.is_dir():
-            try:
-                meta_path.write_bytes(meta_backup)
-            except OSError:
-                pass
-        _restore_redacted(redact_backup)
-        logger.warning("Refusing to approve %s: could not move candidate live", name)
-        raise PendingApprovalRefused("promotion_failed")
-    # Mark scripts executable now that a human approved them (recursively).
-    sdir = dest / "scripts"
-    if sdir.is_dir():
-        for root, _dirs, files in os.walk(sdir):
-            for nm in files:
-                sf = Path(root) / nm
-                if sf.is_file() and not sf.is_symlink():
-                    try:
-                        sf.chmod(sf.stat().st_mode | 0o111)
-                    except OSError:
-                        pass
-    self._invalidate_iter_cache()
-    logger.info("Approved pending skill: %s", name)
-    _emit_pending_consumed(
-        {"slug": slug, "outcome": "approved", "name": name, "consumed_at": consumed_at}
-    )
-    return name
+    self._refuse_failing_pending_scripts(src, name)
+    refusal: list[PendingApprovalRefused] = []
+    result = self._promote_pending_skill(slug, refusal=refusal)
+    if result is None:
+        raise refusal[0] if refusal else PendingApprovalRefused("promotion_failed")
+    return result

@@ -18,6 +18,7 @@ import pytest
 
 from kiro_crew import history as H
 from kiro_crew.history import HistoryConsolidator
+from kiro_crew.skills import canonical_skill_text_hash
 
 _LIVE_BODY = "## When to use\nold\n## Steps\n1. old\n## Gotchas\nnone\n"
 
@@ -33,6 +34,10 @@ class FakeLoader:
         self._version = version
         self._find = find
         self.staged: list[dict] = []
+        self.auto_applied: list[dict] = []
+        self.auto_apply_recovery_pending: tuple[str, int] | None = None
+        self.lifecycle_calls: list[dict] = []
+        self.lifecycle_error: Exception | None = None
 
     # dedupe inputs
     def list_auto_skills(self):
@@ -65,6 +70,9 @@ class FakeLoader:
         scripts=None,
         source="consolidation",
         refusal=None,
+        notify=True,
+        base_content_hash=None,
+        unattended_binding_out=None,
     ):
         self.staged.append(
             {
@@ -76,25 +84,52 @@ class FakeLoader:
                 "target": target,
                 "base_version": base_version,
                 "scripts": scripts,
+                "notify": notify,
+                "base_content_hash": base_content_hash,
             }
         )
+        if unattended_binding_out is not None:
+            unattended_binding_out[:] = [f"binding:{slug}"]
         return f"auto/{slug}"
+
+    def auto_apply_pending_update(
+        self,
+        slug,
+        *,
+        expected_candidate_binding,
+        recovery_pending_out=None,
+    ):
+        self.auto_applied.append(
+            {
+                "slug": slug,
+                "expected_candidate_binding": expected_candidate_binding,
+            }
+        )
+        if self.auto_apply_recovery_pending is not None:
+            if recovery_pending_out is not None:
+                recovery_pending_out[:] = [self.auto_apply_recovery_pending]
+            return None
+        return "auto/deploy-helper", self._version + 1
 
     # new-path fallbacks (unused in these tests but referenced by the code)
     def create_auto_skill(self, *a, **k):
         return None
 
     def run_skill_lifecycle(self, *a, **k):
+        self.lifecycle_calls.append(k)
+        if self.lifecycle_error is not None:
+            raise self.lifecycle_error
         return None
 
 
 def _mk(loader, **kw):
+    approval_required = kw.pop("approval_required", True)
     return HistoryConsolidator(
         log=MagicMock(),
         memory=MagicMock(),
         skills_loader=loader,
         auto_skills_enabled=True,
-        approval_required=True,
+        approval_required=approval_required,
         **kw,
     )
 
@@ -115,11 +150,13 @@ async def test_dedupe_maps_update_verdict(monkeypatch):
     c = _mk(loader, judge_model="claude-haiku-4.5")
     c._event_loop = asyncio.get_running_loop()
     monkeypatch.setattr(
-        H, "metadata_dedupe_verdict",
+        H,
+        "metadata_dedupe_verdict",
         lambda cand, existing, judge: (H.VERDICT_UPDATE, "auto/deploy-helper"),
     )
     assert c._dedupe_candidate("deploy-helper-2", "d", "t") == (
-        H.VERDICT_UPDATE, "auto/deploy-helper"
+        H.VERDICT_UPDATE,
+        "auto/deploy-helper",
     )
 
 
@@ -129,7 +166,8 @@ async def test_dedupe_maps_dup_verdict(monkeypatch):
     c = _mk(loader, judge_model="claude-haiku-4.5")
     c._event_loop = asyncio.get_running_loop()
     monkeypatch.setattr(
-        H, "metadata_dedupe_verdict",
+        H,
+        "metadata_dedupe_verdict",
         lambda *a: (H.VERDICT_DUP, "auto/deploy-helper"),
     )
     assert c._dedupe_candidate("x", "d", "t") == (H.VERDICT_DUP, "auto/deploy-helper")
@@ -199,6 +237,7 @@ async def test_stage_update_uses_merged_body():
     assert st["kind"] == "update"
     assert st["target"] == "auto/deploy-helper"
     assert st["base_version"] == 7
+    assert st["base_content_hash"] == canonical_skill_text_hash(_LIVE_BODY)
     # The merge boundary sanitizer strips surrounding whitespace (the SKILL.md
     # builder strips the body anyway), so compare against the stripped form.
     assert st["procedure_md"] == merged.strip()
@@ -209,6 +248,26 @@ async def test_stage_update_uses_merged_body():
         "base_version": 7,
         "merged": True,
     }
+
+
+def test_stage_update_hashes_crlf_and_lf_as_the_same_live_text():
+    crlf_body = _LIVE_BODY.replace("\n", "\r\n")
+    loader = FakeLoader(live_body=crlf_body)
+    c = _mk(loader)
+    c._event_loop = None
+    ctx = _sel_recorder([])
+    try:
+        c._stage_skill_update(
+            key="sess",
+            target_key="auto/deploy-helper",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n1. cand\n",
+        )
+    finally:
+        ctx.stop()
+
+    assert loader.staged[0]["base_content_hash"] == canonical_skill_text_hash(_LIVE_BODY)
 
 
 @pytest.mark.asyncio
@@ -297,6 +356,265 @@ def test_stage_update_no_loop_skips_merge():
     assert ev and ev[0]["metadata"]["merged"] is False
 
 
+def test_prose_update_auto_applies_when_approval_is_disabled():
+    loader = FakeLoader(version=4)
+    c = _mk(loader, approval_required=False, auto_apply_updates=True)
+    recorded: list[dict] = []
+    ctx = _sel_recorder(recorded)
+    try:
+        c._stage_skill_update(
+            key="sess",
+            target_key="auto/deploy-helper",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n1. safer\n",
+        )
+    finally:
+        ctx.stop()
+
+    staged = loader.staged[0]
+    assert staged["notify"] is False
+    assert loader.auto_applied == [
+        {
+            "slug": "deploy-helper-update",
+            "expected_candidate_binding": "binding:deploy-helper-update",
+        }
+    ]
+    assert any(row.get("outcome") == "auto_applied_update" for row in recorded)
+
+
+def test_auto_apply_success_runs_lifecycle_with_target_exempt():
+    """An update carries the ORIGINAL created_at forward, so an old zero-hit
+    target would be archived by the next lifecycle pass — including
+    _consolidate's own throttled pass moments after the apply. Success must
+    run the pass with the applied skill exempted (mirroring the dashboard
+    approve path) and advance the throttle stamp."""
+    loader = FakeLoader(version=4)
+    c = _mk(loader, approval_required=False, auto_apply_updates=True)
+    before = c._last_lifecycle
+    ctx = _sel_recorder([])
+    try:
+        c._stage_skill_update(
+            key="sess",
+            target_key="auto/deploy-helper",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n1. safer\n",
+        )
+    finally:
+        ctx.stop()
+
+    assert loader.auto_applied  # the apply happened
+    assert loader.lifecycle_calls, "successful auto-apply must run a lifecycle pass"
+    assert loader.lifecycle_calls[-1]["exempt"] == {"auto/deploy-helper"}
+    assert c._last_lifecycle > before
+
+
+def test_failed_auto_apply_runs_no_lifecycle_pass():
+    """A failed apply leaves the candidate pending; archiving anything on that
+    path would act on state the apply never changed."""
+    loader = FakeLoader(version=4)
+    loader.auto_apply_pending_update = lambda *a, **k: None
+    c = _mk(loader, approval_required=False, auto_apply_updates=True)
+    ctx = _sel_recorder([])
+    try:
+        c._stage_skill_update(
+            key="sess",
+            target_key="auto/deploy-helper",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n1. safer\n",
+        )
+    finally:
+        ctx.stop()
+
+    assert loader.lifecycle_calls == []
+
+
+def test_committed_auto_apply_with_pending_recovery_is_reported_as_live():
+    loader = FakeLoader(version=4)
+    loader.auto_apply_recovery_pending = ("auto/deploy-helper", 5)
+    c = _mk(loader, approval_required=False, auto_apply_updates=True)
+    before = c._last_lifecycle
+    recorded: list[dict] = []
+    ctx = _sel_recorder(recorded)
+    try:
+        c._stage_skill_update(
+            key="sess",
+            target_key="auto/deploy-helper",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n1. safer\n",
+        )
+    finally:
+        ctx.stop()
+
+    outcomes = [row for row in recorded if row.get("outcome")]
+    assert any(
+        row["outcome"] == "auto_apply_committed_recovery_pending"
+        and row["metadata"]["new_version"] == 5
+        for row in outcomes
+    )
+    assert not any(
+        row.get("metadata", {}).get("reason") == "left_pending_for_review" for row in outcomes
+    )
+    assert len(loader.lifecycle_calls) == 1
+    assert c._last_lifecycle > before
+
+
+def test_failed_recovery_pending_lifecycle_pass_keeps_retry_stamp():
+    loader = FakeLoader(version=4)
+    loader.auto_apply_recovery_pending = ("auto/deploy-helper", 5)
+    loader.lifecycle_error = RuntimeError("injected lifecycle failure")
+    c = _mk(loader, approval_required=False, auto_apply_updates=True)
+    before = c._last_lifecycle
+    ctx = _sel_recorder([])
+    try:
+        c._stage_skill_update(
+            key="sess",
+            target_key="auto/deploy-helper",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n1. safer\n",
+        )
+    finally:
+        ctx.stop()
+
+    assert len(loader.lifecycle_calls) == 1
+    assert c._last_lifecycle == before
+
+
+def test_script_bearing_update_stays_pending_when_approval_is_disabled():
+    loader = FakeLoader()
+    c = _mk(loader, approval_required=False, auto_apply_updates=True)
+    c._stage_skill_update(
+        key="sess",
+        target_key="auto/deploy-helper",
+        description="d",
+        triggers="t",
+        procedure_md="## Steps\n1. run\n",
+        scripts=[{"filename": "run.py", "content": "print('ok')\n"}],
+        scripts_supplied=True,
+    )
+    assert loader.staged[0]["notify"] is True
+    assert loader.auto_applied == []
+
+
+def test_auto_refine_guard_keeps_prose_update_pending():
+    loader = FakeLoader()
+    c = _mk(loader, approval_required=False, auto_apply_updates=True, auto_refine_enabled=True)
+    c._stage_skill_update(
+        key="sess",
+        target_key="auto/deploy-helper",
+        description="d",
+        triggers="t",
+        procedure_md="## Steps\n1. run\n",
+    )
+    assert loader.staged[0]["notify"] is True
+    assert loader.auto_applied == []
+
+
+def test_disabled_approval_alone_never_auto_applies_an_update():
+    """``approval_required=false`` covered new prose skills only; replacing a
+    live skill the operator relies on needs its own ``auto_apply_updates`` opt-in."""
+    loader = FakeLoader(version=4)
+    c = _mk(loader, approval_required=False)
+    c._stage_skill_update(
+        key="sess",
+        target_key="auto/deploy-helper",
+        description="d",
+        triggers="t",
+        procedure_md="## Steps\n1. safer\n",
+    )
+    assert loader.staged[0]["notify"] is True
+    assert loader.auto_applied == []
+
+
+def test_update_whose_scripts_all_failed_is_rejected_when_approval_is_disabled():
+    """The NEW-candidate all-invalid-script rule holds for updates: an update that
+    tried to add executable content and lost every script is neither disguised
+    as a prose-only update nor queued for a review the operator turned off."""
+    loader = FakeLoader(version=4)
+    c = _mk(loader, approval_required=False, auto_apply_updates=True)
+    recorded: list[dict] = []
+    ctx = _sel_recorder(recorded)
+    try:
+        c._stage_skill_update(
+            key="sess",
+            target_key="auto/deploy-helper",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n1. run\n",
+            scripts=None,
+            scripts_supplied=True,
+        )
+    finally:
+        ctx.stop()
+    assert loader.staged == []
+    assert loader.auto_applied == []
+    rejected = [r for r in recorded if r.get("outcome") == "rejected"]
+    assert rejected and rejected[0]["metadata"] == {
+        "target": "auto/deploy-helper",
+        "reason": "all_scripts_rejected",
+    }
+
+
+def test_update_whose_scripts_all_failed_is_staged_as_prose_for_review():
+    """With review enabled the same update is staged as prose for a human."""
+    loader = FakeLoader(version=4)
+    c = _mk(loader, approval_required=True)
+    c._stage_skill_update(
+        key="sess",
+        target_key="auto/deploy-helper",
+        description="d",
+        triggers="t",
+        procedure_md="## Steps\n1. run\n",
+        scripts=None,
+        scripts_supplied=True,
+    )
+    assert len(loader.staged) == 1
+    assert loader.staged[0]["notify"] is True
+    assert loader.auto_applied == []
+
+
+@pytest.mark.parametrize(
+    "review_still_on",
+    [
+        {"auto_apply_updates": False},
+        {"auto_apply_updates": True, "auto_refine_enabled": True},
+    ],
+)
+def test_update_whose_scripts_all_failed_stays_reviewable_while_update_review_is_on(
+    review_still_on,
+):
+    """Disabled approval alone does not turn UPDATE review off (that needs
+    ``auto_apply_updates``, and refinement keeps updates staged), so the update
+    is staged as prose for that review exactly as base did, never dropped."""
+    loader = FakeLoader(version=4)
+    c = _mk(loader, approval_required=False, **review_still_on)
+    recorded: list[dict] = []
+    ctx = _sel_recorder(recorded)
+    try:
+        c._stage_skill_update(
+            key="sess",
+            target_key="auto/deploy-helper",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n1. run\n",
+            scripts=None,
+            scripts_supplied=True,
+        )
+    finally:
+        ctx.stop()
+    assert len(loader.staged) == 1
+    assert loader.staged[0]["notify"] is True
+    assert loader.auto_applied == []
+    rejected = [
+        r for r in recorded if (r.get("metadata") or {}).get("reason") == "all_scripts_rejected"
+    ]
+    assert rejected == []
+
+
 # ── _process_auto_skills routing ──
 
 
@@ -358,7 +676,8 @@ def test_process_dup_still_rejects(monkeypatch):
     assert staged_update == []
     assert loader.staged == []
     rej = [
-        r for r in recorded
+        r
+        for r in recorded
         if r.get("outcome") == "rejected"
         and r.get("metadata", {}).get("reason") == "similar_exists"
     ]
@@ -377,7 +696,8 @@ def test_process_no_candidate_emits_skipped_audit(monkeypatch):
     c = _mk(loader)
     # _dedupe_candidate must never be consulted — there is no candidate.
     monkeypatch.setattr(
-        c, "_dedupe_candidate",
+        c,
+        "_dedupe_candidate",
         lambda *a, **k: pytest.fail("dedupe called for a null candidate"),
     )
     recorded: list[dict] = []
@@ -389,7 +709,8 @@ def test_process_no_candidate_emits_skipped_audit(monkeypatch):
         ctx.stop()
     assert loader.staged == []
     skipped = [
-        r for r in recorded
+        r
+        for r in recorded
         if r.get("tool_name") == "auto_skill_create"
         and r.get("outcome") == "skipped"
         and r.get("metadata", {}).get("reason") == "no_candidate_proposed"
@@ -461,9 +782,7 @@ def test_strip_skill_frontmatter_and_fence_helpers():
 async def test_merge_receives_prose_only_not_frontmatter():
     """The live SKILL.md header must be stripped before the merge turn, else the
     model echoes it back and a second ``---`` block nests in the procedure."""
-    loader = FakeLoader(
-        live_body="---\nname: auto/deploy-helper\nversion: 4\n---\n\n" + _LIVE_BODY
-    )
+    loader = FakeLoader(live_body="---\nname: auto/deploy-helper\nversion: 4\n---\n\n" + _LIVE_BODY)
     c = _mk(loader)
     c._event_loop = asyncio.get_running_loop()
     seen: dict = {}
@@ -695,7 +1014,8 @@ async def test_update_verdict_on_pending_target_stages_a_new_candidate():
     assert st.get("target") is None
     # And it was NOT audited as a dropped/rejected candidate.
     assert not [
-        r for r in recorded
+        r
+        for r in recorded
         if r.get("outcome") == "rejected"
         and r.get("metadata", {}).get("reason") in ("target_not_live", "similar_exists")
     ]
@@ -817,9 +1137,7 @@ def test_frontmatter_value_resolves_block_scalars():
         "  a, b\n"
         "---\n\n## Steps\n"
     )
-    assert (
-        H._frontmatter_value(body, "description") == "Retry a deploy after checking the logs.\n"
-    )
+    assert H._frontmatter_value(body, "description") == "Retry a deploy after checking the logs.\n"
     # `triggers` uses `|-`, whose strip chomping drops the trailing break, so it is
     # unaffected by the strip chomping -- the pair keeps the two modes visibly distinct here.
     assert H._frontmatter_value(body, "triggers") == "a, b"
@@ -943,3 +1261,28 @@ async def test_base_version_is_captured_before_the_body_it_describes():
     # version live drifted to during the merge (2). The staleness guard will then
     # correctly refuse this candidate instead of silently applying it over v2.
     assert loader.staged[0]["base_version"] == 1
+
+
+def test_auto_apply_lifecycle_failure_keeps_throttle_retryable():
+    loader = FakeLoader(version=4)
+
+    def fail_lifecycle(**kwargs):
+        raise OSError("lifecycle unavailable")
+
+    loader.run_skill_lifecycle = fail_lifecycle
+    c = _mk(loader, approval_required=False, auto_apply_updates=True)
+    before = c._last_lifecycle
+    ctx = _sel_recorder([])
+    try:
+        c._stage_skill_update(
+            key="sess",
+            target_key="auto/deploy-helper",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n1. safer\n",
+        )
+    finally:
+        ctx.stop()
+
+    assert loader.auto_applied
+    assert c._last_lifecycle == before

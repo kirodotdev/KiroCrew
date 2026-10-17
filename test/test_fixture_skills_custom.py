@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from contextlib import closing
 
-from kiro_crew.skills import _BUILTIN_SKILLS_DIR, SkillsLoader, _iter_skill_files
+from kiro_crew.skills import (
+    _BUILTIN_SKILLS_DIR,
+    SkillsLoader,
+    _iter_skill_files,
+    _reset_auto_skill_private_authority_for_tests,
+)
 from kiro_crew.testing.fixtures import seeded_home
 
 _DESCRIPTION = (
@@ -52,6 +57,10 @@ def test_skills_custom_fixture_drives_live_and_pending_readers() -> None:
         assert approved == {"release-notes", "auto/flaky-triage"}
         assert approved.isdisjoint(builtin_names)
 
+    # A second seeded home is a fresh installation: it gets its own gateway
+    # startup, because an authority certified for one data home never serves
+    # another.
+    _reset_auto_skill_private_authority_for_tests()
     with (
         seeded_home("skills-custom") as home,
         closing(SkillsLoader(skills_path=home / "skills", install_builtins=False)) as loader,
