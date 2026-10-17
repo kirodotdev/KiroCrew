@@ -971,8 +971,11 @@ function ChatEmbed({
     >
       {!frameless && (
         <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-card shrink-0">
-          {/* Muted while stalled: the idle accent would say the session is fine. */}
-          <span className={`w-2 h-2 rounded-full shrink-0 ${stalled ? 'bg-muted' : running ? 'bg-ok animate-pulse' : 'bg-accent'}`} />
+          {/* Muted while stalled: the idle accent would say the session is fine.
+              Danger while a stop is under way, so the dot agrees with the
+              "Stopping…"/"Killing…" caption beside it and the footer below
+              instead of staying green as if the turn were working normally. */}
+          <span data-testid="chat-embed-status-dot" className={`w-2 h-2 rounded-full shrink-0 ${stalled ? 'bg-muted' : stopUnderWay ? 'bg-danger animate-pulse' : running ? 'bg-ok animate-pulse' : 'bg-accent'}`} />
           {/* An untitled session reads a localized label (loading, new, or
               untitled), never the internal slot key; the key stays reachable
               on hover for whoever is debugging. */}
