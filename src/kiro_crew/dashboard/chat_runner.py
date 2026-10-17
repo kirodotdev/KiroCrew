@@ -506,8 +506,10 @@ from kiro_crew.dashboard.state import (  # noqa: F401
 )
 from kiro_crew.dashboard.steer_settle import settle_consumed_steers
 from kiro_crew.dashboard.turn_dispatch import (
+    ceiling_cut_unacknowledged,
     format_approval_no_budget_card,
     format_approval_timeout_card,
+    mark_ceiling_reset,
     spawn_guarded_turn,
     tool_approval_timeout_secs,
 )
@@ -600,6 +602,7 @@ from kiro_crew.messaging.empty_turn_copy import (
     EMPTY_TURN_NOTICE,
     EMPTY_TURN_NOTICE_AFTER_RECOVERY,
     EMPTY_TURN_NOTICE_AFTER_WORK,
+    UNFINISHED_TURN_NOTICE,
 )
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.messaging.link import (  # noqa: F401
@@ -8256,6 +8259,118 @@ async def _run_chat(
     _mirror_active_task_title = ""
     _mirror_thread: str | None = ""
     _mirror_task_counter = 0
+
+    async def _deliver_to_linked_surfaces(text: str) -> None:
+        """Deliver *text* from this turn to the surfaces linked to its session.
+
+        The two cross-surface legs of a turn's reply, Slack and a channel such
+        as Telegram, in one place so that an arm ending the turn before the
+        end-of-turn flush (the transport timeout) reaches the linked surfaces
+        through the same audience fences as a reply that finished. A no-op for
+        empty *text*.
+        """
+        # Gated on the SAME audience fence as the channel-neutral leg below. Slack is
+        # a cross-surface audience like any other: it resolves its thread owner live
+        # (`get_session_for_thread`) and carries supersession handling precisely
+        # because a relink can land mid-turn, so a peer steer admitted against an
+        # unlinked target can have its reply published here to a conversation the
+        # authorization never saw. Fencing only the non-Slack leg would leave the
+        # busier surface open. The destination is the thread cached at turn start,
+        # not the live binding, so it is judged as the room it is
+        # (`slack_publication_withheld`) beside the live comparison.
+        if (
+            text
+            and state.slack_client
+            and _mirror_thread
+            and _mirror_chan
+            and not cross_surface_withheld(state, slot)
+            and not slack_publication_withheld(state, slot, _mirror_chan, _mirror_thread)
+        ):
+            try:
+                from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
+                    build_options_blocks,
+                    extract_options,
+                    render_for_slack,
+                )
+
+                # Extract the OPTIONS tag from the RAW text, before rendering.
+                # It is a plain-text marker, so pulling it off after conversion
+                # means whatever conversion did to the tail decides whether the
+                # controls render at all -- and a >39,000-char turn loses the tag
+                # entirely to to_slack_mrkdwn's self-truncation.
+                _mirror_body, _mirror_options = extract_options(text)
+
+                for _part in render_for_slack(_mirror_body):
+                    await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
+                if _mirror_options:
+                    # Keep the ts this posts: the control has to be spendable
+                    # later, and discarding the ts is what leaves a superseded
+                    # question clickable forever. build_options_blocks already
+                    # redacts each choice through redact_for_display, so nothing
+                    # extra is needed here.
+                    # The asker is THIS session, named explicitly. Resolving it
+                    # from the thread would name whoever owns the thread at mint
+                    # time, so a relink landing mid-turn would stamp the control
+                    # with a conversation that never asked the question.
+                    _mirror_token = await asyncio.to_thread(mint_options_token, state, session_key)
+                    _mirror_blocks = build_options_blocks(
+                        _mirror_options, staleness_token=_mirror_token
+                    )
+                    # The thread's owner BEFORE the post. A relink landing while
+                    # post_blocks is in flight moves the conversation to another
+                    # session, and a control recorded under the key this turn
+                    # started with would be filed where that session's expiry
+                    # never looks -- and clickable into a conversation it does not
+                    # belong to. Same treatment the other two posting paths get.
+                    _pre_owner = (
+                        state.sessions.get_session_for_thread(_mirror_thread) or session_key
+                        if getattr(state, "sessions", None)
+                        else session_key
+                    )
+                    _mirror_ts = await state.slack_client.post_blocks(
+                        _mirror_chan,
+                        _mirror_blocks,
+                        "Options",
+                        _mirror_thread,
+                    )
+                    if _mirror_ts:
+                        _owner = (
+                            state.sessions.get_session_for_thread(_mirror_thread) or session_key
+                            if getattr(state, "sessions", None)
+                            else session_key
+                        )
+                        remember_slack_options(
+                            state,
+                            _owner,
+                            PostedOptions(
+                                channel=_mirror_chan,
+                                ts=_mirror_ts,
+                                choices=tuple(_mirror_options),
+                                blocks=tuple(_mirror_blocks),
+                            ),
+                        )
+                        if _owner != _pre_owner:
+                            # An owner change IS supersession: the question we just
+                            # posted would be answered into a conversation that has
+                            # moved on. Narrowed to OUR ts so a control the new
+                            # owner recorded meanwhile survives.
+                            await expire_slack_options(state, _owner, ts=_mirror_ts)
+            except Exception:
+                logger.debug("Failed to mirror response to Slack", exc_info=True)
+
+        # Channel-neutral leg: deliver the completed reply to a linked non-Slack
+        # proactive channel (e.g. Telegram) via Transport.send_message. Slack is
+        # handled above by its dedicated streaming mirror. Only a slash command is
+        # withheld: it has no mirrored question, whereas every requeue site runs
+        # downstream of the user-message leg above, so a recovery reply always has
+        # a preceding question on the linked surface — withholding it would strand
+        # that question unanswered. The audience fence is judged INSIDE the leg, on
+        # the one binding read the send resolves its target from: asked here first,
+        # the decision and the delivery would be two reads with the off-loop
+        # mirror-link writer free to retarget between them.
+        if not is_slash:
+            await _deliver_cross_surface_reply(state, session_key, text, slot=slot)
+
     _memory_preparation_admitted = False
     # Zero until the marker below is written, so a cancellation that lands during
     # startup admission has nothing to clear.
@@ -14702,6 +14817,62 @@ async def _run_chat(
         # turn never hit the loop-top flush for a following non-thinking event).
         _flush_thinking_stream()
 
+        # The transport's own deadline: the ACP handle ends a turn whose prompt
+        # never completed with stop_reason "timeout". That completion is the
+        # handle's own and sends no session/cancel, so the backend still holds
+        # the prompt open, whether or not text streamed first, and the runtime
+        # still reads alive. Reset the session in the finally, keeping the
+        # conversation, so the next message starts a fresh runtime instead of
+        # going to one still busy with this prompt. Told the way the ceiling card
+        # tells it; the message is kept, not re-queued: the user decides what to
+        # send next.
+        if _stop_reason == "timeout":
+            needs_session_reset = True  # checked in finally block (reset + resume)
+            # The text the backend streamed before the deadline is in the slot
+            # only as chunk rows, and a save writes no chunk row. Persist it as
+            # the interrupted reply first, through the helper every other
+            # abnormal end uses, so the saved history and the crew log keep what
+            # the user watched stream. Its usage row needs nothing more: when the
+            # turn billed, the complete branch above wrote it from the same stats
+            # this event carries, and the helper finds it recorded.
+            await _persist_partial_reply("timeout")
+            # The reply keeps the footer the end-of-turn path gives a reply, with
+            # the same figures: this event's elapsed time, credits and cost, the
+            # served model, and the time to first visible output. The persisted
+            # reply is broadcast, so the clock stops there at the latest, as the
+            # turn-end flush stops it. Attaching edits the row's meta only and
+            # writes no usage row.
+            if turn.assistant_text or turn._ttft_quiet_text:
+                _ttft_visible.mark("quiet")
+            _reply_mids = getattr(slot, "_turn_reply_mids", None)
+            if (
+                _attach_owned_turn_stats(
+                    slot,
+                    _turn_elapsed_ms,
+                    _turn_credits,
+                    _turn_cost_usd,
+                    turn_boundary=_turn_msg_boundary,
+                    model=_turn_model,
+                    ttft_ms=_ttft_visible.ms,
+                    reply_mids=(
+                        _reply_mids if isinstance(_reply_mids, list) and _reply_mids else None
+                    ),
+                )
+                and _prompt_depth == 0
+            ):
+                slot._carried_ttft_clock = None
+            # The notice is the one the channel driver posts for a turn the
+            # backend never finished (``messaging/driver.py``), so the dashboard
+            # and the linked surfaces cannot drift apart on its wording.
+            slot.append("error", UNFINISHED_TURN_NOTICE, "msg msg-err")
+            # This arm returns before the end-of-turn legs that take a reply to the
+            # linked surfaces, Slack and a channel such as Telegram. Send the kept
+            # reply, then the notice, through those same legs and audience fences,
+            # so a chat driven from a linked surface sees how its turn ended.
+            await _deliver_to_linked_surfaces(turn.assistant_text)
+            await _deliver_to_linked_surfaces(UNFINISHED_TURN_NOTICE)
+            return
+
         # Auto-recover a genuinely-wedged turn. The ACP layer probed a stale turn
         # via session/cancel and got no ack within the grace window — a confirmed
         # wedge (a done-but-missing-frame turn would have acked and completed
@@ -16473,107 +16644,9 @@ async def _run_chat(
                 )
 
         # ── Bidirectional sync: mirror response to linked Slack thread ──
-        # Gated on the SAME audience fence as the channel-neutral leg below. Slack is
-        # a cross-surface audience like any other: it resolves its thread owner live
-        # (`get_session_for_thread`) and carries supersession handling precisely
-        # because a relink can land mid-turn, so a peer steer admitted against an
-        # unlinked target can have its reply published here to a conversation the
-        # authorization never saw. Fencing only the non-Slack leg would leave the
-        # busier surface open. The destination is the thread cached at turn start,
-        # not the live binding, so it is judged as the room it is
-        # (`slack_publication_withheld`) beside the live comparison.
-        if (
-            turn.assistant_text
-            and state.slack_client
-            and _mirror_thread
-            and _mirror_chan
-            and not cross_surface_withheld(state, slot)
-            and not slack_publication_withheld(state, slot, _mirror_chan, _mirror_thread)
-        ):
-            try:
-                from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
-                    build_options_blocks,
-                    extract_options,
-                    render_for_slack,
-                )
-
-                # Extract the OPTIONS tag from the RAW text, before rendering.
-                # It is a plain-text marker, so pulling it off after conversion
-                # means whatever conversion did to the tail decides whether the
-                # controls render at all -- and a >39,000-char turn loses the tag
-                # entirely to to_slack_mrkdwn's self-truncation.
-                _mirror_body, _mirror_options = extract_options(turn.assistant_text)
-
-                for _part in render_for_slack(_mirror_body):
-                    await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
-                if _mirror_options:
-                    # Keep the ts this posts: the control has to be spendable
-                    # later, and discarding the ts is what leaves a superseded
-                    # question clickable forever. build_options_blocks already
-                    # redacts each choice through redact_for_display, so nothing
-                    # extra is needed here.
-                    # The asker is THIS session, named explicitly. Resolving it
-                    # from the thread would name whoever owns the thread at mint
-                    # time, so a relink landing mid-turn would stamp the control
-                    # with a conversation that never asked the question.
-                    _mirror_token = await asyncio.to_thread(mint_options_token, state, session_key)
-                    _mirror_blocks = build_options_blocks(
-                        _mirror_options, staleness_token=_mirror_token
-                    )
-                    # The thread's owner BEFORE the post. A relink landing while
-                    # post_blocks is in flight moves the conversation to another
-                    # session, and a control recorded under the key this turn
-                    # started with would be filed where that session's expiry
-                    # never looks -- and clickable into a conversation it does not
-                    # belong to. Same treatment the other two posting paths get.
-                    _pre_owner = (
-                        state.sessions.get_session_for_thread(_mirror_thread) or session_key
-                        if getattr(state, "sessions", None)
-                        else session_key
-                    )
-                    _mirror_ts = await state.slack_client.post_blocks(
-                        _mirror_chan,
-                        _mirror_blocks,
-                        "Options",
-                        _mirror_thread,
-                    )
-                    if _mirror_ts:
-                        _owner = (
-                            state.sessions.get_session_for_thread(_mirror_thread) or session_key
-                            if getattr(state, "sessions", None)
-                            else session_key
-                        )
-                        remember_slack_options(
-                            state,
-                            _owner,
-                            PostedOptions(
-                                channel=_mirror_chan,
-                                ts=_mirror_ts,
-                                choices=tuple(_mirror_options),
-                                blocks=tuple(_mirror_blocks),
-                            ),
-                        )
-                        if _owner != _pre_owner:
-                            # An owner change IS supersession: the question we just
-                            # posted would be answered into a conversation that has
-                            # moved on. Narrowed to OUR ts so a control the new
-                            # owner recorded meanwhile survives.
-                            await expire_slack_options(state, _owner, ts=_mirror_ts)
-            except Exception:
-                logger.debug("Failed to mirror response to Slack", exc_info=True)
-
-        # Channel-neutral leg: deliver the completed reply to a linked non-Slack
-        # proactive channel (e.g. Telegram) via Transport.send_message. Slack is
-        # handled above by its dedicated streaming mirror. Only a slash command is
-        # withheld: it has no mirrored question, whereas every requeue site runs
-        # downstream of the user-message leg above, so a recovery reply always has
-        # a preceding question on the linked surface — withholding it would strand
-        # that question unanswered. The audience fence is judged INSIDE the leg, on
-        # the one binding read the send resolves its target from: asked here first,
-        # the decision and the delivery would be two reads with the off-loop
-        # mirror-link writer free to retarget between them.
-        if not is_slash:
-            await _deliver_cross_surface_reply(state, session_key, turn.assistant_text, slot=slot)
+        # The reply's two cross-surface legs, shared with the transport-timeout
+        # arm, which ends the turn before this point.
+        await _deliver_to_linked_surfaces(turn.assistant_text)
     except asyncio.CancelledError:
         _crew_log_error = "CancelledError"
         # A bare CancelledError here is either the operator's Stop press — the
@@ -16588,6 +16661,24 @@ async def _run_chat(
             _cancel_reason = STOP_REASON_CANCELLED
         else:
             _cancel_reason = "error: cancelled"
+            # The turn ceiling can leave a silent runtime behind: when its native
+            # stop request got no acknowledgement, the runtime did not answer,
+            # nothing armed the stale-turn probe and nothing retired it, and it
+            # still reads alive, so without a reset the next message is sent to
+            # it and waits out the ceiling again. The ceiling is told apart from
+            # the other involuntary cancels (a closed tab, the idle sweep,
+            # shutdown) by the record _bounded_turn keeps for this turn, not by
+            # the clock: those must not cold-start a reopened chat. A runtime
+            # that acknowledged the stop ended its prompt, so it keeps its
+            # session, as stop_turn keeps the runtime of an acknowledged Stop.
+            # The reset keeps the conversation (the session map entry) and
+            # replaces the runtime, as the stale-recover path does; the user's
+            # own Stop keeps its session, as before. The timeout card, posted after
+            # this turn has ended, reads the decision from the same record: a
+            # replaced runtime is told to send a message, not to wait.
+            if ceiling_cut_unacknowledged():
+                needs_session_reset = True
+                mark_ceiling_reset()
         # A bare CancelledError never reaches the EVENT_COMPLETE latch above, so
         # _stop_reason is still "" here. The first-turn history-debt settle keys
         # ``_turn_emitted and _stop_reason != STOP_REASON_CANCELLED`` off it: once

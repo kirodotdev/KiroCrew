@@ -45,6 +45,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
+    TurnUsage,
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config import live
@@ -52,8 +53,15 @@ from kiro_crew.config.sections import ResolvedBindings
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_utils import chunk_generation
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.dashboard.turn_dispatch import (
+    _TURN_DEADLINE,
+    TurnTimeoutError,
+    _bounded_turn,
+    finish_turn_task,
+)
 from kiro_crew.history import ConversationLog
 from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.messaging.empty_turn_copy import UNFINISHED_TURN_NOTICE
 from kiro_crew.metrics import turns as turns_mod
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.security import oauth_url_contains_credential
@@ -289,6 +297,32 @@ async def _settle(slot) -> None:
         pass
     except Exception:  # pragma: no cover — draining, never the assertion
         pass
+
+
+async def _run_until_the_ceiling_fires(coro, native_cancel, turn_started, seen) -> None:
+    """Run ``coro`` under a long ceiling, then let that ceiling's own timer fire.
+
+    The clock moves past the deadline only once the turn has started streaming, so a
+    slow start on a loaded runner cannot let the timer land before the turn holds its
+    slot (the reset is paid only for a turn that acquired it).
+    """
+    task = asyncio.ensure_future(_bounded_turn(coro, 30, native_cancel=native_cancel))
+    await asyncio.wait_for(turn_started.wait(), 30)
+    deadline = seen["deadline"]
+    assert deadline is not None, "precondition: the turn runs under the ceiling"
+    loop = asyncio.get_running_loop()
+    real_time = loop.time
+    ahead = deadline - real_time() + 0.05
+    with patch.object(loop, "time", lambda: real_time() + ahead):
+        await asyncio.wait_for(task, 30)
+
+
+def _post_ceiling_card(state, slot, error: TurnTimeoutError) -> str:
+    """Post the card ``finish_turn_task`` posts for a turn that ended in ``error``."""
+    ended = asyncio.get_running_loop().create_future()
+    ended.set_exception(error)
+    finish_turn_task(state, slot, ended, error.timeout_secs)
+    return _errors(slot)[-1]
 
 
 @pytest.mark.asyncio
@@ -4865,6 +4899,384 @@ class TestRunChatRecoveryLadders:
 
         assert any("please retry" in err for err in _errors(slot))
         assert slot._queue == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", ["timeout", "no_turn", "error"])
+    async def test_a_turn_cut_by_the_ceiling_resets_the_session(self, tmp_path, outcome):
+        """A backend silent from the start of the turn never arms the stale
+        probe, so the dashboard ceiling ends the turn. When the native stop the
+        ceiling sends gets no acknowledgement, the runtime did not answer but
+        still reads alive, so without a reset the next message goes to it and
+        waits out the ceiling again."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+
+        turn_started = asyncio.Event()
+        seen: dict[str, float | None] = {}
+
+        async def _silent(*_args, **_kwargs):
+            seen["deadline"] = _TURN_DEADLINE.get()
+            turn_started.set()
+            await asyncio.Event().wait()
+            yield _complete()  # pragma: no cover - the ceiling fires first
+
+        client.stream = MagicMock(side_effect=_silent)
+        client.stream_command = MagicMock(side_effect=_silent)
+
+        async def _native_stop(_owner_task):
+            return outcome
+
+        with _quiet_sel(), pytest.raises(TurnTimeoutError) as raised:
+            await _run_until_the_ceiling_fires(
+                chat_runner._run_chat(state, slot, "hello"), _native_stop, turn_started, seen
+            )
+        await _settle(slot)
+
+        assert raised.value.native_cancel_outcome == outcome
+        state.sessions.reset.assert_awaited_once_with("dashboard:chat-cov-1")
+        # The next message is the recovery, so the card says to send one and
+        # does not tell the user to wait for the runtime that was replaced.
+        card = _post_ceiling_card(state, slot, raised.value)
+        assert "Send a message to continue" in card
+        assert "do not resume" not in card.lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", ["acked", None])
+    async def test_a_ceiling_cut_the_runtime_answered_keeps_the_session(self, tmp_path, outcome):
+        """An acknowledged native stop ended the native prompt, so that runtime
+        answered: it keeps its session, as stop_turn keeps the runtime of an
+        acknowledged Stop, and only the card reports the ceiling. None is a
+        ceiling with no owned native turn to stop, which has no runtime of its
+        own to retire."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+
+        turn_started = asyncio.Event()
+        seen: dict[str, float | None] = {}
+
+        async def _silent(*_args, **_kwargs):
+            seen["deadline"] = _TURN_DEADLINE.get()
+            turn_started.set()
+            await asyncio.Event().wait()
+            yield _complete()  # pragma: no cover - the ceiling fires first
+
+        client.stream = MagicMock(side_effect=_silent)
+        client.stream_command = MagicMock(side_effect=_silent)
+
+        async def _native_stop(_owner_task):
+            return outcome
+
+        with _quiet_sel(), pytest.raises(TurnTimeoutError) as raised:
+            await _run_until_the_ceiling_fires(
+                chat_runner._run_chat(state, slot, "hello"), _native_stop, turn_started, seen
+            )
+        await _settle(slot)
+
+        assert raised.value.native_cancel_outcome == outcome
+        state.sessions.reset.assert_not_awaited()
+        card = _post_ceiling_card(state, slot, raised.value)
+        assert "Send a message to continue from where it stopped" in card
+        assert "do not resume" not in card.lower()
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_after_the_deadline_before_its_timer_keeps_the_session(self, tmp_path):
+        """A closed tab, the idle sweep or shutdown cancels the guarded turn after
+        its deadline has passed but before the loop has run the ceiling's timer,
+        as a busy loop can. That cancel is not the ceiling's: the turn keeps its
+        session, and no native stop is sent at the ceiling."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        turn_started = asyncio.Event()
+        seen: dict[str, float | None] = {}
+
+        async def _until_cancelled(*_args, **_kwargs):
+            seen["deadline"] = _TURN_DEADLINE.get()
+            turn_started.set()
+            await asyncio.Event().wait()
+            yield _complete()  # pragma: no cover - the cancel lands first
+
+        client.stream = MagicMock(side_effect=_until_cancelled)
+        client.stream_command = MagicMock(side_effect=_until_cancelled)
+        native_stop = AsyncMock(return_value="timeout")
+
+        with _quiet_sel():
+            task = asyncio.ensure_future(
+                _bounded_turn(
+                    chat_runner._run_chat(state, slot, "hello"), 30, native_cancel=native_stop
+                )
+            )
+            await asyncio.wait_for(turn_started.wait(), 30)
+            loop = asyncio.get_running_loop()
+            deadline = seen["deadline"]
+            assert deadline is not None, "precondition: the turn runs under the ceiling"
+            # The close cancels the guarded task (what slot.task holds). Then the
+            # loop clock moves past the deadline before the loop runs again: the
+            # close's wakeup is already queued, and the ceiling's timer becomes
+            # due in that same pass, behind it.
+            task.cancel()
+            real_time = loop.time
+            ahead = deadline - real_time() + 0.05
+            with patch.object(loop, "time", lambda: real_time() + ahead):
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 30)
+                await _settle(slot)
+
+        counts = (native_stop.await_count, state.sessions.reset.await_count)
+        assert counts == (0, 0), f"a close read as the ceiling: (native stops, resets) = {counts}"
+
+    @pytest.mark.asyncio
+    async def test_a_transport_timeout_resets_the_session_and_says_so(self, tmp_path):
+        """What the ACP handle yields at its own deadline: an EVENT_COMPLETE
+        with stop_reason "timeout". The turn ends, the user is told, and the
+        session is reset so the next message starts a fresh runtime."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        _set_stream(client, [_complete("timeout")])
+
+        await _drive(state, slot)
+
+        state.sessions.reset.assert_awaited_once_with("dashboard:chat-cov-1")
+        assert any("did not finish its answer" in err for err in _errors(slot)), _errors(slot)
+        assert slot._queue == []
+
+    @pytest.mark.asyncio
+    async def test_a_transport_timeout_posts_the_shared_unfinished_turn_notice(self, tmp_path):
+        """The channel driver already ends a timed-out turn with
+        ``UNFINISHED_TURN_NOTICE`` (``messaging/driver.py``). The dashboard arm
+        posts that same constant, not a spelling of its own, so the surfaces
+        cannot drift apart."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        _set_stream(client, [_complete("timeout")])
+
+        await _drive(state, slot)
+
+        notices = [err for err in _errors(slot) if "did not finish its answer" in err]
+        assert notices == [UNFINISHED_TURN_NOTICE], _errors(slot)
+
+    @pytest.mark.asyncio
+    async def test_a_transport_timeout_keeps_the_reply_it_streamed(self, tmp_path):
+        """Text the backend streamed before the deadline is in the slot only as
+        chunk rows, and a save writes no chunk row. The timeout must persist it
+        as the interrupted reply, or the saved history (what a resumed chat
+        loads) and the crew log lose what the user watched stream."""
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        partial = "Here is the first half of the answer"
+        _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text=partial), _complete("timeout")])
+
+        with patch.object(chat_runner.crew_log_emit, "on_message_sent") as sent:
+            await _drive(state, slot)
+        slot._dirty = True
+        assert _save_slot_to_history(state, slot), "precondition: the save ran"
+
+        rows = state.conversation_log.read_messages(slot_history_key(slot))
+        saved = [(m.get("role"), m.get("content")) for m in rows]
+        assert saved, "precondition: the save wrote the turn"
+        replies = [i for i, (role, _) in enumerate(saved) if role == "assistant"]
+        streamed = [saved[i][1] for i in replies]
+        assert streamed == [partial], f"the saved history lost the streamed reply: {saved}"
+        notice = [i for i, (_, text) in enumerate(saved) if "did not finish" in str(text)]
+        assert notice and replies[0] < notice[0], f"the reply must precede the notice: {saved}"
+        assert [c.kwargs.get("text") for c in sent.call_args_list] == [partial]
+        assert sent.call_args.kwargs.get("interrupted") is True
+
+    @pytest.mark.asyncio
+    async def test_a_transport_timeout_bills_the_turn_once(self, tmp_path):
+        """The timeout's EVENT_COMPLETE carries the turn's stats, and the
+        complete branch writes the turn's one usage row from them. Persisting
+        the partial reply must not write a second."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        _set_stream(
+            client,
+            [
+                LLMEvent(kind=EVENT_TEXT_CHUNK, text="partway"),
+                _complete("timeout", usage=TurnUsage(credits=1.5)),
+            ],
+        )
+
+        with patch.object(chat_runner, "persist_token_record_async", AsyncMock()) as rows:
+            await _drive(state, slot)
+
+        assert rows.await_count == 1, f"{rows.await_count} usage rows were written for one turn"
+        assert rows.await_args.args[2].stop_reason == "timeout"
+
+    @pytest.mark.asyncio
+    async def test_a_transport_timeout_keeps_the_cost_footer(self, tmp_path):
+        """A timed-out reply carries the footer a finished reply carries: the
+        elapsed time and credits from the timeout event's stats, and the time to
+        first visible output. The stream redactor holds a single word back until
+        the turn ends, so this reply first becomes visible at the turn's end; the
+        clock reads 250 ms whenever it is stopped."""
+        from kiro_crew.dashboard.chat_turn.turn_stats import _FirstVisibleClock
+
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        _set_stream(
+            client,
+            [
+                LLMEvent(kind=EVENT_TEXT_CHUNK, text="partway"),
+                _complete("timeout", usage=TurnUsage(credits=1.5, duration_ms=900)),
+            ],
+        )
+
+        def _clock_at_250_ms(*_args, **_kwargs):
+            return _FirstVisibleClock(0.0, clock=lambda: 0.25)
+
+        with patch.object(chat_runner, "_turn_clock", _clock_at_250_ms):
+            await _drive(state, slot)
+
+        replies = [m for m in slot.messages if m.get("role") == "assistant"]
+        assert [m.get("content") for m in replies] == ["partway"], slot.messages
+        footer = (replies[0].get("meta") or {}).get("turn_stats") or {}
+        shown = {key: footer.get(key) for key in ("elapsed_ms", "credits", "ttft_ms")}
+        expected = {"elapsed_ms": 900, "credits": 1.5, "ttft_ms": 250}
+        assert shown == expected, f"the timed-out reply lost its footer: {footer}"
+
+    @pytest.mark.asyncio
+    async def test_a_transport_timeout_reaches_the_linked_surfaces(self, tmp_path):
+        """The timeout arm returns before the end-of-turn legs that take a reply
+        to the linked surfaces, Slack and a channel such as Telegram. A chat
+        driven from either must still get the reply that streamed, then the
+        notice, as main delivered that reply."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        state.sessions.get_slack_link = MagicMock(return_value=("ts-1", "C123"))
+        state.slack_client = AsyncMock()
+        state.slack_client.start_stream = AsyncMock(return_value="")
+        partial = "Here is the first half of the answer"
+        _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text=partial), _complete("timeout")])
+
+        with patch.object(chat_runner, "_deliver_cross_surface_reply", AsyncMock()) as channel:
+            await _drive(state, slot)
+
+        posted = [c.args for c in state.slack_client.post_message.await_args_list]
+        echo = [i for i, args in enumerate(posted) if "\U0001f4ac" in str(args[1])]
+        assert echo == [0], f"precondition: the turn echoed its question first: {posted}"
+        after = [str(args[1]) for args in posted[1:]]
+        assert after and partial in after[0], f"Slack lost the reply: {posted}"
+        assert (
+            len(after) == 2 and "did not finish its answer" in after[1]
+        ), f"Slack lost the notice: {posted}"
+        assert all(args[0] == "C123" and args[2] == "ts-1" for args in posted), posted
+        sent = [c.args[2] for c in channel.await_args_list]
+        assert sent and sent[0] == partial, f"the channel lost the reply: {sent}"
+        assert (
+            len(sent) == 2 and "did not finish its answer" in sent[1]
+        ), f"the channel lost the notice: {sent}"
+        assert all(c.args[1] == "dashboard:chat-cov-1" for c in channel.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_finished_reply_reaches_the_linked_surfaces(self, tmp_path):
+        """Control: the end-of-turn legs, now one helper, still take a finished
+        reply to both linked surfaces, Slack and a channel such as Telegram,
+        once each and with no notice."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        state.sessions.get_slack_link = MagicMock(return_value=("ts-1", "C123"))
+        state.slack_client = AsyncMock()
+        state.slack_client.start_stream = AsyncMock(return_value="")
+        _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="the whole answer"), _complete()])
+
+        with patch.object(chat_runner, "_deliver_cross_surface_reply", AsyncMock()) as channel:
+            await _drive(state, slot)
+
+        posted = [str(c.args[1]) for c in state.slack_client.post_message.await_args_list]
+        assert len(posted) == 2 and "the whole answer" in posted[1], f"Slack: {posted}"
+        assert [c.args[2] for c in channel.await_args_list] == ["the whole answer"]
+
+    @pytest.mark.asyncio
+    async def test_a_transport_timeout_keeps_the_slack_audience_fence(self, tmp_path):
+        """Control: the timed-out reply takes the same fenced Slack leg as a
+        finished reply, so a turn whose audience fence holds posts neither the
+        reply nor the notice to the linked thread."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        state.sessions.get_slack_link = MagicMock(return_value=("ts-1", "C123"))
+        state.slack_client = AsyncMock()
+        state.slack_client.start_stream = AsyncMock(return_value="")
+        _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="partway"), _complete("timeout")])
+
+        with (
+            patch.object(chat_runner, "cross_surface_withheld", return_value=True),
+            patch.object(chat_runner, "_deliver_cross_surface_reply", AsyncMock()),
+        ):
+            await _drive(state, slot)
+
+        posted = [str(c.args[1]) for c in state.slack_client.post_message.await_args_list]
+        assert all("\U0001f4ac" in text for text in posted), f"a fenced turn posted: {posted}"
+
+    @pytest.mark.asyncio
+    async def test_a_users_stop_does_not_reset_the_session(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        turn_started = asyncio.Event()
+
+        async def _until_stopped(*_args, **_kwargs):
+            turn_started.set()
+            await asyncio.Event().wait()
+            yield _complete()  # pragma: no cover - the Stop lands first
+
+        client.stream = MagicMock(side_effect=_until_stopped)
+        client.stream_command = MagicMock(side_effect=_until_stopped)
+
+        with _quiet_sel():
+            task = asyncio.ensure_future(chat_runner._run_chat(state, slot, "hello"))
+            await asyncio.wait_for(turn_started.wait(), 30)
+            slot._stop_generation += 1  # the Stop button, as stop_turn() records it
+            task.cancel()
+            await asyncio.wait_for(task, 30)
+        await _settle(slot)
+
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_involuntary_cancel_before_the_deadline_keeps_the_session(self, tmp_path):
+        """A closed tab, the idle sweep or shutdown cancel the turn with no Stop
+        recorded and no ceiling reached. The runtime is live, so a reopened chat
+        must not cold-start a fresh process for it."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        turn_started = asyncio.Event()
+
+        async def _until_cancelled(*_args, **_kwargs):
+            turn_started.set()
+            await asyncio.Event().wait()
+            yield _complete()  # pragma: no cover - the cancel lands first
+
+        client.stream = MagicMock(side_effect=_until_cancelled)
+        client.stream_command = MagicMock(side_effect=_until_cancelled)
+
+        with _quiet_sel():
+            task = asyncio.ensure_future(
+                _bounded_turn(chat_runner._run_chat(state, slot, "hello"), 60)
+            )
+            await asyncio.wait_for(turn_started.wait(), 30)
+            task.cancel()  # not the Stop button, and the 60 s ceiling is far off
+            # _run_chat absorbs the cancel and returns normally, so the guarded
+            # task completes rather than raising.
+            try:
+                await asyncio.wait_for(task, 30)
+            except asyncio.CancelledError:
+                pass
+        await _settle(slot)
+
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_normal_end_turn_does_not_reset_the_session(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="done"), _complete()])
+
+        await _drive(state, slot)
+
+        state.sessions.reset.assert_not_awaited()
+        assert _errors(slot) == []
 
 
 # ── _run_chat: auto-approve rungs ─────────────────────────────────────────

@@ -48,6 +48,14 @@ from kiro_crew.turn_limit import TURN_LIMIT_SECS, current_turn_limit_secs
 # is the same type to the checker without crossing the boundary at runtime.
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
 
+#: The native stop request's outcomes that carry no acknowledgement: the
+#: timeout card warns about them, and a turn the ceiling cut with one of them
+#: resets its session (:func:`ceiling_cut_unacknowledged`). "acked" means the
+#: native prompt ended on the request, so that runtime answered. "no_turn" is
+#: the provider's answer before any request goes out (it had no active native
+#: turn): nothing confirmed that the turn's prompt ended, so it counts here.
+_UNACKNOWLEDGED_CANCEL: frozenset[str] = frozenset({"timeout", "no_turn", "error"})
+
 logger = logging.getLogger(__name__)
 
 # Absolute ``loop.time()`` deadline of the turn currently running, published by
@@ -57,6 +65,30 @@ logger = logging.getLogger(__name__)
 # call the resolvers directly), in which case callers fall back to the
 # ceiling-relative bound.
 _TURN_DEADLINE: ContextVar[float | None] = ContextVar("kirocrew_turn_deadline", default=None)
+
+
+class _TurnCut:
+    """What the ceiling did to the turn :func:`_bounded_turn` is running.
+
+    One mutable record per guarded turn, published in :data:`_TURN_CUT` so code
+    inside the turn reads the wrapper's own observation rather than the clock.
+    ``fired`` is set only by the wrapper's timer. ``native_cancel_outcome`` is
+    the outcome of the native stop request the timer sent, recorded before the
+    wrapper cancels the turn's task, so the turn's cancel handler can read it.
+    ``session_reset`` is written back by that handler (:func:`mark_ceiling_reset`)
+    when it retires the turn's runtime, for the timeout card the wrapper's
+    :class:`TurnTimeoutError` leads to.
+    """
+
+    __slots__ = ("fired", "native_cancel_outcome", "session_reset")
+
+    def __init__(self) -> None:
+        self.fired = False
+        self.native_cancel_outcome: CancelOutcome | None = None
+        self.session_reset = False
+
+
+_TURN_CUT: ContextVar[_TurnCut | None] = ContextVar("kirocrew_turn_cut", default=None)
 
 _NativeTimeoutCancel = Callable[["asyncio.Task[Any]"], Awaitable["CancelOutcome | None"]]
 
@@ -68,10 +100,12 @@ class TurnTimeoutError(TimeoutError):
         self,
         timeout_secs: float,
         native_cancel_outcome: "CancelOutcome | None" = None,
+        session_reset: bool = False,
     ) -> None:
         super().__init__(f"turn exceeded the {timeout_secs:.0f}s ceiling")
         self.timeout_secs = timeout_secs
         self.native_cancel_outcome = native_cancel_outcome
+        self.session_reset = session_reset
 
 
 def _turn_budget_remaining() -> float | None:
@@ -86,6 +120,39 @@ def _turn_budget_remaining() -> float | None:
         # cannot be compared to anything here.
         return None
     return deadline - loop.time()
+
+
+def ceiling_cut_unacknowledged() -> bool:
+    """Whether the ceiling cut the running turn and its native stop went unacknowledged.
+
+    Reads the record :func:`_bounded_turn` keeps for the turn it guards, not the
+    clock: a close, the idle sweep or shutdown can cancel a turn after its
+    deadline has passed but before the ceiling's timer has run, and that cancel
+    is not the ceiling's. True only when the timer fired and the native stop it
+    attempted ended with an outcome in :data:`_UNACKNOWLEDGED_CANCEL`, the
+    outcomes the timeout card warns about. False when the native prompt
+    acknowledged the stop, when the ceiling found no owned native turn to stop
+    (``None``: ``cancel_owned_turn`` declined, or no native cancel was wired),
+    and outside a guarded turn. ``"no_turn"`` is True: the provider answered,
+    before sending anything, that it had no active native turn, so nothing
+    confirmed that this turn's prompt ended, and the session is reset.
+    """
+    cut = _TURN_CUT.get()
+    return cut is not None and cut.fired and cut.native_cancel_outcome in _UNACKNOWLEDGED_CANCEL
+
+
+def mark_ceiling_reset() -> None:
+    """Record on the running turn's cut that its runtime is being replaced.
+
+    The timeout card is posted after the turn's task has ended, from the
+    wrapper's :class:`TurnTimeoutError`, so the turn's cancel handler tells it
+    here what it did. A card for a cut whose runtime was replaced says to send
+    a message; one for a cut that kept its runtime still warns that the native
+    stop went unacknowledged. No effect outside a guarded turn.
+    """
+    cut = _TURN_CUT.get()
+    if cut is not None:
+        cut.session_reset = True
 
 
 def _acp_prompt_ceiling() -> float:
@@ -348,19 +415,31 @@ def format_turn_timeout_card(
     timeout_secs: float,
     native_cancel_outcome: "CancelOutcome | None" = None,
     limit_scope: str = TURN_LIMIT_GLOBAL,
+    session_reset: bool = False,
 ) -> str:
     """User-facing text for a turn that hit the ceiling.
 
     *limit_scope* names which limit applied, so the hint points at the place
     that sets it: the session's own menu for a session limit, Settings for the
-    global one.
+    global one. *session_reset* is whether the turn's handler replaced the
+    runtime (:func:`mark_ceiling_reset`): after an unacknowledged stop that
+    replaced it, the next message is the recovery, so the card does not tell the
+    user to wait for a runtime that is gone.
     """
     if timeout_secs >= 3600:
         limit = f"{timeout_secs / 3600:.1f}".rstrip("0").rstrip(".") + "-hour"
     else:
         limit = f"{max(1, round(timeout_secs / 60))}-minute"
     hint = _RAISE_SESSION_LIMIT_HINT if limit_scope == TURN_LIMIT_SESSION else _RAISE_LIMIT_HINT
-    if native_cancel_outcome in ("timeout", "no_turn", "error"):
+    if native_cancel_outcome in _UNACKNOWLEDGED_CANCEL and session_reset:
+        return (
+            f"⏱️ This turn hit the {limit} limit. The native agent did not "
+            "acknowledge the stop request, so its runtime was replaced and any "
+            "tool it was still running ended with it. Work already written to "
+            "disk is still there — nothing was rolled back. Send a message to "
+            "continue." + hint
+        )
+    if native_cancel_outcome in _UNACKNOWLEDGED_CANCEL:
         return (
             f"⏱️ This turn hit the {limit} limit. The native agent did not "
             "acknowledge the stop request, so its previous tool may still be "
@@ -380,6 +459,7 @@ def _report_turn_timeout(
     timeout_secs: float,
     native_cancel_outcome: "CancelOutcome | None" = None,
     limit_scope: str = TURN_LIMIT_GLOBAL,
+    session_reset: bool = False,
 ) -> None:
     """Record and surface one wall-clock timeout outcome."""
     logger.warning(
@@ -403,7 +483,9 @@ def _report_turn_timeout(
         # broadcast_ws here or the UI renders a duplicate.
         slot.append(
             "error",
-            format_turn_timeout_card(timeout_secs, native_cancel_outcome, limit_scope),
+            format_turn_timeout_card(
+                timeout_secs, native_cancel_outcome, limit_scope, session_reset
+            ),
             "msg msg-err",
             meta={"kind": TURN_TIMEOUT_KIND, "limit_scope": limit_scope},
         )
@@ -444,6 +526,7 @@ def finish_turn_task(
             timeout_secs,
             exc.native_cancel_outcome if isinstance(exc, TurnTimeoutError) else None,
             limit_scope,
+            isinstance(exc, TurnTimeoutError) and exc.session_reset,
         )
         return
     # Anything else escaped _run_chat's own handler chain. Log it rather than
@@ -477,15 +560,19 @@ async def _bounded_turn(
     and on the 3.12 ``timeouts``-based rewrite: both only convert a
     cancellation that actually propagates.)
 
-    So the deadline is armed here and recorded in ``deadline_fired``, which is
-    set ONLY by this function's own timer. That makes "was this turn cut?" an
-    observed fact rather than an inference from elapsed wall-clock: a clock
-    comparison would mislabel a turn that completed just under the deadline but
-    whose continuation was delayed by a congested loop, discarding a real
-    result. When a native cancellation callback is supplied, the deadline sends
-    that request against the exact lease owner and waits for its bounded outcome
-    before cancelling the Python task. That ordering keeps ACP active-turn state
-    available long enough for ``session/cancel`` to reach the native runtime.
+    So the deadline is armed here and recorded in the turn's :class:`_TurnCut`
+    (``cut.fired``), which is set ONLY by this function's own timer. That makes
+    "was this turn cut?" an observed fact rather than an inference from elapsed
+    wall-clock: a clock comparison would mislabel a turn that completed just
+    under the deadline but whose continuation was delayed by a congested loop,
+    discarding a real result. The record is published in :data:`_TURN_CUT`, so
+    code inside the turn reads the same fact, and an outside cancel this
+    function handles first disarms the timer, so a cut is never recorded for a
+    turn that cancel ended. When a native cancellation callback is supplied, the
+    deadline sends that request against the exact lease owner and waits for its
+    bounded outcome before cancelling the Python task. That ordering keeps ACP
+    active-turn state available long enough for ``session/cancel`` to reach the
+    native runtime.
     """
     # ``spawn_guarded_turn`` uses this yield-free marker to distinguish a
     # wrapper that claimed its input coroutine from one cancelled before its
@@ -495,7 +582,7 @@ async def _bounded_turn(
         _started.append(None)
 
     loop = asyncio.get_running_loop()
-    deadline_fired = False
+    cut = _TurnCut()
     deadline_task: "asyncio.Task[CancelOutcome | None] | None" = None
     deadline_outcome: "CancelOutcome | None" = None
 
@@ -514,10 +601,18 @@ async def _bounded_turn(
                     )
                 except asyncio.TimeoutError:
                     outcome = "timeout"
+                except asyncio.CancelledError:
+                    # Unsettled: recorded as _settle_deadline_cancel reports a
+                    # cancelled request.
+                    outcome = "error"
+                    raise
                 except Exception:
                     logger.warning("Native turn cancellation failed at deadline", exc_info=True)
                     outcome = "error"
         finally:
+            # Recorded before the unwind below, so the turn's cancel handler
+            # reads how the native request ended.
+            cut.native_cancel_outcome = outcome
             # Only after the native request has settled (or exhausted its hard
             # bound) may the dashboard unwind the stream that carries ACP's
             # active-turn marker.
@@ -526,16 +621,17 @@ async def _bounded_turn(
         return outcome
 
     def _on_deadline() -> None:
-        nonlocal deadline_fired, deadline_task, deadline_outcome
+        nonlocal deadline_task, deadline_outcome
         if task is None or task.done():
             return
-        deadline_fired = True
+        cut.fired = True
         try:
             deadline_task = loop.create_task(_cancel_native_then_unwind())
         except RuntimeError:
             # A closing loop cannot run the native request. Preserve the old
             # finite-ceiling guarantee and report the missing acknowledgement.
             deadline_outcome = "error" if native_cancel is not None else None
+            cut.native_cancel_outcome = deadline_outcome
             task.cancel()
             return
         if background_tasks is not None:
@@ -552,7 +648,7 @@ async def _bounded_turn(
             try:
                 await asyncio.shield(deadline_task)
             except asyncio.CancelledError:
-                if not deadline_fired:
+                if not cut.fired:
                     raise
         if deadline_task.cancelled():
             return "error"
@@ -568,11 +664,14 @@ async def _bounded_turn(
     # copy carries it; reset in the finally so a direct `await _bounded_turn(...)`
     # cannot leak a spent deadline into the caller's context and starve the next
     # turn dispatched there. The limit itself is published beside it for the
-    # transport, which sizes its prompt wait to outlive it.
+    # transport, which sizes its prompt wait to outlive it. The cut record is
+    # published the same way, for the turn's own cancel handler.
     previous_deadline = _TURN_DEADLINE.get()
     previous_limit = TURN_LIMIT_SECS.get()
+    previous_cut = _TURN_CUT.get()
     _TURN_DEADLINE.set(loop.time() + timeout_secs)
     TURN_LIMIT_SECS.set(float(timeout_secs))
+    _TURN_CUT.set(cut)
     task: "asyncio.Task[Any] | None" = None
     handle: "asyncio.TimerHandle | None" = None
     _generator_exit = False
@@ -595,11 +694,15 @@ async def _bounded_turn(
             # Stop/shutdown still cancels the inner task explicitly below.
             result = await asyncio.shield(task)
         except asyncio.CancelledError:
-            if deadline_fired:
+            if cut.fired:
                 outcome = await _settle_deadline_cancel()
-                raise TurnTimeoutError(timeout_secs, outcome) from None
+                raise TurnTimeoutError(timeout_secs, outcome, cut.session_reset) from None
             # Cancelled by something else (Stop button, shutdown) — propagate,
-            # after explicitly ending the owned inner task.
+            # after explicitly ending the owned inner task. Disarm the ceiling
+            # first: its timer can be due in this same loop pass, and run while
+            # the inner task unwinds, which would record a cut for a turn this
+            # cancel ended.
+            handle.cancel()
             if not task.done():
                 task.cancel()
                 try:
@@ -607,12 +710,12 @@ async def _bounded_turn(
                 except BaseException:
                     pass
             raise
-        if deadline_fired:
+        if cut.fired:
             # The native cancel may have made the stream return normally, or
             # _run_chat may have absorbed the local cancellation after it. The
             # deadline remains authoritative in either case.
             outcome = await _settle_deadline_cancel()
-            raise TurnTimeoutError(timeout_secs, outcome)
+            raise TurnTimeoutError(timeout_secs, outcome, cut.session_reset)
         return result
     except GeneratorExit:
         # This wrapper is being torn down directly -- its own coroutine object
@@ -638,6 +741,7 @@ async def _bounded_turn(
         # down the whole worker because tokens are context-bound.
         _TURN_DEADLINE.set(previous_deadline)
         TURN_LIMIT_SECS.set(previous_limit)
+        _TURN_CUT.set(previous_cut)
         if task is not None and not task.done():
             # The wrapper itself was cancelled, or setup failed after Task
             # creation.  Cancel AND join it: cancellation alone can leave an
@@ -691,7 +795,12 @@ async def bounded_chat_turn(
     except TurnTimeoutError as exc:
         if state is not None and slot is not None:
             _report_turn_timeout(
-                state, slot, exc.timeout_secs, exc.native_cancel_outcome, limit_scope
+                state,
+                slot,
+                exc.timeout_secs,
+                exc.native_cancel_outcome,
+                limit_scope,
+                exc.session_reset,
             )
         raise
 

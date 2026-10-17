@@ -327,6 +327,81 @@ class TestTimeoutCard:
         assert row["label"].startswith(td.TURN_TIME_LIMIT_SETTING)
         assert row["route"].startswith("/settings/chat/advanced")
 
+    @pytest.mark.parametrize("outcome", ["timeout", "no_turn", "error"])
+    def test_an_unacknowledged_stop_that_kept_the_runtime_warns_not_to_resume(
+        self, outcome
+    ) -> None:
+        card = td.format_turn_timeout_card(14400.0, outcome)
+        assert "Do not resume this session until it becomes idle" in card
+        assert "Send a message to continue" not in card
+
+    @pytest.mark.parametrize("outcome", ["timeout", "no_turn", "error"])
+    def test_an_unacknowledged_stop_that_replaced_the_runtime_says_to_send_a_message(
+        self, outcome
+    ) -> None:
+        card = td.format_turn_timeout_card(14400.0, outcome, session_reset=True)
+        assert "its runtime was replaced" in card
+        assert "Send a message to continue" in card
+        assert "Do not resume" not in card
+
+    def test_an_acknowledged_stop_reads_the_same_whether_or_not_the_runtime_was_replaced(
+        self,
+    ) -> None:
+        assert td.format_turn_timeout_card(
+            14400.0, "acked", session_reset=True
+        ) == td.format_turn_timeout_card(14400.0, "acked")
+
+
+class TestCeilingCutPredicates:
+    """What the turn reads from the ceiling's record, outcome by outcome.
+
+    Both providers answer ``"no_turn"`` before ``cancel_session`` /
+    ``handle.cancel`` when they have no active native turn, and ``None`` is
+    ``cancel_owned_turn`` declining or no native cancel wired. ``"no_turn"`` is
+    unacknowledged, since nothing confirmed the turn's prompt ended; ``None`` is
+    a ceiling with no owned native turn of its own to retire.
+    """
+
+    @pytest.mark.parametrize(
+        "outcome, unacknowledged",
+        [
+            (None, False),
+            ("no_turn", True),
+            ("timeout", True),
+            ("error", True),
+            ("acked", False),
+        ],
+    )
+    def test_the_record_reads_as_unacknowledged(self, outcome, unacknowledged) -> None:
+        cut = td._TurnCut()
+        cut.fired = True
+        cut.native_cancel_outcome = outcome
+        previous = td._TURN_CUT.get()
+        td._TURN_CUT.set(cut)
+        try:
+            assert td.ceiling_cut_unacknowledged() is unacknowledged
+        finally:
+            td._TURN_CUT.set(previous)
+
+    def test_a_timer_that_never_fired_is_not_a_cut(self) -> None:
+        cut = td._TurnCut()
+        cut.native_cancel_outcome = "timeout"
+        previous = td._TURN_CUT.get()
+        td._TURN_CUT.set(cut)
+        try:
+            assert td.ceiling_cut_unacknowledged() is False
+        finally:
+            td._TURN_CUT.set(previous)
+
+    def test_outside_a_guarded_turn_is_not_a_cut(self) -> None:
+        assert td._TURN_CUT.get() is None
+        assert td.ceiling_cut_unacknowledged() is False
+
+    def test_marking_a_reset_outside_a_guarded_turn_changes_nothing(self) -> None:
+        assert td._TURN_CUT.get() is None
+        td.mark_ceiling_reset()
+        assert td._TURN_CUT.get() is None
+
 
 class TestFinishTurnTask:
     @pytest.mark.asyncio
@@ -480,6 +555,35 @@ class TestFinishTurnTask:
         card = slot.append.call_args_list[0].args[1]
         assert "did not acknowledge" in card
         assert "do not resume" in card.lower()
+
+    @pytest.mark.asyncio
+    async def test_a_turn_that_replaced_its_runtime_is_told_to_send_a_message(self) -> None:
+        """The card follows what the turn's cancel handler did, not the outcome alone."""
+        state, slot = _state(), _slot()
+        slot._active_turn_session_key = "dashboard:chat-1"
+        state.sessions.cancel_owned_turn = AsyncMock(return_value="timeout")
+
+        async def _turn_that_resets() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                assert td.ceiling_cut_unacknowledged()
+                td.mark_ceiling_reset()
+
+        task = td.spawn_guarded_turn(
+            state,
+            slot,
+            _turn_that_resets(),
+            timeout_secs=0.01,
+            cancel_ack_timeout_secs=0.1,
+        )
+        with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+            await task
+        await asyncio.sleep(0)
+
+        card = slot.append.call_args_list[0].args[1]
+        assert "Send a message to continue" in card
+        assert "do not resume" not in card.lower()
 
     @pytest.mark.asyncio
     async def test_second_cancellation_cannot_orphan_native_cancel(self) -> None:
