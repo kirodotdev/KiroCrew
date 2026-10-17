@@ -490,8 +490,15 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
         put('/api/teams/' + encodeURIComponent(id), body).then(j) as Promise<{ team: CrewTeam }>,
       remove: (id: string) => del('/api/teams/' + encodeURIComponent(id)).then(j) as Promise<{ ok: boolean }>,
     },
-    updateKirocrewAgent: (name: string, body: object) =>
-      put('/api/agents/' + encodeURIComponent(name), body).then(j),
+    updateKirocrewAgent: (name: string, body: object) => {
+      // Names with characters that need URL encoding (e.g. spaces → %20) are
+      // sent via the body-form route PUT /api/agents so a path-normalising
+      // proxy cannot decode the path segment to an HTTP delimiter and return 502.
+      if (encodeURIComponent(name) !== name) {
+        return put('/api/agents', { ...body, name }).then(j)
+      }
+      return put('/api/agents/' + encodeURIComponent(name), body).then(j)
+    },
     deleteKirocrewAgent: (name: string) =>
       del('/api/agents/' + encodeURIComponent(name)).then(j),
     /** Stage a crew's picture on the server (a `.pending` file only — the
