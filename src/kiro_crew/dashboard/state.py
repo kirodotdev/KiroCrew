@@ -690,6 +690,8 @@ class DashboardState:
         self._prevent_sleep_task: asyncio.Task | None = None  # type: ignore[type-arg]
         # Drops the inhibitor's pre-exec stop; run by the cleanup hook.
         self._prevent_sleep_unregister: Callable[[], None] | None = None
+        # Drops the browser view's pre-exec stop; run by its cleanup hook.
+        self._browser_view_unregister: Callable[[], None] | None = None
 
         # Knowledge Library
         self._knowledge_store: "KnowledgeStore | None" = None  # Lazy-initialized on first access

@@ -1437,9 +1437,17 @@ def _register_browser_view_cleanup(app: web.Application, state: DashboardState) 
 
     `playwright-cli show` is spawned in its OWN session (``start_new_session``) so
     a browsing view outlives the request that started it. That same detachment
-    means an ordinary restart would leave it running while the new gateway loses
-    its pid, and the next view request starts a SECOND process tree. Stopping it
-    on cleanup makes a restart idempotent.
+    means a restart would leave it running while the new gateway loses its pid,
+    and the next view request starts a SECOND process tree. Stopping it on
+    cleanup makes a graceful shutdown idempotent.
+
+    An in-place restart's exec keeps the pid but skips every ``on_cleanup`` hook,
+    so ``_browser_view_shutdown`` below would not run and the detached child
+    would survive the exec parented to the new image. ``view.stop()`` is also
+    registered with :mod:`kiro_crew.pre_exec_stops` so both exec-based restarts
+    reap it before the exec; ``_browser_view_shutdown`` unregisters that stop.
+    The launcher sessions do NOT need the seam: a previous life's ``panel-``
+    daemons are reclaimed at the next startup by owner tag below.
 
     Registered BEFORE ``runner.setup()`` freezes the app's signal lists --
     appending later raises ``RuntimeError: Cannot modify frozen list``, which is
@@ -1463,6 +1471,22 @@ def _register_browser_view_cleanup(app: web.Application, state: DashboardState) 
     """
 
     async def _browser_sessions_startup(app_: web.Application) -> None:
+        # The exec of an in-place restart skips _browser_view_shutdown below but
+        # keeps the pid, so the detached `playwright-cli show` child would
+        # outlive this image still parented to the new one, which then starts a
+        # second process tree on the next view request. The restart runs this
+        # same reap first through the pre-exec seam. view.stop() runs under its
+        # own lock, is a bounded tree-kill, and never raises; it is sync, so it
+        # goes off the loop. The launcher sessions are deliberately NOT in the
+        # seam -- reclaim_stranded below closes a prior life's panel- daemons by
+        # owner tag at the next startup.
+        async def _stop_view_before_exec() -> None:
+            await asyncio.to_thread(browser_cli_view.stop)
+
+        state._browser_view_unregister = register_pre_exec_stop(
+            "Browser view", _stop_view_before_exec
+        )
+
         async def _reclaim() -> None:
             try:
                 await asyncio.to_thread(browser_cli_launcher.reclaim_stranded)
@@ -1476,6 +1500,9 @@ def _register_browser_view_cleanup(app: web.Application, state: DashboardState) 
         task.add_done_callback(state._background_tasks.discard)
 
     async def _browser_view_shutdown(app_: web.Application) -> None:
+        unregister = getattr(state, "_browser_view_unregister", None)
+        if unregister is not None:
+            unregister()
         try:
             await handlers.close_relay_client(app_)
         except Exception:  # noqa: BLE001 - shutdown must not raise
