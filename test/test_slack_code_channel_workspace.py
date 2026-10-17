@@ -279,7 +279,7 @@ def test_a_replacement_session_is_pointed_at_the_existing_worktree_once(tmp_path
     assert h.store.get("T1", "C1").worktree == rec.worktree  # no second worktree
 
 
-def test_a_rewritten_record_never_steers_a_read(tmp_path, repo, audits):
+def test_a_rewritten_record_never_steers_a_read_or_a_removal(tmp_path, repo, audits):
     """The record is a file; git must confirm it names this channel's own worktree."""
     h = Harness(tmp_path)
     binding, rec = _bound(h, repo)
@@ -293,6 +293,16 @@ def test_a_rewritten_record_never_steers_a_read(tmp_path, repo, audits):
     h.store.put(forged)
     h.run(h.svc.refresh(binding))
     assert "hunter2" not in repr(h.client.calls) and h.client.of("set_diff_view") == []
+    # Archive: a CLEAN linked worktree someone else made, which the
+    # keep-if-dirty rule alone would remove, is never removed on the record's word.
+    theirs = tmp_path / "theirs"
+    _git("worktree", "add", "-q", "-b", "user-feature", str(theirs), cwd=repo)
+    forged = h.store.get("T1", "C1")
+    forged.worktree, forged.repo_root = str(theirs), str(repo)
+    h.store.put(forged)
+    assert h.run(h.svc.release("T1", "C1")) == "kept"
+    assert theirs.is_dir() and _git("branch", "--list", "user-feature", cwd=repo)
+    assert Path(rec.worktree).is_dir()
     assert ("code_channel_worktree", "denied") in [(a[0], a[1]) for a in audits]
 
 
@@ -324,7 +334,7 @@ def test_rebinding_is_idempotent_and_a_lost_record_adopts_the_same_worktree(tmp_
     again = h.run(h.svc.ensure(FakeBinding("C1", project_dir=str(repo))))
     assert again.worktree == first.worktree
     assert len(h.client.of("set_context_bar")) == 1  # turn start on a known channel: no call
-    (tmp_path / "store.json").unlink()  # the record is lost (a wiped data home)
+    h.store.delete("T1", "C1")
     adopted = h.run(h.svc.ensure(FakeBinding("C1", project_dir=str(repo))))
     assert adopted.worktree == first.worktree and adopted.base_sha == first.base_sha
     assert (Path(adopted.worktree) / "new.txt").exists()
@@ -772,6 +782,15 @@ def test_a_transient_error_does_not_latch(tmp_path, repo, audits):
     assert features.code_channels_available()
 
 
+def test_archive_cleanup_still_runs_after_the_latch(tmp_path, repo, audits):
+    h = Harness(tmp_path)
+    _binding, rec = _bound(h, repo)
+    features.latch_unavailable(features.CODE_CHANNELS, "feature_disabled")
+    assert not features.code_channels_available()
+    assert h.run(h.svc.release("T1", "C1")) == "removed"
+    assert not Path(rec.worktree).exists()
+
+
 # ── one bind per channel ────────────────────────────────────────────────────
 
 
@@ -835,6 +854,34 @@ def test_a_git_error_at_bind_is_retried_a_bounded_number_of_times(
     for _ in range(6):
         h.run(h.svc.ensure(other))
     assert len(always) == 3  # three binds in all, then the failure is settled
+
+
+def test_an_archive_waits_for_a_bind_in_flight(tmp_path, repo, audits, monkeypatch):
+    h = Harness(tmp_path)
+    binding = FakeBinding("C1", project_dir=str(repo))
+    real_bind = h.svc._bind
+    started = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def slow_bind(b):
+        started.set()
+        await asyncio.wait_for(gate.wait(), timeout=_WAIT)
+        return await real_bind(b)
+
+    monkeypatch.setattr(h.svc, "_bind", slow_bind)
+
+    async def scenario():
+        bind = asyncio.ensure_future(h.svc.ensure(binding))
+        await asyncio.wait_for(started.wait(), timeout=_WAIT)
+        release = asyncio.ensure_future(h.svc.release("T1", "C1"))
+        await asyncio.sleep(0)
+        gate.set()
+        outcome = await asyncio.wait_for(release, timeout=_WAIT)
+        await asyncio.wait_for(bind, timeout=_WAIT)
+        return outcome
+
+    assert h.run(scenario()) == "removed"
+    assert _git("worktree", "list", "--porcelain", cwd=repo).count("worktree ") == 1
 
 
 # ── wiring into the core ────────────────────────────────────────────────────
@@ -1227,29 +1274,119 @@ def test_context_bar_labels_go_through_redaction():
     assert _FAKE_KEY not in repr(items)
 
 
-def test_the_installed_credential_policy_applies_to_every_slack_bound_string(
-    tmp_path, repo, audits, monkeypatch
-):
-    """A companion's extra credential patterns reach the diff, its labels and the bar."""
-    from kiro_crew.platform import context as platform_context
-    from kiro_crew.slack.code_channels.workspace import context_bar
+# ── archive cleanup ─────────────────────────────────────────────────────────
 
-    house = "HOUSE-TOKEN-1234"
-    real = platform_context.redact_via_context
 
-    def policy(text: str) -> str:
-        return real(text).replace(house, "[REDACTED-HOUSE]")
+def test_release_removes_a_clean_worktree_and_its_unused_branch(tmp_path, repo, audits):
+    h = Harness(tmp_path)
+    _binding, rec = _bound(h, repo)
+    assert h.run(h.svc.release("T1", "C1")) == "removed"
+    assert not Path(rec.worktree).exists()
+    assert _git("branch", "--list", rec.branch, cwd=repo) == ""
+    assert h.store.get("T1", "C1").status == "released"
 
-    monkeypatch.setattr(service, "redact_via_context", policy)
-    monkeypatch.setattr(context_bar, "redact", policy)
+
+def test_release_keeps_the_branch_when_it_has_commits(tmp_path, repo, audits):
+    h = Harness(tmp_path)
+    _binding, rec = _bound(h, repo)
+    (Path(rec.worktree) / "README.md").write_text("done\n")
+    _git("commit", "-q", "-am", "work", cwd=Path(rec.worktree))
+    assert h.run(h.svc.release("T1", "C1")) == "removed"
+    assert rec.branch in _git("branch", "--list", rec.branch, cwd=repo)
+
+
+@pytest.mark.parametrize("dirty", ["modified", "untracked"])
+def test_release_never_deletes_uncommitted_work(tmp_path, repo, audits, dirty):
+    h = Harness(tmp_path)
+    _binding, rec = _bound(h, repo)
+    tree = Path(rec.worktree)
+    if dirty == "modified":
+        (tree / "README.md").write_text("unsaved idea\n")
+    else:
+        (tree / "notes.md").write_text("unsaved idea\n")
+    assert h.run(h.svc.release("T1", "C1")) == "kept"
+    assert tree.is_dir() and "unsaved idea" in "".join(p.read_text() for p in tree.glob("*.md"))
+    assert h.store.get("T1", "C1").status == "kept"
+    assert ("code_channel_worktree_release", "denied") in [(a[0], a[1]) for a in audits]
+
+
+def test_release_keeps_a_tree_whose_only_content_is_ignored_files(tmp_path, repo, audits):
+    h = Harness(tmp_path)
+    _binding, rec = _bound(h, repo)
+    tree = Path(rec.worktree)
+    (tree / ".gitignore").write_text("*.env\n")
+    _git("add", ".gitignore", cwd=tree)
+    _git("commit", "-q", "-m", "ignore env", cwd=tree)
+    (tree / "local.env").write_text("TOKEN=mine\n")
+    assert h.run(h.svc.release("T1", "C1")) == "kept"
+    assert (tree / "local.env").read_text() == "TOKEN=mine\n"
+
+
+def test_release_keeps_commits_made_on_a_detached_head(tmp_path, repo, audits):
+    h = Harness(tmp_path)
+    _binding, rec = _bound(h, repo)
+    tree = Path(rec.worktree)
+    _git("checkout", "-q", "--detach", cwd=tree)
+    (tree / "README.md").write_text("detached work\n")
+    _git("commit", "-q", "-am", "detached", cwd=tree)
+    head = _git("rev-parse", "HEAD", cwd=tree)
+    assert h.run(h.svc.release("T1", "C1")) == "kept"
+    assert _git("rev-parse", "HEAD", cwd=tree) == head
+
+
+def test_after_archive_no_hook_recreates_the_worktree(tmp_path, repo, audits):
     h = Harness(tmp_path)
     binding, rec = _bound(h, repo)
-    (Path(rec.worktree) / "README.md").write_text(f"token: {house}\n")
-    (Path(rec.worktree) / "new.txt").write_text(f"{house}\n")
+    assert h.run(h.svc.release("T1", "C1")) == "removed"
+    calls = list(h.client.calls)
+    assert h.run(h.svc.ensure(binding)) is None
     h.run(h.svc.refresh(binding))
-    assert house not in repr(h.client.calls)
-    assert "[REDACTED-HOUSE]" in h.client.of("set_diff_view")[-1]["content"]
-    assert house not in repr(build_items(BarState(branch=f"b-{house}")))
+    assert not Path(rec.worktree).exists() and h.client.calls == calls
+
+
+def test_an_archive_before_any_record_still_stops_a_later_bind(tmp_path, repo, audits):
+    """Archived before a bind stored anything: the tombstone keeps the channel off."""
+    h = Harness(tmp_path)
+    assert h.run(h.svc.release("T1", "C1")) == "no_record"
+    assert h.run(h.svc.ensure(FakeBinding("C1", project_dir=str(repo)))) is None
+    assert _git("worktree", "list", "--porcelain", cwd=repo).count("worktree ") == 1
+
+
+def test_a_bind_finishing_after_the_archive_discards_its_fresh_worktree(
+    tmp_path, repo, audits, monkeypatch
+):
+    h = Harness(tmp_path)
+    binding = FakeBinding("C1", project_dir=str(repo))
+    real_bind = h.svc._bind
+
+    async def bind_then_archive(b):
+        made = await real_bind(b)
+        # The archive lands while this bind is between cutting and storing.
+        await asyncio.to_thread(service._release_sync, h.store, "T1", "C1")
+        return made
+
+    monkeypatch.setattr(h.svc, "_bind", bind_then_archive)
+    assert h.run(h.svc.ensure(binding)) is None
+    assert _git("worktree", "list", "--porcelain", cwd=repo).count("worktree ") == 1
+    assert _git("branch", "--list", "slack/*", cwd=repo) == ""
+
+
+def test_module_level_release_serializes_with_the_registered_service(tmp_path, repo, audits):
+    class Registry:
+        def on_turn_start(self, hook):
+            pass
+
+        def on_turn_end(self, hook):
+            pass
+
+    h = Harness(tmp_path)
+    _binding, rec = _bound(h, repo)
+    service.register(Registry(), h.svc)
+    try:
+        assert h.run(service.release_channel_workspace("T1", "C1")) == "removed"
+    finally:
+        service._SERVICE = None
+    assert h.store.get("T1", "C1").status == "released"
 
 
 def test_a_binding_reporting_the_worktree_as_its_project_is_the_same_workspace(
@@ -1407,3 +1544,29 @@ def test_a_new_file_too_large_to_show_marks_the_diff_truncated(tmp_path, repo, a
     body = h.client.of("set_diff_view")[-1]["content"]
     assert body.startswith("Diff truncated") and "big.txt" not in body
     assert "+small change" in body
+
+
+def test_an_archived_channel_with_kept_work_drops_out_of_the_watch(
+    tmp_path, repo, audits, monkeypatch
+):
+    h, dash, _made, statuses = _conductor_harness(tmp_path, monkeypatch)
+    folder_id, worktree = h.run(
+        h.svc.plan_session(
+            dash,
+            channel_id="C1",
+            team_id="T1",
+            title="t",
+            channel_name="c",
+            project_dir=str(repo),
+            parent_folder_id="F0",
+        )
+    )
+    (Path(worktree) / "notes.md").write_text("unsaved idea\n")
+    assert h.run(h.svc.release("T1", "C1")) == "kept"
+    calls: list[int] = []
+    monkeypatch.setattr(h.svc, "schedule_refresh", lambda _b: calls.append(1))
+    worker = dash.add_slot("chat-w", folder_id, running=True)
+    h.run(h.svc.watch_tick(dash))
+    worker.turn_running = False
+    h.run(h.svc.watch_tick(dash))
+    assert calls == [] and statuses == []

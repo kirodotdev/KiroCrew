@@ -61,8 +61,10 @@ class WorkspaceRecord:
     pr_url: str = ""
     pr_state: str = ""
     pr_ci: str = ""
-    #: A channel-specific Slack error that turned this channel's views off.
+    #: A Slack error that turned this channel's views off (feature_disabled ...).
     slack_off: str = ""
+    #: ``kept`` once release found uncommitted work and left the worktree.
+    status: str = "active"
     updated_at: float = field(default_factory=time.time)
 
     @property
@@ -141,3 +143,9 @@ class WorkspaceStore:
             record.updated_at = time.time()
             records[record.key] = record
             self._write(records)
+
+    def delete(self, team_id: str, channel_id: str) -> None:
+        with self._lock:
+            records = self._read()
+            if records.pop(record_key(team_id, channel_id), None) is not None:
+                self._write(records)

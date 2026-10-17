@@ -180,7 +180,7 @@ def is_channel_worktree(
     """Whether ``worktree`` is the registered worktree of THIS channel's own branch.
 
     The record that names a worktree is a file on disk; before the gateway reads
-    files under it (outside any sandbox), the record is checked
+    files under it (outside any sandbox) or removes it, the record is checked
     against git itself: the branch must be one :func:`channel_branch` derives for
     this channel, and git must list ``worktree`` as the tree holding that branch
     in ``root``. A record rewritten to point anywhere else matches neither.
@@ -274,6 +274,12 @@ def has_remote_branch(cwd: str, branch: str, remote: str = "origin") -> bool:
     return bool(resolve_commit(cwd, f"refs/remotes/{remote}/{branch}"))
 
 
+def status_porcelain(cwd: str) -> str | None:
+    """``git status --porcelain`` (untracked included), ``None`` when git cannot answer."""
+    proc = run_git(["--no-optional-locks", "status", "--porcelain", "--ignore-submodules=all"], cwd)
+    return proc.stdout if proc.returncode == 0 else None
+
+
 def untracked_files(cwd: str, *, cap: int) -> tuple[list[str], bool] | None:
     """Untracked, not-ignored paths (relative), with whether the list was cut short."""
     rc, out, truncated = run_git_capped(
@@ -315,3 +321,49 @@ def tracked_diff(cwd: str, base: str, *, cap: int) -> tuple[bytes, bool] | None:
     if rc != 0 and not truncated:
         return None
     return out, truncated
+
+
+def has_ignored_files(cwd: str) -> bool | None:
+    """Whether the tree holds ignored files (``None`` when git cannot answer).
+
+    ``status --porcelain`` does not list them, yet ``worktree remove`` deletes
+    them, and an ignored file is often real local work (``.env``, notes).
+    """
+    rc, out, truncated = run_git_capped(
+        ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
+        cwd,
+        cap=4096,
+    )
+    if rc != 0 and not truncated:
+        return None
+    return bool(out.strip(b"\0"))
+
+
+def head_is_unreferenced(cwd: str) -> bool | None:
+    """True when HEAD's commit is reachable from no ref (a detached-HEAD commit).
+
+    Removing the worktree drops its HEAD and reflog, so such commits would be
+    left for gc. ``None`` when git cannot answer.
+    """
+    head = resolve_commit(cwd, "HEAD")
+    if not head:
+        return None
+    proc = run_git(["for-each-ref", "--count=1", f"--contains={head}", "--format=%(refname)"], cwd)
+    if proc.returncode != 0:
+        return None
+    return not proc.stdout.strip()
+
+
+def remove_worktree(root: str, path: str) -> bool:
+    """``git worktree remove`` WITHOUT ``--force``: git itself refuses a dirty tree."""
+    proc = run_git(["worktree", "remove", path], root)
+    if proc.returncode != 0:
+        logger.info("code channel worktree %s kept: %s", path, _wt._git_error(proc))
+        return False
+    run_git(["worktree", "prune"], root)
+    return True
+
+
+def delete_branch_if_unchanged(root: str, branch: str, base_sha: str) -> bool:
+    """Delete ``branch`` only while it still points at ``base_sha`` (no commits on it)."""
+    return _wt._delete_ref_if_unchanged(root, branch, base_sha)

@@ -11,9 +11,10 @@ Lifecycle, all driven by the core's hooks (:func:`register`):
   Idempotent: a second call reuses the record.
 * **turn end** — :meth:`WorkspaceService.refresh`. Republish the context bar
   (branch, PR, CI) and the Code tab's diff, each only when it changed.
-
-Removing a channel's worktree when the channel is archived is not done here; it
-belongs to the code-channel wrap-up, which owns the archive path.
+* **archive** — :func:`release_channel_workspace`, the archive path's call.
+  Removes a worktree only when nothing would be lost (and its branch only when
+  nothing was committed on it); otherwise leaves it, logged and SEL-recorded,
+  and tombstones the record so no later hook re-creates it.
 
 Nothing here raises into the turn: every failure degrades (no worktree, no
 view, no PR item) and is logged. A Slack error that means this channel cannot
@@ -86,6 +87,9 @@ _SETTLED_SKIPS = frozenset(
 )
 _MAX_BIND_ATTEMPTS = 3
 
+#: How long an archive waits for a bind still cutting the worktree.
+_RELEASE_BIND_WAIT_SECS = 120.0
+
 #: Points a dashboard session at a directory; returns whether it was applied.
 ProjectSetter = Callable[[str, str], Awaitable[bool]]
 #: Reads the project a dashboard session currently has ("" when unknown).
@@ -144,10 +148,10 @@ def _trusted_worktree(record: WorkspaceRecord) -> bool:
     """Blocking: whether the record's worktree is really this channel's.
 
     The record is a file on disk. Before the gateway reads files under the
-    worktree outside any sandbox (the diff's new-file sections), git must
-    confirm the record (:func:`git_ops.is_channel_worktree`) and neither path
-    may be a sensitive one. A record that fails is logged and SEL-recorded, and
-    the read does not happen.
+    worktree outside any sandbox (the diff's new-file sections) or removes it,
+    git must confirm the record (:func:`git_ops.is_channel_worktree`) and neither
+    path may be a sensitive one. A record that fails is logged and SEL-recorded,
+    and the read or removal does not happen.
     """
     ok = (
         bool(record.worktree and record.repo_root)
@@ -287,6 +291,8 @@ class WorkspaceService:
         try:
             async with self._lock(key):
                 record = await asyncio.to_thread(self._store.get, team, channel)
+                if record is not None and record.status in (RELEASED, KEPT):
+                    return None  # archived: never cut the worktree again
                 fresh = record is None or not await asyncio.to_thread(
                     self._record_matches, record, binding
                 )
@@ -310,7 +316,7 @@ class WorkspaceService:
             if fresh or not record.bar_hash:
                 async with self._lock(key):
                     current = await asyncio.to_thread(self._store.get, team, channel)
-                    if current is None:
+                    if current is None or current.status in (RELEASED, KEPT):
                         return None
                     before = (current.bar_hash, current.slack_off)
                     await self._publish_bar(current)
@@ -329,10 +335,16 @@ class WorkspaceService:
         return _done
 
     async def _bind_and_store(self, binding: Any, key: str) -> WorkspaceRecord | None:
-        """The one bind for a channel, stored under the channel's lock."""
+        """The one bind for a channel; stored unless the channel was archived meanwhile."""
         record = await self._bind(binding)
         async with self._lock(key):
             current = await asyncio.to_thread(self._store.get, record.team_id, record.channel_id)
+            if current is not None and current.status in (RELEASED, KEPT):
+                # Archived while the worktree was being cut: undo what this bind
+                # made instead of leaving an orphan nobody will release.
+                if record.worktree:
+                    await asyncio.to_thread(_discard_fresh_worktree, record)
+                return None
             if not record.worktree and record.worktree_skipped not in _SETTLED_SKIPS:
                 record.bind_attempts = (current.bind_attempts if current else 0) + 1
             await asyncio.to_thread(self._store.put, record)
@@ -355,13 +367,13 @@ class WorkspaceService:
         record = await asyncio.to_thread(self._store.get, team, channel)
         if record is None or not record.worktree or not session:
             return
-        if record.pointed_session == session:
+        if record.pointed_session == session or record.status in (RELEASED, KEPT):
             return
         if not await self._point_session(binding, record):
             return
         async with self._lock(key):
             current = await asyncio.to_thread(self._store.get, team, channel)
-            if current is not None:
+            if current is not None and current.status not in (RELEASED, KEPT):
                 current.pointed_session = session
                 current.session_key = session
                 await asyncio.to_thread(self._store.put, current)
@@ -570,6 +582,8 @@ class WorkspaceService:
         for record in await asyncio.to_thread(self._store.all):
             if not record.folder_id or not record.worktree or record.slack_off:
                 continue
+            if record.status in (RELEASED, KEPT):
+                continue
             key = record.key
             now = folders.sessions_in(state, folders.subtree_ids(state, record.folder_id))
             before = self._seen.get(key, {})
@@ -616,6 +630,23 @@ class WorkspaceService:
             self._working.discard(key)
             if not bound_running:
                 await _set_status(record.channel_id, "active")
+
+    async def release(self, team_id: str, channel_id: str) -> str:
+        """:func:`release_channel_workspace` under this channel's lock.
+
+        A bind still cutting the worktree is waited for first (bounded), and
+        checked again once the lock is held, so the release sees what it made.
+        If one still finishes later, it finds the tombstone and discards its own
+        fresh worktree. The lock is kept: a waiter may still hold a reference.
+        """
+        key = f"{team_id}:{channel_id}"
+        for _ in range(2):
+            bind = self._binds.get(key)
+            if bind is None:
+                break
+            await asyncio.wait({bind}, timeout=_RELEASE_BIND_WAIT_SECS)
+        async with self._lock(key):
+            return await _release_unlocked(self._store, team_id, channel_id)
 
     # ── turn end ────────────────────────────────────────────────────────────
 
@@ -665,7 +696,7 @@ class WorkspaceService:
             await self.ensure(binding)
         async with self._lock(f"{team}:{channel}"):
             record = await asyncio.to_thread(self._store.get, team, channel)
-            if record is None:
+            if record is None or record.status in (RELEASED, KEPT):
                 return
             try:
                 await self._refresh_pr(record)
@@ -864,11 +895,141 @@ class WorkspaceService:
         return None
 
 
+# ── archive ─────────────────────────────────────────────────────────────────
+
+#: Record status after an archive: :meth:`WorkspaceService.ensure` and
+#: :meth:`~WorkspaceService.refresh` leave such a channel alone, so a hook firing
+#: after the archive cannot cut the worktree again.
+RELEASED = "released"
+KEPT = "kept"
+
+
+def _keep_reason(record: WorkspaceRecord) -> str:
+    """Why the worktree must NOT be removed, or ``""`` when removing loses nothing.
+
+    Kept when anything would be lost: uncommitted or untracked changes, ignored
+    files (``worktree remove`` deletes those too), or commits on a detached HEAD
+    that no ref holds. Any probe git cannot answer also keeps it.
+    """
+    tree = record.worktree
+    status = git_ops.status_porcelain(tree)
+    if status is None:
+        return "git status unavailable"
+    if status.strip():
+        return "uncommitted changes"
+    ignored = git_ops.has_ignored_files(tree)
+    if ignored is None:
+        return "ignored-file listing unavailable"
+    if ignored:
+        return "ignored files present"
+    unreferenced = git_ops.head_is_unreferenced(tree)
+    if unreferenced is None:
+        return "HEAD unreadable"
+    if unreferenced:
+        return "commits on a detached HEAD"
+    return ""
+
+
+def _release_sync(store: WorkspaceStore, team_id: str, channel_id: str) -> str:
+    record = store.get(team_id, channel_id)
+    if record is None:
+        # Archived before any bind stored a record: leave a tombstone anyway, so
+        # a bind finishing later discards its worktree instead of going live.
+        store.put(WorkspaceRecord(team_id=team_id, channel_id=channel_id, status=RELEASED))
+        return "no_record"
+    if not record.worktree or not os.path.isdir(record.worktree):
+        record.status = RELEASED
+        store.put(record)
+        return "no_worktree"
+    where = f"channel={channel_id} path={record.worktree} branch={record.branch}"
+    if not _trusted_worktree(record):
+        record.status = KEPT
+        store.put(record)
+        return KEPT
+    reason = _keep_reason(record)
+    if not reason and not git_ops.remove_worktree(record.repo_root, record.worktree):
+        reason = "git refused to remove the worktree"
+    if reason:
+        record.status = KEPT
+        store.put(record)
+        logger.warning(
+            "code channel %s archived: worktree %s kept (%s)", channel_id, record.worktree, reason
+        )
+        _audit("code_channel_worktree_release", "denied", where, reason)
+        return KEPT
+    # The branch survives unless nothing was ever committed on it: commits stay
+    # reachable on their branch after the tree is gone.
+    if record.base_sha:
+        git_ops.delete_branch_if_unchanged(record.repo_root, record.branch, record.base_sha)
+    record.status = RELEASED
+    record.worktree = ""
+    store.put(record)
+    _audit("code_channel_worktree_release", "allowed", where)
+    return "removed"
+
+
+def _discard_fresh_worktree(record: WorkspaceRecord) -> None:
+    """Remove a worktree a bind made after its channel was archived.
+
+    Same keep-if-anything-would-be-lost rule as an archive: a tree someone has
+    already worked in is left (and logged), never removed.
+    """
+    where = f"channel={record.channel_id} path={record.worktree} branch={record.branch}"
+    reason = _keep_reason(record)
+    if not reason and git_ops.remove_worktree(record.repo_root, record.worktree):
+        if record.base_sha:
+            git_ops.delete_branch_if_unchanged(record.repo_root, record.branch, record.base_sha)
+        _audit("code_channel_worktree_release", "allowed", where)
+        return
+    logger.warning(
+        "code channel %s: worktree %s cut after the archive was kept (%s)",
+        record.channel_id,
+        record.worktree,
+        reason or "git refused to remove it",
+    )
+    _audit("code_channel_worktree_release", "denied", where, reason or "git refused")
+
+
+#: The service :func:`register` attached, so the module-level release call
+#: serializes with that service's per-channel lock.
+_SERVICE: WorkspaceService | None = None
+
+
+async def release_channel_workspace(
+    team_id: str, channel_id: str, *, store: WorkspaceStore | None = None
+) -> str:
+    """Clean up a channel's worktree when the channel is archived.
+
+    The archive path's call: the code-channel wrap-up makes it once the channel
+    is archived.
+
+    Returns ``removed`` (tree removed; branch kept when it has commits),
+    ``kept`` (something would be lost, or git would not answer: left in place,
+    logged and SEL-recorded), ``no_worktree`` or ``no_record``. Never raises.
+    Runs under the registered service's per-channel lock, so a refresh in flight
+    finishes first, and leaves a ``released``/``kept`` tombstone that stops later
+    hooks from re-creating the worktree.
+    """
+    if store is None and _SERVICE is not None:
+        return await _SERVICE.release(team_id, channel_id)
+    return await _release_unlocked(store or WorkspaceStore(), team_id, channel_id)
+
+
+async def _release_unlocked(store: WorkspaceStore, team_id: str, channel_id: str) -> str:
+    try:
+        return await asyncio.to_thread(_release_sync, store, team_id, channel_id)
+    except Exception:
+        logger.warning("code channel %s: worktree release failed", channel_id, exc_info=True)
+        return "error"
+
+
 def register(registry: Any, service: WorkspaceService) -> None:
     """Attach the workspace to the core's turn hooks (the only entry point).
 
     The hooks fire only while the core's gate is open; the service checks the
     same gate itself (``binding.code_channels_on``).
     """
+    global _SERVICE
+    _SERVICE = service
     registry.on_turn_start(service.on_turn_start)
     registry.on_turn_end(service.on_turn_end)

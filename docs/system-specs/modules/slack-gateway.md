@@ -1734,8 +1734,8 @@ is routed: the core captures a session's project when the first turn starts, so
 the worktree must exist and the session must point at it by then. The wait is
 bounded by git's own per-call timeout and `prepare` never raises. Each channel has
 ONE bind task at a time, shielded from its caller: a caller that times out (the
-core's hook timeout) or is cancelled leaves it running and the next caller joins
-it. A bind that
+core's hook timeout) or is cancelled leaves it running, the next caller joins it,
+and an archive waits for it (bounded) so it cannot orphan a worktree. A bind that
 ends on a git error is retried by later calls, three binds at most; reasons that
 describe the project or host (no project, not a repository, sensitive path, no
 sandbox) are not retried. Filesystem probes on the event loop's behalf run on
@@ -1750,7 +1750,8 @@ core's client hands such an answer, whichever write receives it, to
 `features.latch_unavailable`, which latches the feature off for the process
 until a reconnect re-probes; nothing is posted in Slack. Off for any of these reasons,
 no code in this package runs (no worktree, no Slack call, no audit row) and the
-gateway behaves as it does without it.
+gateway behaves as it does without it. Archive cleanup is not gated: a latched
+feature still releases what it made.
 
 - **Worktree (bind and turn start).** When the binding's project — or, for a
   binding with none, the project its session was created with (the dashboard's
@@ -1811,8 +1812,8 @@ gateway behaves as it does without it.
   `O_NOFOLLOW | O_NONBLOCK`, the open fd must be the regular file the `lstat` saw,
   and a file with more than one hard link is never read (its other name can be
   anywhere), nor is a path `is_sensitive_path` names. The per-channel record that
-  names the worktree is a file, so before the gateway reads under it git must
-  confirm it: the branch must be one this channel derives and git
+  names the worktree is a file, so before the gateway reads under it, or removes
+  it, git must confirm it: the branch must be one this channel derives and git
   must list the recorded path as the worktree holding it (SEL
   `code_channel_worktree` denied otherwise). An untracked symlink is shown as a
   link (mode `120000` and its target text), never followed; without `dir_fd`
@@ -1843,11 +1844,21 @@ gateway behaves as it does without it.
   answers are not persisted per channel: they go to the feature's process latch
   (see Gate), which a reconnect lifts. Any other error is logged and retried on
   the next turn.
-- **Archive.** Not handled here: removing a channel's worktree when the channel
-  is archived belongs to the code-channel wrap-up change, which owns the archive
-  path. Until it lands, a channel's worktree and its `slack/…` branch stay in the
-  repository until removed by hand (`git worktree remove <path>`; commits stay on
-  the branch).
+- **Archive.** `release_channel_workspace(team_id, channel_id)` is the archive
+  path's call (the code-channel wrap-up makes it when a channel is archived).
+  The call runs under
+  the registered service's per-channel lock, so a refresh in
+  flight finishes first. It removes the worktree with a non-forced
+  `git worktree remove` only when nothing would be lost, and deletes its branch
+  only while it still points at the base sha, so commits stay on their branch.
+  The tree is kept — logged, recorded `kept`, SEL `code_channel_worktree_release`
+  denied — when it has uncommitted or untracked changes, ignored files (which
+  `worktree remove` would delete), commits on a detached HEAD that no ref holds,
+  or when git cannot answer any of those. Either way the record stays as a
+  `released`/`kept` tombstone (written even when the archive comes before any
+  record), and `ensure`/`refresh` leave such a channel alone, so a hook firing
+  after the archive cannot cut the worktree again; a bind already cutting one
+  when the archive lands discards its own fresh worktree.
 - **State.** `<data home>/slack/code_channel_workspaces.json` (owner-only) holds
   pointers and digests per channel, never repository content.
 
