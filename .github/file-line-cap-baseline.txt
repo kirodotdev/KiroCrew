@@ -223,7 +223,6 @@
 3224 test/test_mcp_gateway_stub_session_token.py
 2449 test/test_mcp_gatewayd_coverage.py
 2543 test/test_mcp_launch_approval.py
-2552 test/test_mcp_shared.py
 5390 test/test_md_notebook.py
 3249 test/test_member_essential_context.py
 2044 test/test_member_session_control.py
@@ -276,7 +275,6 @@
 2211 test/test_stt_engine.py
 3093 test/test_subagent.py
 3616 test/test_subagent_panel_durable_replay.py
-2561 test/test_subagent_persistence.py
 3177 test/test_subagent_scale.py
 2820 test/test_subagent_turn_resilience.py
 2460 test/test_taskq_runner_adapter.py
@@ -287,7 +285,6 @@
 4193 test/test_transcribe.py
 5831 test/test_vector_memory.py
 2014 test/test_vector_memory_coverage.py
-2549 test/test_wake_judge_feedback.py
 3521 test/test_webex_dispatch.py
 2006 test/test_webhooks_api.py
 2238 test/test_wheel_engine.py
