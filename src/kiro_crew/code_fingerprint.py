@@ -22,7 +22,8 @@ The fingerprint is derived from the package tree itself, in this order:
    under the package, mixed with the installed distribution version. A wheel
    install is immutable until it is replaced, and replacing it moves the mtimes.
 
-The value is opaque; the only contract is *equal iff the same code*. It is
+The value is opaque; the only contract is *equal iff the same code*, plus
+:func:`same_scheme`, which says whether two values came from the same rule. It is
 computed once per process and cached. The computation runs a ``git``
 subprocess or walks the package tree, so an async caller warms the cache with
 :func:`warm_code_fingerprint` (``asyncio.to_thread``) before the first
@@ -160,6 +161,16 @@ def _mtime_fingerprint(root: Path) -> str:
             break
     digest = hashlib.sha256(f"{dist}|{newest}".encode("utf-8")).hexdigest()[:24]
     return f"mtime:{digest}"
+
+
+def same_scheme(a: str, b: str) -> bool:
+    """Whether *a* and *b* were both made by the git rule or both by the mtime rule.
+
+    A source checkout answers with the git rule and a wheel or app build with
+    the mtime rule, so values from different rules name different installs.
+    They are never equal, and that says nothing about either one being stale.
+    """
+    return a.startswith("mtime:") == b.startswith("mtime:")
 
 
 @functools.lru_cache(maxsize=1)
