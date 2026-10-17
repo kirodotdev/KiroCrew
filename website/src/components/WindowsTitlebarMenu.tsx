@@ -251,6 +251,22 @@ export default function WindowsTitlebarMenu() {
             buttons[nextIndex]?.focus()
           }}
         >
+          {/* Footer legend. Rendered ONCE, BELOW the mapped items, when this
+              menu has any GATE-CAUSED disabled row (`item.gated === true`).
+              A natively-disabled row (e.g. an `undo` role with an empty
+              history) is NOT counted: the "unavailable from this window,
+              shortcut still fires here" claim would be false for it. So
+              `serializeMenuItems` exposes `gated` alongside `enabled` and
+              this predicate reads the former.
+              The footer is the ONLY reachable explainer for a sighted mouse
+              user: `disabled:pointer-events-none` blocks hover on the greyed
+              rows, so no tooltip on them can ever be opened. A single line at
+              the bottom of the popup carries the counter-conventional message
+              the greyed rows need — rendered
+              AFTER items so menu-row geometry stays stable (first row's
+              vertical position matches the same menu in the main window,
+              not shifted down by the footer height). Rendered only when
+              relevant so a fully-enabled menu (main window) stays clean. */}
           {menuItems.map(item => item.type === 'separator' ? (
             <div key={item.index} role="separator" className="mx-1 my-1 h-px bg-border" />
           ) : (
@@ -270,12 +286,38 @@ export default function WindowsTitlebarMenu() {
               </span>
               <span className="flex-1 whitespace-nowrap">{item.label}</span>
               {item.accelerator && (
-                <span className="ml-6 whitespace-nowrap text-[11px] text-muted">
+                // Plain caption on every row, gated or not — and on a gated
+                // row the caption's presence is itself the signal, because
+                // windows-menu-model blanks it when the chord cannot fire
+                // from this window. So a caption that renders here is one
+                // Electron's native dispatch (or Chromium's clipboard
+                // handling) still delivers, which is what lets the footer
+                // say the shortcuts shown still work.
+                <span className="ml-6 flex items-center whitespace-nowrap text-[11px] text-muted">
                   {formatWindowsAccelerator(item.accelerator)}
                 </span>
               )}
             </button>
           ))}
+          {menuItems.some(item => item.type !== 'separator' && item.gated) && (
+            <div
+              // max-width matches the popup's ~min-w-56 (224px) plus its
+              // outer padding, giving a wrap point roughly aligned with the
+              // menu rows. Without it (and without `whitespace-normal`,
+              // which is the default on divs but easy to lose to a parent
+              // rule) the footer's single line stretches the popup to
+              // several hundred pixels wider than a normal menu — UX
+              // Review "popup width blowout" watch on c2d85562b.
+              //
+              // `border-t` (previously `border-b` when the footer sat above
+              // the items) draws the separator above the footer so it reads
+              // as a legend appended AFTER the row list, not another item.
+              className="mx-2 mt-1 max-w-[240px] whitespace-normal border-t border-border pb-1 pt-1 text-[11px] leading-snug text-muted"
+              role="note"
+            >
+              {i18nT('app.titlebar_menu_disabled_footer')}
+            </div>
+          )}
         </div>,
         document.body,
       )}

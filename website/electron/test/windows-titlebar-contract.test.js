@@ -116,13 +116,21 @@ test("serializeMenuItems does not silently pass a submenu off as a command", () 
   // Guards the model itself, independently of today's template: if nesting ever
   // reaches it, the serialized item must NOT claim to be a plain "normal"
   // command, which is what makes a dead row indistinguishable from a live one.
-  const nested = {
-    items: [{
-      visible: true, enabled: true, label: "Recent", type: "submenu",
-      submenu: { items: [{ visible: true, enabled: true, label: "Deep", type: "normal" }] },
-    }],
+  //
+  // `serializeMenuItems` now takes the TOP-LEVEL menu item (so the per-action
+  // gate can classify by top-level id), so we wrap the submenu in a top-level
+  // shape here. Passing `senderIsLocal=true` keeps this test scoped to the
+  // shape guarantee it was written for — the LOCAL_ONLY grey-out is asserted
+  // in `windows-menu-model.test.js`.
+  const topLevelItem = {
+    submenu: {
+      items: [{
+        visible: true, enabled: true, label: "Recent", type: "submenu",
+        submenu: { items: [{ visible: true, enabled: true, label: "Deep", type: "normal" }] },
+      }],
+    },
   };
-  const [entry] = serializeMenuItems(nested);
+  const [entry] = serializeMenuItems(topLevelItem, /*senderIsLocal*/ true);
   assert.notStrictEqual(
     entry.type, "normal",
     "a submenu item serialized as type 'normal' renders as a live-looking dead row",
