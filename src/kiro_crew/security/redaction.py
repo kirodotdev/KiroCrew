@@ -274,7 +274,15 @@ _CREDENTIAL_PATTERNS = re.compile(
     # the JWT); a bare JWT is still caught independently (defense in depth).
     f"|{JWT_MULTI_SEGMENT}"  # JWS (3-seg) / JWE (5-seg incl. dir/ECDH-ES), shared spelling
     r"|(?<![A-Za-z0-9_.-])eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"  # 2-seg link token
-    r"|(?i:Authorization)[\"\']?\s*[:=]\s*[\"\']?(?i:Bearer)\s+[A-Za-z0-9._~+/-]+=*"  # HTTP/JSON bearer
+    # The non-secret prefix -- the header name, the `:`/`=` separator, an
+    # optional quote and the `Bearer` scheme word -- sits in the `bearer_prefix`
+    # named group, which pass 1 keeps while it redacts ONLY the token after it,
+    # so a serialized header (`{"Authorization": "Bearer <tok>"}`) stays a
+    # parseable JSON/header document rather than a bare tag. The token class
+    # (`[A-Za-z0-9._~+/-]`, RFC 6750 `b64token`) stops at the closing quote, so
+    # the value-only span leaves the key, both quotes and the scheme intact.
+    r"|(?P<bearer_prefix>(?i:Authorization)[\"\']?\s*[:=]\s*[\"\']?(?i:Bearer)\s+)"
+    r"[A-Za-z0-9._~+/-]+=*"  # HTTP/JSON bearer
     r")",
 )
 
@@ -2233,6 +2241,13 @@ def _credential_redaction_plan(
     taken: list[_RedactionSpan] = []
     if _might_contain_credential(text):
         for m in _credential_matches(text):
+            # The HTTP/JSON bearer branch captures its non-secret prefix (the
+            # header name, separator, optional quote and `Bearer` scheme) in the
+            # `bearer_prefix` group. Redact only the token AFTER it, so the key
+            # and quotes survive and a JSON/header document still parses; every
+            # other branch has no such group and is redacted whole.
+            prefix_end = m.end("bearer_prefix")
+            start = prefix_end if prefix_end != -1 else m.start()
             # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
             # the match into the warning: `_CREDENTIAL_PATTERNS` matches the raw
             # secret value itself (e.g. `ghp_…`, `sk-ant-…`), so even a short prefix
@@ -2241,9 +2256,9 @@ def _credential_redaction_plan(
             # redaction-subsystem output expected to be safe to log/surface, so it
             # must carry no secret bytes. The base64 / bare-secret passes below
             # likewise log length only.
-            warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
-            taken.append((m.start(), m.end(), _REDACTED_CREDENTIAL_TAG))
-            rules[m.start()] = _pass1_rule(m.group())
+            warnings.append(f"Redacted credential pattern ({m.end() - start} chars)")
+            taken.append((start, m.end(), _REDACTED_CREDENTIAL_TAG))
+            rules[start] = _pass1_rule(m.group())
 
     # Passes 2 and 3 both scan the ORIGINAL `text` for runs of the base64
     # alphabet, and they select the SAME spans: `[A-Za-z0-9+/]{40,}` is greedy and
