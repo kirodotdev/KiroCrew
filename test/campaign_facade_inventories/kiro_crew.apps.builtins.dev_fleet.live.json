@@ -1,0 +1,40 @@
+{
+ "base_public_names": [
+  "LeaseOutcome",
+  "LoopBoundLock",
+  "PointerProvider",
+  "PointerState",
+  "PointerUnavailable",
+  "RemovalLeaseClient",
+  "acquire_removal_lease",
+  "confirm_removal_lease",
+  "gateway_service",
+  "install_pointer_provider",
+  "install_removal_lease_client",
+  "live_target",
+  "platform_compat",
+  "pod_start_reservation",
+  "pointer_state",
+  "release_removal_lease",
+  "removal_in_progress",
+  "removal_lease",
+  "removal_lease_lost",
+  "renew_removal_lease",
+  "repository",
+  "run_marker",
+  "running_in_backend",
+  "runtime",
+  "subprocess_executor"
+ ],
+ "note": "A kiro_crew._facade_mirror facade over the live_leases, live_service and live_plan owners beside it; it keeps the state the cutover shares and its BASE __all__ (server.py's re-export table).",
+ "rebound": {
+  "LoopBoundLock": "kiro_crew.loop_lock",
+  "gateway_service": "kiro_crew.apps.builtins.dev_fleet",
+  "live_target": "kiro_crew.service",
+  "platform_compat": "kiro_crew",
+  "repository": "kiro_crew.apps.builtins.dev_fleet",
+  "run_marker": "kiro_crew.instances",
+  "runtime": "kiro_crew.apps.builtins.dev_fleet",
+  "subprocess_executor": "kiro_crew.executors"
+ }
+}

@@ -1371,7 +1371,7 @@ def test_every_reexport_src_reads_on_the_runtime_is_named_for_type_checkers() ->
         for name in _names_read_through_rt(ast.parse(path.read_text(encoding="utf-8"))):
             read.setdefault(name, set()).add(path.name)
     reading_files = set().union(*read.values())
-    assert "cli.py" in reading_files and "worktree_ops.py" in reading_files, reading_files
+    assert "cli.py" in reading_files and "worktree_ops_pods.py" in reading_files, reading_files
     missing = sorted(name for name in read if name in rt._EXPORTS and name not in declared)
     assert missing == [], {name: sorted(read[name]) for name in missing}
 

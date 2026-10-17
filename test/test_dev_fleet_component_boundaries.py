@@ -13,10 +13,16 @@ from kiro_crew.apps.builtins.dev_fleet import (
     fleet_state,
     http_api,
     live,
+    live_leases,
+    live_plan,
+    live_service,
     repository,
     runtime,
     server,
     worktree_ops,
+    worktree_ops_pods,
+    worktree_ops_removal,
+    worktree_ops_sync,
 )
 
 _COMPONENTS = (
@@ -28,6 +34,18 @@ _COMPONENTS = (
     http_api,
 )
 _RANK = {component.__name__.rsplit(".", 1)[-1]: rank for rank, component in enumerate(_COMPONENTS)}
+#: The owner modules a component's code moved to, read with it: same rank, same rules.
+_COMPONENT_OWNERS = {
+    live: (live_leases, live_service, live_plan),
+    worktree_ops: (worktree_ops_sync, worktree_ops_pods, worktree_ops_removal),
+}
+_RANK.update(
+    {
+        owner.__name__.rsplit(".", 1)[-1]: _RANK[component.__name__.rsplit(".", 1)[-1]]
+        for component, owners in _COMPONENT_OWNERS.items()
+        for owner in owners
+    }
+)
 
 
 def test_facade_exports_have_one_owner_and_remain_read_compatible() -> None:
@@ -149,7 +167,8 @@ def test_component_imports_follow_the_ownership_dag() -> None:
     """Lower-level owners must never call back through a higher component."""
     for component in _COMPONENTS:
         current = component.__name__.rsplit(".", 1)[-1]
-        tree = ast.parse(inspect.getsource(component))
+        members = (component, *_COMPONENT_OWNERS.get(component, ()))
+        tree = ast.parse("\n".join(inspect.getsource(member) for member in members))
         for node in ast.walk(tree):
             if not isinstance(node, ast.ImportFrom):
                 continue
