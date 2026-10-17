@@ -20,6 +20,7 @@ not either.
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -287,6 +288,102 @@ def test_project_skill_is_judged_against_the_project_tree(
     assert entry.state == SKILL_INSTALL_IN_SYNC
     # The printed source is what makes a shadowing skill legible to the reader.
     assert entry.source == project / "probe-skill"
+
+
+def _add_bytecode_cache(skill_dir: Path) -> None:
+    """Give *skill_dir* the ``scripts/__pycache__`` the desktop app's build ships."""
+    cache = skill_dir / "scripts" / "__pycache__"
+    cache.mkdir()
+    (cache / "probe.cpython-312.pyc").write_bytes(b"\x00compiled")
+
+
+def _second_package(trees: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, name: str) -> Path:
+    """Point the check at a second packaged root holding the same *name* sources.
+
+    A machine with two installs: the gateway's sync ran from one packaged tree
+    and doctor runs from another built from the same sources.
+    """
+    _base, packaged = trees
+    other = packaged.parent / "other-install"
+    shutil.copytree(packaged / name, other / name)
+    monkeypatch.setattr(skills_mod, "_BUILTIN_SKILLS_DIR", other)
+    return other / name
+
+
+@_POSIX_ONLY
+def test_doctor_from_the_app_reads_a_checkout_synced_copy_in_sync(
+    trees: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Checkout synced it, the app's doctor checks it: only the app has bytecode caches."""
+    base, packaged = trees
+    _ship(packaged, "probe-skill")
+    skills_mod._ensure_builtin_skills(base)
+
+    _add_bytecode_cache(_second_package(trees, monkeypatch, "probe-skill"))
+
+    assert _state_for("probe-skill") == SKILL_INSTALL_IN_SYNC
+
+
+@_POSIX_ONLY
+def test_doctor_from_the_checkout_reads_an_app_synced_copy_in_sync(
+    trees: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other direction: the app synced its caches, the checkout ships none."""
+    base, packaged = trees
+    _add_bytecode_cache(_ship(packaged, "probe-skill"))
+    skills_mod._ensure_builtin_skills(base)
+    assert (base / "probe-skill" / "scripts" / "__pycache__").is_dir()
+
+    shutil.rmtree(_second_package(trees, monkeypatch, "probe-skill") / "scripts" / "__pycache__")
+
+    assert _state_for("probe-skill") == SKILL_INSTALL_IN_SYNC
+
+
+@_POSIX_ONLY
+def test_a_script_change_across_installs_still_reads_behind(
+    trees: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leaving caches out must not hide a real difference in the sources beside them."""
+    base, packaged = trees
+    _ship(packaged, "probe-skill")
+    skills_mod._ensure_builtin_skills(base)
+
+    other = _second_package(trees, monkeypatch, "probe-skill")
+    _add_bytecode_cache(other)
+    (other / "scripts" / "probe.py").write_text("print('v2')\n", encoding="utf-8")
+
+    assert _state_for("probe-skill") == SKILL_INSTALL_BEHIND
+
+
+@_POSIX_ONLY
+def test_a_cache_added_to_the_installed_copy_still_reads_edited(
+    trees: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ownership check keeps hashing caches: one the sync did not write is an edit."""
+    base, packaged = trees
+    _ship(packaged, "probe-skill")
+    skills_mod._ensure_builtin_skills(base)
+
+    _add_bytecode_cache(base / "probe-skill")
+    _add_bytecode_cache(_second_package(trees, monkeypatch, "probe-skill"))
+
+    assert _state_for("probe-skill") == SKILL_INSTALL_EDITED
+
+
+@_POSIX_ONLY
+def test_a_carried_opt_out_across_installs_reads_in_sync(
+    trees: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Context-budget opt-out line is tolerated on the cross-install path too."""
+    base, packaged = trees
+    _ship(packaged, "probe-skill")
+    skills_mod._ensure_builtin_skills(base)
+    loader = skills_mod.SkillsLoader(skills_path=base, install_builtins=False)
+    assert loader.set_inject_on_trigger("probe-skill", False) is True
+
+    _add_bytecode_cache(_second_package(trees, monkeypatch, "probe-skill"))
+
+    assert _state_for("probe-skill") == SKILL_INSTALL_IN_SYNC
 
 
 @_POSIX_ONLY

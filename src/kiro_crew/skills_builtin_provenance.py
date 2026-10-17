@@ -56,8 +56,14 @@ _FINGERPRINT_MAX_BYTES = 32 * 1024 * 1024
 _FINGERPRINT_MAX_ENTRIES = 4096
 
 
+#: Python's bytecode cache directory. Build output, not skill content: one
+#: install flavour ships it (the desktop app precompiles its whole tree) and
+#: another does not (a source checkout), from the same sources.
+_BYTECODE_CACHE_DIR = "__pycache__"
+
+
 def _tree_entries(
-    root: Path, *, assume_owner_rwx_dirs: bool = False
+    root: Path, *, assume_owner_rwx_dirs: bool = False, skip_bytecode_caches: bool = False
 ) -> Iterator[tuple[str, str, str]]:
     """Yield ``(relative path, kind, detail)`` for the tree under *root*.
 
@@ -71,11 +77,17 @@ def _tree_entries(
     everything (fail toward "diverged"). The provenance marker itself is
     skipped: it records the fingerprint, so including it would make the
     recorded value impossible to reproduce.
+
+    ``skip_bytecode_caches`` leaves out every ``__pycache__`` directory and
+    everything under it. Only the doctor's currency comparison sets it; the
+    ownership checks never do, so a cache on an installed copy still diverges it.
     """
     walk_errors: list[OSError] = []
     for dirpath, dirnames, filenames in os.walk(root, onerror=walk_errors.append):
         rel_dir = Path(dirpath).relative_to(root)
         dirnames.sort()
+        if skip_bytecode_caches:
+            dirnames[:] = [d for d in dirnames if d != _BYTECODE_CACHE_DIR]
         for dname in list(dirnames):
             entry = Path(dirpath) / dname
             rel = (rel_dir / dname).as_posix()
@@ -203,7 +215,11 @@ def _strip_carried_opt_out(data: bytes) -> bytes | None:
 
 
 def _skill_tree_fingerprint(
-    root: Path, *, assume_owner_rwx_dirs: bool = False, strip_carried_opt_out: bool = False
+    root: Path,
+    *,
+    assume_owner_rwx_dirs: bool = False,
+    strip_carried_opt_out: bool = False,
+    skip_bytecode_caches: bool = False,
 ) -> str | None:
     """Stable content hash of the whole skill tree under *root*.
 
@@ -230,6 +246,8 @@ def _skill_tree_fingerprint(
     ``_strip_carried_opt_out`` and hashed with their stripped size. Every
     other entry, and every guard, is unchanged. A ``SKILL.md`` that does not
     hold exactly the carried line makes the tree unprovable (None).
+
+    ``skip_bytecode_caches`` is passed through to ``_tree_entries``.
     """
     if is_link_or_junction(root):
         return None
@@ -250,7 +268,11 @@ def _skill_tree_fingerprint(
     digest.update(f"root\0{root_mode:o}\0".encode("utf-8"))
     budget = _FINGERPRINT_MAX_BYTES
     entries = 0
-    for rel, kind, detail in _tree_entries(root, assume_owner_rwx_dirs=assume_owner_rwx_dirs):
+    for rel, kind, detail in _tree_entries(
+        root,
+        assume_owner_rwx_dirs=assume_owner_rwx_dirs,
+        skip_bytecode_caches=skip_bytecode_caches,
+    ):
         if kind == "unreadable":
             return None
         entries += 1
@@ -619,7 +641,36 @@ def _skill_currency_state(dest_dir: Path, src_dir: Path) -> str:
     packaged = _skill_tree_fingerprint(src_dir, assume_owner_rwx_dirs=True)
     if packaged is None:
         return SKILL_INSTALL_UNVERIFIABLE
-    return SKILL_INSTALL_IN_SYNC if recorded == packaged else SKILL_INSTALL_BEHIND
+    if recorded == packaged or _same_but_bytecode_caches(dest_dir, src_dir):
+        return SKILL_INSTALL_IN_SYNC
+    return SKILL_INSTALL_BEHIND
+
+
+def _same_but_bytecode_caches(dest_dir: Path, src_dir: Path) -> bool:
+    """Do the two trees match once every ``__pycache__`` is left out of both?
+
+    The marker records the packaged tree of whichever install ran the sync. A
+    machine with a source checkout and the desktop app has two packaged trees
+    built from the same sources, and only the app's carries ``__pycache__``
+    beside each ``scripts/*.py``. Doctor from one install therefore reads a copy
+    the other synced as behind, and no restart or reinstall can clear it.
+
+    Only reached once ``_matches_recorded`` proved the installed copy is the one
+    the sync wrote, so a cache someone added to the copy has already read as
+    edited. Both opt-out spellings of the installed ``SKILL.md`` are tried, the
+    same tolerance the ownership check applies.
+    """
+    packaged = _skill_tree_fingerprint(
+        src_dir, assume_owner_rwx_dirs=True, skip_bytecode_caches=True
+    )
+    if packaged is None:
+        return False
+    if _skill_tree_fingerprint(dest_dir, skip_bytecode_caches=True) == packaged:
+        return True
+    return (
+        _skill_tree_fingerprint(dest_dir, skip_bytecode_caches=True, strip_carried_opt_out=True)
+        == packaged
+    )
 
 
 # A cron script body is one file, not a tree, so its ceiling sits far below the

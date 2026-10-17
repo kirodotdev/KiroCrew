@@ -642,6 +642,71 @@ class TestDoctorShowsTheDaemonRevision:
         assert "kirocrew restart" in out
         assert issues == ["MCP gateway daemon runs a different code revision than this install"]
 
+    @pytest.mark.parametrize(
+        ("mine", "theirs"),
+        [
+            ("mtime:4c5de10efc166d5e04e67512", "b4cf148542b8e6a591717c1b2a3610696979d7ce"),
+            ("b4cf148542b8e6a591717c1b2a3610696979d7ce+5a9e921cdca0b0ec", "mtime:4c5de10efc166d5e"),
+        ],
+        ids=["app-doctor-checkout-daemon", "checkout-doctor-app-daemon"],
+    )
+    def test_another_installs_daemon_is_information_not_an_issue(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        mine: str,
+        theirs: str,
+    ) -> None:
+        """A git revision and an mtime stamp name two installs, not a stale daemon."""
+        import kiro_crew.code_fingerprint as fp_mod
+
+        monkeypatch.setattr(fp_mod, "code_fingerprint", lambda: mine)
+        info = dc.DaemonInfo(Path("s"), 9999, 4242, theirs, ("CORE",))
+        _doctor_sees(monkeypatch, info)
+        monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: True)
+        issues: list[str] = []
+        cli_doctor._doctor_mcp_gateway_daemon(issues)
+        out = capsys.readouterr().out
+        assert "another install" in out and theirs in out and mine in out
+        assert "gateway (pid 4242)" in out, "a stale owner must be nameable to stop"
+        assert "❌" not in out and "kirocrew restart" not in out
+        assert issues == []
+
+    @pytest.mark.parametrize("owner_pid", [0, 4242], ids=["no-owner", "owner-gone"])
+    def test_an_ownerless_cross_install_daemon_is_still_an_issue(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        owner_pid: int,
+    ) -> None:
+        """With no live owner, this install's gateway may have adopted it, so it stays an issue."""
+        import kiro_crew.code_fingerprint as fp_mod
+
+        monkeypatch.setattr(fp_mod, "code_fingerprint", lambda: "b4cf148542b8e6a5")
+        info = dc.DaemonInfo(Path("s"), 9999, owner_pid, "mtime:4c5de10efc166d5e", ("CORE",))
+        _doctor_sees(monkeypatch, info)
+        monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: False)
+        issues: list[str] = []
+        cli_doctor._doctor_mcp_gateway_daemon(issues)
+        out = capsys.readouterr().out
+        assert "another install" not in out and "kirocrew restart" in out
+        assert issues == ["MCP gateway daemon runs a different code revision than this install"]
+
+    def test_same_scheme_mismatch_is_still_an_issue(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Two wheel builds both stamp mtimes, so a mismatch there is a stale daemon."""
+        import kiro_crew.code_fingerprint as fp_mod
+
+        monkeypatch.setattr(fp_mod, "code_fingerprint", lambda: "mtime:new")
+        info = dc.DaemonInfo(Path("s"), 9999, 4242, "mtime:old", ("CORE",))
+        _doctor_sees(monkeypatch, info)
+        monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: True)
+        issues: list[str] = []
+        cli_doctor._doctor_mcp_gateway_daemon(issues)
+        assert "kirocrew restart" in capsys.readouterr().out
+        assert issues == ["MCP gateway daemon runs a different code revision than this install"]
+
     def test_a_pre_fingerprint_daemon_is_named_as_such(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
