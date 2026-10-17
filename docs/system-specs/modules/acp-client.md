@@ -303,9 +303,14 @@ wrote to decide a deletion, and it never judges a directory marked by another
 data home. The provider factory marks a work directory it DERIVED from an exact
 generated one-run key -- `subagent:<16 hex>` from `SubagentManager._mint_agent_id`
 (eight hex on the shipped builds whose directories the sweep also recognises),
-`cron:<8 hex job>:<8 hex run>` from `build_cron_session_context`, or
-`memory-consolidation:<store>:<32 hex>` from `llm_helpers.background_turn`, which
-discards the key when the call ends -- never a caller-supplied `cwd`. That key
+`cron:<8 hex job>:<8 hex run>` from `build_cron_session_context`,
+`memory-consolidation:<store>:<32 hex>` from `llm_helpers.background_turn` (discards
+the key when the call ends), `judge-<uuid4 hex>` from `decisions/impl_llm.py`
+(destroyed on return), `taskrunner:refine:<epoch ms>` from
+`dashboard/handlers/taskrunner.py`, `hook:default:<epoch s>-<token_hex(6)>` from
+`dashboard/handlers/hooks.py` (per-request default webhook key), or
+`wf-author:<wf_<n>>:a<attempt>` from `workflows/service.py` (destroyed in the
+finally block after authoring) -- never a caller-supplied `cwd`. The `memory-consolidation` key
 counts as one-run only where the walk holds `.kiro` open; on the by-name walk
 (Windows) its folder is never marked, so neither the shutdown reclaim nor the sweep
 removes it, and its name is no sweep candidate. The doctor's census below still
