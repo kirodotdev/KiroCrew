@@ -469,9 +469,11 @@ jobs:
   # Mount, copy the .app out, run the installed launcher and the installed
   # bundled kiro-cli, then start the REAL app from its executable and wait for
   # the gateway its supervisor boots to answer /api/health. That launch is the
-  # only place the Electron shell's bundled-kiro-cli hand-off (gateway-env.js)
-  # runs against a shipped bundle, so the gateway child's environment is read
-  # back to prove it. Unsigned build by design: signing is a later stage, and the
+  # only place the Electron shell's bundled-kiro-cli and bundled-KAS-engine
+  # hand-offs (gateway-env.js) run against a shipped bundle, so the gateway
+  # child's environment is read back to prove both, and the installed `kirocrew
+  # kas status` must report the engine as built into the app. Unsigned build by
+  # design: signing is a later stage, and the
   # launch exercises the binary, not Gatekeeper. See scripts/smoke-macos-install.sh.
   smoke-install-macos:
     name: Smoke-install macOS DMG (launch + bundled kiro-cli)
@@ -489,7 +491,7 @@ jobs:
           name: unsigned-build-darwin-universal
           path: dist
 
-      - name: Install the DMG, launch the app, prove the bundled kiro-cli
+      - name: Install the DMG, launch the app, prove the bundled kiro-cli and KAS engine
         run: ./scripts/smoke-macos-install.sh dist
 
       - name: Upload smoke evidence

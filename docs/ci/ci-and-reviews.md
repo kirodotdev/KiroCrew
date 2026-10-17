@@ -1672,7 +1672,11 @@ PR-time proof only, no publishing.
 - **`smoke-install-macos`** runs when the matrix includes `macos-15`: it
   installs the DMG with `scripts/smoke-macos-install.sh`, launches the app,
   and checks that the packaged gateway answers `/api/health` with the bundled
-  kiro-cli handed to it. `build-desktop.yml` in the release lane runs the same
+  kiro-cli and the bundled KAS engine handed to it (`KIROCREW_BUNDLED_KIRO_DIR`
+  and `KIROCREW_BUNDLED_KAS_DIR` read off the gateway child, the latter naming
+  an existing directory, and the installed `kirocrew kas status` reporting
+  `(built into the app)` from that root; `BUNDLE_KAS=0` skips the KAS part with
+  a logged line). `build-desktop.yml` in the release lane runs the same
   script.
 - **`build-windows-installer`** assembles the real python-build-standalone backend
   payload, builds and silently installs the NSIS artifact, then runs the installed
