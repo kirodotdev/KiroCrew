@@ -15,6 +15,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
+from kiro_crew.testing.wait import async_wait_until, await_until
+
 
 def _app_scoped(state, declared_app: str) -> web.Application:
     """The resume app with a token middleware that publishes ``declared_app``."""
@@ -59,10 +61,7 @@ async def test_slot_is_never_reachable_unhydrated_during_the_threaded_read(tmp_p
     observed = {}
 
     async def racer():
-        for _ in range(200):
-            if read_entered.is_set():
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(read_entered.is_set)
         slot = state._slots.get("race1")
         observed["present"] = slot is not None
         observed["empty"] = slot is not None and len(slot.messages) == 0
@@ -106,6 +105,10 @@ async def test_a_slot_published_during_the_read_still_faces_the_ownership_gate(
     state = _make_state(tmp_path)
     log = state.conversation_log
     log.append("dashboard:race2", "user", "history-1")
+    log.append("dashboard:race2", "assistant", "history-2")
+    # Record appB as owner so the handler reads the transcript (the app-isolation
+    # gate refuses an unowned transcript before reaching the threaded read).
+    await asyncio.to_thread(log.update_metadata, "dashboard:race2", {"app": "appB"})
 
     read_entered = threading.Event()
     may_finish = threading.Event()
@@ -119,11 +122,10 @@ async def test_a_slot_published_during_the_read_still_faces_the_ownership_gate(
     monkeypatch.setattr(log, "read_messages_chained", blocking_read)
 
     async def racer():
-        for _ in range(200):
-            if read_entered.is_set():
-                break
-            await asyncio.sleep(0.01)
-        # A concurrent resume from a DIFFERENT app publishes the slot mid-read.
+        # Wait for the threaded read to enter, then publish appA's slot while
+        # the handler is suspended. The post-read ownership re-check must catch
+        # this and return 404 rather than handing appB a slot it does not own.
+        await async_wait_until(read_entered.is_set)
         foreign = state.get_or_create_slot("race2", app="appA")
         foreign._app = "appA"
         may_finish.set()
@@ -172,8 +174,8 @@ async def test_slot_is_not_reachable_unhydrated_during_the_folder_unhide(tmp_pat
 
     async def racer():
         try:
-            await asyncio.wait_for(unhide_entered.wait(), timeout=5)
-        except asyncio.TimeoutError:
+            await await_until(unhide_entered, what="unhide entered")
+        except AssertionError:
             observed["reached"] = False
             may_finish.set()
             return
@@ -249,10 +251,7 @@ async def test_a_delete_during_the_read_does_not_republish_the_transcript(tmp_pa
     deleted = {"ok": False}
 
     async def racer():
-        for _ in range(300):
-            if read_entered.is_set():
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(read_entered.is_set)
         assert read_entered.is_set(), "the transcript read never entered"
         # The permanent delete lands while resume holds the loaded transcript.
         deleted["ok"] = await asyncio.to_thread(log.delete_session, key)
@@ -323,10 +322,7 @@ async def test_a_delete_then_recreate_during_the_read_does_not_overwrite_the_rep
     outcome = {"deleted": False, "recreated_created_at": None}
 
     async def racer():
-        for _ in range(300):
-            if read_entered.is_set():
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(read_entered.is_set)
         assert read_entered.is_set(), "the transcript read never entered"
 
         def delete_then_recreate():
@@ -409,10 +405,7 @@ async def test_a_benign_metadata_rewrite_during_the_read_still_publishes(tmp_pat
     changed = {"ok": False}
 
     async def racer():
-        for _ in range(300):
-            if read_entered.is_set():
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(read_entered.is_set)
         assert read_entered.is_set(), "the transcript read never entered"
         await asyncio.to_thread(log.update_metadata, key, {"title": "renamed mid-read"})
         changed["ok"] = log.get_metadata(key).get("title") == "renamed mid-read"
@@ -486,10 +479,7 @@ async def test_a_folder_filed_during_the_read_is_not_erased_by_a_stale_existence
     observed = {"filed": False, "pre": None, "post": None}
 
     async def racer():
-        for _ in range(300):
-            if read_entered.is_set():
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(read_entered.is_set)
         assert read_entered.is_set(), "the transcript read never entered"
 
         # Channel reconciliation files the session while resume is suspended.
@@ -612,10 +602,7 @@ async def test_a_close_landing_during_the_read_is_not_cleared_by_the_stale_snaps
     WINDOW_S = 0.3
 
     async def racer():
-        for _ in range(300):
-            if read_entered.is_set():
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(read_entered.is_set)
         assert read_entered.is_set(), "the transcript read never entered"
 
         # A REAL interval, not a token one. Without ``closed_at`` the guard falls
@@ -775,10 +762,7 @@ async def test_a_metadata_only_session_removed_during_the_read_is_not_republishe
     outcome = {"deleted": False, "post_meta": None}
 
     async def racer():
-        for _ in range(300):
-            if read_entered.is_set():
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(read_entered.is_set)
         assert read_entered.is_set(), "the transcript read never entered"
 
         def remove():

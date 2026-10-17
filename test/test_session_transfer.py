@@ -30,6 +30,7 @@ from kiro_crew.dashboard.session_transfer import (
     build_transfer_bundle_async,
     local_instance_label,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 class _OwnerReq(SimpleNamespace):
@@ -136,7 +137,11 @@ class _PersistentLine:
 
     @contextlib.contextmanager
     def publication_hold(self, key, *, expected_keys=None):
-        from kiro_crew.history import TranscriptBusy, TranscriptWithheld, is_incognito_transcript
+        from kiro_crew.history import (
+            TranscriptBusy,
+            TranscriptWithheld,
+            is_incognito_transcript,
+        )
 
         meta, readable = self.get_metadata_status(key)
         if not readable:
@@ -1561,17 +1566,16 @@ async def test_a_cancel_after_the_prefix_landed_removes_it(monkeypatch, tmp_path
     state.conversation_log = log
     big = [{"role": "assistant", "content": f"row-{i}", "ts": ""} for i in range(900)]
     task = asyncio.create_task(st.api_chat_slot_import(_make_request(state, _valid(messages=big))))
-    await asyncio.wait_for(saving.wait(), 10)
+    await await_until(saving, what="save started")
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     assert seen[0].exists(), "the transcript was removed while its save still ran"
 
     release.set()
-    for _ in range(50):
-        await asyncio.sleep(0.01)
-        if not seen[0].exists():
-            break
+    await async_wait_until(
+        lambda: not seen[0].exists(), describe=lambda: "rolled-back file still exists"
+    )
     assert not seen[0].exists(), "the finished save left a rolled-back transcript"
 
 
@@ -3845,10 +3849,10 @@ async def test_concurrent_expansions_are_bounded_and_the_excess_is_refused(monke
     # to disk before it reaches admission, which takes longer than any fixed tick
     # on a slow runner. The gunzip is held shut, so an admitted or queued import
     # cannot finish yet; any task done before the release is one the gate refused.
-    deadline = asyncio.get_running_loop().time() + 10
-    while not any(t.done() for t in running):
-        assert asyncio.get_running_loop().time() < deadline, "no import ever reached the gate"
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: any(t.done() for t in running),
+        describe=lambda: "no import ever reached the gate",
+    )
     refused = [t for t in running if t.done()]
     release.set()
     results = await asyncio.gather(*running)
@@ -3898,10 +3902,7 @@ async def test_the_expansion_permit_outlives_the_decompression(monkeypatch):
     ]
     # Wait for the first caller to park, then give the rest time to pile in
     # behind it: a fixed sleep measures the harness's speed, not the permit.
-    for _ in range(200):
-        if resident["peak"]:
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(lambda: bool(resident["peak"]))
     await asyncio.sleep(0.1)
     peak_while_parked = resident["peak"]
     release.set()
@@ -5583,7 +5584,9 @@ async def test_an_upload_the_peer_stops_reading_times_out(tmp_path, monkeypatch)
         async with stall:
             with body.open("rb") as fh:
                 async for _chunk in mod._upload_chunks(fh, stall):
-                    await asyncio.sleep(1)  # the peer never reads the next chunk
+                    await asyncio.sleep(
+                        1
+                    )  # flake-ok: stalled peer models a peer that never reads; sleep is the modeled behavior
 
     with pytest.raises(TimeoutError):
         await _stalled_peer()

@@ -41,7 +41,6 @@
  2 test_acp_turn_lock.py
  1 test_acp_turn_state_parity.py
  1 test_acp_watchdog_working_bound.py
- 7 test_active_turn_session_key.py
  5 test_adaptive_startup_memory.py
  4 test_admission_gate.py
  2 test_agent_fork_templates.py
@@ -75,7 +74,6 @@
  4 test_channel_boot_hot_reload.py
  3 test_channel_env_write_off_loop.py
  2 test_channel_subscribe_timeout.py
- 5 test_chat_close_interrupts_turn.py
  3 test_chat_fork_member_memory.py
  3 test_chat_mode_security.py
  2 test_chat_nav.py
@@ -124,7 +122,6 @@
  1 test_cron_thread_routing.py
  2 test_cron_undispatched_one_shot.py
  1 test_cron_wake_budget.py
- 7 test_cross_surface_stop_gate.py
  4 test_dashboard_approval.py
  1 test_dashboard_cron_run_guard.py
  1 test_dashboard_execution_retention.py
@@ -266,7 +263,6 @@
  1 test_registry_store_art_prewarm_rewarm.py
  1 test_remote_crew_chaining.py
  1 test_resource_pressure_notify.py
- 9 test_resume_publishes_hydrated_slot.py
  4 test_run_tests_reap.py
  5 test_runloop_integration.py
  1 test_runtime_start_gate_headroom.py
@@ -280,30 +276,22 @@
  2 test_sel_prune_streaming.py
  1 test_session_autocompact_override.py
  2 test_session_broadcast.py
-16 test_session_capabilities.py
  1 test_session_card_source_links_knob.py
  2 test_session_config_hot_reload.py
- 5 test_session_control.py
  1 test_session_control_reload.py
  2 test_session_control_rename.py
  2 test_session_control_revive.py
- 5 test_session_core_audit.py
- 6 test_session_drain.py
  3 test_session_map_flush.py
  1 test_session_map_mirror.py
  1 test_session_more_coverage.py
  1 test_session_not_found_surfaces.py
-10 test_session_pool.py
  1 test_session_pulse_counter.py
  1 test_session_scope_reap_seams.py
  4 test_session_sharing.py
-10 test_session_start_gate.py
  1 test_session_start_queued_behind.py
  1 test_session_storage_api.py
  1 test_session_terminated_reap.py
- 5 test_session_transfer.py
  1 test_session_tree_push.py
- 5 test_session_usage.py
  1 test_session_work_dir.py
  2 test_shell_audit_log.py
  1 test_shutdown_event.py

@@ -16,6 +16,7 @@ import pytest
 from kiro_crew import platform_compat
 from kiro_crew.acp.session_handle import WatchdogSettings
 from kiro_crew.start_priority import PrioritySemaphore, StartPriority
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.fixture(autouse=True)
@@ -540,7 +541,10 @@ class TestGetOrCreatePoolIntegration:
         assert isinstance(kwargs["watchdog"], WatchdogSettings)
 
     def test_capability_preparation_refuses_an_undeclared_canonical_member(self):
-        from kiro_crew.session_capabilities import CapabilityStartupError, prepare_runtime
+        from kiro_crew.session_capabilities import (
+            CapabilityStartupError,
+            prepare_runtime,
+        )
 
         with pytest.raises(CapabilityStartupError, match="capability_member_missing"):
             prepare_runtime("kirocrew", "undeclared-crew", None)
@@ -553,7 +557,10 @@ class TestGetOrCreatePoolIntegration:
         the sidecar and still starts."""
         from kiro_crew import agent_state
         from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
-        from kiro_crew.session_capabilities import CapabilityStartupError, prepare_runtime
+        from kiro_crew.session_capabilities import (
+            CapabilityStartupError,
+            prepare_runtime,
+        )
 
         cfg = KiroCrewConfig.load()
         cfg.agents["legacy-member"] = KiroCrewAgentConfig(
@@ -1630,7 +1637,9 @@ class TestDiscardReaping:
         self._expired_entry(mgr, survivor)
 
         with patch("kiro_crew.session._sync_kill_provider") as mock_kill:
-            pooled = await mgr._drain_and_claim("kirocrew")
+            pooled = await await_until(
+                asyncio.ensure_future(mgr._drain_and_claim("kirocrew")), what="drain and claim"
+            )
 
         assert pooled is None
         survivor.shutdown.assert_awaited_once()
@@ -1661,7 +1670,9 @@ class TestDiscardReaping:
         self._expired_entry(mgr, broken)
 
         with patch("kiro_crew.session._sync_kill_provider") as mock_kill:
-            pooled = await mgr._drain_and_claim("kirocrew")
+            pooled = await await_until(
+                asyncio.ensure_future(mgr._drain_and_claim("kirocrew")), what="drain and claim"
+            )
 
         assert pooled is None
         mock_kill.assert_called_once_with(broken)
@@ -1700,7 +1711,9 @@ class TestDiscardReaping:
             patch("kiro_crew.session._sync_kill_provider") as mock_kill,
             patch("kiro_crew.session.subprocess_executor", return_value=private_executor),
         ):
-            pooled = await asyncio.wait_for(mgr._drain_and_claim("kirocrew"), timeout=5)
+            pooled = await await_until(
+                asyncio.ensure_future(mgr._drain_and_claim("kirocrew")), what="drain and claim"
+            )
 
         assert pooled is None
         mock_kill.assert_called_once_with(wedged)
@@ -1806,9 +1819,10 @@ class TestDiscardReaping:
 
             await mgr._drain_and_claim("kirocrew")
 
-            deadline = time.monotonic() + 5
-            while proc.poll() is None and time.monotonic() < deadline:
-                await asyncio.sleep(0.05)
+            await async_wait_until(
+                lambda: proc.poll() is not None,
+                describe=lambda: f"proc.returncode={proc.returncode!r}",
+            )
             assert proc.poll() is not None, "survivor leaked behind lying bookkeeping"
         finally:
             if proc.poll() is None:
@@ -1838,12 +1852,15 @@ class TestDiscardReaping:
             mgr, _ = _make_manager(pool_agent="kirocrew", pool_ttl_secs=1)
             self._expired_entry(mgr, provider)
 
-            pooled = await mgr._drain_and_claim("kirocrew")
+            pooled = await await_until(
+                asyncio.ensure_future(mgr._drain_and_claim("kirocrew")), what="drain and claim"
+            )
             assert pooled is None
 
-            deadline = time.monotonic() + 5
-            while proc.poll() is None and time.monotonic() < deadline:
-                await asyncio.sleep(0.05)
+            await async_wait_until(
+                lambda: proc.poll() is not None,
+                describe=lambda: f"proc.returncode={proc.returncode!r}",
+            )
             assert proc.poll() is not None, "discarded provider process leaked"
         finally:
             if proc.poll() is None:
@@ -1947,20 +1964,11 @@ class TestFillLockReleasedAcrossStart:
 
         mgr._provider_factory = MagicMock(side_effect=_factory)
 
-        # Lost-run ceiling, not a speed check. The starts never finish until
-        # ``release_start`` is set in ``finally``, so a refresh that waits on
-        # the whole refill blocks until this ceiling however long it is.
-        # Measured: the call phase takes 0.03 s on Linux (``--durations``);
-        # hosted macOS job 115414883668 ran past 2 s in the off-loop config
-        # load and was cut off there, so its full length is unknown. 30 s is
-        # 15x that cut-off and a quarter of ``--timeout=120``.
-        bound = _MID_REFILL_LOST_RUN_CEILING_SECS
-
         fill = asyncio.create_task(mgr._fill_warm_pool())
         try:
             # The refill is now parked inside the first provider's start(), with
             # the fill lock released.
-            await asyncio.wait_for(first_started.wait(), timeout=bound)
+            await await_until(first_started, what="first provider started")
 
             with patch("kiro_crew.session.KiroCrewConfig.load") as mock_load:
                 new_cfg = _make_cfg(pool_size=0)
@@ -1970,12 +1978,14 @@ class TestFillLockReleasedAcrossStart:
                 mock_load.return_value = new_cfg
                 # With the lock held across the whole refill this waits for all
                 # three starts; released around the start it returns at once.
-                await asyncio.wait_for(mgr.refresh_defaults(), timeout=bound)
+                await await_until(
+                    asyncio.ensure_future(mgr.refresh_defaults()), what="defaults refreshed"
+                )
 
             assert mgr._cfg is new_cfg
         finally:
             release_start.set()
-            await asyncio.wait_for(fill, timeout=bound)
+            await await_until(fill, what="warm pool fill finished")
 
     @pytest.mark.asyncio
     async def test_concurrent_refills_do_not_overfill(self):
@@ -2014,18 +2024,20 @@ class TestFillLockReleasedAcrossStart:
             # The first fill is parked inside a start() with the fill lock
             # released and a free start permit -- a second fill could run were
             # it not for the guard.
-            await asyncio.wait_for(in_start.wait(), timeout=2.0)
+            await await_until(in_start, what="provider started")
             # The ``fill_active`` guard makes a second refill a no-op while the
             # first is live, so this returns at once without starting a
             # provider of its own. Delete the guard and this second fill
             # instead runs a real refill that blocks inside its own start() on
             # ``release_start`` -- the ``wait_for`` then fails with a timeout
             # (the hang the guard prevents), not a passing no-op.
-            await asyncio.wait_for(mgr._fill_warm_pool(), timeout=2.0)
+            await await_until(
+                asyncio.ensure_future(mgr._fill_warm_pool()), what="fill warm pool completed"
+            )
             assert started == 1
         finally:
             release_start.set()
-            await asyncio.wait_for(first, timeout=2.0)
+            await await_until(first, what="first fill finished")
 
         assert mgr._warm_pool.qsize() == 2
         assert started == 2
@@ -2067,7 +2079,7 @@ class TestFillLockReleasedAcrossStart:
 
         fill = asyncio.create_task(mgr._fill_warm_pool())
         try:
-            await asyncio.wait_for(in_start.wait(), timeout=2.0)
+            await await_until(in_start, what="provider started")
             # Swap the factory while the refill is parked inside start();
             # pool_size is left at 1 so there is still room for a provider -- the
             # stale one must be dropped purely because its factory is retired.
@@ -2075,7 +2087,7 @@ class TestFillLockReleasedAcrossStart:
             mgr._provider_factory = new_factory
         finally:
             release_start.set()
-            await asyncio.wait_for(fill, timeout=2.0)
+            await await_until(fill, what="warm pool fill finished")
 
         # The stale provider was discarded; the one queued slot holds a provider
         # built from the new factory.
@@ -2122,7 +2134,7 @@ class TestFillLockReleasedAcrossStart:
         try:
             # The provider is building/starting before any epoch is marked, so
             # its spawn_time predates the epoch set below.
-            await asyncio.wait_for(in_start.wait(), timeout=2.0)
+            await await_until(in_start, what="provider started")
             # The identity sweep only marks the epoch -- pool_size stays 1, so
             # the size check still has room for a provider. The ONLY reason the
             # pre-epoch provider is refused is the identity-epoch check; delete
@@ -2130,7 +2142,7 @@ class TestFillLockReleasedAcrossStart:
             mgr._pool.mark_identity_epoch()
         finally:
             release_start.set()
-            await asyncio.wait_for(fill, timeout=2.0)
+            await await_until(fill, what="warm pool fill finished")
 
         # Pool still has room (size 1) yet nothing is enqueued: the pre-epoch
         # provider was discarded, not seeded behind the drain.

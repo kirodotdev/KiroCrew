@@ -24,6 +24,7 @@ from kiro_crew.session import (
     _provider_has_unfinished_turn,
     _Session,
 )
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture
@@ -319,7 +320,9 @@ async def test_close_all_drain_plus_kill_fit_tight_deadline(cfg):
     _inject(mgr, "s1", p)
 
     t0 = time.monotonic()
-    await asyncio.wait_for(mgr.close_all(drain_timeout=0.2), timeout=1.0)
+    await await_until(
+        asyncio.ensure_future(mgr.close_all(drain_timeout=0.2)), what="close_all completed"
+    )
     elapsed = time.monotonic() - t0
 
     assert p.cancel_calls == [0.2]  # drain used the passed budget
@@ -355,7 +358,7 @@ async def test_close_all_propagates_outer_cancel_to_keep_deadline_honest(cfg, mo
     try:
         # Establish mid-drain cancellation explicitly: an absolute deadline
         # can otherwise expire before the provider gets scheduled on a busy host.
-        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        await await_until(entered, what="cancel entered")
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(task, timeout=0)
 
@@ -425,7 +428,7 @@ async def test_update_pause_is_refused_once_a_stop_is_signalled(cfg, monkeypatch
         await asyncio.sleep(0)
         stopping["set"] = True
 
-    assert await asyncio.wait_for(pause, timeout=5) is False
+    assert await await_until(pause, what="pause completed") is False
     assert mgr.admission_closed is False
 
 
@@ -445,7 +448,7 @@ async def test_update_pause_is_kept_once_a_stop_is_signalled(cfg, monkeypatch):
         resume = asyncio.create_task(mgr.resume_turn_admission_after_update())
         await asyncio.sleep(0)
         stopping["set"] = True
-    assert await asyncio.wait_for(resume, timeout=5) is False
+    assert await await_until(resume, what="resume completed") is False
 
     assert mgr.admission_closed is True
     with pytest.raises(SessionClosingError):
@@ -516,11 +519,11 @@ async def test_registration_refused_when_closing_began_during_startup(cfg):
     mgr = SessionManager(cfg, provider_factory=lambda *a, **k: provider)
 
     task = asyncio.create_task(mgr.get_or_create("s-late"))
-    await asyncio.wait_for(started.wait(), timeout=2)
+    await await_until(started, what="provider started")
     mgr._closing = True  # close_all()'s first act, mid-handshake
     resume.set()
     with pytest.raises(SessionClosingError):
-        await asyncio.wait_for(task, timeout=2)
+        await await_until(task, what="get_or_create completed")
     # Nothing registered behind the snapshot.
     assert "s-late" not in mgr._sessions
 

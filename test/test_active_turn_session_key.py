@@ -25,6 +25,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.acp.client import AcpAuthRequired
 from kiro_crew.dashboard.chat_runner import _run_chat
+from kiro_crew.testing.wait import await_until
 
 LINKED_KEY = "slack:1730000000.123456"
 
@@ -317,7 +318,7 @@ class TestTheKeyIsPublishedBeforeAdmission:
         # Phase 1: the key is visible while the turn is parked on admission,
         # and a routing rebind landing in that window does not move it.
         turn = asyncio.create_task(_run_chat(state, slot, "test message"))
-        await asyncio.wait_for(parked.wait(), timeout=5)
+        await await_until(parked, what="turn parked on admission")
         assert (
             slot._active_turn_session_key == LINKED_KEY
         ), "the turn was parked on admission with no published identity"
@@ -326,7 +327,7 @@ class TestTheKeyIsPublishedBeforeAdmission:
         assert slot._active_turn_session_key == LINKED_KEY
         # Refused: the turn retires the key it published.
         release.set()
-        await asyncio.wait_for(turn, timeout=5)
+        await await_until(turn, what="turn finished")
         assert slot._active_turn_session_key == "", "a refused turn left its identity behind"
 
         # Phase 2: the same refusal must not clobber a successor's key. While
@@ -337,11 +338,11 @@ class TestTheKeyIsPublishedBeforeAdmission:
         slot.linked_session_key = LINKED_KEY
         slot.append("user", "again", "msg msg-u2")
         turn = asyncio.create_task(_run_chat(state, slot, "test message"))
-        await asyncio.wait_for(parked.wait(), timeout=5)
+        await await_until(parked, what="turn parked on admission")
         assert slot._active_turn_session_key == LINKED_KEY
         slot._active_turn_session_key = "dashboard:successor"
         release.set()
-        await asyncio.wait_for(turn, timeout=5)
+        await await_until(turn, what="turn finished")
         assert (
             slot._active_turn_session_key == "dashboard:successor"
         ), "the refused turn erased its successor's identity"
@@ -394,13 +395,13 @@ class TestDispatchSerializesWithTheSwitchLock:
         # A switch transaction on the shared session is in progress.
         async with observed:
             turn = asyncio.create_task(_run_chat(state, slot, "test message"))
-            await asyncio.wait_for(observed.waiting.wait(), timeout=5)
+            await await_until(observed.waiting, what="turn parked on switch lock")
             # Parked: nothing registered while the switch holds the lock.
             await asyncio.sleep(0)
             state.sessions.get_or_create.assert_not_awaited()
             # The switch commits its new binding inside its critical section.
             slot.model = "gpt-5.6-sol"
-        await asyncio.wait_for(turn, timeout=5)
+        await await_until(turn, what="turn finished")
 
         assert keys_seen == [
             LINKED_KEY
@@ -463,7 +464,9 @@ class TestDispatchNeverWaitsForALeaseUnderTheSwitchLock:
         for _ in range(50):
             await asyncio.sleep(0)
         b_turn = asyncio.create_task(_b_turn_restore_then_release())
-        await asyncio.wait_for(asyncio.gather(a_turn, b_turn), timeout=5)
+        await await_until(
+            asyncio.ensure_future(asyncio.gather(a_turn, b_turn)), what="turns a and b finished"
+        )
 
         state.sessions.get_or_create.assert_awaited_once()
         assert (

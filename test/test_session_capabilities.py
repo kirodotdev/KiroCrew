@@ -12,7 +12,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from chat_test_helpers import _make_app_with_agent_routes, _make_state, drain_background_tasks
+from chat_test_helpers import (
+    _make_app_with_agent_routes,
+    _make_state,
+    drain_background_tasks,
+)
 from dashboard_owner_helpers import as_owner
 
 from kiro_crew import agent, agent_discovery, agent_state
@@ -43,14 +47,23 @@ from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
 from kiro_crew.dashboard.handlers.agent_capabilities import _SERVICE
 from kiro_crew.dashboard.routes.agents import register
 from kiro_crew.history import ConversationLog
-from kiro_crew.member_memory_auth import bind_private_session_store, read_private_session_store
+from kiro_crew.member_memory_auth import (
+    bind_private_session_store,
+    read_private_session_store,
+)
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import provision_member_memory
-from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent, LLMProvider
+from kiro_crew.providers.base import (
+    EVENT_COMPLETE,
+    EVENT_TEXT_CHUNK,
+    LLMEvent,
+    LLMProvider,
+)
 from kiro_crew.session import SessionManager
 from kiro_crew.session_agent_selection import session_agent_selection_kind
 from kiro_crew.session_capabilities import CapabilityStartupError, runtime_view
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.testing.wait import await_until
 
 
 class FakeProvider(LLMProvider):
@@ -269,12 +282,14 @@ def dashboard_capability_world(world, tmp_path, monkeypatch):
 
 async def _create_capability_dashboard_slot(state, name, selected, project):
     async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
-        response = await asyncio.wait_for(
-            client.post(
-                "/api/chat/slots",
-                json={"name": name, "agent": selected, "project": str(project)},
+        response = await await_until(
+            asyncio.ensure_future(
+                client.post(
+                    "/api/chat/slots",
+                    json={"name": name, "agent": selected, "project": str(project)},
+                )
             ),
-            15,
+            what="POST /api/chat/slots",
         )
         assert response.status == 200, await response.text()
     return state._slots[name]
@@ -284,10 +299,16 @@ async def _close_capability_dashboards(world):
     """Join dashboard writers and real managers while the fixture homes still exist."""
     try:
         for state in world.states:
-            await asyncio.wait_for(drain_background_tasks(state), 15)
+            await await_until(
+                asyncio.ensure_future(drain_background_tasks(state)),
+                what="background tasks drained",
+            )
     finally:
         for state in world.states:
-            await asyncio.wait_for(state.sessions.close_all(drain_timeout=0), 15)
+            await await_until(
+                asyncio.ensure_future(state.sessions.close_all(drain_timeout=0)),
+                what="sessions closed",
+            )
 
 
 @pytest.mark.asyncio
@@ -301,11 +322,13 @@ async def test_dashboard_template_keeps_namespace_through_real_manager(
     state = world.new_state(supported=supported)
     key = "dashboard:template-chat"
     try:
-        slot = await asyncio.wait_for(
-            _create_capability_dashboard_slot(
-                state, "template-chat", world.template, world.project
+        slot = await await_until(
+            asyncio.ensure_future(
+                _create_capability_dashboard_slot(
+                    state, "template-chat", world.template, world.project
+                )
             ),
-            20,
+            what="template-chat slot created",
         )
         assert await asyncio.to_thread(session_agent_selection_kind, key, world.template) == (
             "template"
@@ -326,10 +349,17 @@ async def test_dashboard_template_keeps_namespace_through_real_manager(
             assert slot is not None
             assert slot.agent == world.template
         if entry == "eager":
-            await asyncio.wait_for(chat_runner._eager_spawn(state, slot), 20)
+            await await_until(
+                asyncio.ensure_future(chat_runner._eager_spawn(state, slot)), what="eager spawn"
+            )
         else:
-            await asyncio.wait_for(chat_runner._run_chat(state, slot, "Run this template."), 20)
-        await asyncio.wait_for(drain_background_tasks(state), 15)
+            await await_until(
+                asyncio.ensure_future(chat_runner._run_chat(state, slot, "Run this template.")),
+                what="run chat",
+            )
+        await await_until(
+            asyncio.ensure_future(drain_background_tasks(state)), what="background tasks drained"
+        )
 
         # Assert what the real allocation boundary gave the external process,
         # not just the agent argument that chat_runner gave SessionManager.
@@ -348,8 +378,14 @@ async def test_dashboard_template_keeps_namespace_through_real_manager(
         )
         if entry == "eager":
             assert world.prompts == []
-            await asyncio.wait_for(chat_runner._run_chat(state, slot, "Use the warm template."), 20)
-            await asyncio.wait_for(drain_background_tasks(state), 15)
+            await await_until(
+                asyncio.ensure_future(chat_runner._run_chat(state, slot, "Use the warm template.")),
+                what="run chat warm",
+            )
+            await await_until(
+                asyncio.ensure_future(drain_background_tasks(state)),
+                what="background tasks drained",
+            )
             assert world.made == [provider]
             assert provider.starts == 1
         assert [item[0] for item in world.prompts] == [provider]
@@ -370,12 +406,20 @@ async def test_dashboard_enrolled_member_controls_through_real_manager(
     state = world.new_state(supported=supported)
     key = "dashboard:A"
     try:
-        slot = await asyncio.wait_for(
-            _create_capability_dashboard_slot(state, "A", "A", world.project), 20
+        slot = await await_until(
+            asyncio.ensure_future(
+                _create_capability_dashboard_slot(state, "A", "A", world.project)
+            ),
+            what="A slot created",
         )
         assert await asyncio.to_thread(session_agent_selection_kind, key, "A") == "member"
-        await asyncio.wait_for(chat_runner._run_chat(state, slot, "Run the member."), 20)
-        await asyncio.wait_for(drain_background_tasks(state), 15)
+        await await_until(
+            asyncio.ensure_future(chat_runner._run_chat(state, slot, "Run the member.")),
+            what="run chat member",
+        )
+        await await_until(
+            asyncio.ensure_future(drain_background_tasks(state)), what="background tasks drained"
+        )
         assert len(world.made) == 1
         provider = world.made[0]
         assert provider.template == world.prepared["template"]
@@ -731,7 +775,7 @@ async def test_real_acp_mode_ack_is_required_for_loaded_template(
         )
         if fault:
             with pytest.raises(AcpRuntimeError, match="failure"):
-                await asyncio.wait_for(start, 5)
+                await await_until(asyncio.ensure_future(start), what="session start with fault")
             assert len(handles) == 1
             handle = handles[0]
             dedicated = AcpSessionProvider(handle, runtime, owns_runtime=True)
@@ -747,17 +791,17 @@ async def test_real_acp_mode_ack_is_required_for_loaded_template(
             pre.assert_called_once_with(template, tmp_path)
             assert post.call_count == (1 if fault == "post" else 0)
             return
-        handle = await asyncio.wait_for(start, 5)
+        handle = await await_until(asyncio.ensure_future(start), what="session start")
         dedicated = AcpSessionProvider(handle, runtime, owns_runtime=True)
         shared = AcpSessionProvider(handle, runtime)
         assert "session/set_mode" in methods
         assert dedicated.loaded_capability_template == template
         assert shared.loaded_capability_template == ""
-        await asyncio.wait_for(handle.set_mode("another-mode"), 5)
+        await await_until(asyncio.ensure_future(handle.set_mode("another-mode")), what="set mode")
         assert dedicated.loaded_capability_template == ""
     finally:
         reader.feed_eof()
-        await asyncio.wait_for(pump, 5)
+        await await_until(pump, what="reader loop pump finished")
 
 
 @pytest.mark.asyncio
@@ -1119,7 +1163,11 @@ async def test_claude_saved_projection_requires_consumed_matching_spec(
 ):
     from kiro_crew.acp.client import AcpError
     from kiro_crew.providers.acp import AcpProvider
-    from kiro_crew.session_capabilities import loaded_stamp, prepare_runtime, verify_saved
+    from kiro_crew.session_capabilities import (
+        loaded_stamp,
+        prepare_runtime,
+        verify_saved,
+    )
 
     service, _, _, _, project, _, _ = world
     await asyncio.to_thread(save, service, enroll=True)

@@ -30,6 +30,7 @@ from kiro_crew.providers.base import (
     LLMEvent,
 )
 from kiro_crew.session import SessionManager
+from kiro_crew.testing.wait import await_until
 
 LINKED_KEY = "slack:1700000000.000100"
 
@@ -221,7 +222,7 @@ class TestStopTurnRecordsASessionScopedStop:
         await asyncio.sleep(0.05)
         assert order == ["replay"]
         mgr.release(LINKED_KEY)
-        await asyncio.wait_for(newer, timeout=2)
+        await await_until(newer, what="newer message task finished")
 
         assert order == ["replay", "newer"]
         await mgr.close_all()
@@ -247,7 +248,7 @@ class TestStopTurnRecordsASessionScopedStop:
 
         await mgr.reset(LINKED_KEY)
 
-        assert await asyncio.wait_for(waiter, timeout=5) == "claimed"
+        assert await await_until(waiter, what="waiter claimed") == "claimed"
         assert mgr.has_session(LINKED_KEY)
         await mgr.close_all()
 
@@ -273,14 +274,14 @@ class TestStopTurnRecordsASessionScopedStop:
         await asyncio.sleep(0.05)
 
         await mgr.reset(LINKED_KEY)
-        await asyncio.wait_for(successor_held.wait(), timeout=5)
+        await await_until(successor_held, what="successor held permit")
         assert mgr.is_busy(LINKED_KEY), "the woken waiter holds the successor"
 
         mgr.release(LINKED_KEY)  # the torn-down turn's own finally
         assert mgr.is_busy(LINKED_KEY), "absorbed: the successor's permit is not ours to give back"
 
         let_go.set()
-        await asyncio.wait_for(waiter, timeout=5)
+        await await_until(waiter, what="waiter finished")
         assert not mgr.is_busy(LINKED_KEY), "the holder's own release is the one that counts"
         # Absorbed exactly once: a later release from this task is an ordinary one.
         await mgr.get_or_create(LINKED_KEY)
@@ -325,7 +326,7 @@ class TestStopTurnRecordsASessionScopedStop:
         mgr.release(LINKED_KEY)
         mgr.close_replay_gap(LINKED_KEY)
 
-        await asyncio.wait_for(waiter, timeout=5)
+        await await_until(waiter, what="waiter finished")
         assert order == ["replay", "newer"]
         await mgr.close_all()
 
@@ -351,7 +352,7 @@ class TestStopTurnRecordsASessionScopedStop:
         assert not newer.done(), "a stranger's close must leave the owner's gap open"
 
         mgr.close_replay_gap(LINKED_KEY)  # the owner
-        await asyncio.wait_for(newer, timeout=2)
+        await await_until(newer, what="newer message task finished")
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -367,7 +368,7 @@ class TestStopTurnRecordsASessionScopedStop:
         assert not newer.done()
 
         await mgr.close_all()
-        await asyncio.wait_for(newer, timeout=2)
+        await await_until(newer, what="newer message task finished")
 
     @pytest.mark.asyncio
     async def test_a_closed_replay_gap_records_nothing_again(self, cfg):

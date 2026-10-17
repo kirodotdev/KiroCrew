@@ -730,7 +730,6 @@ test/test_sel_prune_streaming.py
 test/test_service.py
 test/test_serving_loop_unified.py
 test/test_session_cleanup.py
-test/test_session_core_audit.py
 test/test_session_coverage.py
 test/test_session_end_interaction.py
 test/test_session_grid.py
@@ -745,7 +744,6 @@ test/test_session_start_timeout_diagnostics.py
 test/test_session_summary_api.py
 test/test_session_summary_extract.py
 test/test_session_thread_map.py
-test/test_session_usage.py
 test/test_ship_report_issues.py
 test/test_side_context_cov80.py
 test/test_side_steer_queue.py
