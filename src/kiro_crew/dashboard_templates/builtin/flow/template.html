@@ -61,6 +61,7 @@
   <div class="sub" style="margin-top: 7px;">
     <span data-dashboard-field="items">-</span> <span data-i18n="items_counted">item(s) counted,</span>
     <span data-dashboard-field="omitted">-</span> <span data-i18n="not_shown_flow">not shown (list truncated, so both charts are drawn on a part of the board)</span>
+    <span data-dashboard-field="forgotten" hidden></span>
   </div>
 
   <script>
@@ -146,6 +147,15 @@
       function items() {
         var v = fields().items;
         return Array.isArray(v) ? v.filter(function (e) { return e && typeof e === 'object'; }) : [];
+      }
+      // The closed items the fold no longer holds, counted per closing state. The fold
+      // keeps only the open items and the newest closed ones, so the tiles add these
+      // to what `items` holds.
+      function forgotten() {
+        var f = fields().forgotten;
+        var g = f && typeof f === 'object' ? f : {};
+        function n(k) { var v = g[k]; return typeof v === 'number' && isFinite(v) && v > 0 ? Math.floor(v) : 0; }
+        return { items: n('items'), accepted: n('accepted'), rejected: n('rejected'), abandoned: n('abandoned') };
       }
       function stamp(v) {
         var n = num(v);
@@ -262,9 +272,13 @@
           else if (st === 'open') open += 1;
           else shut += 1;
         }
-        kpis.appendChild(kpi(i18n('kpi_accepted'), list.length ? done : null, i18n('kpi_of', { n: list.length }), list.length ? done / list.length : null));
-        kpis.appendChild(kpi(i18n('kpi_still_open'), list.length ? open : null, i18n('unit_items'), null));
-        kpis.appendChild(kpi(i18n('kpi_rejected'), list.length ? shut : null, i18n('unit_items'), null));
+        var gone = forgotten();
+        var total = list.length + gone.items;
+        done += gone.accepted;
+        shut += gone.rejected + gone.abandoned;
+        kpis.appendChild(kpi(i18n('kpi_accepted'), total ? done : null, i18n('kpi_of', { n: total }), total ? done / total : null));
+        kpis.appendChild(kpi(i18n('kpi_still_open'), total ? open : null, i18n('unit_items'), null));
+        kpis.appendChild(kpi(i18n('kpi_rejected'), total ? shut : null, i18n('unit_items'), null));
 
         var lo = stamp(f.first_entry_at) || stamp(f.created_at);
         var hi = stamp(f.last_entry_at);

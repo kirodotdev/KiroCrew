@@ -13,6 +13,7 @@
     "first_entry_at": { "type": "string", "source": { "fold": "work", "path": "conductor.first_entry_at" } },
     "last_entry_at": { "type": "string", "source": { "fold": "work", "path": "conductor.last_entry_at" } },
     "items": { "type": "array", "source": { "fold": "work", "path": "items" } },
-    "omitted": { "type": "number", "source": { "fold": "work", "path": "omitted" } }
+    "omitted": { "type": "number", "source": { "fold": "work", "path": "omitted" } },
+    "forgotten": { "type": "object", "source": { "fold": "work", "path": "forgotten" } }
   }
 }

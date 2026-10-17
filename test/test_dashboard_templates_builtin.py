@@ -26,6 +26,8 @@ break this is for.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from configparser import ConfigParser
 from fnmatch import fnmatch
 from pathlib import Path
@@ -43,6 +45,7 @@ from kiro_crew.dashboard_templates.manifest import (
     TemplateManifest,
     load_template,
 )
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 BUILTIN = Path(__file__).resolve().parents[1] / "src/kiro_crew/dashboard_templates/builtin"
 FIXTURES = Path(__file__).resolve().parent / "fixtures/dashboard_templates"
@@ -647,3 +650,154 @@ class TestEveryBuiltinSurvivesPreviewAndApply:
         assert back.instance_version == 3, "a rollback writes a NEW version"
         assert back.template_id == instance.DEFAULT_TEMPLATE_ID
         assert back.html == default_html, "the restored page is not the default's own"
+
+
+# ------------------------------------ the flow page counts the items the fold forgot
+
+#: A DOM just wide enough to run the ``flow`` page's script as far as its tiles. Each
+#: element records what is written to it and nothing more, with ``textContent`` behaving
+#: the way a browser's does (a write replaces the children, a read joins them).
+_FLOW_DOM = r"""
+class El {
+  constructor(tag) { this.tag = tag; this.children = []; this.className = ''; this.style = {}; this._t = ''; }
+  get textContent() { return this._t + this.children.map((c) => c.textContent).join(''); }
+  set textContent(v) { this._t = String(v); this.children = []; }
+  appendChild(c) { this.children.push(c); return c; }
+  setAttribute() {}
+  getAttribute() { return null; }
+}
+const byId = {};
+for (const id of ['kpis', 'burn', 'cfd', 'burnax', 'cfdax', 'cfdlegend']) byId[id] = new El('div');
+globalThis.window = globalThis;
+globalThis.addEventListener = () => {};
+globalThis.document = {
+  body: { querySelectorAll: () => [] },
+  querySelectorAll: () => [],
+  querySelector: () => null,
+  getElementById: (id) => byId[id] || null,
+  createElement: (tag) => new El(tag),
+  createElementNS: (ns, tag) => new El(tag),
+  createTextNode: (s) => { const n = new El('#text'); n.textContent = s; return n; },
+};
+"""
+
+#: What the page drew into its tile row, one record per tile.
+_FLOW_PROBE = r"""
+console.log(JSON.stringify(byId.kpis.children.map((card) => ({
+  value: card.children[1]._t,
+  unit: card.children[1].children.map((c) => c.textContent).join(''),
+  fill: card.children[2] ? card.children[2].children[0].style.width : null,
+}))));
+"""
+
+_ABSENT = object()
+
+
+def _flow_item(state: str) -> dict[str, Any]:
+    """One ``work`` item with only what the tiles read. It carries no stamps, so the
+    page reports that its charts cannot be drawn and stops after the tiles."""
+    return {"item_id": f"it-{state}", "title": f"a {state} task", "state": state}
+
+
+def _flow_tiles(html: str, fields: dict[str, Any]) -> list[dict[str, Any]]:
+    """Run the page's own script over *fields* and return the tiles it drew."""
+    node = shutil.which("node")
+    if node is None:  # pragma: no cover - CI builds the website, so node is present
+        pytest.fail(
+            "node is required to run the flow page's script; the tile assertions cannot be skipped"
+        )
+    script = html.split("<script>")[1].split("</script>")[0]
+    program = "\n".join(
+        (
+            f"globalThis.kirocrew = {{ fields: {json.dumps(fields)} }};",
+            _FLOW_DOM,
+            script,
+            _FLOW_PROBE,
+        )
+    )
+    done = subprocess.run([node, "-"], input=program, capture_output=True, timeout=60, **UTF8_TEXT)
+    assert done.returncode == 0, done.stderr
+    return list(json.loads(done.stdout.strip().splitlines()[-1]))
+
+
+class TestFlowCountsTheItemsTheFoldForgot:
+    """The ``flow`` page's tiles read the whole board, not only the part the fold lists.
+
+    The ``work`` fold keeps the open items and the newest closed ones. A closed item past
+    that window leaves ``items`` and is counted in ``forgotten``, so a tile that counts
+    ``items`` alone shrinks as a goal runs long. The page's script is RUN here over a
+    field bag: "the tile reads 5 of 7" is a claim about what executes, and a source
+    pattern holding the word ``forgotten`` is satisfied by a page that never adds it.
+    """
+
+    def test_it_binds_forgotten_the_way_goal_board_binds_it(
+        self, loaded: dict[str, tuple[TemplateManifest, str]]
+    ) -> None:
+        flow, html = loaded["flow"]
+        assert "forgotten" in flow.fields, "flow does not bind the work fold's forgotten counts"
+        mine = flow.fields["forgotten"]
+        theirs = loaded["goal-board"][0].fields["forgotten"]
+        assert (mine.type, mine.fold, mine.path, mine.agentic) == (
+            theirs.type,
+            theirs.fold,
+            theirs.path,
+            theirs.agentic,
+        )
+        assert 'data-dashboard-field="forgotten"' in html
+
+    def test_the_accepted_tile_adds_the_forgotten_items(
+        self, loaded: dict[str, tuple[TemplateManifest, str]]
+    ) -> None:
+        accepted, still_open, rejected = _flow_tiles(
+            loaded["flow"][1],
+            {
+                "items": [_flow_item("accepted"), _flow_item("accepted"), _flow_item("open")],
+                "forgotten": {
+                    "created": 7,
+                    "items": 4,
+                    "accepted": 3,
+                    "rejected": 1,
+                    "abandoned": 0,
+                    "in_round": 0,
+                },
+            },
+        )
+        assert (accepted["value"], accepted["unit"]) == ("5", "of 7")
+        assert float(accepted["fill"].rstrip("%")) == pytest.approx(5 / 7 * 100)
+        assert still_open["value"] == "1"
+        assert rejected["value"] == "1"
+
+    def test_the_rejected_tile_adds_the_forgotten_rejected_and_abandoned(
+        self, loaded: dict[str, tuple[TemplateManifest, str]]
+    ) -> None:
+        accepted, _, rejected = _flow_tiles(
+            loaded["flow"][1],
+            {
+                "items": [_flow_item("rejected")],
+                "forgotten": {"items": 3, "accepted": 0, "rejected": 2, "abandoned": 1},
+            },
+        )
+        assert rejected["value"] == "4"
+        assert (accepted["value"], accepted["unit"]) == ("0", "of 4")
+
+    @pytest.mark.parametrize(
+        "forgotten",
+        [
+            pytest.param(_ABSENT, id="absent"),
+            pytest.param(None, id="null"),
+            pytest.param("many", id="string"),
+            pytest.param([3], id="array"),
+            pytest.param({"items": -2, "accepted": "5", "rejected": None}, id="not-counts"),
+        ],
+    )
+    def test_a_missing_or_odd_forgotten_reads_as_zeros(
+        self, loaded: dict[str, tuple[TemplateManifest, str]], forgotten: Any
+    ) -> None:
+        fields: dict[str, Any] = {
+            "items": [_flow_item("accepted"), _flow_item("accepted"), _flow_item("open")]
+        }
+        if forgotten is not _ABSENT:
+            fields["forgotten"] = forgotten
+        accepted, still_open, rejected = _flow_tiles(loaded["flow"][1], fields)
+        assert (accepted["value"], accepted["unit"]) == ("2", "of 3")
+        assert (still_open["value"], rejected["value"]) == ("1", "0")

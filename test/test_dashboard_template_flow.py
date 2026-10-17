@@ -285,7 +285,7 @@ class TestTheUndrawableCases:
     def test_a_kpi_with_no_items_draws_a_dash_rather_than_zero(self, html: str) -> None:
         """Absent is not zero: a board nobody opened and a board with nothing accepted
         are different facts and 0 states the second."""
-        assert "list.length ? done : null" in html
+        assert "total ? done : null" in html
         assert "value === null ? DASH" in html
 
 
