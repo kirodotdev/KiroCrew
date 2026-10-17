@@ -445,6 +445,167 @@ class TestTransportFailuresDegrade:
         assert not issubclass(http.client.HTTPException, OSError)
 
 
+class _CannedResp:
+    """A stand-in for the HTTPResponse the seam returns.
+
+    `read(amt)` is a SIZED read that returns whatever bytes it has -- fewer than
+    ``Content-Length`` when the body was truncated, without raising. That is the
+    silent short read a real relay produces (`HTTPResponse.read(amt)` only
+    raises `IncompleteRead` for a chunked stream that ends mid-chunk).
+    """
+
+    def __init__(self, body: bytes, declared: int | str, status: int = 200):
+        self._body = body
+        self._declared = declared
+        self.status = status
+        self.headers = {"Content-Length": str(self._declared)}
+
+    def read(self, amt: int = -1) -> bytes:
+        if amt is None or amt < 0:
+            return self._body
+        return self._body[:amt]
+
+    def __enter__(self) -> "_CannedResp":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+class TestTruncatedResponsesAreRetried:
+    """One truncated response is a transient fault, not a catalog outage.
+
+    A relay that drops the tail of the stream as the server closes the
+    connection does it to a sizeable fraction of fetches (observed: 8,463 of a
+    declared 23,349 bytes, no exception). Before the retry, that single bad
+    body was remembered for ``FAILURE_TTL`` -- and, via the failure sentinel,
+    refused explicit installs that never touched the network. A truncated body
+    is detected by LENGTH (against ``Content-Length``), reported as a
+    truncation rather than as "not valid JSON", and retried before the failure
+    becomes final.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_sleep(self, monkeypatch):
+        """The back-off is real in production; the suite should not wait it out."""
+        slept: list[float] = []
+        monkeypatch.setattr(time, "sleep", lambda s: slept.append(s))
+        self.slept = slept
+
+    def test_a_short_read_is_detected_and_retried(self, monkeypatch):
+        good = json.dumps(doc()).encode("utf-8")
+        truncated = good[: len(good) // 2]
+        responses = [_CannedResp(truncated, len(good)), _CannedResp(good, len(good))]
+        calls: list[str] = []
+
+        def canned(req):
+            calls.append(str(req.full_url))
+            return responses.pop(0)
+
+        monkeypatch.setattr(oc, "_open_catalog", canned)
+        assert oc._download() == doc()
+        assert len(calls) == 2, "the truncated first response must earn a second attempt"
+
+    def test_a_truncated_response_is_reported_as_a_truncation(self, monkeypatch, caplog):
+        good = json.dumps(doc()).encode("utf-8")
+        monkeypatch.setattr(
+            oc,
+            "_open_catalog",
+            lambda req: _CannedResp(good[: len(good) // 2], len(good)),
+        )
+        with caplog.at_level("WARNING", logger=oc.logger.name):
+            assert oc._download() is None
+        assert "truncated response from" in caplog.text
+        assert f"got {len(good) // 2} of {len(good)} bytes" in caplog.text
+        assert (
+            "not valid JSON" not in caplog.text
+        ), "a length-detected truncation must not be misreported as a JSON error"
+
+    def test_every_attempt_short_degrades_to_none_after_all_attempts(self, monkeypatch):
+        good = json.dumps(doc()).encode("utf-8")
+        calls: list[str] = []
+
+        def always_short(req):
+            calls.append(str(req.full_url))
+            return _CannedResp(good[:-1], len(good))
+
+        monkeypatch.setattr(oc, "_open_catalog", always_short)
+        assert oc._download() is None
+        assert (
+            len(calls) == oc.FETCH_ATTEMPTS
+        ), "a persistently truncated origin is retried to the last attempt, then degrades"
+
+    def test_a_transport_failure_is_retried_before_the_failure_is_final(self, monkeypatch):
+        good = json.dumps(doc()).encode("utf-8")
+        responses: list[object] = [
+            http.client.RemoteDisconnected("relay dropped us"),
+            _CannedResp(good, len(good)),
+        ]
+
+        def canned(req):
+            item = responses.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        monkeypatch.setattr(oc, "_open_catalog", canned)
+        assert oc._download() == doc()
+
+    def test_a_non_200_answer_is_deterministic_and_not_retried(self, monkeypatch):
+        calls: list[str] = []
+        monkeypatch.setattr(
+            oc,
+            "_open_catalog",
+            lambda req: (calls.append(str(req.full_url)), _CannedResp(b"{}", 2, status=503))[1],
+        )
+        assert oc._download() is None
+        assert len(calls) == 1, "a server that answered can only answer the same way again"
+
+    @pytest.mark.parametrize("declared", ["²", "①", " 12", "+12", "nope", ""])
+    def test_an_unparseable_content_length_is_ignored_not_raised(self, monkeypatch, declared):
+        """`str.isdigit` would have accepted `'²'` for `int()` to reject, and the
+        ValueError would have escaped the one contract this function has --
+        "Returns None on any failure" -- all the way past the listing handler's
+        reach. The guard must accept exactly what `int()` does: `str.isdecimal`
+        (every isdecimal string parses; `²`/`①` are digit but not decimal), and
+        anything else reads as "no declared length", like a missing header.
+        `Content-Length` is whatever the origin sent, so a bad value is a
+        degradation, never an exception."""
+        calls: list[str] = []
+        good = json.dumps(doc()).encode("utf-8")
+        monkeypatch.setattr(
+            oc,
+            "_open_catalog",
+            lambda req: (calls.append(str(req.full_url)), _CannedResp(good, declared))[1],
+        )
+        assert oc._download() == doc()
+        assert len(calls) == 1, "a garbage length is not a truncation and earns no retry"
+
+    def test_a_complete_body_is_never_retried(self, monkeypatch):
+        """The retry exists for transient transport faults; a full response that
+        is not JSON would read the same bytes twice for nothing."""
+        calls: list[str] = []
+        monkeypatch.setattr(
+            oc,
+            "_open_catalog",
+            lambda req: (calls.append(str(req.full_url)), _CannedResp(b"{not json", 9))[1],
+        )
+        assert oc._download() is None
+        assert len(calls) == 1
+
+    def test_the_backoff_is_short_and_growing(self, monkeypatch):
+        good = json.dumps(doc()).encode("utf-8")
+        monkeypatch.setattr(
+            oc,
+            "_open_catalog",
+            lambda req: _CannedResp(good[:-1], len(good)),
+        )
+        assert oc._download() is None
+        assert self.slept == [
+            oc.FETCH_RETRY_PAUSE * n for n in range(1, oc.FETCH_ATTEMPTS)
+        ], "attempt n waits FETCH_RETRY_PAUSE * (n - 1), all short next to FETCH_TIMEOUT"
+
+
 class TestVersionIsNotCurated:
     """`version` is a FACT about the app, not curated copy.
 

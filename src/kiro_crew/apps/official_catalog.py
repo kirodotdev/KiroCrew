@@ -72,6 +72,15 @@ CACHE_TTL = 3600  # 1 hour
 #: cost of remembering too long is a store that stays stale after the CDN is back.
 FAILURE_TTL = 60
 FETCH_TIMEOUT = 10
+#: How many times one logical fetch may touch the wire. A single truncated or
+#: reset response is a TRANSIENT fault -- a relay that drops the tail of the
+#: stream as the server closes the connection does it to a sizeable fraction of
+#: fetches -- so it is worth another cheap attempt before the failure is
+#: remembered for ``FAILURE_TTL`` and every reader inherits it.
+FETCH_ATTEMPTS = 3
+#: Seconds to wait before attempt *n* is ``FETCH_RETRY_PAUSE * (n - 1)``: short,
+#: growing, and never a substitute for the caller-side FAILURE_TTL back-off.
+FETCH_RETRY_PAUSE = 0.25
 #: Escape hatch for tests and CI, mirroring ``KIROCREW_SKIP_MODEL_DOWNLOAD``: a
 #: test rig's store must never reach the published documents' origin. Set to
 #: ``"1"`` it makes every document read as unreachable, so the store degrades to
@@ -223,6 +232,12 @@ def fetch_document(url: str) -> dict[str, Any] | None:
     Every failure is a degradation rather than an error: each caller has a
     working answer without the document.
 
+    A transient fault -- a transport error, or a body shorter than its declared
+    ``Content-Length`` -- is retried (:data:`FETCH_ATTEMPTS`) with a short
+    back-off before the failure is reported. Deterministic outcomes (a non-200
+    status, an oversized document, a complete body that is not JSON) are not
+    retried: a second read would return the same bytes.
+
     Checked BEFORE the seam, not inside it: ``_open_catalog`` is what tests
     intercept, and a skip that reached it would be indistinguishable from a
     fetch that did.
@@ -230,27 +245,62 @@ def fetch_document(url: str) -> dict[str, Any] | None:
     if store_fetch_skipped():
         logger.info("%s=1 — not fetching %s", SKIP_FETCH_ENV, url)
         return None
-    try:
-        req = _https_request(url)
-        with _open_catalog(req) as resp:
-            if resp.status != 200:
-                logger.info("%s returned HTTP %s", url, resp.status)
-                return None
-            raw = resp.read(MAX_BYTES + 1)
-    # `HTTPException` is the family, not a courtesy addition to the tuple. It is
-    # NOT an OSError subclass, so `IncompleteRead` (a truncated chunked body),
-    # `BadStatusLine`, `LineTooLong`, `InvalidURL`, `UnknownProtocol` and the
-    # `ImproperConnectionState` pair all escape a tuple that lists only
-    # URLError/OSError. `RemoteDisconnected` is the misleading one: it happens to
-    # be caught because it also inherits `ConnectionResetError`, which is what
-    # makes the gap look narrower than it is.
-    except (
-        urllib.error.URLError,
-        http.client.HTTPException,
-        OSError,
-        ValueError,
-    ) as exc:
-        logger.info("could not fetch %s: %s", url, exc)
+    raw: bytes | None = None
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        if attempt > 1:
+            time.sleep(FETCH_RETRY_PAUSE * (attempt - 1))
+        try:
+            req = _https_request(url)
+            with _open_catalog(req) as resp:
+                if resp.status != 200:
+                    logger.info("%s returned HTTP %s", url, resp.status)
+                    return None
+                body = resp.read(MAX_BYTES + 1)
+                headers = getattr(resp, "headers", None)
+                declared = headers.get("Content-Length") if headers is not None else None
+        # `HTTPException` is the family, not a courtesy addition to the tuple. It is
+        # NOT an OSError subclass, so `IncompleteRead` (a truncated chunked body),
+        # `BadStatusLine`, `LineTooLong`, `InvalidURL`, `UnknownProtocol` and the
+        # `ImproperConnectionState` pair all escape a tuple that lists only
+        # URLError/OSError. `RemoteDisconnected` is the misleading one: it happens to
+        # be caught because it also inherits `ConnectionResetError`, which is what
+        # makes the gap look narrower than it is.
+        except (
+            urllib.error.URLError,
+            http.client.HTTPException,
+            OSError,
+            ValueError,
+        ) as exc:
+            logger.info("could not fetch %s (attempt %d/%d): %s", url, attempt, FETCH_ATTEMPTS, exc)
+            continue
+        # `HTTPResponse.read(amt)` is a SIZED read: a relay that drops the tail of
+        # the stream as the server closes the connection returns a SHORT body
+        # without raising `IncompleteRead` -- observed at 8,463 of a declared
+        # 23,349 bytes. The mismatch, not the JSON error a truncated document
+        # decodes into, is what a truncated response looks like, and it is
+        # transient, so it earns a retry before the failure is remembered.
+        # `str.isdecimal` not `str.isdigit`: the header is attacker-adjacent
+        # (whatever the origin sends), and `isdigit` accepts strings `int()`
+        # rejects -- `'²'.isdigit()` is True while `int('²')` raises. Using
+        # isdigit here would turn a garbage Content-Length into an escape from
+        # this function's only contract, "returns None on any failure". Every
+        # isdecimal string parses (`int` reads exactly Unicode Nd), and anything
+        # else is treated as "no declared length": the fetch proceeds unaudited
+        # for length, which is what a missing header does too.
+        expected = int(declared) if isinstance(declared, str) and declared.isdecimal() else None
+        if expected is not None and len(body) < expected:
+            logger.warning(
+                "truncated response from %s (got %d of %d bytes; attempt %d/%d)",
+                url,
+                len(body),
+                expected,
+                attempt,
+                FETCH_ATTEMPTS,
+            )
+            continue
+        raw = body
+        break
+    if raw is None:
         return None
     if len(raw) > MAX_BYTES:
         logger.warning("%s exceeds %d bytes; ignoring it", url, MAX_BYTES)
@@ -623,11 +673,21 @@ class CatalogUnavailable(Exception):
     """
 
 
-def fetch_inventory_entries() -> list[dict[str, Any]]:
+def fetch_inventory_entries(*, ignore_failure_memory: bool = False) -> list[dict[str, Any]]:
     """The catalog's entries from a FRESH HTTPS fetch, never the on-disk cache.
 
     Raises :class:`CatalogUnavailable` when the document cannot be fetched or
     interpreted, so a caller cannot mistake "could not ask" for "nothing there".
+
+    *ignore_failure_memory* is for the EXPLICIT-INSTALL path
+    (:func:`inventory_for_install`). The failure sentinel lives in the same
+    agent-writable cache file the install path is defined to ignore, and it
+    records what a STORE LISTING fetch saw: one bad listing-page response must
+    not turn an install click into a refusal-without-an-attempt for
+    ``FAILURE_TTL``. Skipping the memory is fail-closed in the direction this
+    module already reasons about (the memory can only refuse EARLIER, never
+    answer): an attacker who clears it buys one real fetch attempt, which ends
+    in the same refusal if the catalog is genuinely unreachable.
 
     This is the only source allowed to MATERIALISE inventory. The cache under the
     data home is agent-writable, which is harmless while it supplies display copy
@@ -648,9 +708,10 @@ def fetch_inventory_entries() -> list[dict[str, Any]]:
     # answer. The file is agent-writable, so an attacker can clear the memory -- and the
     # worst that buys them is one real fetch attempt, which is the same fail-closed
     # answer by a slower route.
-    cached = _read_cache()
-    if isinstance(cached, dict) and _FAILED_KEY in cached:
-        raise CatalogUnavailable("a recent catalog fetch failed; not retrying yet")
+    if not ignore_failure_memory:
+        cached = _read_cache()
+        if isinstance(cached, dict) and _FAILED_KEY in cached:
+            raise CatalogUnavailable("a recent catalog fetch failed; not retrying yet")
 
     doc = fetch_document(OFFICIAL_CATALOG_URL)
     if not isinstance(doc, dict):
@@ -681,13 +742,20 @@ def inventory_for_install(name: str) -> dict[str, Any] | None:
     that would also close the case where the CDN itself is wrong -- but it removes
     the local surface, which is the one this client creates for itself.
 
+    The failure sentinel is part of that cache file, so it is ignored too: it
+    records what a listing-page fetch saw, and honouring it here turned one
+    truncated store response into a minute of install refusals that never
+    touched the network. Ignoring it costs one real fetch attempt per install
+    click -- the same trade the cache bypass already makes -- and leaves the
+    fail-closed answer untouched: if that fetch fails, the refusal still raises.
+
     Returns None ONLY when a valid catalog document does not name *name* -- an
     authoritative absence. Every other outcome raises :class:`CatalogUnavailable`,
     because a caller that cannot tell "not in the catalog" from "could not reach the
     catalog" will treat a network failure as permission to install from unpinned
     coordinates.
     """
-    apps = fetch_inventory_entries()
+    apps = fetch_inventory_entries(ignore_failure_memory=True)
     rows = list(inventory(apps))
     for row in rows:
         if row.get("name") == name:
