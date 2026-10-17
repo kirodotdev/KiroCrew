@@ -55,7 +55,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final, Iterable, Iterator, Mapping
+from typing import Any, Callable, Final, Iterable, Iterator, Mapping
 from urllib.parse import quote, urlencode
 
 from kiro_crew import dashboard_frame, pinned_fs
@@ -1632,10 +1632,12 @@ _LOCK_GUARD_SUFFIX: Final[str] = ".dashboard-lock.guard"
 def set_structure_lock(slug: str, locked: bool) -> Instance:
     """Set or clear the person's structure lock on *slug*'s dashboard.
 
-    The only writer of :func:`lock_path`, and reached only from the owner-gated
-    dashboard route: no MCP tool calls it, so an agent can be refused by the lock and
-    can never lift it. The lock is not part of any version, so a rollback cannot
-    restore an old lock state, and it holds for a crewmate that never adopted.
+    The only writer of :func:`lock_path` for a live crewmate, and reached only from the
+    owner-gated dashboard route: no MCP tool calls it, so an agent can be refused by
+    the lock and can never lift it. :func:`remove_structure_lock` removes the file only
+    once the roster does not hold the crewmate. The lock is not part of any version, so
+    a rollback cannot restore an old lock state, and it holds for a crewmate that never
+    adopted.
 
     EVERY write here is inside ``crew-panels``. Nothing is created, written or deleted
     under ``members/<slug>/``, a tree the crewmate's shell can redirect, so neither a
@@ -1667,6 +1669,36 @@ def set_structure_lock(slug: str, locked: bool) -> Instance:
         # An unreadable record does not undo a lock change that already landed.
         current = _empty(slug, "the record cannot be read")
     return dataclasses.replace(current, structure_locked=locked)
+
+
+def remove_structure_lock(slug: str, *, still_unclaimed: Callable[[], bool]) -> bool:
+    """Remove the structure lock of a crewmate the roster does not hold.
+
+    The crew delete route's half of the lock's lifecycle, and the only other path that
+    removes :func:`lock_path`. A lock left behind would greet a later crewmate that
+    derives the same slug with a page locked to the deleted one's snapshot.
+
+    *still_unclaimed* is asked under the same guard :func:`set_structure_lock` holds,
+    and a ``False`` answer removes nothing: a lock still keyed by a live crewmate is
+    that person's decision, and clearing it would let its agent change the page. Only
+    the lock file is touched -- not the guard file, which another writer may be
+    holding, and nothing under ``members/<slug>/``.
+
+    Returns whether a lock file was removed. A crewmate that never locked returns
+    without taking the guard, so the delete creates nothing in ``crew-panels``.
+    """
+    path = lock_path(slug)
+    if not os.path.lexists(path):
+        return False
+    with _locked(path.parent, lock_file=f"{slug}{_LOCK_GUARD_SUFFIX}"):
+        if not still_unclaimed():
+            return False
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return False
+        fsync_dir(path.parent)
+    return True
 
 
 # --------------------------------------------------------------------------
