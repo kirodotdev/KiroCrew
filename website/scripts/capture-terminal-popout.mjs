@@ -135,6 +135,9 @@ async function stubContext(context) {
         activeId: 'fixture-tab-1',
       }))
     }
+    // The `open` flag is per window (sessionStorage) since the per-window fix;
+    // the layout's `open` is ignored at load.
+    sessionStorage.setItem('mc-bottom-terminal-open', '1')
   })
 }
 

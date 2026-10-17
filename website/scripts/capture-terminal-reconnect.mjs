@@ -106,6 +106,9 @@ async function stubContext(context, theme, opts = {}) {
       open: true, height: 300,
       tabs: [{ id: 'fixture-tab-1' }], activeId: 'fixture-tab-1',
     }))
+    // The `open` flag is per window (sessionStorage) since the per-window fix;
+    // the layout's `open` is ignored at load.
+    sessionStorage.setItem('mc-bottom-terminal-open', '1')
     // Compress the real backoff clock: production caps each delay at 30s, so
     // ten dials would take ~3 min. Clamp the delay only; the retry chain, the
     // ceiling and the disconnected flip all still run in production code.
