@@ -286,10 +286,12 @@ The two quality fields describe the durable sources independently:
 Neither field alone says the combined count is exact. A short list under an
 `incomplete` or `unreadable` value is not evidence that you created nothing.
 
-The roster holds at most **256** rows. Two counts say what was cut:
-`roster_omitted` is how many rows the 256-row cap dropped from the combined
-list, and `history_omitted` is how many the transcript scan itself left out.
-Both are `0` when nothing was cut. A call answers `caller_changed_mid_read` when
+The roster holds at most **256** rows, and at most the newest **64** `closed`
+or `lost` ones. Three counts say what was cut: `roster_omitted` is how many rows
+the 256-row cap dropped from the combined list, `history_omitted` is how many the
+transcript scan itself left out, and `gone_omitted` is how many older `closed` or
+`lost` sessions were left out because only the newest 64 are read. All three are
+`0` when nothing was cut. A call answers `caller_changed_mid_read` when
 your own session moved workspace during the read; call again.
 Read-only: it sends nothing and changes nothing.
 

@@ -58,6 +58,15 @@ MAX_READ_CONTENT_CHARS = 4000
 MAX_PENDING_APPROVAL_TOOL_CHARS = 200
 
 
+# Maximum ENDED sessions (closed or lost) one status read folds and lists. Each
+# costs a status fold of that session's crew log, read off disk on a worker
+# thread, and a conductor's ended children only grow, so without this bound the
+# read's cost grows with every worker it ever dispatched. The newest are kept:
+# they are the ones a patrol re-dispatches. The rest are counted in the reply's
+# ``gone_omitted``, never listed under a status nobody read.
+MAX_SESSION_STATUS_GONE_ROWS = 64
+
+
 # Bounds on a ``read_summary`` response. The stored summary caps intent and note
 # COUNTS at 50 but neither per-intent list lengths nor string lengths, so the
 # response is cut here, once, and says how much it left out. Intents arrive
@@ -84,7 +93,7 @@ TRANSIENT_ROLES = _PERSISTENCE_TRANSIENT_ROLES
 
 
 def _created_tree_roster(caller_key: str) -> "tuple[list[str], str]":
-    """Slots the crew log says hang under *caller_key*, and how good that read was.
+    """Slots the crew log says hang under *caller_key*, NEWEST first, and how good that read was.
 
     The DURABLE half of :func:`created_session_status`. ``state._slots`` knows only
     what is open right now, so a worker that was closed, or whose session was lost
@@ -115,6 +124,13 @@ def _created_tree_roster(caller_key: str) -> "tuple[list[str], str]":
     right answer for this verb — it reports the sessions the caller is answerable
     for — and it cannot widen the caller's reach, because an adoption is itself
     gated by :func:`authorize_target`.
+
+    NEWEST FIRST, by the newest ``createdAt`` among the slot's own logs, so a worker
+    recycled onto a fresh log counts as recent. Both bounds on this population keep
+    that end: the row cap here, when a caller has more children than it holds, and
+    :data:`MAX_SESSION_STATUS_GONE_ROWS` in :func:`created_session_status`, which
+    folds only the newest ended ones. A slot with no record in this reading sorts as
+    the oldest, and a tie falls back to the slot key, so the order is stable.
     """
     try:
         if not crew_log_emit.enabled():
@@ -126,17 +142,21 @@ def _created_tree_roster(caller_key: str) -> "tuple[list[str], str]":
     except Exception:
         logger.debug("session tree roster could not be read", exc_info=True)
         return [], "unreadable"
-    children: list[str] = []
-    overflow = False
-    for slot, node in reading.nodes.items():
-        if getattr(node, "parent_slot", None) != caller_key or slot == caller_key:
-            continue
-        if len(children) < MAX_SESSION_STATUS_ROWS:
-            children.append(slot)
-        else:
-            overflow = True
-    children.sort()
-    return children, ("incomplete" if reading.incomplete or overflow else "readable")
+    newest: dict[str, int] = {}
+    for record in reading.records:
+        created = int(getattr(record, "created_at", 0) or 0)
+        if record.slot and created > newest.get(record.slot, -1):
+            newest[record.slot] = created
+    children = [
+        slot
+        for slot, node in reading.nodes.items()
+        if getattr(node, "parent_slot", None) == caller_key and slot != caller_key
+    ]
+    children.sort(key=lambda slot: (-newest.get(slot, 0), slot))
+    overflow = len(children) > MAX_SESSION_STATUS_ROWS
+    return children[:MAX_SESSION_STATUS_ROWS], (
+        "incomplete" if reading.incomplete or overflow else "readable"
+    )
 
 
 def _gone_slot_lifecycles(slots: "Sequence[str]") -> dict[str, dict[str, Any]]:
@@ -167,7 +187,9 @@ def _gone_slot_lifecycles(slots: "Sequence[str]") -> dict[str, dict[str, Any]]:
     have finished is cheaper than reading a recycled or mid-turn worker as
     ``closed`` and telling a conductor to stop looking for it.
 
-    Touches disk (one slot-keyed fold per slot), so it is called off the event loop.
+    Touches disk (one slot-keyed fold per slot), so it is called off the event loop,
+    and its cost is linear in *slots*: :func:`created_session_status` hands it at
+    most :data:`MAX_SESSION_STATUS_GONE_ROWS` of them, the newest.
     """
     from kiro_crew.crew_log.projection import read_slot_projection
 
@@ -386,6 +408,10 @@ async def created_session_status(
     any source, and spelling it that way blames a read that completed while
     ``history_omitted`` still reports nothing cut.
 
+    ``closed`` and ``lost`` rows are bounded first, at the newest
+    :data:`MAX_SESSION_STATUS_GONE_ROWS`, because each costs a disk fold and they
+    only accumulate; ``gone_omitted`` counts the older ones, which are not listed.
+
     The ownership fence applies to the rows, not just to the verb: a fenced caller
     (a crew member, a cron, an agent-created session) sees the live sessions it
     created and nothing else, so this verb cannot become a way to enumerate the
@@ -446,6 +472,23 @@ async def created_session_status(
 
     rows: list[dict[str, Any]] = []
     roster = set(tree_children) | set(history_children) | set(live_children)
+    # ENDED rows are bounded before the union is, by their own count. Each one costs
+    # a status fold of its crew log, and a conductor's ended children only grow, so
+    # unbounded, this read's cost would grow with every worker it ever
+    # dispatched. ``tree_children`` is newest first, so the newest ended ones are
+    # kept -- the ones a patrol acts on -- and each still gets its exact
+    # closed/lost fold below. The older ones leave the roster here rather than
+    # after the union cut, so they cannot crowd a live row out of it, and they are
+    # counted in ``gone_omitted``: listing them as ``lost`` would tell a patrol to
+    # re-dispatch finished work, and as ``closed`` would hide a lost worker.
+    #
+    # Taken with no suspension since the live read above, so "ended" here and in
+    # ``gone_slots`` below is the same instant. One that is revived while the fold
+    # runs is missing from this one reply and listed live by the next.
+    ended = [key for key in tree_children if state.get_slot(key) is None]
+    older_ended = ended[MAX_SESSION_STATUS_GONE_ROWS:]
+    roster.difference_update(older_ended)
+    gone_omitted = len(older_ended)
     # The UNION cut is its own fact, with its own field and its own count. It must
     # not be signalled by degrading ``history_state``, which describes the
     # transcript scan alone: a union cut is not a read fault in any source, so that
@@ -465,7 +508,8 @@ async def created_session_status(
     # already projects, so it is a disk fold per gone slot and runs OFF the loop,
     # the same worker-thread discipline the history scan above keeps. Scoped to the
     # retained, tree-attested, now-absent slots so no fold is paid for a row that
-    # will not carry the distinction.
+    # will not carry the distinction -- at most MAX_SESSION_STATUS_GONE_ROWS of them,
+    # since the older ended slots already left the roster.
     gone_slots = [key for key in retained if key in tree_children and state.get_slot(key) is None]
     gone_lifecycles = (
         await asyncio.to_thread(_gone_slot_lifecycles, gone_slots) if gone_slots else {}
@@ -601,6 +645,7 @@ async def created_session_status(
             "history": history_state,
             "history_omitted": history_omitted,
             "roster_omitted": roster_omitted,
+            "gone_omitted": gone_omitted,
         },
     )
     return {
@@ -624,6 +669,11 @@ async def created_session_status(
         # in any source, and no source's quality field describes it. Zero when the
         # whole union was retained.
         "roster_omitted": roster_omitted,
+        # Exact count of ENDED sessions (closed or lost) older than the newest
+        # ``MAX_SESSION_STATUS_GONE_ROWS``, which were neither folded nor listed.
+        # Separate from ``roster_omitted`` because it is a different cut: it is
+        # taken before the union bound, by age, and only from ended sessions.
+        "gone_omitted": gone_omitted,
         "sessions": rows,
     }
 
