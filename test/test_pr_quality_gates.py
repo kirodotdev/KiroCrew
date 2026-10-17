@@ -823,7 +823,6 @@ class TestCrossPlatformScope:
         "path",
         [
             "src/kiro_crew/platform_compat.py",
-            "src/kiro_crew/platform_compat_probe.py",
             "src/kiro_crew/kiro_prerequisite_probe.py",
             "src/kiro_crew/_process_group_supervisor.py",
             "src/kiro_crew/apps/builtins/demo/tests/test_probe.py",
