@@ -878,6 +878,9 @@ class CronService:
         # to, and clobberable by, the others. A dict the caller allocated is seen
         # by that caller alone.
         chat_folder_out = kwargs.pop("chat_folder_transition_out", None)
+        # Not a field: the session making this write, recorded on the
+        # auto-pause-limit audit row (see CronJob.audit_auto_pause_limit_change).
+        audit_actor = kwargs.pop("audit_actor", "") or ""
         with self._file_lock():
             self._sync_for_write()
             for job in self._jobs:
@@ -904,6 +907,7 @@ class CronService:
                 # onto the SAME object (identity is what readers hold), and the
                 # reload-on-change in ``_sync_for_write`` cannot do this, since a
                 # failed save changes nothing on disk.
+                previous_limit = job.auto_pause_after_failures
                 before = copy.copy(job)
                 apply_job_update(job, kwargs, chat_folder_out)
                 try:
@@ -911,6 +915,7 @@ class CronService:
                 except BaseException:
                     job.__dict__.update(before.__dict__)
                     raise
+                job.audit_auto_pause_limit_change(previous_limit, audit_actor)
                 logger.info("Updated cron job %s", job_id)
                 return job
         return None

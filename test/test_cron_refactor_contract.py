@@ -612,6 +612,7 @@ def _full_record() -> dict[str, object]:
         "agent_sequence": ["a1", "a2"],
         "env": {"K": "V"},
         "timeout_secs": 600,
+        "auto_pause_after_failures": 0,
         "strict_schedule": True,
         "script": "",
         "command": "echo hi",

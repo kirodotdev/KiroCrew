@@ -10,6 +10,11 @@ import re
 from typing import Any
 
 from kiro_crew.constants import MAX_SHORT_STRING
+
+# Per-job auto-pause cap: ``cron_service.model`` owns it. Import-safe: the model
+# module pulls in only ``cron_service.schedule`` and ``platform_compat``, neither
+# of which imports validation at module load, so no cycle back into validation.
+from kiro_crew.cron_service.model import _AUTO_PAUSE_MAX
 from kiro_crew.validation_parts.field_engine import FieldSpec, ToolSchema, ValidationError
 from kiro_crew.validation_parts.input_bounds import (
     _JOB_ID_RE,
@@ -93,6 +98,7 @@ CRON_ADD_SCHEMA = ToolSchema(
         FieldSpec("command", str, max_len=5000, pattern=re.compile(r"^[^\x00-\x1f\x7f]*$")),
         FieldSpec("timeout", int, min_val=0, max_val=3600),
         FieldSpec("timeout_secs", int, min_val=1, max_val=86400),
+        FieldSpec("auto_pause_after_failures", int, min_val=0, max_val=_AUTO_PAUSE_MAX),
     ],
     custom_validator=_validate_cron_add_requires_message_or_script,
 )
@@ -189,6 +195,7 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("hide_in_chat", bool),
             FieldSpec("timeout", int, min_val=0, max_val=3600),
             FieldSpec("timeout_secs", int, min_val=1, max_val=86400),
+            FieldSpec("auto_pause_after_failures", int, min_val=0, max_val=_AUTO_PAUSE_MAX),
         ],
     ),
     "cron_remove": CRON_REMOVE_SCHEMA,
