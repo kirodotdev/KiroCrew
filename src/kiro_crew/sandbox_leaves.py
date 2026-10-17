@@ -688,8 +688,8 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # not hidden: the id is random, carries nothing secret, and is already served on
     # ``/api/health``. The only writer is the unsandboxed gateway's first-read mint.
     "gateway_id",
-    # The skill projection's side files (``acp/skill_projection.py``): its publication
-    # lock, the per-process lease records and the ownership sidecars with the view
+    # The skill projection's side files (``acp/skill_projection_parts/side_files.py``): its
+    # publication lock, the per-process lease records and the ownership sidecars with the view
     # ledger. The sidecars and the ledger are an INPUT TO AN AUTHORIZATION DECISION: a
     # conversation stored under a ``kirocrew-skill-view-*`` name resumes under the agent
     # its record maps it to (``source_agent_name``), with that agent's grants, and this

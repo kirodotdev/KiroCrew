@@ -1582,8 +1582,8 @@ def inherited_skill_globs(
     Since kiro-cli 2.7 a custom agent inherits the default skill trees,
     ``~/.kiro/skills`` and the workspace's ``.kiro/skills``, unless
     ``chat.disableInheritingDefaultResources`` turns that off. Native launches
-    turn it off to bound the startup catalog (``acp/skill_projection.py``), so an
-    agent with no ``skill://`` entry of its own would get no skills at all. Crew
+    turn it off to bound the startup catalog (``acp/skill_projection_parts/preparation.py``),
+    so an agent with no ``skill://`` entry of its own would get no skills at all. Crew
     supplies those trees instead, through the same bounded directory and
     ``skill_search`` a mapped agent uses. Returns ``[]`` when the workspace opted
     out of inheritance. *kiro_home_dir* is the kiro-cli home the caller already

@@ -96,6 +96,27 @@ bound in the class (`acp/client_class.py`) under that owner's header, and a new 
 
 ## Native skill startup views
 
+`acp/skill_projection.py` is a mirror facade over the owners in
+`acp/skill_projection_parts/`: every name stays readable and patchable as
+`kiro_crew.acp.skill_projection.<name>`, a patch through the facade reaches every
+owner that binds the name (`kiro_crew._facade_mirror`), the owners log under the
+`kiro_crew.acp.skill_projection` logger, and an exception class an owner defines keeps
+the facade as its `__module__`. An owner imports only the owners above it in this
+table, never the facade; `test/test_skill_projection_facade.py` pins the owner set,
+the layer order and the reach. New projection code goes to the owner whose row names
+its responsibility.
+
+| Projection owner | Owns |
+|---|---|
+| `acp/skill_projection_parts/side_files.py` | the side files under this data home and the protocol over them: their layout and legacy locations, the alias-name shape, the bounded publication lock and its two timeouts, the per-process leases with their liveness scan, and the identity-checked unlinks |
+| `acp/skill_projection_parts/inheritance_overlay.py` | Crew's overlay on `chat.disableInheritingDefaultResources` in a workspace `cli.json`: its keys, the settings read, the recorded preference behind `inherits_default_resources` and the rollback |
+| `acp/skill_projection_parts/view_publication.py` | what a view hands kiro-cli beyond its authored spec (the bounded display text, the search tool) and the in-place rewrite that makes kiro-cli reload it (`announce_alias`) |
+| `acp/skill_projection_parts/view_ownership.py` | which views are this data home's: ownership records, the home tag, the view identity and digest, sidecar and metadata reads, and whether a published copy is current |
+| `acp/skill_projection_parts/view_sources.py` | which agent a skill-view name projects: the in-process map, the view ledger, the sidecar fallback and the resolvers that raise `RetiredSkillView` |
+| `acp/skill_projection_parts/native_projection.py` | the prepared `NativeSkillProjection` and the registry of live projections a prune must keep |
+| `acp/skill_projection_parts/alias_reclaim.py` | reclaiming unused views and their residue (the per-spawn, end-of-projection and boot prunes, the orphan sweeps, the legacy side-file migration) and the read-only censuses the doctor reports |
+| `acp/skill_projection_parts/preparation.py` | `prepare_native_skill_projection` and its view-count ceiling fallback |
+
 Native CLI launches prepare a `skill_projection` after the existing spec freshness
 check. The alias preserves the prompt, approval policy and non-skill resources,
 while Crew retains the authored skill mapping for scoped discovery. A workspace
@@ -782,9 +803,10 @@ startup. Active, foreign-home, unmarked, malformed, unreadable, oversized or
 otherwise uncertain alias files remain on disk.
 
 `kirocrew doctor`'s Agents Directory section reports the census read-only,
-through `census_projected_aliases` in this module, reached over the
+through `census_projected_aliases` in the reclaim owner
+(`acp/skill_projection_parts/alias_reclaim.py`), reached over the
 `agent_sdk.drivers.acp` seam like the doctor's other backend reads, so the
-record shapes stay here; the lease record itself is parsed by the one
+record shapes stay the projection's; the lease record itself is parsed by the one
 `_read_lease_record` the liveness probe also uses, and the data-home identity
 the `foreign_home` split is judged against is resolved inside the census with
 the publisher's own spelling, so no caller can hand it a differently normalised

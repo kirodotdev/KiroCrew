@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -650,7 +651,9 @@ def test_neither_reader_keeps_a_private_copy_of_the_merge_or_the_predicate():
         "_read_mcp_settings(",
     ):
         assert private not in mount
-    projected = inspect.getsource(projection)
+    projected = "".join(
+        inspect.getsource(sys.modules[name]) for name in (projection.__name__, *projection._OWNERS)
+    )
     assert "session_mcp.native_mount_withholding(" in projected
     # The mount is the ONE reader of the settings files: the projection judges the
     # spec entry and reads none of them, by any route.
