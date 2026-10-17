@@ -797,7 +797,7 @@ class TestHookGateKwargs:
         # Slack's EVENT_TOOL_CALL branch: the tool is already executing, the
         # branch cannot reject, and arming the params/diff/is_shell tiers would
         # let a best-effort warning claim to have blocked a running call.
-        "slack/handler.py",
+        "slack/handler_runtime/permission_ladder.py",
     }
     # ``.judge(`` calls that are not a hook-gate consultation, keyed by (site,
     # receiver), so another receiver in the same module is still scanned.
@@ -1043,7 +1043,7 @@ class TestHookGateKwargs:
             "dashboard/handlers/hooks.py",
             "llm_helpers.py",
             "messaging/dispatch.py",
-            "slack/handler.py",
+            "slack/handler_runtime/permission_ladder.py",
             "slack/transport_dispatch.py",
             "subagent_manager/run.py",
             "task_executor.py",
@@ -2094,7 +2094,7 @@ class TestSafeReadFile:
 
 
 class TestShouldAutoApproveSpawn:
-    """Test _should_auto_approve_spawn helper from handler.py."""
+    """Test _should_auto_approve_spawn helper from handler_runtime/permission_ladder.py."""
 
     @staticmethod
     def _spawn_event(**overrides):

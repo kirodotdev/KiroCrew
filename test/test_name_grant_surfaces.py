@@ -162,6 +162,7 @@ class TestLoopSafetyPins:
         from kiro_crew.discord import transport_dispatch as discord_dispatch
         from kiro_crew.messaging import driver
         from kiro_crew.slack import handler as slack_handler
+        from kiro_crew.slack import handler_runtime
         from kiro_crew.slack import transport_dispatch as slack_dispatch
         from kiro_crew.telegram import transport_dispatch as telegram_dispatch
         from kiro_crew.telegram.dispatch import turn_engine as telegram_turn_engine
@@ -176,6 +177,12 @@ class TestLoopSafetyPins:
             for info in pkgutil.iter_modules(chat_turn.__path__)
         ]
         assert owners, "the owner scan found no module, so it is measuring nothing"
+        # The native Slack turn's rungs run in these owners of the handler facade.
+        slack_owners = [
+            importlib.import_module(f"{handler_runtime.__name__}.{info.name}")
+            for info in pkgutil.iter_modules(handler_runtime.__path__)
+        ]
+        assert slack_owners, "the owner scan found no module, so it is measuring nothing"
         for mod in (
             chat_runner,
             *owners,
@@ -185,6 +192,7 @@ class TestLoopSafetyPins:
             tool_permission,
             driver,
             slack_handler,
+            *slack_owners,
             llm_helpers,
             slack_dispatch,
             discord_dispatch,
@@ -693,10 +701,12 @@ class TestSpawnRungEventIdentity:
         # check this rung was hardened against.
         import importlib
         import inspect
+        import pkgutil
 
         from kiro_crew.discord import transport_dispatch as discord_dispatch
         from kiro_crew.messaging import dispatch, driver
         from kiro_crew.slack import handler as slack_handler
+        from kiro_crew.slack import handler_runtime
         from kiro_crew.slack import transport_dispatch as slack_dispatch
         from kiro_crew.telegram import transport_dispatch as telegram_dispatch
         from kiro_crew.telegram.dispatch import turn_engine as telegram_turn_engine
@@ -704,10 +714,17 @@ class TestSpawnRungEventIdentity:
 
         # The Discord dispatcher is its facade and the owners it is composed from.
         discord_owners = [importlib.import_module(o) for o in discord_dispatch._OWNERS]
+        # The native Slack turn's spawn rung runs in an owner of the handler facade.
+        slack_owners = [
+            importlib.import_module(f"{handler_runtime.__name__}.{info.name}")
+            for info in pkgutil.iter_modules(handler_runtime.__path__)
+        ]
+        assert slack_owners, "the owner scan found no module, so it is measuring nothing"
         for mod in (
             dispatch,
             driver,
             slack_handler,
+            *slack_owners,
             slack_dispatch,
             discord_dispatch,
             *discord_owners,

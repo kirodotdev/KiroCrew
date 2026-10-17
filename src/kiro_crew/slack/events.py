@@ -879,7 +879,7 @@ async def _handle_sessions(
     # production this branch is unreachable today. The check is still
     # required by the security-controls rule (deny-by-default) and
     # protects against future refactors that bypass the dispatcher gate.
-    # The ``sessions`` keyword path applies the same check at handler.py
+    # The ``sessions`` keyword path applies the same check in handler_runtime/dispatch.py
     # before delegating to ``_handle_sessions_command``.
     if not (is_owner(caller_id) or is_allowed_user(caller_id)):
         sel().log_api_access(
@@ -2110,7 +2110,7 @@ async def _dispatch_queued(
                 task_runner=orch.task_runner,
                 cron_service=orch.cron_svc,
                 # Live-read per message (parity with native handle_message, which
-                # loads config at handler.py:2661/2683): orch._cfg is captured at
+                # loads config in handler_runtime/turn.py): orch._cfg is captured at
                 # startup, so reading it here would make settings-UI toggle saves
                 # silently inert until restart.
                 reactions_enabled=KiroCrewConfig.load().slack.reactions_enabled,

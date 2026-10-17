@@ -31,7 +31,12 @@ async def test_status_keyword_posts_stats_summary():
 
 
 def test_handler_functions_do_not_import_current_context_locally():
-    tree = ast.parse(Path(h.__file__).read_text(encoding="utf-8"))
+    # The facade and the handler_runtime owners its functions run in, as one tree.
+    paths = [Path(h.__file__), *sorted((Path(h.__file__).parent / "handler_runtime").glob("*.py"))]
+    tree = ast.Module(
+        body=[node for path in paths for node in ast.parse(path.read_text(encoding="utf-8")).body],
+        type_ignores=[],
+    )
     offenders = [
         f"{fn.name}:{node.lineno}"
         for fn in ast.walk(tree)

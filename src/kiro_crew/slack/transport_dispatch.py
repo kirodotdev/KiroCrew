@@ -1362,7 +1362,7 @@ async def handle_message_transport(
         # setup (A trusts B, B trusts A) an error reply is itself a
         # bot-authored event the peer admits, so replying would open an
         # unbounded error-reply ping-pong. Mirrors the native path's guard in
-        # handler.py (from_trusted_bot and _had_error). The thread STATUS is
+        # handler_runtime/delivery.py (from_trusted_bot and _had_error). The thread STATUS is
         # cleared unconditionally — skipping it would leave a stale "working"
         # status pinned to the thread forever.
         if from_trusted_bot:

@@ -356,7 +356,8 @@ task whose outcome is read when it settles, and the cancellation re-raises at
 once — the cancellation is the caller's deadline, so nothing waits past it.
 
 **The messaging surfaces steer the same notice.** The native Slack handler
-(`slack/handler.py`) and the channel-neutral `messaging.TurnDriver` each carry
+(`slack/handler_runtime/permission_ladder.py`) and the channel-neutral
+`messaging.TurnDriver` each carry
 a thin `_steer_host_deny` that redacts the reason and forwards to
 `deny_notice.steer_refusal_notice`; the channel agent stream (`channel.py`)
 reuses `llm_helpers`' helper (passing the rendered tool name as `title`), since

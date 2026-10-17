@@ -298,7 +298,10 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "slack/gateway_runtime/result_egress.py": 1,
     "slack/gateway_runtime/subagent_injection.py": 1,
     "slack/gateway_runtime/turn_approvals.py": 2,
-    "slack/handler.py": 3,
+    # Owners composed into slack/handler.py (the reply decorator's re-redaction, the
+    # sessions keyword's collector failure): the same handler process as the facade.
+    "slack/handler_runtime/delivery.py": 2,
+    "slack/handler_runtime/dispatch.py": 1,
     "voice_reply.py": 4,
 }
 

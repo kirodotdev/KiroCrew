@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
+from test_handler_turn import SLACK_TURN_FUNCTIONS
 
 from kiro_crew.dashboard.chat_utils import (
     mint_options_token,
@@ -169,7 +170,7 @@ class TestTheTurnIsDurableBeforeItsControlGoesOut:
 
         from kiro_crew.slack import handler
 
-        src = inspect.getsource(handler.handle_message)
+        src = "".join(inspect.getsource(getattr(handler, n)) for n in SLACK_TURN_FUNCTIONS)
         assert "if options and thread_ts" not in src, (
             "gating the token mint on thread_ts strands every root-thread control"
         )
@@ -194,7 +195,7 @@ class TestTheTurnIsDurableBeforeItsControlGoesOut:
 
         from kiro_crew.slack import handler
 
-        src = inspect.getsource(handler.handle_message)
+        src = "".join(inspect.getsource(getattr(handler, n)) for n in SLACK_TURN_FUNCTIONS)
         persist = src.find("save_conversation_turn_off_loop(")
         mint = src.find("mint_options_token")
         assert persist != -1, "the turn must still be persisted in handle_message"
@@ -294,15 +295,20 @@ class TestTheAnswerGoesToTheConversationThatAsked:
         prevent, in the opposite direction.
 
         Structural rather than end-to-end: the gate sits ~50 lines inside
-        ``handle_message``'s try block, past ``sessions.get_or_create``, so
+        ``_run_turn``'s try block, past ``sessions.get_or_create``, so
         reaching it needs the whole turn pipeline stood up. What broke was the
         GATE, so the gate is what this pins.
         """
         import inspect
+        from pathlib import Path
 
         from kiro_crew.slack import handler
 
-        src = inspect.getsource(handler)
+        # The facade and the handler_runtime owners its turn runs in, as one text.
+        src = inspect.getsource(handler) + "".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted((Path(handler.__file__).parent / "handler_runtime").glob("*.py"))
+        )
         assert "if thread_owner_key is None and not route_pinned:" in src, (
             "a pinned answer must never claim the thread, however empty the index"
         )

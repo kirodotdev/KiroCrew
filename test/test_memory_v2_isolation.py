@@ -1553,7 +1553,7 @@ class TestTheChannelPipelineReadsTheSessionsOwnSilo:
 #: ``EXPECTED_BACKLOG`` counts what is still unconverted, so the two halves together
 #: leave no site unaccounted for.
 _CONVERTED_TURN_SURFACES: tuple[tuple[str, str], ...] = (
-    ("src/kiro_crew/slack/handler.py", "candidate_key"),
+    ("src/kiro_crew/slack/handler_runtime/turn.py", "candidate_key"),
     ("src/kiro_crew/slack/transport_dispatch.py", "session_key"),
     ("src/kiro_crew/telegram/dispatch/turn_engine.py", "session_key"),
     ("src/kiro_crew/messaging/dispatch.py", "session_key"),
