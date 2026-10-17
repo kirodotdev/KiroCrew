@@ -188,7 +188,7 @@ class TestAgentSpecReadsAreHardened:
         monkeypatch.setattr(
             agent_discovery,
             "_read_spec_bytes",
-            lambda _p: (_ for _ in ()).throw(FileTooLargeError()),
+            lambda _p, **_kwargs: (_ for _ in ()).throw(FileTooLargeError()),
         )
         assert KiroCrewConfig._resolve_named_agent_model("huge", agents_dir=tmp_path) == ""
 
@@ -233,7 +233,7 @@ class TestAgentSpecReadsAreHardened:
         monkeypatch.setattr(loader_mod, "kiro_agents_dir", lambda: tmp_path)
         seen = {}
 
-        def _refusing_read(_path):
+        def _refusing_read(_path, **_kwargs):
             seen["called"] = True
             raise FileTooLargeError()
 

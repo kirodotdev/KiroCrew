@@ -188,6 +188,7 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
     "roster": tuple("""
         _roster_mask _carries_mask _roster_avatar _name_would_be_masked _agent_roster_row
         """.split()),
+    "roster_project_path": (),
     "installed_agents": tuple("""
         _namespaced_agent_file_exists api_agents_installed api_kirocrew_agents_sync
         _do_agents_sync

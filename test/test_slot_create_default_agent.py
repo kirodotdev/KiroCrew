@@ -243,6 +243,115 @@ async def test_unloadable_config_still_creates_with_empty_agent(
     assert dashboard_state._slots["no-config"].agent == ""
 
 
+@pytest.mark.asyncio
+async def test_folder_create_keeps_missing_agent_verbatim_not_rewritten(
+    dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A folder create whose saved default_agent does not resolve keeps the name
+    VERBATIM on the slot — the create layer never permanently rewrites it to the
+    default (a transient discovery failure would otherwise replace a valid
+    binding for good). Keeping it verbatim avoids a create-time fault and lets
+    the binding recover automatically if the agent returns; if the agent is
+    genuinely gone, dispatch errors out cleanly (see the dispatch-contract
+    test) rather than silently running a different agent."""
+    cfg = _alias_config(default={"kiro_agent": "kirocrew"})  # default_agent="default"
+    monkeypatch.setattr(chat_handlers, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **k: None)
+    # A real folder so folder_id validates and the create is folder-originated.
+    dashboard_state._folders = [
+        {"id": "fld", "name": "Payments", "order": 0, "default_agent": "gone-agent"}
+    ]
+    await _create_slot(
+        dashboard_state,
+        {"name": "in-folder", "agent": "gone-agent", "folder_id": "fld"},
+    )
+    # The slot keeps the requested agent VERBATIM — the create layer never
+    # permanently rewrites it (a transient discovery failure would otherwise
+    # replace a valid binding for good). It recovers automatically if the agent
+    # returns; if it is genuinely gone, dispatch errors out cleanly at run time
+    # (fail-loud contract) rather than silently starting a different agent.
+    assert dashboard_state._slots["in-folder"].agent == "gone-agent"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declares_project", [True, False])
+async def test_folder_create_scopes_resolution_to_the_folders_project_dir(
+    dashboard_state: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, declares_project: bool
+) -> None:
+    """A folder-originated create resolves bindings in the FOLDER's project scope.
+
+    The picker scopes its rows to the folder's project dir, so the create has to
+    resolve the pick in that same scope or the two disagree: a project-declared
+    agent the picker offered would resolve as absent here and be logged as
+    unresolved. A create carries no slot yet, so the folder is the only place
+    that scope can come from.
+
+    Parametrised over a folder that declares a project and one that does not,
+    because the scope must be the directory in the first case and ``None`` --
+    global rows only, never ``""`` -- in the second. ``resolve_agent_bindings``
+    takes ``project_dir`` as its third POSITIONAL parameter, so this also pins
+    that the value lands in the project slot rather than silently becoming
+    something else.
+    """
+    project_dir = tmp_path / "repo"
+    project_dir.mkdir()
+    cfg = _alias_config(default={"kiro_agent": "kirocrew"})
+    monkeypatch.setattr(chat_handlers, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **k: None)
+    folder: dict[str, Any] = {"id": "fld", "name": "Payments", "order": 0}
+    if declares_project:
+        folder["project_dir"] = str(project_dir)
+    dashboard_state._folders = [folder]
+
+    original = chat_handlers.resolve_agent_bindings
+    seen: list[Any] = []
+
+    def resolve(config, agent=None, project=None, **kwargs):
+        seen.append(project)
+        return original(config, agent, project, **kwargs)
+
+    monkeypatch.setattr(chat_handlers, "resolve_agent_bindings", resolve)
+    await _create_slot(
+        dashboard_state, {"name": "in-folder", "agent": "default", "folder_id": "fld"}
+    )
+
+    assert seen, "the create never resolved bindings, so the scope was not exercised"
+    assert seen[0] == (str(project_dir) if declares_project else None)
+
+
+@pytest.mark.asyncio
+async def test_resolver_returns_default_bindings_but_flags_absent_agent_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """resolve_agent_bindings never faults on an absent agent: it returns the
+    configured DEFAULT kiro agent's bindings with ``requested_resolved=False``.
+    That flag — not a substituted agent — is the signal dispatch keys off: for a
+    non-app slot with a set-but-unresolved agent, ``chat_runner`` raises
+    ``UnknownMemoryStore`` ("... is unavailable") rather than silently running
+    the default, so a chat never runs under a different agent than configured.
+    The create layer relies on the same flag to keep the name verbatim."""
+    from kiro_crew.config.loader import resolve_agent_bindings
+
+    cfg = _alias_config(default={"kiro_agent": "kirocrew"})
+    bindings = resolve_agent_bindings(cfg, "gone-agent")
+    assert bindings.requested_resolved is False
+    assert bindings.kiro_agent == "kirocrew"  # the default's kiro agent, not a fault
+
+
+@pytest.mark.asyncio
+async def test_non_folder_create_keeps_unresolvable_agent_verbatim(
+    dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A create keeps a caller-named agent VERBATIM even if it does not currently
+    resolve, preserving the user's explicit intent against momentary resolution
+    staleness; dispatch resolves the default at run time."""
+    cfg = _alias_config(default={"kiro_agent": "kirocrew"})
+    monkeypatch.setattr(chat_handlers, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **k: None)
+    await _create_slot(dashboard_state, {"name": "no-folder", "agent": "gone-agent"})
+    assert dashboard_state._slots["no-folder"].agent == "gone-agent"
+
+
 # ── The same-binding relaxation on /api/chat's 409 guard ──
 #
 # Stamping the resolved default alias at creation means a programmatic first
@@ -453,11 +562,11 @@ async def test_create_resolves_off_loop_without_adopting_a_concurrent_slot(
     calls = []
     replacement = _ChatSlot("offloop-create", agent="another-owner")
 
-    def resolve(config, agent, **kwargs):
+    def resolve(config, agent, project=None, **kwargs):
         with pytest.raises(RuntimeError, match="no running event loop"):
             asyncio.get_running_loop()
         calls.append(agent)
-        result = original(config, agent, **kwargs)
+        result = original(config, agent, project, **kwargs)
         if replace_slot:
             loop.call_soon_threadsafe(
                 dashboard_state._slots.__setitem__, replacement.key, replacement

@@ -78,9 +78,9 @@ async def test_the_agent_config_read_runs_off_the_event_loop(
     read_threads: list[int] = []
     real_read = agent_discovery._read_spec_bytes
 
-    def recording_read(real: Path) -> bytes:
+    def recording_read(real: Path, **kwargs: Any) -> bytes:
         read_threads.append(threading.get_ident())
-        return real_read(real)
+        return real_read(real, **kwargs)
 
     monkeypatch.setattr(agent_discovery, "_read_spec_bytes", recording_read)
 

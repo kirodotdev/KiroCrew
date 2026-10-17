@@ -55,6 +55,7 @@ from kiro_crew.dashboard.chat_folders import (
     create_folder_record,
 )
 from kiro_crew.dashboard.create_rate_limit import FOLDER_CREATE, allow_create
+from kiro_crew.dashboard.handlers import source_providers
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.project_scan import (
@@ -485,7 +486,12 @@ def _scaffold_response(
 
 
 async def _create_selection(
-    state: DashboardState, tree: CandidateTree, selected: set[str], *, request_app: str
+    state: DashboardState,
+    tree: CandidateTree,
+    selected: set[str],
+    *,
+    request_app: str,
+    is_owner: bool,
 ) -> dict[str, Any]:
     """Create the scan root's folder and the selected candidates beneath it.
 
@@ -525,6 +531,7 @@ async def _create_selection(
                 name=folder_display_name(tree.root),
                 project_dir=tree.root,
                 request_app=request_app,
+                is_owner=is_owner,
                 unique_project_dir=True,
                 require_resolved_project_dir=True,
             )
@@ -602,6 +609,7 @@ async def _create_selection(
                 ),
                 project_dir=candidate.path,
                 request_app=request_app,
+                is_owner=is_owner,
                 unique_project_dir=True,
                 require_resolved_project_dir=True,
             )
@@ -747,7 +755,13 @@ async def api_chat_folders_scaffold(request: web.Request) -> web.Response:
             status=400,
         )
 
-    payload = await _create_selection(state, tree, set(selected), request_app=request_app)
+    payload = await _create_selection(
+        state,
+        tree,
+        set(selected),
+        request_app=request_app,
+        is_owner=source_providers.is_owner_dashboard_request(request),
+    )
     if payload["created"]:
         state.push_slots_update()
     sel().log_api_access(
