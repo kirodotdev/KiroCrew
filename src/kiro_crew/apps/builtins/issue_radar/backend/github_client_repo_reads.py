@@ -192,6 +192,31 @@ def list_recent_open_issues(
     return _run_gh_api(path, _ISSUE_POLL_JQ, timeout=timeout, paginate=False)
 
 
+# The crew wake sweep's comment read: the repository's newest conversation comments
+# (issues and PRs share the issue-comments endpoint on GitHub, so one call covers both).
+_REPO_COMMENT_JQ = (
+    '.[] | {id: (.id | tostring), number: (.issue_url | split("/") | last | tonumber), '
+    'is_pr: (.html_url | test("/pull/")), actor: (.user.login // ""), '
+    'created_at: .created_at, body: ((.body // "")[:4000])}'
+)
+
+
+def list_repo_comments_since(
+    owner: str, repo: str, since: str, limit: int = 100, *, timeout: float = GH_TIMEOUT_SEC
+) -> list[dict]:
+    """Issue and PR conversation comments updated at or after *since*, oldest first.
+
+    ONE page of ``issues/comments`` for the whole repository: GitHub files a PR's
+    conversation comments as issue comments, so this is every thread at once. Returns
+    ``[{id, number, is_pr, actor, created_at, body}]``. *since* is an ISO-8601 time.
+    """
+    lim = max(1, min(int(limit), 100))
+    path = f"repos/{owner}/{repo}/issues/comments?sort=created&direction=asc&per_page={lim}"
+    if since:
+        path += f"&since={quote(str(since), safe='')}"
+    return _run_gh_api(path, _REPO_COMMENT_JQ, timeout=timeout, paginate=False)
+
+
 # The repo picker's list: repos the authenticated user personally CONTRIBUTED
 # to recently, newest contribution first.
 #

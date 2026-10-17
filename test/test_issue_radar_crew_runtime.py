@@ -530,7 +530,8 @@ class TestProviderVocabulary(unittest.TestCase):
         source = inspect.getsource(cr.sweep_repo)
         self.assertIn("watchdog_cycle(state, key.owner, key.repo, crews, scope, key)", source)
         # Wakes go through one helper, so the key it forwards is pinned there.
-        self.assertIn("_wake_for(state, key,", source)
+        self.assertIn("_wake_and_settle(state, key,", source)
+        self.assertIn("_wake_for(state, key,", inspect.getsource(cr._wake_and_settle))
         self.assertRegex(
             inspect.getsource(cr._wake_for),
             r"wake_crew\(\s*state,\s*key\.owner,\s*key\.repo,[\s\S]*?\bkey,",

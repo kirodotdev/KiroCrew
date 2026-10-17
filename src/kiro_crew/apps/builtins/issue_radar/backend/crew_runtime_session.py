@@ -42,10 +42,27 @@ APP_NAME = "issue-radar"
 
 
 #: Crews get a turn on this idle gap when the sweep has nothing to report. The
-#: watcher is the real scheduler (it fires on an actual signal); this is the
-#: fallback clock that lets an idle crew pick up NEW work, so it is deliberately
-#: slow. ``autonudge`` clamps it to [15s, 24h].
+#: watcher is the real scheduler (it fires on an actual signal, new work included);
+#: this is the fallback clock for whatever the watcher cannot see, so it is
+#: deliberately slow. The repo setting ``crew_idle_secs`` overrides it
+#: (:func:`crew_idle_secs`); ``autonudge`` clamps it to [15s, 24h].
 DEFAULT_IDLE_SECS = 300
+
+
+async def crew_idle_secs(owner: str, repo: str, root: Path | None = None) -> int:
+    """The repo's fallback idle gap: the ``crew_idle_secs`` setting, else the default.
+
+    Read fresh on every arm and every watchdog pass, so an operator who changes the
+    setting sees it applied to running crews within one poll, with no restart.
+    """
+    try:
+        settings = await asyncio.to_thread(partial(crew_store.read_settings, owner, repo, root))
+        value = int(settings.get("crew_idle_secs") or DEFAULT_IDLE_SECS)
+    except Exception:
+        logger.debug("issue-radar: reading crew_idle_secs failed", exc_info=True)
+        return DEFAULT_IDLE_SECS
+    low, high = crew_store.CREW_IDLE_SECS_RANGE
+    return max(low, min(high, value))
 
 
 # ── session launch / attach ─────────────────────────────────────────────────
@@ -329,7 +346,7 @@ async def launch_crew(
     await svc.add(
         slot_key=slot.key,
         message=await compose_turn_prompt_async(slot, owner, repo, crew, root, key),
-        idle_secs=DEFAULT_IDLE_SECS,
+        idle_secs=await crew_idle_secs(owner, repo, root),
         max_cycles=0,
         stop_sentinel_path=str(stop_sentinel_path(owner, repo, str(crew.get("id")), root)),
         admission_check=lambda: state.get_slot(slot.key) is slot,

@@ -8,6 +8,7 @@ case. The shared fakes and autouse fixtures live in ``issue_radar_crew_runtime_h
 """
 
 import asyncio
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -36,6 +37,7 @@ from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.apps.builtins.issue_radar.backend import provider
 from kiro_crew.apps.builtins.issue_radar.backend import store as store_mod
 from kiro_crew.apps.builtins.issue_radar.backend import watch as watch_mod
+from kiro_crew.safety_override import reset_singleton
 
 _KEY = provider.key_from_parts(OWNER, REPO)
 
@@ -688,12 +690,14 @@ class TestSweep(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cr.read_signals(OWNER, REPO, self.root), {})
 
     async def test_recheck_cadence_is_phase_aware(self):
-        self.assertLess(cr.RECHECK_SEC["awaiting-ci"], cr.RECHECK_SEC["awaiting-reply"])
+        self.assertLess(cr.RECHECK_SEC["awaiting-ci"], cr.RECHECK_SEC["implementing"])
         stored = {"checked_at": 1000.0}
         self.assertTrue(cr._is_due({"phase": "awaiting-ci"}, stored, 1000.0 + 61))
-        self.assertFalse(cr._is_due({"phase": "awaiting-reply"}, stored, 1000.0 + 61))
+        self.assertFalse(cr._is_due({"phase": "implementing"}, stored, 1000.0 + 61))
+        # A requester's reply is the conversation the crew is in: read every minute.
+        self.assertTrue(cr._is_due({"phase": "awaiting-reply"}, stored, 1000.0 + 61))
         # A mark in the future (clock correction) must not park the item forever.
-        self.assertTrue(cr._is_due({"phase": "awaiting-reply"}, stored, 900.0))
+        self.assertTrue(cr._is_due({"phase": "implementing"}, stored, 900.0))
 
     async def test_two_signalling_items_wake_the_crew_once_with_both_reasons(self):
         crew = _crew(self.root, unattended=True)
@@ -1578,3 +1582,365 @@ class TestHumanAnswer(unittest.IsolatedAsyncioTestCase):
             "2026-10-16T10:00:00.123000Z",
         )
         self.assertEqual(cs.normalize_forge_time("yesterday"), "")
+
+
+# ── new work and mentions ───────────────────────────────────────────────────
+
+
+_OLD = "2020-01-01T00:00:00Z"
+#: Later than any cursor a test can seed from the real clock.
+_LATER = "2099-01-01T00:00:00Z"
+_LATEST = "2099-01-02T00:00:00Z"
+
+
+class _WakeClient(_FakeClient):
+    """The forge as the new-work and mention detection reads it (GitLab shape)."""
+
+    def __init__(self, login="crew-bot"):
+        super().__init__()
+        self.login = login
+        self.open: list[dict[str, Any]] = []
+        self.pulls: list[dict[str, Any]] = []
+        self.notes: dict[tuple[int, bool], list[dict[str, Any]]] = {}
+
+    def add_issue(self, number, labels=(), updated_at=_OLD):
+        self.open = [i for i in self.open if i["number"] != number]
+        self.open.append({"number": number, "labels": list(labels), "updated_at": updated_at})
+
+    def note(self, number, note_id, actor, body, *, pr=False, at=_LATER):
+        self.notes.setdefault((number, pr), []).append(
+            {"id": str(note_id), "actor": actor, "created_at": at, "body": body}
+        )
+        rows = self.pulls if pr else self.open
+        for row in rows:
+            if row["number"] == number:
+                row["updated_at"] = at
+                return
+        rows.append({"number": number, "labels": [], "updated_at": at})
+
+    def get_current_login(self, **kw):
+        self.calls.append("login")
+        return self.login
+
+    def list_open_issues_first_page(self, owner, repo, **kw):
+        self.calls.append("open-issues")
+        return [dict(i) for i in self.open]
+
+    def list_open_pulls_first_page(self, owner, repo, **kw):
+        self.calls.append("open-pulls")
+        return [dict(p) for p in self.pulls]
+
+    def list_thread_comments(self, owner, repo, number, *, pr=False, **kw):
+        self.calls.append(f"notes:{'!' if pr else '#'}{number}")
+        return [dict(n) for n in self.notes.get((number, pr), [])]
+
+
+class TestNewWorkWakes(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.wake_result = True
+
+    async def _sweep(self, client, key=_KEY):
+        wake = mock.AsyncMock(side_effect=lambda *a, **k: self.wake_result)
+        with (
+            mock.patch.object(provider, "client_for", return_value=client),
+            mock.patch.object(cr.provider, "client_for", return_value=client),
+            mock.patch.object(cr, "wake_crew", new=wake),
+        ):
+            woken = await cr.sweep_repo(_app(_FakeState()), key, self.root)
+        return woken, wake
+
+    @staticmethod
+    def _reasons(wake) -> list[str]:
+        return [call.args[4] for call in wake.await_args_list]
+
+    async def test_a_scope_label_wakes_once_after_a_silent_first_look(self):
+        crew = _crew(self.root, labels=["Bug"])
+        client = _WakeClient()
+        client.add_issue(5, ["bug"])
+        woken, wake = await self._sweep(client)
+        # First observation: the backlog is recorded, nobody is woken.
+        self.assertEqual(woken, {})
+        wake.assert_not_awaited()
+
+        client.add_issue(6, ["bug", "ui"])
+        client.add_issue(7, ["docs"])
+        woken, wake = await self._sweep(client)
+        self.assertEqual(woken, {crew["id"]: [cr.SIG_SCOPE_LABEL]})
+        self.assertEqual(self._reasons(wake), ["#6 scope-label"])
+
+        woken, wake = await self._sweep(client)
+        self.assertEqual(woken, {})
+        wake.assert_not_awaited()
+
+    async def test_claimed_needs_human_skipped_and_own_issues_wake_nobody(self):
+        crew = _crew(self.root, labels=["bug"])
+        client = _WakeClient()
+        await self._sweep(client)
+        off_loop(
+            cs.commit_work_progress,
+            OWNER,
+            REPO,
+            crew["id"],
+            8,
+            {"phase": "skipped"},
+            "skip",
+            "duplicate of #2",
+            skip_reason="duplicate",
+            skip_scope="duplicate",
+            root=self.root,
+            session_id=_unit_for(crew["id"]),
+        )
+        _item(self.root, crew["id"], 9, phase="claimed")
+        client.add_issue(6, ["bug", cr.CLAIM_LABEL])
+        client.add_issue(7, ["bug", "crew: needs human"])
+        client.add_issue(8, ["bug"])
+        client.add_issue(9, ["bug"])
+        client.add_issue(10, ["bug"])
+
+        woken, wake = await self._sweep(client)
+
+        self.assertEqual(self._reasons(wake), ["#10 scope-label"])
+
+    async def test_a_busy_crew_is_woken_again_next_sweep(self):
+        crew = _crew(self.root, labels=["bug"])
+        client = _WakeClient()
+        await self._sweep(client)
+        client.add_issue(6, ["bug"])
+
+        self.wake_result = False  # mid-turn: the wake is dropped
+        _, wake = await self._sweep(client)
+        self.assertEqual(self._reasons(wake), ["#6 scope-label"])
+
+        self.wake_result = True
+        woken, wake = await self._sweep(client)
+        self.assertEqual(self._reasons(wake), ["#6 scope-label"])
+        self.assertIn(crew["id"], woken)
+
+        _, wake = await self._sweep(client)
+        wake.assert_not_awaited()
+
+    async def test_an_empty_scope_crew_wakes_for_a_new_issue(self):
+        crew = _crew(self.root)
+        client = _WakeClient()
+        client.add_issue(5, ["bug"])
+        _, wake = await self._sweep(client)
+        wake.assert_not_awaited()
+
+        client.add_issue(6, [])
+        client.add_issue(7, [cr.CLAIM_LABEL])
+        woken, wake = await self._sweep(client)
+        self.assertEqual(woken, {crew["id"]: [cr.SIG_NEW_ISSUE]})
+        self.assertEqual(self._reasons(wake), ["#6 new-issue"])
+        # An old issue gaining labels is not new to a crew with no scope.
+        client.add_issue(5, ["bug", "ui"], updated_at=_LATER)
+        _, wake = await self._sweep(client)
+        wake.assert_not_awaited()
+
+    async def test_a_mention_wakes_the_crew_and_names_the_comment(self):
+        crew = _crew(self.root)
+        client = _WakeClient()
+        client.add_issue(5)
+        _, wake = await self._sweep(client)
+        # The cursor is seeded on first sight: no thread is read yet.
+        self.assertFalse([c for c in client.calls if c.startswith("notes:")])
+
+        client.note(5, 101, "alice", "@Crew-Bot why was this skipped?")
+        client.note(5, 102, "bob", "@crew-botanist unrelated")
+        client.note(3, 7, "alice", "cc @crew-bot", pr=True, at=_LATEST)
+        key = provider.key_from_parts(OWNER, REPO, "gitlab")
+        woken, wake = await self._sweep(client, key)
+
+        self.assertEqual(woken, {crew["id"]: [cr.SIG_ASKED, cr.SIG_ASKED]})
+        self.assertEqual(self._reasons(wake), ["#5 asked 101; !3 asked 7"])
+
+        _, wake = await self._sweep(client, key)
+        wake.assert_not_awaited()
+
+    async def test_the_crews_own_mention_wakes_nobody(self):
+        _crew(self.root)
+        client = _WakeClient()
+        client.add_issue(5)
+        await self._sweep(client)
+        client.note(5, 101, "crew-bot", "Answered above, @crew-bot out.")
+
+        _, wake = await self._sweep(client)
+
+        wake.assert_not_awaited()
+
+    async def test_a_mention_on_a_busy_crew_stays_pending(self):
+        crew = _crew(self.root)
+        client = _WakeClient()
+        client.add_issue(5)
+        await self._sweep(client)
+        client.note(5, 101, "alice", "@crew-bot ?")
+
+        self.wake_result = False
+        await self._sweep(client)
+        self.wake_result = True
+        woken, wake = await self._sweep(client)
+
+        self.assertEqual(self._reasons(wake), ["#5 asked 101"])
+        self.assertIn(crew["id"], woken)
+        _, wake = await self._sweep(client)
+        wake.assert_not_awaited()
+
+    async def test_a_mention_goes_to_the_crew_whose_scope_matches(self):
+        _crew(self.root, name="Andromeda", labels=["ui"])
+        backend = _crew(self.root, name="Bode", labels=["api"])
+        client = _WakeClient()
+        client.add_issue(5, ["api"])
+        await self._sweep(client)
+        client.note(5, 101, "alice", "@crew-bot which endpoint?")
+
+        _, wake = await self._sweep(client)
+
+        self.assertEqual([c.args[3]["id"] for c in wake.await_args_list], [backend["id"]])
+
+    async def test_github_reads_every_thread_in_one_call(self):
+        crew = _crew(self.root)
+        client = _WakeClient()
+        client.list_thread_comments = mock.Mock(side_effect=AssertionError("GitLab path"))
+        client.list_repo_comments_since = mock.Mock(return_value=[])
+        await self._sweep(client)
+        client.list_repo_comments_since.return_value = [
+            {
+                "id": "c1",
+                "number": 5,
+                "is_pr": True,
+                "actor": "alice",
+                "created_at": _LATER,
+                "body": "@crew-bot ping",
+            },
+        ]
+
+        woken, wake = await self._sweep(client)
+
+        self.assertEqual(self._reasons(wake), ["#5 asked c1"])
+        self.assertIn(crew["id"], woken)
+        self.assertEqual(client.list_repo_comments_since.call_count, 1)
+
+    def test_mentions_match_the_whole_username(self):
+        self.assertTrue(cr.mentions("hey @crew-bot.", "crew-bot"))
+        self.assertTrue(cr.mentions("(@CREW-BOT)", "crew-bot"))
+        self.assertFalse(cr.mentions("@crew-bot2 hi", "crew-bot"))
+        self.assertFalse(cr.mentions("mail me at x@crew-bot", "crew-bot"))
+        self.assertFalse(cr.mentions("@crew-bot", ""))
+
+
+class TestWakeReads(unittest.TestCase):
+    """The client reads the new-work sweep adds: the query each builds, and its shape."""
+
+    def test_gitlab_notes_drop_system_notes_and_read_one_page(self):
+        from kiro_crew.apps.builtins.issue_radar.backend import gitlab_client as gl
+
+        notes = [
+            {
+                "id": 2,
+                "system": False,
+                "author": {"username": "bob"},
+                "created_at": "b",
+                "body": "@x",
+            },
+            {
+                "id": 1,
+                "system": True,
+                "author": {"username": "bot"},
+                "created_at": "a",
+                "body": "added",
+            },
+            {
+                "id": 0,
+                "system": False,
+                "author": {"username": "amy"},
+                "created_at": "a",
+                "body": "hi",
+            },
+        ]
+        with mock.patch.object(gl, "_glab_api", return_value=notes) as api:
+            rows = gl.list_thread_comments("g", "p", 3, pr=True)
+        path = api.call_args.args[0]
+        self.assertIn("/merge_requests/3/notes?", path)
+        self.assertNotIn("paginate", api.call_args.kwargs)
+        self.assertEqual([r["id"] for r in rows], ["0", "2"])
+        self.assertEqual(rows[1]["actor"], "bob")
+
+    def test_gitlab_thread_notes_keep_a_bounded_body(self):
+        from kiro_crew.apps.builtins.issue_radar.backend import gitlab_client as gl
+        from kiro_crew.apps.builtins.issue_radar.backend import gitlab_client_crew_reads as reads
+
+        notes = [
+            {"id": 1, "author": {"username": "amy"}, "created_at": "a", "body": "x" * 9000},
+            {"id": 2, "system": True, "body": "added label"},
+            {"author": {"username": "bob"}, "body": "no id"},
+        ]
+        with mock.patch.object(gl, "_glab_api", return_value=notes) as api:
+            rows = gl.list_thread_comments("g", "p", 3, pr=True)
+        self.assertIn("/merge_requests/3/notes?", api.call_args.args[0])
+        self.assertEqual([r["id"] for r in rows], ["1"])
+        self.assertEqual(len(rows[0]["body"]), reads.NOTE_BODY_MAX)
+
+    def test_github_comments_since_is_one_page_with_an_encoded_cursor(self):
+        from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
+
+        with mock.patch.object(gh, "_run_gh_api", return_value=[]) as api:
+            gh.list_repo_comments_since("o", "r", "2026-10-17T10:00:00Z")
+        path = api.call_args.args[0]
+        self.assertTrue(path.startswith("repos/o/r/issues/comments?"))
+        self.assertIn("since=2026-10-17T10%3A00%3A00Z", path)
+        self.assertFalse(api.call_args.kwargs["paginate"])
+
+
+class TestWakeTimers(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        reset_singleton()
+        self.addCleanup(reset_singleton)
+
+    def test_the_watcher_interval_comes_from_the_environment_clamped(self):
+        env = watch_mod.POLL_INTERVAL_ENV
+        cases = {"": 60, "20": 20, "1": 15, "999999": 3600, "soon": 60, " 45 ": 45}
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw), mock.patch.dict(os.environ, {env: raw}):
+                self.assertEqual(watch_mod.poll_interval_secs(), expected)
+
+    def test_crew_idle_secs_is_clamped_on_write(self):
+        for raw, expected in ((900, 900), (5, 15), (10**9, 86400), ("x", 300), (True, 300)):
+            with self.subTest(raw=raw):
+                cs.write_settings(OWNER, REPO, {"crew_idle_secs": 300}, self.root)
+                cs.write_settings(OWNER, REPO, {"crew_idle_secs": raw}, self.root)
+                self.assertEqual(
+                    cs.read_settings(OWNER, REPO, self.root)["crew_idle_secs"], expected
+                )
+
+    async def test_launch_arms_the_loop_with_the_repo_setting(self):
+        off_loop(cs.write_settings, OWNER, REPO, {"crew_idle_secs": 1800}, self.root)
+        crew = _crew(self.root, unattended=True)
+        svc = _FakeNudge()
+        armed: list[int] = []
+        plain_add = svc.add
+
+        async def add(slot_key="", message="", **kw):
+            armed.append(kw.get("idle_secs"))
+            return await plain_add(slot_key, message, **kw)
+
+        svc.add = add  # type: ignore[method-assign]
+        with mock.patch.object(cr, "_autonudge_instance", lambda: svc):
+            await cr.launch_crew(_FakeState(), OWNER, REPO, crew, self.root)
+        self.assertEqual(armed, [1800])
+
+    async def test_the_watchdog_retimes_a_loop_armed_before_the_setting_changed(self):
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        loop = _FakeLoop("nl_0", f"crew-{crew['id']}")
+        loop.idle_secs = 300  # type: ignore[attr-defined]
+        svc = _FakeNudge([loop])
+        off_loop(cs.write_settings, OWNER, REPO, {"crew_idle_secs": 600}, self.root)
+        with mock.patch.object(cr, "_autonudge_instance", lambda: svc):
+            await cr.watchdog_cycle(state, OWNER, REPO, [crew], self.root)
+        self.assertIn(("nl_0", {"idle_secs": 600}), svc.updates)
