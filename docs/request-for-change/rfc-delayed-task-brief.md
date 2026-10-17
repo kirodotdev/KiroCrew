@@ -3,8 +3,8 @@ title: Return-triggered warm task brief — replace the immediate warm resume
 status: accepted
 author: zejiangg
 created: 2026-10-14
-last-audited: 2026-10-14
-audited-at: d06b611f549d
+last-audited: 2026-10-17
+audited-at: 52a302b914dc
 doc-pr: 20157
 implementation-prs: []
 tracking-issues: [20156]
@@ -129,7 +129,7 @@ The model prompt snapshot is built on the gateway from existing durable local st
 
 1. **Original request:** the first genuine user request for the active task, quoted verbatim when it fits the existing transcript-summary user-text bound, otherwise faithfully quoted with an explicit truncation mark. The model never chooses a different origin.
 2. **Current task:** the session ledger's `goal`, `phase`, `next`, recent event tail, and artifacts when present; the work ledger's item title, state, worker status, last truthful worker summary, decision, verdict, and artifacts when present; and bounded recent user/assistant transcript turns for context.
-3. **Next steps:** one to three actions inferred from that snapshot.
+3. **Suggested actions:** one to three actions inferred from that snapshot.
 
 Missing state stays missing. The prompt forbids invented work, progress, percentages, dates, deadlines, elapsed-time claims, and ETAs. Worker transcript text is not read; only the report the worker deliberately wrote to the shared work ledger is eligible.
 
