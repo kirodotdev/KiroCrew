@@ -33,7 +33,17 @@ function actions(overrides: Partial<NoteActions> = {}): NoteActions {
     deletingPath: null,
     onRenameStart: () => {},
     onRenameEnd: () => {},
+    renameDraft: null,
+    onRenameDraft: () => {},
     onRename: () => {},
+    validateName: () => null,
+    onNewNote: () => {},
+    newFolderParent: null,
+    onNewFolderStart: () => {},
+    onNewFolderEnd: () => {},
+    newFolderDraft: '',
+    onNewFolderDraft: () => {},
+    onNewFolder: async () => true,
     ...overrides,
   }
 }
