@@ -429,7 +429,8 @@ end, and its length, are in that log too, the first cut or pause opens a period 
 one WARNING closes it, `adaptive concurrency restored: exec_cap=N gate_cap=M after
 Ss (before the cut: exec_cap=N gate_cap=M)`, when the policy's caps are back at the
 values held just before that cut (a ceiling lowered meanwhile lowers the target; a
-switch to fixed mode also closes it). A decrease or pause that loop lag caused ends
+switch to fixed mode also closes it; with no demand left, a return to the policy's
+start caps closes it too, since idle recovery restores only that far). A decrease or pause that loop lag caused ends
 with `busy=<module.qualname>[ via <module.qualname>]`: what the loop thread was
 running while the controller's timer was late. `adaptive/busy.py`'s
 `LoopBusySampler` is one daemon thread, armed before each sample's sleep for the

@@ -12,8 +12,8 @@ from __future__ import annotations
 import asyncio.events
 import json
 import logging
+import sys
 import threading
-import time
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -32,7 +32,7 @@ from kiro_crew.adaptive.policy import (
     ACTION_RESUME,
     Decision,
 )
-from kiro_crew.adaptive.signals import SIGNAL_LOOP_LAG
+from kiro_crew.adaptive.signals import SIGNAL_LOOP_LAG, Sample
 
 
 def _frame(module: str, qualname: str, back: Any = None) -> Any:
@@ -110,8 +110,6 @@ class TestDescribeFrame:
         assert describe_frame(lib) == "json.decoder.JSONDecoder.raw_decode via json.loads"
 
     def test_a_real_frame_names_code_and_no_path(self) -> None:
-        import sys
-
         def held_the_loop() -> Any:
             return sys._getframe()
 
@@ -128,19 +126,38 @@ class TestDescribeFrame:
 
 class TestLoopBusySampler:
     def test_a_late_loop_is_read_while_it_is_still_busy(self) -> None:
-        sampler = LoopBusySampler()
-        sampler.start(threading.get_ident())
+        """The "loop" here is this test thread, held until the sampler has read
+        its frame: the frame reader releases it, so the read happens while the
+        thread is still inside the blocking function, on any host speed."""
+        read = threading.Event()
+        seen: list[str] = []
+        loop_thread = threading.get_ident()
+
+        def frames() -> dict[int, Any]:
+            current = sys._current_frames()
+            frame = current.get(loop_thread)
+            while frame is not None:
+                seen.append(frame.f_code.co_name)
+                frame = frame.f_back
+            read.set()
+            return current
+
+        sampler = LoopBusySampler(frames=frames)
+        sampler.start(loop_thread)
         try:
 
-            def blocks_the_loop() -> None:
-                time.sleep(0.4)
+            def blocks_the_loop() -> bool:
+                return read.wait(timeout=30)
 
-            sampler.arm(0.05)
-            blocks_the_loop()
+            sampler.arm(0.0)
+            assert blocks_the_loop()
             busy = sampler.disarm()
         finally:
             sampler.stop()
-        assert "blocks_the_loop" in busy
+        # Read while this thread was inside the blocking function; the innermost
+        # frame there is the library wait it is parked in.
+        assert "blocks_the_loop" in seen
+        assert busy == "threading.Condition.wait"
 
     def test_a_punctual_loop_reads_no_frame(self) -> None:
         reads: list[int] = []
@@ -152,6 +169,21 @@ class TestLoopBusySampler:
         finally:
             sampler.stop()
         assert reads == []
+
+    @pytest.mark.asyncio
+    async def test_the_controller_stops_the_sampler_off_the_loop(self) -> None:
+        """Stopping joins the sampler's thread, so it must not run on the loop."""
+        mgr = FakeManager(user_max=10)
+        ctl, _clock = _controller(mgr)
+        stopped_on: list[int] = []
+
+        class _Sampler:
+            def stop(self) -> None:
+                stopped_on.append(threading.get_ident())
+
+        ctl._busy_sampler = _Sampler()  # type: ignore[assignment]
+        await ctl.stop()
+        assert stopped_on and stopped_on[0] != threading.get_ident()
 
 
 class TestThrottledPeriod:
@@ -202,6 +234,39 @@ class TestThrottledPeriod:
             mgr._user = 6
             await ctl.apply(_decision(6, 4, ACTION_INCREASE))
         assert any("restored: exec_cap=6" in m for m in _messages(caplog, logging.WARNING))
+
+    @pytest.mark.asyncio
+    async def test_a_cut_on_the_first_decision_opens_a_period(self, caplog) -> None:
+        """Before any decision the policy holds its start caps, which is what
+        the first cut is measured against."""
+        mgr = FakeManager(user_max=10)
+        ctl, clock = _controller(mgr, FakeGate())
+        start = (ctl._policy.params.exec_start, ctl._policy.params.gate_start)
+        with caplog.at_level(logging.WARNING, logger=ctl_mod.__name__):
+            await ctl.apply(_decision(start[0], start[1] - 2, ACTION_DECREASE))
+            clock.advance(12)
+            await ctl.apply(_decision(start[0], start[1], ACTION_INCREASE))
+        restored = [m for m in _messages(caplog, logging.WARNING) if "restored" in m]
+        assert len(restored) == 1 and "after 12s" in restored[0]
+
+    @pytest.mark.asyncio
+    async def test_an_idle_return_to_the_start_caps_ends_the_period(self, caplog) -> None:
+        """Demand grew the gate past its start before the cut; with no demand
+        left the policy only restores to the start, which ends the period."""
+        mgr = FakeManager(user_max=10)
+        ctl, clock = _controller(mgr, FakeGate())
+        gate_start = ctl._policy.params.gate_start
+        with caplog.at_level(logging.WARNING, logger=ctl_mod.__name__):
+            await ctl.apply(_decision(10, gate_start + 4, ACTION_HOLD))
+            await ctl.apply(_decision(10, gate_start, ACTION_DECREASE))
+            ctl._samples.append(Sample(t=clock.t, running=2, queued=1))
+            await ctl.apply(_decision(10, gate_start, ACTION_HOLD))
+            assert not any("restored" in m for m in _messages(caplog, logging.WARNING))
+            clock.advance(40)
+            ctl._samples.append(Sample(t=clock.t, running=0, queued=0))
+            await ctl.apply(_decision(10, gate_start, ACTION_HOLD))
+        restored = [m for m in _messages(caplog, logging.WARNING) if "restored" in m]
+        assert len(restored) == 1 and "after 40s" in restored[0]
 
     @pytest.mark.asyncio
     async def test_a_switch_to_fixed_mode_ends_the_period(self, caplog) -> None:
