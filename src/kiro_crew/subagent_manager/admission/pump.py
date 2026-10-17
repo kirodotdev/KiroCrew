@@ -26,7 +26,9 @@ if TYPE_CHECKING:
         SubagentInfo,
         _context_groups_field,
         asyncio,
+        contested_spawn_note,
         create_agent_folder,
+        is_contested_root,
         logger,
         parent_spawn_policy,
         sel,
@@ -244,6 +246,12 @@ class _PumpMixin(ManagerComponent):
         # pending work the done-probe must keep the serial guard for.
         if agent_id not in self._manager._retained_claims:
             self._manager._dispatch_window_ids.discard(agent_id)
+            # The dispatch that retained this claim held the row's conversation
+            # (``_dispatch_async_impl``); the retry settled it, so let go.
+            starts = self._manager._continuation_starts
+            conv_key = str(stop_params.get("conversation_key") or "")
+            if conv_key and starts.get(conv_key) == agent_id:
+                del starts[conv_key]
         self._after_dispatch_impl(stop_params, result, refill=lambda **_kw: 0)
         if retained:
             self._schedule_retained_claim_retry()
@@ -438,89 +446,168 @@ class _PumpMixin(ManagerComponent):
         def _still_wanted() -> bool:
             return in_dispatch.get(agent_id) is params
 
-        try:
-            # The parent agent spec's ``availableAgents`` declaration is re-read
-            # here, off the loop, so the gate's re-check at dispatch costs the
-            # loop no directory scan (same reason the record read is threaded).
-            policy = await asyncio.to_thread(
-                parent_spawn_policy, str(params.get("parent_session_key") or "")
-            )
-            # Neither the queued entry nor the durable row carries a policy
-            # (``queue_params`` never stores one, ``taskq_build_record`` drops
-            # the key); the filter keeps a params dict that somehow holds one
-            # from shadowing the fresh read. ``params`` itself stays whole: it
-            # is the row's identity for the stop path below.
-            spawn_params = {k: v for k, v in params.items() if k != "_parent_spawn_policy"}
-            # The drain's agent re-validation, off the loop for the same reason.
-            agent_check = await self._manager._check_agent_off_loop(
-                str(params.get("agent") or ""),
-                str(params.get("cwd") or ""),
-                app=str(params.get("app") or ""),
-                execution_context=params.get("_execution_context"),
-                prevalidated=bool(params.get("_agent_prevalidated")),
-            )
-            if undurable and not _still_wanted():
-                # Stopped while the reads ran: the stop already reported it.
-                self._unmark_dispatching(params)
-                return None
-            # The memory floor is read on a worker: the gate stops at its read
-            # (``MemoryReadPoint``) and is re-entered with the reading and these
-            # same flags (``_spawn_after_memory_read``).
-            reentry: dict[str, Any] = dict(
-                _parent_spawn_policy=policy,
-                _agent_check=agent_check,
-                _from_queue=True,
-                _stop_before_claim=store is not None,
-                _child_registration=store is None,
-            )
-            first: Any = await self._manager._spawn_after_memory_read(
-                self._manager.spawn(**spawn_params, **reentry, _stop_before_memory_read=True),
-                _still_wanted if undurable else None,
-                **reentry,
-            )
-        except Exception:
+        # A refilled continuation holds its conversation from here until its
+        # start settles, the way ``continue_conversation`` holds a first start
+        # (``_continuation_starts``). The founder's durable root is read below
+        # and carried across the validation, memory and claim awaits, and the
+        # claim re-entry (this attempt's or a retained retry's); a rival
+        # continuation admitted in that window could contest the conversation
+        # on disk and be dismissed before the commit-point check, which reads
+        # retained records, could adopt it -- and the cached root would then
+        # hand the founding chat's auto-approval to a contested conversation.
+        # Held, the rival is refused ``conversation_busy`` instead. Released
+        # when the row registers (the run holds the conversation then), is
+        # re-queued, parked or refused; kept with a retained claim, which
+        # ``retry_retained_claims`` releases once the retry settles.
+        conversation_for_root = str(params.get("conversation_key") or "")
+        starts = self._manager._continuation_starts
+        rival_start = starts.get(conversation_for_root) if conversation_for_root else None
+        if rival_start is not None and rival_start != agent_id:
+            # Another start owns the conversation and its root read is in
+            # flight. Reading the founder's root now would cache it across
+            # this dispatch's awaits while that start may contest the
+            # conversation and be dismissed, and the commit-point check
+            # would then find no rival and register this row on a root the
+            # contest has outdated. So the row is not read at all: it waits
+            # for the next pass, when the start has settled (and the gate
+            # refuses it ``conversation_busy`` if that run is live).
             if undurable and in_dispatch.pop(agent_id, None) is params:
                 self._requeue_undispatched(params)
-            raise
+            else:
+                self._unmark_dispatching(params)
+                import time as _time
+
+                admission.arm_memory_wait(_time.monotonic() + admission.taskq_admit_wait_secs())
+            return None
+        held_start = bool(conversation_for_root and agent_id and rival_start is None)
+        if held_start:
+            starts[conversation_for_root] = agent_id
+
+        def _release_start() -> None:
+            if held_start and starts.get(conversation_for_root) == agent_id:
+                del starts[conversation_for_root]
+
+        try:
+            try:
+                # The parent agent spec's ``availableAgents`` declaration is re-read
+                # here, off the loop, so the gate's re-check at dispatch costs the
+                # loop no directory scan (same reason the record read is threaded).
+                policy = await asyncio.to_thread(
+                    parent_spawn_policy, str(params.get("parent_session_key") or "")
+                )
+                # Neither the queued entry nor the durable row carries a policy
+                # (``queue_params`` never stores one, ``taskq_build_record`` drops
+                # the key); the filter keeps a params dict that somehow holds one
+                # from shadowing the fresh read. ``params`` itself stays whole: it
+                # is the row's identity for the stop path below.
+                spawn_params = {k: v for k, v in params.items() if k != "_parent_spawn_policy"}
+                # A refilled continuation re-resolves its conversation root at
+                # re-entry (``_window_entry`` strips the stamp its row was written
+                # under). The gate compares against the founder's record but reads
+                # nothing itself, so the founder's durable root is read here, off
+                # the loop, the way ``spawn_async`` reads it for a first entry: it
+                # is the only carrier of a contest written while the row waited on
+                # disk, and the in-memory record that contested the conversation
+                # may be gone while the founder's is still retained with its
+                # founding root.
+                if conversation_for_root and spawn_params.get("_durable_conversation_root") is None:
+                    spawn_params["_durable_conversation_root"] = await asyncio.to_thread(
+                        self._manager._durable_conversation_root, conversation_for_root
+                    )
+                # The drain's agent re-validation, off the loop for the same reason.
+                agent_check = await self._manager._check_agent_off_loop(
+                    str(params.get("agent") or ""),
+                    str(params.get("cwd") or ""),
+                    app=str(params.get("app") or ""),
+                    execution_context=params.get("_execution_context"),
+                    prevalidated=bool(params.get("_agent_prevalidated")),
+                )
+                if undurable and not _still_wanted():
+                    # Stopped while the reads ran: the stop already reported it.
+                    self._unmark_dispatching(params)
+                    return None
+                # The memory floor is read on a worker: the gate stops at its read
+                # (``MemoryReadPoint``) and is re-entered with the reading and these
+                # same flags (``_spawn_after_memory_read``).
+                reentry: dict[str, Any] = dict(
+                    _parent_spawn_policy=policy,
+                    _agent_check=agent_check,
+                    _from_queue=True,
+                    _stop_before_claim=store is not None,
+                    _child_registration=store is None,
+                )
+                first: Any = await self._manager._spawn_after_memory_read(
+                    self._manager.spawn(**spawn_params, **reentry, _stop_before_memory_read=True),
+                    _still_wanted if undurable else None,
+                    **reentry,
+                )
+            except Exception:
+                if undurable and in_dispatch.pop(agent_id, None) is params:
+                    self._requeue_undispatched(params)
+                raise
+            finally:
+                if in_dispatch.get(agent_id) is params:
+                    del in_dispatch[agent_id]
+            if not isinstance(first, ClaimPoint):
+                # Not claimed: the gate re-queued, parked or refused the row, so
+                # it is waiting (or gone) again and the depth must count it as the
+                # store sees it. Cleared BEFORE the parked defer publishes its
+                # depth, or that emit would read the row as still dispatching.
+                _release_start()
+                self._unmark_dispatching(params)
+                if first is not None:
+                    # Ahead of the registration below, never after it: the row is
+                    # durably parked -- or refused for want of a row -- before any
+                    # caller can read the answer as a queued handle.
+                    first = await admission.finish_parked_defer(first)
+                # A re-queued (or, without a store, started) row: the W3 branch
+                # runs here, awaited, instead of inline in ``spawn_impl``.
+                if (
+                    store is not None
+                    and first is not None
+                    and (first.id in self._manager._agents or (first.queued and not first.done))
+                ):
+                    await admission.taskq_child_registered_async(first)
+                return first
+            assert store is not None
+            result: Any = await admission.claim_and_start(
+                first,
+                lambda claimed: self._manager.spawn(
+                    **spawn_params,
+                    _parent_spawn_policy=policy,
+                    _agent_check=agent_check,
+                    _from_queue=True,
+                    _claimed=claimed,
+                    _child_registration=False,
+                ),
+                stop_params=params,
+            )
+            if result is not None and not result.done and result.id in self._manager._agents:
+                await admission.taskq_child_registered_async(result)
+            return result
         finally:
-            if in_dispatch.get(agent_id) is params:
-                del in_dispatch[agent_id]
-        if not isinstance(first, ClaimPoint):
-            # Not claimed: the gate re-queued, parked or refused the row, so
-            # it is waiting (or gone) again and the depth must count it as the
-            # store sees it. Cleared BEFORE the parked defer publishes its
-            # depth, or that emit would read the row as still dispatching.
-            self._unmark_dispatching(params)
-            if first is not None:
-                # Ahead of the registration below, never after it: the row is
-                # durably parked -- or refused for want of a row -- before any
-                # caller can read the answer as a queued handle.
-                first = await admission.finish_parked_defer(first)
-            # A re-queued (or, without a store, started) row: the W3 branch
-            # runs here, awaited, instead of inline in ``spawn_impl``.
-            if (
-                store is not None
-                and first is not None
-                and (first.id in self._manager._agents or (first.queued and not first.done))
-            ):
-                await admission.taskq_child_registered_async(first)
-            return first
-        assert store is not None
-        result: Any = await admission.claim_and_start(
-            first,
-            lambda claimed: self._manager.spawn(
-                **spawn_params,
-                _parent_spawn_policy=policy,
-                _agent_check=agent_check,
-                _from_queue=True,
-                _claimed=claimed,
-                _child_registration=False,
-            ),
-            stop_params=params,
-        )
-        if result is not None and not result.done and result.id in self._manager._agents:
-            await admission.taskq_child_registered_async(result)
-        return result
+            # Every exit releases the conversation -- the stopped-row return,
+            # the not-claimed branch, a raise from the reads or from the
+            # claim -- except while a retained claim owns it: that claim's
+            # retry re-enters the gate with the same cached root, and
+            # ``retry_retained_claims`` releases once it settles.
+            if agent_id not in self._manager._retained_claims:
+                _release_start()
+
+    def _started_record(self, agent_id: str) -> bool:
+        """Whether *agent_id* is registered as a run that started: a live record.
+
+        A terminal record under the id -- a commit-point refusal's, a queued
+        stop's -- is a report, not a start, and must not consume a reservation.
+        """
+        rec = self._manager._agents.get(agent_id)
+        return rec is not None and not rec.done
+
+    def _ended_record(self, agent_id: str) -> bool:
+        """Whether the re-entry registered *agent_id*'s terminal record: the row was
+        refused at the gate's commit point and its ``failed`` write is posted."""
+        rec = self._manager._agents.get(agent_id)
+        return rec is not None and rec.done
 
     async def claim_and_start(
         self,
@@ -680,8 +767,8 @@ class _PumpMixin(ManagerComponent):
                 # raise AFTER it registered the run (a post-registration
                 # audit write, for one), and that run is live and holds its
                 # slot.
-                registered = claim_will_register and point.agent_id in self._manager._agents
-                if start_taken and not registered:
+                registered = claim_will_register and self._started_record(point.agent_id)
+                if start_taken and not registered and not self._ended_record(point.agent_id):
                     # The re-entry raised after the store took the start and
                     # before it registered it: the accepted row goes back to a
                     # claimable state for the next pump pass, and the
@@ -693,12 +780,19 @@ class _PumpMixin(ManagerComponent):
             # Decided here, with no await since the re-entry returned: the
             # release below awaits, and a stop that runs meanwhile installs a
             # synthetic queued-stop record under this id, which is no
-            # registration and must not consume the reservation.
-            registered = claim_will_register and point.agent_id in self._manager._agents
-            if start_taken and not registered:
+            # registration and must not consume the reservation. A refusal at
+            # the gate's commit point ALSO registers a terminal record under
+            # this id (so the caller's next status read finds the failure, not
+            # a 404): a run that never started, not a registered start either.
+            registered = claim_will_register and self._started_record(point.agent_id)
+            if start_taken and not registered and not self._ended_record(point.agent_id):
                 # The re-entry returned without registering the taken start
                 # (gateway admission closed meanwhile, for one): the accepted
-                # row goes back to a claimable state rather than ending.
+                # row goes back to a claimable state rather than ending. A
+                # re-entry REFUSED at the gate's commit point is not that case:
+                # it registered the row's terminal record and posted its
+                # ``failed`` write (``_refuse_row``), so the start is not given
+                # back -- a ``retry_wait`` row here would run refused work.
                 claim_retained, release_cancelled = await self._release_or_retain_taken_start(
                     store, point, generation, reenter, stop_params
                 )
@@ -1070,7 +1164,24 @@ class _PumpMixin(ManagerComponent):
         # it, keeps that id across the second round-trip too).
         if dispatch is None:
             try:
-                drained = self._manager.spawn(**params, _from_queue=True)
+                # A refilled continuation re-resolves its conversation root at
+                # re-entry (``_window_entry`` strips the stamp its row was
+                # written under) from the founder's durable record, which the
+                # gate does not read itself. The coroutine pump reads it off the
+                # loop before its re-entry (``_dispatch_async_impl``); this
+                # inline pump runs without a loop, so it reads it here, inline,
+                # the way it re-validates the agent inline -- handing the gate
+                # nothing would fail the founding chat's own continuation closed.
+                conversation_for_root = str(params.get("conversation_key") or "")
+                spawn_params = params
+                if conversation_for_root and params.get("_durable_conversation_root") is None:
+                    # A copy: ``params`` itself is the row's identity for the
+                    # dispatching mark released below.
+                    spawn_params = dict(params)
+                    spawn_params["_durable_conversation_root"] = (
+                        self._manager._durable_conversation_root(conversation_for_root)
+                    )
+                drained = self._manager.spawn(**spawn_params, _from_queue=True)
             finally:
                 # Same one-attempt lifetime as the coroutine pump: a ``spawn``
                 # that raises must not leave the row excluded from refill.
@@ -1191,7 +1302,12 @@ class _PumpMixin(ManagerComponent):
 
                 task_safe, _ = redact_exfiltration_urls(info.task)
                 task_safe, _ = redact_credentials(task_safe)
-                task_preview: str = task_safe[:80]
+                # One line: the gateway's spawn approver reads the description's
+                # first line as the prompt's title and the rest as its purpose,
+                # so a task with a newline in its first 80 characters would
+                # otherwise cut its own title short and push the tail (and, for
+                # a contested run, the state and remedy below it) into the body.
+                task_preview: str = " ".join(task_safe[:80].split())
                 # Mark the pre-execution spawn gate as a human-wait so the reaper
                 # does not misreport it. This is the SAME lifecycle the mid-run TOOL
                 # approvals use in run.py: set before the await, cleared in a
@@ -1215,14 +1331,39 @@ class _PumpMixin(ManagerComponent):
                     request_id,
                     info.parent_session_key or "<unowned>",
                 )
+                # The prompt is raised under the chat at the ROOT of the spawn
+                # tree, not the literal parent: a nested run's parent is a
+                # ``subagent:<id>`` that owns no channel and no tab, and a Trust
+                # press must write the key the gate reads back
+                # (``root_approval_policy``), or the grant lands on a key nothing
+                # consults and the tree keeps prompting. Equal to the parent for
+                # a depth-one run; ``""`` for an unowned one; the contested
+                # marker for a run in a contested conversation, whose card's tab
+                # must not approve it (``trust_root_for``).
+                root_session_key: str = self._manager.trust_root_for(info)
+                description: str = f"spawn_run({task_preview})"
+                if is_contested_root(root_session_key):
+                    # A conversation with no single owning chat resolves to a
+                    # marker no tab shows, so this prompt reaches only the global
+                    # approvals feed, where an unlabeled prompt with no chat
+                    # provenance reads as a routing bug and the remedy is not
+                    # otherwise discoverable. The first line stays the ask -- the
+                    # title every sibling card shows -- and the second is the
+                    # body: the state and the remedy, whose words (and why they
+                    # are shaped for that card) live beside
+                    # ``CONTESTED_PROMPT_STATE``; the run loop leads the run's
+                    # tool prompts with the same state.
+                    description = f"{description}\n{contested_spawn_note()}"
                 # Before the await, so a fold read while the prompt is still open
                 # shows it as pending -- which is the whole point of recording it.
+                # The fold keeps the ask alone: the contested note is the card's
+                # body, not the request's reason.
                 _log_origin = self._record_crew_log_spawn_approval_requested(
                     info, approval_id=request_id, reason=f"spawn_run({task_preview})"
                 )
                 try:
                     approved: bool = await self._manager._on_spawn_approval(
-                        request_id, f"spawn_run({task_preview})", info.parent_session_key
+                        request_id, description, root_session_key
                     )
                 finally:
                     info._awaiting_approval = False
@@ -1673,6 +1814,7 @@ class _PumpMixin(ManagerComponent):
                 execution_context=info.execution_context,
                 memory_mode=info.memory_mode,
                 app=info.app,
+                conversation_root=info.conversation_root_session_key,
             )
         except Exception:
             logger.warning(

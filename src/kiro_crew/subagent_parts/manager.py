@@ -455,6 +455,18 @@ class SubagentManager:
         # row needs none of this: the store keeps it and the claim re-checks
         # the stop.
         self._undurable_in_dispatch: dict[str, dict[str, Any]] = {}
+        # conversation key -> the id of the continuation whose START is in
+        # flight (``_claim_continuation``), from the claim to ``_settle_continuation``.
+        # Keyed on the CONVERSATION, not the founder's record: the founder may
+        # be evicted, and a start's awaits (the founder's durable root read off
+        # the loop, the row write, the memory read) are where a rival
+        # continuation could otherwise be admitted, contest the conversation,
+        # finish and be evicted before this one commits -- leaving the gate's
+        # commit-point check nothing in memory to adopt the contest from, and
+        # the cached root to grant a chat trust another chat has written past.
+        # ``_conversation_busy`` answers this table, so the gate, a retry and
+        # a sync ``spawn`` all see the start, not only another ``continue``.
+        self._continuation_starts: dict[str, str] = {}
         # parent_session_key -> how many Stop all calls for it are in flight.
         # While one is, the refill windows none of that parent's rows: a fetch
         # queued before the stop would otherwise put back rows the stop is
@@ -881,6 +893,8 @@ class SubagentManager:
     _note_startup_progress = _admission_surface._note_startup_progress
     _leave_startup = _admission_surface._leave_startup
     running_agents_for = _admission_surface.running_agents_for
+    running_agents_rooted_at = _admission_surface.running_agents_rooted_at
+    live_root_session_keys = _admission_surface.live_root_session_keys
     task_memory_rows = _admission_surface.task_memory_rows
     spawn = _admission_surface.spawn
     _spawn_after_memory_read = _admission_surface._spawn_after_memory_read
@@ -909,6 +923,14 @@ class SubagentManager:
     _log_spawned = _admission_surface._log_spawned
     queued_run_async = _admission_surface.queued_run_async
     queued_runs_async = _admission_surface.queued_runs_async
+    root_session_key = _admission_surface.root_session_key
+    _conversation_records = _admission_surface._conversation_records
+    conversation_root_for_new_run = _admission_surface.conversation_root_for_new_run
+    _durable_conversation_root = _admission_surface._durable_conversation_root
+    root_session_key_for = _admission_surface.root_session_key_for
+    _tab_root_below_contest = _admission_surface._tab_root_below_contest
+    trust_root_for = _admission_surface.trust_root_for
+    root_approval_policy = _admission_surface.root_approval_policy
 
     # subagent_parts/continuation_surface.py
     _conversation_busy = _continuation_surface._conversation_busy
@@ -925,6 +947,7 @@ class SubagentManager:
     continue_conversation_async = _continuation_surface.continue_conversation_async
     _continue_prelude = _continuation_surface._continue_prelude
     recorded_cwd = _continuation_surface.recorded_cwd
+    founder_conversation_id = _continuation_surface.founder_conversation_id
     _inherited_context_groups = _continuation_surface._inherited_context_groups
     _inherited_memory_store = _continuation_surface._inherited_memory_store
     steer_run = _continuation_surface.steer_run

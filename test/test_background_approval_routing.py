@@ -32,6 +32,11 @@ def _make_gateway():
     gateway.sessions.get_pid = MagicMock(return_value=None)
     gateway.sessions.get_channel = MagicMock(return_value=None)
     gateway.sessions.get_thread = MagicMock(return_value=None)
+    # The DM branch resolves a ``cron:<id>`` key's outbound thread from the
+    # cron service; a gateway built with ``__new__`` has no such attribute, and
+    # the branch's blanket ``except`` would swallow the AttributeError as a
+    # Slack failure, skipping the DM the counterfactuals assert on.
+    gateway.cron_svc = None
     # No Slack: the callback falls through to the dashboard-only path, which is
     # where slot attribution is observable.
     gateway.slack = None
@@ -223,9 +228,7 @@ class TestOwnedApprovalStillRoutesToItsSlot:
         gateway.dashboard_state._slots = {"slot-other": _slot(running=True)}
 
         with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
-            approve_fn = gateway._interactive_approval(
-                "subagent", slot_resolver=lambda _rid: ""
-            )
+            approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "")
             await approve_fn(_event("req-owned-4"), "")
 
         assert _requested_slot(gateway) == ""
@@ -278,9 +281,7 @@ class TestLowFidelityChildNeverAutoApproved:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_lf_event()) is True
         gateway.dashboard_state.request_approval.assert_awaited_once()
 
@@ -375,9 +376,7 @@ class TestIdentityTrustedChildHonorsUnconditionalGrants:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_identity_event()) is True
         gateway.dashboard_state.request_approval.assert_not_awaited()
 
@@ -388,9 +387,7 @@ class TestIdentityTrustedChildHonorsUnconditionalGrants:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=False)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_identity_event()) is True
         gateway.dashboard_state.request_approval.assert_awaited_once()
 
@@ -401,9 +398,7 @@ class TestIdentityTrustedChildHonorsUnconditionalGrants:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_lf_event()) is True
         gateway.dashboard_state.request_approval.assert_awaited_once()
 
@@ -419,3 +414,57 @@ class TestIdentityTrustedChildHonorsUnconditionalGrants:
         approve_fn = gateway._interactive_approval("cron")
         assert await approve_fn(ev) is True
         gateway.dashboard_state.request_approval.assert_awaited_once()
+
+
+class TestContestedRootWithholdsChatTrust:
+    """A prompt keyed by a conversation's contested marker is not answered by any chat's trust.
+
+    The prompt arrives keyed by ``contested:<key>`` -- no session key, no tab.
+    Slot trust is chat-level trust, the one grant the contest withholds, so a
+    resolver that names a trusted slot does not speak for it; and the owner's
+    DM, whose Trust button would record the marker as a trusted session, is not
+    opened for it. The grants that are not chat-level trust (the per-source
+    unattended opt-in, ``--approval``, the YOLO override) answer it exactly as
+    they would any other run's prompt.
+    """
+
+    MARKER = ""
+
+    @classmethod
+    def setup_class(cls) -> None:
+        from kiro_crew.subagent import contested_root
+
+        cls.MARKER = contested_root("subagent:founder")
+
+    @pytest.mark.asyncio
+    async def test_slot_trust_still_prompts(self) -> None:
+        """Even a resolver that names a trusted slot does not speak for the marker."""
+        gateway = _make_gateway()
+        gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
+        assert await approve_fn(_event(), self.MARKER) is True
+        gateway.dashboard_state.request_approval.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_owner_dm_is_not_opened_for_a_contested_prompt(self) -> None:
+        """With Slack configured, an ordinary slotless prompt races the owner's
+        DM against the dashboard; a contested one goes to the dashboard feed
+        alone. The DM card carries a Trust button that would record the marker
+        as a trusted session, and no explanation of why there is no tab."""
+        gateway = _make_gateway()
+        gateway.slack = MagicMock()
+        gateway.slack.open_dm = AsyncMock(return_value="D-owner")
+        gateway.slack.post_blocks = AsyncMock(return_value="1.0")
+        gateway.slack.update_message = AsyncMock()
+        gateway._owner_id = "U-owner"
+        approve_fn = gateway._interactive_approval("subagent")
+        assert await approve_fn(_event(), self.MARKER) is True
+        gateway.slack.open_dm.assert_not_awaited()
+        gateway.slack.post_blocks.assert_not_awaited()
+        gateway.dashboard_state.request_approval.assert_awaited_once()
+        assert gateway.dashboard_state.request_approval.await_args.kwargs["contested"] is True
+        # The counterfactual: an uncontested slotless prompt still opens the DM.
+        gateway.dashboard_state.request_approval = AsyncMock(return_value=True)
+        assert await approve_fn(_event("req-bg-2"), "cron:job-1") is True
+        gateway.slack.open_dm.assert_awaited_once_with("U-owner")
+        gateway.slack.post_blocks.assert_awaited_once()

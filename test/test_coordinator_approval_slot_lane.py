@@ -20,6 +20,7 @@ from kiro_crew.dashboard.chat_utils import _MAX_TOOL_PURPOSE, _redact_tool_field
 from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, row_mid
 from kiro_crew.history import ConversationLog
+from kiro_crew.testing.wait import async_wait_until
 
 _WAIT_SECS = 30.0
 _POLL_SECS = 0.01
@@ -483,3 +484,34 @@ async def test_a_huge_coordinator_purpose_is_bounded_before_it_is_retained(tmp_p
     assert len(retained.encode("utf-8")) <= _MAX_TOOL_PURPOSE + 200
     task.cancel()
     assert await asyncio.wait_for(task, _WAIT_SECS) is False
+
+
+@pytest.mark.asyncio
+async def test_a_contested_record_carries_the_flag_and_an_ordinary_one_does_not(tmp_path):
+    """``contested`` is an explicit field the gateway sets from the trust root.
+
+    The feed card reads it to lead with the purpose; it never infers the case
+    from an empty slot, since an unowned cron- or channel-rooted prompt has no
+    slot either. An ordinary record keeps its shape (no key at all).
+    """
+    state = _make_state(tmp_path)
+    task = asyncio.get_running_loop().create_task(
+        state.request_approval(
+            "req-contested", "subagent", "shell(psql)", tool_purpose="why", contested=True
+        )
+    )
+    await async_wait_until(
+        lambda: "req-contested" in state._pending_approvals,
+        describe=lambda: f"pending={sorted(state._pending_approvals)!r}",
+    )
+    record = state._pending_approvals["req-contested"]
+    assert record["slot"] == "" and record["contested"] is True
+    frame = [c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "approval"]
+    assert frame and frame[-1]["contested"] is True
+    assert state.resolve_state_approval("req-contested", False) is True
+    assert await task is False
+
+    plain = await _register(state, "req-plain", "")
+    assert "contested" not in state._pending_approvals["req-plain"]
+    assert state.resolve_state_approval("req-plain", False) is True
+    assert await plain is False

@@ -146,9 +146,9 @@ def _emit_queue_depth(
 
 
 async def _write_state_off_loop(
-    self: SubagentManager, info: SubagentInfo, what: str, **fields: object
+    self: SubagentManager, info: SubagentInfo, what: str, record_id: str = "", /, **fields: object
 ) -> bool:
-    return await self._run_events._write_state_off_loop_impl(info, what, **fields)
+    return await self._run_events._write_state_off_loop_impl(info, what, record_id, **fields)
 
 
 async def _write_finished_result_off_loop(

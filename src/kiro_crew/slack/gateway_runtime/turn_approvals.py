@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         _slot_is_trusted,
         command_invokes_git,
         dashboard_slot_key,
+        is_contested_root,
         is_read_only_bash,
         logger,
         name_grant,
@@ -146,6 +147,9 @@ def _interactive_approval(
         # as an agent ID loses the dashboard slot and hides the approval prompt.
         # ``dashboard_slot_key`` answers "which tab shows this conversation?", so a
         # channel-born session gets its prompt in the tab it is open in too.
+        # A subagent's tool prompt arrives with the key of the chat at the
+        # ROOT of its spawn tree (stamped on the run at admission), never its
+        # ``subagent:<id>`` parent, which no tab shows.
         parent_slot = dashboard_slot_key(parent_session_key)
 
         # NO heuristic fallback. A background caller (cron / taskrunner /
@@ -174,6 +178,19 @@ def _interactive_approval(
                 approval_slot = ""
         else:
             approval_slot = ""
+        # A contested run's prompt arrives keyed by its conversation's
+        # marker (``trust_root_for``), which is no session key and has no
+        # tab. The flag rides the dashboard record so the feed card can lead
+        # with the purpose -- the system's explanation of why there is no
+        # tab -- for THIS case only; a slotless prompt is not thereby a
+        # contested one (a run rooted in a cron, the CLI or a channel has no
+        # tab either, and its purpose is the run's own words).
+        # The grants that are not chat-level trust -- the per-source
+        # unattended grant, ``--approval``, the YOLO override -- answer a
+        # contested prompt exactly as they would any other run's (the RFC
+        # changes only WHOSE chat-level trust a continuation reads); slot
+        # trust, which is chat-level trust, is closed to it below.
+        approval_contested = is_contested_root(parent_session_key)
 
         # Per-source auto-approve (e.g. cron, taskrunner, subagent)
         if source in self._cfg.hooks.get("auto_approve_sources", []):
@@ -266,8 +283,11 @@ def _interactive_approval(
         if safety_override().is_active() and _child_grant_eligible:
             return True
 
-        if self.dashboard_state:
-            # Check if the parent slot is trusted (not all slots).
+        if self.dashboard_state and not approval_contested:
+            # Check if the parent slot is trusted (not all slots). Not for
+            # a contested prompt: slot trust IS chat-level trust, the one
+            # grant the contest withholds -- the marker names no tab, and a
+            # resolver that names one would lend it a chat's trust.
             # The parent comes from the authoritative parent session key or
             # an explicit slot_resolver -- never from a guess. When a
             # slot_resolver exists but returns falsy we do NOT fall back to
@@ -372,8 +392,15 @@ def _interactive_approval(
                     resources=_safe_title,
                 )
 
-        # Post approval buttons to Slack DM if available
-        if self.slack and self._owner_id:
+        # Post approval buttons to Slack DM if available. Not for a
+        # contested prompt: its key is the marker, which names no channel
+        # or thread, so this branch would open the OWNER's DM -- a card
+        # without the contest's explanation, whose Trust button would
+        # record the marker as a trusted session
+        # (``add_trusted_session(pending.session_key)``). The feed card
+        # below is the surface built for it: it leads with the purpose and
+        # carries no trust control.
+        if self.slack and self._owner_id and not approval_contested:
             try:
                 # Resolve parent thread context for threaded approval prompts
                 thread_ts: str | None = None
@@ -434,6 +461,7 @@ def _interactive_approval(
                             tool_purpose=event.tool_purpose,
                             slot=approval_slot,
                             is_background=is_background,
+                            contested=approval_contested,
                         )
                     )
 
@@ -516,6 +544,7 @@ def _interactive_approval(
                 tool_purpose=event.tool_purpose,
                 slot=approval_slot,
                 is_background=is_background,
+                contested=approval_contested,
             )
         if _child_lf:
             # No human surface answered and none of the (skipped)

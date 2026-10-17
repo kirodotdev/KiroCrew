@@ -1936,6 +1936,9 @@ class _SettlingManager:
     def published_queued_depths(self) -> dict[str, int]:
         return {}
 
+    def live_root_session_keys(self) -> set[str]:
+        return set()
+
 
 @pytest.fixture
 def _slots_window_always_open(monkeypatch):

@@ -291,6 +291,7 @@ from kiro_crew.subagent import (  # noqa: F401
     effort_applied_note,
     effort_drop_reason,
     effort_pending_note,
+    is_contested_root,
     parent_template_allowlists,
 )
 from kiro_crew.subagent_manager.admission.types import (  # noqa: F401
