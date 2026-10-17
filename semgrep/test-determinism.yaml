@@ -17,16 +17,43 @@ rules:
       - metavariable-regex:
           metavariable: $TEST
           regex: ^test
-      # A sleep inside a loop is a poll interval: the loop checks the state.
-      - pattern-not-inside: |
-          while $COND:
-            ...
-      - pattern-not-inside: |
-          for $X in $ITER:
-            ...
       - pattern-either:
-          - pattern: time.sleep($N)
-          - pattern: await asyncio.sleep($N)
+          # A sleep inside a loop is a poll interval: the loop checks the state.
+          - patterns:
+              - pattern-not-inside: |
+                  while $COND:
+                    ...
+              - pattern-not-inside: |
+                  for $X in $ITER:
+                    ...
+              - pattern-either:
+                  - pattern: time.sleep($N)
+                  - pattern: $MOD.time.sleep($N)
+                  - pattern: await asyncio.sleep($N)
+                  - pattern: await $MOD.asyncio.sleep($N)
+          # Unless the loop body asserts right after it: that is a barrier run N
+          # times, not a poll, since the assert fails on the first early read.
+          - patterns:
+              - pattern-either:
+                  - pattern-inside: |
+                      while $COND:
+                        ...
+                  - pattern-inside: |
+                      for $X in $ITER:
+                        ...
+              - pattern-either:
+                  - pattern: |
+                      time.sleep($N)
+                      assert $A
+                  - pattern: |
+                      $MOD.time.sleep($N)
+                      assert $A
+                  - pattern: |
+                      await asyncio.sleep($N)
+                      assert $A
+                  - pattern: |
+                      await $MOD.asyncio.sleep($N)
+                      assert $A
       - metavariable-comparison:
           metavariable: $N
           comparison: $N > 0
@@ -35,6 +62,7 @@ rules:
         - test/**
         - src/kiro_crew/apps/builtins/**/tests/**
         - src/kiro_crew/apps/builtins/**/*_tests/**
+        - conftest.py
     message: >
       A fixed sleep in a test body is a bet on how fast the host is: it passes on
       a fast runner and reds a loaded one, or it makes a negative assertion pass
@@ -54,6 +82,7 @@ rules:
         - test/**
         - src/kiro_crew/apps/builtins/**/tests/**
         - src/kiro_crew/apps/builtins/**/*_tests/**
+        - conftest.py
     message: >
       monkeypatch.undo() reverts EVERY patch on the shared instance, including
       the autouse fixtures' that this test inherited, so the rest of the test
@@ -74,6 +103,7 @@ rules:
         - test/**
         - src/kiro_crew/apps/builtins/**/tests/**
         - src/kiro_crew/apps/builtins/**/*_tests/**
+        - conftest.py
     message: >
       importlib.reload rebinds a shared module's globals in place, so code that
       imported a name earlier keeps the old object and later tests see a module
@@ -86,17 +116,26 @@ rules:
       subcategory: test-determinism
 
   - id: kirocrew.test-stdlib-clock-rebound
+    # `$MOD.time` is the time module reached through another module's binding
+    # (`subject.time`, `"pkg.mod.time.monotonic"`): the same object, so the same
+    # whole-worker patch. `$MP.setattr(subject, "time", clock)` rebinds the
+    # module's own name and is the shape asked for; it stays unmatched.
     pattern-either:
       - pattern: $MP.setattr(time, "$NAME", ...)
-      - pattern: $MP.setattr("=~/^time\./", ...)
-      - pattern: mock.patch("=~/^time\./", ...)
-      - pattern: patch("=~/^time\./", ...)
+      - pattern: $MP.setattr($MOD.time, "$NAME", ...)
+      - pattern: $MP.setattr("=~/(^|\.)time\.\w+$/", ...)
+      - pattern: patch("=~/(^|\.)time\.\w+$/", ...)
+      - pattern: $M.patch("=~/(^|\.)time\.\w+$/", ...)
       - pattern: patch.object(time, "$NAME", ...)
+      - pattern: patch.object($MOD.time, "$NAME", ...)
+      - pattern: $M.patch.object(time, "$NAME", ...)
+      - pattern: $M.patch.object($MOD.time, "$NAME", ...)
     paths:
       include:
         - test/**
         - src/kiro_crew/apps/builtins/**/tests/**
         - src/kiro_crew/apps/builtins/**/*_tests/**
+        - conftest.py
     message: >
       Patching the stdlib time module replaces the clock for the whole worker:
       every thread, library and event loop (loop.time() is time.monotonic())
@@ -112,7 +151,10 @@ rules:
     pattern-either:
       - pattern: datetime.now()
       - pattern: datetime.datetime.now()
+      - pattern: $MOD.datetime.now()
       - pattern: datetime.today()
+      - pattern: datetime.datetime.today()
+      - pattern: $MOD.datetime.today()
       - pattern: date.today()
       - pattern: datetime.date.today()
       - pattern: time.localtime()
@@ -121,6 +163,7 @@ rules:
         - test/**
         - src/kiro_crew/apps/builtins/**/tests/**
         - src/kiro_crew/apps/builtins/**/*_tests/**
+        - conftest.py
     message: >
       A naive local-time read depends on the host's zone and on when the test
       runs: it passes in UTC and fails where local midnight falls between two
@@ -136,18 +179,23 @@ rules:
     pattern-either:
       - pattern: os.urandom(...)
       - patterns:
+          # random.seed included: it reseeds the module-level generator every
+          # other test and library in the worker draws from.
           - pattern: random.$FN(...)
           - metavariable-regex:
               metavariable: $FN
-              regex: ^(random|randint|randrange|choice|choices|shuffle|sample|uniform|getrandbits|randbytes|gauss)$
+              regex: ^(seed|random|randint|randrange|choice|choices|shuffle|sample|uniform|getrandbits|randbytes|gauss)$
     paths:
       include:
         - test/**
         - src/kiro_crew/apps/builtins/**/tests/**
         - src/kiro_crew/apps/builtins/**/*_tests/**
+        - conftest.py
     message: >
       An unseeded draw makes the input different on every run, so a red cannot
-      be replayed. Use random.Random(SEED) or the seeded_rng fixture (D6).
+      be replayed, and random.seed() moves the shared module-level generator
+      under every other test. Use random.Random(SEED) or the seeded_rng
+      fixture (D6).
     severity: ERROR
     languages: [python]
     metadata:
@@ -156,10 +204,15 @@ rules:
 
   - id: kirocrew.test-autouse-shared-monkeypatch
     patterns:
-      - pattern: |
-          @pytest.fixture(..., autouse=True, ...)
-          def $FIXTURE(..., monkeypatch, ...):
-            ...
+      - pattern-either:
+          - pattern: |
+              @pytest.fixture(..., autouse=True, ...)
+              def $FIXTURE(..., monkeypatch, ...):
+                ...
+          - pattern: |
+              @pytest_asyncio.fixture(..., autouse=True, ...)
+              def $FIXTURE(..., monkeypatch, ...):
+                ...
       # Report the name only, so an edit to an existing fixture's body is not a
       # new finding against the baseline commit.
       - focus-metavariable: $FIXTURE
@@ -184,6 +237,8 @@ rules:
       - pattern-either:
           - pattern: new Promise(($R) => setTimeout($R, $N))
           - pattern: new Promise($R => setTimeout($R, $N))
+          - pattern: new Promise(($R) => { setTimeout($R, $N) })
+          - pattern: new Promise($R => { setTimeout($R, $N) })
       - metavariable-comparison:
           metavariable: $N
           comparison: $N > 0
@@ -191,6 +246,9 @@ rules:
       include:
         - website/src/**/*.test.ts
         - website/src/**/*.test.tsx
+        - website/src/**/*.test.js
+        - website/src/**/*.test.jsx
+        - website/src/**/*.test.mjs
         - website/src/**/test/**
         - website/integration/**
         - website/playwright/**
@@ -199,7 +257,7 @@ rules:
       assert: findBy* / waitFor on that state, or fake timers advanced to the
       exported constant (website/docs/testing.md § Rules every test keeps).
     severity: ERROR
-    languages: [typescript]
+    languages: [typescript, javascript]
     metadata:
       category: correctness
       subcategory: test-determinism

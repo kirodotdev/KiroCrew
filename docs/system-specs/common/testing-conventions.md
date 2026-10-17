@@ -122,9 +122,9 @@ id>` with the reason where a `semgrep/test-determinism.yaml` rule refuses it. Re
 accepts the marker, and the reason is the record of why the rule does not apply there.
 
 `test/test_flake_pattern_ratchet.py` counts, file by file, the shapes
-`semgrep/test-determinism.yaml`'s patterns miss, so no site needs both markers: patches of `asyncio.sleep`, of the
-`datetime` classes or of another module's `time` binding (`<mod>.time`,
-`"pkg.mod.time.<attr>"`, `mock.patch.object(time, ...)`), a `sys.modules` eviction with
+`semgrep/test-determinism.yaml`'s patterns miss, so no site needs both markers: patches of `asyncio.sleep` or of the
+`datetime` classes (named directly or through another module's binding; the `time`
+module through any binding is the semgrep rule's), a `sys.modules` eviction with
 no restore in the same function, raw environment writes, duration bounds, literal waits
 under two seconds (the too-tight lost-run bound of class 6; a negative such as
 `assert not done.wait(0.3)` is not one), literal listener ports, fixed crew-log flush

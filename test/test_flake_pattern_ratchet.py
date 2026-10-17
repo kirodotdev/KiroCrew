@@ -5,8 +5,8 @@ the shapes a test must not use. ``semgrep/test-determinism.yaml`` refuses the
 commonest of them on a new line (a sleep as a barrier, a ``time`` patch, a bare
 ``monkeypatch.undo()``, a reload, a naive local-time read, an unseeded draw, an autouse
 fixture on the shared ``monkeypatch``, a promise-sleep, ``waitForTimeout``). This module
-counts per file only the shapes those patterns miss: patches of ``asyncio.sleep``, the
-``datetime`` classes or another module's ``time`` binding, ``sys.modules`` evictions,
+counts per file only the shapes those patterns miss: patches of ``asyncio.sleep`` or
+the ``datetime`` classes, ``sys.modules`` evictions,
 raw environment writes, duration bounds, short literal waits, literal listener ports,
 crew-log flush ceilings, unpaused removals, Event waits a test parks on an executor
 (``to_thread(<obj>.wait, ...)`` and ``run_in_executor(<any>, <obj>.wait, ...)``,
@@ -279,29 +279,33 @@ def _patched_target(node: ast.Call) -> tuple[ast.AST | None, str | None]:
 
 
 #: What ``kirocrew.test-stdlib-clock-rebound`` (semgrep/test-determinism.yaml) refuses:
-#: ``<x>.setattr(time, ...)`` and ``patch.object(time, ...)`` on the stdlib ``time``
-#: module named directly (an ``import time as`` alias included), and a ``"time.<attr>"``
-#: target string handed to ``<x>.setattr``, ``patch`` or ``mock.patch``. K3 counts the
-#: clock and sleep patches that rule's patterns miss, so no site needs both markers.
-_TIME_RULE_STRING_CALLS = frozenset({"patch", "mock.patch"})
+#: ``<x>.setattr(time, ...)`` and ``<x>.patch.object(time, ...)`` on the stdlib ``time``
+#: module, named directly (an ``import time as`` alias included) or reached through
+#: another module's binding (``<mod>.time``), and a ``"time.<attr>"`` or
+#: ``"pkg.mod.time.<attr>"`` target string handed to ``<x>.setattr`` or ``<x>.patch``.
+#: K3 counts the clock and sleep patches that rule's patterns miss, so no site needs
+#: both markers.
+_TIME_RULE_STRING_TARGET = re.compile(r"(^|\.)time\.\w+$")
 
 
 def _time_rule_refuses(module: _Module, node: ast.Call, target: ast.AST | None) -> bool:
     name = _dotted(node.func)
     via_setattr = isinstance(node.func, ast.Attribute) and node.func.attr == "setattr"
     if isinstance(target, ast.Constant) and isinstance(target.value, str):
-        return target.value.startswith("time.") and (via_setattr or name in _TIME_RULE_STRING_CALLS)
+        via_patch = name == "patch" or name.endswith(".patch")
+        return bool(_TIME_RULE_STRING_TARGET.search(target.value)) and (via_setattr or via_patch)
+    via_patch_object = name == "patch.object" or name.endswith(".patch.object")
     return (
-        isinstance(target, ast.Name)
-        and module.modules.get(target.id) == "time"
-        and (via_setattr or name == "patch.object")
+        target is not None
+        and module.stdlib_of(target) == "time"
+        and (via_setattr or via_patch_object)
     )
 
 
 def _k3_stdlib_clock_patch(module: _Module) -> Iterable[ast.AST]:
-    """A patch on a stdlib clock or sleep the time rule does not refuse: ``asyncio.sleep``,
-    ``datetime.datetime`` / ``date``, the time module reached through another module's
-    binding (``<mod>.time``, ``"pkg.mod.time.<attr>"``), or ``mock.patch.object(time, ...)``.
+    """A patch on a stdlib clock or sleep the time rule does not refuse: ``asyncio.sleep``
+    and ``datetime.datetime`` / ``date``, named directly or through another module's
+    binding (``<mod>.asyncio``, ``"pkg.mod.datetime.<attr>"``).
     """
     for node in module.calls:
         name = _dotted(node.func)
@@ -861,18 +865,26 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
             "        pass\n",
             "import datetime\ndef test_x(monkeypatch):\n"
             "    monkeypatch.setattr(datetime, 'datetime', Frozen)\n",
-            "def test_x(monkeypatch):\n    monkeypatch.setattr(subject.time, 'monotonic', f)\n",
+            "def test_x(monkeypatch):\n    monkeypatch.setattr(subject.asyncio, 'sleep', f)\n",
             "def test_x(monkeypatch):\n"
-            "    monkeypatch.setattr('kiro_crew.acp.client.time.monotonic', f)\n",
-            "import time as _time\nfrom unittest import mock\ndef test_x():\n"
-            "    with mock.patch.object(_time, 'time', f):\n        pass\n",
+            "    monkeypatch.setattr('kiro_crew.acp.client.datetime.datetime', Frozen)\n",
+            "import asyncio\nfrom unittest import mock\ndef test_x():\n"
+            "    with mock.patch.object(asyncio, 'sleep', f):\n        pass\n",
         ),
         # The right seam, a non-clock attribute, and the shapes the time rule refuses.
-        "import os\nimport time\nimport time as _t\ndef test_x(monkeypatch):\n"
+        "import os\nimport time\nimport time as _t\nimport unittest.mock\n"
+        "from unittest import mock\ndef test_x(monkeypatch):\n"
         "    monkeypatch.setattr(subject, 'time', fake)\n    monkeypatch.setattr(os, 'getcwd', f)\n"
         "    monkeypatch.setattr('time.tzname', t)\n    monkeypatch.setattr(time, 'monotonic', f)\n"
         "    monkeypatch.setattr(_t, 'sleep', f)\n    monkeypatch.setattr('time.time', f)\n"
-        "    with patch('time.sleep'), patch.object(time, 'monotonic', f):\n        pass\n",
+        "    monkeypatch.setattr(subject.time, 'monotonic', f)\n"
+        "    monkeypatch.setattr('kiro_crew.acp.client.time.monotonic', f)\n"
+        "    monkeypatch.setattr('kiro_crew.acp.client.time', fake)\n"
+        "    with patch('time.sleep'), patch.object(time, 'monotonic', f):\n        pass\n"
+        "    with mock.patch.object(_t, 'time', f), unittest.mock.patch('time.sleep'):\n"
+        "        pass\n"
+        "    with mock.patch('kiro_crew.cron.time.time'), patch.object(subject.time, 'sleep'):\n"
+        "        pass\n",
     ),
     "K5-sys-modules-eviction": (
         (
