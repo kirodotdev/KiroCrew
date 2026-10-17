@@ -30,7 +30,7 @@ offers when the harness is missing:
 
 | Harness | Install | What it installs |
 |---|---|---|
-| OpenCode | `npm i -g opencode-ai` | The `opencode` binary, which serves ACP itself (`opencode acp`). This is OpenCode 1; OpenCode's [intro](https://opencode.ai/docs/) lists its other installers. |
+| OpenCode | `npm i -g opencode-ai@1` | The `opencode` binary, which serves ACP itself (`opencode acp`). This is OpenCode 1, the line the launch is tested against; a binary of any other major is refused. OpenCode's [intro](https://opencode.ai/docs/) lists its other installers. |
 | Pi | `npm i -g pi-acp @earendil-works/pi-coding-agent` | The `pi-acp` adapter and the `pi` agent it starts. Pi needs Node.js 22.19 or newer. |
 
 Then select it in **Settings → Agent Harness**, or set it in

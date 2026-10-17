@@ -47,7 +47,7 @@ fixture is refused for.
 |---|---|---|---|
 | goose | `curl -fsSL https://raw.githubusercontent.com/block/goose/main/download_cli.sh \| bash` | A provider. `goose configure` in a terminal names one and stores its key; the key lands in the OS keyring, or in `~/.config/goose/secrets.yaml` when `GOOSE_DISABLE_KEYRING` selects file storage. A locally served model is named as the provider instead and needs no key. `GOOSE_PROVIDER` / `GOOSE_MODEL` in the environment select one without touching the config. | `GOOSE_BIN` points at the binary. `XDG_CONFIG_HOME` relocates the whole config tree, secrets included — useful for a scratch capture. |
 | pi | `npm i -g pi-acp @earendil-works/pi-coding-agent` (both halves: the adapter Crew spawns and the agent it spawns) | A sign-in or a local model. `pi` in a terminal, then its `/login`, writes `~/.pi/agent/auth.json`; or name a locally served model in `~/.pi/agent/models.json` and skip sign-in entirely. | `PI_ACP_BIN` points at the adapter's entry script, `PI_ACP_PI_COMMAND` at the agent. `PI_CODING_AGENT_DIR` relocates pi's whole agent directory. |
-| opencode | `npm i -g opencode-ai` | `opencode auth login`, or a local model in the project's `opencode.json`. | `OPENCODE_BIN` points at the binary. |
+| opencode | `npm i -g opencode-ai@1` | `opencode auth login`, or a local model in the project's `opencode.json`. | `OPENCODE_BIN` points at the binary. The launch refuses a binary outside the tested major 1. |
 
 opencode is in that table on purpose: it is already a member, so driving it is the
 control run. If the script reports `COMPACTED` for opencode on your host, the script

@@ -437,6 +437,12 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             patch.object(deepseek_mod, "_verify_deepseek_gate", return_value=("", "")),
             patch.object(opencode_mod, "_verify_opencode_routing", return_value=("", "")),
             patch.object(opencode_mod, "_opencode_routing_config", return_value=_OPENCODE_CONFIG),
+            # The version gate answers in range: it spawns a child of the synthetic
+            # binary the resolver stub hands the launch, and a version child is not
+            # one of the four launch answers the golden records.
+            patch.object(
+                opencode_mod, "_opencode_version_refusal", new=AsyncMock(return_value=("", ""))
+            ),
             patch.object(launch_mod, "_unlink_readback_launcher", return_value=None),
             patch.object(
                 launch_mod,
