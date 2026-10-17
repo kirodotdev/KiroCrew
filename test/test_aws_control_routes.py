@@ -14,7 +14,7 @@ Every case asserts real behaviour — a status code, a response ``code`` field,
 or whether a collaborator was called — not merely that a line executed.
 
 Helpers (`_request`, `_payload`, `_enabled_owner_env`, ``ACCOUNT``) mirror the
-conventions in ``test_aws_control_app.py`` so the two files build requests and
+conventions in ``aws_control_app_helpers.py`` so the two files build requests and
 patch the environment identically; they are copied here because they are
 module-private there and the two files must not edit each other.
 """
@@ -482,7 +482,7 @@ class TestDriveList:
 
 # ---------------------------------------------------------------------------
 # Drive download — invalid key + aws error (success/backup/publish/missing
-# covered in test_aws_control_app.py)
+# covered in test_aws_control_app.py and test_aws_control_app_hardening.py)
 # ---------------------------------------------------------------------------
 
 

@@ -93,7 +93,7 @@ retries) rather than an unregistered profile still holding an authorization
 (`consent_unwritable` is the 500 that reports the former). The share,
 library, and backup ledgers are account-keyed and are left alone: they describe
 the bucket, which still exists and still bills, and must render unchanged when
-the key is registered again. `test_aws_control_app.py::TestProfileUnregister`
+the key is registered again. `test_aws_control_app_profiles.py::TestProfileUnregister`
 pins the registry-only boundary, the default re-pick, and the grant sweep.
 
 AWS Control reaches AWS through deploy-engine helpers: account inspection uses
@@ -114,7 +114,7 @@ account target and S3 consent after confirmation and serializes creation so
 concurrent confirmations cannot create competing drives.
 `test_aws_control_app.py::TestDriveGuards.test_bootstrap_without_confirm_previews_and_creates_nothing`,
 `TestRound3Hardening.test_concurrent_bootstrap_confirms_create_exactly_one_drive`,
-and `TestBootstrapReauthorizes.test_consent_withdrawn_mid_create_refuses_and_creates_nothing`
+and `test_aws_control_app_profiles.py::TestBootstrapReauthorizes.test_consent_withdrawn_mid_create_refuses_and_creates_nothing`
 pin those guarantees.
 
 A created drive is ownership-checked before it becomes discoverable. The storage
@@ -470,7 +470,7 @@ traversal pinning is available. `backup._authorize_upload` requires the app to
 remain enabled, the S3 grant to still name the target account, and shutdown not
 to be in progress before upload. `backup.restore_download` stages an archive
 locally; it does not restore it into live gateway state.
-`test_aws_control_app.py::TestRound17Hardening.test_restore_refuses_a_symlinked_destination`
+`test_aws_control_app_hardening.py::TestRound17Hardening.test_restore_refuses_a_symlinked_destination`
 pins the staged restore safety boundary.
 
 Both runs build their archive and then decide whether to send it.

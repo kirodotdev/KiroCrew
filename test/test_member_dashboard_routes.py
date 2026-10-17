@@ -109,7 +109,7 @@ async def _client(state=None):
     """A started client that always closes.
 
     An ``async with`` helper rather than an ``@pytest.fixture``, by this repo's
-    convention (see ``test_agent_panel_routes._client``): the pinned pytest-asyncio
+    convention (see ``agent_panel_routes_helpers._client``): the pinned pytest-asyncio
     does not collect async-generator fixtures declared with plain ``@pytest.fixture``.
 
     Closing is not tidiness. A ``TestClient`` owns an aiohttp session AND a listening
@@ -604,7 +604,7 @@ async def test_a_non_owner_cannot_read_a_crewmates_values():
 async def test_the_gateway_registers_exactly_these_paths_without_importing_us():
     """The boot path binds these routes DEFERRED, so the paths are written twice.
 
-    The same property ``test_agent_panel_routes`` pins, for the same reason: the boot
+    The same property ``test_agent_panel_routes_allocation`` pins, for the same reason: the boot
     path may not import an optional subsystem before the socket binds, so it restates
     each path against ``server._deferred`` -- and a restated path can drift. A route
     renamed here and not there would 404 in the gateway while every test above passed.
