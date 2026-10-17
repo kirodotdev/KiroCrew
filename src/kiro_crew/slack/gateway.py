@@ -613,6 +613,7 @@ from kiro_crew.subagent_completion_meta import (
     wave_chunk_meta,
     wave_final_meta,
 )
+from kiro_crew.subagent_persistence import read_tombstone, tombstone_persists
 from kiro_crew.subagent_wait_reasons import (
     NEVER_STARTED_MEMORY_PREFIX,
     QUEUED_WAIT_EXPIRED_TEXT,

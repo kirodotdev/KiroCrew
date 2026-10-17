@@ -363,6 +363,13 @@ class _SpecSlot:
         self._pending_steers = ["steer-1"]
         self._pending_synthesis = True
 
+    def queue_discard_all(self) -> list:
+        # The slot's own repository call: it empties the queue and retires each
+        # row's discard callback once.
+        from kiro_crew.dashboard.slot_queue_repository import SlotQueueRepository
+
+        return SlotQueueRepository().queue_discard_all(self)
+
 
 def _spec_state(slot, *, compacting: bool, stop_outcome: str):
     from unittest.mock import AsyncMock, MagicMock

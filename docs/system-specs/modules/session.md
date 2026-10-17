@@ -2047,6 +2047,67 @@ Two more reads on this area follow config without a restart:
 (`_effective_prompt_timeout_async`), so `agent.chat_turn_timeout_secs` needed no
 applier — a raised turn budget is in force on the next prompt.
 
+## Queued completion cancellation ownership
+
+A queued sub-agent completion transfers its one-shot consumption, irreversible
+consumption, discard callback, and delivery fence into the queue-drain dispatch
+when the queue row is popped. A pre-entry owner keeps the discard callback until
+the dispatched wrapper begins `chat_runner._run_chat`; cancellation or task-
+construction failure before that point invokes the durable-discard path, while
+entry transfers exclusive recovery/discard ownership into `_run_chat`. If the
+turn fails before consumption, the runner must preserve that exact ownership on
+one `lifecycle_recovery` row only when it replays the completion announce
+itself. That row carries the completion-replay mark when it queues the raw
+announce, even when drained failure notices or context enriched the prompt, so
+a second failure keeps it a completion. User-text and
+runner-written retries keep the ordinary `synthetic_recovery` kind, so stale-
+admission revalidation still applies to them. This includes the dashboard turn ceiling cancelling the inner turn,
+transport/model cancellation, a responsive human send pausing the turn (it records
+no Stop, and the bounded copy of paused work the answering turn reads can end before
+the announce does), and any system cancellation with no user intent.
+The settlement is registered on the turn's exit record before the turn's first
+exit and runs once: a replay vetoed at its consume seam returns above the main
+`try`, and a cancel that lands in a later teardown await (the forced history
+save, the local-turn marker clear) skips the turn's own call; the exit guard
+runs the settlement before the tail in both cases. The `lifecycle_recovery` row
+and an owed completion requeued as a completion (the binding, image-history and
+model-access recoveries) both queue the raw announce, so failure notices the
+failed attempt drained from `_pending_subagent_failures` go back on the slot for
+the next turn's drain.
+
+The retry row goes behind every entry already queued, so a user message or a
+completion not yet attempted drains in the ordinary hand-off and the retry runs
+after it. The hand-off holds the queue when the next entry it would drain is a
+failed completion's `lifecycle_recovery` row, this turn's own or one an earlier
+failure queued. It reads that entry the way the drain picks: a person's waiting
+send first, then, while live children hold user messages, the first entry the
+hold releases. It reads that entry again after the turn's unconsumed steers return
+to the queue head, so a steer the failed turn never consumed still drains. Two
+failing completions therefore never keep re-running each other; a later turn or the
+user's next action starts them.
+`test_completion_retry_ownership.py` pins these cases, the teardown cancel, the
+consume-seam veto and the responsive pause.
+
+A direct user Stop, explicit removal of the queued recovery row, or rewind
+remains authoritative: it discards the row and callback once. Slot teardown is
+authoritative after its history commit: it retires the callback once but keeps
+the archived queue row on the retired slot, so a late flush cannot erase queued
+work already written to History. A close that hands its key to a recreate
+commits through `_persist_handover_tail`, and retires the callbacks only when
+that write reports `rows_committed`. A failed tail leaves them unfired, so the
+manager keeps the delivery for restart orphan reconciliation. None of these
+paths recreates the recovery row. Session-mutation 409s keep their established running,
+queued, and active-handoff predicate and their `sub-agents are running` body. The goal-stop directives alone add owned
+terminal reports, runs still finalizing one, and accepted completion turns. A retained failure notice is
+future turn context rather than attached work. A one-shot discard first clears every report-only store marker or writes every
+result tombstone and reads back each one the writer persists
+(`tombstone_persists`); an incognito, temporary or released run gets none, so
+owes none. Failure keeps ordinary manager ownership for
+restart orphan reconciliation and records its reason in the SEL, without a
+second recovery ledger or refusal state. Callback
+transfer and discard are mutually exclusive, so no completion can
+settle twice.
+
 ## Stop Orchestration
 
 `stop_turn()` is the shared orchestration layer for every stop surface (dashboard Stop button, Slack `/kirocrew stop`, transport stop verbs). Sequence:

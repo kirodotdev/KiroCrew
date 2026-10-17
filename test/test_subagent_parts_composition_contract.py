@@ -879,7 +879,8 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "native_child_resume_refusal": ("method", "(self, conversation_id: 'str') -> 'str | None'"),
     "notify_injection_failed": (
         "method",
-        "(self, info: 'SubagentInfo', reason: 'str' = 'delivery timed out') -> 'None'",
+        "(self, info: 'SubagentInfo', reason: 'str' = 'delivery timed out') -> "
+        "'asyncio.Task | None'",
     ),
     "open_teardown_fence": ("method", "(self, parent_session_key: 'str') -> \"'set[str] | None'\""),
     "pending_work_count": ("property", ""),
@@ -906,12 +907,21 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
         "(self, batch_id: 'str', batch_total: 'int', reason: 'str', parent_session_key: 'str' = '') -> 'None'",
     ),
     "recorded_cwd": ("method", "(self, conv_id: 'str') -> 'str'"),
+    "release_completion_deliveries_for": ("method", "(self, parent_session_key: 'str') -> 'int'"),
+    "release_completion_delivery": (
+        "method",
+        "(self, parent_session_key: 'str', agent_id: 'str') -> 'None'",
+    ),
     "release_conversation": ("method", "(self, conv_id: 'str') -> 'tuple[bool, str]'"),
     "release_conversation_async": ("async method", "(self, conv_id: 'str') -> 'tuple[bool, str]'"),
     "release_queue_dispatch": ("method", "(self) -> 'None'"),
     "release_teardown_fence": (
         "method",
         "(self, parent_session_key: 'str', expected: \"'AbstractSet[str] | None'\" = None) -> 'None'",
+    ),
+    "retain_completion_delivery": (
+        "method",
+        "(self, parent_session_key: 'str', agent_id: 'str') -> 'None'",
     ),
     "retry_owed_teardown_sweeps": ("async method", "(self) -> 'int'"),
     "running": ("property", ""),
@@ -953,6 +963,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "start_reaper": ("method", "(self) -> 'None'"),
     "steer_run": ("async method", "(self, agent_id: 'str', message: 'str') -> 'tuple[bool, str]'"),
     "task_memory_rows": ("method", "(self) -> 'list[dict[str, object]]'"),
+    "terminal_delivery_inflight_for": ("method", "(self, parent_session_key: 'str') -> 'bool'"),
     "update_completion_keep": ("method", "(self, mode: 'str', max_chars: 'int') -> 'None'"),
     "user_max_concurrent": ("property", ""),
     "wait_taskq_ready": ("async method", "(self) -> 'None'"),

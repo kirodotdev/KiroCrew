@@ -242,20 +242,19 @@ def test_the_queue_row_matches_what_each_verb_does_to_the_queue(
     )
 
     assert (
-        "slot._queue.clear()" in handlers
+        "slot.queue_discard_all()" in handlers
     ), "the escalated stop no longer clears the queue; the row says it does"
-    # The soft-stop branch is pinned by SHAPE: exactly one ``_queue.clear()`` exists in
-    # these files and it sits in the hard-kill branch, so "the first stop preserves the
-    # queue" IS the absence of a second one. A comment string would go stale in both
-    # directions -- outliving the behaviour, or reworded while the behaviour holds.
+    # The soft-stop branch is pinned by SHAPE: exactly one destructive repository
+    # call exists in these files and it sits in the hard-kill branch, so "the first
+    # stop preserves the queue" IS the absence of a second one.
     assert (
-        handlers.count("_queue.clear()") == 1
-    ), "a second _queue.clear() appeared; only the escalated stop may clear the queue"
+        handlers.count("queue_discard_all()") == 1
+    ), "a second queue discard appeared; only the escalated stop may clear the queue"
     hard_kill = handlers.split("Stop (force): hard-killing session", 1)
     assert len(hard_kill) == 2, "the hard-kill branch marker moved"
     assert (
-        "_queue.clear()" in hard_kill[0].rsplit("if force", 1)[-1]
-    ), "the single _queue.clear() is no longer inside the force branch"
+        "queue_discard_all()" in hard_kill[0].rsplit("if force", 1)[-1]
+    ), "the single queue discard is no longer inside the force branch"
     # A tab rehydrated from disk hands its queued prompts back, sanitized: a
     # hand-added ``kind`` is not carried, and an entry the writer never emits is
     # dropped.

@@ -8,7 +8,9 @@ Covers:
 
 from __future__ import annotations
 
+import ast
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -59,6 +61,74 @@ class TestQueueHelpers:
         assert item["content"] == "first"
         assert slot._queue[0]["content"] == "second"
 
+    def test_discard_callback_runs_only_for_discard_not_consumption(self):
+        slot = _ChatSlot("s1")
+        discarded: list[str] = []
+        consumed_id = slot.queue_insert(
+            0, "consume", on_discarded=lambda: discarded.append("consumed")
+        )
+        discarded_id = slot.queue_insert(
+            1, "discard", on_discarded=lambda: discarded.append("discarded")
+        )
+
+        assert slot.queue_pop(0)["id"] == consumed_id
+        assert discarded == []
+        assert slot.queue_remove_by_id(discarded_id) == "discard"
+        assert discarded == ["discarded"]
+
+    def test_bulk_discard_retires_each_callback_once(self):
+        slot = _ChatSlot("s1")
+        discarded: list[str] = []
+        slot.queue_insert(0, "one", on_discarded=lambda: discarded.append("one"))
+        slot.queue_insert(1, "two", on_discarded=lambda: discarded.append("two"))
+
+        removed = slot.queue_discard_all()
+
+        assert [item["content"] for item in removed] == ["one", "two"]
+        assert discarded == ["one", "two"]
+        assert slot._queue == []
+        assert slot.queue_discard_all() == []
+        assert discarded == ["one", "two"], "callbacks must be one-shot"
+
+    def test_bulk_retire_preserves_archived_rows_and_is_one_shot(self):
+        slot = _ChatSlot("s1")
+        discarded: list[str] = []
+        slot.queue_insert(0, "one", on_discarded=lambda: discarded.append("one"))
+        slot.queue_append("two")
+
+        retired = slot.queue_retire_all()
+
+        assert [item["content"] for item in retired] == ["one", "two"]
+        assert [item["content"] for item in slot._queue] == ["one", "two"]
+        assert discarded == ["one"]
+        assert slot.queue_retire_all() == slot._queue
+        assert discarded == ["one"], "callbacks must be one-shot"
+
+    def test_discard_by_ids_retires_only_rows_still_present(self):
+        slot = _ChatSlot("s1")
+        discarded: list[str] = []
+        first = slot.queue_insert(0, "first", on_discarded=lambda: discarded.append("first"))
+        second = slot.queue_insert(1, "second", on_discarded=lambda: discarded.append("second"))
+        slot.queue_append("keep")
+
+        assert slot.queue_remove_by_id(first) == "first"
+        removed = slot.queue_discard_by_ids({first, second})
+
+        assert [item["id"] for item in removed] == [second]
+        assert [item["content"] for item in slot._queue] == ["keep"]
+        assert discarded == ["first", "second"]
+
+    def test_discard_callback_failure_does_not_restore_the_row(self):
+        slot = _ChatSlot("s1")
+
+        def _reject() -> None:
+            raise RuntimeError("retirement unavailable")
+
+        queue_id = slot.queue_insert(0, "discard", on_discarded=_reject)
+
+        assert slot.queue_remove_by_id(queue_id) == "discard"
+        assert slot._queue == []
+
     def test_queue_remove_by_id_found(self):
         slot = _ChatSlot("s1")
         slot.queue_append("keep")
@@ -90,6 +160,70 @@ class TestQueueHelpers:
         assert content == "same text"
         assert len(slot._queue) == 1
         assert slot._queue[0]["id"] == id1
+
+
+_SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
+_QUEUE_REPOSITORY = _SRC_ROOT / "dashboard" / "slot_queue_repository.py"
+
+
+def _is_queue_attr(node: ast.AST) -> bool:
+    return isinstance(node, ast.Attribute) and node.attr == "_queue"
+
+
+def _is_full_slice(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Subscript)
+        and _is_queue_attr(node.value)
+        and isinstance(node.slice, ast.Slice)
+        and node.slice.lower is None
+        and node.slice.upper is None
+    )
+
+
+def _queue_wipes(tree: ast.AST) -> list[int]:
+    """Lines that empty an existing ``<owner>._queue`` in place."""
+    lines = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "clear"
+            and _is_queue_attr(node.func.value)
+        ):
+            lines.append(node.lineno)
+        elif isinstance(node, ast.Delete) and any(_is_full_slice(t) for t in node.targets):
+            lines.append(node.lineno)
+        elif (
+            isinstance(node, ast.Assign)
+            and any(_is_full_slice(t) for t in node.targets)
+            and isinstance(node.value, ast.List)
+            and not node.value.elts
+        ):
+            lines.append(node.lineno)
+    return lines
+
+
+def test_only_the_queue_repository_empties_a_slot_queue_in_place():
+    """A queued sub-agent completion's discard callback releases its stop fence.
+
+    Only the repository's discard paths run that callback, so a wipe anywhere
+    else drops the row with its ledger count still held and leaves every later
+    agent ``autonudge_stop``/``monitor_stop`` on the parent refused.
+    """
+    offenders = []
+    for path in sorted(_SRC_ROOT.rglob("*.py")):
+        if path == _QUEUE_REPOSITORY:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        offenders.extend(f"{path.relative_to(_SRC_ROOT)}:{line}" for line in _queue_wipes(tree))
+    assert offenders == [], "route these through slot.queue_discard_all(): " + ", ".join(offenders)
+
+
+def test_the_queue_wipe_scan_sees_each_wipe_shape():
+    tree = ast.parse("slot._queue.clear()\ndel slot._queue[:]\nslot._queue[:] = []\n")
+    assert sorted(_queue_wipes(tree)) == [1, 2, 3]
+    assert _queue_wipes(ast.parse("del slot._queue[:2]\nslot._queue[:] = kept\n")) == []
+    assert _queue_wipes(ast.parse(_QUEUE_REPOSITORY.read_text(encoding="utf-8"))) != []
 
 
 # ── API tests: DELETE /api/chat/slots/{slot}/queue/{queue_id} ──
