@@ -67,13 +67,13 @@ export function loadGoalDraft(slot: string): GoalDraft | null {
 
 /** Remember (or clear) the goal draft for `slot`. Pass `null` — or a draft with
  *  a blank message — to drop the slot; the caller uses this to avoid pinning the
- *  pristine default template. */
-export function saveGoalDraft(slot: string, draft: GoalDraft | null): void {
+ *  pristine default template. Returns whether the storage write succeeded. */
+export function saveGoalDraft(slot: string, draft: GoalDraft | null): boolean {
   const drafts = store.load()
   // A blank message sanitizes to null, which makes `set` delete the slot — so a
   // null/empty draft is the uniform "forget this slot" path.
   store.set(drafts, slot, draft ?? { message: '', idleSecs: 0, maxCycles: 0 })
-  store.save(drafts)
+  return store.save(drafts)
 }
 
 /** @internal test-only: reset module state between tests. `undefined` in the

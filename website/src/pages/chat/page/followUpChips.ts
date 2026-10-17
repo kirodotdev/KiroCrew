@@ -38,7 +38,7 @@ export function useFollowUpChips({
   // Swapping chats (activeSlot change) → messages change → memo recomputes fresh.
   // A pending question card suppresses them: both would offer the same choices in
   // the same band, and only the card can answer the blocked tool call.
-  const { followUpOptions, followUpSourceKey, followUpMulti } = useMemo(
+  const { followUpOptions, followUpGoal, followUpSourceKey, followUpMulti } = useMemo(
     () => deriveFollowUpOptions(messages, isStreaming, !!pendingQuestion),
     [messages, isStreaming, pendingQuestion],
   )
@@ -71,7 +71,7 @@ export function useFollowUpChips({
     clearFollowUpOwnership(); setInput(v)
     if (!prefillEditedRef.current) setPrefillEdited(true)
   }, [clearFollowUpOwnership, setInput, setPrefillEdited])
-  const followUpOptionsKey = followUpOptions.join('\x00')
+  const followUpOptionsKey = [followUpGoal ?? '', ...followUpOptions].join('\x00')
   // A single-select offer is keyed on its source row too: a newer reply can repeat
   // the same labels, and a single-select pick must not replace text the user picked
   // from the older offer. Multi-select rows keep the label-only reset.
@@ -108,7 +108,7 @@ export function useFollowUpChips({
     }
   }
   return {
-    followUpOptions, followUpSourceKey, followUpMulti,
+    followUpOptions, followUpGoal, followUpSourceKey, followUpMulti,
     followUpPicked, followUpPickedRef, toggleFollowUpOption,
     composerRootChange, composerUserEdit,
   }

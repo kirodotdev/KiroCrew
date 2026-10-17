@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config.loader import resolve_effective_agent
-from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.constants import OPTIONS_RE_LINE, strip_goal_marker_lines
 from kiro_crew.dashboard.state_parts.source_links import (
     _budgeted_source_links,
     _project_source_links,
@@ -597,7 +597,7 @@ def to_dict(
         transient_roles=_TRANSIENT_ROLES,
         redact=_redact,
         parse_options=_parse_options,
-        strip_options=lambda text: _OPTIONS_RE.sub("", text).strip(),
+        strip_options=lambda text: strip_goal_marker_lines(_OPTIONS_RE.sub("", text)).strip(),
         parse_cls_meta=parse_cls_meta,
         is_turn_interrupted=is_turn_interrupted,
         is_system_notice=is_system_notice,

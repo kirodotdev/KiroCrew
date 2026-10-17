@@ -66,6 +66,12 @@ class TestStripMarkdown:
         assert strip_markdown("<https://example.com|Example>") == "Example"
         assert strip_markdown("<https://example.com>") == "(link)"
 
+    def test_goal_marker_with_a_bare_url_is_removed_before_url_cleanup(self) -> None:
+        assert (
+            strip_markdown("Before.\n[GOAL: Monitor https://example.com/health]")
+            == "Before."
+        )
+
     def test_removes_markdown_links(self) -> None:
         assert strip_markdown("[click](https://example.com)") == "click"
 
@@ -92,6 +98,9 @@ class TestStripMarkdown:
 
     def test_preserves_plain_text(self) -> None:
         assert strip_markdown("hello world") == "hello world"
+
+    def test_does_not_speak_goal_card_marker(self) -> None:
+        assert strip_markdown("Next step.\n[GOAL: Deliver it]") == "Next step."
 
     def test_removes_control_tag_comments(self) -> None:
         # Trailing control-tag LINES are stripped — the tail-anchored grammar

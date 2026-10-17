@@ -4,6 +4,7 @@ import { isStopEvent } from '../../lib/stopEvent'
 import { isRetryNotice } from '../../lib/retryNotice'
 import { isNoteRow } from '../../lib/noteContract'
 import { findLastOptionMarker, stripOptionMarkers } from './optionMarker'
+import { parseGoalSuggestion } from './goalMarker'
 
 /** A message split into the prose the user reads and the choices offered alongside it. */
 export interface ParsedOptions {
@@ -11,18 +12,28 @@ export interface ParsedOptions {
   text: string
   /** Choices from the LAST marker, in the order the agent listed them. */
   options: string[]
+  /** Objective from the last standalone `[GOAL: ...]` marker, if present. */
+  goalSuggestion: string | null
   /** `[OPTIONS:]` allows several picks; `[OPTION:]` is a single choice. */
   multi: boolean
 }
 
 export function parseOptions(content: string): ParsedOptions {
+  const { text: contentWithoutGoals, goalSuggestion } = parseGoalSuggestion(content)
   // `findLastOptionMarker` applies BOTH halves of the grammar: the pattern that finds
   // candidates, and the check that a candidate's terminating closer is its own rather
   // than an unmatched opener's partner. The pattern is module-private precisely so
   // this cannot be done by halves. It also clones the regex per call, so the g-flag
   // `lastIndex` hazard is no longer a caller's problem to remember.
-  const last = findLastOptionMarker(content)
-  if (!last || last.index === undefined) return { text: content, options: [], multi: true }
+  const last = findLastOptionMarker(contentWithoutGoals)
+  if (!last || last.index === undefined) {
+    return {
+      text: goalSuggestion ? contentWithoutGoals.trim() : content,
+      options: [],
+      goalSuggestion,
+      multi: true,
+    }
+  }
   // The marker pattern is a two-branch alternation (line-anchored-with-wrappers
   // vs mid-line): groups 1/2 belong to the first branch, 3/4 to the second, and
   // exactly one pair is defined per match. `??` (not `||`) so an empty label
@@ -32,20 +43,21 @@ export function parseOptions(content: string): ParsedOptions {
   const sep = labels.includes('|') ? '|' : ','
   const options = labels.split(sep).map(o => o.trim()).filter(Boolean)
   // Strip ALL accepted markers from the displayed text (not just the last) so a stray
-  // earlier marker can't leak as raw "[OPTION: …]" syntax to the user; options still
-  // come from the LAST marker (computed above). A REFUSED candidate is deliberately
-  // left in place — it is prose the user should still see, and removing it is the
-  // defect the check exists to prevent.
-  const text = stripOptionMarkers(content).trim()
-  return { text, options, multi }
+  // earlier marker can't leak as raw syntax to the user; options still come from the
+  // LAST marker (computed above). A REFUSED candidate is deliberately left in place —
+  // it is prose the user should still see, and removing it is the defect the check
+  // exists to prevent.
+  const text = stripOptionMarkers(contentWithoutGoals).trim()
+  return { text, options, goalSuggestion, multi }
 }
 
 export interface FollowUpDerivation {
   followUpOptions: string[]
+  followUpGoal: string | null
   /**
-   * Identity of the row the options were derived from — `meta.mid` when
+   * Identity of the row the actions were derived from — `meta.mid` when
    * present, else the row's `ts`, else an index fallback. `null` when no
-   * options are on offer (streaming, question pending, user boundary, none).
+   * actions are on offer (streaming, question pending, user boundary, none).
    *
    * Consumers that must know whether the CHIPS THEMSELVES changed — not just
    * their labels — compare this instead of the option labels: two consecutive
@@ -59,6 +71,15 @@ export interface FollowUpDerivation {
    * options are on offer, so a caller that ignores it keeps multi-select.
    */
   followUpMulti: boolean
+}
+
+/**
+ * Hosts without the Set-a-goal control preserve a suggested objective as an
+ * ordinary reply instead of dropping it or promising autonomy they cannot arm.
+ */
+export function goalSuggestionReplyFallback(options: string[], goal: string | null): string[] {
+  if (!goal || options.includes(goal)) return options
+  return [goal, ...options]
 }
 
 /**
@@ -85,6 +106,13 @@ const rowIdentity = (m: ChatMessage, i: number): string =>
   ?? (m.meta?.mid as string | undefined)
   ?? m.ts
   ?? `idx:${i}`
+
+const noFollowUp = (): FollowUpDerivation => ({
+  followUpOptions: [],
+  followUpGoal: null,
+  followUpSourceKey: null,
+  followUpMulti: true,
+})
 
 /**
  * Derive the follow-up `[OPTIONS:]` buttons for the current chat by scanning
@@ -143,7 +171,7 @@ export function deriveFollowUpOptions(
   isStreaming: boolean,
   questionPending = false,
 ): FollowUpDerivation {
-  if (isStreaming || questionPending) return { followUpOptions: [], followUpSourceKey: null, followUpMulti: true }
+  if (isStreaming || questionPending) return noFollowUp()
   // Errors were already transparent here (no branch matched them); the flag is
   // what makes that transparency mean something.
   let sawError = false
@@ -151,15 +179,15 @@ export function deriveFollowUpOptions(
     const m = messages[i]
     // A deliberate Stop ENDS the turn rather than interrupting it, so the choice is closed
     // by the user's own cancellation — the error licence below must not reach back past it.
-    if (isStopEvent(m)) return { followUpOptions: [], followUpSourceKey: null, followUpMulti: true }
+    if (isStopEvent(m)) return noFollowUp()
     // Only a TERMINAL error licenses a crossing. A retry notice means the recovery is
     // already queued, so re-offering the pill would run the same choice a second time.
     if (m.role === 'error') { if (!isRetryNotice(m)) sawError = true; continue }
     // `queued` is an UNCONDITIONAL stop: its queue entry OUTLIVES the error (only a hard
     // kill clears the queue), so re-offering the pill would run the choice a second time.
-    if (m.role === 'queued') return { followUpOptions: [], followUpSourceKey: null, followUpMulti: true }
+    if (m.role === 'queued') return noFollowUp()
     if (m.role === 'user') {
-      if (!sawError) return { followUpOptions: [], followUpSourceKey: null, followUpMulti: true }
+      if (!sawError) return noFollowUp()
       // Cross this failed turn and keep looking. Re-armed only by another error,
       // so a SUCCESSFUL turn further back still stops the scan.
       sawError = false
@@ -170,22 +198,32 @@ export function deriveFollowUpOptions(
     // `isNoteRow` also matches a rehydrated note, whose class the history format drops.
     if (m.role === 'inject' && isNoteRow(m) && m.content) {
       const parsed = parseOptions(m.content)
-      if (parsed.options.length) {
+      if (parsed.options.length || parsed.goalSuggestion) {
         // A note row still gets an identity: the bar keys its render off it, and a note whose
-        // options never re-key would let a later identical note reuse the earlier row's key.
-        return { followUpOptions: parsed.options, followUpSourceKey: rowIdentity(m, i), followUpMulti: parsed.multi }
+        // actions never re-key would let a later identical note reuse the earlier row's key.
+        return {
+          followUpOptions: parsed.options,
+          followUpGoal: parsed.goalSuggestion,
+          followUpSourceKey: rowIdentity(m, i),
+          followUpMulti: parsed.options.length > 0 ? parsed.multi : true,
+        }
       }
       continue
     }
     if (m.role === 'assistant' && m.content) {
-      const { options, multi } = parseOptions(m.content)
+      const { options, goalSuggestion, multi } = parseOptions(m.content)
       // A failed turn can flush the text it streamed as a real assistant row before the
-      // error, and that option-less row shadowed the question exactly as the `user` row did.
+      // error, and that action-less row shadowed the question just as the `user` row did.
       // Crossing does NOT consume the error licence: the `user` row below still needs it.
-      if (!options.length && sawError) continue
-      const followUpSourceKey = options.length > 0 ? rowIdentity(m, i) : null
-      return { followUpOptions: options, followUpSourceKey, followUpMulti: options.length > 0 ? multi : true }
+      if (!options.length && !goalSuggestion && sawError) continue
+      const followUpSourceKey = options.length > 0 || goalSuggestion ? rowIdentity(m, i) : null
+      return {
+        followUpOptions: options,
+        followUpGoal: goalSuggestion,
+        followUpSourceKey,
+        followUpMulti: options.length > 0 ? multi : true,
+      }
     }
   }
-  return { followUpOptions: [], followUpSourceKey: null, followUpMulti: true }
+  return noFollowUp()
 }
