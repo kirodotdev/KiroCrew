@@ -136,6 +136,7 @@ from kiro_crew.dashboard.crash_dump_store import (  # noqa: F401
     dump_superseded,
     dumps_with_stacks,
     get_dumps_dir,
+    last_boots,
     newest_dump_with_stacks,
 )
 from kiro_crew.dashboard.origin import (  # noqa: F401
@@ -2296,6 +2297,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Loop-stall crash dumps ──
     workload._doctor_crash_dumps(issues)
+
+    # ── Gateway boots (information only: no issues list) ──
+    workload._doctor_last_boots()
 
     # ── Connectivity ──
     print("\nConnectivity")

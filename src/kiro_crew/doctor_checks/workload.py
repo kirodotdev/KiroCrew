@@ -487,3 +487,34 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
         print(f"  dump dir:    {dumps_dir}")
     except Exception as exc:
         print(f"  crash dumps: ⚠️  check failed ({exc})")
+
+
+def _doctor_last_boots() -> None:
+    """Render the ``Gateway Boots`` section: the newest five retained crash-dump files, one per gateway start.
+
+    The rows are the newest five dump files left after the start-up sweep and the rotation. They
+    may show the retained stalls and newest start, but they are not a complete boot history. The
+    newest header-only file is labelled by identity-aware proof about its writer (``running``,
+    ``not running`` or ``unknown``), the rest by what the file shows.
+
+    Information only. It takes no ``issues`` list, so it cannot add one: a run of stalls turns the
+    report red through the repeated-stall issue in :func:`_doctor_crash_dumps` (two or more dumps
+    with stacks), and that stays the one place it happens. Silent when no dump is retained.
+    """
+    try:
+        boots = cli_doctor.last_boots(cli_doctor.get_dumps_dir())
+    except Exception:
+        print("\nGateway Boots")
+        print("  boots:       ⚠️  could not read the retained crash dumps")
+        return
+    if not boots:
+        return
+    print("\nGateway Boots")
+    print("  boots:       newest first, one per retained crash dump")
+    render._print_wrapped(
+        "The newest five retained crash-dump files are shown, one per gateway start. They are the "
+        "retained stalls and newest start within that slice, not a complete boot history."
+    )
+    for started, state in boots:
+        stamp = "time unknown" if started is None else started.strftime("%Y-%m-%dT%H:%M:%SZ")
+        print(f"    {stamp}  {state}")
