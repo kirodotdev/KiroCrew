@@ -179,6 +179,8 @@
     "withheldManaged": "{{productName}} 会自行重建这个连接，重建后的连接不保留批准。",
     "withheldUnexplained": "{{productName}} 不会保存这个批准，也没有已知设置能解释原因。请把它作为缺陷报告。",
     "withheldOpenTab": "打开 MCP 服务器标签页（保留草稿）",
+    "platformOffer": "添加目标工具（{{server}}）",
+    "platformOfferHelp": "让 {{name}} 能提出自己的目标、里程碑和定期检查，并跟踪自己的进展。它的父模板不包含这些工具。保存后，该服务器、其工具及对应的批准会添加到 {{name}} 自己的副本中。",
     "permissionsReview": "此页面无法修改 {{member}} 的审批设置：它在 ~/.kiro/agents 中的 agent 文件含有手写权限设置。请移除这些设置，然后点击“从服务器重新加载”。草稿仍保留。这些设置包括：手动编辑过 permissions 块、autoAllowReadonly，以及 toolsSettings 中 allowed/trusted 列表。",
     "unsupported": "此服务器不支持能力编辑器。",
     "failed": "能力请求失败。草稿已保留。请从服务器重新加载后重试。",

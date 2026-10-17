@@ -815,7 +815,9 @@ and refuses outside its own dashboard turn. A crewmate created on a template
 that lacks the server gets it on its own private copy at creation
 (`member_mate_tools.grant_mate_tools_to_new_member`, through the capability
 editor), with the default template's transport and the same grants; its other
-fields keep following the template.
+fields keep following the template. An existing crewmate on such a template is
+offered the same rows on its Capabilities page (the MCP Servers tab), and gets
+them on the same terms once you turn the offer on and save.
 
 `rebuild_agent_config` creates the first crewmate (`mate`, shown as
 Mate) once, bound to the same template a crewmate you create gets, with its

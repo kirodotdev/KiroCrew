@@ -292,6 +292,8 @@
     "withheldManaged": "O {{productName}} reconstrói esta conexão por conta própria, e a conexão reconstruída não mantém aprovações.",
     "withheldUnexplained": "O {{productName}} não vai salvar esta aprovação, e nenhuma configuração conhecida explica o motivo. Relate isso como um bug.",
     "withheldOpenTab": "Abrir a aba Servidores MCP (mantém seu rascunho)",
+    "platformOffer": "Adicionar as ferramentas de metas ({{server}})",
+    "platformOfferHelp": "Permite que {{name}} proponha sua meta, seus marcos e seus acompanhamentos e registre seu progresso. O modelo pai não inclui essas ferramentas. Ao salvar, o servidor, suas ferramentas e as aprovações delas são adicionados à cópia própria de {{name}}.",
     "permissionsReview": "Esta página não consegue alterar as aprovações de {{member}}: o arquivo de agente dele em ~/.kiro/agents tem configurações de permissão escritas à mão. Remova-as e depois pressione Recarregar do servidor. Seu rascunho foi mantido. As configurações são um bloco permissions editado à mão, autoAllowReadonly ou uma lista allowed ou trusted em toolsSettings.",
     "unreviewableDrift": "O arquivo de agente {{file}} de {{member}} foi editado fora desta página em uma configuração que esta página não consegue mostrar, então esta página não consegue gravar a correção e Revisar alterações fica desativado. Desfaça essa edição externa em ~/.kiro/agents/{{file}} e depois pressione Recarregar do servidor."
   },

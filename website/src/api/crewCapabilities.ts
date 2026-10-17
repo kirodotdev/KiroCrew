@@ -28,6 +28,18 @@ export interface CapabilityView {
   detach_blocked?: 'detach_tool_limits_unkept' | 'detach_removal_unkept' | null
   /** Stopping would turn the global mcp.json merge off for the kept copy; the owner confirms it. */
   detach_mcp_json_loss?: boolean
+  /** Platform servers this member and its Parent both lack, offered as opt-ins.
+   * Only the loaded view carries them, never a preview. */
+  platform_offers?: CapabilityPlatformOffer[]
+}
+/** A platform server (`kirocrew-mate`) the member's spec lacks. `operations` are
+ * the rows a crewmate gets at creation (the server, its tools reference and its
+ * approvals); `value` is the entry its copy would carry, for display only: the
+ * save takes the transport from the server, never from the draft. */
+export interface CapabilityPlatformOffer {
+  id: string
+  value: unknown
+  operations: CapabilityOperation[]
 }
 export interface CapabilityBackendWarning {
   code: 'harness_unsupported' | 'tool_limits_unsupported'

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Trans, useTranslation } from 'react-i18next'
 import { ApiError } from '../../api/apiError'
-import { capabilityKey, crewCapabilitiesApi, crewCapabilitiesKey, type CapabilityBackendWarning, type CapabilityDraft, type CapabilityOperation, type CapabilityPreview, type CapabilityRef, type CapabilityRow, type CapabilitySection } from '../../api/crewCapabilities'
+import { capabilityKey, crewCapabilitiesApi, crewCapabilitiesKey, type CapabilityBackendWarning, type CapabilityDraft, type CapabilityOperation, type CapabilityPlatformOffer, type CapabilityPreview, type CapabilityRef, type CapabilityRow, type CapabilitySection } from '../../api/crewCapabilities'
 import { Badge, Btn, Checkbox, Input, PanelSectionHeader, SendBtn } from '../ui'
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '../ui/dialog'
 import ErrorNotice from '../ErrorNotice'
@@ -227,9 +227,18 @@ export default function CrewCapabilitiesPane({ member, members = [], hidden, onD
     if (Object.keys(value).length === 1 && typeof value.disabled === 'boolean') return false
     return typeof (value.command ?? value.url) !== 'string' || !(value.command ?? value.url)
   })
+  const offers = view?.platform_offers ?? []
   const rows: CapabilityRow[] = [...(view?.rows ?? [])]
   for (const op of operations) {
-    if (!rows.some(row => capabilityKey(row) === capabilityKey(op))) rows.push({ ...op, label: (op.section === 'skills' ? view?.skills : view?.connections)?.find(item => item.id === op.id)?.label ?? op.id, state: 'local', present: true, value: op.action === 'set' && 'value' in op ? op.value : true })
+    // An offered platform server shows as the managed row it becomes once saved.
+    const offer = op.section === 'mcpServers' ? offers.find(item => item.id === op.id) : undefined
+    if (!rows.some(row => capabilityKey(row) === capabilityKey(op))) rows.push({ ...op, label: (op.section === 'skills' ? view?.skills : view?.connections)?.find(item => item.id === op.id)?.label ?? op.id, state: 'local', present: true, value: offer ? offer.value : op.action === 'set' && 'value' in op ? op.value : true, ...(offer ? { managed: true } : {}) })
+  }
+  // Ticking an offer adds all of its rows and unticking drops them all; other edits stay.
+  const offerAdded = (offer: CapabilityPlatformOffer) => offer.operations.every(op => operations.some(item => capabilityKey(item) === capabilityKey(op)))
+  const toggleOffer = (offer: CapabilityPlatformOffer, checked: boolean) => {
+    const keys = new Set(offer.operations.map(capabilityKey))
+    edit(current => ({ ...current, operations: [...current.operations.filter(op => !keys.has(capabilityKey(op))), ...(checked ? offer.operations : [])] }))
   }
   const visibleSections: CapabilitySection[] = category === 'autoApprove' ? ['allowedTools', 'autoApprove'] : [category]
   const addReference = () => {
@@ -312,6 +321,16 @@ export default function CrewCapabilitiesPane({ member, members = [], hidden, onD
           </div>
           <div className="shrink-0 overflow-x-auto border-b border-border pb-2"><Tablist tabs={CATEGORIES.map(key => ({ key, label: t(CATEGORY_KEYS[key]) }))} value={category} onChange={setCategory} ariaLabel={t('crewCapabilities.title')} /></div>
           <fieldset disabled={!enabled || busy} className="min-w-0">
+            {category === 'mcpServers' && offers.map(offer => {
+              const id = `crew-capabilities-offer-${offer.id}`
+              return <label key={offer.id} htmlFor={id} className="mb-3 flex items-start gap-2 rounded-md border border-border p-3 text-[13px]" data-testid={`capability-offer-${offer.id}`}>
+                <Checkbox id={id} aria-labelledby={`${id}-label`} aria-describedby={`${id}-help`} checked={offerAdded(offer)} disabled={!enabled || busy} onChange={e => toggleOffer(offer, e.target.checked)} />
+                <span className="min-w-0 break-words">
+                  <span id={`${id}-label`} className="block">{t('crewCapabilities.platformOffer', { server: offer.id })}</span>
+                  <span id={`${id}-help`} className="mt-1 block text-[12px] text-muted">{t('crewCapabilities.platformOfferHelp', { name: member })}</span>
+                </span>
+              </label>
+            })}
             {category === 'mcpServers' && <SearchableSelect aria-label={t('crewCapabilities.connection')} triggerFallback={t('crewCapabilities.connection')} value="" disabled={!enabled || busy} options={view.connections.map(item => ({ value: item.id, label: item.label, disabled: item.managed, sublabel: item.managed ? t('crewCapabilities.managed') : undefined }))} onChange={id => changeRow({ section: 'mcpServers', id, action: 'set', connection_id: id })} modal />}
             {category === 'mcpServers' && <div className="mt-3 flex flex-col gap-2">
               <label className="text-[13px]">{t('crewCapabilityEditing.connectionName')}<Input value={connectionName} onChange={e => { setConnectionName(e.target.value); setPreview(null); setReviewedRequest(null) }} /></label>

@@ -292,6 +292,8 @@
     "withheldManaged": "{{productName}} ricostruisce da sé questa connessione, e la connessione ricostruita non conserva approvazioni.",
     "withheldUnexplained": "{{productName}} non salverà questa approvazione, e nessuna impostazione nota spiega perché. Segnalalo come bug.",
     "withheldOpenTab": "Apri la scheda Server MCP (mantiene la bozza)",
+    "platformOffer": "Aggiungi gli strumenti per gli obiettivi ({{server}})",
+    "platformOfferHelp": "Permette a {{name}} di proporre il proprio obiettivo, i traguardi e le verifiche periodiche e di tenere traccia dei progressi. Il modello padre non include questi strumenti. Salvando, il server, i suoi strumenti e le relative approvazioni vengono aggiunti alla copia propria di {{name}}.",
     "permissionsReview": "Questa pagina non può modificare le approvazioni di {{member}}: il suo file agente in ~/.kiro/agents contiene impostazioni di permessi scritte a mano. Rimuovile, poi premi Ricarica dal server. La tua bozza è conservata. Si tratta di un blocco permissions modificato a mano, di autoAllowReadonly o di un elenco allowed o trusted in toolsSettings.",
     "unreviewableDrift": "Il file agente {{file}} di {{member}} è stato modificato fuori da questa pagina in un’impostazione che questa pagina non può mostrare, quindi questa pagina non può scrivere la correzione e Rivedi le modifiche resta disattivato. Annulla quella modifica esterna in ~/.kiro/agents/{{file}}, poi premi Ricarica dal server."
   },
