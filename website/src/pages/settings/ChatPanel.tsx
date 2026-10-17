@@ -22,6 +22,7 @@ import { useChatPanelDashboard } from './useChatPanelDashboard'
 import { useChatPanelTypedFields } from './useChatPanelTypedFields'
 import { chatPanelConfigOpts, useChatPanelFallbackModels, useChatPanelModelDefaults } from './useChatPanelModels'
 import { AppModelsSection } from './AppModelsSection'
+import { KiroHarnessFallbackNote } from './KiroHarnessFallbackNote'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { useDiffSplit } from '../../hooks/useDiffSplit'
 import { EFFORT_LEVELS } from '../../lib/effort'
@@ -581,8 +582,10 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
         </SettingsCard>
         </div>
 
+        <h4 className="text-base font-semibold text-text-strong mb-2">{i18nT('pages.settings.chatPanel.fallbacks')}</h4>
+        <KiroHarnessFallbackNote cfg={mcCfg} />
         <div className="mb-8">
-        <h4 className="text-base font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.throttle_fallback')}</h4>
+        <h5 className="text-sm font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.throttle_fallback')}</h5>
         <div className="text-[12px] text-muted mb-1">{i18nT('pages.settings.chatPanel.model_tried_when_your_current_model_stays_rate_li')}</div>
         <SettingsCard index={3}>
           <SettingsSelect
@@ -599,7 +602,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
         </div>
 
         <div>
-        <h4 className="text-base font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.refusal_fallback')}</h4>
+        <h5 className="text-sm font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.refusal_fallback')}</h5>
         <div className="text-[12px] text-muted mb-1">{i18nT('pages.settings.chatPanel.refusal_fallback_desc')}</div>
         <SettingsCard index={4}>
           <SettingsSelect

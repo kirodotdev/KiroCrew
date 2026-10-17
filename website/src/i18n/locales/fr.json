@@ -16741,7 +16741,11 @@
         "turn_time_limit_description": "Durée maximale d’un tour de chat avant son arrêt. De 300 à 86 400 s (24 h). Par défaut 14 400 s (4 h).",
         "turn_time_limit_hint": "Un tour qui atteint cette limite s’arrête et garde le travail déjà écrit sur le disque ; reprends-le pour continuer. Augmente-la pour les longs tours sans surveillance, comme une suite de tests complète. S’applique dès le tour suivant.",
         "failed_to_save_compaction_wait_budget": "Impossible d'enregistrer le délai d'attente du compactage",
-        "failed_to_save_turn_time_limit": "Impossible d’enregistrer la durée maximale d’un tour"
+        "failed_to_save_turn_time_limit": "Impossible d’enregistrer la durée maximale d’un tour",
+        "kiro_harness_fallback_body": "Avec un harness Kiro, les replis que tu gères sur app.kiro.dev s’exécutent d’abord, dans le harness. Les replis ci-dessous sont propres à {{productName}} et ne s’exécutent que si le tour échoue encore ensuite.",
+        "kiro_harness_fallback_link": "Gérer les replis Kiro",
+        "kiro_harness_fallback_title": "Les replis du harness Kiro s’appliquent d’abord",
+        "fallbacks": "Replis"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilité",

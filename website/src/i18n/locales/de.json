@@ -16476,7 +16476,11 @@
         "turn_time_limit_description": "Wie lange ein Chat-Zug höchstens laufen darf, bevor er gestoppt wird. 300 bis 86.400 s (24 h). Standard 14.400 s (4 h).",
         "turn_time_limit_hint": "Ein Zug, der dieses Limit erreicht, stoppt; bereits auf die Festplatte geschriebene Arbeit bleibt erhalten. Nimm ihn wieder auf, um weiterzumachen. Erhöhe das Limit für lange unbeaufsichtigte Züge wie vollständige Testläufe. Gilt ab dem nächsten Zug.",
         "failed_to_save_compaction_wait_budget": "Wartezeit für Verdichtung konnte nicht gespeichert werden",
-        "failed_to_save_turn_time_limit": "Zeitlimit pro Zug konnte nicht gespeichert werden"
+        "failed_to_save_turn_time_limit": "Zeitlimit pro Zug konnte nicht gespeichert werden",
+        "kiro_harness_fallback_body": "Bei einem Kiro-Harness laufen die auf app.kiro.dev verwalteten Fallbacks zuerst, innerhalb des Harness. Die Fallbacks unten gehören zu {{productName}} und greifen nur, wenn der Turn danach weiterhin fehlschlägt.",
+        "kiro_harness_fallback_link": "Kiro-Fallbacks verwalten",
+        "kiro_harness_fallback_title": "Kiro-Harness-Fallbacks gelten zuerst",
+        "fallbacks": "Fallbacks"
       },
       "computerUsePanel": {
         "accessibility": "Bedienungshilfen",

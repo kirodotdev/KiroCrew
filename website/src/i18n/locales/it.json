@@ -16741,7 +16741,11 @@
         "turn_time_limit_description": "Durata massima di un turno di chat prima che venga fermato. Da 300 a 86.400 s (24 h). Predefinito 14.400 s (4 h).",
         "turn_time_limit_hint": "Un turno che raggiunge questo limite si ferma e conserva il lavoro già scritto su disco; riprendilo per continuare. Aumentalo per turni lunghi non presidiati, come intere suite di test. Vale dal turno successivo.",
         "failed_to_save_compaction_wait_budget": "Impossibile salvare il tempo di attesa della compattazione",
-        "failed_to_save_turn_time_limit": "Impossibile salvare il limite di tempo per turno"
+        "failed_to_save_turn_time_limit": "Impossibile salvare il limite di tempo per turno",
+        "kiro_harness_fallback_body": "Con un harness Kiro, le riserve che gestisci su app.kiro.dev vengono eseguite per prime, all'interno dell'harness. Le riserve qui sotto sono proprie di {{productName}} e si attivano solo se il turno non riesce ancora dopo.",
+        "kiro_harness_fallback_link": "Gestisci le riserve Kiro",
+        "kiro_harness_fallback_title": "Le riserve dell'harness Kiro si applicano per prime",
+        "fallbacks": "Riserve"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilità",

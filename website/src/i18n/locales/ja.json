@@ -16211,7 +16211,11 @@
         "turn_time_limit_description": "1 回のチャットターンが停止されるまでに実行できる最長時間。300〜86,400 秒（24 時間）。既定は 14,400 秒（4 時間）。",
         "turn_time_limit_hint": "この制限に達したターンは停止しますが、ディスクに書き込まれた作業は残ります。再開すると続きから進みます。テストスイート全体の実行など、長時間の無人ターンでは値を上げてください。次のターンから適用されます。",
         "failed_to_save_compaction_wait_budget": "圧縮の待機時間を保存できませんでした",
-        "failed_to_save_turn_time_limit": "ターンの制限時間を保存できませんでした"
+        "failed_to_save_turn_time_limit": "ターンの制限時間を保存できませんでした",
+        "kiro_harness_fallback_body": "Kiro ハーネスを使用している場合、app.kiro.dev で管理しているフォールバックがまずハーネス内で実行されます。以下のフォールバックは {{productName}} 独自のもので、その後もターンが失敗した場合にのみ実行されます。",
+        "kiro_harness_fallback_link": "Kiro のフォールバックを管理",
+        "kiro_harness_fallback_title": "Kiro ハーネスのフォールバックが先に適用されます",
+        "fallbacks": "フォールバック"
       },
       "computerUsePanel": {
         "accessibility": "アクセシビリティ",

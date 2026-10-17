@@ -16211,7 +16211,11 @@
         "turn_time_limit_description": "채팅 턴 하나가 중지되기 전까지 실행될 수 있는 최대 시간입니다. 300~86,400초(24시간). 기본값 14,400초(4시간).",
         "turn_time_limit_hint": "이 제한에 도달한 턴은 중지되지만 디스크에 이미 기록된 작업은 남습니다. 재개하면 이어서 진행됩니다. 전체 테스트 스위트처럼 오래 걸리는 무인 턴에는 값을 늘리세요. 다음 턴부터 적용됩니다.",
         "failed_to_save_compaction_wait_budget": "압축 대기 시간을 저장하지 못했습니다",
-        "failed_to_save_turn_time_limit": "턴 시간 제한을 저장하지 못했습니다"
+        "failed_to_save_turn_time_limit": "턴 시간 제한을 저장하지 못했습니다",
+        "kiro_harness_fallback_body": "Kiro 하네스를 사용할 때는 app.kiro.dev에서 관리하는 폴백이 먼저 하네스 내부에서 실행됩니다. 아래 폴백은 {{productName}} 자체 폴백이며, 그 후에도 턴이 실패할 때만 실행됩니다.",
+        "kiro_harness_fallback_link": "Kiro 폴백 관리",
+        "kiro_harness_fallback_title": "Kiro 하네스 폴백이 먼저 적용됩니다",
+        "fallbacks": "폴백"
       },
       "computerUsePanel": {
         "accessibility": "손쉬운 사용",

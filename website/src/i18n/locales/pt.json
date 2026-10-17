@@ -16741,7 +16741,11 @@
         "turn_time_limit_description": "Tempo máximo que um turno de chat pode durar antes de ser interrompido. De 300 a 86.400 s (24 h). Padrão: 14.400 s (4 h).",
         "turn_time_limit_hint": "Um turno que atinge este limite para e mantém o trabalho já gravado em disco; retome-o para continuar. Aumente-o para turnos longos sem supervisão, como suítes de testes completas. Vale a partir do próximo turno.",
         "failed_to_save_compaction_wait_budget": "Não foi possível salvar o tempo de espera da compactação",
-        "failed_to_save_turn_time_limit": "Não foi possível salvar o tempo máximo por turno"
+        "failed_to_save_turn_time_limit": "Não foi possível salvar o tempo máximo por turno",
+        "kiro_harness_fallback_body": "Ao usar um harness Kiro, os fallbacks que você gerencia em app.kiro.dev são executados primeiro, dentro do harness. Os fallbacks abaixo são próprios do {{productName}} e só são executados se o turno ainda falhar depois disso.",
+        "kiro_harness_fallback_link": "Gerenciar fallbacks do Kiro",
+        "kiro_harness_fallback_title": "Os fallbacks do harness Kiro são aplicados primeiro",
+        "fallbacks": "Fallbacks"
       },
       "computerUsePanel": {
         "accessibility": "Acessibilidade",

@@ -148,6 +148,7 @@ export type KirocrewConfigShape = {
   session?: { autocompact_pct?: number; compact_wait_secs?: number }
   session_summary?: { enabled?: boolean }
   agent?: {
+    acp_backend?: string
     model?: string
     role_models?: { background?: string; subagent?: string }
     role_efforts?: { background?: string; subagent?: string }

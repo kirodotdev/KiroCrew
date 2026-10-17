@@ -16211,7 +16211,11 @@
         "turn_time_limit_description": "一轮聊天在被停止前最多可运行的时长。300 到 86,400 秒（24 小时）。默认 14,400 秒（4 小时）。",
         "turn_time_limit_hint": "达到此上限的一轮会被停止，已写入磁盘的工作会保留；恢复即可继续。对于完整测试套件等长时间无人值守的轮次，请调高此值。从下一轮开始生效。",
         "failed_to_save_compaction_wait_budget": "无法保存压缩等待时长",
-        "failed_to_save_turn_time_limit": "无法保存单轮时间上限"
+        "failed_to_save_turn_time_limit": "无法保存单轮时间上限",
+        "kiro_harness_fallback_body": "使用 Kiro 运行框架时，你在 app.kiro.dev 中管理的回退会先在运行框架内执行。下方是 {{productName}} 自己的回退，只有那之后本轮仍失败时才会生效。",
+        "kiro_harness_fallback_link": "管理 Kiro 回退",
+        "kiro_harness_fallback_title": "Kiro 运行框架的回退优先生效",
+        "fallbacks": "回退"
       },
       "computerUsePanel": {
         "accessibility": "辅助功能",

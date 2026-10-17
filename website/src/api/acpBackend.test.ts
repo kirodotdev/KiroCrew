@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, configuredAcpBackend, DEFAULT_ACP_BACKEND, isKiroBackend, mcpWholeServerDeny, reportsCredits } from './acpBackend'
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, configuredAcpBackend, DEFAULT_ACP_BACKEND, isKiroBackend, mcpWholeServerDeny, reportsCredits, isKiroHarness } from './acpBackend'
 import type { AcpBackendProbe } from './client/config'
 
 describe('isKiroBackend', () => {
@@ -88,5 +88,24 @@ describe('mcpWholeServerDeny', () => {
   it('reads the server flag, not the reach name: no flag (an older gateway) is no rule', () => {
     expect(mcpWholeServerDeny(row({ per_tool_deny: 'whole-server', ineffective: [] })).rule).toBe('')
     expect(mcpWholeServerDeny(row(undefined)).rule).toBe('')
+  })
+})
+
+describe('isKiroHarness', () => {
+  it('is false while the config has not loaded', () => {
+    expect(isKiroHarness(undefined)).toBe(false)
+  })
+
+  it('is true for kiro-cli, the KAS relay, and "no choice" (absent or empty), which resolves to the default', () => {
+    expect(isKiroHarness({ agent: { acp_backend: ACP_BACKEND_KIRO } })).toBe(true)
+    expect(isKiroHarness({ agent: { acp_backend: ACP_BACKEND_KAS } })).toBe(true)
+    expect(isKiroHarness({})).toBe(true)
+    expect(isKiroHarness({ agent: { acp_backend: '' } })).toBe(true)
+  })
+
+  it('is false for every other harness', () => {
+    for (const id of ['claude', 'codex', 'opencode', 'goose', 'pi', 'deepseek']) {
+      expect(isKiroHarness({ agent: { acp_backend: id } })).toBe(false)
+    }
   })
 })

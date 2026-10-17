@@ -23,6 +23,9 @@ export const ACP_BACKEND_KIRO = 'kiro'
  *  which completes first-run setup on kiro-cli ACP support, not a kiro-cli login. */
 export const ACP_BACKEND_KAS = 'kas'
 
+/** kiro-cli and its KAS relay: the harnesses backed by the Kiro service. */
+export const KIRO_HARNESS_BACKENDS: readonly string[] = [ACP_BACKEND_KIRO, ACP_BACKEND_KAS]
+
 /** The harness an install runs when it holds no choice (absent or `''`). */
 export const DEFAULT_ACP_BACKEND = ACP_BACKEND_KAS
 
@@ -60,8 +63,18 @@ export function isKiroBackend(cfg: AcpBackendConfig | undefined): boolean {
  */
 export function reportsCredits(cfg: AcpBackendConfig | undefined): boolean {
   if (cfg === undefined) return false
-  const backend = configuredAcpBackend(cfg)
-  return backend === ACP_BACKEND_KIRO || backend === ACP_BACKEND_KAS
+  return KIRO_HARNESS_BACKENDS.includes(configuredAcpBackend(cfg))
+}
+
+/**
+ * True only when a LOADED config runs one of the Kiro harnesses, which apply
+ * the user's app.kiro.dev model fallbacks inside the turn before any of Kiro
+ * Crew's own. Separate from `reportsCredits` because the two answer different
+ * questions that happen to name the same harnesses today.
+ */
+export function isKiroHarness(cfg: AcpBackendConfig | undefined): boolean {
+  if (cfg === undefined) return false
+  return KIRO_HARNESS_BACKENDS.includes(configuredAcpBackend(cfg))
 }
 
 /** Shared translated harness labels; unknown harnesses keep the server's policy name. */
