@@ -19,6 +19,7 @@ grows into a subsystem should become a spec under
 | [tool-stall-watchdog-placement.md](tool-stall-watchdog-placement.md) | Which stall checks belong in the ACP read loop and which must be judged out of band. |
 | [memory-benchmarks.md](memory-benchmarks.md) | Measuring the memory layer against LongMemEval and LoCoMo, and why the retrieval ruler is deterministic. |
 | [kas-nondestructive-session-teardown.md](kas-nondestructive-session-teardown.md) | The session verb KAS does not have — evict from memory, keep the record loadable — written as a request to the KAS team: current state, the semantics asked for, why `_kiro/session/delete` cannot serve, how to test that history survives, and the alternatives Crew can accept. |
+| [wakatime-oauth-read-auth.md](wakatime-oauth-read-auth.md) | Why WakaTime read calls move to an OAuth bearer token while the API key keeps the heartbeat-send path and the self-hosted fallback, after WakaTime makes keys write-only on 1 November 2026. |
 
 Connections is a subsystem, not a narrow decision record, so its status
 vocabulary, mint contract, warm table, disconnect authorization and launch-gate
