@@ -205,7 +205,6 @@
 11302 test/test_instances.py
 2374 test/test_issue_radar_crew_routes.py
 3557 test/test_issue_radar_crew_runtime.py
-4640 test/test_issue_radar_crew_store.py
 2436 test/test_issue_radar_routes_ai_coverage.py
 2162 test/test_issue_radar_routes_coverage.py
 4427 test/test_job_sdk.py
