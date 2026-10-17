@@ -76,7 +76,8 @@ SKIP_PATHS = frozenset(
     }
 )
 
-# The one module allowed to DEFINE harness identifiers and membership sets.
+# The vocabulary module, the one import path for harness identifiers and membership
+# sets; the files allowed to DEFINE them are VOCABULARY_PATHS below.
 #
 # Moved out of ``acp/types.py`` deliberately: importing anything under
 # ``kiro_crew.acp`` executes that package's ``__init__`` (client + runtime), so the
@@ -94,6 +95,23 @@ SKIP_PATHS = frozenset(
 # rule. Pointing the rule at the shim instead would be the drift it exists to
 # prevent -- a second place a definition could legally live.
 VOCABULARY_PATH = "src/kiro_crew/agent_sdk/backends.py"
+
+# The files that may define it: the vocabulary module and the owners it re-exports every
+# name from, one owner per question. Callers still import from one path, so this does not
+# reopen the shim question above -- an owner is where a definition lives behind that path,
+# never a second path a consumer imports. Named file by file rather than by pattern, so a
+# file added beside them is not exempt until it is listed here; ``test_harness_parity``
+# pins this tuple to the vocabulary module's own owner imports.
+VOCABULARY_PATHS = (
+    VOCABULARY_PATH,
+    "src/kiro_crew/agent_sdk/backends_launch.py",
+    "src/kiro_crew/agent_sdk/backends_mcp.py",
+    "src/kiro_crew/agent_sdk/backends_members.py",
+    "src/kiro_crew/agent_sdk/backends_models.py",
+    "src/kiro_crew/agent_sdk/backends_routing.py",
+    "src/kiro_crew/agent_sdk/backends_sessions.py",
+    "src/kiro_crew/agent_sdk/backends_turns.py",
+)
 
 SUPPRESSION = re.compile(r"harness-ok")
 
@@ -169,7 +187,7 @@ RULES: tuple[Rule, ...] = (
         message="harness identifier or membership set defined outside the " "vocabulary module",
         fix=f"define it in {VOCABULARY_PATH} and add every new identifier to "
         "ACP_BACKENDS_KNOWN, or provider construction will not reject a typo",
-        exempt=frozenset({VOCABULARY_PATH}),
+        exempt=frozenset(VOCABULARY_PATHS),
     ),
     Rule(
         rule_id="non-kiro-default",
@@ -438,6 +456,12 @@ PROBES: tuple[tuple[str, str, str, str | None], ...] = (
         "vocabulary-home",
     ),
     (
+        "membership-set-beside-the-vocabulary-owners",
+        "src/kiro_crew/agent_sdk/backends_extra.py",
+        "ACP_BACKENDS_FAST = frozenset({ACP_BACKEND_KIRO})",
+        "vocabulary-home",
+    ),
+    (
         "non-kiro-default",
         "src/kiro_crew/acp/runtime.py",
         "        acp_backend: str = ACP_BACKEND_KAS,",
@@ -485,6 +509,15 @@ PROBES: tuple[tuple[str, str, str, str | None], ...] = (
         VOCABULARY_PATH,
         'ACP_BACKEND_BYO = "byo"',
         None,
+    ),
+    *(
+        (
+            f"membership-set-at-{os.path.basename(path)}",
+            path,
+            "ACP_BACKENDS_FAST = frozenset({ACP_BACKEND_KIRO})",
+            None,
+        )
+        for path in VOCABULARY_PATHS[1:]
     ),
     (
         "kiro-default",

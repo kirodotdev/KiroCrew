@@ -216,8 +216,8 @@ per sub-agent and forgoes continuation.
 
 ## The Crew side, for context
 
-Crew keeps per-backend capability sets in `src/kiro_crew/agent_sdk/backends.py`,
-and all three named below live there. Two of them answer this question
+Crew keeps per-backend capability sets behind `src/kiro_crew/agent_sdk/backends.py`,
+and all three named below live in `src/kiro_crew/agent_sdk/backends_sessions.py`. Two of them answer this question
 differently, and the pair is the precise statement of the gap:
 
 - `ACP_BACKENDS_SESSION_EVICTION` — **KAS is a member.** Its teardown genuinely
@@ -243,10 +243,10 @@ edit:
 
 | # | Change | Where |
 |---|---|---|
-| 1 | Add KAS to `ACP_BACKENDS_SESSION_SHARING` | `agent_sdk/backends.py` |
+| 1 | Add KAS to `ACP_BACKENDS_SESSION_SHARING` | `agent_sdk/backends_sessions.py` |
 | 2 | Point `KasHarness.teardown` at the new verb | `acp/harness/kas.py` |
 | 3 | Add the method constant beside `METHOD_KAS_SESSION_DELETE` | `acp/types.py` |
-| 4 | Add KAS to `ACP_BACKENDS_HARNESS_OWNED_SESSIONS` | `agent_sdk/backends.py` |
+| 4 | Add KAS to `ACP_BACKENDS_HARNESS_OWNED_SESSIONS` | `agent_sdk/backends_sessions.py` |
 | 5 | Teach the fake backend to answer the new verb | `testing/fake_acp_backend.py` |
 | — | The card's "sub-agent continuation" cell | nothing to edit |
 

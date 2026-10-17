@@ -423,7 +423,7 @@ with `base_spec_missing` before a session exists.
 
 **The allowance is a harness capability, granted by positive membership.**
 Whether a side turn may execute read-only tools at all is
-`ACP_BACKENDS_SIDE_READONLY` (`agent_sdk/backends.py`, harness-parity H6):
+`ACP_BACKENDS_SIDE_READONLY` (`agent_sdk/backends_routing.py`, harness-parity H6):
 kiro-cli, KAS, claude, goose and deepseek. A harness has its own pre-approval surface
 (claude-agent-acp `permissions.allow` / `bypassPermissions`, KAS `permissions`
 rules from its own store, goose's `permission.yaml`) that the host gate cannot see: a call it pre-approves

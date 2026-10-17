@@ -181,7 +181,7 @@ BACKGROUND_AGENT = "kirocrew-lite"
 # and re-measured by the gated live test on every install that has the adapter.
 # ``session/cancel`` would NOT have earned the second membership: it leaves the
 # session addressable with its context resident. A harness reaches this path by
-# demonstrating BOTH properties in ``backends.py``, never by an edit here.
+# demonstrating BOTH properties in ``agent_sdk/backends_sessions.py``, never by an edit here.
 def _bg_runtime_backends() -> frozenset[str]:
     return ACP_BACKENDS_ACP_RUNTIME & ACP_BACKENDS_SESSION_EVICTION & selectable_backends()
 

@@ -169,8 +169,9 @@ the shape the rest should have.
 **This subsection was structurally wrong in v3 and is rewritten.** It cited
 `acp/types.py` as the home of the backend constants and "seven opt-in
 frozensets in the same file". `acp/types.py` holds **zero** of either. Every
-backend id, every capability set and the `Routing` tables live in
-`src/kiro_crew/agent_sdk/backends.py` (PR 3a), and the tool-gate verdict lives in
+backend id lives in `src/kiro_crew/agent_sdk/backends.py` (PR 3a), which re-exports
+every capability set and the `Routing` tables from the `backends_*` owner that
+defines each, and the tool-gate verdict lives in
 `src/kiro_crew/agent_sdk/tool_gate.py` (PR 3). `src/kiro_crew/acp_backends.py` and
 `src/kiro_crew/acp_tool_gate.py` are re-export shims, and `acp/types.py` re-exports
 the ids, so existing call sites keep their import path.

@@ -22,7 +22,6 @@
 3357 src/kiro_crew/acp/skill_projection.py
 6697 src/kiro_crew/agent.py
 2265 src/kiro_crew/agent_discovery.py
-3207 src/kiro_crew/agent_sdk/backends.py
 4276 src/kiro_crew/apps/bridges.py
 2259 src/kiro_crew/apps/builtins/auto_improvement/spine/agent_runner.py
 2879 src/kiro_crew/apps/builtins/aws_control/crew/runtime/container/sidecar/backup.py

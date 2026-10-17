@@ -974,6 +974,49 @@ def test_added_line_gate_flags_a_planted_negative_test(tmp_path, monkeypatch) ->
     assert gate.main([planted]) == 0
 
 
+def test_vocabulary_home_exempts_the_vocabulary_module_and_its_listed_owners_only(
+    monkeypatch,
+) -> None:
+    """H8: a membership set is defined in ``agent_sdk/backends.py`` or a listed owner of it.
+
+    Both directions on the rule, then the list against the module: the planted set passes
+    in every listed file and fails in a file named like an owner that is not listed, and
+    the list is exactly the vocabulary module plus each module it re-exports from. So an
+    owner added later is exempt only once it is named, and nothing beside them ever is.
+    """
+    spec = importlib.util.spec_from_file_location("check_harness_parity_paths", _GATE_PATH)
+    assert spec and spec.loader
+    gate = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "check_harness_parity_paths", gate)
+    spec.loader.exec_module(gate)
+    planted = "ACP_BACKENDS_FAST = frozenset({ACP_BACKEND_KIRO})"
+
+    def rules_hit(path: str) -> set:
+        return {v.rule.rule_id for v in gate.scan_line(path, 1, planted)}
+
+    assert len(gate.VOCABULARY_PATHS) > 1
+    for path in gate.VOCABULARY_PATHS:
+        assert "vocabulary-home" not in rules_hit(path), path
+    for path in (
+        "src/kiro_crew/agent_sdk/backends_extra.py",
+        "src/kiro_crew/agent_sdk/backend_cards.py",
+        "src/kiro_crew/acp/types.py",
+    ):
+        assert "vocabulary-home" in rules_hit(path), path
+
+    with open(os.path.join(_REPO_ROOT, gate.VOCABULARY_PATH), encoding="utf-8") as fh:
+        vocabulary = ast.parse(fh.read())
+    owners = {
+        "src/" + node.module.replace(".", "/") + ".py"
+        for node in vocabulary.body
+        if isinstance(node, ast.ImportFrom)
+        and (node.module or "").startswith("kiro_crew.agent_sdk.backends_")
+    }
+    assert owners, "the vocabulary module re-exports from no owner; this pin measures nothing"
+    assert set(gate.VOCABULARY_PATHS) == {gate.VOCABULARY_PATH} | owners
+    assert all(os.path.isfile(os.path.join(_REPO_ROOT, path)) for path in gate.VOCABULARY_PATHS)
+
+
 # ---------------------------------------------------------------------------
 # H6 completeness — every per-host answer on the runtime path reads its table
 # ---------------------------------------------------------------------------

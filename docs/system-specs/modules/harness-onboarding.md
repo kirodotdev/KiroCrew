@@ -44,7 +44,7 @@ code should import the Agent SDK path so the registry keeps one owner:
 | membership in `ACP_BACKENDS_KNOWN` | `AcpProvider.__init__` rejects anything outside it (H8), and every capability set is asserted a subset of it. |
 | `PROVIDER_LABEL_<NAME>` in `acp/types.py` | A closed mapping; an absent label means Kiro, so a harness without one persists as a Kiro session and has its transcript pruned for want of a Kiro session file (H11). |
 | an entry in `POLICY_ID_BY_BACKEND` | A governance rule is written by a human as an identifier. The mapping is what makes the id nameable in a deny rule **before** anything registers it — so this is required even for a dormant harness. |
-| an entry in `_MODEL_REGISTRY_NAMESPACE_BY_BACKEND` | The model-id namespace, which is also the harness's bucket in the cross-session advertised-model cache. An id with no entry falls back to `acp` and joins the kiro family, so its advertised models can replace the list the picker offers for kiro-cli. |
+| an entry in `_MODEL_REGISTRY_NAMESPACE_BY_BACKEND` (in `agent_sdk/backends_models.py`) | The model-id namespace, which is also the harness's bucket in the cross-session advertised-model cache. An id with no entry falls back to `acp` and joins the kiro family, so its advertised models can replace the list the picker offers for kiro-cli. |
 
 **A fresh id and a fresh namespace.** A new harness takes an id no other
 `ACP_BACKEND_*` constant spells, and a namespace no other backend reads; the one
@@ -61,8 +61,8 @@ the kiro family.
 
 `acp/types.py` and the top-level shim re-export the vocabulary, so existing callers
 keep their import sites. Do not define the constants there: both are compatibility
-surfaces, while `agent_sdk/backends.py` is the capability owner enforced by the SDK
-boundary gate.
+surfaces, while `agent_sdk/backends.py` and the `backends_*` owners it re-exports
+from are the capability owner enforced by the SDK boundary gate.
 
 ## Stage 2 — an explicit decision for every capability set
 
@@ -72,7 +72,9 @@ do not think about is a set you have silently opted out of. That is usually
 right, and it must still be deliberate, because the review lane and the tests
 both read the membership as a claim. The authoritative inventory and disposition
 for every `ACP_BACKENDS_*` set is the module-level table in
-`agent_sdk/backends.py`; keep this onboarding table synchronized with it.
+`agent_sdk/backends.py`, and each set is defined in the owner its question names
+([harness-parity](harness-parity.md), "Where the vocabulary is defined"); keep this
+onboarding table synchronized with them.
 `ACP_BACKENDS_SELF_SERVED_ACP` is derived from `ACP_BACKEND_LAUNCH`, so its
 Stage 3 row is the decision rather than a second membership edit.
 `ACP_BACKENDS_KNOWN` is not one of the capability decisions: it
@@ -245,7 +247,7 @@ part that is genuinely different; it now lives in one adapter file per host.
 
 **Ask first whether your harness serves ACP from its own binary.** If it does,
 most of this stage is already written. `ACP_BACKEND_LAUNCH` in
-`agent_sdk/backends.py` holds one record per such harness — the display label, the
+`agent_sdk/backends_launch.py` holds one record per such harness — the display label, the
 binary, the ACP args, the override variable, the install command, the protocol
 version, and one prose hint for what an operator might otherwise try to install.
 Add a row and the shared paths resolve you from it: one resolver

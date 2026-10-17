@@ -34,7 +34,7 @@ no dependency install.
 | `negative-constant` | H5 | `!= ACP_BACKEND_KAS` and its mirror — an inequality captures every harness added later |
 | `bare-literal` | H8 | `backend == "kas"` — `ACP_BACKEND_KIRO` is the empty string, so only the named constant is legible |
 | `sandbox-delegation` | H7 | `is_kiro_cli=` derived from a negation. This flag makes `wrap_argv` SKIP Kiro Crew's seatbelt, so it fails OPEN |
-| `vocabulary-home` | H8 | an `ACP_BACKEND_*` identifier or `ACP_BACKENDS_*` set defined outside `agent_sdk/backends.py` |
+| `vocabulary-home` | H8 | an `ACP_BACKEND_*` identifier or `ACP_BACKENDS_*` set defined outside `agent_sdk/backends.py` and the owners `VOCABULARY_PATHS` lists beside it |
 | `non-kiro-default` | H1 | `default=ACP_BACKEND_KAS` and equivalents — an operator who configures nothing gets Kiro |
 
 ## Why diff-scoped rather than whole-tree
@@ -61,9 +61,14 @@ checks out was computed against that exact commit, so the diff cannot pick up
   contain one and truncating there would hide the real call site behind it.
 - **`scripts/check_harness_parity.py` and `test/test_harness_parity.py`**, which
   spell every forbidden form out literally.
-- **`src/kiro_crew/agent_sdk/backends.py`**, for the `vocabulary-home` rule
-  only. It is the module those definitions are supposed to live in;
-  `src/kiro_crew/acp/types.py` re-exports them.
+- **`src/kiro_crew/agent_sdk/backends.py` and its owners**, for the
+  `vocabulary-home` rule only. That module is the one import path for the
+  vocabulary, and each owner it re-exports from (`backends_mcp.py`,
+  `backends_sessions.py` and the rest) defines the sets for one question;
+  `src/kiro_crew/acp/types.py` re-exports them. `VOCABULARY_PATHS` names every
+  exempt file exactly, never by pattern, so a new owner is gated until it is
+  listed, and `test_harness_parity.py` pins that list to the vocabulary
+  module's own owner imports.
 
 ## Escape hatch
 

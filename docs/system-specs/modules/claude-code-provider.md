@@ -8,7 +8,7 @@ choice is a separate field, `agent.acp_backend`. The public baseline currently
 selects kiro-cli (`ACP_BACKEND_KIRO`, the empty string), Claude, KAS, Codex,
 OpenCode, Pi, goose and DeepSeek -- every id in `ACP_BACKENDS_KNOWN`. DeepSeek is
 selectable because Crew's gate plugin routes its tool calls through the host
-permission gate (`Routing.VERIFIED_GATE_EXTENSION`, `agent_sdk/backends.py`).
+permission gate (`Routing.VERIFIED_GATE_EXTENSION`, `agent_sdk/backends_routing.py`).
 `test_baseline_ships_every_known_backend` pins the baseline as
 `ACP_BACKENDS_KNOWN - NOT_SHIPPED_SELECTABLE`, where `NOT_SHIPPED_SELECTABLE` is a
 test-side set of known-but-unshipped ids, not a product allowlist; it is empty.

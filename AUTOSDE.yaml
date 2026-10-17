@@ -532,6 +532,13 @@ custom-rules:
       - "src/kiro_crew/acp_backends.py"
       - "src/kiro_crew/mcp_hot_reload.py"
       - "src/kiro_crew/agent_sdk/backends.py"
+      - "src/kiro_crew/agent_sdk/backends_launch.py"
+      - "src/kiro_crew/agent_sdk/backends_mcp.py"
+      - "src/kiro_crew/agent_sdk/backends_members.py"
+      - "src/kiro_crew/agent_sdk/backends_models.py"
+      - "src/kiro_crew/agent_sdk/backends_routing.py"
+      - "src/kiro_crew/agent_sdk/backends_sessions.py"
+      - "src/kiro_crew/agent_sdk/backends_turns.py"
     rule: |
       Kiro Crew drives ONE first-class agent harness — kiro-cli
       (ACP_BACKEND_KIRO, spelled "") — and ADAPTS the others (the
@@ -570,8 +577,8 @@ custom-rules:
         lookup, or that makes an unusable persisted acp_backend raise instead of
         degrading to kiro with a logged reason.
       - H6/H7 — capability grants. A new capability predicate must be membership
-        in a named ACP_BACKENDS_* set (defined in agent_sdk/backends.py,
-        re-exported by acp/types.py), and every existing
+        in a named ACP_BACKENDS_* set (defined in agent_sdk/backends.py or a backends_* owner,
+        re-exported by agent_sdk/backends.py and acp/types.py), and every existing
         harness's membership must be an explicit decision in the diff. FLAG a
         new predicate that grants a capability to a harness the PR never
         mentions. For is_kiro_cli specifically the failure is OPEN — it makes
