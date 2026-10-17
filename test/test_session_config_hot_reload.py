@@ -111,6 +111,7 @@ class TestSubscription:
             "workspaces",
             "default_workspace",
             "aws",
+            "apps",
         )
         assert mgr._config_sub is subs[0]
 

@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.session import SessionManager, _model_fallback
+from kiro_crew.session import SessionManager
 
 
 @pytest.fixture
@@ -90,27 +90,6 @@ class TestModelFallbackToGlobalConfig:
         await mgr.get_or_create("kirocrew-sess", agent="kirocrew")
         assert captured["model_override"] == "claude-opus-4.6"
         await mgr.close_all()
-
-
-class TestModelFallback:
-    """Pure unit tests for the precedence decision — no I/O, no patching.
-
-    A per-agent pin defers to kiro (None); a blank agent inherits the global;
-    a sentinel/empty global also defers. This is the heart of the per-agent
-    precedence fix, exercised here with plain inputs.
-    """
-
-    def test_per_agent_pin_defers_to_kiro(self):
-        assert _model_fallback("claude-sonnet-3", "claude-opus-4.6") is None
-
-    def test_blank_agent_uses_global_model(self):
-        assert _model_fallback("", "claude-opus-4.6") == "claude-opus-4.6"
-
-    def test_sentinel_global_returns_none(self):
-        assert _model_fallback("", "auto") is None
-
-    def test_empty_global_returns_none(self):
-        assert _model_fallback("", "") is None
 
 
 class TestResolveNamedAgentModel:

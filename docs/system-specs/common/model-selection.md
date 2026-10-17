@@ -230,8 +230,10 @@ an out-of-scope pin reads exactly like an unset one:
   every surface routes through. It takes the per-session `backend` because
   `create_provider_factory` resolves that before the model; a member-DM thread
   auto-routed to another harness is judged against the harness it runs.
-- `config.loader.resolve_effective_model` — the display resolver behind the model
-  chip. It scopes against the configured backend.
+- `config.loader.resolve_effective_model` — the default-model ladder, read by the
+  model chip and by every new session a caller starts without naming a model
+  (`session._session_model`, run inside `get_or_create`). It scopes against the
+  configured backend, or against the per-session backend the session layer passes.
 
 The two MUST agree on whether a pin survives, or the chip names a model no turn
 runs. `test_model_scope_wire_paths.py` pins that agreement.
@@ -461,8 +463,10 @@ its own once the cache refreshes with a list that carries it.
   read or the agent-pin read fails (`useSettingsDefaultModel` reports `failed`),
   the composer shows an inline "failed to load config" notice instead.
 - **A dashboard chat slot with an empty `slot.model` inherits**, and keeps inheriting
-  across turns. When neither the slot nor its crewmate pins a model, the turn resolves
-  the default the slot inherits (`_default_session_model`). While that default is
+  across turns. When neither the slot nor its crewmate pins a model, the turn asks
+  `get_or_create` for no model and the allocation resolves the ladder itself; the turn
+  reads the same resolver over the session manager's config
+  (`_inherited_default_model`) only to know which default the slot inherits. While that default is
   non-empty, neither `slot.model` backfill site writes the provider's served model
   into the slot; the composer chip reads it from `served_model`. The backfill still
   runs when every tier defers to the backend. A settings change to the default

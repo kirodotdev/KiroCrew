@@ -159,8 +159,8 @@ def _spawn_effective_model(
     spawn path drives ``get_or_create``: the kwarg the spawn passes (explicit
     per-spawn *model*, else the subagent role pin — see ``_run_inner``, which
     forwards raw ``info.model`` including an explicit ``"auto"``), and, when no
-    kwarg is passed, ``session._session_model`` for *agent* (a crew's own pin,
-    else non-sentinel global; the factory resolves a named template's JSON pin).
+    kwarg is passed, ``session._session_model`` for *agent* (the session's own
+    ladder: crew pin, template pin, global, installed agent file).
     An explicit empty ``crew_agent`` retains the template namespace; a member
     claim retains that member's pin and bound template. Omitted claims keep the
     helper's crew-name inference. Reporting never prepares a capability runtime.
@@ -187,7 +187,9 @@ def _spawn_effective_model(
         if override is None:
             # No kwarg: get_or_create resolves the session chain and passes
             # its result (possibly None) as model_override.
-            override = _session_model(cfg, agent or None, crew_agent=claim)
+            override = _session_model(
+                cfg, agent or None, crew_agent=claim, backend_override=backend
+            )
         # A per-spawn backend is translated into ITS namespace, as the factory
         # does once the override wins the selection gate.
         namespace = None

@@ -43,6 +43,9 @@ _CONFIG_SECTIONS: tuple[str, ...] = (
     "default_workspace",
     # aws.project_profiles is read off ``_cfg`` at each spawn.
     "aws",
+    # apps.<name>.model is a tier of the new-session model ladder, read off
+    # ``_cfg`` at each cold start (session._session_model).
+    "apps",
 )
 _FACTORY_CONFIG_PATHS: tuple[str, ...] = (
     "agent.model",
