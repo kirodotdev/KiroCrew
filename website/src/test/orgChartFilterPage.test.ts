@@ -231,6 +231,59 @@ describe('org-chart: the Open / Closed / All filter', () => {
     expect(again.getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('keeps the numbers beside the rows honest under a filter', () => {
+    mount(crew())
+    pick('open').click()
+    const g = graphText()
+    // lead: 4 dispatched; a, b (context) and e (context) are drawn, but only a matches,
+    // so under a filter the first fact reads "1 of 4 shown".
+    expect(g).toContain('1 of 4 shown')
+    expect(g).not.toContain('3 of 4 shown')
+    // the board footer counts the boards drawn: 1 lead + 2 sub-leads.
+    expect(document.querySelector('[data-dashboard-field="items"]')!.textContent).toBe('3')
+    pick('all').click()
+    // under All the plain "dispatched" fact stands and nothing reads "shown".
+    expect(graphText()).toContain('4 dispatched')
+    expect(graphText()).not.toContain('shown')
+    expect(document.querySelector('[data-dashboard-field="items"]')!.textContent).toBe('5')
+  })
+
+  it('says in words, with a dashed chip, which kept rows are there only for context', () => {
+    mount(crew())
+    pick('open').click()
+    const ctx = Array.from(document.querySelectorAll('#oc-graph .oc-chip.oc-ctx'))
+    // b and e do not match Open themselves; a, d and g do.
+    expect(ctx).toHaveLength(2)
+    for (const c of ctx) expect(c.textContent).toContain('kept for the tasks under it')
+    pick('all').click()
+    expect(document.querySelectorAll('#oc-graph .oc-ctx')).toHaveLength(0)
+    expect(graphText()).not.toContain('kept for the tasks under it')
+  })
+
+  it('puts the context note first on a kept row, so a narrow width cuts the end and not the note', () => {
+    mount(crew())
+    pick('open').click()
+    for (const c of Array.from(document.querySelectorAll('#oc-graph .oc-chip.oc-ctx'))) {
+      const facts = c.querySelector('.oc-name span')!.textContent ?? ''
+      expect(facts.startsWith('kept for the tasks under it')).toBe(true)
+    }
+  })
+
+  it('says in the header that its counts follow the filter', () => {
+    mount(crew())
+    const scope = () => document.getElementById('oc-scope')!.textContent ?? ''
+    expect(scope()).not.toContain('filtered')
+    pick('closed').click()
+    expect(scope()).toContain('filtered')
+    pick('all').click()
+    expect(scope()).not.toContain('filtered')
+  })
+
+  it('puts a visible word before the pills, so the control says what it filters', () => {
+    mount(crew())
+    expect(document.querySelector('.oc-flabel')!.textContent).toBe('Tasks:')
+  })
+
   it('names the choices in Simplified Chinese', () => {
     mount(crew(), 'zh-CN')
     expect(pick('open').textContent).toBe('\u8fdb\u884c\u4e2d3')
@@ -244,6 +297,60 @@ describe('org-chart: the Open / Closed / All filter', () => {
   it('hides the control when there is no board to filter', () => {
     mount([])
     expect(document.getElementById('oc-filter')!.hidden).toBe(true)
+  })
+
+  it('keeps the cards title while cards are drawn, even with no graph root', () => {
+    // `stray` names a parent task that does not exist, so it is not drawn in the graph,
+    // yet its open task still gets a card.
+    mount([
+      board('p', [task('x', 'accepted')]),
+      board('stray', [task('y')], { board: 'p', item_id: 'missing' }),
+    ])
+    pick('open').click()
+    expect(document.querySelectorAll('#oc-graph .oc-chip')).toHaveLength(0)
+    expect(document.querySelectorAll('#oc-cards .oc-card')).toHaveLength(1)
+    // the empty line must not claim "no open task" above a card for an open task.
+    expect(document.querySelectorAll('#oc-graph .oc-empty')).toHaveLength(0)
+    expect(graphText()).not.toContain('No open task to show.')
+    expect(document.getElementById('oc-cards-t')!.hidden).toBe(false)
+    // with nothing in the graph and no card, the title goes.
+    mount([board('p', [task('x', 'accepted')])])
+    pick('open').click()
+    expect(document.querySelectorAll('#oc-cards .oc-card')).toHaveLength(0)
+    expect(graphText()).toContain('No open task to show.')
+    expect(document.getElementById('oc-cards-t')!.hidden).toBe(true)
+  })
+
+  it('lets a long row shrink inside a folded group, so its Hide button stays in reach', () => {
+    // jsdom lays nothing out, so the rule itself is what can be checked here; the
+    // 320 px render is in the PR screenshots.
+    const css = Array.from(new DOMParser().parseFromString(RAW, 'text/html').querySelectorAll('style'))
+      .map((s) => s.textContent)
+      .join('\n')
+    expect(css).toMatch(/\.oc-kids\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/)
+  })
+
+  it('lets the fact line wrap under 520 px so the counts are not cut behind the ellipsis', () => {
+    // jsdom lays nothing out, so the rule itself is what can be checked here; the
+    // 320 px render is in the PR screenshots. Inside the narrow media query the fact
+    // line (.oc-name span) stops truncating so every count stays on screen.
+    const css = Array.from(new DOMParser().parseFromString(RAW, 'text/html').querySelectorAll('style'))
+      .map((s) => s.textContent)
+      .join('\n')
+    const narrow = css.match(/@media\s*\(max-width:\s*520px\)\s*\{([\s\S]*?\n  \})/)
+    expect(narrow).not.toBeNull()
+    expect(narrow![1]).toMatch(/\.oc-name span\s*\{[^}]*white-space:\s*normal/)
+  })
+
+  it('reads the shown count against its total under a filter, in Simplified Chinese too', () => {
+    mount(crew(), 'zh-CN')
+    pick('open').click()
+    // lead board: 4 dispatched, 1 open row drawn -> "4 中显示 1 个".
+    expect(graphText()).toContain('4 \u4e2d\u663e\u793a 1 \u4e2a')
+    // the context note no longer reuses the "shown" word that the count also carries.
+    for (const c of Array.from(document.querySelectorAll('#oc-graph .oc-chip.oc-ctx'))) {
+      expect(c.textContent).toContain('\u56e0\u5176\u4e0b\u7684\u4efb\u52a1\u800c\u4fdd\u7559')
+    }
   })
 
   it('does not store the choice anywhere', () => {
