@@ -1116,9 +1116,17 @@ Details worth knowing:
     tail stopped every tick after page one, which left the sweep seeing the newest
     couple of minutes of runs against a 15-minute orphan threshold and hid two
     six-hour `main` outages; the six-hour orphan behind the second one sat on page
-    seven. Live statuses read at most ten
-    pages each — the API's reachable window, since a status-filtered runs listing
-    stops at 1000 results. A listed live run older than `GHOST_AFTER` (two days,
+    seven. Live actionable statuses are read via a listing bounded by
+    `created=<=<now-saturation_wait>`, so orphan-aged runs AND every run capable of
+    carrying saturation evidence (age >= `saturation_wait`, five minutes) sit on
+    page one regardless of how many younger runs fill the head of the unfiltered
+    listing; the page cap (`REPO_LISTING_MAX_PAGES`, ten pages, the API's reachable
+    window) is no longer a correctness knob for orphan reach driven by runs
+    younger than `saturation_wait`; a same-second burst of older runs remains
+    subject to the windowing cap as before. A single-page evidence
+    listing then reads the newest runs (those under five minutes old the bounded pass
+    excluded) so prompt CodeBuild starts inside them still count as dispatch evidence.
+    A listed live run older than `GHOST_AFTER` (two days,
     its age taken from the newer of `created_at` and `run_started_at`) is a ghost:
     GitHub cancels a job that has not started within a day, so no job of it will
     run. Ghosts are dropped before the read bound is drawn, so they are neither

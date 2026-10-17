@@ -600,7 +600,7 @@ def test_a_rate_limit_on_the_fresh_evidence_read_has_an_accurate_outcome() -> No
             r"[?&]page=1(?![0-9])", path
         ):
             reads["in_progress"] += 1
-            if reads["in_progress"] > 1:
+            if reads["in_progress"] > 2:
                 raise wd.ApiError(
                     403,
                     "API rate limit exceeded for installation ID 12345",
@@ -1297,6 +1297,64 @@ def test_the_repo_wide_paging_respects_its_page_cap() -> None:
         wd._iter_repo_runs(api, REPO, status="in_progress", max_pages=wd.REPO_LISTING_MAX_PAGES)
     )
     assert len(collected) == wd.PAGE_SIZE * wd.REPO_LISTING_MAX_PAGES
+
+
+def test_candidate_threshold_puts_orphan_aged_runs_on_page_one() -> None:
+    """With created=<=<threshold>, orphan-aged runs are on page one of the filtered
+    listing, regardless of how many recent runs fill the head of an unfiltered listing.
+
+    A burst of 1,200 runs all created in one second sits between the orphan and page
+    one. Without a candidate_threshold the windowing cannot narrow: the second window
+    starts at the same second as the burst and re-reads the same 1,000 rows, leaving
+    the orphan (position 1,201) unseen.
+    ``test_a_window_that_cannot_narrow_still_fails_the_tick`` pins that behaviour as
+    the negative control.
+
+    With candidate_threshold=now-saturation_wait the 1,200 recent runs are excluded
+    (created_at > threshold), and the orphan is returned on page one with no
+    truncation.
+    """
+    recent = [_run(i, minutes_ago=3, status="queued") for i in range(1, 1201)]
+    orphan = _run(9999, minutes_ago=20, status="queued")
+    api, _ = _ceilinged_listing(recent + [orphan])
+
+    threshold = _ts(5)  # = now - saturation_wait (5 min)
+    runs, aborted, truncated = wd.gather_all_candidate_runs(
+        api, REPO, candidate_threshold=threshold, log=lambda _l: None
+    )
+    assert aborted is None
+    assert truncated == []
+    assert 9999 in {int(r["id"]) for r in runs}
+
+
+def test_candidate_threshold_includes_saturation_capable_band() -> None:
+    """Runs aged saturation_wait to orphan_after are included by the threshold bound.
+
+    ``candidate_threshold = now - saturation_wait``, not ``now - orphan_after``: the
+    5-to-15-minute band can carry a slow CodeBuild start (``_can_carry_a_slow_start``
+    requires age >= ``saturation_wait``), so it must be inside the bounded listing for
+    the saturation hold to work. Runs under five minutes cannot hold a slow start but
+    are still re-read by the evidence listing for their prompt-start dispatch signal.
+    """
+    # 5-min-old runs: younger than saturation_wait — excluded from the listing.
+    too_young = [_run(i, minutes_ago=3, status="queued") for i in range(1, 6)]
+    # 10-min-old runs: inside saturation_wait..orphan_after band — must be included.
+    capable = [_run(100 + i, minutes_ago=10, status="queued") for i in range(1, 6)]
+    orphan = _run(9999, minutes_ago=20, status="queued")
+    api, _ = _ceilinged_listing(too_young + capable + [orphan])
+
+    threshold = _ts(5)  # = now - saturation_wait
+    runs, aborted, truncated = wd.gather_all_candidate_runs(
+        api, REPO, candidate_threshold=threshold, log=lambda _l: None
+    )
+    assert aborted is None
+    assert truncated == []
+    run_ids = {int(r["id"]) for r in runs}
+    # Orphan and capable band present (from bounded candidate listing)
+    assert 9999 in run_ids
+    assert all(100 + i in run_ids for i in range(1, 6))
+    # Too-young runs back via evidence listing
+    assert all(i in run_ids for i in range(1, 6))
 
 
 def test_cancelled_recovery_reaches_a_deep_orphan_inside_the_reachable_window(

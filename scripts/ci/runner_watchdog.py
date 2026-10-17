@@ -438,7 +438,13 @@ REPO_LISTING_MAX_WINDOWS = 3
 # could not be read in full has hidden nothing actionable, and failing a tick over
 # it would go red exactly during the saturation this script exists to survive.
 ACTIONABLE_CANDIDATE_STATUSES = ("in_progress", "queued")
-
+# One page of newest runs fetched alongside the bounded candidate listing when
+# ``candidate_threshold`` is set. Runs younger than ``saturation_wait`` are
+# excluded by the threshold, but a prompt CodeBuild start inside one still
+# counts as dispatch evidence (``run_watchdog`` reads jobs for every admitted
+# run, young ones included). One page (PAGE_SIZE runs) is enough for
+# ``LIVE_EVIDENCE_RESERVE`` (10); shortfall is only logged, not a tick failure.
+EVIDENCE_LISTING_PAGES = 1
 # The jobs of ONE run, so the page count is bounded by the run's own matrix rather
 # than by fleet load: the widest watched workflow expands to a few hundred jobs, so
 # six pages of 100 clear it several times over. Kept as a cap anyway, because the
@@ -1700,6 +1706,7 @@ def _iter_actionable_runs(
     truncated: list[str],
     get: Callable[[str], Any] | None = None,
     log: Callable[[str], None] = print,
+    initial_upper: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yield every run of an ACTIONABLE status, reading past the result ceiling.
 
@@ -1709,11 +1716,16 @@ def _iter_actionable_runs(
     oldest run already read. ``<=`` rather than ``<`` so runs that share that
     second are not skipped; the caller drops the repeats by id.
 
+    When ``initial_upper`` is set (a ``candidate_threshold``), the first window
+    already starts at that timestamp: only runs created at or before it are
+    returned, so orphan-aged runs are on page one regardless of how many recent
+    runs sit ahead of them in the unfiltered listing.
+
     Truncation is recorded only for the LAST window, and only when it still hit a
     nameable cause: the window cap ran out, or a full window made no progress
     (every run in it shares one ``created_at``), so narrowing cannot reach further.
     """
-    upper: str | None = None
+    upper: str | None = initial_upper
     for window in range(1, REPO_LISTING_MAX_WINDOWS + 1):
         sink: list[str] = []
         oldest: str | None = None
@@ -1744,6 +1756,7 @@ def gather_all_candidate_runs(
     api: Api,
     repo: str,
     *,
+    candidate_threshold: str | None = None,
     get: Callable[[str], Any] | None = None,
     log: Callable[[str], None] = print,
 ) -> tuple[list[dict[str, Any]], ApiError | None, list[str]]:
@@ -1762,6 +1775,19 @@ def gather_all_candidate_runs(
     the runs being hunted; the page cap bounds the listing cost, and the global
     per-tick heal cap still bounds how many runs are acted on.
 
+    When ``candidate_threshold`` is set (an ISO-8601 timestamp equal to
+    ``now - saturation_wait``), the actionable listing starts at that timestamp via
+    ``_iter_actionable_runs``'s ``initial_upper``, so orphan-aged runs AND the runs
+    capable of carrying saturation evidence (age >= ``saturation_wait``) sit on
+    page one regardless of how many younger runs precede them in the unfiltered
+    listing. ``REPO_LISTING_MAX_PAGES`` stops being a correctness knob for orphan
+    reach. A separate ``EVIDENCE_LISTING_PAGES``-page evidence read then fetches
+    the newest runs (those the bounded pass excluded, age < ``saturation_wait``)
+    so the tick can absorb their prompt CodeBuild starts as dispatch evidence;
+    its shortfall is only logged (no ``truncated=``), because evidence is
+    best-effort. Without ``candidate_threshold``, the original windowed pass over
+    the full unfiltered listing is used.
+
     An actionable status is read through ``_iter_actionable_runs``, which narrows
     by created window past the result ceiling. The third element names each
     ACTIONABLE status whose listing still did not reach its own ``total_count``. It is a tick-level failure rather than a note, because the
@@ -1777,8 +1803,35 @@ def gather_all_candidate_runs(
         for status in CANDIDATE_STATUSES:
             if status in ACTIONABLE_CANDIDATE_STATUSES:
                 runs = _iter_actionable_runs(
-                    api, repo, status=status, truncated=truncated, get=get, log=log
+                    api,
+                    repo,
+                    status=status,
+                    truncated=truncated,
+                    get=get,
+                    log=log,
+                    initial_upper=candidate_threshold,
                 )
+                for run in runs:
+                    if _is_watched(run):
+                        seen.setdefault(int(run["id"]), run)
+                if candidate_threshold is not None:
+                    # Evidence listing: youngest runs the bounded pass excluded.
+                    # Runs under saturation_wait cannot hold a slow start, but a
+                    # prompt CodeBuild start inside one is dispatch evidence; without
+                    # this read, evidence.inconclusive can fire when the fleet just
+                    # recovered and only young runs carry recent starts. Shortfall
+                    # is only logged (no truncated=) -- evidence is best-effort.
+                    for run in _iter_repo_runs(
+                        api,
+                        repo,
+                        status=status,
+                        max_pages=EVIDENCE_LISTING_PAGES,
+                        get=get,
+                        log=log,
+                    ):
+                        if _is_watched(run):
+                            seen.setdefault(int(run["id"]), run)
+                continue
             else:
                 runs = _iter_repo_runs(
                     api, repo, status=status, max_pages=REPO_LISTING_MAX_PAGES, get=get, log=log
@@ -3634,9 +3687,11 @@ def run_watchdog(
 
     listing_truncated: list[str] = []
     try:
+        candidate_threshold = (policy.now - policy.saturation_wait).strftime("%Y-%m-%dT%H:%M:%SZ")
         candidate_runs, listing_abort, listing_truncated = gather_all_candidate_runs(
             api,
             policy.repo,
+            candidate_threshold=candidate_threshold,
             get=lambda path: cheap_retry(lambda: api.get(path)),
             log=log,
         )
