@@ -226,7 +226,6 @@
 2552 test/test_mcp_shared.py
 5390 test/test_md_notebook.py
 3249 test/test_member_essential_context.py
-2044 test/test_member_session_control.py
 2405 test/test_monitor_controller.py
 2096 test/test_monitor_directive_apply.py
 5822 test/test_onboarding_import.py
@@ -245,7 +244,6 @@
 3193 test/test_sandbox_absent_ceiling_seal.py
 12647 test/test_security.py
 3048 test/test_security_conductor_ledger.py
-2055 test/test_security_conductor_verify_fix.py
 2034 test/test_security_path_resolve_bounded.py
 5509 test/test_sel.py
 9530 test/test_session.py
@@ -253,7 +251,6 @@
 2376 test/test_session_control_revive.py
 2398 test/test_session_ledger_projection.py
 2132 test/test_session_pool.py
-2046 test/test_session_scope_reap.py
 7444 test/test_session_storage.py
 6415 test/test_session_transfer.py
 2548 test/test_session_usage.py
@@ -272,7 +269,6 @@
 3265 test/test_snapshot.py
 2641 test/test_spawn_audit.py
 2008 test/test_steer_requeue.py
-2045 test/test_stop_clears_only_its_own_sender.py
 2211 test/test_stt_engine.py
 3093 test/test_subagent.py
 3616 test/test_subagent_panel_durable_replay.py
