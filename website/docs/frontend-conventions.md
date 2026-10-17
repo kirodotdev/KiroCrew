@@ -344,6 +344,42 @@ and unit-literal added-line gates count. The tier labels and the contrary-tier s
 that `test/test_mcp_shareability_frontend_parity.py` pins live in
 `mcpManagementModel.ts`.
 
+### The Security and Remote Crew settings panels
+
+`pages/settings/SecurityPanel.tsx` (Settings ▸ Security) and
+`pages/settings/RemoteCrewPanel.tsx` (Settings ▸ Remote Crew) are facades over sibling
+owners in `pages/settings/`, with the same contract as the panels above: each facade
+keeps its module id and re-exports every name callers import from it, nothing outside
+a panel's own files imports one of its owners, and no owner imports its facade. Every
+component moved whole, so each one registers its hooks in its BASE order.
+
+| Owner | Holds |
+|---|---|
+| `SecurityPanel.tsx` | the rail: `SECURITY_SECTIONS`, `SECTION_LABEL_KEY` (read by `gen-ui-index.mjs`), `SECTION_GROUP_KEY`, the rail summaries, the panel, and the Documentation section |
+| `SecurityPanelPosture.tsx` | Live security posture, and the status row and chip the tailnet card reuses |
+| `SecurityPanelApprovals.tsx` | the ad-hoc auto-approve duration card and the flagged-file delivery consent card |
+| `SecurityPanelDeniedCommands.tsx` | Denied commands: the built-in rules by category, the custom deny patterns, the pinned and floor tooltip keys |
+| `SecurityPanelTailnet.tsx` | the tailnet origin card and `TAILNET_STATE_KEY`, which the rail summary reads |
+| `SecurityPanelTrust.tsx` | third-party app trust grants, per-registry Git-identity trust grants, and their failure messages |
+| `SecurityPanelRedaction.tsx` | the credential-redaction switch, the allowed long-query hosts, `RedactionSection` |
+| `SecurityPanelLayers.tsx` | the defense-in-depth layer registry (`FEATURES` and its catalog keys) and its section |
+| `SecurityPanelGovernance.tsx` | the governance-policy viewer, its scope labels and planes, the central-distribution block |
+| `RemoteCrewPanel.tsx` | the panel component: both tabs, every query and mutation, the launch form |
+| `remoteCrewPanelModel.ts` | launch-job predicates, the remembered launch-form keys, the size tiers, the sign-in failure sentences |
+| `RemoteCrewPanelLaunch.tsx` | the setup tab's size, provisioner and prerequisite cards, the launch progress card, the sign-in block |
+| `RemoteCrewPanelCrewRow.tsx` | one crew row (badges, lifecycle actions, inline edit) and the fargate turn-API URL field |
+
+The edges between owners are `SecurityPanelTailnet.tsx` to `SecurityPanelPosture.tsx`,
+`SecurityPanelGovernance.tsx` to `SecurityPanelDeniedCommands.tsx`,
+`SecurityPanelDeniedCommands.tsx` to `SecurityPanelTrust.tsx`, and the two Remote Crew
+component owners to `remoteCrewPanelModel.ts` (with `RemoteCrewPanelCrewRow.tsx` to
+`RemoteCrewPanelLaunch.tsx` for the sign-in block). Unlike the panels above, these
+owners keep their own Settings* primitives and settings-search anchors: each `.tsx`
+owner is mapped to its facade's tab in `PANEL_TAB_MAP`
+(`website/scripts/settingsExtract.ts`), so the extractor and the manual-anchor check
+read them where they are. The size tiers `test/test_cloud_sizes_ui_parity.py` pins
+live in `remoteCrewPanelModel.ts`.
+
 ## Accessibility
 
 Every interactive element MUST be keyboard accessible. Use `Clickable` from

@@ -854,7 +854,7 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   when the instance's current `ssm_target` matches an EC2 instance id in the
   cloud launch job store (`kiro_crew.cloud.connect.is_launched_instance()`) —
   i.e. Kiro Crew provisioned it, as opposed to a hand-added SSM record. These
-  four fields are how `coordsOf()` (`RemoteCrewPanel.tsx`) builds
+  four fields are how `coordsOf()` (`RemoteCrewPanelCrewRow.tsx`) builds
   `{profile, region, instanceId}` for Stop/Start/Delete; rewriting them on a
   correlated instance leaves those actions unable to resolve the real EC2
   stack, which then keeps running and billing with no dashboard path to reach
@@ -2872,7 +2872,7 @@ addresses the crew by `ssm_target` + AWS profile/region) and `hasDashboardPane()
 federated session polling (`useInstanceSessions`), so a `fargate` crew gets no
 tab, no pane, no auto-connect and no rows in the session palette.
 
-In `website/src/pages/settings/RemoteCrewPanel.tsx` a connected `fargate` row
+In `website/src/pages/settings/RemoteCrewPanelCrewRow.tsx` a connected `fargate` row
 renders the status's `turn_url` in a copyable field (`TurnUrlField`) and shows no
 Open control: the URL answers JSON, so a control that promised a dashboard would
 be the defect the field replaces.

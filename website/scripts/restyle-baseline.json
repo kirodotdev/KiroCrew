@@ -51,6 +51,6 @@
   "website/src/pages/overview/MemberMemoryPanel.tsx": 2,
   "website/src/pages/overview/SkillContextBudget.tsx": 3,
   "website/src/pages/settings/McpManagement.tsx": 3,
-  "website/src/pages/settings/RemoteCrewPanel.tsx": 14,
+  "website/src/pages/settings/RemoteCrewPanelCrewRow.tsx": 14,
   "website/src/pages/system/SessionsTab.tsx": 26
 }

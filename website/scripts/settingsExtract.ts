@@ -125,6 +125,15 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ComputerUsePanel.tsx': 'computer-use',
   'InstancesPanel.tsx': 'instances',
   'SecurityPanel.tsx': 'security',
+  // SecurityPanel.tsx's section owners, mapped with it to the Security tab.
+  'SecurityPanelPosture.tsx': 'security',
+  'SecurityPanelApprovals.tsx': 'security',
+  'SecurityPanelDeniedCommands.tsx': 'security',
+  'SecurityPanelTailnet.tsx': 'security',
+  'SecurityPanelTrust.tsx': 'security',
+  'SecurityPanelRedaction.tsx': 'security',
+  'SecurityPanelLayers.tsx': 'security',
+  'SecurityPanelGovernance.tsx': 'security',
   'ConnectionsPanel.tsx': 'connections',
   'SecretsPanel.tsx': 'secrets',
   'NotificationsPanel.tsx': 'notifications',
@@ -199,6 +208,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // renders InstancesPanel.tsx's AddInstanceForm — both files map to the same
   // tab so a primitive added to either lands on the right deep link.
   'RemoteCrewPanel.tsx': 'instances',
+  // RemoteCrewPanel.tsx's component owners (the setup tab's cards, one crew row).
+  'RemoteCrewPanelLaunch.tsx': 'instances',
+  'RemoteCrewPanelCrewRow.tsx': 'instances',
   // Mounted from outside pages/settings, so each is also a root in panelRoots:
   // ImportPanel mounts PortabilityTab, FeaturePreviewsSection the gateway-wide
   // automatic-cards switch.
