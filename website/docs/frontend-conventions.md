@@ -39,6 +39,16 @@ commit that touches it. The API needs Chrome/Edge 105, Safari 17.2 or Firefox
 140; older browsers paint no highlight, while match counting and stepping to
 the current match keep working (`utils/domHighlight.ts`).
 
+Pierre draws a fenced code block into a shadow root. A `TreeWalker` never
+enters it, and a document selection reports a drag inside it as collapsed.
+`utils/pierreShadow.ts` therefore reads the block's source lines for the preview
+find, which needs no API newer than the one above, and resolves a selection with
+`Selection.getComposedRanges`, which needs Chrome/Edge 137, Safari 17 or
+Firefox 142; older browsers open no selection toolbar over a code block.
+`SelectionToolbar` takes such a selection only from a host that passes
+`codeSelection` (the file panel's markdown preview), because the other hosts'
+comment anchors cannot resolve it.
+
 ## Shared components
 
 `src/components/ui.tsx` is the primitive set. Compose from it rather than

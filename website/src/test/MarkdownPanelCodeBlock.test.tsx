@@ -1,0 +1,209 @@
+/**
+ * Fenced code blocks in the markdown preview, through the real panel: Cmd+F finds
+ * text inside them, and a selection made inside one can be commented on.
+ *
+ * Pierre draws a block into an open shadow root, which the find's text walk and
+ * the document's Selection both stop at. `PierreCode` is stubbed here with a host
+ * shaped like the one Pierre renders (see `pierreDom`), so the panel, `CodeBlock`,
+ * the find hook and `SelectionToolbar` are all the real thing.
+ *
+ * `Highlight` and `CSS.highlights` are stubbed BEFORE the panel is imported,
+ * because it captures both into module-level constants at load time.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { createElement, forwardRef, useImperativeHandle } from 'react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { PierreEditorHandle } from '../pierre'
+import { installHighlightApiStub, paintedText, registeredRanges } from './highlightApiStub'
+import { dragInCode, fillCodeBlock, tokens } from './pierreDom'
+
+installHighlightApiStub()
+
+vi.mock('../pierre', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  PierreEditor: forwardRef<PierreEditorHandle, { file: { contents: string } }>(
+    function PierreEditorStub({ file }, ref) {
+      useImperativeHandle(ref, () => ({ jumpToLine: () => {}, focus: () => {} }), [])
+      return <div data-testid="pierre-editor" data-value={file.contents} />
+    },
+  ),
+  // The block as Pierre draws it, filled once like Pierre's own render.
+  PierreCode: ({ file }: { file: { contents: string } }) => createElement('diffs-container', {
+    'data-testid': 'code-host',
+    ref: (host: HTMLElement | null) => { if (host && !host.shadowRoot) fillCodeBlock(host, file.contents.split('\n').map(tokens)) },
+  }),
+  // A diff row is drawn in a shadow root too; a fixed line is enough to drag over.
+  PierreFilePair: () => createElement('diffs-container', {
+    'data-testid': 'diff-host',
+    ref: (host: HTMLElement | null) => { if (host && !host.shadowRoot) fillCodeBlock(host, [tokens('const answer = 42')]) },
+  }),
+}))
+
+vi.mock('../api/client', () => ({
+  api: {
+    artifacts: vi.fn(),
+    artifact: vi.fn(),
+    createArtifact: vi.fn(),
+    updateArtifact: vi.fn(),
+    setArtifactPinned: vi.fn(),
+    revealPath: vi.fn(),
+    fileDiff: vi.fn(),
+  },
+}))
+
+const { api } = await import('../api/client')
+const { default: MarkdownPanel } = await import('../components/MarkdownPanel')
+
+const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+const wrapper = ({ children }: { children: React.ReactNode }) => (
+  <MemoryRouter>
+    <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  </MemoryRouter>
+)
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  qc.clear()
+  localStorage.clear()
+  sessionStorage.clear()
+  vi.stubGlobal('fetch', vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    json: async () => ({ enabled: false, supported_formats: [] }),
+    text: async () => '',
+  })))
+  vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [] } as never)
+  vi.mocked(api.artifact).mockResolvedValue({ live_dirty: false, pinned: false } as never)
+  vi.mocked(api.fileDiff).mockResolvedValue({ diff: '', original: '', status: 'clean' } as never)
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
+
+const FILE = '/tmp/notes.md'
+const BODY = '# Title\n\nRun it first, with care.\n\n```bash\nmycli rm NAME --force\n```\n'
+
+/** `initialDiffMode: undefined` leaves the auto-diff effect inert, so a click on the diff toggle cannot race back to preview. */
+function mountPanel(content = BODY, onSubmitComments = vi.fn(), extra: { initialDiffMode?: boolean } = {}) {
+  render(
+    <MarkdownPanel embedded filePath={FILE} content={content} onContentChange={vi.fn()} onSave={vi.fn(async () => {})}
+      onClose={vi.fn()} onSubmitComments={onSubmitComments} initialDiffMode={false} {...extra} />,
+    { wrapper },
+  )
+  return onSubmitComments
+}
+
+describe('MarkdownPanel — find in a fenced code block', () => {
+  async function openFind() {
+    mountPanel()
+    await screen.findByTestId('code-host')
+    fireEvent.keyDown(document, { key: 'f', metaKey: true })
+    return screen.findByLabelText('Find in document')
+  }
+
+  it('finds a phrase that crosses the tokens of a line, and paints exactly that text', async () => {
+    fireEvent.change(await openFind(), { target: { value: 'rm NAME' } })
+    expect(await screen.findByText('1 of 1')).toBeInTheDocument()
+    expect(paintedText('mc-find-current')).toEqual(['rm NAME'])
+    expect(registeredRanges('mc-find-current')[0].startContainer.getRootNode()).toBeInstanceOf(ShadowRoot)
+  })
+
+  it('counts the line numbers beside the code as no match', async () => {
+    fireEvent.change(await openFind(), { target: { value: '1' } })
+    expect(await screen.findByText('No results')).toBeInTheDocument()
+  })
+})
+
+describe('MarkdownPanel — commenting on a fenced code block', () => {
+  /** Drag over `mycli rm NAME` in the block; the comment box opens on its own (type-first). */
+  async function selectInCode() {
+    const host = await screen.findByTestId('code-host')
+    dragInCode(host)
+    return screen.findByLabelText('Comment on the selected text')
+  }
+
+  it('anchors the comment to the selected code, with the source line it was found on', async () => {
+    const onSubmitComments = mountPanel()
+    const box = await selectInCode()
+    // The open box paints the selection, one range per text node (a token each).
+    expect(paintedText('mc-annotate').join('')).toBe('mycli rm NAME')
+    expect(registeredRanges('mc-annotate').every(r => r.startContainer.getRootNode() instanceof ShadowRoot)).toBe(true)
+    fireEvent.change(box, { target: { value: 'why force?' } })
+    fireEvent.click(screen.getByLabelText('Add comment'))
+    expect(await screen.findByText('why force?')).toBeInTheDocument()
+    const stored = JSON.parse(localStorage.getItem('mc-comment-drafts') || '{}')
+    expect(stored[FILE]).toHaveLength(1)
+    expect(stored[FILE][0]).toMatchObject({ anchor: 'mycli rm NAME', text: 'why force?', line: 6, column: 1, inCode: true })
+    expect(stored[FILE][0]).not.toHaveProperty('startOffset')
+    expect(onSubmitComments).not.toHaveBeenCalled()
+  })
+
+  it('finds the line of a selection that includes the space after the text', async () => {
+    mountPanel()
+    const host = await screen.findByTestId('code-host')
+    dragInCode(host, { text: 'rm NAME --force ' })
+    fireEvent.change(await screen.findByLabelText('Comment on the selected text'), { target: { value: 'padded' } })
+    fireEvent.click(screen.getByLabelText('Add comment'))
+    await screen.findByText('padded')
+    const stored = JSON.parse(localStorage.getItem('mc-comment-drafts') || '{}')
+    expect(stored[FILE][0]).toMatchObject({ anchor: 'rm NAME --force', line: 6, column: 7 })
+  })
+
+  it('puts no line on text that occurs twice in the file, rather than the first occurrence’s', async () => {
+    mountPanel('Run mycli rm NAME by hand.\n\n```bash\nmycli rm NAME --force\n```\n')
+    fireEvent.change(await selectInCode(), { target: { value: 'which one?' } })
+    fireEvent.click(screen.getByLabelText('Add comment'))
+    await screen.findByText('which one?')
+    const [saved] = JSON.parse(localStorage.getItem('mc-comment-drafts') || '{}')[FILE]
+    expect(saved).toMatchObject({ anchor: 'mycli rm NAME', inCode: true })
+    expect(saved).not.toHaveProperty('line')
+    expect(saved).not.toHaveProperty('column')
+  })
+
+  it('does not underline the same words in the prose', async () => {
+    mountPanel('Run mycli rm NAME by hand.\n\n```bash\nmycli rm NAME --force\n```\n')
+    fireEvent.change(await selectInCode(), { target: { value: 'same words twice' } })
+    fireEvent.click(screen.getByLabelText('Add comment'))
+    await screen.findByText('same words twice')
+    expect(registeredRanges('mc-comment')).toEqual([])
+  })
+})
+
+describe('MarkdownPanel — a drag in the diff view', () => {
+  /** The diff view has no preview root, so a comment on it could only be quote-only; the toolbar must not open. */
+  async function openDiff() {
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: 'x', original: 'old\n', status: 'clean' } as never)
+    mountPanel(BODY, vi.fn(), { initialDiffMode: undefined })
+    await waitFor(() => expect(api.fileDiff).toHaveBeenCalled())
+    fireEvent.click(screen.getAllByLabelText('Toggle diff view')[0])
+    await screen.findByTestId('diff-host')
+  }
+
+  function dragAndLook() {
+    const host = screen.getByTestId('diff-host')
+    vi.useFakeTimers()
+    const selection = dragInCode(host)
+    act(() => { vi.advanceTimersByTime(60) })
+    expect(screen.queryByLabelText('Comment on the selected text')).toBeNull()
+    expect(selection.getComposedRanges).not.toHaveBeenCalled()
+  }
+
+  it('opens no comment box in the side panel', async () => {
+    await openDiff()
+    dragAndLook()
+  })
+
+  it('opens no comment box in full screen', async () => {
+    await openDiff()
+    fireEvent.click(screen.getAllByTestId('markdown-panel-more-options')[0])
+    fireEvent.click(screen.getByText('Full screen'))
+    await screen.findByRole('dialog')
+    await screen.findByTestId('diff-host')
+    dragAndLook()
+  })
+})
