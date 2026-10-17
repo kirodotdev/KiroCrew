@@ -23,7 +23,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useReducedMotion } from 'framer-motion'
 import { RefreshCw, Waypoints } from 'lucide-react'
 import { useIssueRadar } from '../context'
-import { issueRadarApi, type DepsResponse } from '../api'
+import { DepsFetchError, issueRadarApi, type DepsResponse } from '../api'
 import { repoScopeKey } from '../lib/links'
 import {
   buildNodes, layoutGraph, readySet, reduceInferred,
@@ -32,6 +32,7 @@ import {
   type GraphNode, type NodeState, type FrontierItem,
 } from '../lib/deps'
 import { i18nT } from '../../../i18n/t'
+import ErrorNotice from '../../../components/ErrorNotice'
 import { splitOnPlaceholder } from '../../../lib/splitOnPlaceholder'
 
 /** The theme token a node state paints with. `open`/`done` are drawn muted. */
@@ -105,8 +106,8 @@ export default function GraphView() {
 
   // Build the full-graph nodes once per payload; every view derives from this.
   const built = useMemo(
-    () => (deps ? buildNodes(deps, issues, pulls, prevReadyRef.current) : null),
-    [deps, issues, pulls],
+    () => (deps ? buildNodes(deps, issues, pulls, prevReadyRef.current, active.provider) : null),
+    [deps, issues, pulls, active.provider],
   )
 
   // Snapshot the ready set after paint so the NEXT fetch compares against it.
@@ -159,7 +160,14 @@ export default function GraphView() {
   // ── empty / unavailable (404, error, or no edges) ──
   const hasGraph = !!built && !!deps && deps.edges.length > 0
   if (!hasGraph) {
-    return <EmptyBoard error={depsQuery.isError} onRetry={() => depsQuery.refetch()} refreshing={depsQuery.isFetching} />
+    return (
+      <EmptyBoard
+        error={depsQuery.isError ? depsQuery.error : null}
+        provider={active.provider ?? 'github'}
+        onRetry={() => depsQuery.refetch()}
+        refreshing={depsQuery.isFetching}
+      />
+    )
   }
 
   const nodes = built!
@@ -258,6 +266,46 @@ export default function GraphView() {
           </button>
         </div>
       </div>
+
+      {/* A refresh can fail while a previously-cached graph is still shown.
+          `hasGraph` keeps that graph (and skips EmptyBoard), so without this the
+          failure and its ErrorNotice would be invisible — the retained graph
+          would look current. The banner's bold lead says plainly that this is the
+          last good copy and the refresh failed (never the empty-board "could not
+          be loaded / route may not be enabled" line, which contradicts a graph
+          that is on screen). The accurate per-cause blurb is shown only for a
+          coded GitLab error; the server's own detail renders underneath, as the
+          empty board does. */}
+      {depsQuery.isError
+        ? (() => {
+            const err = depsQuery.error
+            const u = unavailableBlurb(err, active.provider ?? 'github')
+            const coded = err instanceof DepsFetchError && !!err.code
+            const lead = i18nT('apps.issueRadar.views.graphView.refresh_failed_stale_graph')
+            // The lead and the backend-derived cause blurb both carry failure text
+            // whose value comes from the /deps error, so they render THROUGH the
+            // shared ErrorNotice (errors-use-error-notice), never a bare <p>. The
+            // raw server detail stacks below. When there is no detail the blurb is
+            // the message itself, since ErrorNotice renders nothing without one.
+            const explain = coded ? `${lead} ${u.blurb}` : lead
+            return (
+              <div className="flex-none px-2 md:px-4 pt-2">
+                <ErrorNotice
+                  title={u.detail ? explain : undefined}
+                  message={u.detail || explain}
+                  messagePlacement="below"
+                  askAgent
+                  className="max-w-full text-left"
+                  messageClassName={
+                    u.detailProminent
+                      ? 'font-mono text-text break-words'
+                      : 'text-muted-strong break-words'
+                  }
+                />
+              </div>
+            )
+          })()
+        : null}
 
       {view === 'frontier' ? (
         <Frontier
@@ -674,10 +722,83 @@ function FocusTree({ root, nodes, liveEdges, reduceMotion, onReRoot, onOpen }: {
 
 /* ── EMPTY / UNAVAILABLE ──────────────────────────────────────────────── */
 
+/** The explanation line for a failed deps fetch, keyed on the route's own
+ * `code` so it reads in the user's language and names the RIGHT next step; the
+ * server's raw sentence rides underneath as detail. `detailProminent` lifts
+ * that detail to body weight when it carries the actionable command (the
+ * `… auth login` line), per the UX review. The auth and outage blurbs are
+ * per-provider so each one names the real CLI ("GitLab CLI (glab)") and forge
+ * ("GitHub didn't answer") instead of the jargon "forge"; the brand name lives
+ * INSIDE the translated sentence (never a standalone token), so a localized
+ * catalog value stays mostly in its own script. An error with no code (a 404
+ * from a build without the route, a network failure) keeps the generic line. */
+function unavailableBlurb(
+  error: unknown,
+  provider: string,
+): { blurb: string; detail: string; detailProminent: boolean } {
+  const code = error instanceof DepsFetchError ? error.code : ''
+  const detail = error instanceof Error ? error.message : ''
+  // Only GitLab carries provider-specific copy here. It is the forge this change
+  // adds, and its "most issues" wording is backed by a real majority-failure rule
+  // in gitlab_queries.fetch_dependency_edges. Every other provider (GitHub
+  // included) keeps the single generic blurb it showed before this change: a
+  // GitHub edge fetch is one GraphQL call that raises on any single failure, so a
+  // "most issues" line would promise a cause the code never tracks.
+  if (provider === 'gitlab') {
+    if (code === 'deps_auth_required') {
+      // The raw server line carries the exact `glab auth login --hostname …`
+      // command, so promote it to body weight instead of burying it.
+      return {
+        blurb: i18nT('apps.issueRadar.views.graphView.empty_unavailable_auth_gitlab'),
+        detail,
+        detailProminent: true,
+      }
+    }
+    if (code === 'deps_fetch_failed') {
+      return {
+        blurb: i18nT('apps.issueRadar.views.graphView.empty_unavailable_fetch_failed_gitlab'),
+        detail,
+        detailProminent: false,
+      }
+    }
+    if (code === 'deps_issue_scope_unavailable') {
+      return {
+        blurb: i18nT('apps.issueRadar.views.graphView.empty_unavailable_issue_scope'),
+        detail,
+        detailProminent: false,
+      }
+    }
+  }
+  return {
+    blurb: i18nT('apps.issueRadar.views.graphView.empty_unavailable_blurb'),
+    detail,
+    detailProminent: false,
+  }
+}
+
 /** Designed empty state — the deps route is not enabled yet (404/500), errored,
  * or the repo has no dependency edges. Not a bare "no data": a small unpopulated
- * board so the tab still stands alone. */
-function EmptyBoard({ error, onRetry, refreshing }: { error: boolean; onRetry: () => void; refreshing: boolean }) {
+ * board so the tab still stands alone. `error` is null when the fetch succeeded;
+ * otherwise it is what the deps query rejected with (see `unavailableBlurb`).
+ * The empty blurb is per forge: GitLab has no `gh` command and no inferred
+ * edges, only native links (a Premium/Ultimate feature). */
+function EmptyBoard({
+  error,
+  provider,
+  onRetry,
+  refreshing,
+}: {
+  error: unknown | null
+  provider: string
+  onRetry: () => void
+  refreshing: boolean
+}) {
+  const unavailable = error !== null ? unavailableBlurb(error, provider) : null
+  const blurb = unavailable
+    ? unavailable.blurb
+    : provider === 'gitlab'
+      ? i18nT('apps.issueRadar.views.graphView.empty_blurb_gitlab')
+      : i18nT('apps.issueRadar.views.graphView.empty_blurb')
   return (
     <div className="h-full flex flex-col items-center justify-center gap-4 bg-bg text-text font-mono px-2 md:px-6">
       {/* Decorative mini-board drawn with borders, not an inline SVG (the icon
@@ -696,15 +817,33 @@ function EmptyBoard({ error, onRetry, refreshing }: { error: boolean; onRetry: (
       </div>
       <div className="flex items-center gap-1.5 text-[14px] font-medium text-text">
         <Waypoints size={16} className="text-accent opacity-70" />
-        {error
+        {error !== null
           ? i18nT('apps.issueRadar.views.graphView.empty_unavailable_title')
           : i18nT('apps.issueRadar.views.graphView.empty_title')}
       </div>
-      <p className="text-[12px] text-muted max-w-sm text-center leading-relaxed">
-        {error
-          ? i18nT('apps.issueRadar.views.graphView.empty_unavailable_blurb')
-          : i18nT('apps.issueRadar.views.graphView.empty_blurb')}
-      </p>
+      {unavailable ? (
+        // Failure text: the blurb's value comes from the /deps error code, so it
+        // renders THROUGH the shared ErrorNotice (errors-use-error-notice), with
+        // the raw server detail stacked below. No bare <p> for a backend-derived
+        // explanation. The <p> below is kept only for the SUCCESS empty state,
+        // whose copy is static UI text, not an error value.
+        <ErrorNotice
+          title={unavailable.detail ? unavailable.blurb : undefined}
+          message={unavailable.detail || unavailable.blurb}
+          messagePlacement="below"
+          askAgent
+          className="max-w-sm text-left"
+          messageClassName={
+            unavailable.detailProminent
+              ? 'font-mono text-text break-words'
+              : 'text-muted-strong break-words'
+          }
+        />
+      ) : (
+        <p className="text-[12px] text-muted max-w-sm text-center leading-relaxed">
+          {blurb}
+        </p>
+      )}
       <button
         onClick={onRetry}
         disabled={refreshing}

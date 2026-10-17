@@ -108,19 +108,54 @@ function blockerSatisfied(lifecycle: 'open' | 'closed' | 'merged'): boolean {
   return lifecycle === 'closed' || lifecycle === 'merged'
 }
 
+/** The forges whose issue and change-request numbers live in SEPARATE
+ * sequences, so one number can name both an issue and a merge request. On
+ * such a forge the payload node's `kind` is authoritative and a live row of the
+ * OTHER kind must never override it. GitHub shares one number space, so there a
+ * live row always wins over the payload's kind (the backend stamps
+ * `kind: "issue"` on a node whose summary lookup failed, and the real PR row
+ * must still correct that). */
+const SEPARATE_NUMBER_SPACES: ReadonlySet<string> = new Set(['gitlab'])
+
+/** True when `provider` numbers issues and change requests independently. */
+export function hasSeparateNumberSpaces(provider: string | undefined): boolean {
+  return provider !== undefined && SEPARATE_NUMBER_SPACES.has(provider)
+}
+
+/** A node's live lifecycle, joined from the list rows and the payload. */
+export interface ResolvedLifecycle {
+  kind: NodeKind
+  title: string
+  lifecycle: 'open' | 'closed' | 'merged'
+  ciFailed: boolean
+}
+
 /** Resolve the lifecycle of one node number from the live list rows first
  * (authoritative, fresh), falling back to the deps payload's node map.
  *
  * A merged PR is 'closed' on GitHub with a merge timestamp, so the PR row's
- * `merged_at` is what distinguishes merged from closed-unmerged. */
-function resolveLifecycle(
+ * `merged_at` is what distinguishes merged from closed-unmerged.
+ *
+ * On a forge with separate number spaces (see `SEPARATE_NUMBER_SPACES`) the
+ * payload node's `kind` decides WHICH live list may answer: an `issue` node
+ * never reads the MR row that shares its number, and a `pull` node never reads
+ * the issue row. This holds whether or not the other row is loaded, because a
+ * blocker that is closed is absent from the open-issue list and the MR row
+ * would otherwise win by default. A node absent from the payload falls back to
+ * the GitHub order (PR row, then issue row).
+ *
+ * Shared by the Graph tab (`buildNodes`) and the issue detail pane's
+ * blocked-by section, so the two surfaces cannot disagree about one number. */
+export function resolveLifecycle(
   n: number,
   deps: DepsResponse,
   issueByNumber: Map<number, Issue>,
   pullByNumber: Map<number, PullRequest>,
-): { kind: NodeKind; title: string; lifecycle: 'open' | 'closed' | 'merged'; ciFailed: boolean } {
+  provider?: string,
+): ResolvedLifecycle {
   const node = deps.nodes[String(n)]
-  const pull = pullByNumber.get(n)
+  const kindIsAuthoritative = hasSeparateNumberSpaces(provider) && node !== undefined
+  const pull = kindIsAuthoritative && node.kind === 'issue' ? undefined : pullByNumber.get(n)
   if (pull) {
     const lifecycle: 'open' | 'closed' | 'merged' =
       pull.merged_at ? 'merged' : pull.state === 'closed' ? 'closed' : 'open'
@@ -131,7 +166,7 @@ function resolveLifecycle(
       ciFailed: pull.checks_state === 'failure',
     }
   }
-  const issue = issueByNumber.get(n)
+  const issue = kindIsAuthoritative && node.kind === 'pull' ? undefined : issueByNumber.get(n)
   if (issue) {
     const lifecycle: 'open' | 'closed' | 'merged' = issue.state === 'closed' ? 'closed' : 'open'
     return { kind: 'issue', title: issue.title || node?.title || '', lifecycle, ciFailed: false }
@@ -173,6 +208,7 @@ export function buildNodes(
   issues: Issue[],
   pulls: PullRequest[],
   prevReady: ReadonlySet<number> | null,
+  provider?: string,
 ): Map<number, GraphNode> {
   const issueByNumber = new Map(issues.map((i) => [i.number, i]))
   const pullByNumber = new Map(pulls.map((p) => [p.number, p]))
@@ -190,9 +226,9 @@ export function buildNodes(
   }
 
   // First pass: lifecycle for every node (needed to derive blocked/ready).
-  const resolved = new Map<number, ReturnType<typeof resolveLifecycle>>()
+  const resolved = new Map<number, ResolvedLifecycle>()
   for (const n of numbers) {
-    resolved.set(n, resolveLifecycle(n, deps, issueByNumber, pullByNumber))
+    resolved.set(n, resolveLifecycle(n, deps, issueByNumber, pullByNumber, provider))
   }
 
   // Second pass: derive fabric state. An open item is `hold` if any blocker is

@@ -16,6 +16,7 @@ import { CircleDot, GitPullRequest, Lock, Unlock } from 'lucide-react'
 import { useIssueRadar } from '../context'
 import { issueRadarApi, type DepEdge, type DepsResponse } from '../api'
 import { repoScopeKey } from '../lib/links'
+import { resolveLifecycle, hasSeparateNumberSpaces, type NodeKind } from '../lib/deps'
 import { i18nT } from '../../../i18n/t'
 
 /** One resolved dependency row: the counterpart number, its kind/lifecycle, and
@@ -34,7 +35,7 @@ function tint(lifecycle: DepRow['lifecycle']): string {
   return lifecycle === 'open' ? 'text-accent' : 'text-muted'
 }
 
-export default function DepsSection({ number }: { number: number }) {
+export default function DepsSection({ number, kind }: { number: number; kind: NodeKind }) {
   const { active, issues, pulls, openRef } = useIssueRadar()
   const scopeKey = repoScopeKey(active)
 
@@ -50,46 +51,33 @@ export default function DepsSection({ number }: { number: number }) {
     if (!deps) return { blockedBy: [] as DepRow[], blocking: [] as DepRow[] }
     const issueByNumber = new Map(issues.map((i) => [i.number, i]))
     const pullByNumber = new Map(pulls.map((p) => [p.number, p]))
+    // One lookup shared with the Graph tab, so the two surfaces can never show
+    // one number with two different lifecycles (see lib/deps.resolveLifecycle for
+    // the per-forge number-space rule).
     const resolve = (n: number, src: DepEdge['source']): DepRow => {
-      const node = deps.nodes[String(n)]
-      const pull = pullByNumber.get(n)
-      if (pull) {
-        return {
-          number: n,
-          kind: 'pull',
-          lifecycle: pull.merged_at ? 'merged' : pull.state === 'closed' ? 'closed' : 'open',
-          title: pull.title || node?.title || '',
-          source: src,
-        }
-      }
-      const issue = issueByNumber.get(n)
-      if (issue) {
-        return {
-          number: n,
-          kind: 'issue',
-          lifecycle: issue.state === 'closed' ? 'closed' : 'open',
-          title: issue.title || node?.title || '',
-          source: src,
-        }
-      }
-      return {
-        number: n,
-        kind: node?.kind ?? 'issue',
-        lifecycle: node?.state ?? 'open',
-        title: node?.title ?? '',
-        source: src,
-      }
+      const r = resolveLifecycle(n, deps, issueByNumber, pullByNumber, active.provider)
+      return { number: n, kind: r.kind, lifecycle: r.lifecycle, title: r.title, source: src }
     }
     const bb: DepRow[] = []
     const bl: DepRow[] = []
+    // On a separate-number-space forge (GitLab) the deps graph is built from
+    // issue links only, so every edge endpoint is an issue. An edge therefore
+    // belongs to THIS item only when the payload node at that number is this
+    // item's own kind: a GitLab MR (iid 6) must not borrow issue #6's rows.
+    // GitHub shares one number space, so this gate is a no-op there.
+    const ownsEndpoint = (n: number): boolean => {
+      if (!hasSeparateNumberSpaces(active.provider)) return true
+      const node = deps.nodes[String(n)]
+      return node !== undefined && node.kind === kind
+    }
     for (const e of deps.edges) {
-      if (e.blocked === number) bb.push(resolve(e.blocker, e.source))
-      if (e.blocker === number) bl.push(resolve(e.blocked, e.source))
+      if (e.blocked === number && ownsEndpoint(e.blocked)) bb.push(resolve(e.blocker, e.source))
+      if (e.blocker === number && ownsEndpoint(e.blocker)) bl.push(resolve(e.blocked, e.source))
     }
     bb.sort((a, b) => a.number - b.number)
     bl.sort((a, b) => a.number - b.number)
     return { blockedBy: bb, blocking: bl }
-  }, [deps, number, issues, pulls])
+  }, [deps, number, kind, issues, pulls, active.provider])
 
   if (blockedBy.length === 0 && blocking.length === 0) return null
 
