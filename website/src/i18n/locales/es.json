@@ -2815,6 +2815,8 @@
         },
         "crews": {
           "desk": {
+            "answer_mentions_hint": "Un comentario que @menciona la cuenta de la forja con la que ha iniciado sesión este gateway despierta a un equipo, que responde como esa cuenta. Actívalo solo para una cuenta dedicada al equipo, no para la tuya.",
+            "answer_mentions_label": "Responder a las @menciones",
             "claim_ttl_hint": "Solo cuenta en reclamada / investigando / implementando. Un pull request en espera nunca expira.",
             "claim_ttl_label": "TTL de la reclamación",
             "claim_ttl_min": "Introduce al menos 1 hora.",
@@ -2832,7 +2834,9 @@
             "trailer_required": "Introduce un trailer de commit.",
             "unit_hours_many": "horas",
             "unit_hours_one": "hora",
-            "unit_hours_other": "horas"
+            "unit_hours_other": "horas",
+            "wake_new_work_hint": "Un equipo empieza un turno en cuanto una incidencia recibe una de sus etiquetas o, para un equipo sin etiquetas, en cuanto se abre una incidencia nueva. Desactivado: los equipos solo miran según su temporizador de inactividad.",
+            "wake_new_work_label": "Despertar a los equipos cuando aparece trabajo nuevo"
           },
           "editor": {
             "agent_hint": "Cualquier agente funciona. Las instrucciones del equipo se inyectan en la sesión cada vez que faltan en la conversación, así no hay que pegar nada en el agente.",

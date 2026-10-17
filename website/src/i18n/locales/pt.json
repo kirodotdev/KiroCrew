@@ -2815,6 +2815,8 @@
         },
         "crews": {
           "desk": {
+            "answer_mentions_hint": "Um comentário que @menciona a conta da forja com que este gateway está conectado acorda uma equipe, que responde como essa conta. Ative apenas para uma conta dedicada à equipe, não para a sua.",
+            "answer_mentions_label": "Responder a @menções",
             "claim_ttl_hint": "Só conta durante as fases assumida / investigando / implementando. Uma pull request parada nunca expira.",
             "claim_ttl_label": "TTL da reserva",
             "claim_ttl_min": "Informe 1 hora ou mais.",
@@ -2832,7 +2834,9 @@
             "trailer_required": "Informe um trailer de commit.",
             "unit_hours_many": "horas",
             "unit_hours_one": "hora",
-            "unit_hours_other": "horas"
+            "unit_hours_other": "horas",
+            "wake_new_work_hint": "Uma equipe começa um turno assim que uma issue recebe uma de suas etiquetas ou, para uma equipe sem etiquetas, assim que uma nova issue é aberta. Desligado: as equipes só verificam pelo próprio temporizador de inatividade.",
+            "wake_new_work_label": "Acordar as equipes quando surgir trabalho novo"
           },
           "editor": {
             "agent_hint": "Qualquer agente funciona. O brief do crew é injetado na sessão sempre que desaparece da conversa, então nada precisa ser colado no agente.",
