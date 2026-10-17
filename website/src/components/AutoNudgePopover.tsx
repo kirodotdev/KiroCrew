@@ -7,7 +7,25 @@ import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { cronJobsQuery } from '../api/cronJobsQuery'
 import { runBelongsToSlot } from '../apps/workflows/runModel'
-import { loadGoalDraft, saveGoalDraft, type GoalDraft } from '../utils/goalDrafts'
+import {
+  GOAL_DRAFT_MAX_CYCLES,
+  GOAL_DRAFT_MAX_IDLE_SECS,
+  GOAL_DRAFT_MIN_IDLE_SECS,
+  GoalDraftConflict,
+  cacheCanonicalGoalDraft,
+  clampGoalDraftMessage,
+  enqueueRemoteGoalDraft,
+  latestLocalGoalDraft,
+  loadRemoteGoalDraft,
+  migrateLocalGoalDraft,
+  sameGoalDraft,
+  sameGoalDraftSnapshot,
+  savePendingGoalDraft,
+  saveRemoteGoalDraft,
+  type GoalDraft,
+  type GoalDraftPersistResult,
+  type GoalDraftSnapshot,
+} from '../utils/goalDrafts'
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
 import { i18nT } from '../i18n/t'
@@ -85,6 +103,21 @@ type LoopFields = { message: string; idle_secs: number; max_cycles: number }
  *  since the form read its baseline: the 409 `goal_stale_baseline`. */
 class StaleGoalBaseline extends Error {}
 
+/**
+ * `failed` and `clear-failed` are the same recovery (the snapshot is retained
+ * and Retry reruns reconciliation) with different copy: one says a draft is
+ * still held here, the other that a clear did not finish. The copy must follow
+ * WHAT failed to sync, or a failed tombstone would tell the user a draft exists
+ * while the editor shows the cleared template.
+ */
+type DraftSyncState = 'idle' | 'checking' | 'updated' | 'failed' | 'conflict' | 'clear-failed'
+type DraftPersistResult = GoalDraftPersistResult
+
+/** A timestamped null draft is a clear tombstone; `updatedAt === 0` is no record at all. */
+function syncFailureFor(snapshot: GoalDraftSnapshot): DraftSyncState {
+  return snapshot.draft === null && snapshot.updatedAt > 0 ? 'clear-failed' : 'failed'
+}
+
 /** One armed script cron owned by this chat slot. */
 interface SlotWatch {
   id: string
@@ -94,10 +127,11 @@ interface SlotWatch {
 }
 
 export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, onChange, onFired, onSetUpBoundedMonitor, writeDisabled = false, interrupted = false, trigger, content }: Props) {
+  const draftSyncStatusId = useId()
   // `||` (not `??`) is deliberate on the loop tier: it preserves the fallback
   // so a loop with idle_secs/max_cycles of 0 or an empty message still shows
   // the 60 / 0 / default template rather than a bare 0 / "".
-  const [message, setMessage] = useState(() => loop?.message || defaultMsg())
+  const [message, setMessage] = useState(() => clampGoalDraftMessage(loop?.message || defaultMsg()))
   // Idle-seconds and max-cycles are held as RAW STRINGS while the popover is
   // open so every edit (including a fully-cleared field or a transient "") is
   // allowed as-typed. Coercing to a number on each keystroke would snap a
@@ -112,6 +146,8 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
      primary CTA, so one press asks and the second performs. */
   const [confirmClear, setConfirmClear] = useState(false)
   const [error, setError] = useState('')
+  const [draftSyncState, setDraftSyncState] = useState<DraftSyncState>('idle')
+  const [draftSyncAttempt, setDraftSyncAttempt] = useState(0)
   // Watches armed on this slot, read through the SHARED `cron-jobs` query rather
   // than a private fetch. That key is invalidated by the websocket hook, so a
   // watch deleted or paused elsewhere disappears from an open popover instead of
@@ -122,6 +158,22 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   const { data: cronJobs, isError: watchesFailed, refetch: refetchWatches } = useQuery({
     ...cronJobsQuery,
     enabled: open && content === undefined,
+  })
+  const { refetch: refetchRemoteDraft } = useQuery({
+    queryKey: ['goal-draft', slotKey],
+    queryFn: () => loadRemoteGoalDraft(slotKey),
+    enabled: false,
+    retry: false,
+  })
+  const remoteDraftMutation = useMutation({
+    mutationFn: ({ targetSlot, snapshot, options }: {
+      targetSlot: string
+      snapshot: GoalDraftSnapshot
+      options: { keepalive?: boolean; migration?: boolean }
+    }) => saveRemoteGoalDraft(targetSlot, snapshot, options),
+    onSuccess: (canonical, { targetSlot }) => {
+      queryClient.setQueryData(['goal-draft', targetSlot], canonical)
+    },
   })
 
   const watches: SlotWatch[] = useMemo(() => {
@@ -152,6 +204,8 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
 
   const parseIdle = (s: string) => parseInt(s, 10) || 60
   const parseCycles = (s: string) => parseInt(s, 10) || 0
+  const clampInteger = (value: number, minimum: number, maximum: number) =>
+    Math.min(maximum, Math.max(minimum, value))
 
   // Only a genuine user edit should persist a draft. Seeding from the live loop
   // or restoring a remembered draft on open must NOT re-write the store (doing
@@ -159,10 +213,20 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   // mirror a live loop's config into the user-draft store). `hasEdited` gates
   // the persist so it fires on real onChange edits only.
   const hasEdited = useRef(false)
-  // Latest field values, kept current every render so the close-flush below
-  // (which runs from a stable handler) can read them.
-  const latest = useRef({ slotKey, message, idleInput, maxCyclesInput, loop })
-  latest.current = { slotKey, message, idleInput, maxCyclesInput, loop }
+  // Async clear completion must distinguish its own reset from text typed across
+  // either request boundary even when React batches the parent loop update.
+  const editRevision = useRef(0)
+  const syncGeneration = useRef(0)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
+  // Latest field values, kept current every render so async reconciliation and
+  // the close-flush can prove they still refer to the same open editor.
+  const latest = useRef({ slotKey, message, idleInput, maxCyclesInput, loop, open })
+  latest.current = { slotKey, message, idleInput, maxCyclesInput, loop, open }
+
   /* What the fields held when the popover last SHOWED them: the record they
      were seeded from on open, or what the user's last write sent. `editedFields`
      measures against this rather than the live record, because the fields
@@ -171,7 +235,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
      edit and write the stale value back over it. Seeded on the first render
      because Play's name renders off it before the open-edge effect runs. */
   const seeded = useRef<LoopFields | null>(
-    loop ? { message: loop.message || defaultMsg(), idle_secs: loop.idle_secs || 60, max_cycles: loop.max_cycles || 0 } : null,
+    loop ? { message: clampGoalDraftMessage(loop.message || defaultMsg()), idle_secs: loop.idle_secs || 60, max_cycles: loop.max_cycles || 0 } : null,
   )
 
   /* The goal baseline: the `goal_token` of the stored goal the form's text
@@ -184,6 +248,21 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
      not the stored one and a save from it must be refused, not land. No token at
      all (an older gateway, a failed read) leaves the save unfenced.
      `baselineGen` drops a read that a newer read or a landed write overtook. */
+  /** Show a draft (or the template for null) as the form's pristine state.
+   *  A draft reconciled from storage or another device is what the form now
+   *  SHOWS, so it also becomes `seeded`, the baseline edits are measured from. */
+  function applyDraft(draft: GoalDraft | null) {
+    const shown: LoopFields = {
+      message: clampGoalDraftMessage(draft ? draft.message : defaultMsg()),
+      idle_secs: draft ? draft.idleSecs : 60,
+      max_cycles: draft ? draft.maxCycles : 0,
+    }
+    setMessage(shown.message)
+    setIdleInput(String(shown.idle_secs))
+    setMaxCyclesInput(String(shown.max_cycles))
+    seeded.current = shown
+  }
+
   const goalBaseline = useRef<{ loopId: string, token: string } | null>(null)
   const baselineGen = useRef(0)
 
@@ -224,15 +303,98 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
 
   // Compute the draft to persist for the current field state, or null to drop
   // the slot: the blank / pristine-default case stores nothing so an emptied or
-  // untouched popover never pins the template. (Only reached when no loop is
-  // running — a live loop is authoritative and its config is never mirrored
-  // into the user-draft store; persistence is skipped entirely while a loop is
-  // present.)
+  // untouched popover never pins the template.
   function draftToPersist(s: typeof latest.current): GoalDraft | null {
-    const idleSecs = parseIdle(s.idleInput)
-    const maxCycles = parseCycles(s.maxCyclesInput)
+    // Held to the store's bounds, the same normalization the store applies, so
+    // an editor-vs-snapshot comparison never differs only by an out-of-range number.
+    const idleSecs = clampInteger(parseIdle(s.idleInput), GOAL_DRAFT_MIN_IDLE_SECS, GOAL_DRAFT_MAX_IDLE_SECS)
+    const maxCycles = clampInteger(parseCycles(s.maxCyclesInput), 0, GOAL_DRAFT_MAX_CYCLES)
     const isPristineDefault = s.message === defaultMsg() && idleSecs === 60 && maxCycles === 0
-    return isPristineDefault ? null : { message: s.message, idleSecs, maxCycles }
+    return isPristineDefault || !s.message.trim()
+      ? null
+      : { message: s.message, idleSecs, maxCycles }
+  }
+
+  const closeAfterClearRetry = useRef(false)
+  const replaceConflictOnRetry = useRef(false)
+
+  function editorStillMatches(snapshot: GoalDraftSnapshot): boolean {
+    return latest.current.open
+      && !latest.current.loop
+      && sameGoalDraft(draftToPersist(latest.current), snapshot.draft)
+  }
+
+  function applyCanonicalIfCurrent(
+    targetSlot: string,
+    submitted: GoalDraftSnapshot,
+    canonical: GoalDraftSnapshot,
+    result: Exclude<DraftPersistResult, 'remote-failed' | 'conflict'>,
+  ): void {
+    if (
+      result === 'superseded'
+      || !mounted.current
+      || latest.current.slotKey !== targetSlot
+      || !editorStillMatches(submitted)
+    ) return
+    hasEdited.current = false
+    // The server often returns the submitted clamped draft unchanged. Keep raw
+    // focused number text (for example an empty field or the first digit of 120)
+    // until blur instead of replacing it with the parsed canonical value.
+    if (!sameGoalDraft(canonical.draft, submitted.draft)) applyDraft(canonical.draft)
+  }
+
+  const writeRemoteDraft = (
+    targetSlot: string,
+    snapshot: GoalDraftSnapshot,
+    options: { keepalive?: boolean; migration?: boolean },
+  ) => remoteDraftMutation.mutateAsync({ targetSlot, snapshot, options })
+
+  function enqueueRemoteDraft(
+    targetSlot: string,
+    snapshot: GoalDraftSnapshot,
+    options: { keepalive?: boolean; migration?: boolean } = {},
+  ): Promise<GoalDraftSnapshot> {
+    return enqueueRemoteGoalDraft(targetSlot, snapshot, writeRemoteDraft, options)
+  }
+
+  function persistDraft(
+    targetSlot: string,
+    snapshot: GoalDraftSnapshot,
+    keepalive = false,
+  ): Promise<DraftPersistResult> {
+    return enqueueRemoteDraft(targetSlot, snapshot, { keepalive })
+      .then(canonical => {
+        const result = cacheCanonicalGoalDraft(targetSlot, snapshot, canonical)
+        applyCanonicalIfCurrent(targetSlot, snapshot, canonical, result)
+        return result
+      })
+      .catch((error: unknown) => {
+        // Offline/local-only remains the fallback, but an open editor must say
+        // that the shared copy is stale and offer the same migration retry path.
+        if (
+          !keepalive
+          && mounted.current
+          && latest.current.open
+          && latest.current.slotKey === targetSlot
+          && !latest.current.loop
+          && editorStillMatches(snapshot)
+        ) {
+          setDraftSyncState(error instanceof GoalDraftConflict ? 'conflict' : syncFailureFor(snapshot))
+        }
+        return error instanceof GoalDraftConflict ? 'conflict' : 'remote-failed'
+      })
+  }
+
+  function persistLocalDraft(
+    targetSlot: string,
+    draft: GoalDraft | null,
+    keepalive = false,
+  ): Promise<DraftPersistResult> {
+    return persistDraft(targetSlot, savePendingGoalDraft(targetSlot, draft), keepalive)
+  }
+
+  function persistCurrentDraft(s: typeof latest.current, keepalive = false) {
+    return persistLocalDraft(s.slotKey, draftToPersist(s), keepalive)
   }
 
   /* A pending confirmation belongs to the record the reader was LOOKING at. The
@@ -250,23 +412,35 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   }, [loop?.id, loop?.active, loop?.message])
 
   // Seed/restore fields on each open (rising edge). A live loop is the
-  // authoritative source; otherwise the last per-slot draft is restored.
-  // One read seeds all three fields. Runs in an effect (not render) so the
-  // render itself performs no storage read/write.
+  // authoritative source. Otherwise show the local fallback immediately, then
+  // reconcile with the shared server copy. Existing local-only installs migrate
+  // by timestamp: the newer browser copy is uploaded, while an older mobile copy
+  // cannot overwrite a newer desktop value. A response never replaces text the
+  // user started editing while the request was in flight.
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      syncGeneration.current += 1
+      closeAfterClearRetry.current = false
+      replaceConflictOnRetry.current = false
+      setDraftSyncState('idle')
+      return
+    }
+    const generation = ++syncGeneration.current
+    const replaceConflict = replaceConflictOnRetry.current
+    replaceConflictOnRetry.current = false
     hasEdited.current = false
     setError('')
     // A pending confirmation must not survive a close: reopening later would
     // put a primed erase under the next press.
     setConfirmClear(false)
     if (loop) {
+      setDraftSyncState('idle')
       // `||` (not `??`) is deliberate: a loop with idle_secs/max_cycles of 0
       // or an empty message shows the 60 / 0 / default template.
-      setMessage(loop.message || defaultMsg())
+      setMessage(clampGoalDraftMessage(loop.message || defaultMsg()))
       setIdleInput(String(loop.idle_secs || 60))
       setMaxCyclesInput(String(loop.max_cycles || 0))
-      seeded.current = { message: loop.message || defaultMsg(), idle_secs: loop.idle_secs || 60, max_cycles: loop.max_cycles || 0 }
+      seeded.current = { message: clampGoalDraftMessage(loop.message || defaultMsg()), idle_secs: loop.idle_secs || 60, max_cycles: loop.max_cycles || 0 }
       // A popover that cannot write (crew/member mode) has nothing to fence.
       if (writeDisabled) {
         baselineGen.current++
@@ -274,39 +448,100 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
       } else {
         readGoalBaseline(loop.id, loop.message)
       }
-    } else {
-      baselineGen.current++
-      goalBaseline.current = null
-      const remembered = loadGoalDraft(slotKey)
-      setMessage(remembered ? remembered.message : defaultMsg())
-      setIdleInput(String(remembered ? remembered.idleSecs : 60))
-      setMaxCyclesInput(String(remembered ? remembered.maxCycles : 0))
-      seeded.current = remembered
-        ? { message: remembered.message, idle_secs: remembered.idleSecs, max_cycles: remembered.maxCycles }
-        : { message: defaultMsg(), idle_secs: 60, max_cycles: 0 }
+      return
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge seed only; loop/slotKey are read fresh each open
-  }, [open])
+    baselineGen.current++
+    goalBaseline.current = null
 
-  // Flush a pending debounced edit synchronously when the popover closes OR
-  // unmounts while open, so edits within the last DRAFT_SAVE_DEBOUNCE_MS
-  // window aren't lost. Effect cleanup covers both paths.
+    const seed = latestLocalGoalDraft(slotKey)
+    applyDraft(seed.draft)
+    setDraftSyncState('checking')
+    const stillCurrent = () => (
+      syncGeneration.current === generation
+      && latest.current.open
+      && latest.current.slotKey === slotKey
+      && !latest.current.loop
+      && !hasEdited.current
+    )
+    // A cache write that lands during an await becomes this reconciliation
+    // subject; `seed` stays what the user first saw for the visible status.
+    const settle = (canonical: GoalDraftSnapshot, cacheResult: Exclude<DraftPersistResult, 'remote-failed' | 'conflict'>) => {
+      if (cacheResult === 'superseded') {
+        // A record this editor did not adopt beat the answer. Preserve both by
+        // blocking Start until Retry reconciles the visible editor explicitly.
+        setDraftSyncState('conflict')
+        return
+      }
+      applyDraft(canonical.draft)
+      if (closeAfterClearRetry.current && canonical.draft === null) {
+        closeAfterClearRetry.current = false
+        setDraftSyncState('idle')
+        onOpenChange(false)
+        return
+      }
+      setDraftSyncState(
+        cacheResult === 'retained'
+          ? syncFailureFor(canonical)
+          : (sameGoalDraft(seed.draft, canonical.draft) ? 'idle' : 'updated'),
+      )
+    }
+    void (async () => {
+      try {
+        const result = await refetchRemoteDraft({ throwOnError: true })
+        const remote = result.data
+        if (!remote || !stillCurrent()) return
+        const local = latestLocalGoalDraft(slotKey)
+        // Pending base provenance is checked before timestamp ordering. A newer
+        // canonical must surface a conflict instead of erasing an offline edit.
+        const migration = await migrateLocalGoalDraft(
+          slotKey,
+          local,
+          remote,
+          writeRemoteDraft,
+          { replaceConflict },
+        )
+        if (!stillCurrent()) return
+        if (migration.result === 'conflict') {
+          setDraftSyncState('conflict')
+          return
+        }
+        if (migration.result === 'remote-failed' || !migration.canonical) {
+          setDraftSyncState(syncFailureFor(local))
+          return
+        }
+        settle(migration.canonical, migration.result)
+      } catch {
+        // The read itself failed. The retained local snapshot is what Retry
+        // will reconcile, so it also decides whether this is a draft or a clear.
+        if (stillCurrent()) setDraftSyncState(syncFailureFor(seed))
+      }
+    })()
+    return () => {
+      if (syncGeneration.current === generation) syncGeneration.current += 1
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge/retry seed only; refs guard the async continuation against slot/loop/edit changes
+  }, [open, draftSyncAttempt])
+
+  // Flush a pending debounced edit synchronously into local storage when the
+  // popover closes or unmounts, then use a keepalive request for the shared copy.
   useEffect(() => {
     if (!open) return
     return () => {
       if (!hasEdited.current || latest.current.loop) return
-      saveGoalDraft(latest.current.slotKey, draftToPersist(latest.current))
+      void persistCurrentDraft(latest.current, true)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- stable cleanup reading the latest ref
   }, [open])
 
-  // Persist edits per slot, debounced with the same DRAFT_SAVE_DEBOUNCE_MS as
-  // chat drafts so a long goal doesn't drive a synchronous localStorage write on
-  // every keystroke. Skips until the user actually edits a field (so opening the
-  // popover or the open-restore setState above never writes).
+  // Persist genuine edits per slot, debounced with the same interval as chat
+  // drafts. Local storage remains the immediate/offline commit; the server write
+  // makes the same latest draft visible to every dashboard client.
   useEffect(() => {
     if (!open || !hasEdited.current || loop) return
-    const timer = setTimeout(() => saveGoalDraft(slotKey, draftToPersist(latest.current)), DRAFT_SAVE_DEBOUNCE_MS)
+    const timer = setTimeout(
+      () => { void persistCurrentDraft(latest.current) },
+      DRAFT_SAVE_DEBOUNCE_MS,
+    )
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `draftToPersist` is a pure transform of the ref snapshot it is handed, redeclared each render, so its identity carries no information the deps above miss. Depending on it would restart the debounce timer on every unrelated re-render — the coalescing this effect exists for.
   }, [open, slotKey, message, idleInput, maxCyclesInput, loop])
@@ -403,6 +638,12 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     if (!loop) return
     setSaving(true)
     try {
+      // Clearing removes the loop before it writes the draft tombstone. Capture
+      // the editor the user submitted so an edit typed across either await can
+      // become the next draft instead of being mistaken for cleared state.
+      const clearSlot = slotKey
+      const clearSubmission = draftToPersist(latest.current)
+      const clearEditRevision = editRevision.current
       const resp = await fetch(`/api/autonudge/${loop.id}?intent=clear`, { method: 'DELETE' })
       if (!resp.ok) {
         // A successful DELETE may return 204 No Content, so the body is read only here.
@@ -410,8 +651,47 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
         throw new Error(data.error || `HTTP ${resp.status}`)
       }
       void queryClient.invalidateQueries({ queryKey: AUTONUDGE_LOOPS_QUERY_KEY })
+      const editorMatchesSubmission = editRevision.current === clearEditRevision
+        && latest.current.slotKey === clearSlot
+        && sameGoalDraft(draftToPersist(latest.current), clearSubmission)
       onChange(null)
-      onOpenChange(false)
+      // The loop record is already gone, but an edit typed while DELETE was
+      // pending belongs to the now-inactive slot. Do not reset it. Once the
+      // parent drops `loop`, the ordinary debounce makes it durable and queues
+      // it behind the clear exactly once.
+      if (editorMatchesSubmission) {
+        hasEdited.current = false
+        applyDraft(null)
+        setDraftSyncState('checking')
+      } else {
+        setDraftSyncState('idle')
+      }
+      const clearSnapshot = savePendingGoalDraft(clearSlot, null)
+      const result = await persistDraft(clearSlot, clearSnapshot)
+      if (!mounted.current) return
+      // A second edit can land while the tombstone PUT is pending. Only the
+      // unchanged cleared editor belongs to that completion; a newer editor
+      // stays open and its own queued write/retry owns the visible sync state.
+      const clearStillOwnsEditor = editRevision.current === clearEditRevision
+        && latest.current.slotKey === clearSlot
+        && latest.current.open
+      if (!clearStillOwnsEditor) {
+        setDraftSyncState('idle')
+        return
+      }
+      if (result === 'persisted') {
+        onOpenChange(false)
+      } else if (result === 'superseded') {
+        // A newer durable edit won without changing this editor. Keep it open
+        // so storage-event reconciliation or Retry can adopt that value.
+        setDraftSyncState('idle')
+      } else {
+        // Both failure modes retain the tombstone locally or in the module
+        // fallback. Retry/reopen reconciles that same newest snapshot. The
+        // editor already shows the cleared template, so the notice names the
+        // clear that did not finish rather than a draft that is not there.
+        setDraftSyncState('clear-failed')
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -538,13 +818,33 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
    *  owner, 2026-10-01): the first nudge goes out after `idle_secs`, or when
    *  the user presses Play on the running loop. The write's hand-off re-keys
    *  the popover onto the created id; a refused create lands in this notice. */
+  const draftSyncBlocksStart = draftSyncState !== 'idle' && draftSyncState !== 'updated'
+
   function startNow() {
+    if (draftSyncBlocksStart) return
     const fields = formFields()
+    // Captured at the press: the draft this create submitted, and whether it
+    // is a genuine edit rather than a viewed draft.
+    const startSlot = slotKey
+    const submittedDraft = draftToPersist(latest.current)
+    const editedBeforeStart = hasEdited.current
+    const startEditRevision = editRevision.current
+    const localAtStart = latestLocalGoalDraft(startSlot)
     return runControl(async () => {
       await writeLoop(
         { url: '/api/autonudge', method: 'POST', body: { slot_key: slotKey, ...fields } },
         fields,
       )
+      // Only after the create landed: a refused Start leaves the draft to the
+      // debounce and close-flush, which own an editor with no loop.
+      const currentLocal = latestLocalGoalDraft(startSlot)
+      const startStillOwnsDraft = editRevision.current === startEditRevision
+        && latest.current.slotKey === startSlot
+        && sameGoalDraft(draftToPersist(latest.current), submittedDraft)
+        && sameGoalDraftSnapshot(currentLocal, localAtStart)
+      if (editedBeforeStart && startStillOwnsDraft) {
+        void persistLocalDraft(startSlot, submittedDraft)
+      }
     })
   }
 
@@ -747,6 +1047,36 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
         ) : null}
         <p className="text-muted text-[11px] mb-3 leading-relaxed">{i18nT('components.autoNudgePopover.give_the_agent_a_goal_and_it_will_keep_working_t')}</p>
 
+        {!loop && (draftSyncState === 'failed' || draftSyncState === 'conflict' || draftSyncState === 'clear-failed') ? (
+          <div className="flex items-center justify-between gap-2 mb-3">
+            {/* No hand-off: this popover retains the unsaved goal draft (or the
+                clear tombstone) and its retry must stay beside that editable copy. */}
+            <ErrorNotice
+              variant="inline"
+              testId="goal-draft-sync-error"
+              message={draftSyncState === 'clear-failed'
+                ? i18nT('components.autoNudgePopover.draft_clear_sync_failed')
+                : draftSyncState === 'conflict'
+                  ? i18nT('components.autoNudgePopover.goal_stale_baseline', {
+                      action: i18nT('components.autoNudgePopover.retry'),
+                    })
+                  : i18nT('components.autoNudgePopover.draft_sync_failed')}
+            />
+            <button
+              type="button"
+              onClick={() => {
+                closeAfterClearRetry.current = draftSyncState === 'clear-failed'
+                replaceConflictOnRetry.current = true
+                setDraftSyncState('checking')
+                setDraftSyncAttempt(attempt => attempt + 1)
+              }}
+              className="px-2 py-0.5 rounded border border-border text-[11px] text-muted hover:text-text bg-transparent cursor-pointer shrink-0"
+            >
+              {i18nT('components.autoNudgePopover.retry')}
+            </button>
+          </div>
+        ) : null}
+
         {watchesFailed && (
           <div className="flex items-center justify-between gap-2 mb-3">
             {/* No hand-off: the popover holds the unsaved goal message, idle and max-cycle inputs.
@@ -815,13 +1145,19 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             Done is a dead end, so there is nothing an edit could be saved into. */}
         <textarea
           aria-label={i18nT('components.autoNudgePopover.goal_description')}
+          aria-describedby={stopFileHelp ? stopFileHelpId : undefined}
           value={message}
           disabled={writeDisabled || finished}
-          onChange={e => { hasEdited.current = true; setMessage(e.target.value) }}
+          onChange={e => {
+            editRevision.current += 1
+            hasEdited.current = true
+            closeAfterClearRetry.current = false
+            setDraftSyncState('idle')
+            setMessage(clampGoalDraftMessage(e.target.value))
+          }}
           rows={6}
-          className={`w-full bg-bg border border-border rounded p-2 text-[12px] font-mono resize-y mb-3 text-text${FINISHED_FIELD}`}
+          className={`w-full bg-bg border border-border rounded p-2 text-[12px] font-mono resize-y mb-1 text-text${FINISHED_FIELD}`}
           placeholder={i18nT('components.autoNudgePopover.describe_what_you_want_the_agent_to_accomplish')}
-          aria-describedby={stopFileHelp ? stopFileHelpId : undefined}
         />
         {stopFileHelp ? (
           /* Display-only explanation of the raw token above (#10458). The
@@ -845,11 +1181,11 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             <input
               type="number"
               aria-label={i18nT('components.autoNudgePopover.seconds_between_nudges')}
-              min={15}
-              max={86400}
+              min={GOAL_DRAFT_MIN_IDLE_SECS}
+              max={GOAL_DRAFT_MAX_IDLE_SECS}
               value={idleInput}
               disabled={writeDisabled || finished}
-              onChange={e => { hasEdited.current = true; setIdleInput(e.target.value) }}
+              onChange={e => { editRevision.current += 1; hasEdited.current = true; closeAfterClearRetry.current = false; setDraftSyncState('idle'); setIdleInput(e.target.value) }}
               onBlur={() => setIdleInput(String(parseIdle(idleInput)))}
               className={`w-full bg-bg border border-border rounded px-2 py-1 text-[12px] text-text${FINISHED_FIELD}`}
             />
@@ -860,9 +1196,10 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
               type="number"
               aria-label={i18nT('components.autoNudgePopover.max_cycles_0_infinite')}
               min={0}
+              max={GOAL_DRAFT_MAX_CYCLES}
               value={maxCyclesInput}
               disabled={writeDisabled || finished}
-              onChange={e => { hasEdited.current = true; setMaxCyclesInput(e.target.value) }}
+              onChange={e => { editRevision.current += 1; hasEdited.current = true; closeAfterClearRetry.current = false; setDraftSyncState('idle'); setMaxCyclesInput(e.target.value) }}
               onBlur={() => setMaxCyclesInput(String(parseCycles(maxCyclesInput)))}
               className={`w-full bg-bg border border-border rounded px-2 py-1 text-[12px] text-text${FINISHED_FIELD}`}
             />
@@ -1010,14 +1347,35 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
           </div>
         ) : (
           <div className="flex items-center justify-end gap-2" data-testid="auto-nudge-actions">
+            {/* The cross-device check is what disables Start, so its state sits
+                in Start's own row rather than above a form the button can scroll
+                away from. Always mounted while the form is inactive: the polite
+                live region exists before its text changes, and the row's height
+                comes from the button, so checking -> idle moves nothing. Start
+                names this element through aria-describedby while it is the
+                reason the button is disabled. */}
+            <p
+              id={draftSyncStatusId}
+              role="status"
+              aria-live="polite"
+              data-testid="goal-draft-sync-status"
+              className="mr-auto min-w-0 text-[11px] leading-relaxed text-muted"
+            >
+              {draftSyncState === 'checking'
+                ? i18nT('components.autoNudgePopover.draft_sync_checking')
+                : draftSyncState === 'updated'
+                  ? i18nT('components.autoNudgePopover.draft_sync_updated')
+                  : ''}
+            </p>
             <div className="flex items-center gap-2" data-testid="auto-nudge-controls">
               <Btn
                 type="button"
                 primary
                 className={ICON_BTN}
                 onClick={startNow}
-                disabled={saving || writeDisabled || !message.trim()}
+                disabled={saving || writeDisabled || draftSyncBlocksStart || !message.trim()}
                 aria-label={playName}
+                aria-describedby={draftSyncState === 'checking' ? draftSyncStatusId : undefined}
                 title={playName}
               >
                 <Play size={14} aria-hidden />

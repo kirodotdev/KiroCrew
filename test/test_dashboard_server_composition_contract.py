@@ -466,7 +466,8 @@ _LAZY_IMPORTS = {
     ),
     "kiro_crew.dashboard.handlers.autonudge": (
         "api_autonudge_delete api_autonudge_fire api_autonudge_get api_autonudge_list "
-        "api_autonudge_start api_autonudge_update api_monitor_clear api_monitor_create "
+        "api_autonudge_start api_autonudge_update api_goal_draft_get api_goal_draft_put "
+        "api_monitor_clear api_monitor_create "
         "api_monitor_restart api_monitor_slot_get api_monitor_stop api_monitor_update "
         "api_monitors_list api_session_monitor_get"
     ),
@@ -516,7 +517,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 84
+    assert len(expected) == 86
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
@@ -1507,6 +1508,8 @@ _DASHBOARD_BOOT = tuple("""
     _reserve_dashboard_port subprocess_executor init_hooks_system safe_context_call
     current_context _register_dist_static_routes _dist_file_handler _dist_file_handler
     _dist_file_handler _dist_file_handler _dist_file_handler discover_app_window_entries
+    _window_entry_handler _window_entry_handler _window_entry_handler _window_entry_handler
+    _window_entry_handler _window_entry_handler _window_entry_handler _window_entry_handler
     register_app_window_paths _install_asset_cache_control_finalizer
     tailnet_effective_allowed_logins tailnet_identity_unknown degraded_config_files
     build_allowed_origins _make_host_validation_middleware _make_csrf_middleware
@@ -1784,8 +1787,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 300
-_MCP_TABLE_DIGEST = "c13bb64c3702d1494a989027bc16bbe2f21fabd992292022c78806e5aee6c9c2"
+_MCP_TABLE_ROWS = 303
+_MCP_TABLE_DIGEST = "9b18d3b6e7586dab9fe9e3163b39c317412b477f7be5a3abc34534d41973eaf5"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

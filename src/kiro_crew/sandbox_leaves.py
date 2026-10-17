@@ -226,6 +226,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``security.paths`` so the file tools refuse it too. All three, because each
     # one alone leaves a different path open.
     "work",
+    # Canonical goal text returned by the owner-gated dashboard and executed by
+    # Start. The gateway opens it directly; no in-sandbox process needs access.
+    # Mask the directory so an agent cannot forge a prompt through its JSON file,
+    # lock, or atomic-write sibling temp.
+    "goal-drafts",
     # The Notes state files below are OWNED by the md-notebook backend, which is itself
     # a sandboxed spawn (`apps/backend.py`), so the mask alone would break the app: the
     # registry write's final rename gets EPERM and attach/clone always fails.
