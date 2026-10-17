@@ -3709,7 +3709,7 @@
         "trust_all_base": "Доверять всем командам {{base}}",
         "trust_all_tools": "Доверять всем инструментам в этом сеансе",
         "trust_hint": "«Доверять» будет автоматически разрешать все инструменты до конца этого сеанса.",
-        "trust_this_command": "Доверять «{{cmd}}»",
+        "trust_this_command": "Доверять <mono>{{cmd}}</mono>",
         "trusted": "Доверенное"
       },
       "chat": {
@@ -9176,11 +9176,11 @@
       "trust_all_base_today": "Доверять любой команде <mono>{{base}}</mono> до полуночи ({{time}})",
       "trust_all_tools": "Доверять всем инструментам в этом сеансе",
       "trust_all_tools_channel": "Доверять всем инструментам в этом канале — сохраняется после перезапуска",
-      "trust_this_command": "Доверять «<mono>{{cmd}}</mono>»",
-      "trust_this_command_channel": "Доверять «<mono>{{cmd}}</mono>» для @{{role}} — до перезапуска {{productName}}",
-      "trust_this_command_hour": "Доверять «<mono>{{cmd}}</mono>» в течение часа (до {{time}})",
-      "trust_this_command_session": "Доверять «<mono>{{cmd}}</mono>» в этом сеансе",
-      "trust_this_command_today": "Доверять «<mono>{{cmd}}</mono>» до полуночи ({{time}})"
+      "trust_this_command": "Доверять <mono>{{cmd}}</mono>",
+      "trust_this_command_channel": "Доверять <mono>{{cmd}}</mono> для @{{role}} — до перезапуска {{productName}}",
+      "trust_this_command_hour": "Доверять <mono>{{cmd}}</mono> в течение часа (до {{time}})",
+      "trust_this_command_session": "Доверять <mono>{{cmd}}</mono> в этом сеансе",
+      "trust_this_command_today": "Доверять <mono>{{cmd}}</mono> до полуночи ({{time}})"
     },
     "tunnelStatus": {
       "connected": "Подключено",

@@ -3567,7 +3567,7 @@
         "trust_all_base": "सभी {{base}} कमांड पर भरोसा करें",
         "trust_all_tools": "इस सत्र के लिए सभी टूल पर भरोसा करें",
         "trust_hint": "«भरोसा करो» इस सत्र के बाकी हिस्से में हर टूल को अपने आप मंज़ूरी दे देगा।",
-        "trust_this_command": "«{{cmd}}» पर भरोसा करें",
+        "trust_this_command": "<mono>{{cmd}}</mono> पर भरोसा करो",
         "trusted": "विश्वसनीय"
       },
       "chat": {
@@ -8904,11 +8904,11 @@
       "trust_all_base_today": "किसी भी <mono>{{base}}</mono> कमांड पर आधी रात तक भरोसा करो ({{time}})",
       "trust_all_tools": "इस सत्र के लिए सभी टूल पर भरोसा करें",
       "trust_all_tools_channel": "इस चैनल के सभी टूल पर भरोसा करें — रीस्टार्ट के बाद भी बना रहता है",
-      "trust_this_command": "«<mono>{{cmd}}</mono>» पर भरोसा करें",
-      "trust_this_command_channel": "«<mono>{{cmd}}</mono>» पर @{{role}} के लिए भरोसा करो — {{productName}} के रीस्टार्ट तक",
-      "trust_this_command_hour": "«<mono>{{cmd}}</mono>» पर एक घंटे के लिए भरोसा करो ({{time}} तक)",
-      "trust_this_command_session": "«<mono>{{cmd}}</mono>» पर इस सत्र के लिए भरोसा करो",
-      "trust_this_command_today": "«<mono>{{cmd}}</mono>» पर आधी रात तक भरोसा करो ({{time}})"
+      "trust_this_command": "<mono>{{cmd}}</mono> पर भरोसा करो",
+      "trust_this_command_channel": "<mono>{{cmd}}</mono> पर @{{role}} के लिए भरोसा करो — {{productName}} के रीस्टार्ट तक",
+      "trust_this_command_hour": "<mono>{{cmd}}</mono> पर एक घंटे के लिए भरोसा करो ({{time}} तक)",
+      "trust_this_command_session": "<mono>{{cmd}}</mono> पर इस सत्र के लिए भरोसा करो",
+      "trust_this_command_today": "<mono>{{cmd}}</mono> पर आधी रात तक भरोसा करो ({{time}})"
     },
     "tunnelStatus": {
       "connected": "कनेक्टेड",

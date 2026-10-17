@@ -3584,7 +3584,7 @@
         "trust_all_base": "すべての{{base}}コマンドを信頼",
         "trust_all_tools": "このセッションのすべてのツールを信頼",
         "trust_hint": "信頼すると、このセッションの残りの間はすべてのツールが自動承認されます。",
-        "trust_this_command": "「{{cmd}}」を信頼",
+        "trust_this_command": "<mono>{{cmd}}</mono>を信頼",
         "trusted": "信頼済み"
       },
       "chat": {
@@ -8768,11 +8768,11 @@
       "trust_all_base_today": "任意の <mono>{{base}}</mono> コマンドを深夜0時まで信頼（{{time}}）",
       "trust_all_tools": "このセッションのすべてのツールを信頼",
       "trust_all_tools_channel": "このチャネルのすべてのツールを信頼 — 再起動後も維持",
-      "trust_this_command": "「<mono>{{cmd}}</mono>」を信頼",
-      "trust_this_command_channel": "「<mono>{{cmd}}</mono>」を @{{role}} に対して信頼 — {{productName}} の再起動まで",
-      "trust_this_command_hour": "「<mono>{{cmd}}</mono>」を1時間信頼（{{time}} まで）",
-      "trust_this_command_session": "「<mono>{{cmd}}</mono>」をこのセッション中は信頼",
-      "trust_this_command_today": "「<mono>{{cmd}}</mono>」を深夜0時まで信頼（{{time}}）"
+      "trust_this_command": "<mono>{{cmd}}</mono>を信頼",
+      "trust_this_command_channel": "<mono>{{cmd}}</mono>を @{{role}} に対して信頼 — {{productName}} の再起動まで",
+      "trust_this_command_hour": "<mono>{{cmd}}</mono>を1時間信頼（{{time}} まで）",
+      "trust_this_command_session": "<mono>{{cmd}}</mono>をこのセッション中は信頼",
+      "trust_this_command_today": "<mono>{{cmd}}</mono>を深夜0時まで信頼（{{time}}）"
     },
     "tunnelStatus": {
       "connected": "接続されました",

@@ -3496,7 +3496,7 @@
         "trust_all_base": "信任所有 {{base}} 命令",
         "trust_all_tools": "信任本会话的所有工具",
         "trust_hint": "“信任”会让本会话之后的每个工具都自动通过。",
-        "trust_this_command": "信任“{{cmd}}”",
+        "trust_this_command": "信任<mono>{{cmd}}</mono>",
         "trusted": "已信任"
       },
       "chat": {
@@ -8768,11 +8768,11 @@
       "trust_all_base_today": "信任任意 <mono>{{base}}</mono> 命令至午夜（{{time}}）",
       "trust_all_tools": "信任本会话的所有工具",
       "trust_all_tools_channel": "信任此频道中的所有工具 — 重启后仍然有效",
-      "trust_this_command": "信任“<mono>{{cmd}}</mono>”",
-      "trust_this_command_channel": "信任“<mono>{{cmd}}</mono>”，仅对 @{{role}} — {{productName}} 重启前有效",
-      "trust_this_command_hour": "信任“<mono>{{cmd}}</mono>”一小时（至 {{time}}）",
-      "trust_this_command_session": "在本会话中信任“<mono>{{cmd}}</mono>”",
-      "trust_this_command_today": "信任“<mono>{{cmd}}</mono>”至午夜（{{time}}）"
+      "trust_this_command": "信任<mono>{{cmd}}</mono>",
+      "trust_this_command_channel": "信任<mono>{{cmd}}</mono>，仅对 @{{role}} — {{productName}} 重启前有效",
+      "trust_this_command_hour": "信任<mono>{{cmd}}</mono>一小时（至 {{time}}）",
+      "trust_this_command_session": "在本会话中信任<mono>{{cmd}}</mono>",
+      "trust_this_command_today": "信任<mono>{{cmd}}</mono>至午夜（{{time}}）"
     },
     "tunnelStatus": {
       "connected": "已连接",

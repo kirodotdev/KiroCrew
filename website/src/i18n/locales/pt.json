@@ -3638,7 +3638,7 @@
         "trust_all_base": "Confiar em todos os comandos {{base}}",
         "trust_all_tools": "Confiar em todas as ferramentas desta sessão",
         "trust_hint": "“Confiar” aprova automaticamente todas as ferramentas no resto desta sessão.",
-        "trust_this_command": "Confiar em “{{cmd}}”",
+        "trust_this_command": "Confiar em <mono>{{cmd}}</mono>",
         "trusted": "Confiável"
       },
       "chat": {
@@ -9040,11 +9040,11 @@
       "trust_all_base_today": "Confiar em qualquer comando <mono>{{base}}</mono> até a meia-noite ({{time}})",
       "trust_all_tools": "Confiar em todas as ferramentas desta sessão",
       "trust_all_tools_channel": "Confiar em todas as ferramentas deste canal — persiste após reiniciar",
-      "trust_this_command": "Confiar em “<mono>{{cmd}}</mono>”",
-      "trust_this_command_channel": "Confiar em “<mono>{{cmd}}</mono>” para @{{role}} — até {{productName}} reiniciar",
-      "trust_this_command_hour": "Confiar em “<mono>{{cmd}}</mono>” por uma hora (até {{time}})",
-      "trust_this_command_session": "Confiar em “<mono>{{cmd}}</mono>” nesta sessão",
-      "trust_this_command_today": "Confiar em “<mono>{{cmd}}</mono>” até a meia-noite ({{time}})"
+      "trust_this_command": "Confiar em <mono>{{cmd}}</mono>",
+      "trust_this_command_channel": "Confiar em <mono>{{cmd}}</mono> para @{{role}} — até {{productName}} reiniciar",
+      "trust_this_command_hour": "Confiar em <mono>{{cmd}}</mono> por uma hora (até {{time}})",
+      "trust_this_command_session": "Confiar em <mono>{{cmd}}</mono> nesta sessão",
+      "trust_this_command_today": "Confiar em <mono>{{cmd}}</mono> até a meia-noite ({{time}})"
     },
     "tunnelStatus": {
       "connected": "Conectado",

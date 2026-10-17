@@ -106,7 +106,7 @@ describe('ChannelPage approval card with meta', () => {
     fireEvent.click(screen.getByRole('button', { name: /Trust/ }))
     const items = screen.getAllByRole('menuitem').map(i => i.textContent ?? '')
     expect(items).toHaveLength(2)
-    expect(items[0]).toBe('Trust “cat f | wc -l” for @Researcher — until Kiro Crew restarts')
+    expect(items[0]).toBe('Trust cat f | wc -l for @Researcher — until Kiro Crew restarts')
     expect(items[1]).toBe(BLANKET)
     // On the prose path the first token would have offered "cat" -- a grant the
     // endpoint refuses (pattern_underivable). No item names it.
@@ -119,7 +119,7 @@ describe('ChannelPage approval card with meta', () => {
     fireEvent.click(screen.getByRole('button', { name: /Trust/ }))
     const items = screen.getAllByRole('menuitem')
     expect(items.map(i => i.textContent)).toEqual([
-      'Trust “ls -la /tmp” for @Researcher — until Kiro Crew restarts',
+      'Trust ls -la /tmp for @Researcher — until Kiro Crew restarts',
       'Trust all ls commands for @Researcher — until Kiro Crew restarts',
       BLANKET,
     ])
