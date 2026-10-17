@@ -1296,7 +1296,7 @@ async def api_side_stop(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
 
     # Owner-dashboard gate, mirroring ``api_side_turn``: stopping a turn is a
     # dashboard-user action, and an app token keeps the slot scoping below.

@@ -65,7 +65,7 @@ async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
     # Session-aware ownership gate, not the slot-only check: the POST writes the
     # override keyed by effective_session_key(slot), so a linked app-owned slot
     # (channel stem) would let an app modify a foreign session's threshold and
@@ -403,7 +403,7 @@ async def api_chat_slot_turn_timeout(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
     request_app = request.get("app", "")
     denied = deny_app_slot_session_access(request_app, slot, name, "slot_turn_timeout")
     if denied is not None:

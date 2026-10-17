@@ -287,7 +287,7 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
 
     # Resolved before authorization, because what has to be authorized is the
     # SESSION this will clear, not the slot it was reached through.
