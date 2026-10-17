@@ -464,9 +464,12 @@ jobs:
   #
   # Mount, copy the .app out, run the installed launcher, then start the REAL
   # app from its executable and wait for the gateway its supervisor boots to
-  # answer /api/health. Unsigned build by design: signing is a later stage, and
-  # the launch exercises the binary, not Gatekeeper. See
-  # scripts/smoke-macos-install.sh.
+  # answer /api/health. That launch is the only place the Electron shell's
+  # bundled-KAS-engine hand-off (gateway-env.js) runs against a shipped bundle,
+  # so the gateway child's environment is read back to prove it, and the
+  # installed `kirocrew kas status` must report the engine as built into the
+  # app. Unsigned build by design: signing is a later stage, and the launch
+  # exercises the binary, not Gatekeeper. See scripts/smoke-macos-install.sh.
   smoke-install-macos:
     name: Smoke-install macOS DMG (launch)
     needs: build-desktop
@@ -483,7 +486,7 @@ jobs:
           name: unsigned-build-darwin-universal
           path: dist
 
-      - name: Install the DMG and launch the app
+      - name: Install the DMG, launch the app, prove the bundled KAS engine
         run: ./scripts/smoke-macos-install.sh dist
 
       - name: Upload smoke evidence

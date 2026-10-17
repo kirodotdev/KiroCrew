@@ -488,7 +488,7 @@ jobs:
           name: desktop-macos-arm64
           path: dist
 
-      - name: Install the DMG and launch the app
+      - name: Install the DMG, launch the app, prove the bundled KAS engine
         run: ./scripts/smoke-macos-install.sh dist
 
       - name: Upload smoke evidence

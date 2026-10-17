@@ -277,6 +277,24 @@ the app`), the status payload carries `installed.bundled`, and the Settings card
 names where each copy came from: "KAS engine … (included with the app)" for the
 app's copy, "KAS engine … (installed by you)" for the data home's.
 
+The hand-off is asserted against a shipped app, not only the build's staging
+directory. The macOS smoke (`scripts/smoke-macos-install.sh`) checks the
+`backend-dist/kas/` root in the INSTALLED tree, launches the REAL app, and reads
+the gateway child's environment back: `KIROCREW_BUNDLED_KAS_DIR` must name that
+root, and the installed `kirocrew kas status`, run with that environment against
+the smoke's empty data home, must report `installed: KAS <version> … (built into
+the app)` with its `engine:` row inside the root. The Windows smoke
+(`scripts/smoke-windows-install.ps1`) boots the gateway from the installed
+interpreter rather than through the shell, so it checks the same layout under
+`resources\backend-dist\kas\` (`BUNDLED-VERSION` and the install record), then
+sets `KIROCREW_BUNDLED_KAS_DIR` itself the way the shell does and runs the
+installed `kirocrew kas status` with it, asserting the same two rows.
+`BUNDLE_KAS=0` in the smoke's environment skips these assertions with a logged
+line: an opted-out build stages no root for the shell to export. Only the macOS
+smoke reads the shell's export off a real gateway child, so a build whose root
+electron-builder moved or dropped fails there rather than on an opted-in user's
+first prompt.
+
 Bundling the engine does not turn the route on: `agent.kas_bundle` keeps its
 default (off) on every platform while the route is in shadow testing, and the
 relay route runs on the kiro-cli the user installed. Nothing in the build,
