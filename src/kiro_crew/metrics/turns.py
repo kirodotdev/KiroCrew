@@ -196,8 +196,8 @@ def emit_turn_duration(
     the transport namespace for a channel key, a local label for the rest,
     ``other`` for a shape it does not recognise. Deliberately NOT
     ``validation.infer_use_case``, whose output also gates an artifact check
-    (``handlers/artifacts.py``) — a metric must not be the reason an
-    authorization-adjacent mapping grows a case.
+    (``handlers/artifacts_parts/record_serialization.py``) — a metric must not be
+    the reason an authorization-adjacent mapping grows a case.
 
     Caveat on what the wall clock measures: ``elapsed_ms`` runs from the start
     of the turn, so a turn parked on an interactive tool-approval prompt counts

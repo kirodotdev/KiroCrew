@@ -65,10 +65,10 @@ refactoring in review.
 Named honestly, because every filter above buys a blind spot:
 
   * **Indirect sinks.** ``_err("...", 400)`` and ``_err500(exc)`` wrappers
-    (``handlers/artifacts.py``, ``handlers/agents.py``) are ordinary calls -- the
-    ``json_response`` inside the helper is a single site, so N call sites count as
-    one. Converting a helper fixes all of its callers at once, which is why this
-    is an acceptable blind spot rather than a hole to plug.
+    (``handlers/artifacts_parts/route_plumbing.py``, ``handlers/agents.py``) are
+    ordinary calls -- the ``json_response`` inside the helper is a single site, so
+    N call sites count as one. Converting a helper fixes all of its callers at
+    once, which is why this is an acceptable blind spot rather than a hole to plug.
   * **Non-``json_response`` sinks.** ``web.Response(text=json.dumps(...))``,
     ``HTTPBadRequest(reason=...)``, raised aiohttp exceptions, and every
     catalog-less target (Slack, Discord, CLI, cron) are out of scope here.

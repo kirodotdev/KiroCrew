@@ -302,7 +302,7 @@ and are imported from their owner.
 | `kiro_crew.artifact_store.records` | The persisted formats: `meta.json` and its tolerant load, the lifecycle event entries (`ALLOWED_EVENT_TYPES`), `comments.json`, and the publication and fork-metadata field allowlists |
 | `kiro_crew.artifact_store.comments` | The comment-thread rules: the forwarding filter, whole-thread cap pruning, the provider merge, the anchor rescan and root-cascade removal |
 | `kiro_crew.artifact_store.folders` | `ArtifactFolderStore` and `artifact_folders.json` |
-| `dashboard/handlers/artifacts.py` | The HTTP projection: request parsing, the owner gate on write routes, the restricted-session gate, SEL audit, response redaction (`_serialize`), the publish governance gates and the live-refresh broadcast |
+| `dashboard/handlers/artifacts.py` | The HTTP projection's import path and patch seam: a mirrored facade over the owner modules in `dashboard/handlers/artifacts_parts/` (see [Handler owners](#handler-owners)), which hold request parsing, the owner gate on write routes, the restricted-session gate, SEL audit, response redaction (`_serialize`), the publish governance gates and the live-refresh broadcast |
 | `kiro_crew.mcp_tools.artifacts` | The MCP projection: tool schemas and handlers, which reach the artifact store only through the HTTP API |
 
 `ArtifactStore` keeps its class in `kiro_crew.artifacts`, and its class body binds each
@@ -627,7 +627,8 @@ each row carries an `available` flag so the FE can hint install-on-first-use for
 a not-yet-installed but installable destination. Governance: `publish_sync` has NO internal gate and `push_version` is
 ungated, so the two egress-arming routes go through
 `_publish_governance_denied` (fail-closed `capabilities.publish ∩
-destinations:<provider>`, a module-local alias for the shared
+destinations:<provider>`, an alias in
+`dashboard/handlers/artifacts_parts/route_plumbing.py` for the shared
 `publish_governance.publish_denied_reason` — the same decision the public-web
 deploy path uses, see `governance.md`) BEFORE dispatch — `overwrite-remote` on the resolved
 `publication.provider`, and `clone` on the routed provider (a clone sets
@@ -648,6 +649,36 @@ paginated: the response carries the provider's `next_page_token`, the client
 forwards it as `?pageToken=`, and `RemoteBrowseSection` drives a
 `useInfiniteQuery` with a "Load more" control — so remote artifacts past the
 provider's first page are reachable rather than silently truncated.
+
+#### Handler owners
+
+`dashboard/handlers/artifacts.py` is the import path and the patch seam of these
+routes and holds no code of its own: `dashboard/server.py` imports each route from
+it, and tests patch names on it. The routes and their helpers live in the owner
+modules of `dashboard/handlers/artifacts_parts/`, one responsibility each, and new
+code for a responsibility goes to its module:
+
+| Owner | Responsibility |
+|---|---|
+| `record_serialization.py` | What a route sends back: `_serialize`, the session title it shows, and the redactors (`_redact_text`, webapp and SEL audit metadata, `_redact_remote_response`) |
+| `route_plumbing.py` | The request plumbing every route shares: JSON and error responses, the owner gate (`_non_owner_refusal`), the capped JSON body read, the saving session's key and source, `_audit`, the live-refresh broadcast, the off-loop store runner, folder-reference resolution and `_publish_governance_denied` |
+| `library_reads.py` | The read routes: `GET /api/artifacts` with its filters, search snippets and content and snippet caches, and an artifact's detail, asset, versions and event log |
+| `session_documents.py` | `GET /api/artifacts/session-docs` and `POST /api/artifacts/materialize` |
+| `dashboard_package_gate.py` | The `kind="dashboard"` write gate create and update consult: the binding refusals, the promote verdict and the stored-snapshot classification |
+| `create_update.py` | `POST /api/artifacts` and `PATCH /api/artifacts/{slug}` |
+| `item_lifecycle.py` | Settling a blank, delete, recording a lifecycle event and relocating `source_path` |
+| `publish_sharing.py` | Publish, sharing updates, unpublish, refresh, reprobe, pull-latest, upstream status, overwrite-remote and the publish-provider list |
+| `artifact_folders.py` | The folder routes and icons, moving an artifact into a folder, pinning, and the publication withdrawal a folder delete runs |
+| `artifact_comments.py` | Comments on a local artifact |
+| `remote_artifacts.py` | Browsing, cloning, forking and reading an artifact a publish provider hosts, and its comments |
+
+The facade is a `kiro_crew._facade_mirror` mirror: a patch of
+`handlers.artifacts.<name>` reaches every owner that binds the name, so tests patch
+the facade, never an owner. The owners import each other lowest layer first, in the
+order of the table, never the facade, and log on the
+`kiro_crew.dashboard.handlers.artifacts` logger. A route reports its owner as
+`__module__`; nothing reads it. `test/test_artifacts_parts_contract.py` pins this
+shape.
 
 ### Dashboard pages
 
@@ -1318,7 +1349,8 @@ HTTP layer.** `dashboard_package.validate_bound_to` checks the SHAPE —
 `crewmate:<slug>` or `session:<slot key>` — and can check nothing else, because
 it runs inside `ArtifactStore`, a library the CLI and cron use with no roster
 loaded and no gateway running. So the eligibility question is asked in
-`dashboard.handlers.artifacts._binding_refusal`, on the one write path both
+`dashboard.handlers.artifacts_parts.dashboard_package_gate._binding_refusal`, on the one
+write path both
 doors reach: the browser's `PATCH /api/artifacts/{slug}` and MCP's
 `artifact_save` / `artifact_update` all arrive at `api_artifacts_create` /
 `api_artifact_update`. It asks the serve path's own questions —
@@ -1462,7 +1494,7 @@ to this kind would store content no reader can parse.
 - **Restricted sessions** — POST/PATCH/DELETE are denied when the dashboard
   classifies the session as restricted (`_is_restricted_session`).
 - **SEL audit** — every mutation emits a `log_tool_invocation` event from the
-  HTTP layer (`dashboard/handlers/artifacts.py`). Reads are not audited.
+  HTTP layer (`_audit` in `dashboard/handlers/artifacts_parts/route_plumbing.py`). Reads are not audited.
   `_audit` redacts caller-supplied text before it reaches the SEL writer (which
   signs bytes as-written and does NOT redact): the `error` string and every
   string leaf of `extra` metadata pass through `redact_via_context`, so an

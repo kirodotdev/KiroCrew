@@ -2363,7 +2363,16 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The crewmate recap lines `handlers/members.py`'s recap route returns:
         # a helper behind that same dashboard HTTP surface, not a boundary itself.
         "member_recap.py",
-        "dashboard/handlers/artifacts.py",
+        "dashboard/handlers/artifacts_parts/artifact_comments.py",
+        "dashboard/handlers/artifacts_parts/artifact_folders.py",
+        "dashboard/handlers/artifacts_parts/create_update.py",
+        "dashboard/handlers/artifacts_parts/dashboard_package_gate.py",
+        "dashboard/handlers/artifacts_parts/library_reads.py",
+        "dashboard/handlers/artifacts_parts/publish_sharing.py",
+        "dashboard/handlers/artifacts_parts/record_serialization.py",
+        "dashboard/handlers/artifacts_parts/remote_artifacts.py",
+        "dashboard/handlers/artifacts_parts/route_plumbing.py",
+        "dashboard/handlers/artifacts_parts/session_documents.py",
         "dashboard/handlers/core.py",
         "dashboard/handlers/cron.py",
         # Same class as the dashboard handlers around it: the five debug reads
