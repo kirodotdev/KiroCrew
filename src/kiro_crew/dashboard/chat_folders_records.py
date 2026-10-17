@@ -478,6 +478,7 @@ async def create_folder_record(
     project_dir: str = "",
     default_agent: str = "",
     default_destination_crew: str = "",
+    default_crew: str = "",
     color: str = "",
     icon: str = "",
     request_app: str = "",
@@ -635,6 +636,7 @@ async def create_folder_record(
         "project_dir": project_dir,
         "default_agent": default_agent,
         "default_destination_crew": clean_crew_ref(default_destination_crew),
+        "default_crew": clean_crew_ref(default_crew),
         # Epoch seconds, a JSON number, so the sidebar and the MCP tree read it
         # with the same rule they read ``order`` by. It is what the sidebar's
         # ``created`` folder sort orders on; a row from before this key existed

@@ -66,6 +66,7 @@ _KEEP_FIELDS = (
     "project_dir",
     "default_agent",
     "default_destination_crew",
+    "default_crew",
     "steering_dirs",
     "tags",
     "color",
