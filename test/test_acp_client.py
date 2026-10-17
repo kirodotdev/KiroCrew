@@ -819,7 +819,7 @@ class TestFormatAcpError:
         # nothing, and it deliberately makes no state claim.
         assert host_auth.signed_out_message("") in out
         assert "kiro-cli login" in out.lower()
-        assert "retry" in out.lower() and "will not help" in out.lower()
+        assert "switching models will not help" in out.lower()
         # Must NOT show the misleading 5xx message.
         assert "transient error" not in out.lower()
         assert "retry in a moment" not in out.lower()
@@ -880,7 +880,7 @@ class TestFormatAcpError:
         }
         out = _format_acp_error(err)
         assert "kiro-cli login" in out.lower()
-        assert "retry" in out.lower() and "will not help" in out.lower()
+        assert "switching models will not help" in out.lower()
         # Must NOT show the misleading transient-5xx advice.
         assert "transient error" not in out.lower()
         assert "retry in a moment" not in out.lower()
