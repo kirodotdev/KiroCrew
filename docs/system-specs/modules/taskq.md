@@ -816,7 +816,20 @@ then reaps the run, and a cancelled parent's cascade
 same `cancel` rather than to the ledger's unconditional `cancel_tree`. Stop
 all's running sweep also takes this parent's rows whose start is in flight
 (`starting_claim_ids_for`, from the parent filed beside each
-`_starting_claims` entry) and stops them through that same `cancel`. A
+`_starting_claims` entry) and stops them through that same `cancel`. These
+are the loop readers that decide from run liveness to stop work and must see
+a row whose start is in flight: `cancel_impl` (`starting_claim_of`), Stop
+all's `cancel_for_parent_impl` (`starting_claim_ids_for`), and the cascades
+`taskq_cancel_children_of[_async]` and `_cancel_live_or_row`
+(`_live_agent_ids`, which counts `_starting_claims`). Every other reader that
+stops work never stops such a row, each for a named reason: a parent end
+leaves a claimed row to its claimer (`allow_admitted=False`), shutdown leaves
+a `starting` row to the boot reconcile, the reaper and wait expiry stop only
+registered runs, the retained-claim retry is the claimer itself, and the
+orphan and leaked-process scans end a prior gateway run's process and cancel
+no store row. `test/test_taskq_starting_claim_readers.py` names each with its
+reason and fails on a new one, on a listed reader that stops consulting the
+starts in flight, and on a helper that stops reading `_starting_claims`. A
 claimer cancelled while its start write is in flight does not abandon it: the
 write is awaited through `asyncio.shield`, so a cancel neither removes a queued
 write from the writer nor loses its answer, and the claimer awaits that answer
