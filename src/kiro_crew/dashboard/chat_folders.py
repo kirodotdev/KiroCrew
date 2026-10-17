@@ -1080,7 +1080,7 @@ def member_slot_write_refused(
         resources=f"slot={getattr(slot, 'key', '')}",
         error="member can only file or tag its own or created sessions",
     )
-    return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    return slot_not_found()
 
 
 def caller_home_slot(state: DashboardState, request: web.Request, principal: str) -> Any:
@@ -3103,7 +3103,7 @@ async def _toggle_slot_user_flag(request: web.Request, field: str) -> web.Respon
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
     if (refusal := refuse_unattributable_caller(state, request, operation)) is not None:
         return refusal
     if (refusal := member_slot_write_refused(state, request, slot, operation)) is not None:

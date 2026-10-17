@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from kiro_crew.platform import wheel_apply, wheel_engine
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.fixture(autouse=True)
@@ -510,7 +511,7 @@ class TestOutcomes:
             assert await asyncio.to_thread(started.wait, 30)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=10)
+                await await_until(task)
             assert releases == [], "the apply still owns the descriptor after the grace"
             with pytest.raises(wheel_engine.WheelUpdateBusy):
                 await asyncio.to_thread(_assert_update_lock_free)
@@ -676,7 +677,7 @@ class TestOwnership:
         try:
             assert await asyncio.to_thread(started.wait, 30)
             await wheel_apply.stop_wheel_applies()
-            outcome = await asyncio.wait_for(task, timeout=10)
+            outcome = await await_until(task)
         finally:
             wheel_apply.cancel_wheel_applies()
         assert outcome.status == "cancelled"
@@ -703,7 +704,7 @@ class TestOwnership:
         task = asyncio.ensure_future(_run(apply, monkeypatch))
         assert await asyncio.to_thread(started.wait, 30)
         platform_compat.cancel_wheel_applies_in_flight("exec")
-        outcome = await asyncio.wait_for(task, timeout=10)
+        outcome = await await_until(task)
         assert outcome.status == "cancelled" and reasons == ["exec"]
 
     @pytest.mark.asyncio
@@ -751,13 +752,20 @@ class TestOwnership:
         try:
             task = asyncio.ensure_future(_run(apply, monkeypatch))
             assert await asyncio.to_thread(started.wait, 30)
+            # Save the worker's future before cancellation so we can wait for it
+            # after release: _IN_FLIGHT.discard runs in the task's finally before
+            # the CancelledError reaches this test, so the set is empty too early.
+            worker_fut = next(iter(wheel_apply._IN_FLIGHT)).future
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=10)
+                await await_until(task)
             release.set()
             # Let the worker finish and its future resolve with nobody awaiting it.
-            for _ in range(50):
-                await asyncio.sleep(0.02)
+            await async_wait_until(
+                lambda: worker_fut.done(),
+                describe=lambda: "worker future not yet resolved",
+            )
+            worker_fut = None  # release the reference so Future.__del__ can fire
             import gc
 
             gc.collect()

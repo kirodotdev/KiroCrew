@@ -125,7 +125,7 @@ describe('TeamsPanel', () => {
 
 describe('TeamsPanel — the PyJWT dependency', () => {
   // The gateway's own interpreter, as `_channel_sdk_status` reports it.
-  const CMD = '/opt/gw/bin/python -m pip install "PyJWT[crypto]==2.13.0"'
+  const CMD = '/opt/gw/bin/python -m pip install "PyJWT[crypto]==2.15.0"'
 
   it('explains the missing extra without a bare pip command', async () => {
     getTeamsConfig.mockResolvedValue({ ...BASE, jwt_available: false, configured: true })

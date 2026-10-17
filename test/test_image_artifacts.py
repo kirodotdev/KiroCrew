@@ -266,6 +266,27 @@ class TestMarkdownDestinationParsing:
     def test_unterminated_angle_wrap_is_none(self) -> None:
         assert md_destination("</tmp/a b/c.png)") is None
 
+    def test_escaped_close_angle_in_wrapped_path_is_kept(self) -> None:
+        """A `>` in the path (escaped by the composer's `mdImageDest`) is not the close."""
+        got = md_destination(r"</data/a\>b/uploads/x.png>)")
+        assert got == "/data/a>b/uploads/x.png"
+
+    def test_escaped_close_angle_with_title_suffix(self) -> None:
+        got = md_destination(r'</data/a\>b/x y.png> "a > title")')
+        assert got == "/data/a>b/x y.png"
+
+    def test_single_quoted_title_after_wrap(self) -> None:
+        assert md_destination(r"</data/a\>b/x.png> 'cap')") == "/data/a>b/x.png"
+
+    def test_wrap_followed_by_junk_closes_at_first_unescaped_angle(self) -> None:
+        assert md_destination("</tmp/a.png> junk)") == "/tmp/a.png"
+
+    def test_bare_angle_after_the_wrap_does_not_move_the_close(self) -> None:
+        assert md_destination("</a.png> b>)") == "/a.png"
+
+    def test_escaped_angle_before_unrecognised_suffix_is_kept(self) -> None:
+        assert md_destination(r"</a\>b/x.png> junk)") == "/a>b/x.png"
+
     def test_unclosed_destination_is_none(self) -> None:
         assert md_destination("/tmp/a.png") is None
 

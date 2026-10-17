@@ -62,9 +62,9 @@ const SCENARIOS = [
     config: {
       ...TEAMS_BASE,
       sdk_install_supported: true,
-      sdk_install_command: '/opt/kirocrew/.venv/bin/python -m pip install "PyJWT[crypto]==2.13.0"',
+      sdk_install_command: '/opt/kirocrew/.venv/bin/python -m pip install "PyJWT[crypto]==2.15.0"',
     },
-    expectText: /-m pip install "PyJWT\[crypto\]==2\.13\.0"/,
+    expectText: /-m pip install "PyJWT\[crypto\]==2\.15\.0"/,
   },
   {
     channel: 'teams',

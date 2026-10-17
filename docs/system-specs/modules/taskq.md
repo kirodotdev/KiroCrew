@@ -836,9 +836,20 @@ is not shutting down, and still propagates `CancelledError`; during shutdown,
 the warning records a `starting` row for the boot reconcile. A start write that
 fails with the store unavailable under a cancelled claimer also retains the claim
 and its reservation unless the manager is shutting down. A claimer cancelled
-under the claim await itself, before any generation reached it, leaves an
-`admitted` row to the boot reconcile's requeue.
-Nothing is re-dispatched either way for a cancelled row. A process killed after
+under the claim await itself does not abandon the claim either: the claim job is
+awaited through `asyncio.shield` to its answer, and a claim that took the row is
+given back by one generation-fenced `admitted -> queued` write posted behind it
+on the same writer (`_release_untaken_claim`), unleased and eligible at once,
+before the cancel propagates; no start write is posted. A row a stop recorded
+meanwhile is left to that stop's report. When the release commits outside
+shutdown the claimer requests one more pump pass; a release the store cannot
+take is logged and leaves the `admitted` row to the boot reconcile's requeue
+(`test_taskq_claim_start.py::test_a_claimer_cancelled_under_its_claim_await_requeues_the_row`).
+A claim that fails with the store unavailable after the cancel took nothing,
+so nothing is released, and the claimer still propagates its own cancel, never
+the outage
+(`test_a_claimer_cancelled_under_a_failing_claim_still_propagates_its_cancel`).
+Apart from that pump request, nothing is re-dispatched for a cancelled row. A process killed after
 the start write's answer and before registration (the loop hop between the
 two) runs no release and leaves the row `starting` with no run folder, the
 same row the inline pump's posted `starting` mark leaves one hop after
@@ -1496,6 +1507,27 @@ TaskRunner steps and workflow `ctx.agent()` calls run on `SessionManager`
 sessions, not on `SubagentManager.spawn`, so they cannot share that code path;
 this module gives them the same contract over the same store.
 
+`runner.py` is the import path of every runner name and a plain facade, like
+`store.py`. It keeps `RunnerAdmission`, the orphan-adoption sweep
+(`adopt_orphaned_rows` and its queued-row scan) and the `runner_admission_for`
+factory, and binds every name it bound as one file from the owners beside it:
+
+| Module | Owns |
+|---|---|
+| `runner_vocab.py` | What every runner piece shares: `lane_for`, the row-id scheme (`step_task_id`, `run_task_id`, `workflow_task_id`) and `owner_of`, the row params (`PARAM_LANE`, `PARAM_SAFE_RETRY`, `PARAM_ACCEPTED_BY`), the lane modes, the `UNCLAIMED` / `INPUT_WAIT_ONLY` fences, `RUNNER_RECOVERY_ADAPTERS`, the admit timing bounds, the durable-answer bound (`_answer_detail`), and the three refusals, whose `__module__` stays `kiro_crew.taskq.adapters.runner`. |
+| `runner_lane.py` | `RunnerLane`, the FIFO gate bounded by the live effective cap. |
+| `runner_handle.py` | `Admitted`, the claimed row's handle. |
+
+`_RUNNER_OWNERS` lists them lowest layer first. Each imports only modules before
+it and never `runner.py` at run time (`runner_handle` names `RunnerAdmission` for
+type checkers only), and an owner that logs does so under the
+`kiro_crew.taskq.adapters.runner` logger. An owner reads its own namespace, so a
+name a test patches through `kiro_crew.taskq.adapters.runner` (`_ADOPT_SCAN_PAGE`,
+`adopt_orphaned_rows`) must be one only `runner.py` reads. New lane or handle work
+goes to its owner, and a new row-vocabulary name to `runner_vocab.py`;
+`test/test_runner_facade.py` pins the layering, the logger, the class modules and
+that patch rule.
+
 Incognito and Temporary executions use `RunnerAdmission.in_memory()`: the
 existing storeless admission path shares the same live lane, pressure checks and
 retry timing. It does not attach the durable store or dependency coordinator, so
@@ -1849,6 +1881,7 @@ startup), so later edits require restart. Fairness settings (`lane_weights`,
 - `test_subagent_dependency_mark.py`: the dependency park against a row whose `starting` write was lost — the whole park lands (`admitted→starting→running→waiting_dependency`, a real wait record, zero `rejected_transition`), the next boot asks the side-effect class instead of requeueing blind, a cancel in the claim window still fences the replay as `stale_result`, and both marks reach ONE store method (`TaskStore.advance`); on `journal_mode=delete` with a competing writer every read is `TaskStoreUnavailable` and `taskq_mark` stays a debug-level best effort rather than raising into the spawn path; a refused terminal write on a parked row is logged with the row's real state.
 - `test_taskq_store.py`: `apply_schema` is one shape at `SCHEMA_VERSION` (fresh file has `wait_json`, `lane`, both indexes) and a second apply changes nothing; a newer-stamped file is refused; ids only after commit; an injected write failure raises `TaskStoreUnavailable` and commits nothing (not even the batch's first row); duplicate id / idempotency key refuse; locked past busy timeout refuses rather than hangs; network FS → `delete` journal + warning; defer keeps `queued` but ineligible; a conditional `cancel` refuses a row that left `only_from` (`rejected_transition`, and the row's own owner still settles it) and one whose generation moved although the state is still acceptable (`stale_result`, and the same call under the row's real generation cancels), while the unconditional form still ends `starting` and `running`.
 - `test_store_taskq_bindings.py`: every `TaskStore` member keeps its kind and signature and IS its owner's function; no bound function needs a class body; owners import only earlier layers and never `store.py` at run time, and nothing else in `src/` imports one; each owner's `Writes:` / `Reads:` line is what its methods touch; `TaskStoreUnavailable` renders under `kiro_crew.taskq.store`; every module-level name `store.py` bound as one file still resolves on it to the owner's object; a subclass's `super()` reaches a moved member; and no name a test tree patches through `kiro_crew.taskq.store` is read by an owner.
+- `test_runner_facade.py`: the runner owners are exactly the `runner_*` siblings in `_RUNNER_OWNERS` order, import only earlier layers and never `runner.py` at run time, and nothing else in `src/` imports one; an owner that logs uses the `kiro_crew.taskq.adapters.runner` logger; the refusals render under that path; every name the one-module file bound still resolves on `runner.py` to its owner's object, and `__all__` is unchanged; no name the test trees patch through `runner.py` is read by an owner.
 - `test_store_taskq_owner_paths.py`: the failure arms of the moved writes and of the deferral beside them, on a real store: an `append_event`, `defer`, `expedite`, `update_wait` or `wake_wait` whose `COMMIT` fails raises `TaskStoreUnavailable` and leaves the row and its events as they were; an event whose `data_json` is not JSON reads back as an empty dict, and a deferral whose `until` is unreadable counts no parked time.
 - `test_taskq_claim_fencing.py`: two real threads on separate connections, 40 rows → each row won exactly once; stale generation `finish` is a no-op with a `stale_result` event; terminal never regresses; duplicate completion no-op; cancel before/after claim and during run all end `cancelled`.
 - `test_taskq_reconcile.py`: crash at queued / admitted / running / result-written-not-acked → nothing lost, terminals kept, `admitted→queued`, class-driven recovery, cancelled never revives, idempotent; legacy import fields and idempotency.

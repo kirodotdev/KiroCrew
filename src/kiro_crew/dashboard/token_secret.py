@@ -563,7 +563,7 @@ def _load_or_create_secret(outcome: "list[str] | None" = None) -> bytes:
             # not its name: the keystone-artifact suffix rule belongs to
             # security.paths, which gates the agent's FILE TOOLS, so it does not
             # stop a shell inside the namespace from opening a path it can see.
-            # test_token_auth.py pins the staged path against the real predicate
+            # test_token_auth_signing_secret.py pins the staged path against the real predicate
             # so a rename cannot silently leave the fence behind.
             #
             # Resolved inside the retry budget: this validator can fail for a

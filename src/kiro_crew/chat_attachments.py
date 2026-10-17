@@ -96,7 +96,12 @@ from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
-from kiro_crew.messaging.outbound_files import LocalRef, iter_local_refs, local_destination
+from kiro_crew.messaging.outbound_files import (
+    LocalRef,
+    angle_wrap_close,
+    iter_local_refs,
+    local_destination,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -580,7 +585,8 @@ def _destination_span(markup: str) -> tuple[int, int, bool] | None:
 
     Mirrors the scanner's ``_finish_destination`` on the RAW text: after the
     ``](`` and any leading whitespace, an ``<`` opens an angle-wrapped destination
-    that ends at the first ``>``; a bare one ends at the first whitespace (where
+    that ends at the first unescaped ``>`` (:func:`angle_wrap_close`, so the
+    ``\\>`` an encoded path holds stays inside); a bare one ends at the first whitespace (where
     an optional title begins) or at the closing paren. Neither terminator is
     produced or removed by markdown unescaping, so the raw and parsed views agree
     on where the destination ends.
@@ -592,7 +598,7 @@ def _destination_span(markup: str) -> tuple[int, int, bool] | None:
     while at < limit and markup[at] in " \t":
         at += 1
     if at < limit and markup[at] == "<":
-        close = markup.find(">", at + 1, limit)
+        close = angle_wrap_close(markup, at + 1, limit)
         if close < 0:
             return None
         return at + 1, close, True

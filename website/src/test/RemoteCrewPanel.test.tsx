@@ -670,16 +670,16 @@ describe('RemoteCrewPanel', () => {
     await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
 
     expect(
-      await screen.findByText(/could not find sso-cred-helper on the gateway’s PATH.*credential_process/s),
+      await screen.findByText(/^Give sso-cred-helper its full path in the credential_process line.*could not find it on the gateway’s PATH/s),
     ).toBeInTheDocument()
     // The CLI failure renders through ErrorNotice with the agent hand-off.
-    const notice = screen.getByText(/could not find sso-cred-helper/).closest('[role="alert"]') as HTMLElement
+    const notice = screen.getByText(/^Give sso-cred-helper its full path/).closest('[role="alert"]') as HTMLElement
     expect(notice).not.toBeNull()
     expect(notice).toHaveTextContent(/No such file or directory: 'sso-cred-helper'/)
     expect(within(notice).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
     // The sentence leads; the CLI's own error sits on its own smaller,
     // monospace line under it instead of running on in the same red paragraph.
-    const lead = screen.getByText(/could not find sso-cred-helper/)
+    const lead = screen.getByText(/^Give sso-cred-helper its full path/)
     expect(lead).not.toHaveTextContent(/No such file or directory/)
     const raw = within(notice).getByText("aws: [ERROR]: [Errno 2] No such file or directory: 'sso-cred-helper'")
     expect(raw).not.toBe(lead)

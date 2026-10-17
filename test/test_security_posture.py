@@ -950,6 +950,79 @@ class TestOmissionDetection:
             assert marker in src, f"advertised auth control's mechanism is gone: {marker}"
 
 
+#: Callees that count as a redactor call although no ``_``-separated word of their
+#: name is ``redact``/``redacted``/``redactor``: the rolling stream redactor and the
+#: display wrapper that runs both scanners.
+_REDACTOR_CALLEES = frozenset({"StreamRedactor", "display_safe"})
+_REDACTOR_WORDS = frozenset({"redact", "redacted", "redactor"})
+
+
+def _called_names(tree: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name):
+                names.add(func.id)
+            elif isinstance(func, ast.Attribute):
+                names.add(func.attr)
+    return names
+
+
+def _is_redactor_call(name: str) -> bool:
+    # ``redact``, ``redact_credentials``, ``_redact_frame``, ``prepare_redacted_copy``
+    # count; ``count_redaction_tags``, ``needs_redaction``, ``redaction_notice`` do not.
+    if name in _REDACTOR_CALLEES:
+        return True
+    return any(word.lower() in _REDACTOR_WORDS for word in name.split("_"))
+
+
+def _declared_owner_modules(tree: ast.Module) -> list[str]:
+    """Dotted owner modules a split module's facade declares.
+
+    Two declarations count, both module-level: an ``_OWNERS`` tuple of dotted names,
+    and ``from <pkg> import <owner> as _owner_<owner>``. Any other import does not, so
+    a facade cannot borrow a redactor call from a module it merely imports.
+    """
+    owners: list[str] = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "_OWNERS" for t in node.targets
+        ):
+            if isinstance(node.value, (ast.Tuple, ast.List)):
+                owners.extend(
+                    e.value
+                    for e in node.value.elts
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str)
+                )
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            for alias in node.names:
+                if alias.asname and alias.asname.startswith("_owner_"):
+                    owners.append(f"{node.module}.{alias.name}")
+    return owners
+
+
+def _sink_module_calls_a_redactor(pkg, module: str) -> bool:
+    """True when ``module`` (relative to the ``kiro_crew`` package dir ``pkg``) calls
+    a redactor, or, as a split module's facade, one of its declared owners does."""
+    path = pkg / module
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    if any(_is_redactor_call(n) for n in _called_names(tree)):
+        return True
+    for dotted in _declared_owner_modules(tree):
+        parts = dotted.split(".")
+        if parts[0] != "kiro_crew":
+            continue
+        owner = pkg.joinpath(*parts[1:])
+        candidates = (owner.with_suffix(".py"), owner / "__init__.py")
+        for candidate in candidates:
+            if candidate.is_file():
+                owner_tree = ast.parse(candidate.read_text(encoding="utf-8"))
+                if any(_is_redactor_call(n) for n in _called_names(owner_tree)):
+                    return True
+    return False
+
+
 class TestRedactionSinkRegistry:
     def test_every_named_sink_module_exists(self):
         from pathlib import Path
@@ -963,10 +1036,63 @@ class TestRedactionSinkRegistry:
 
         pkg = Path(security_posture.__file__).resolve().parent
         for label, module, _detail in security_posture._REDACTION_SINKS:
-            text = (pkg / module).read_text(encoding="utf-8")
             # The claim "this is an output path where redaction is applied" must be
-            # true of the module named, or the count is fiction.
-            assert "redact" in text or "StreamRedactor" in text, label
+            # true of the module named, or the count is fiction. A CALL is required:
+            # an import, a docstring or a comment that mentions a redactor is not one.
+            assert _sink_module_calls_a_redactor(pkg, module), (
+                f"{label} ({module}) names no call to a redactor, in the module or "
+                "in the owner modules its facade declares"
+            )
+
+    def test_a_module_that_only_imports_a_redactor_fails_the_sink_check(self, tmp_path):
+        """The check above must be able to fail: a mention is not a call."""
+        (tmp_path / "mention.py").write_text(
+            '"""Output is redacted before it is sent."""\n'
+            "from kiro_crew.security import redact_credentials  # noqa: F401\n"
+            "from kiro_crew.security import StreamRedactor  # noqa: F401\n"
+            "def send(text):\n"
+            "    # redact(text) used to run here\n"
+            "    return text\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "calls.py").write_text(
+            "from kiro_crew.security import redact_credentials\n"
+            "def send(text):\n"
+            "    return redact_credentials(text)\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "helper_only.py").write_text(
+            "def send(text):\n    return count_redaction_tags(text), needs_redaction(text)\n",
+            encoding="utf-8",
+        )
+        assert not _sink_module_calls_a_redactor(tmp_path, "mention.py")
+        assert not _sink_module_calls_a_redactor(tmp_path, "helper_only.py")
+        assert _sink_module_calls_a_redactor(tmp_path, "calls.py")
+
+    def test_a_facade_counts_only_through_the_owners_it_declares(self, tmp_path):
+        """A split module's facade keeps its sink row; its declared owners must call."""
+        pkg = tmp_path / "kiro_crew"
+        (pkg / "fam").mkdir(parents=True)
+        (pkg / "fam" / "owner.py").write_text(
+            "def send(text):\n    return redact(text)\n", encoding="utf-8"
+        )
+        (pkg / "fam" / "silent.py").write_text(
+            "def send(text):\n    return text\n", encoding="utf-8"
+        )
+        (pkg / "by_owners.py").write_text(
+            '_OWNERS = ("kiro_crew.fam.silent", "kiro_crew.fam.owner")\n', encoding="utf-8"
+        )
+        (pkg / "by_alias.py").write_text(
+            "from kiro_crew.fam import owner as _owner_owner  # noqa: F401\n", encoding="utf-8"
+        )
+        (pkg / "silent_family.py").write_text(
+            '_OWNERS = ("kiro_crew.fam.silent",)\n'
+            "from kiro_crew.fam import owner  # noqa: F401  (not an _owner_ alias)\n",
+            encoding="utf-8",
+        )
+        assert _sink_module_calls_a_redactor(pkg, "by_owners.py")
+        assert _sink_module_calls_a_redactor(pkg, "by_alias.py")
+        assert not _sink_module_calls_a_redactor(pkg, "silent_family.py")
 
     def test_a_partially_covered_sink_says_so(self):
         """A sink running only ONE scanner must disclose that on its own row.

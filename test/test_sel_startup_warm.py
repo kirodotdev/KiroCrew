@@ -19,7 +19,7 @@ These tests pin the three halves of that contract:
   keep the gateway from becoming ready);
 * both ``start_dashboard`` and ``start_api_server`` await the warm before
   publishing readiness (source guard, same convention as
-  ``test_token_auth.test_start_paths_warm_auth_singletons_off_loop``).
+  ``test_token_auth_signing_secret.test_start_paths_warm_auth_singletons_off_loop``).
 """
 
 from __future__ import annotations

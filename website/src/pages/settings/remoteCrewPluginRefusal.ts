@@ -8,6 +8,26 @@ import type { ErrorReport } from '../../utils/errorReport'
 export const SESSION_MANAGER_PLUGIN_INSTALL_URL =
   'https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html'
 
+// The pre-flight troubleshooting entry of the Remote Crew on EC2 guide: it covers
+// both the missing credential helper and a refused plugin.
+export const REMOTE_CREW_PREFLIGHT_GUIDE_URL =
+  'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/remote-crew-on-ec2.md#set-up-pre-flight-credential-helper-not-found-or-plugin-refused'
+
+// Typed by the user, so never a catalog value: the AWS config file's usual
+// place and the command that prints a program's full path.
+export const AWS_CONFIG_FILE = '~/.aws/config'
+export const whichCommand = (name: string) => `which ${name}`
+
+/** The credentials row's sentence when the AWS CLI could not find the
+ *  credential_process helper by its bare name: the edit to make first, then why. */
+export function credentialHelperMissingSentence(name: string): string {
+  return i18nT('pages.settings.remoteCrewPanel.credentials_helper_missing', {
+    name,
+    file: AWS_CONFIG_FILE,
+    command: whichCommand(name),
+  })
+}
+
 /** The diagnosis in the reader's language, from the kind of refusal the gateway
  *  names. Null for a kind this build has no sentence for: the caller then puts
  *  the safety check's own English reason in the generic sentence. */
@@ -65,7 +85,15 @@ export function pluginRefusalCopy(p: CloudPreflight): PluginRefusalCopy | null {
   const failure = translated ?? i18nT('pages.settings.remoteCrewPanel.plugin_refused_found', { path, reason: raw })
   const failureDetail = translated && raw ? raw : undefined
   if (!p.session_manager_plugin_command) {
-    return { failure, failureDetail, steps: { text: nextStep(p.session_manager_plugin_refused_code) } }
+    // No fix command is known for this refusal, so point at the guide's entry.
+    return {
+      failure,
+      failureDetail,
+      steps: {
+        text: nextStep(p.session_manager_plugin_refused_code),
+        link: { href: REMOTE_CREW_PREFLIGHT_GUIDE_URL, label: i18nT('pages.settings.remoteCrewPanel.plugin_refused_guide') },
+      },
+    }
   }
   // Root-owning the folder makes whatever file is in it trusted, so the
   // reinstall-from-AWS caution comes before the command, with AWS's page.

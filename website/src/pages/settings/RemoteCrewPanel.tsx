@@ -98,7 +98,7 @@ import { i18nT } from '../../i18n/t'
 import { guideCaution } from '../../guide/trustRoot'
 import { AddInstanceForm, StatusBadge } from './InstancesPanel'
 import CrewVersionStatus, { CrewVersionsReadError } from './CrewVersionStatus'
-import { pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
+import { credentialHelperMissingSentence, pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
 import {
   EditInstanceForm,
   instanceFormFromView,
@@ -2642,7 +2642,7 @@ export function RemoteCrewPanel() {
                       // The helper's name is the actionable part, so the sentence
                       // leads; the CLI's own error sits under it (failureDetail)
                       // for anything the sentence misses.
-                      ? i18nT('pages.settings.remoteCrewPanel.credentials_helper_missing', { name: preflight.credential_helper_missing })
+                      ? credentialHelperMissingSentence(preflight.credential_helper_missing)
                       : (preflight.detail || i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
                   failureDetail={preflight.reachable && preflight.account
                     ? undefined

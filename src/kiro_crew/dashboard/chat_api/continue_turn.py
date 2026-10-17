@@ -84,7 +84,7 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return _slot_not_found()
 
     # App ownership check (App Kit §5.2): deny-by-default for app tokens, mirroring
     # api_chat. Without it an app token holding /api/chat could resume ANY
@@ -386,7 +386,7 @@ async def api_chat_slot_end_wait(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return _slot_not_found()
     denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_end_wait")
     if denied is not None:
         return denied

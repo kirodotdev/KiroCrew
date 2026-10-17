@@ -193,7 +193,7 @@ def _register_dist_static_routes(app: web.Application, dist_dir: Path) -> None:
     # Each build subdirectory at its own prefix; without a route each would fall
     # through to the SPA fallback, and the browser would parse index.html as a
     # module, a font or an image. Literal paths, so the shell-exclusion drift
-    # guard (test_token_auth) sees every one.
+    # guard (test_token_auth_spa_shell) sees every one.
     # Vite's content-hashed chunks.
     app.router.add_get("/assets/{tail:.+}", _dist_file_handler(dist_dir, "assets"))
     app.router.add_get("/sprites/{tail:.+}", _dist_file_handler(dist_dir, "sprites"))

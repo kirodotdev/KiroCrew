@@ -3572,6 +3572,27 @@ def schedule_eager_spawn(
     return task
 
 
+def stop_eager_spawns(state: "DashboardState") -> "list[asyncio.Task[None]]":
+    """Cancel every slot's pending speculative start, for a gateway shutdown.
+
+    A start still in its debounce would otherwise wake during the shutdown and
+    spawn an agent process the shutdown does not own: nothing is registered
+    yet, so ``close_all`` cannot reach it. Returns the cancelled tasks so the
+    caller can await them; one cancelled mid-spawn finishes killing its
+    process before it ends.
+    """
+    slots = getattr(state, "_slots", None)
+    if not isinstance(slots, dict):
+        return []
+    stopped: list[asyncio.Task[None]] = []
+    for slot in list(slots.values()):
+        task = getattr(slot, "_eager_spawn_task", None)
+        if isinstance(task, asyncio.Task) and not task.done():
+            task.cancel()
+            stopped.append(task)
+    return stopped
+
+
 def app_agent_binding_applies(slot: "_ChatSlot") -> bool:
     """Whether *slot*'s app-agent binding still names the agent it runs as.
 
@@ -3987,6 +4008,11 @@ async def _eager_spawn(
                 or slot.running
                 or _slot_binding(slot) != _bound
             ):
+                return
+            if shutdown_event.is_set():
+                # The gateway began stopping during the awaits above. Its
+                # session teardown cannot see a process that is not registered
+                # yet, so a start beginning now would outlive it.
                 return
             # ADMISSION, before the process exists: the live-population cap is
             # host-derived, and on a host that cannot afford another idle

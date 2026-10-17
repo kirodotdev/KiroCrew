@@ -694,6 +694,130 @@ async def test_a_claimer_cancelled_under_its_start_write_releases_the_row(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_a_claimer_cancelled_under_its_claim_await_requeues_the_row(
+    quiet, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The claimer's task is cancelled while its claim is on the writer thread
+    and after the claim job took the row. The generation the claim minted never
+    reached the claimer, so nothing would carry the ``admitted`` row on until a
+    boot reconcile. The claimer awaits the shielded claim to its answer and
+    gives the row back before the cancel propagates: ``admitted -> queued``
+    under the claim's generation, eligible at once and unleased, with the
+    reservation returned and no start write ever posted. The next pump pass
+    claims, starts and registers it under a new generation."""
+    mgr, params = await _popped_row(monkeypatch)
+    store: TaskStore = mgr._taskq
+    agent_id = params["_preassigned_id"]
+    real_run = store.run
+    taskq_claim = mgr._admission.taskq_claim
+    taskq_start = mgr._admission.taskq_claim_start
+    claimed, release_claim = asyncio.Event(), asyncio.Event()
+    start_writes: list[str] = []
+
+    async def _gated(fn, /, *args, **kwargs):
+        if fn == taskq_start:
+            start_writes.append(args[0])
+        result = await real_run(fn, *args, **kwargs)
+        if fn == taskq_claim and not claimed.is_set():
+            claimed.set()
+            await release_claim.wait()  # held until the test cancels the claimer
+        return result
+
+    try:
+        with (
+            patch.object(store, "run", side_effect=_gated),
+            patch.object(SubagentManager, "_run", new=_park_run),
+            # The release asks the pump for a pass. Record that request instead
+            # of running it, so no pass reclaims the row while the released
+            # state is asserted; the test runs that pass itself below.
+            patch.object(mgr, "_drain_queue") as pump_request,
+        ):
+            dispatch = asyncio.create_task(mgr._admission._dispatch_async_impl(params))
+            await await_until(claimed)
+            taken = store.get(agent_id)
+            assert taken is not None and taken.state == model.ADMITTED
+            dispatch.cancel()
+            release_claim.set()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(dispatch, what="the cancelled claimer")
+            await settle_store_writes(store, rounds=4)
+
+            released = store.get(agent_id)
+            assert released is not None and released.state == model.QUEUED
+            assert released.generation == taken.generation
+            assert released.next_run_at is None and released.lease_owner is None
+            assert start_writes == [], "a cancelled claimer posts no start write"
+            assert agent_id not in mgr._agents and agent_id not in mgr._tasks
+            assert mgr._admission.starting_claim_of(agent_id) is None
+            assert mgr._running_count == 0 and mgr._startup_reservations == 0
+            transitions = [e.data for e in store.events(agent_id) if e.kind == "transition"]
+            assert (transitions[-1].get("from"), transitions[-1].get("to")) == (
+                model.ADMITTED,
+                model.QUEUED,
+            )
+            assert pump_request.call_count == 1, "the release requests one pump pass"
+
+            await mgr._drain_queue_pass()
+            await settle_store_writes(store, rounds=4)
+            again = store.get(agent_id)
+            assert again is not None and again.state == model.STARTING
+            assert again.generation == released.generation + 1
+            assert agent_id in mgr._agents and agent_id in mgr._tasks
+    finally:
+        release_claim.set()
+        await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_a_claimer_cancelled_under_a_failing_claim_still_propagates_its_cancel(
+    quiet, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The claimer is cancelled while its claim is on the writer thread, and the
+    claim then fails with the store unavailable. Nothing was taken, so nothing
+    is given back, and the claimer raises its own ``CancelledError``, not the
+    store's outage: a cancel is never swallowed into a logged pump failure."""
+    mgr, params = await _popped_row(monkeypatch)
+    store: TaskStore = mgr._taskq
+    agent_id = params["_preassigned_id"]
+    real_run = store.run
+    taskq_claim = mgr._admission.taskq_claim
+    at_claim, release_claim = asyncio.Event(), asyncio.Event()
+    before = store.get(agent_id)
+    assert before is not None
+
+    async def _gated(fn, /, *args, **kwargs):
+        if fn == taskq_claim:
+            at_claim.set()
+            await release_claim.wait()  # held until the test cancels the claimer
+            raise TaskStoreUnavailable("store down under the claim")
+        return await real_run(fn, *args, **kwargs)
+
+    try:
+        with (
+            patch.object(store, "run", side_effect=_gated),
+            patch.object(SubagentManager, "_run", new=_park_run),
+        ):
+            dispatch = asyncio.create_task(mgr._admission._dispatch_async_impl(params))
+            await await_until(at_claim)
+            dispatch.cancel()
+            release_claim.set()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(dispatch, what="the cancelled claimer")
+            await settle_store_writes(store, rounds=4)
+
+            row = store.get(agent_id)
+            assert row is not None and row.state == before.state
+            assert row.generation == before.generation
+            assert agent_id not in mgr._agents and agent_id not in mgr._tasks
+            assert mgr._admission.starting_claim_of(agent_id) is None
+    finally:
+        release_claim.set()
+        await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("shutting_down", [False, True])
 async def test_a_cancelled_claimer_retains_a_start_outage_unless_shutting_down(
     quiet, monkeypatch: pytest.MonkeyPatch, shutting_down: bool

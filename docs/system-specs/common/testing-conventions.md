@@ -446,7 +446,7 @@ test that removes crew-log segments or a unit folder with a bare `path.unlink()`
 which reads the unit on its own thread after every entry. Retention removes them inside
 `crew_log.eager.paused()`, which holds the folder between batches; a test does the same
 after `eager.drain()`, and asserts the hold was granted rather than proceeding without it
-(`test_issue_radar_crew_store.py::test_a_unit_recreated_under_its_id_folds_cold_however_far_its_seq_climbed`).
+(`test_issue_radar_crew_store_fold_bounds.py::test_a_unit_recreated_under_its_id_folds_cold_however_far_its_seq_climbed`).
 That hold is only waited for off the event-loop thread: an `async def` test that calls
 `store.sweep_expired` or `store.remove_unit` directly proceeds without it, so the fold
 woken by the entry the test just flushed keeps the segment open and Windows reports
@@ -460,7 +460,7 @@ test patched `_read_header_line` can assign `_slot_index` after the test's own r
 replacing the map the test is about to check with one that proves every unit. A test
 that patches a store read and then inspects the index does it inside
 `_eager_folder_held()` (drain, then `eager.paused()`), the way the two unprovable-header
-tests in `test_issue_radar_crew_store.py` do.
+tests in `test_issue_radar_crew_store_write_refusal.py` do.
 
 **Hold the crew-log writer for a burst the test counts.** `CrewLogWriter` claims a
 unit's whole bucket after its batching pause (`WriterLimits.batch_deadline_seconds`,

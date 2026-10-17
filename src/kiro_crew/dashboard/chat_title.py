@@ -1772,7 +1772,7 @@ async def api_chat_slot_generate_title(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
 
     logger.info("Manual title generation requested for slot %s", name)
     epoch = slot._title_epoch
@@ -1864,7 +1864,7 @@ async def api_chat_slot_rename(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
     try:
         body = await request.json()
     except Exception:

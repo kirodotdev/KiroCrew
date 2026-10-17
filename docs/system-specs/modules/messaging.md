@@ -1948,7 +1948,7 @@ decides; offered only when the host passes `jevAutoAvailable`); in the Enter sen
 mode, ⌘↩ / Ctrl+Enter performs the other action for that one send; and a
 host that passes `busyMode="steer-only"` has no queue and always steers (no
 shipped surface does today: the Crew members DM uses the split button too).
-`BusySendControls` in the same file renders that slot. `ChatInput.test.tsx` pins
+`BusySendControls` in the same file renders that slot. `ChatInput.busyAndUndo.test.tsx` pins
 steer versus queue, the one-send flip and the persisted mode, and
 `ChatPane.steerOnly.test.tsx` the steer-only surface.
 
@@ -2656,7 +2656,7 @@ replaces the send button with the stop for the phase the host reports: an armed
 Stop, a pulsing force-kill while the soft stop is pending, a disabled spinner
 while the kill runs, and a force-reset once `useStopEscapeHatch` sees that kill
 outlive 15 s. Every press is the host's `onStop`; the composer only renders the
-phase. `ChatInput.test.tsx` and `integration/ChatFooter.integration.test.tsx` pin
+phase. `ChatInput.busyAndUndo.test.tsx` and `integration/ChatFooter.integration.test.tsx` pin
 the phases, and `stopButtonEscalation.test.tsx` the 15 s force-reset.
 
 ### Where a command handler splits

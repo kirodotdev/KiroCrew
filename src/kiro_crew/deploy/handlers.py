@@ -814,13 +814,9 @@ def _scan_tree(src: Path) -> tuple[list, int]:
         # Full content scan (non-credential findings) for text files only.
         non_cred_findings = [f for f in scan_content(content) if not is_credential_finding(f)]
         findings.extend(non_cred_findings)
-    byte_size = 0
-    for p in src.rglob("*"):
-        if p.is_file():
-            try:
-                byte_size += p.stat().st_size
-            except OSError:
-                pass  # already recorded as unreadable-file finding above
+    # A file whose stat fails is already recorded as an unreadable-file
+    # finding above; the size helper skips it.
+    byte_size = _compute_tree_size_global(src)
     return findings, byte_size
 
 

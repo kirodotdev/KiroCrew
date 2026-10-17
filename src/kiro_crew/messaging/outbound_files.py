@@ -414,12 +414,16 @@ def _walk_destination(rest: str) -> tuple[str | None, int]:
     """
     depth = 1
     out: list[str] = []
+    # Indices into `out` of characters that arrived escaped, so the finish can
+    # tell a `\>` in the path from the `>` that closes a `<...>` wrap.
+    escaped: set[int] = set()
     i = 0
     while i < len(rest):
         ch = rest[i]
         if ch == "\\" and i + 1 < len(rest) and rest[i + 1] in _MD_ESCAPABLE:
             # A real markdown escape: keep the escapee, and never let it move the
             # paren depth.
+            escaped.add(len(out))
             out.append(rest[i + 1])
             i += 2
             continue
@@ -430,23 +434,54 @@ def _walk_destination(rest: str) -> tuple[str | None, int]:
         elif ch == ")":
             depth -= 1
             if depth == 0:
-                return _finish_destination("".join(out)), i + 1
+                return _finish_destination("".join(out), escaped), i + 1
         out.append(ch)
         i += 1
     return None, 0
 
 
-def _finish_destination(raw: str) -> str | None:
-    """Strip the optional ``<...>`` wrapper or trailing ``"title"`` from *raw*."""
+def angle_wrap_close(markup: str, start: int, limit: int) -> int:
+    """Index of the first unescaped ``>`` in ``markup[start:limit]``, or ``-1``.
+
+    *markup* is RAW markdown and *start* is just past a destination's opening
+    ``<``. A backslash before a character in :data:`_MD_ESCAPABLE` makes the pair
+    one token, so the ``\\>`` the composer writes for a ``>`` in a path never
+    closes the wrap -- the same tokenisation :func:`_walk_destination` uses, so a
+    caller that cuts the raw markup closes the wrap where the scanner did.
+    """
+    i = start
+    while i < limit:
+        ch = markup[i]
+        if ch == "\\" and i + 1 < limit and markup[i + 1] in _MD_ESCAPABLE:
+            i += 2
+            continue
+        if ch == ">":
+            return i
+        i += 1
+    return -1
+
+
+def _finish_destination(raw: str, escaped: set[int] | frozenset[int] = frozenset()) -> str | None:
+    """Strip the optional ``<...>`` wrapper or trailing ``"title"`` from *raw*.
+
+    *escaped* holds the indices of *raw* whose character arrived backslash-escaped;
+    an escaped ``>`` is part of the path, never the close of a ``<...>`` wrap.
+    """
     if "\r" in raw or "\n" in raw:
         return None
     dest = raw.strip()
+    lead = len(raw) - len(raw.lstrip())
     # `<...>` is markdown's explicit way to write a destination containing spaces
     # (`![c](</tmp/generated images/c.png>)`). Unwrap it and DON'T split on
     # whitespace: inside the brackets a space is part of the path, not the
     # separator before a `"title"`.
     if dest.startswith("<"):
-        end = dest.find(">")
+        # The wrap closes at the first UNESCAPED `>`, as in CommonMark: the
+        # composer writes a `>` in the path as `\>` (a POSIX data home `a>b`).
+        end = next(
+            (j for j, ch in enumerate(dest) if ch == ">" and j + lead not in escaped),
+            -1,
+        )
         if end == -1:
             return None  # unterminated -- don't guess at the path
         dest = dest[1:end].strip()

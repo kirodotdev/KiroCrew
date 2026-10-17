@@ -42,6 +42,7 @@ from kiro_crew import security
 from kiro_crew.agent_discovery import clear_list_agents_cache
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.skills import _iter_skill_files
+from kiro_crew.testing.wait import default_timeout
 
 
 def _refuse_candidate_resolution(expanded: str) -> set[str]:
@@ -533,12 +534,12 @@ class TestNamedAgentModelReadsTheSnapshot:
         assert asyncio.run(resolve()) == ("old" if state == "stale" else "")
         _, futures = _discovery_pool
         assert len(futures) == 1
-        futures[0].result(timeout=5)
+        futures[0].result(timeout=default_timeout())
         assert log.labels_off(loop_thread) == [{"operation": "load_config", "source": "unknown"}]
         assert log.on(loop_thread) == []
         assert asyncio.run(resolve()) == "new"
         assert len(futures) == 2
-        futures[1].result(timeout=5)
+        futures[1].result(timeout=default_timeout())
         assert len(log.labels_off(loop_thread)) == 1, "a warm revalidation parsed"
         assert str(tmp_path) not in agent_discovery._PARSED_SPECS_REFRESHING
 
@@ -564,10 +565,10 @@ class TestNamedAgentModelReadsTheSnapshot:
         _, futures = _discovery_pool
         cold = asyncio.run(resolve())
         assert len(futures) == 1
-        futures[0].result(timeout=5)
+        futures[0].result(timeout=default_timeout())
         warm = asyncio.run(resolve())
         assert len(futures) == 2
-        futures[1].result(timeout=5)
+        futures[1].result(timeout=default_timeout())
         assert cold == ""
         assert warm == "m"
         assert signatures, "no directory signature was revalidated"
@@ -600,7 +601,7 @@ class TestNamedAgentModelReadsTheSnapshot:
             # Drain even if an assertion fails; never leave an in-flight mark.
             pool, _ = _discovery_pool
             for call in queued.submit.call_args_list:
-                pool.submit(*call.args, **call.kwargs).result(timeout=5)
+                pool.submit(*call.args, **call.kwargs).result(timeout=default_timeout())
         assert str(tmp_path) not in agent_discovery._PARSED_SPECS_REFRESHING
         assert KiroCrewConfig._resolve_named_agent_model("bot", agents_dir=tmp_path) == "m"
 
@@ -625,7 +626,7 @@ class TestNamedAgentModelReadsTheSnapshot:
                 # The worker swallows the failure so the fire-and-forget future
                 # never carries an unretrieved exception -- and logs it, since
                 # nothing else would surface a persistent parse failure.
-                assert futures[-1].result(timeout=5) is None
+                assert futures[-1].result(timeout=default_timeout()) is None
             assert "snapshot refresh failed" in caplog.text
             assert "snapshot unavailable" in caplog.text
             assert str(tmp_path) not in agent_discovery._PARSED_SPECS_REFRESHING

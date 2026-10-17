@@ -59,7 +59,7 @@ RADAR_SKIP_LIMIT: Final[int] = 5000
 #: Lower than that and an ordinary accepted field is truncated on every read, which
 #: is silent state corruption rather than a bound. Not imported from ``validation``
 #: on purpose -- the fold stays free of the MCP layer -- so
-#: ``test_issue_radar_crew_store`` pins the two constants equal instead.
+#: ``test_issue_radar_crew_store_fold_bounds`` pins the two constants equal instead.
 RADAR_TEXT_LIMIT: Final[int] = 5000
 RADAR_SCHEMA_VERSION: Final[int] = 1
 

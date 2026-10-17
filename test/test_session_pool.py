@@ -1909,6 +1909,9 @@ class TestDiscardReaping:
         assert mgr._warm_pool.qsize() == 0
 
 
+_MID_REFILL_LOST_RUN_CEILING_SECS = 30.0
+
+
 class TestFillLockReleasedAcrossStart:
     """``_fill_warm_pool`` holds ``_pool_fill_lock`` only around the queue
     mutations, releasing it across each per-iteration start-permit wait.
@@ -1944,11 +1947,20 @@ class TestFillLockReleasedAcrossStart:
 
         mgr._provider_factory = MagicMock(side_effect=_factory)
 
+        # Lost-run ceiling, not a speed check. The starts never finish until
+        # ``release_start`` is set in ``finally``, so a refresh that waits on
+        # the whole refill blocks until this ceiling however long it is.
+        # Measured: the call phase takes 0.03 s on Linux (``--durations``);
+        # hosted macOS job 115414883668 ran past 2 s in the off-loop config
+        # load and was cut off there, so its full length is unknown. 30 s is
+        # 15x that cut-off and a quarter of ``--timeout=120``.
+        bound = _MID_REFILL_LOST_RUN_CEILING_SECS
+
         fill = asyncio.create_task(mgr._fill_warm_pool())
         try:
             # The refill is now parked inside the first provider's start(), with
             # the fill lock released.
-            await asyncio.wait_for(first_started.wait(), timeout=2.0)
+            await asyncio.wait_for(first_started.wait(), timeout=bound)
 
             with patch("kiro_crew.session.KiroCrewConfig.load") as mock_load:
                 new_cfg = _make_cfg(pool_size=0)
@@ -1958,12 +1970,12 @@ class TestFillLockReleasedAcrossStart:
                 mock_load.return_value = new_cfg
                 # With the lock held across the whole refill this waits for all
                 # three starts; released around the start it returns at once.
-                await asyncio.wait_for(mgr.refresh_defaults(), timeout=2.0)
+                await asyncio.wait_for(mgr.refresh_defaults(), timeout=bound)
 
             assert mgr._cfg is new_cfg
         finally:
             release_start.set()
-            await asyncio.wait_for(fill, timeout=2.0)
+            await asyncio.wait_for(fill, timeout=bound)
 
     @pytest.mark.asyncio
     async def test_concurrent_refills_do_not_overfill(self):

@@ -3498,11 +3498,14 @@ change lands in its owner.
 | `registry_pipeline/indexes.py` | External index fetch, the configured-branch rule, fetch-then-swap caching, load with stale fallback, and the install-time owner-tier confirmation (`_owner_tier_confirmed`) |
 | `registry_pipeline/manifests.py` | An app's `app.json` for the store: subdirectory containment, fetch from the verified checkout or a throwaway clone, resolution through the cache, and the merge with its blob-proxy asset paths |
 | `registry_pipeline/catalog.py` | The store listing and lookups: seed, catalog and external precedence, install status, trust fields, refresh, and the row and candidate resolution install and consent go through |
-| `registry_pipeline/install.py` | The install transaction: every gate before repository bytes run, clone, identity and admission before the build, the rejected-checkout rollback (`_unpoison_rejected_checkout`), `onInstall`, registration, provenance, and the single restore-and-report `finally` |
+| `registry_pipeline/install_desktop_gate.py` | The desktop build-step verdict (`_desktop_build_refusal`) and its code `DESKTOP_BUILD_STEP_UNSUPPORTED`, judged on the copy the install would produce (`_installed_tree_preview`) with the runtime's own provisioning predicates, and the build step's probe of it (`_desktop_gate_probe`) |
+| `registry_pipeline/install_rollback.py` | Putting a refused checkout back: the rejected-checkout rollback (`_unpoison_rejected_checkout`), the layout snapshot taken before `onInstall` (`_desktop_layout_present`), and the post-script removal or set-aside of the layout files the script created (`_roll_back_post_script_refusal`) |
+| `registry_pipeline/install_clone.py` | Clone and build under the per-app lock: clone or pull, the identity and admission gates before the build (`_refuse_identity_mismatch`), the facade's build step, the restore of a same-origin previous checkout when the build fails, the verb-named refusal lines (`_refusal_line`), and the report of the move-asides the install's exits leave retained (`_report_retained_stale_checkouts`) |
+| `registry_pipeline/install.py` | The install transaction: every gate before repository bytes run, the clone and build through `install_clone`, the sandboxed `setup.onInstall` run, the checks after the build and after the script, registration, provenance, and the single restore-and-report `finally` |
 
 Imports only point down this order: `subprocess_env`, `git_targets`, `caches`,
 `sources`, `recovery`, `checkout`, `store_art`, `indexes`, `manifests`, `catalog`,
-`install`, then
+`install_desktop_gate`, `install_rollback`, `install_clone`, `install`, then
 `registry.py`. There is no cycle, and no owner imports the facade. The facade imports
 every owner at its own import, so an owner's `from ... import` bindings are taken
 once, as the one-module registry took them. `registry.py` re-exports every name an
@@ -3523,7 +3526,7 @@ Three placements are constraints rather than style. `_run_app_build` stays in
 the two `KEBAB_RE.fullmatch` name gates stay there because
 `test_kebab_gates_reject_trailing_newline.py` counts them in the facade's source. The
 three owners that call them (`caches._read_external_registry_cache`,
-`indexes._fetch_and_cache_external_registry`, `install._clone_build_app_locked`)
+`indexes._fetch_and_cache_external_registry`, `install_clone._clone_build_app_locked`)
 resolve the facade at call time through `registry_pipeline._facade()`, and nothing
 else in the pipeline refers to it. `_redact_url_userinfo` and
 `_redacted_git_failure_class` are the two names `test_security_posture.py` classifies
@@ -3682,7 +3685,7 @@ shipped `data` link, the root `data` file refused before the record),
 `TestCopyAppTree::test_an_installed_data_file_refuses_the_update_before_the_transaction`
 (and its link and junction siblings),
 `TestCopyAppTreeAsInstalled`,
-`test/test_apps_registry.py::test_a_root_data_file_is_refused_before_any_record_is_written`.
+`test/test_apps_registry_desktop_layout.py::test_a_root_data_file_is_refused_before_any_record_is_written`.
 
 
 

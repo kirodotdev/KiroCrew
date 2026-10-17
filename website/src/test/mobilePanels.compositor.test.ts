@@ -1,6 +1,6 @@
 /**
  * The OTHER two mobile panels ride the same compositor machinery as the
- * sessions drawer — pinned as SOURCE contracts, the way App.test.tsx pins the
+ * sessions drawer — pinned as SOURCE contracts, the way App.topbarAndShortcuts.test.tsx pins the
  * drawer's own wrapper: these are pairings ("compositor slide" ⟷ "no framer
  * transform / no projection under it"), and one half regressing alone
  * reintroduces a bug the other half was built around.

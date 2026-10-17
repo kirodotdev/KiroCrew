@@ -35,6 +35,10 @@ Lanes follow RFC §13 Q5: a run launched by a cron or a hook queues in the
 
 Specification: ``docs/system-specs/modules/taskq.md`` (§ Runner adapters),
 ``taskrunner.md``, ``workflows.md``.
+
+The lane, the claimed-row handle and the vocabulary every runner piece shares live in
+``runner_lane``, ``runner_handle`` and ``runner_vocab`` beside this module (the owner
+table below); this module binds every name they define and stays their import path.
 """
 
 from __future__ import annotations
@@ -42,24 +46,23 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Iterable
 
 from kiro_crew.recovery.ladder import L3_ACP_RUNTIME, RecoveryDecision, RecoveryLadder
 
 from ..dependency import DependencyCoordinator, DependencySignal
-from ..lanes import SYSTEM_LANE, lane_key_for
-from ..migrate import TASKRUNNER_ID_PREFIX
+from ..lanes import SYSTEM_LANE, lane_key_for  # noqa: F401
+from ..migrate import TASKRUNNER_ID_PREFIX  # noqa: F401
+from ..model import DONE  # noqa: F401
+from ..model import KIND_WORKFLOW_AGENT  # noqa: F401
 from ..model import (
     ADMITTED,
     ADOPTED_RESUME_EVENT,
     CANCELLED,
     CLAIMABLE,
-    DONE,
     FAILED,
     KIND_TASKRUNNER_STEP,
-    KIND_WORKFLOW_AGENT,
     PARKED,
     QUEUED,
     RECOVERING,
@@ -79,683 +82,50 @@ from ..model import (
 )
 from ..store import TaskStore, TaskStoreUnavailable
 from ..waits import WaitLedger, WaitRecord
+from .runner_handle import Admitted
+from .runner_lane import RunnerLane
+from .runner_vocab import OWNER_TASKRUNNER  # noqa: F401
+from .runner_vocab import OWNER_WORKFLOW  # noqa: F401
+from .runner_vocab import owner_of  # noqa: F401
+from .runner_vocab import (
+    _DEFAULT_ADMIT_WAIT_SECS,
+    _MAX_ADMIT_SLEEP_SECS,
+    _MAX_DURABLE_ANSWER_CHARS,
+    ANSWER_TRUNCATED,
+    INPUT_WAIT_ONLY,
+    LANE_SYSTEM,
+    MODE_AIMD,
+    MODE_FIXED,
+    PARAM_ACCEPTED_BY,
+    PARAM_LANE,
+    PARAM_SAFE_RETRY,
+    RUNNER_RECOVERY_ADAPTERS,
+    SYSTEM_SOURCES,
+    UNCLAIMED,
+    WORKFLOW_ID_PREFIX,
+    RunnerAdmissionRefused,
+    RunnerLaneSelfBlocked,
+    RunnerTaskCancelled,
+    _answer_detail,
+    lane_for,
+    run_task_id,
+    step_task_id,
+    workflow_task_id,
+)
 
 logger = logging.getLogger(__name__)
 
-#: The lane every cron- and hook-launched run shares (RFC §13 Q5, weight 1).
-LANE_SYSTEM = SYSTEM_LANE
-#: Launch sources that have no watching session and therefore no lane of their own.
-SYSTEM_SOURCES: frozenset[str] = frozenset({"cron", "hook"})
-
-WORKFLOW_ID_PREFIX = "workflow:"
-
-MODE_AIMD = "aimd"
-MODE_FIXED = "fixed"
-
-#: Kinds this module knows how to rebuild from a stored row.
-RUNNER_RECOVERY_ADAPTERS: frozenset[str] = frozenset({KIND_TASKRUNNER_STEP, KIND_WORKFLOW_AGENT})
-
-#: The only state a row an ``admit`` never claimed can be cancelled from, and
-#: the only one the queued-orphan sweep may end: ``queued`` says no ``claim``
-#: ever took the row, so nothing has run under it. A row that has LEFT it
-#: belongs to whoever claimed it, whatever an earlier read said.
-UNCLAIMED: frozenset[str] = frozenset({QUEUED})
-
-#: The only wait an operator's answer may end (``answer_input``). An answer
-#: answers ONE question, and the other three waits in :data:`model.WAITING` are
-#: different questions, so a row that has moved to one of them is refused rather
-#: than woken by an answer to a question that is already over.
-INPUT_WAIT_ONLY: frozenset[str] = frozenset({WAITING_INPUT})
-
-#: Row param naming the lane the row queues in.
-PARAM_LANE = "lane"
-#: Row param: the runner may re-run the interrupted step from its checkpoint.
-PARAM_SAFE_RETRY = "safe_retry"
-#: Row param: the ``TaskStore.incarnation`` whose ``accept`` wrote the row. The
-#: adoption sweep needs to tell a row a LIVE coroutine of this process accepted
-#: from one a dead incarnation left, and for a row that was never claimed the
-#: lease cannot say: ``claim`` is what takes one.
-PARAM_ACCEPTED_BY = "accepted_by"
-
-_DEFAULT_ADMIT_WAIT_SECS = 30.0
-#: Bound on one sleep inside ``admit``: a deferred row re-checks the store at
-#: least this often so a cancel landing during the wait is seen promptly.
-_MAX_ADMIT_SLEEP_SECS = 30.0
-
-#: Bound on the operator answer carried on a row's ``wake`` event, so one
-#: pasted document cannot become the store's size.
-_MAX_DURABLE_ANSWER_CHARS = 2000
-#: Wake-event key that says the durable copy is SHORT of the answer given. The
-#: marker is what makes the bound safe: a replay reading it refuses instead of
-#: feeding a model a cut answer as if it were the whole one.
-ANSWER_TRUNCATED = "answer_truncated"
-
-
-def _answer_detail(answer: str) -> dict[str, Any]:
-    """The ``wake`` event detail carrying an operator's answer.
-
-    The stored copy is bounded; when the bound cuts it, the event SAYS so and
-    names the length that was given. Every reader of this copy is a REPLAY --
-    a rebuilt step, or one answered through another incarnation
-    (:meth:`RunnerAdmission.recorded_answer`) -- and a silently cut answer is
-    one the model cannot tell from the operator's own words.
-    """
-    text = str(answer)
-    detail: dict[str, Any] = {"answer": text[:_MAX_DURABLE_ANSWER_CHARS]}
-    if len(text) > _MAX_DURABLE_ANSWER_CHARS:
-        detail[ANSWER_TRUNCATED] = True
-        detail["answer_chars"] = len(text)
-    return detail
-
-
-def lane_for(session_key: str | None, source: str = "") -> str:
-    """The lane a run queues in: ``taskq.lanes.lane_key_for`` (the ONE lane
-    key policy: automation keys and the empty key are ``system``), with the
-    runner's launch *source* as the extra fact the key alone cannot carry --
-    a cron- or hook-launched run is a ``system`` root whatever its key says.
-    """
-    if str(source or "") in SYSTEM_SOURCES:
-        return LANE_SYSTEM
-    return lane_key_for(session_key)
-
-
-def step_task_id(run_id: str, index: int) -> str:
-    """Row id of one TaskRunner step; the run row is ``taskrunner:<run_id>``."""
-    return f"{TASKRUNNER_ID_PREFIX}{run_id}:task{int(index)}"
-
-
-def run_task_id(run_id: str) -> str:
-    return f"{TASKRUNNER_ID_PREFIX}{run_id}"
-
-
-def workflow_task_id(run_id: str, call_no: int) -> str:
-    return f"{WORKFLOW_ID_PREFIX}{run_id}:agent{int(call_no)}"
-
-
-OWNER_TASKRUNNER = "taskrunner"
-OWNER_WORKFLOW = "workflow"
-
-
-def owner_of(task_id: str) -> tuple[str, str] | None:
-    """``(owner, run_id)`` for a runner row id, else None.
-
-    ``taskrunner:<run>`` and ``taskrunner:<run>:task<N>`` belong to the
-    TaskRunner run ``<run>``; ``workflow:<run>:agent<N>`` to the workflow run
-    ``<run>``. A ``~N`` re-run suffix on the last segment is dropped. The
-    cancel adapter routes on this: a step or an agent call is one unit of its
-    run, so cancelling it means cancelling that run.
-    """
-    if task_id.startswith(TASKRUNNER_ID_PREFIX):
-        rest = task_id[len(TASKRUNNER_ID_PREFIX) :]
-        run_id = rest.split(":", 1)[0].split("~", 1)[0]
-        return (OWNER_TASKRUNNER, run_id) if run_id else None
-    if task_id.startswith(WORKFLOW_ID_PREFIX):
-        rest = task_id[len(WORKFLOW_ID_PREFIX) :]
-        run_id = rest.rsplit(":", 1)[0] if ":" in rest else rest.split("~", 1)[0]
-        return (OWNER_WORKFLOW, run_id) if run_id else None
-    return None
-
-
-class RunnerAdmissionRefused(RuntimeError):
-    """The row could not be written: NOTHING was accepted."""
-
-
-class RunnerTaskCancelled(RuntimeError):
-    """The row was cancelled (or ended) before the runner could start it."""
-
-
-class RunnerLaneSelfBlocked(RunnerAdmissionRefused):
-    """Every slot on the lane is held by one of the asking row's own ANCESTORS.
-
-    A refusal, never a park: :meth:`RunnerLane.acquire` has no timeout, so a
-    descendant in that position waits for a release only its own ancestry can
-    make, and an ancestor blocked on the descendant never makes it. A
-    :class:`RunnerAdmissionRefused` subclass so a caller that already reports a
-    refused admission reports this one too.
-
-    Raised ONLY when the ancestry holds every slot -- one unrelated holder is a
-    release the FIFO queue will hand on, so that wait is parked as before. The
-    sanctioned way to run nested work is for the ancestor to YIELD first
-    (``Admitted.release_slot`` / ``reacquire_slot``, the same pair
-    ``yield_dependency`` uses): the lane is FIFO, so the freed slot reaches the
-    descendant once the waiters that arrived before it have had theirs.
-    """
-
-
-# ── lane ──────────────────────────────────────────────────────────────────────
-
-
-class RunnerLane:
-    """FIFO execution gate whose bound is the LIVE effective cap.
-
-    ``cap`` is the ceiling source -- a callable read on every decision (the
-    manager's ``max_concurrent``, which the adaptive controller already
-    clamps), or a constant. Reading it live is not a WAKE: a waiter parked
-    while the bound was ``0`` holds no slot, so no :meth:`release` of its own
-    will ever come. :meth:`pump` is the raise EDGE, and the cap's owner rings
-    it (``SubagentManager.set_cap_raise_listener``). ``set_effective_cap`` is a
-    lane-LOCAL override that also pumps: ``None`` removes it, ``0`` pauses new
-    grants (in-flight work finishes; nothing is cancelled).
-    ``mode`` (callable or constant) selects ``fixed``, which pins the bound
-    at ``pinned`` (or the ceiling) whatever the controller says -- the one
-    config flip that turns the adaptive lane back into a plain semaphore.
-
-    No asyncio primitive is created at import or construction: every waiter
-    is a future minted on the loop that called :meth:`acquire`.
-
-    The lane also knows WHICH rows hold its slots (:attr:`holders`), which is
-    what lets :meth:`acquire` refuse a self-blocking wait instead of parking on
-    it -- see :class:`RunnerLaneSelfBlocked`. A caller that passes no ``task_id``
-    holds an UNTRACKED slot, so it can never be named as somebody's blocker; the
-    refusal therefore requires every held slot to be accounted for, because an
-    untracked holder is one nothing proves is an ancestor.
-    """
-
-    def __init__(
-        self,
-        cap: Callable[[], int] | int = 4,
-        *,
-        mode: Callable[[], str] | str = MODE_AIMD,
-        pinned: int | None = None,
-        name: str = "runner-lane",
-    ) -> None:
-        if callable(cap):
-            self._cap: Callable[[], int] = cap
-        else:
-            fixed_cap = int(cap)
-            self._cap = lambda: fixed_cap
-        if callable(mode):
-            self._mode: Callable[[], str] = mode
-        else:
-            fixed_mode = str(mode)
-            self._mode = lambda: fixed_mode
-        self._pinned = None if pinned is None else max(0, int(pinned))
-        self._override: int | None = None
-        self._running = 0
-        self._waiters: deque[tuple[asyncio.Future[None], str, frozenset[str]]] = deque()
-        self._name = name
-        self._granted = 0
-        #: Rows that reached a committed ``done`` terminal write, the lane's
-        #: COMPLETIONS. A grant is not one -- ``_granted`` counts admissions,
-        #: including the ones that fail, cancel or recover -- so the adaptive
-        #: controller earns an increase on this counter, never on grants.
-        self._settled_ok = 0
-        #: Row id -> slots it holds. Only non-empty ids are tracked, and the map
-        #: is cleared whenever the lane empties, so a slot released without its
-        #: id leaves no phantom holder behind: a phantom would refuse a
-        #: descendant nothing is actually blocking.
-        self._holders: dict[str, int] = {}
-
-    # -- bound ---------------------------------------------------------------
-
-    @property
-    def ceiling(self) -> int:
-        try:
-            return max(0, int(self._cap()))
-        except Exception:  # noqa: BLE001 - a broken cap source pins at one
-            logger.debug("%s: cap source failed; assuming 1", self._name, exc_info=True)
-            return 1
-
-    @property
-    def mode(self) -> str:
-        try:
-            value = str(self._mode() or MODE_AIMD)
-        except Exception:  # noqa: BLE001 - a broken mode source reads as aimd
-            value = MODE_AIMD
-        return MODE_FIXED if value == MODE_FIXED else MODE_AIMD
-
-    @property
-    def effective(self) -> int:
-        """The bound in force now: pinned under ``fixed``, else min(ceiling, override)."""
-        ceiling = self.ceiling
-        if self.mode == MODE_FIXED:
-            return ceiling if self._pinned is None else self._pinned
-        if self._override is None:
-            return ceiling
-        return max(0, min(ceiling, self._override))
-
-    def set_effective_cap(self, cap: int | None) -> int:
-        """Lane-local override of the bound; returns the one now in force."""
-        self._override = None if cap is None else max(0, int(cap))
-        self.pump()
-        return self.effective
-
-    # -- occupancy -----------------------------------------------------------
-
-    @property
-    def running(self) -> int:
-        return self._running
-
-    @property
-    def waiting(self) -> int:
-        return len(self._waiters)
-
-    @property
-    def settled_ok(self) -> int:
-        """Cumulative rows that reached a committed ``done`` terminal write."""
-        return self._settled_ok
-
-    def note_done(self) -> None:
-        """Record one committed ``done`` terminal write. Called by
-        :meth:`Admitted._settle_apply`, the single in-memory settle choke point,
-        so a fail, cancel or recovery -- none of which pass ``done`` with a
-        committed write -- is never counted a completion. A write the store
-        could not take and the admission later replays
-        (:meth:`RunnerAdmission.flush_pending_finish`) is not counted here: its
-        slot is already freed and its window long past, so crediting it late
-        would attribute a completion to the wrong window -- the adaptive track
-        tolerates the missing evidence rather than mis-timing it."""
-        self._settled_ok += 1
-
-    @property
-    def holders(self) -> frozenset[str]:
-        """Ids of the rows holding a slot right now."""
-        return frozenset(self._holders)
-
-    @property
-    def saturated(self) -> bool:
-        """Whether the next :meth:`acquire` would have to park."""
-        return bool(self._waiters) or self._running >= self.effective
-
-    def stats(self) -> dict[str, Any]:
-        return {
-            "name": self._name,
-            "running": self._running,
-            "waiting": len(self._waiters),
-            "effective": self.effective,
-            "ceiling": self.ceiling,
-            "mode": self.mode,
-            "granted": self._granted,
-            "settled_ok": self._settled_ok,
-        }
-
-    def _take(self, task_id: str) -> None:
-        """Book one slot to *task_id* (untracked when the id is empty)."""
-        self._running += 1
-        self._granted += 1
-        if task_id:
-            self._holders[task_id] = self._holders.get(task_id, 0) + 1
-
-    def self_blocking_holders(self, ancestors: Iterable[str]) -> frozenset[str]:
-        """The holders of EVERY slot when they are all this row's ancestors, else
-        empty.
-
-        Non-empty is the exact statement "no release can come from outside this
-        row's own ancestry": the lane is full and each slot belongs to an
-        ancestor. One non-ancestor holder answers empty, because that holder
-        will free a slot the FIFO queue then hands on. A bound of ``0`` also
-        answers empty: that is a deliberate PAUSE which grants nothing to
-        anyone and which :meth:`pump` ends, never a block to refuse.
-
-        An UNACCOUNTED slot answers empty too, and that is the fail-safe
-        direction: a slot taken with no ``task_id`` is held by nobody this lane
-        can name, so it cannot be shown to be an ancestor's, and refusing on a
-        set that does not cover every holder would refuse a wait some untracked
-        holder is about to end.
-        """
-        wanted = frozenset(ancestors)
-        if not wanted or not self._holders or self.effective <= 0:
-            return frozenset()
-        if self._running < self.effective:
-            return frozenset()
-        if sum(self._holders.values()) < self._running:
-            return frozenset()
-        holders = frozenset(self._holders)
-        return holders if holders <= wanted else frozenset()
-
-    def _self_blocked(self, task_id: str, holders: frozenset[str]) -> RunnerLaneSelfBlocked:
-        return RunnerLaneSelfBlocked(
-            f"{task_id or 'a row'} would wait for a {self._name} slot held only by its own "
-            f"ancestor {', '.join(sorted(holders))}; an ancestor yields its slot "
-            "(Admitted.release_slot) before its descendant is admitted"
-        )
-
-    def pump(self) -> int:
-        """Grant slots to the oldest waiters while the bound allows; returns grants.
-
-        Also the point where a waiter that became self-blocking AFTER it parked
-        is refused: the bound can fall (an adaptive squeeze) so that a release
-        frees nothing, which would leave that waiter on its own ancestry with no
-        further edge to wake it.
-
-        Judging only the head is not enough, because a waiter ahead of it can be
-        one the same ancestry blocks: an ordinary root queued in front of a
-        self-blocked descendant is served only by the ancestor releasing, so
-        neither ever wakes and the queue stalls behind a head that is not itself
-        refusable. So every parked waiter is judged while the lane is at its
-        bound. Refusing one cannot disturb FIFO for the rest -- it leaves the
-        queue, it does not overtake -- and the scan runs only on the saturated
-        edge.
-        """
-        granted = 0
-        while self._waiters:
-            if self._running < self.effective:
-                fut, task_id, _anc = self._waiters.popleft()
-                if fut.done():
-                    continue
-                self._take(task_id)
-                fut.set_result(None)
-                granted += 1
-                continue
-            refused = False
-            for entry in list(self._waiters):
-                fut, task_id, ancestors = entry
-                if fut.done():
-                    self._drop_waiter(entry)
-                    refused = True
-                    continue
-                holders = self.self_blocking_holders(ancestors)
-                if not holders:
-                    continue
-                self._drop_waiter(entry)
-                fut.set_exception(self._self_blocked(task_id, holders))
-                refused = True
-            if not refused:
-                break
-        return granted
-
-    def _drop_waiter(self, entry: Any) -> None:
-        """Remove *entry* from the FIFO wherever it sits."""
-        try:
-            self._waiters.remove(entry)
-        except ValueError:
-            pass
-
-    async def acquire(self, task_id: str = "", *, ancestors: Iterable[str] = ()) -> None:
-        """Wait for a slot. FIFO; a cancelled waiter leaves the queue cleanly.
-
-        *ancestors* are the ids this row descends from. A wait that only one of
-        them could ever end is REFUSED (:class:`RunnerLaneSelfBlocked`) rather
-        than parked. Pass none and the park is unbounded, which is what every
-        ROOT entry does: a root has no ancestor to be blocked by, so a
-        legitimately long queue wait is never turned into a refusal.
-        """
-        if not self._waiters and self._running < self.effective:
-            self._take(task_id)
-            return
-        wanted = frozenset(ancestors)
-        holders = self.self_blocking_holders(wanted)
-        if holders:
-            raise self._self_blocked(task_id, holders)
-        loop = asyncio.get_running_loop()
-        fut: asyncio.Future[None] = loop.create_future()
-        self._waiters.append((fut, task_id, wanted))
-        try:
-            await fut
-        except asyncio.CancelledError:
-            # The task's cancel reaches the future first: a waiter that was
-            # still parked sees ``fut.cancelled()`` and holds no slot, so only
-            # its queue entry goes (``_running`` is untouched). A future that
-            # already holds a grant was resolved before the cancel landed:
-            # that slot is handed on. Mirrors ``asyncio.Semaphore.acquire``.
-            if fut.cancelled():
-                self._waiters = deque(w for w in self._waiters if w[0] is not fut)
-            else:
-                self.release(task_id)
-            raise
-
-    def release(self, task_id: str = "") -> None:
-        """Give one slot back. Pass the id the matching :meth:`acquire` used, or
-        the lane keeps counting that row as a holder until it empties."""
-        if self._running > 0:
-            self._running -= 1
-        held = self._holders.get(task_id, 0) if task_id else 0
-        if held > 1:
-            self._holders[task_id] = held - 1
-        elif held:
-            del self._holders[task_id]
-        if self._running == 0:
-            self._holders.clear()
-        self.pump()
-
-
-# ── admission ─────────────────────────────────────────────────────────────────
-
-
-@dataclass
-class Admitted:
-    """A claimed row the runner is executing. Every write is generation-fenced."""
-
-    admission: "RunnerAdmission"
-    task_id: str
-    kind: str
-    lane: str
-    generation: int
-    session_key: str = ""
-    side_effect_class: str = SIDE_EFFECT_UNKNOWN
-    safe_retry: bool = False
-    _slot_held: bool = field(default=True, repr=False)
-    _settled: bool = field(default=False, repr=False)
-    #: The state of the ROW, so a handle never reports one the store did not
-    #: take. A claim leaves the row ``admitted``; ``starting`` is what the
-    #: constructing call has to WRITE before it hands the handle out.
-    _state: str = field(default=ADMITTED, repr=False)
-
-    @property
-    def state(self) -> str:
-        return self._state
-
-    @property
-    def slot_held(self) -> bool:
-        return self._slot_held
-
-    def _store(self) -> TaskStore | None:
-        return self.admission.store
-
-    def _transition_db(self, state: str, **kw: Any) -> bool:
-        """Database phase of a state write. Safe on any thread."""
-        store = self._store()
-        if store is None:
-            return True
-        try:
-            return store.transition(self.task_id, state, generation=self.generation, **kw)
-        except TaskStoreUnavailable:
-            logger.debug("taskq runner: %s -> %s write failed", self.task_id, state, exc_info=True)
-            return False
-
-    def _write(self, state: str, **kw: Any) -> bool:
-        """``self._state`` follows the ROW, so it is published from the write's
-        result and never ahead of it."""
-        ok = self._transition_db(state, **kw)
-        if ok:
-            self._state = state
-        return ok
-
-    async def write_async(self, state: str, **kw: Any) -> bool:
-        """:meth:`_write` for an event-loop caller: the transition on the store's
-        writer thread, the in-memory publish back on the loop from its result."""
-        store = self._store()
-        if store is None:
-            self._state = state
-            return True
-        ok = bool(await store.run(self._transition_db, state, **kw))
-        if ok:
-            self._state = state
-        return ok
-
-    def running(self, progress: dict[str, Any] | None = None) -> bool:
-        """``starting -> running`` (also the re-entry after a recovery claim)."""
-        if self._state == RUNNING:
-            return True
-        return self._write(RUNNING, progress=progress)
-
-    async def running_async(self, progress: dict[str, Any] | None = None) -> bool:
-        """:meth:`running` for an event-loop caller."""
-        if self._state == RUNNING:
-            return True
-        return await self.write_async(RUNNING, progress=progress)
-
-    def progress(self, marker: dict[str, Any]) -> bool:
-        store = self._store()
-        if store is None:
-            return True
-        try:
-            return store.record_progress(self.task_id, self.generation, marker)
-        except TaskStoreUnavailable:
-            return False
-
-    def renew(self) -> bool:
-        """Extend the lease; False means another incarnation owns the row now."""
-        store = self._store()
-        if store is None:
-            return True
-        try:
-            return store.renew_lease(self.task_id, self.generation)
-        except TaskStoreUnavailable:
-            return False
-
-    def release_slot(self) -> None:
-        """Give the lane slot back (idempotent). The row keeps its state."""
-        if self._slot_held:
-            self._slot_held = False
-            self.admission.lane.release(self.task_id)
-
-    async def reacquire_slot(self) -> None:
-        """Take the slot back after a yield.
-
-        No ``ancestors``, unlike :meth:`RunnerAdmission.admit`: this row already
-        RAN, so refusing it here would fail work in flight, where refusing an
-        admission only declines to start it.
-        """
-        if not self._slot_held:
-            await self.admission.lane.acquire(self.task_id)
-            self._slot_held = True
-
-    def settle(
-        self, state: str, *, result_ref: str | None = None, error: str | None = None
-    ) -> bool:
-        """Terminal write FIRST, then slot release and forget. A second call
-        is a no-op.
-
-        The handle is marked settled only once the terminal write committed,
-        or once the admission's durable retry owns it (the store was
-        unavailable: the write is replayed by the admission's next ``admit``,
-        and by ``tick`` where one runs, until it commits). A
-        write fenced by a newer generation means another owner already ended
-        the row -- nothing to retry, the handle just lets go. Returns True
-        only for a committed write.
-        """
-        if self._settled:
-            return False
-        return self._settle_apply(state, self._finish_db(state, result_ref, error))
-
-    async def settle_async(
-        self, state: str, *, result_ref: str | None = None, error: str | None = None
-    ) -> bool:
-        """:meth:`settle` for an event-loop caller: the terminal write on the
-        store's writer thread, the slot release and the forget back on the loop.
-
-        NOT for an ``except CancelledError`` arm -- an ``await`` there can be
-        interrupted before the write is submitted, and a dropped terminal write
-        leaves the row active for the next boot's reconciler to re-dispatch.
-        """
-        if self._settled:
-            return False
-        store = self._store()
-        if store is None:
-            return self._settle_apply(state, True)
-        ok = bool(await store.run(self._finish_db, state, result_ref, error))
-        return self._settle_apply(state, ok)
-
-    def _finish_db(self, state: str, result_ref: str | None, error: str | None) -> bool:
-        """Database phase of the terminal write. Safe on any thread.
-
-        A store that cannot take it hands the write to the admission's durable
-        retry (:meth:`RunnerAdmission.defer_terminal_write` names its replayers)
-        rather than losing it. That hand-off writes
-        one ``_pending_finish`` item from whichever thread ran this phase; the
-        future's completion is what orders it before :meth:`_settle_apply` reads
-        the dict back on the loop.
-        """
-        store = self._store()
-        if store is None:
-            return True
-        try:
-            return store.finish(
-                self.task_id,
-                state,
-                generation=self.generation,
-                result_ref=result_ref,
-                error=error,
-            )
-        except TaskStoreUnavailable:
-            logger.warning(
-                "taskq runner: terminal write for %s deferred (store unavailable)",
-                self.task_id,
-            )
-            self.admission.defer_terminal_write(
-                self.task_id, self.generation, state, result_ref=result_ref, error=error
-            )
-            return False
-
-    def _settle_apply(self, state: str, ok: bool) -> bool:
-        self._settled = True
-        # Captured BEFORE release_slot() clears it: a lane completion counts only
-        # for a handle that metered a lane slot. A claim_only container row holds
-        # no slot (_slot_held=False from construction) and executes nothing
-        # itself -- its steps are what the lane meters -- so it must not credit a
-        # completion no slot produced.
-        was_lane_metered = self._slot_held
-        self.release_slot()
-        if ok:
-            self._state = state
-            if state == DONE and was_lane_metered:
-                # The lane's completion signal for the adaptive controller: a
-                # grant that reached a committed ``done``. Recorded here, the
-                # single settle choke point, so fail/cancel/recovery never count.
-                self.admission.lane.note_done()
-        if self.task_id not in self.admission._pending_finish:
-            self.admission.forget(self.task_id)
-        return ok
-
-    def done(self, result_ref: str | None = None) -> bool:
-        return self.settle(DONE, result_ref=result_ref)
-
-    async def done_async(self, result_ref: str | None = None) -> bool:
-        return await self.settle_async(DONE, result_ref=result_ref)
-
-    def fail(self, error: str) -> bool:
-        return self.settle(FAILED, error=error)
-
-    async def fail_async(self, error: str) -> bool:
-        return await self.settle_async(FAILED, error=error)
-
-    def cancel(self, reason: str = "") -> bool:
-        return self.settle(CANCELLED, error=reason or None)
-
-    async def cancel_async(self, reason: str = "") -> bool:
-        return await self.settle_async(CANCELLED, error=reason or None)
-
-    def _recovering_kw(self, reason: str, delay_secs: float) -> dict[str, Any]:
-        """The recovery write's arguments; the slot release is the caller's."""
-        return {
-            "next_run_at": self.admission.now() + max(0.0, float(delay_secs)),
-            "detail": {"reason": str(reason)[:200], "delay_secs": round(float(delay_secs), 3)},
-        }
-
-    def recovering(self, *, reason: str, delay_secs: float) -> bool:
-        """``running -> recovering`` with ``next_run_at = now + delay``; slot released.
-
-        The row becomes claimable again after the delay; :meth:`reclaim` takes
-        it back under a NEW generation, so a late callback from the interrupted
-        turn is fenced out as ``stale_result``.
-        """
-        self.release_slot()
-        return self._write(RECOVERING, **self._recovering_kw(reason, delay_secs))
-
-    async def recovering_async(self, *, reason: str, delay_secs: float) -> bool:
-        """:meth:`recovering` for an event-loop caller: the slot release stays on
-        the loop ahead of the write, the transition runs on the writer thread."""
-        self.release_slot()
-        return await self.write_async(RECOVERING, **self._recovering_kw(reason, delay_secs))
-
-    async def reclaim(self) -> bool:
-        """Re-admit a ``recovering`` row: a lane slot, then a fresh claim."""
-        handle = await self.admission.admit(self.task_id, kind=self.kind, lane=self.lane)
-        self.generation = handle.generation
-        self._slot_held = True
-        self._state = handle.state
-        return True
+#: The modules this one binds the runner's lane, its row handle and their shared
+#: vocabulary from, lowest layer first. Each imports only modules listed before it and
+#: never this one at run time, and one that logs does so under this module's logger. This
+#: module binds every project name it bound as one file, so it stays the one import path; a
+#: name a test patches through it must be one only the code kept here reads, because an
+#: owner reads its own namespace and a patch of this module does not reach it.
+_RUNNER_OWNERS = (
+    "kiro_crew.taskq.adapters.runner_vocab",
+    "kiro_crew.taskq.adapters.runner_lane",
+    "kiro_crew.taskq.adapters.runner_handle",
+)
 
 
 class RunnerAdmission:

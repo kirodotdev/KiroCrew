@@ -522,12 +522,19 @@ Delete is the one destructive row action, and it is staged rather than immediate
 
 ## Tests
 
-`test/test_md_notebook.py` drives the aiohttp app through a signed test client, so the
-proxy-HMAC middleware is exercised on every call rather than bypassed. Coverage includes
-the save guard, path traversal, unique note naming, duplicate-note naming and containment,
-move-without-overwrite, external-change detection, self-write suppression, token file
-permissions, the knowledge flag round-trip, and a real sync against git fixtures including
-the conflict path. `test/test_md_notebook_git_ops.py` pins Git subprocess lifecycle,
+`test/test_md_notebook.py` and its topic siblings drive the aiohttp app through a signed
+test client, so the proxy-HMAC middleware is exercised on every call rather than bypassed.
+Coverage includes the save guard, path traversal, unique note naming, duplicate-note naming
+and containment, move-without-overwrite, external-change detection, self-write suppression,
+token file permissions, the knowledge flag round-trip, and a real sync against git fixtures
+including the conflict path. The suite is split by topic: `test/test_md_notebook.py`
+(request signing, the vault routes, trash reveal and the basic note routes),
+`test/test_md_notebook_notes.py` (naming, delete-to-trash, duplicate, move, search and tags),
+`test/test_md_notebook_git_trust.py` (the token, sync and the git trust boundary),
+`test/test_md_notebook_write_safety.py` (the vault lock and staged saves) and
+`test/test_md_notebook_settings_sync.py` (change polling, sync stamps, settings and the
+auto-sync loop), with shared fixtures in `test/md_notebook_helpers.py`.
+`test/test_md_notebook_git_ops.py` pins Git subprocess lifecycle,
 `test/test_sandbox_md_notebook_carveout.py` pins the state-file carve-out and orphan sweep,
 and `src/kiro_crew/apps/builtins/md_notebook/tests/test_md_notebook_windows.py` covers the
 native Windows branches. All are collected because `setup.cfg` includes both `test` and

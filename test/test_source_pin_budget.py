@@ -110,7 +110,7 @@ BUDGET: dict[str, int] = {
     "test/test_subagent_stop_reason_consistency.py": 1,
     "test/test_turn_duration_recorded.py": 1,
     "test/test_turn_metric_all_surfaces.py": 2,
-    "test/test_wake_judge_feedback.py": 1,
+    "test/test_wake_judge_feedback_service.py": 1,
     "test/test_ws_event_scoping_frames.py": 1,
 }
 
