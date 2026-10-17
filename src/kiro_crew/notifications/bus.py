@@ -65,6 +65,10 @@ SYSTEM_CHANNELS: dict[str, str] = {
     # A dashboard terminal shell that exited with a non-zero code; its tab
     # closed with it, so the note is where the code is left to read.
     "system.terminal": _DEFAULT_PRIORITY,
+    # A crewmate's message in its DM thread (dashboard/member_message_notes.py).
+    # Its own channel so the user can mute crewmate chatter without muting
+    # system.agent; the note keeps kind "agent", as system.monitor's do.
+    "system.member": _DEFAULT_PRIORITY,
 }
 
 # The channel the gateway's monitor-loop stop/finish notices use. Their legacy

@@ -2600,6 +2600,17 @@ class DashboardState:
             eventlog_hooks.submit(_emit_message)
         except Exception:
             logger.debug("member/message event-log hook failed", exc_info=True)
+        # A crewmate's message to the user is also a notification. Kept apart
+        # from the log append so neither failure costs the other its row.
+        if role == "assistant":
+            try:
+                from kiro_crew import eventlog_hooks
+                from kiro_crew.dashboard.member_message_notes import post_member_message
+
+                if eventlog_hooks.member_slug_for_slot(slot_key) is not None:
+                    post_member_message(self, slot_key, msg)
+            except Exception:
+                logger.debug("crewmate message note hook failed", exc_info=True)
 
     # ── Folder persistence ──
 
