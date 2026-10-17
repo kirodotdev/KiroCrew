@@ -1186,7 +1186,7 @@ Admission order (`subagent_manager/admission/gate.py::spawn_impl`):
    again on the next pump pass
    (`test_taskq_claim_start.py::test_a_reentry_refused_by_closed_admission_releases_the_start_to_retry_wait`,
    `test_taskq_claim_start.py::test_a_release_queued_behind_another_writer_job_survives_the_claimers_cancel`,
-   `test_overload_integration_glue.py::test_a_raise_inside_reenter_releases_the_reservation`).
+   `test_overload_integration_glue_spawn_queue.py::test_a_raise_inside_reenter_releases_the_reservation`).
    The release write is shielded from the claimer's cancel and its outcome is
    accounted for before cancellation propagates.
    If that release is unavailable, the claim keeps its generation and reserved
@@ -2924,7 +2924,7 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   The durable row never carries the flag at all (`taskq_build_record` strips
   it; `_window_entry` drops it from any row that still holds one), so a start
   rebuilt from the store -- window refill or restart -- runs the same gates
-  (`test_overload_integration_glue.py::test_durable_row_never_carries_prevalidation`).
+  (`test_overload_integration_glue_spawn_queue.py::test_durable_row_never_carries_prevalidation`).
   `approval_mode` is the OTHER process-local param and is stripped by both, for
   the same reason at higher stakes: an ad-hoc `approval_mode="auto"` skips the
   spawn gate AND pre-approves the run's tools, so a row carrying it replays one

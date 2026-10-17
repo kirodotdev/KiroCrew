@@ -332,7 +332,7 @@ guards the executor SLOT and nothing else. Taking `_lock` there would hand the
 loop the very busy wait `run` exists to move off it — the writer thread holds
 `_lock` across `BEGIN IMMEDIATE` — and would do it invisibly, because that take
 is not a connection accessor and `loop_thread_calls` counts nothing.
-`test_overload_integration_glue.py::TestStoreOffLoop::test_run_does_not_take_the_connection_lock_on_the_loop`
+`test_overload_integration_glue_store_off_loop.py::TestStoreOffLoop::test_run_does_not_take_the_connection_lock_on_the_loop`
 pins it by WHO releases a held lock: a coroutine scheduled before the `run`, so
 a frozen loop leaves it to time out instead. The discipline is diagnosed at
 the connection accessor by a module-level `on_loop_db.OnLoopDBGuard` (label
@@ -402,7 +402,7 @@ take, because the guard's queued half is a `_queued_depth` — a `count_pending`
 for rows this incarnation never accepted, which is exactly what makes a reset
 after a restart see children the in-memory registry cannot. The synchronous
 `subagents_attached` stays for callers with no loop under them, and
-`test_overload_integration_glue.py::TestStoreOffLoop::test_no_coroutine_calls_the_synchronous_attached_children_guard`
+`test_overload_integration_glue_store_off_loop.py::TestStoreOffLoop::test_no_coroutine_calls_the_synchronous_attached_children_guard`
 is a whole-package ratchet rather than a list of the converted sites: ONE
 coroutine left on the sync entry puts the busy wait back on the loop. Because
 that guard wraps its probe in `except Exception` (an unreadable queue is unknown
@@ -504,7 +504,7 @@ id never carries two contradictory terminal events — one saying the user stopp
 it, one saying the host refused it. That is the same single-event outcome the
 `ClaimPoint` window already has, reached by a re-read rather than by the
 predicate alone. Pinned by
-`test_overload_integration_glue.py::TestStoreOffLoop::test_a_cancel_inside_the_parked_defers_window_is_announced_once`,
+`test_overload_integration_glue_store_off_loop.py::TestStoreOffLoop::test_a_cancel_inside_the_parked_defers_window_is_announced_once`,
 which holds the writer thread inside `store.defer` while the loop cancels. The three callers with no loop to hand
 the write to (sync `spawn`, the inline drain, `pump_off_loop=False`) keep the
 inline write, and `_deferred`'s REFUSAL text and its single `_announce_rejection`
@@ -550,7 +550,7 @@ pump (`taskq_pump`) runs its expiry sweep the same way. Without a running loop,
 or with `SpawnAdmissionCoordinator.pump_off_loop=False` (the test suite's root
 fixture and the virtual-clock experiment driver, which settle with `sleep(0)`
 loops), the pump runs inline on the calling thread; the off-loop path is pinned
-by `test_overload_integration_glue.py::TestStoreOffLoop` with nothing stubbed:
+by `test_overload_integration_glue_store_off_loop.py::TestStoreOffLoop` with nothing stubbed:
 the dispatch of a picked row is split at the claim (`spawn_impl(...,
 _stop_before_claim=True)` returns a `ClaimPoint` once every gate passed AND
 the slot is reserved -- running count and stagger token taken synchronously,

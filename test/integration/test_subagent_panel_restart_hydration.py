@@ -113,7 +113,7 @@ _REPLAY_DEADLINE_SECS = 20.0
 def _plant_persisted_run(*, agent_id: str, parent_session: str, age_secs: float = 120.0) -> None:
     """Write one finished persistent subagent run folder into the registry dir.
 
-    The same on-disk shape ``test_subagent_panel_durable_replay.write_record``
+    The same on-disk shape ``subagent_panel_durable_replay_helpers.write_record``
     produces: a ``state.json`` identifying a persistent run owned by
     *parent_session*, plus a ``delivered`` ``tombstone.json`` so the reader
     classifies it as a completed run rather than waiting for a reconciler to

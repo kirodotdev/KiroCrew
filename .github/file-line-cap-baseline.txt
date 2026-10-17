@@ -103,7 +103,6 @@
 5531 test/test_apps_routes_coverage.py
 3299 test/test_artifacts_handlers.py
 6303 test/test_aws_control_backup.py
-3564 test/test_browser_cli_view.py
 2475 test/test_chat_mirror.py
 10498 test/test_cli.py
 2744 test/test_cli_server_more_coverage.py
@@ -122,7 +121,6 @@
 3102 test/test_handlers_memory_coverage.py
 2809 test/test_history_consolidation_retry.py
 4353 test/test_hooks.py
-3557 test/test_issue_radar_crew_runtime.py
 2162 test/test_issue_radar_routes_coverage.py
 4427 test/test_job_sdk.py
 2631 test/test_llm_pool.py
@@ -133,7 +131,6 @@
 3249 test/test_member_essential_context.py
 2096 test/test_monitor_directive_apply.py
 5822 test/test_onboarding_import.py
-3579 test/test_overload_integration_glue.py
 2725 test/test_plugin_import.py
 8519 test/test_pod.py
 3225 test/test_portability.py
@@ -153,7 +150,6 @@
 3265 test/test_snapshot.py
 2641 test/test_spawn_audit.py
 3093 test/test_subagent.py
-3616 test/test_subagent_panel_durable_replay.py
 3177 test/test_subagent_scale.py
 2820 test/test_subagent_turn_resilience.py
 2460 test/test_taskq_runner_adapter.py

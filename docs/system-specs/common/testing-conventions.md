@@ -3113,7 +3113,7 @@ mechanism, and one of them a production defect wearing a test's clothes.
   are skipped before the parse, which keeps it under a second), and the sites left in the
   package equal to a vetted list. A checklist item asks a reviewer to notice; the pin
   fails the first run that adds one.
-- **"Let it finish" as two 200 ms sleeps.** `test_overload_integration_glue.py`'s
+- **"Let it finish" as two 200 ms sleeps.** `test_overload_integration_glue_store_off_loop.py`'s
   `test_drain_refill_reads_the_store_off_loop` waited `20 x sleep(0.01)` twice for started
   runs to settle through the writer thread, then asserted a row reached a terminal state; in
   round 3, on a loaded worker, both rows still read `starting`. The pin the test exists for

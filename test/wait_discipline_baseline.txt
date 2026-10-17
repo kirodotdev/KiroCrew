@@ -173,7 +173,7 @@
  3 test_inbound_unbind_notice.py
  1 test_installer_binary_only.py
  4 test_installer_distro.py
- 1 test_issue_radar_crew_runtime.py
+ 1 test_issue_radar_crew_runtime_trust.py
  4 test_issue_radar_http_routes_contracts.py
  1 test_issue_radar_http_routes_seams.py
  2 test_issue_radar_list_probe.py
@@ -335,7 +335,7 @@
  3 test_subagent_memory_bounds_concurrency.py
  1 test_subagent_no_tool_calls_note.py
  3 test_subagent_owed_tombstones.py
- 1 test_subagent_panel_durable_replay.py
+ 1 test_subagent_panel_durable_replay_records.py
  3 test_subagent_provenance_write.py
  2 test_subagent_queued_visibility.py
  1 test_subagent_release_off_loop.py
