@@ -1,5 +1,6 @@
-"""Session titles: the hidden-character refusal, title cleaning for a new and a renamed
-session, ``session_rename`` and ``session_generate_title``.
+"""Session titles and colors: the hidden-character refusal, title cleaning for a new
+and a renamed session, ``session_rename``, ``session_generate_title`` and
+``session_set_color``.
 """
 
 from __future__ import annotations
@@ -24,9 +25,13 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     caller_slot_key,
     prewarm_enabled_check,
 )
-from kiro_crew.dashboard.session_control_parts.target_authorization import authorize_target
+from kiro_crew.dashboard.session_control_parts.target_authorization import (
+    _deny_factory,
+    authorize_target,
+)
 from kiro_crew.sel import sel
 from kiro_crew.terminal_safe import _is_invisible  # one shared list of invisible code points
+from kiro_crew.validation import SESSION_COLOR_CHOICES, SESSION_PALETTE_SIZE
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState
@@ -287,6 +292,85 @@ async def rename_target(
     # The slot's title, not this call's: a rename that overtook this one while it
     # saved has already replaced it, and the caller acts on what the reply names.
     return {"ok": True, "target": slot.key, "title": slot.title}
+
+
+def _parse_session_color(color: str) -> int | None:
+    """The palette index for a ``session_set_color`` value, or ``None`` to clear.
+
+    ``"none"`` clears and ``"0"`` to ``"6"`` is one of the menu's swatches. Anything
+    else is refused, including the menu's custom ``#rrggbb`` cell: grouping a
+    fleet needs a few distinct marks, and the swatches follow the viewer's theme
+    where a fixed hex does not.
+    """
+    if color in SESSION_COLOR_CHOICES:
+        return None if color == "none" else int(color)
+    raise SessionControlError(
+        f'color must be a sidebar palette swatch index "0" to "{SESSION_PALETTE_SIZE - 1}", '
+        'or "none" to clear; color not changed',
+        code="invalid_color",
+        status=400,
+    )
+
+
+async def set_color_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    color: str,
+    caller_fenced: bool | None = None,
+) -> dict[str, Any]:
+    """Set *target*'s sidebar color, the way the session color menu does.
+
+    Reach is the sessions the caller created. Every rule in
+    :func:`authorize_target` applies, including its ``self_target`` refusal, and
+    then the creator fence runs for EVERY caller, as :func:`end_wait_target`'s
+    does: the target must carry ``created_by`` equal to the caller's slot key. So an owner session with
+    session control switched on for everyone still cannot recolor the person's
+    own tabs. The write is the one a swatch
+    click in ``PATCH /api/chat/slots/{slot}/color`` makes: the index is set and
+    any custom hex the person picked is cleared, so exactly one color shows;
+    ``"none"`` clears both. Metadata only.
+
+    ``caller_fenced`` has the meaning :func:`stop_target` documents.
+    """
+    # Validated before any gate, as `set_model_target` does.
+    color_index = _parse_session_color(color)
+    # Same prewarm ordering as `stop_target`: nothing may suspend between the
+    # gate and the write it authorizes.
+    try:
+        await asyncio.to_thread(sel)
+    except Exception:  # noqa: BLE001 - a prewarm failure must not fail the write
+        logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_enabled_check()
+    slot = authorize_target(
+        state,
+        caller_session_key=caller_session_key,
+        target=target,
+        operation="set_color",
+        precomputed_ownership_fenced=caller_fenced,
+    )
+    caller_key = caller_slot_key(state, caller_session_key)
+    if _created_by_other(slot, caller_key):
+        deny = _deny_factory(
+            caller_session_key=caller_session_key, operation="set_color", target=target
+        )
+        raise deny("this verb reaches only sessions the caller created", "not_creator")
+    # The same write as a swatch click in the sidebar menu's PATCH route: set
+    # the fields, mark the slot dirty and publish. The periodic flush persists
+    # it, including for a worker that has no messages yet (its birth line).
+    slot.color_index = color_index
+    slot.color_hex = None
+    slot._dirty = True
+    state.push_slots_update()
+    _audit(
+        caller_session_key=caller_session_key,
+        operation="set_color",
+        slot_key=slot.key,
+        outcome="allowed",
+        detail={"color_index": color_index},
+    )
+    return {"ok": True, "target": slot.key, "color_index": color_index}
 
 
 def _admit_generate_title(slot_key: str) -> None:
