@@ -152,6 +152,88 @@ class TestSettingsInjection:
         assert not (overlay_dir.parent / "settings").exists()
         assert (settings_dir / "mcp.json").read_bytes() == settings_before
 
+    def test_an_agent_that_opts_out_of_the_global_file_gets_only_its_own_servers(
+        self, tmp_path: Path
+    ) -> None:
+        """``includeMcpJson: false`` tells kiro-cli not to merge the global file,
+        so the overlay must not add the global servers back as stubs.
+
+        Every wrapped entry in an overlay is sent at ACP ``session/new``, so an
+        injected stub reaches the session even though the agent excluded the file
+        it came from. A server there that publishes a tool name the agent's own
+        server also publishes leaves one of them with no tools. The agent's own
+        servers are kept exactly: the remote one passes through and its own
+        rostered stdio server is still wrapped. An agent without the opt-out, in
+        the same pass, still gets the injected stub.
+        """
+        from kiro_crew.mcp_gateway.rewriter import rewrite_agents
+
+        source_dir = tmp_path / "agents"
+        source_dir.mkdir()
+        remote = {"url": "https://example.invalid/mcp"}
+        own = {"command": sys.executable, "args": ["-own"]}
+        (source_dir / "solo.json").write_text(
+            json.dumps(
+                {
+                    "name": "solo",
+                    "includeMcpJson": False,
+                    "mcpServers": {"remote": remote, "own-mcp": own},
+                    "tools": ["@remote", "@own-mcp"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (source_dir / "kirocrew.json").write_text(
+            json.dumps({"name": "kirocrew", "mcpServers": {}}), encoding="utf-8"
+        )
+        settings_dir = tmp_path / "settings"
+        settings_dir.mkdir()
+        (settings_dir / "mcp.json").write_text(json.dumps(self._spec()), encoding="utf-8")
+
+        overlay_dir = tmp_path / "overlay" / "agents"
+        rewrite_agents(
+            source_dir=source_dir,
+            overlay_dir=overlay_dir,
+            socket_path=tmp_path / "gw.sock",
+            work_dir=tmp_path / "wd",
+            stub_servers=frozenset(["beta-mcp", "own-mcp"]),
+        )
+
+        solo = json.loads((overlay_dir / "solo.json").read_text(encoding="utf-8"))
+        assert set(solo["mcpServers"]) == {"remote", "own-mcp"}
+        assert solo["mcpServers"]["remote"] == remote
+        assert solo["mcpServers"]["own-mcp"].get(_WRAPPER_MARKER) is True
+        assert solo["includeMcpJson"] is False
+        other = json.loads((overlay_dir / "kirocrew.json").read_text(encoding="utf-8"))
+        assert other["mcpServers"]["beta-mcp"].get(_WRAPPER_MARKER) is True
+
+    @pytest.mark.parametrize(
+        ("flag", "injected"),
+        [(None, True), (True, True), (False, False)],
+        ids=["absent", "true", "false"],
+    )
+    def test_injection_follows_the_include_mcp_json_flag(
+        self, tmp_path: Path, flag: bool | None, injected: bool
+    ) -> None:
+        """kiro-cli reads an absent ``includeMcpJson`` as true, so only a literal
+        ``false`` opts the agent out of the injected globals."""
+        spec: dict = {"name": "agent-a", "mcpServers": {}}
+        if flag is not None:
+            spec["includeMcpJson"] = flag
+        inject = _injectable_settings_servers(self._spec(), frozenset(["beta-mcp"]))
+        new_spec, wrapped = _rewrite_single_spec(
+            spec,
+            stubs_dir=tmp_path / "stubs",
+            socket_path=tmp_path / "gw.sock",
+            work_dir=tmp_path / "wd",
+            sandbox_mode="auto",
+            approval_mode="interactive",
+            stub_servers=frozenset(["beta-mcp"]),
+            inject_servers=inject,
+        )
+        assert ("beta-mcp" in new_spec["mcpServers"]) is injected
+        assert wrapped == (1 if injected else 0)
+
 
 def _rewrite(
     spec: dict,
