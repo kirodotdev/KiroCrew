@@ -1121,7 +1121,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # fixed argv whose binary is validated (basenamed kirocrew, absolute,
         # executable) from the gateway's own keystone-fenced run-marker or
         # shutil.which — never agent input. Deliberately NOT sandboxed for the
-        # same reason as cli_server.py::_spawn_detached_gateway above: the child
+        # same reason as cli_server_restart.py::_spawn_detached_gateway above: the child
         # must outlive and REPLACE the gateway (kill + respawn + own session),
         # which a scoped/sandboxed child cannot do.
         "apps/builtins/dev_fleet/gateway_service.py::default_detached_spawn",
@@ -1297,18 +1297,18 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # names), no agent influence, 5s-capped, read-only query.
         "cli_doctor.py::_detect_userspace_oom_killer",
         "cli_server.py::_logs_cmd",
-        "cli_server.py::_spawn_detached_gateway",
-        "cli_server.py::_update",
+        "cli_server_restart.py::_spawn_detached_gateway",
+        "cli_server_update.py::_update",
         # The agent-only config refresh extracted from _update: a fixed argv
         # (`<this interpreter> -m kiro_crew setup --agent-only`) built from
         # sys.executable plus literals, cwd from the detected install layout —
         # no shell, no PATH lookup, nothing agent-influenced. stdin=DEVNULL
         # and TimeoutExpired handling are pinned by
         # test_update_agent_refresh.py.
-        "cli_server.py::_refresh_agent_config",
+        "cli_server_update.py::_refresh_agent_config",
         # (_divergence_verdict removed — its counting now delegates to the
         # git_divergence module, allowlisted below, and spawns nothing itself.)
-        "cli_server.py::_update_wheel",
+        "cli_server_update.py::_update_wheel",
         "cli_setup.py::_setup_electron",
         # Cursor Motion overlay renderer: `<this interpreter> -m
         # kiro_crew.computer_use.overlay_proc`, a fixed argv built from

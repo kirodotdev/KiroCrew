@@ -225,7 +225,6 @@ line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/routes.py:2336
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/routes.py:503
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/version.py:32-33
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	bridges.py:2324-2410
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	cli_server.py:1507
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	dashboard/handlers_system.py:168-172
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	manifest.py:247
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	manifest.py:249

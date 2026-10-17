@@ -42,6 +42,26 @@ owner imports `kiro_crew.cli` or another owner, the owners log as `kiro_crew.cli
 and the facade declares no exclusion. `test/test_cli_split_facade.py` pins the
 contract.
 
+`kiro_crew/cli_server.py` holds the server-lifecycle commands `main()` dispatches to. It
+keeps `file-delivery approve`, `status`, `gateway`, `run`, `service`, `sandbox` and `logs`;
+the gateway peer proof, the owner requests (`token`, `logout`, `update approve`), `stop`,
+`restart` and `update` live in its owners, and new work for each goes to its module:
+
+| Module | Owns |
+|---|---|
+| `cli_server_peer.py` | the proven route to the gateway every local-secret send takes: `_owner_verified_secret_urlopen` and its connected-peer proofs, and `_CLI_LOOPBACK` |
+| `cli_server_requests.py` | the commands that make one owner request of the running dashboard with the local secret: `token` (with the session URLs it prints), `logout`, `update approve` |
+| `cli_server_stop.py` | finding and stopping this home's gateway (`stop`, `gateway-pid`): the authenticated shutdown, the pid verification, and the service-alias and lock-holder refusals `restart` shares |
+| `cli_server_restart.py` | `restart`: the wait for the incumbent to exit, the detached spawn, the readiness probe and its deadline, the `gateway.log` relay, the printed sign-in URL |
+| `cli_server_update.py` | `update`: the git, wheel and managed-venv paths, the memory snapshot taken first, the agent-config refresh after |
+
+`kiro_crew.cli_server` is a mirror facade over those five owners, lowest layer first.
+Every name `cli_server.py` held before the split still resolves as
+`kiro_crew.cli_server.<name>` and is the same object, and a patch through it reaches every
+owner that binds the name. An owner imports only the owners listed before it, never the
+facade, and the owners log as `kiro_crew.cli_server`. `test/test_cli_server_facade.py` pins
+the contract.
+
 ## Member memory commands
 
 `kirocrew agent create --name <name>` explicitly creates a stable member identity

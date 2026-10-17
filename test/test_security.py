@@ -6405,7 +6405,7 @@ class TestIsSensitivePath:
     def test_local_secret(self) -> None:
         # .local_secret is the shared internal-auth secret used, in turn, to
         # authenticate MCP/cron/hook callbacks back into the gateway
-        # (mcp_core.py, cron_script.py, mcp_shared.py, etc.).
+        # (mcp_core.py, cron_script.py, mcp_shared_policy.py, etc.).
         assert is_sensitive_path("~/.kiro/crew/.local_secret") is True
         assert is_sensitive_path("~/.kirocrew/.local_secret") is True
 

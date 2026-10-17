@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import inspect
 import subprocess
+import sys
 
 from kiro_crew import cli_server
 
@@ -106,5 +107,7 @@ class TestUpdateWiring:
         ``_update()`` alone, so a future prose mention of the flag in some
         other branch cannot be misread as a duplicated spawn.
         """
-        module_src = inspect.getsource(cli_server)
+        module_src = "".join(
+            inspect.getsource(sys.modules[m]) for m in ("kiro_crew.cli_server", *cli_server._OWNERS)
+        )
         assert module_src.count('"setup", "--agent-only"') == 1

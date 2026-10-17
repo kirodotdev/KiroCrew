@@ -4744,7 +4744,9 @@ class TestCliLoopbackAddress:
         from kiro_crew import cli_server
 
         assert cli_server._CLI_LOOPBACK == "127.0.0.1"
-        src = inspect.getsource(cli_server)
+        src = "".join(
+            inspect.getsource(sys.modules[m]) for m in ("kiro_crew.cli_server", *cli_server._OWNERS)
+        )
         # No CLI->gateway request may be built from the hostname.
         assert "http://localhost:{port}" not in src
         for fn in (cli_server._token, cli_server._logout, cli_server._print_token_url):

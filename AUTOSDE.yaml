@@ -155,6 +155,7 @@ custom-rules:
       - "src/kiro_crew/cli_logging.py"
       - "src/kiro_crew/cli_parser_*.py"
       - "src/kiro_crew/cli_server.py"
+      - "src/kiro_crew/cli_server_*.py"
       - "src/kiro_crew/dashboard/routes/**/*.py"
       - "src/kiro_crew/deploy/handlers.py"
     rule: |

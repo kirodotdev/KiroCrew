@@ -257,7 +257,7 @@ class TestWheelUpdateCommand:
 
 
 class TestUpdateWheelCli:
-    """Integration tests for ``_update_wheel`` in cli_server.py."""
+    """Integration tests for ``_update_wheel`` in cli_server_update.py."""
 
     def _make_manifest(self, version: str = "0.2.0", channel: str = "stable") -> bytes:
         return json.dumps(
@@ -565,7 +565,7 @@ class TestUpdateWheelCli:
 
 
 class TestUpdateDispatch:
-    """Tests for the top-level _update() dispatch in cli_server.py."""
+    """Tests for the top-level _update() dispatch in cli_server_update.py."""
 
     def test_externally_managed_prints_guidance(self, monkeypatch, capsys) -> None:
         """Desktop/Docker installs get guidance, not an error."""

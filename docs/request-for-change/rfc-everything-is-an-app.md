@@ -173,7 +173,7 @@ Consequences, each grep-verified rather than demonstrated:
 Meanwhile the *declarative* surface is strictly add-only. An app cannot take a
 position in any core flow: `HookManager` is constructed solely from the `hooks`
 section of `config.json` (`src/kiro_crew/hooks.py:931`, callers at
-`cli_server.py:1507`, `slack/gateway.py:653`) and has no registration path; the
+`_run_task` in `cli_server.py`, `slack/gateway.py:653`) and has no registration path; the
 app `EventBus` is publish-only, with no `subscribe` anywhere in
 `apps/event_bus.py`; notification **routing** transports register through
 `DashboardState.register_channel_transport` (in `dashboard/state.py`) whose only

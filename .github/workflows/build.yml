@@ -376,6 +376,7 @@ jobs:
               - 'MANIFEST.in'
               - 'src/kiro_crew/__main__.py'
               - 'src/kiro_crew/cli_server.py'
+              - 'src/kiro_crew/cli_server_*.py'
               - 'src/kiro_crew/testing/**'
       - id: compute
         env:

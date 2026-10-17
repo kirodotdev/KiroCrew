@@ -250,10 +250,11 @@ class TestBaselineRatchet:
         the PR added nothing. Both calls are pinned now and the
         baseline entry is pruned; this pins the file at zero so it can never
         silently re-enter the list."""
-        rel = "src/kiro_crew/cli_server.py"
-        violations = gate._violations_in_source((ROOT / rel).read_text(encoding="utf-8"))
-        assert violations == []
-        assert rel not in gate._read_baseline(BASELINE)
+        for path in sorted((ROOT / "src" / "kiro_crew").glob("cli_server*.py")):
+            rel = path.relative_to(ROOT).as_posix()
+            violations = gate._violations_in_source(path.read_text(encoding="utf-8"))
+            assert violations == []
+            assert rel not in gate._read_baseline(BASELINE)
 
     def test_write_read_roundtrip(self, tmp_path: Path) -> None:
         path = tmp_path / "baseline.txt"

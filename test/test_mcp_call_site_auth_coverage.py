@@ -108,6 +108,7 @@ _SOURCES = (
     _CORE,
     *sorted((_SRC / "mcp_core_parts").glob("*.py")),
     _SRC / "mcp_shared.py",
+    _SRC / "mcp_shared_policy.py",
     _SRC / "mcp_work.py",
     _SRC / "mcp_crew_log.py",
     _SRC / "mcp_debug.py",
@@ -118,6 +119,11 @@ _SOURCES = (
     _SRC / "mcp_cron.py",
     _SRC / "cli_commands.py",
     _SRC / "cli_server.py",
+    _SRC / "cli_server_peer.py",
+    _SRC / "cli_server_requests.py",
+    _SRC / "cli_server_stop.py",
+    _SRC / "cli_server_restart.py",
+    _SRC / "cli_server_update.py",
     _SRC / "cron_script.py",
     _SRC / "cron_trigger.py",
     _SRC / "apps/builtins/code_review_sage/sage_lib/review_driver.py",
@@ -164,13 +170,13 @@ _KNOWN_UNRESOLVED = frozenset(
         # via a helper, and the endpoint (/api/ready) carries no auth by
         # design — it answers before auth middleware exists so a starting
         # gateway can be told apart from a dead one.
-        "cli_server.py:_probe_dashboard_health",
+        "cli_server_requests.py:_probe_dashboard_health",
         # NOT a gateway call at all: this fetches the public release feed
         # (updates.crew.kiro.dev) over HTTPS to compare versions. There is no
         # /api path to resolve because the peer is the CDN, and no secret is
         # attached (the feed is unauthenticated display metadata; the signed
         # manifest is verified by the wheel engine before anything installs).
-        "cli_server.py:_update_wheel",
+        "cli_server_update.py:_update_wheel",
         "review_driver.py:_api_request",
     }
 )

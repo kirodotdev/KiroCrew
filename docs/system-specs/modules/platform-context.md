@@ -823,7 +823,7 @@ Wired sites:
 - Preflight checks (`IdentityProvider.preflight_checks()`) —
   `kiro_crew.preflight.run_preflight_checks()` runs seam-supplied pre-launch
   checks at exactly two sites: the `gateway` dispatch in `cli.py` (before
-  faulthandler/lock/`asyncio.run`) and `_token` in `cli_server.py` (before TTL
+  faulthandler/lock/`asyncio.run`) and `_token` in `cli_server_requests.py` (before TTL
   parsing). The method returns **already-resolved callables** — checks are
   never `module:function` strings resolved from config (an agent-writable
   config importing arbitrary callables at next start would be a code-exec
