@@ -59,6 +59,85 @@ describe('ErrorCard', () => {
     expect(screen.queryByTestId('error-card-continue')).toBeNull()
   })
 
+  it('drops the resume instruction from an interruption row once a continuation followed it', () => {
+    // The restart row says "then resume to continue" for as long as it offers
+    // Resume. Once a continuation followed it (a press, or the gateway's own
+    // automatic resume) the row has no control, and the instruction would sit
+    // right above the card that says the turn was resumed.
+    const wire = 'This turn was interrupted when the app restarted. Review the partial output above, then resume to continue.'
+    const settled = render(<ErrorCard content={wire} meta={{ kind: 'gateway_restart_interruption' }} resumed />)
+    // The cause alone: the Resumed-automatically card under the row says the rest.
+    expect(screen.getByTestId('error-card')).toHaveTextContent('This turn was interrupted when the app restarted.')
+    expect(screen.getByTestId('error-card')).not.toHaveTextContent('then resume to continue')
+    expect(screen.getByTestId('error-card')).not.toHaveTextContent('resumed')
+    // Settled history, not a live failure: the danger tint is gone.
+    expect(screen.getByTestId('error-card')).toHaveAttribute('data-settled', 'true')
+    expect(screen.getByTestId('error-card').className).not.toContain('bg-danger-subtle')
+    settled.unmount()
+
+    // Newest row, Resume offered: the wire text stands, instruction included.
+    render(<ErrorCard content={wire} meta={{ kind: 'gateway_restart_interruption' }} onContinue={() => {}} />)
+    expect(screen.getByTestId('error-card')).toHaveTextContent('then resume to continue')
+    expect(screen.getByRole('button', { name: /resume/i })).toBeInTheDocument()
+  })
+
+  it('never claims a resume from the absence of the button alone', () => {
+    // A row that is not the newest, or one the person typed past instead of
+    // pressing Resume, has no button either -- and its work was never picked
+    // up. Only the caller's `resumed` (read from the rows below) may settle it.
+    const wire = 'This turn was interrupted when the app restarted. Review the partial output above, then resume to continue.'
+    render(<ErrorCard content={wire} meta={{ kind: 'gateway_restart_interruption' }} />)
+    expect(screen.getByTestId('error-card')).toHaveTextContent(wire)
+    expect(screen.getByTestId('error-card')).toHaveTextContent('then resume to continue')
+    expect(screen.getByTestId('error-card')).not.toHaveAttribute('data-settled')
+    expect(screen.getByTestId('error-card').className).toContain('bg-danger-subtle')
+  })
+
+  it('settles on the same node, with the tint transitioning rather than cutting', () => {
+    // When the automatic resume lands, the live row (red, Resume offered) and
+    // the settled row (muted, no button) are one DOM node to React: the root
+    // div is kept and its classes change, so a colour transition on it is what
+    // links the two states for someone watching the chat.
+    const wire = 'This turn was interrupted when the app restarted. Review the partial output above, then resume to continue.'
+    const meta = { kind: 'gateway_restart_interruption' }
+    const view = render(<ErrorCard content={wire} meta={meta} onContinue={() => {}} />)
+    const live = screen.getByTestId('error-card')
+    expect(live.className).toContain('transition-colors')
+    expect(live.className).toContain('motion-reduce:transition-none')
+
+    view.rerender(<ErrorCard content={wire} meta={meta} resumed />)
+
+    const after = screen.getByTestId('error-card')
+    expect(after).toBe(live)
+    expect(after).toHaveAttribute('data-settled', 'true')
+    expect(after.className).toContain('transition-colors')
+    expect(after.className).not.toContain('bg-danger-subtle')
+  })
+
+  it.each([
+    ['⟳ Connection lost (exit 137) — please retry.', undefined, 'Connection lost (exit 137).'],
+    ['⟳ Session busy — please retry.', undefined, 'The session was busy.'],
+    ['⟳ Turn stalled — please retry.', undefined, 'The turn stalled.'],
+    ['⟳ Tool appeared stalled — please retry.', undefined, 'A tool appeared stalled.'],
+    ['The agent process this chat shares kept restarting — please retry.', undefined, 'The agent process this chat shares kept restarting.'],
+    // The ladder's give-up row reaches the card as its localized text; the token says what it is.
+    ['Connection unstable — please try again.', { notice: 'transient_give_up' }, 'The connection was unstable.'],
+  ])('states a resumed "please retry" row as settled history: %s', (wire, meta, expected) => {
+    render(<ErrorCard content={wire} meta={meta} resumed />)
+    expect(screen.getByTestId('error-card')).toHaveTextContent(expected)
+    expect(screen.getByTestId('error-card')).not.toHaveTextContent(/please (retry|try again)/)
+    expect(screen.getByTestId('error-card')).toHaveAttribute('data-settled', 'true')
+  })
+
+  it('leaves a resumed row verbatim, in the danger tone, when its words carry no instruction', () => {
+    // "Something else went wrong." asks the reader for nothing, so there is
+    // nothing stale to rewrite -- and the card does not pretend to know more.
+    render(<ErrorCard content="Something else went wrong." meta={{ kind: 'some_other_kind' }} resumed />)
+    expect(screen.getByTestId('error-card')).toHaveTextContent('Something else went wrong.')
+    expect(screen.getByTestId('error-card')).not.toHaveAttribute('data-settled')
+    expect(screen.getByTestId('error-card').className).toContain('bg-danger-subtle')
+  })
+
   it('renders a Resume action when the turn is resumable', () => {
     render(<ErrorCard content="boom" onContinue={() => {}} />)
     expect(screen.getByTestId('error-card-continue')).toBeTruthy()

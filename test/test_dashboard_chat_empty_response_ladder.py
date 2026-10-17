@@ -86,15 +86,20 @@ class TestEmptyResponseRetryLadder:
         # the forced save that creates it, and the finally clears the marker
         # with a second one before the queued retry receives its own generation.
         assert mock_save.await_count == 2
-        for marker_save in mock_save.await_args_list:
+        admission_save, clear_save = mock_save.await_args_list
+        for marker_save in (admission_save, clear_save):
             assert marker_save.args == (state, slot)
-            # Both marker saves are pinned to this slot incarnation so a
-            # cancelled runner outliving a same-key replacement writes nothing.
-            assert marker_save.kwargs == {
-                "force": True,
-                "expected_history_key": "dashboard:empty-resp-slot",
-                "expected_slot_name": "empty-resp-slot",
-            }
+        # Both marker saves are pinned to this slot incarnation so a cancelled
+        # runner outliving a same-key replacement writes nothing. The admission
+        # fallback is judged by its result (not best-effort) so the budget reset
+        # flag clears only after a confirmed write; the teardown clear stays
+        # best-effort, re-arming the flush on failure.
+        pins = {
+            "expected_history_key": "dashboard:empty-resp-slot",
+            "expected_slot_name": "empty-resp-slot",
+        }
+        assert admission_save.kwargs == {"force": True, "best_effort": False, **pins}
+        assert clear_save.kwargs == {"force": True, **pins}
         mock_consolidate.assert_not_called()
         state.sessions.record_success.assert_not_called()
         # _flush_file_changes is intentionally NOT skipped: the try-body call (inside

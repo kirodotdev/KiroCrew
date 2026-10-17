@@ -737,3 +737,31 @@ describe('newestErrorOwnsRecovery -- one rule for the composer beneath the four 
     expect(newestErrorOwnsRecovery([user(), msg('assistant', { content: 'ok' })])).toBe(false)
   })
 })
+
+describe('an interruption row is settled only by the rows below it', () => {
+  const cut = msg('error', {
+    content: 'This turn was interrupted when the app restarted. Review the partial output above, then resume to continue.',
+    meta: { kind: 'gateway_restart_interruption' },
+  })
+  const typedPast = [msg('user', { content: 'do it' }), cut, msg('user', { content: 'never mind' }), msg('assistant', { content: 'ok' })]
+  const resumed = [msg('user', { content: 'do it' }), cut, msg('inject', { content: '[Continue — automatic after a restart]\n\nPick up where you stopped.', meta: { injectKind: 'recovery' } }), msg('assistant', { content: 'done' })]
+
+  it('does NOT settle a row the person typed past (no button, no resume)', () => {
+    const el = render(cut, { slot: 's1', continuable: true, interrupted: false, onContinue: () => undefined }, { index: 1, messages: typedPast }) as ReactElement
+    expect(el.type).toBe(ErrorCard)
+    expect(el.props.onContinue).toBeUndefined()
+    expect(el.props.resumed).toBe(false)
+  })
+
+  it('settles a row an automatic resume followed', () => {
+    const el = render(cut, { slot: 's1', continuable: true, interrupted: false, onContinue: () => undefined }, { index: 1, messages: resumed }) as ReactElement
+    expect(el.type).toBe(ErrorCard)
+    expect(el.props.resumed).toBe(true)
+  })
+
+  it("leaves a row the person resumed themselves as it always was", () => {
+    const pressed = [msg('user', { content: 'do it' }), cut, msg('inject', { content: '[Continue — requested by the user]\n\nPick up where you stopped.', meta: { injectKind: 'recovery' } }), msg('assistant', { content: 'done' })]
+    const el = render(cut, { slot: 's1', continuable: true, interrupted: false, onContinue: () => undefined }, { index: 1, messages: pressed }) as ReactElement
+    expect(el.props.resumed).toBe(false)
+  })
+})

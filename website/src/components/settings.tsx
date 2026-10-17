@@ -80,7 +80,10 @@ export function SettingsToggle({ label, description, hint, checked, onChange, di
               event target, so the tip needs no handler of its own. */}
           {hint && <span data-settings-hint><InfoTip text={hint} placement="top" /></span>}
         </div>
-        {description && <div className="text-[12px] text-muted mt-0.5">{description}</div>}
+        {/* `pre-line`: a description that states more than one consequence puts
+            each on its own line (a newline in the catalog string), so the one a
+            reader must weigh is not buried at the end of a paragraph. */}
+        {description && <div className="text-[12px] text-muted mt-0.5 whitespace-pre-line">{description}</div>}
       </div>
       {/* stopPropagation prevents the row's mouse-click convenience from double-
           toggling; the inner Toggle carries all keyboard/AT semantics. */}

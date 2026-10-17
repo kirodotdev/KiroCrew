@@ -13,6 +13,7 @@ if TYPE_CHECKING:
         channel_slots,
         chat,
         logger,
+        restart_resume,
         slot_retention,
     )
 
@@ -55,6 +56,18 @@ async def _restore_dashboard_sessions(state: DashboardState, cfg: KiroCrewConfig
         # Reseed it past the highest restored index so the next new chat can't
         # re-mint a colliding low index (which scrambles the tab -> session map).
         state.reseed_slot_counter()
+
+    # Two passes over the slots the restores built, in one background task so
+    # the server's listen waits on neither (each loads transcripts the restore
+    # deferred, one per chat concerned). First: a chat that comes back holding a
+    # different approval mode than the person last saw it hold is told so
+    # (rfc-restart-resume) -- Trust is in memory by construction and this
+    # restores none of it; the notice is the honest half. Then: Resume is
+    # pressed on the person's behalf for every chat the restart cut off, when
+    # ``dashboard.resume_interrupted_turns`` is on (off by default), so the
+    # notice always lands before a turn could run under the mode the person
+    # does not yet know about.
+    restart_resume.start_boot_pass(state, cfg)
 
     if state._dynamic_cards is not None:
         state._dynamic_cards.seed_open_sessions()

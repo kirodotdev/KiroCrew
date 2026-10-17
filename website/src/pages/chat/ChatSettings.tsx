@@ -337,6 +337,9 @@ export function saveChatConfig(cfg: ChatConfig): boolean {
 export interface DashboardConfig {
   restore_sessions: boolean
   restore_window_minutes: number
+  resume_interrupted_turns: boolean
+  resume_retry_limit: number
+  resume_retry_window_minutes: number
   merge_queued_messages: boolean
   default_memory_mode: MemoryMode
   widget_density: 'more' | 'less'

@@ -17,6 +17,7 @@ import type { ChatMessage } from '../../types'
 import { withOriginLink } from '../../components/withOriginLink'
 import { SessionTurnLimitButton } from '../../components/SessionTurnLimitMenu'
 import { injectOpensTurn } from './RecoveryCard'
+import { isTransientGiveUp } from './transientNotice'
 
 /** Error code the backend stamps (`meta.code`) when a crew member's private
  *  agent file no longer matches what was last reviewed in Capabilities
@@ -182,6 +183,60 @@ export function retryProse(content: string): string | null {
   return null
 }
 
+/**
+ * The interruption row `turn_marker.py` lands when a turn was cut off by the app
+ * restarting, keyed by `meta.kind`: the one interruption row the gateway resumes
+ * on its own. Its wire text ends in "then resume to continue", an instruction
+ * for the row that offers Resume.
+ */
+const INTERRUPTION_PROSE: Record<string, string> = {
+  gateway_restart_interruption: 'pages.chat.errorCard.interrupted_restart_settled',
+}
+
+/** The settled form of each "please retry" row in {@link RETRY_PROSE} the
+ *  gateway's error pass can resume. The legacy backend-hiccup wording is not
+ *  among them: no gateway writes it any more and none retries it. */
+const RETRY_SETTLED_KEYS: Partial<Record<keyof typeof RETRY_PROSE, string>> = {
+  connection_lost: 'pages.chat.errorCard.settled_connection_lost',
+  session_busy: 'pages.chat.errorCard.settled_session_busy',
+  turn_stalled: 'pages.chat.errorCard.settled_turn_stalled',
+  tool_stalled: 'pages.chat.errorCard.settled_tool_stalled',
+}
+
+/** The runner's terminal row for a shared agent process that kept dying. */
+const SHARED_PROCESS_WIRE = /^The agent process this chat shares kept restarting( \(exit -?\d+\))? — please retry\.$/
+
+/**
+ * A terminal error row's prose once the gateway's own automatic resume has
+ * picked its turn back up: the row still records what happened, but no longer
+ * tells the reader to resume or retry -- which would sit right above the
+ * "Resumed automatically" card that says the turn was. The mirror of
+ * {@link retryProse}: that one rewrites the wire text only where the button IS;
+ * this one only once the automatic continuation HAS followed
+ * (`automaticResumeFollows` in RecoveryCard), which the caller establishes from
+ * the rows below, never from the button's absence -- a row that is not the
+ * newest, or one the person typed past, has no button and was never resumed.
+ * A person's own Resume press is not a case: the row it follows keeps the
+ * rendering it has always had. `null` for a row whose words carry no such
+ * instruction, so its wire text stands.
+ */
+export function settledProse(content: string, meta: ChatMessage['meta']): string | null {
+  const kind = meta?.kind
+  const interruption = typeof kind === 'string' ? INTERRUPTION_PROSE[kind] : undefined
+  if (interruption) return i18nT(interruption)
+  if (isTransientGiveUp({ role: 'error', content, meta } as ChatMessage)) {
+    return i18nT('pages.chat.errorCard.settled_connection_unstable')
+  }
+  for (const [name, { wire }] of Object.entries(RETRY_PROSE) as [keyof typeof RETRY_PROSE, { wire: RegExp }][]) {
+    const key = RETRY_SETTLED_KEYS[name]
+    const m = key ? wire.exec(content) : null
+    if (m && key) return i18nT(key, { detail: m[1] ?? '' })
+  }
+  const shared = SHARED_PROCESS_WIRE.exec(content)
+  if (shared) return i18nT('pages.chat.errorCard.settled_shared_process', { detail: shared[1] ?? '' })
+  return null
+}
+
 export interface ErrorCardProps {
   /**
    * Server- or client-authored error prose; typed diagnostic prefixes are
@@ -207,6 +262,16 @@ export interface ErrorCardProps {
   onContinue?: () => void
   /** True while a continue request is in flight, so the press cannot double-fire. */
   continuing?: boolean
+  /**
+   * True when the gateway's own automatic resume picked this row's turn back up
+   * (an automatic continuation follows it in the transcript;
+   * `automaticResumeFollows`). The card then states the error as settled history
+   * ({@link settledProse}) in a neutral tone instead of instructing the reader
+   * to resume. Never inferred from a missing `onContinue`: a row that is not the
+   * newest, or one the person typed past, has no button and was not resumed
+   * either. A person's own Resume press leaves the row as it has always been.
+   */
+  resumed?: boolean
   /**
    * The fix affordances for a model-entitlement rejection. When set, the card
    * offers them INSTEAD of Continue: the backend has said retrying cannot help,
@@ -507,6 +572,7 @@ export const ErrorCard = memo(function ErrorCard({
   meta,
   onContinue,
   continuing,
+  resumed,
   onPickModel,
   onOpenDefaultModel,
   onOpenSignIn,
@@ -522,9 +588,12 @@ export const ErrorCard = memo(function ErrorCard({
 }: ErrorCardProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Swap the gateway's "please retry" wording ONLY on a row that renders the
-  // Resume button. A row with no control keeps the wire text: telling the
-  // reader to resume beside nothing is worse than the mismatch it would fix.
-  const content = (onContinue && retryProse(wireContent)) || wireContent
+  // Resume button, and state it as settled ONLY once a continuation followed.
+  // Any other row keeps the wire text: telling the reader to resume beside
+  // nothing is worse than the mismatch it would fix, and claiming a resume
+  // that never happened is worse than either.
+  const settled = !onContinue && resumed ? settledProse(wireContent, meta) : null
+  const content = settled ?? (onContinue && retryProse(wireContent)) ?? wireContent
   if (featureRequestFormUrl) {
     // A feature request the plan could not afford: the one action that still
     // ends it is the tracker's own form, which needs no agent turn. The prose
@@ -790,10 +859,17 @@ export const ErrorCard = memo(function ErrorCard({
     )
   }
   if (!onContinue) {
+    // A settled row is history, not a live failure: the danger tint would keep
+    // a chat that recovered reading as broken. This div and the continuable
+    // row's root below are the same DOM node to React (one root div per
+    // render), so when a row settles the tint transitions in place rather
+    // than cutting; the text itself cuts, since a cross-fade would double the
+    // row's height for its duration.
     return (
       <div
-        className="bg-danger-subtle text-danger-text text-[13px] leading-5 px-3 py-2 rounded-md ring-1 ring-inset forced-colors:border ring-danger/15 self-center animate-scale-in"
+        className={`${settled !== null ? 'bg-bg-elevated text-muted ring-border' : 'bg-danger-subtle text-danger-text ring-danger/15'} text-[13px] leading-5 px-3 py-2 rounded-md ring-1 ring-inset forced-colors:border self-center animate-scale-in transition-colors duration-200 motion-reduce:transition-none`}
         data-testid="error-card"
+        data-settled={settled !== null ? 'true' : undefined}
         style={{ overflowWrap: 'anywhere' }}
       >
         {withOriginLink(displayText)}
@@ -819,7 +895,7 @@ export const ErrorCard = memo(function ErrorCard({
   }
   return (
     <div
-      className="bg-danger-subtle ring-1 ring-inset forced-colors:border ring-danger/20 rounded-md self-center w-full max-w-full min-w-0 px-3 py-2 flex items-center gap-3 animate-scale-in"
+      className="bg-danger-subtle ring-1 ring-inset forced-colors:border ring-danger/20 rounded-md self-center w-full max-w-full min-w-0 px-3 py-2 flex items-center gap-3 animate-scale-in transition-colors duration-200 motion-reduce:transition-none"
       data-testid="error-card"
       data-continuable="true"
     >

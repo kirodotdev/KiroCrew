@@ -130,7 +130,7 @@ from kiro_crew.context_blocks import (
 )
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import chat_turn as _chat_turn
-from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard import directive_queue, restart_resume
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     COMMANDS_OFF_META_KEY,
     STEER_STATE_CONSUMED,
@@ -788,6 +788,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     _COMPACTION_CONTINUE_MSG,
     _CONN_RECOVER_MSG,
     _EMPTY_AUTO_CONTINUE_MSG,
+    _INTERRUPTED_TURN_RESUME_MSGS,
     _MANUAL_RESUME_MSG,
     _POSTTOKEN_RECOVER_MSG,
     _PROMISE_ONLY_CONTINUE_MSG,
@@ -805,6 +806,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     FALSE_TOOL_BLOCKER_REPLAY_KIND,
     MCP_APP_MESSAGE_KIND,
     MODEL_UNENTITLED_KIND,
+    RETRY_INVITED_KIND,
     SESSION_START_FAILED_KIND,
     SPEC_HOOKS_NOTICE_KIND,
     SUBAGENT_COMPLETION_KIND,
@@ -821,6 +823,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     TRANSIENT_RESUMING_TEXT,
     TRANSIENT_RETRY_KIND,
     TRANSIENT_RETRYING_TEXT,
+    TURN_FAILED_META,
     USAGE_LIMIT_KIND,
     EmptyTurnActivity,
     RecoveryPayload,
@@ -828,6 +831,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     classify_empty_turn,
     has_leaked_tool_call,
     has_unfinished_progress_claim,
+    interrupted_turn_rows,
     is_false_current_tool_blocker,
     is_false_current_tool_blocker_near_miss,
     is_promise_only_terminal,
@@ -3544,6 +3548,14 @@ async def _finish_queue_cycle(
     slot.task = None
     state.push_slots_update()
     await _send_chat_done(state, slot, payload=payload)
+    # The slot is idle and its tail is final: if the turn ended in a retryable
+    # error, arm one backed-off automatic resume (rfc-restart-resume). Inert
+    # while ``dashboard.resume_interrupted_turns`` is off; the module reads the
+    # switch inside the armed task. Never raises into the cycle end.
+    try:
+        restart_resume.schedule_after_error(state, slot)
+    except Exception:
+        logger.debug("restart_resume: schedule_after_error failed", exc_info=True)
     reached_provider = slot._cycle_reached_provider
     slot._cycle_reached_provider = False
     if not reached_provider:
@@ -3857,12 +3869,6 @@ async def _end_turn_tail(
     )
 
 
-#: Meta key on the error row of a turn that raised before its main ``try``. The
-#: cycle still ends with a ``done`` row, so an HTTP reader that waits for
-#: ``done`` reads this key to report the failure instead of an empty reply.
-TURN_FAILED_META = "turn_failed"
-
-
 def _note_failed_before_the_try(slot: _ChatSlot, turn_exit: _TurnExit) -> None:
     """Show the user an exit that raised before the turn reached its main ``try``.
 
@@ -4103,6 +4109,23 @@ async def _persist_abnormal_turn_usage(
     except Exception:
         logger.debug("Failed to persist abnormal-turn usage for slot %s", slot.key, exc_info=True)
         return False
+
+
+def _ladder_end_meta(*, will_retry: bool, invites_retry: bool) -> dict[str, str] | None:
+    """The ``meta`` of an ``error`` row the recovery ladder writes at a rung's end.
+
+    ``will_retry`` marks the row that announces a recovery ALREADY queued
+    (``TRANSIENT_RETRY_KIND``: a pending notice, not a failure). ``invites_retry``
+    marks the terminal row whose words ask for a retry (``RETRY_INVITED_KIND``),
+    which is what lets the restart-resume error pass act on it; a terminal row
+    that asks for something else -- a new chat, an approval -- stays untagged and
+    is never retried unattended.
+    """
+    if will_retry:
+        return {"kind": TRANSIENT_RETRY_KIND}
+    if invites_retry:
+        return {"kind": RETRY_INVITED_KIND}
+    return None
 
 
 @_hands_off_queue_on_exit
@@ -7361,14 +7384,14 @@ async def _run_chat(
                 is_new
                 and _provider_has_history
                 and _synthetic_recovery_turn
-                and message in (_MANUAL_RESUME_MSG, _CONN_RECOVER_MSG, _BUSY_RECOVER_MSG)
+                and message in _INTERRUPTED_TURN_RESUME_MSGS
             ):
                 from kiro_crew.context import (  # circular: context -> chat
                     build_interrupted_turn_preamble,
                 )
 
                 preamble = build_interrupted_turn_preamble(
-                    list(slot.messages),
+                    interrupted_turn_rows(slot.messages),
                     current=_current_replay_message,
                     opener_inject_kinds=TURN_OPENING_INJECT_KINDS,
                 )
@@ -12447,12 +12470,14 @@ async def _run_chat(
             # above the recovery card.
             await _persist_partial_reply(_stop_reason)
 
-            def _emit_stale(msg: str, *, will_retry: bool = False) -> None:
+            def _emit_stale(
+                msg: str, *, will_retry: bool = False, invites_retry: bool = False
+            ) -> None:
                 slot.append(
                     "error",
                     msg,
                     "msg msg-err",
-                    meta={"kind": TRANSIENT_RETRY_KIND} if will_retry else None,
+                    meta=_ladder_end_meta(will_retry=will_retry, invites_retry=invites_retry),
                 )
                 # No explicit chat_message: slot.append already emits ONE, and it
                 # carries `meta` -- a second frame here would arrive untagged.
@@ -12484,7 +12509,7 @@ async def _run_chat(
                 # depth>0 (nested turn) with budget remaining: reset the session
                 # but don't re-queue (mirrors the pipe-death depth>0 handling);
                 # surface feedback so the nested turn doesn't fail silently.
-                _emit_stale("⟳ Turn stalled — please retry.")
+                _emit_stale("⟳ Turn stalled — please retry.", invites_retry=True)
             return
 
         # Dedicated tool-stall recovery — MUST precede the generic "error:"
@@ -12500,12 +12525,14 @@ async def _run_chat(
         if _stop_reason == STOP_REASON_TOOL_STALL:
             await _persist_partial_reply(_stop_reason)
 
-            def _emit_stall(msg: str, *, will_retry: bool = False) -> None:
+            def _emit_stall(
+                msg: str, *, will_retry: bool = False, invites_retry: bool = False
+            ) -> None:
                 slot.append(
                     "error",
                     msg,
                     "msg msg-err",
-                    meta={"kind": TRANSIENT_RETRY_KIND} if will_retry else None,
+                    meta=_ladder_end_meta(will_retry=will_retry, invites_retry=invites_retry),
                 )
                 # No explicit chat_message: slot.append already emits ONE, and it
                 # carries `meta` -- a second frame here would arrive untagged.
@@ -12543,7 +12570,7 @@ async def _run_chat(
                     slot._tool_stall_exhausted_emitted = True
                 _emit_stall("Session stuck — please start a new chat.")
             else:
-                _emit_stall("⟳ Tool appeared stalled — please retry.")
+                _emit_stall("⟳ Tool appeared stalled — please retry.", invites_retry=True)
             return
 
         # Automatic compaction failed and the backend then abandoned the turn.
@@ -12646,12 +12673,14 @@ async def _run_chat(
             _rc = getattr(client, "exit_code", None)
             _rc_suffix = f" (exit {_rc})" if _rc is not None else ""
 
-            def _emit_error(msg: str, *, will_retry: bool = False) -> None:
+            def _emit_error(
+                msg: str, *, will_retry: bool = False, invites_retry: bool = False
+            ) -> None:
                 slot.append(
                     "error",
                     msg,
                     "msg msg-err",
-                    meta={"kind": TRANSIENT_RETRY_KIND} if will_retry else None,
+                    meta=_ladder_end_meta(will_retry=will_retry, invites_retry=invites_retry),
                 )
                 # No explicit chat_message: slot.append already emits ONE, and it
                 # carries `meta` -- a second frame here would arrive untagged.
@@ -12693,10 +12722,11 @@ async def _run_chat(
                 else:
                     _emit_error(
                         f"The agent process this chat shares kept restarting{_rc_suffix}"
-                        " — please retry."
+                        " — please retry.",
+                        invites_retry=True,
                     )
             else:
-                _emit_error(f"⟳ Connection lost{_rc_suffix} — please retry.")
+                _emit_error(f"⟳ Connection lost{_rc_suffix} — please retry.", invites_retry=True)
             return
 
         # /compact acknowledged but compaction deferred — send a lightweight
@@ -14457,9 +14487,15 @@ async def _run_chat(
                     "error",
                     "The agent process this chat shares kept restarting — please retry.",
                     "msg msg-err",
+                    meta={"kind": RETRY_INVITED_KIND},
                 )
         else:
-            slot.append("error", "⟳ Connection lost — please retry.", "msg msg-err")
+            slot.append(
+                "error",
+                "⟳ Connection lost — please retry.",
+                "msg msg-err",
+                meta={"kind": RETRY_INVITED_KIND},
+            )
     except PromptBusyExhaustedError:
         # Provider was killed after prompt-busy retries exhausted — reset (and
         # re-queue only when retry-eligible; see per-branch handling below).
@@ -14614,6 +14650,7 @@ async def _run_chat(
                         "error",
                         "The agent process this chat shares kept restarting — please retry.",
                         "msg msg-err",
+                        meta={"kind": RETRY_INVITED_KIND},
                     )
             elif _prompt_depth == 0:
                 # Single emit (see AcpProcessDied note): slot.append persists +
@@ -14656,7 +14693,7 @@ async def _run_chat(
                     if _is_pipe_death
                     else "⟳ Session busy — please retry."
                 )
-                slot.append("error", _retry_msg, "msg msg-err")
+                slot.append("error", _retry_msg, "msg msg-err", meta={"kind": RETRY_INVITED_KIND})
         elif acp_error_is_session_not_found(exc):
             # The backend process is alive but holds no session under the id this
             # chat is bound to, so the dead-provider eviction never fires and a

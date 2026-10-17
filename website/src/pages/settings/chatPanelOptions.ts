@@ -26,6 +26,18 @@ export const RESTORE_OPTIONS = ['15', '30', '60', '120', '360', '720', '1440', '
 export function restoreLabels(): string[] {
   return ['15m', '30m', '1h', '2h', '6h', '12h', '24h', i18nT('pages.settings.chatPanel.no_limit')]
 }
+/** `dashboard.resume_retry_limit` bounds, mirroring config/sections_limits.py
+ *  RESUME_RETRY_LIMIT_MIN / _MAX. */
+export const RESUME_RETRY_LIMIT_MIN = 1
+export const RESUME_RETRY_LIMIT_MAX = 20
+/** `dashboard.resume_retry_window_minutes` choices, paired positionally with
+ *  `resumeWindowLabels()` the way RESTORE_OPTIONS pairs with `restoreLabels()`;
+ *  the ends mirror config/sections_limits.py RESUME_RETRY_WINDOW_MIN / _MAX. */
+export const RESUME_WINDOW_OPTIONS = ['5', '15', '30', '60', '120', '240', '1440']
+/** Duration abbreviations are left verbatim, exactly as `restoreLabels()` does. */
+export function resumeWindowLabels(): string[] {
+  return ['5m', '15m', '30m', '1h', '2h', '4h', '24h']
+}
 /** How often the feature-video cache readout re-reads while the panel is open. */
 export const FEATURE_VIDEO_POLL_MS = 15_000
 

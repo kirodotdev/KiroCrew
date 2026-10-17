@@ -850,6 +850,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.title_refresh_every_turns"
   },
   {
+    "id": "chat.automatic-resumes-per-chat",
+    "label": "Automatic resumes per chat",
+    "labelKey": "pages.settings.chatPanel.resume_retry_limit",
+    "hint": "Restart and error resumes counted together. At the limit the chat pauses and asks you to press Resume, which resets the count.",
+    "tab": "chat",
+    "type": "stepper",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.resume_retry_limit"
+  },
+  {
     "id": "chat.background-effort",
     "label": "Background Effort",
     "labelKey": "pages.settings.chatPanel.background_effort",
@@ -958,6 +971,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "models"
     },
     "configKey": "agent.refusal_fallback_model"
+  },
+  {
+    "id": "chat.count-resumes-over-the-last",
+    "label": "Count resumes over the last",
+    "labelKey": "pages.settings.chatPanel.resume_retry_window",
+    "hint": "The rolling window the per-chat limit is counted over.",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.resume_retry_window_minutes"
   },
   {
     "id": "chat.default-memory-mode",
@@ -1275,6 +1301,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "sub": "sessions"
     }
+  },
+  {
+    "id": "chat.resume-interrupted-turns-automatically",
+    "label": "Resume interrupted turns automatically",
+    "labelKey": "pages.settings.chatPanel.resume_interrupted_turns",
+    "description": "Uses model turns and tool calls while you are away, and may repeat work the cut-off turn had begun — an edit half applied, a message sent — since nobody reviewed its partial output.\nAfter a restart, a resumed turn that needs a tool approval waits for you; after an error, the chat keeps its Trust, so its tools run without asking.",
+    "hint": "After the app restarts, or after a turn ends in an error a retry can fix, Kiro Crew presses Resume for you, up to the per-chat limit below.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.resume_interrupted_turns"
   },
   {
     "id": "chat.selectable-models",

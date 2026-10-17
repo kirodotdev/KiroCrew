@@ -154,6 +154,17 @@ async def _begin_local_turn_marker(state: DashboardState, slot: _ChatSlot, gener
         "turn_in_flight_generation": generation,
         "turn_in_flight_prompt": slot._turn_in_flight_prompt,
     }
+    carries_budget = bool(slot._auto_resume_stamps) or slot._auto_resume_reset_pending
+    carried = list(slot._auto_resume_stamps)
+    if carries_budget:
+        # The automatic-resume budget rides the same awaited save, so a gateway
+        # that dies on this turn before the next 5 s flush reads the current
+        # count on the next boot (rfc-restart-resume): the stamps an automatic
+        # resume committed before it was queued, or the EMPTY list a person's
+        # reset left, which must land before the spent budget is read back off
+        # the line. Only when there is something to carry: a chat that never had
+        # an automatic resume writes the same bytes it did before.
+        marker_fields["auto_resume_stamps"] = carried
 
     def _still_this_incarnation(_meta: dict) -> bool:
         return state._slots.get(slot_name) is slot
@@ -188,16 +199,45 @@ async def _begin_local_turn_marker(state: DashboardState, slot: _ChatSlot, gener
         logger.warning("Could not persist the turn marker for slot %s", slot.key, exc_info=True)
         slot._dirty = True
         return
+    written = bool(merged)
     if not merged and state._slots.get(slot_name) is slot:
-        await run_to_completion(
-            save_slot_off_loop(
-                state,
-                slot,
-                force=True,
-                expected_history_key=history_key,
-                expected_slot_name=slot_name,
+        carried = list(slot._auto_resume_stamps)
+        # Not best-effort: a best-effort save answers ``True`` to a write that
+        # failed, and the verdict below needs the truth. A refusal returns
+        # ``False``; a failure is logged, re-arms the flush and still admits the
+        # turn, the same way the merge's own failure above does.
+        try:
+            written = bool(
+                await run_to_completion(
+                    save_slot_off_loop(
+                        state,
+                        slot,
+                        force=True,
+                        best_effort=False,
+                        expected_history_key=history_key,
+                        expected_slot_name=slot_name,
+                    )
+                )
             )
-        )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Could not persist the turn marker for slot %s", slot.key, exc_info=True)
+            slot._dirty = True
+            written = False
+    if (
+        written
+        and carries_budget
+        and state._slots.get(slot_name) is slot
+        and slot._auto_resume_stamps == carried
+    ):
+        # A confirmed write carried the list memory still holds (the full save
+        # omits an empty one, which reads back the same way), so the reset is on
+        # disk. A write that failed or was refused leaves the reset pending for
+        # the next marker; so does a reset that landed while the write was in
+        # flight, since the list this write carried is not the one the person
+        # left, and the next marker must carry the empty list in its place.
+        slot._auto_resume_reset_pending = False
 
 
 def _retire_local_turn_marker(slot: _ChatSlot, generation: int) -> bool:

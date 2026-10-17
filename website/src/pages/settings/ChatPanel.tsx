@@ -10,7 +10,8 @@ import { api } from '../../api/client'
 import { useOptimisticConfigPaths, setConfigPathValue } from './useOptimisticConfigPaths'
 import { FieldHint, LinkPatternsEditor, type LinkPatternsDraft } from './ChatPanelLinkPatternsEditor'
 import {
-  RESTORE_OPTIONS, restoreLabels, COMPACT_OPTIONS, compactLabels, ROLE_OPTIONS, roleLabels,
+  RESTORE_OPTIONS, restoreLabels, RESUME_RETRY_LIMIT_MIN, RESUME_RETRY_LIMIT_MAX,
+  RESUME_WINDOW_OPTIONS, resumeWindowLabels, COMPACT_OPTIONS, compactLabels, ROLE_OPTIONS, roleLabels,
   TECH_OPTIONS, techLabels, SOFT_STOP_MIN, SOFT_STOP_MAX, SOFT_STOP_DEFAULT, TURN_LIMIT_MIN,
   TURN_LIMIT_MAX, TURN_LIMIT_DEFAULT, TITLE_REFRESH_PATH, TITLE_REFRESH_MIN, TITLE_REFRESH_MAX,
   normalizeTitleRefresh, type CompletionKeepMode, COMPLETION_KEEP_OPTIONS, type VerbosityLevel,
@@ -1036,6 +1037,25 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.restore_sessions')} hint={i18nT('pages.settings.chatPanel.re_open_recently_active_sessions_on_startup')} checked={dashCfg.restore_sessions} onChange={v => setDash({ restore_sessions: v })} disabled={dashDisabled} />
           {dashCfg.restore_sessions && (
             <SettingsSelect label={i18nT('pages.settings.chatPanel.restore_window')} hint={i18nT('pages.settings.chatPanel.time_window_for_session_restoration')} value={String(dashCfg.restore_window_minutes)} options={RESTORE_OPTIONS} optionLabels={restoreLabels()} onChange={v => setDash({ restore_window_minutes: Number(v) })} disabled={dashDisabled} />
+          )}
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.resume_interrupted_turns')} description={i18nT('pages.settings.chatPanel.resume_interrupted_turns_description')} hint={i18nT('pages.settings.chatPanel.resume_interrupted_turns_hint')} checked={dashCfg.resume_interrupted_turns} onChange={v => setDash({ resume_interrupted_turns: v })} disabled={dashDisabled} configKey="dashboard.resume_interrupted_turns" />
+          {dashCfg.resume_interrupted_turns && (
+            <>
+              {/* Clamped to the backend's 1..20: the − button is disabled at the floor,
+                  and + past the ceiling writes the ceiling, like Message Font Size. */}
+              <SettingsStepper
+                label={i18nT('pages.settings.chatPanel.resume_retry_limit')}
+                hint={i18nT('pages.settings.chatPanel.resume_retry_limit_hint')}
+                value={dashCfg.resume_retry_limit}
+                onIncrement={() => setDash({ resume_retry_limit: Math.min(RESUME_RETRY_LIMIT_MAX, dashCfg.resume_retry_limit + 1) })}
+                onDecrement={() => setDash({ resume_retry_limit: Math.max(RESUME_RETRY_LIMIT_MIN, dashCfg.resume_retry_limit - 1) })}
+                disabled={dashDisabled}
+                decrementDisabled={dashCfg.resume_retry_limit <= RESUME_RETRY_LIMIT_MIN}
+                reserveWidthFor={[RESUME_RETRY_LIMIT_MAX]}
+                configKey="dashboard.resume_retry_limit"
+              />
+              <SettingsSelect label={i18nT('pages.settings.chatPanel.resume_retry_window')} hint={i18nT('pages.settings.chatPanel.resume_retry_window_hint')} value={String(dashCfg.resume_retry_window_minutes)} options={RESUME_WINDOW_OPTIONS} optionLabels={resumeWindowLabels()} onChange={v => setDash({ resume_retry_window_minutes: Number(v) })} disabled={dashDisabled} configKey="dashboard.resume_retry_window_minutes" />
+            </>
           )}
           <SettingsToggle label={i18nT('pages.settings.chatPanel.session_summaries')} description={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_in_the_right_pa')} hint={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_hint')} checked={summaryEnabled} onChange={v => summaryMut.mutate(v)} disabled={!mcQ.isSuccess || summaryMut.isPending} />
           {/* 0 is the built-in schedule and reads as "Default", so + leaves it

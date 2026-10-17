@@ -62,6 +62,7 @@ from kiro_crew.dashboard import (  # noqa: F401
     channel_slots,
     chat,
     handlers,
+    restart_resume,
     slot_retention,
     tailnet,
     tailnet_serve,

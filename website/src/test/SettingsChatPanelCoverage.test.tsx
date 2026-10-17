@@ -26,6 +26,9 @@ import { SETTINGS_CARD_STAGGER_MS } from '../components/settings'
 const BASE_DASH = {
   restore_sessions: false,
   restore_window_minutes: 30,
+  resume_interrupted_turns: false,
+  resume_retry_limit: 5,
+  resume_retry_window_minutes: 60,
   merge_queued_messages: false,
   default_memory_mode: 'persistent' as const,
   widget_density: 'more' as const,
@@ -539,6 +542,7 @@ describe('ChatPanel — Sessions', () => {
     ['Split View (Session Grid)', 'session_grid', true],
     ['Tail-only Fork', 'tail_fork_enabled', true],
     ['Restore Sessions', 'restore_sessions', true],
+    ['Resume interrupted turns automatically', 'resume_interrupted_turns', true],
   ])('persists %s through the dashboard config', async (label, key, expected) => {
     wrap('sessions')
     fireEvent.click(await settledSwitch(label))
@@ -598,6 +602,66 @@ describe('ChatPanel — Sessions', () => {
       expect(updateDashboardConfigMock).toHaveBeenCalledWith({
         restore_window_minutes: 60,
       })
+    )
+  })
+
+  it('hides the automatic-resume limit and window until the switch is on', async () => {
+    wrap('sessions')
+    await settledSwitch('Resume interrupted turns automatically')
+    expect(document.querySelector('[data-setting-key="dashboard.resume_retry_limit"]')).toBeNull()
+    expect(document.querySelector('[data-setting-key="dashboard.resume_retry_window_minutes"]')).toBeNull()
+  })
+
+  /** Mount Sessions with the switch on and the limit at `limit`; returns the stepper's row. */
+  async function resumeLimitRow(limit: number) {
+    dashboardConfigMock.mockImplementation(
+      () => Promise.resolve({ ...BASE_DASH, resume_interrupted_turns: true, resume_retry_limit: limit }) as never
+    )
+    wrap('sessions')
+    await settledSwitch('Resume interrupted turns automatically')
+    return document.querySelector('[data-setting-key="dashboard.resume_retry_limit"]') as HTMLElement
+  }
+
+  it('steps the automatic-resume limit up and persists the new value', async () => {
+    const row = await resumeLimitRow(5)
+    fireEvent.click(within(row).getByRole('button', { name: 'Increase' }))
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({ resume_retry_limit: 6 })
+    )
+  })
+
+  it('steps the automatic-resume limit down and persists the new value', async () => {
+    const row = await resumeLimitRow(5)
+    fireEvent.click(within(row).getByRole('button', { name: 'Decrease' }))
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({ resume_retry_limit: 4 })
+    )
+  })
+
+  it('never writes past the ceiling of the automatic-resume limit', async () => {
+    const row = await resumeLimitRow(20)
+    fireEvent.click(within(row).getByRole('button', { name: 'Increase' }))
+    await waitFor(() => expect(updateDashboardConfigMock).toHaveBeenCalledTimes(1))
+    expect(updateDashboardConfigMock).toHaveBeenCalledWith({ resume_retry_limit: 20 })
+    expect(updateDashboardConfigMock).not.toHaveBeenCalledWith({ resume_retry_limit: 21 })
+  })
+
+  it('disables the decrement at the floor of the automatic-resume limit', async () => {
+    const row = await resumeLimitRow(1)
+    expect(within(row).getByRole('button', { name: 'Decrease' })).toBeDisabled()
+    expect(within(row).getByRole('button', { name: 'Increase' })).not.toBeDisabled()
+  })
+
+  it('offers the automatic-resume windows and persists the picked one', async () => {
+    dashboardConfigMock.mockImplementation(
+      () => Promise.resolve({ ...BASE_DASH, resume_interrupted_turns: true }) as never
+    )
+    wrap('sessions')
+    const opts = await openSelect('Count resumes over the last')
+    expect(opts.map(o => o.textContent)).toEqual(['5m', '15m', '30m', '1h', '2h', '4h', '24h'])
+    fireEvent.click(opts[4])
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({ resume_retry_window_minutes: 120 })
     )
   })
 })

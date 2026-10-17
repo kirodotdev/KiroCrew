@@ -56,6 +56,11 @@ function shapeOf(m: ChatMessage): Shape | null {
   return null
 }
 
+/** Whether `m` is the ladder's terminal give-up row (token or legacy wording). */
+export function isTransientGiveUp(m: ChatMessage): boolean {
+  return shapeOf(m) === 'give_up'
+}
+
 export type TransientNotice =
   | {
       /**

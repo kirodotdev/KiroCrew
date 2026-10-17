@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         logger,
         read_bounded_json,
         relay_archive_refusal,
+        restart_resume,
         sel,
         slot_not_found,
         stop_declined_armed,
@@ -458,6 +459,9 @@ async def stop_slot_turn(
     """
     name = slot.key
     cancel_key = cancel_key or _cancel_target(slot)
+    # A Stop is the person's recorded intent that nothing continues on its own:
+    # an armed automatic retry is dropped before the stop runs (rfc-restart-resume).
+    restart_resume.cancel_armed_retry(slot)
 
     # The second press after a DECLINED Stop (the session was compacting) is
     # the user's escape hatch and takes the escalation branch below, which is

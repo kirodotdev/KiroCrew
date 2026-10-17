@@ -19,8 +19,16 @@ from kiro_crew.constants import (
 from kiro_crew.preview_text import drop_format_chars
 
 SESSION_RELOAD_KIND = "session_reload"
+#: A restored chat holds a different approval mode than the person last saw it
+#: hold (``restart_resume.approval_mode_dropped_notice``).
+APPROVAL_MODE_DROPPED_KIND = "approval_mode_dropped"
+#: The chat spent its automatic-resume budget and waits for a person
+#: (``restart_resume._notice_budget_exhausted``).
+AUTO_RESUME_PAUSED_KIND = "auto_resume_paused"
 
-SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset({"compaction", SESSION_RELOAD_KIND})
+SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset(
+    {"compaction", SESSION_RELOAD_KIND, APPROVAL_MODE_DROPPED_KIND, AUTO_RESUME_PAUSED_KIND}
+)
 
 
 def is_system_notice(role: object, meta: object) -> bool:

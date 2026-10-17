@@ -639,6 +639,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.chat_utils_injected_rows import (  # noqa: F401
         _ACTIVITY_NO_REPLY_CONTINUE_MSG,
+        _AUTO_RESUME_BODY,
+        _AUTO_RESUME_ERROR_MSG,
+        _AUTO_RESUME_RESTART_MSG,
         _BUSY_RECOVER_MSG,
         _COMPACTION_CONTINUE_MSG,
         _CONN_RECOVER_MSG,
@@ -658,6 +661,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
         MCP_APP_MESSAGE_KIND,
         MODEL_UNENTITLED_KIND,
+        RETRY_INVITED_KIND,
         SESSION_START_FAILED_KIND,
         SPEC_HOOKS_NOTICE_KIND,
         STEER_INTENT_META,
@@ -667,6 +671,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SUBAGENT_DELIVERY_KINDS,
         SYNTHETIC_RECOVERY_KIND,
         TRANSIENT_RETRY_KIND,
+        TURN_FAILED_META,
         USAGE_LIMIT_KIND,
         RecoveryPayload,
         _dequeue_next_message,
@@ -729,6 +734,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CONTINUATION_BY_CAUSE,
         _FALSE_CURRENT_TOOL_BLOCKER_NEAR_MISS_RE,
         _FALSE_CURRENT_TOOL_BLOCKER_RE,
+        _INTERRUPTED_TURN_RESUME_MSGS,
         _MANUAL_CONTINUE_MSG,
         _MANUAL_RESUME_MSG,
         _READ_ONLY_PREPARATION_TOOLS,
@@ -752,6 +758,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         ResetCause,
         build_recovery_requeue,
         classify_empty_turn,
+        interrupted_turn_rows,
         is_false_current_tool_blocker,
         is_false_current_tool_blocker_near_miss,
         normalize_stop_reason,
@@ -790,6 +797,8 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         ATTACHMENT_META_KEYS,
     )
     from kiro_crew.dashboard.state import (  # noqa: F401
+        AUTO_RESUME_ERROR_RECOVERY_PREFIX,
+        AUTO_RESUME_RESTART_RECOVERY_PREFIX,
         BUSY_RECOVERY_PREFIX,
         COMPACTION_RECOVERY_PREFIX,
         CONN_RECOVERY_PREFIX,
@@ -801,6 +810,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         REFUSAL_FALLBACK_RECOVERY_PREFIX,
         SUBAGENT_COMPLETION_PREFIXES,
         _normalize_slot_key,
+    )
+    from kiro_crew.dashboard.system_notices import (  # noqa: F401
+        is_system_notice,
     )
     from kiro_crew.execution_context import (  # noqa: F401
         ExecutionContext,

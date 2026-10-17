@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         CONTEXT_OVERFLOW_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
         MODEL_UNENTITLED_KIND,
+        RETRY_INVITED_KIND,
         SESSION_START_FAILED_KIND,
         SUBAGENT_COMPLETION_KIND,
         SUBAGENT_SYNTHESIS_PROMPT,
@@ -768,7 +769,12 @@ async def _requeue_after_prompt_busy(
     else:
         # depth>0 with budget remaining: no re-queue (mirrors AcpProcessDied),
         # but still surface feedback so the nested turn doesn't fail silently.
-        slot.append("error", "⟳ Session busy — please retry.", "msg msg-err")
+        slot.append(
+            "error",
+            "⟳ Session busy — please retry.",
+            "msg msg-err",
+            meta={"kind": RETRY_INVITED_KIND},
+        )
 
 
 _REFUSAL_CARD_LEAD = "Response declined by the model."

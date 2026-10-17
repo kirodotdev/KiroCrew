@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         logger,
         read_bounded_json,
         relay_archive_refusal,
+        restart_resume,
         sel,
     )
 
@@ -145,6 +146,7 @@ async def continue_slot_turn(
     before_dispatch: Callable[[], None] | None = None,
     extra_meta: dict[str, Any] | None = None,
     replaced: Callable[[], bool] | None = None,
+    body: str | None = None,
 ) -> str:
     """Queue the Resume/Continue body at the head of *slot* and dispatch it.
 
@@ -167,7 +169,11 @@ async def continue_slot_turn(
     so a drain-time drop is reported back to it). ``replaced`` is checked after
     each await (the lock, the sub-agent probe) and refuses with a 404
     ``slot_not_found`` when it returns True: the Continue endpoint passes
-    ``_slot_replaced_while_queued`` for its slot name.
+    ``_slot_replaced_while_queued`` for its slot name. ``body`` replaces the
+    continuation text the interruption check would pick: ``restart_resume``
+    passes its own, whose prefix line tells the card and the model that the
+    gateway pressed Resume rather than a person. Every refusal above still
+    applies to it; only the words change.
     """
     async with slot._lock:
         # Same-name registration can change while the lock or child probe waits.
@@ -249,7 +255,14 @@ async def continue_slot_turn(
                 "the last turn did not fail; there is nothing to retry",
                 "turn_not_failed",
             )
-        resume = _MANUAL_RESUME_MSG if interrupted else _MANUAL_CONTINUE_MSG
+        resume = body or (_MANUAL_RESUME_MSG if interrupted else _MANUAL_CONTINUE_MSG)
+        if body is None and directive_user_origin:
+            # A PERSON is continuing the chat: the automatic-resume budget starts
+            # over, and an armed retry is moot. An agent's ``session_retry`` /
+            # ``session_continue`` and an app's Continue carry no human origin and
+            # leave the budget alone -- it bounds exactly what no person asked for.
+            # An automatic resume passes its own body and never resets it.
+            restart_resume.reset_budget(slot)
         if before_dispatch is not None:
             # Synchronous, under the lock, with no await between it and the
             # insert below: a caller whose authority was decided before the lock
