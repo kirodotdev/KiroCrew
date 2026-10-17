@@ -1735,7 +1735,11 @@ async def handle_message(
             and context_builder.conversation_log
         ):
             _session.prev_turn_cancelled = False
-            _preamble = build_cancelled_turn_preamble(context_builder.conversation_log, session_key)
+            # Off the loop, like the replay above: the builder's transcript read
+            # can read every file in the session's chain.
+            _preamble = await asyncio.to_thread(
+                build_cancelled_turn_preamble, context_builder.conversation_log, session_key
+            )
             if _preamble:
                 offset = len(_preamble) + 2
                 _user_text_range = (offset, offset + len(text))

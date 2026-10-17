@@ -57,6 +57,7 @@ from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.metrics import turns as turns_mod
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.security import oauth_url_contains_credential
+from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
 from kiro_crew.trust_patterns import (
     GrantDeadline,
     base_trust_patterns,
@@ -6162,6 +6163,90 @@ class TestPromptSubmitTranscriptRead:
             "the re-injection probe read the transcript on the event-loop thread; "
             "it must go through asyncio.to_thread"
         )
+
+
+class _HeldTailLog(ConversationLog):
+    """A transcript whose chained-tail read stays open until the loop runs again.
+
+    Off the loop thread the read waits for :meth:`beat`, a coroutine on the loop,
+    so the beat finds the read open only if the loop kept running during it. On the
+    loop thread nothing else can run until the read returns, so waiting would only
+    spend the bound: it returns at once and the beat finds it closed.
+    """
+
+    def __init__(self, base_dir: Path) -> None:
+        super().__init__(base_dir=base_dir)
+        self._loop_thread = threading.get_ident()
+        self._entered = threading.Event()
+        self._release = threading.Event()
+        self._open = False
+        self.loop_ran_while_open: bool | None = None
+
+    def read_messages_chained_tail(self, key: str, limit: int) -> list[dict]:
+        self._open = True
+        self._entered.set()
+        try:
+            if threading.get_ident() != self._loop_thread:
+                self._release.wait(default_timeout())
+            return super().read_messages_chained_tail(key, limit)
+        finally:
+            self._open = False
+
+    async def beat(self) -> None:
+        await async_wait_until(
+            self._entered.is_set, describe=lambda: "the stop restore has not read the transcript"
+        )
+        self.loop_ran_while_open = self._open
+        self.release()
+
+    def release(self) -> None:
+        self._release.set()
+
+
+class TestStopRestoreTranscriptRead:
+    """The stopped turn's restore reads the transcript while the loop keeps running."""
+
+    @pytest.mark.asyncio
+    async def test_the_loop_runs_while_the_restore_reads_the_transcript(self, tmp_path):
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        slot = _slot()
+        key = effective_session_key(slot)
+        held = _HeldTailLog(tmp_path / "held")
+        held.append(key, "user", "please refactor the parser")
+        held.append(key, "assistant", "Reading the parser module")
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        builder.conversation_log = held
+        state, client = _runner_state(tmp_path, context_builder=builder)
+        client.client = MagicMock(pop_pending_oauth_requests=MagicMock(return_value=[]))
+        # The runner restores a stopped turn only for a session flagged this way.
+        state.sessions._sessions = {key: SimpleNamespace(prev_turn_cancelled=True)}
+        _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok"), _complete()])
+
+        beat = asyncio.ensure_future(held.beat())
+        try:
+            with patch.object(
+                chat_runner, "generate_session_summary", new=AsyncMock(return_value=None)
+            ):
+                await _drive(state, slot, "and now?")
+                await asyncio.gather(*list(state._background_tasks), return_exceptions=True)
+            await await_until(beat, what="the loop-side beat")
+        finally:
+            beat.cancel()
+            held.release()
+
+        assert held.loop_ran_while_open is True, (
+            "no coroutine ran while the stop restore read the transcript: "
+            "the read ran on the event loop"
+        )
+        prompt = client.stream.call_args_list[0].args[0]
+        assert "Cancelled user request:\nplease refactor the parser\n" in prompt
 
 
 # ── SessionClosingError shutdown race ─────────────────────────────────────
