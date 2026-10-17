@@ -932,7 +932,7 @@ async def test_throttle_fallback_ladder_routes_through_shared_budget_body():
     FallbackState.should_retry_active for the per-candidate budget. Forcing
     the shared body to refuse retries changes the attempt count — proof the
     budget is not re-encoded locally (mirror of the stream_and_collect pin in
-    test_llm_helpers.py)."""
+    test_llm_helpers_fallback_restore.py)."""
     from kiro_crew.llm_helpers import FallbackState
 
     calls: list[str] = []

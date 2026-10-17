@@ -158,7 +158,6 @@
 2744 test/test_cli_server_more_coverage.py
 2182 test/test_cloud_microvm_engine.py
 2288 test/test_cloud_source.py
-2106 test/test_computer_use_api.py
 2166 test/test_computer_use_snapshot_macos.py
 2260 test/test_config_live.py
 2868 test/test_connections_mint.py
@@ -202,10 +201,8 @@
 2377 test/test_kas_agents.py
 2409 test/test_knowledge_handlers_coverage.py
 2549 test/test_lesson_write_outcome.py
-2118 test/test_llm_helpers.py
 2631 test/test_llm_pool.py
 2248 test/test_markdown_link_parentheses.py
-2117 test/test_mcp_cron_security.py
 7022 test/test_mcp_discovery.py
 5650 test/test_mcp_gateway_backend_coverage.py
 2271 test/test_mcp_gateway_rewriter_fingerprint.py
@@ -237,7 +234,6 @@
 6171 test/test_session_control.py
 2376 test/test_session_control_revive.py
 2398 test/test_session_ledger_projection.py
-2132 test/test_session_pool.py
 7444 test/test_session_storage.py
 6415 test/test_session_transfer.py
 2548 test/test_session_usage.py

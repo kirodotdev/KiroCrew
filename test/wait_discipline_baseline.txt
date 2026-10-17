@@ -208,7 +208,7 @@
  1 test_mcp_apps_e2e.py
  3 test_mcp_apps_render.py
  1 test_mcp_caller.py
- 1 test_mcp_cron_security.py
+ 1 test_mcp_cron_security_wiring.py
  1 test_mcp_discovery.py
  3 test_mcp_gateway_bluegreen.py
  1 test_mcp_gateway_daemon_control.py
@@ -293,7 +293,8 @@
  1 test_session_map_mirror.py
  1 test_session_more_coverage.py
  1 test_session_not_found_surfaces.py
-10 test_session_pool.py
+ 3 test_session_pool_reaping.py
+ 7 test_session_pool_refill.py
  1 test_session_pulse_counter.py
  1 test_session_scope_reap_seams.py
  4 test_session_sharing.py
