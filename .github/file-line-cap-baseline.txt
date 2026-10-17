@@ -138,7 +138,6 @@
 2166 test/test_computer_use_snapshot_macos.py
 2260 test/test_config_live.py
 2868 test/test_connections_mint.py
-2418 test/test_context.py
 2226 test/test_context_composition_contract.py
 6406 test/test_crew_log_emit.py
 2202 test/test_crew_log_fold_eager.py
@@ -147,7 +146,6 @@
 2247 test/test_cron_secret_env.py
 3175 test/test_dashboard_approval.py
 2718 test/test_dashboard_server_composition_contract.py
-2430 test/test_dashboard_state_ws.py
 2286 test/test_dashboard_templates.py
 2478 test/test_dashboard_updates_coverage.py
 11203 test/test_denied_commands_security.py
@@ -169,7 +167,6 @@
 2400 test/test_host_isolation_floor.py
 2374 test/test_issue_radar_crew_routes.py
 3557 test/test_issue_radar_crew_runtime.py
-2436 test/test_issue_radar_routes_ai_coverage.py
 2162 test/test_issue_radar_routes_coverage.py
 4427 test/test_job_sdk.py
 2377 test/test_kas_agents.py
@@ -189,7 +186,6 @@
 5822 test/test_onboarding_import.py
 2190 test/test_onboarding_import_refactor_contract.py
 3579 test/test_overload_integration_glue.py
-2429 test/test_pinned_staging.py
 4048 test/test_pipeline_conductor_fleet_probe.py
 2725 test/test_plugin_import.py
 8519 test/test_pod.py

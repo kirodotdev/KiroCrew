@@ -222,7 +222,7 @@ _FACADE_DEFS = (
 )
 
 #: Collaborators the facade re-offers that belong to another module. Their identity is
-#: what ``test_agent_refactor_contracts`` and ``test_pinned_staging`` assert through
+#: what ``test_agent_refactor_contracts`` and ``test_pinned_staging_helper_contract`` assert through
 #: the facade, so the split may not replace one with a copy.
 _COLLABORATORS = {
     "_coerce_bool": ("kiro_crew.config.fields", "_coerce_bool"),
@@ -350,7 +350,7 @@ def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
 def test_every_collaborator_is_still_the_source_object() -> None:
     """A collaborator the facade re-offers is the object its own module holds, not a
     copy -- which is what ``test_agent_refactor_contracts`` and
-    ``test_pinned_staging`` assert through this module."""
+    ``test_pinned_staging_helper_contract`` assert through this module."""
     for name, (module, attribute) in _COLLABORATORS.items():
         source = getattr(importlib.import_module(module), attribute)
         assert getattr(hooks_mod, name) is source, f"hooks.{name} is not {module}.{attribute}"
