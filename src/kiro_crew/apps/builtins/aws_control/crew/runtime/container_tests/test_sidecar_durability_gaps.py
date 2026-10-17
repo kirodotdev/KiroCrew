@@ -4393,13 +4393,15 @@ def test_a_gone_transcript_does_not_withhold_on_the_following_cycle(tmp_path, mo
     victim = f"{STEM}{keys.TRANSCRIPT_SUFFIX}"
     _transcript(settings, b"a turn\n")
     _index_naming(settings, SLOT_KEY)
-    _vanish_after_listing(settings, monkeypatch, victim)
     store = _Recorder()
     state: dict = {}
 
-    with pytest.raises(backup_mod.BackupIncomplete):
-        backup_mod.run_cycle(settings, store, state=state)
-    monkeypatch.undo()
+    # Scope the race to the first cycle only: a bare undo() would also
+    # revert every autouse fixture's patch and run the second cycle on host values.
+    with monkeypatch.context() as mp:
+        _vanish_after_listing(settings, mp, victim)
+        with pytest.raises(backup_mod.BackupIncomplete):
+            backup_mod.run_cycle(settings, store, state=state)
     assert not (settings.sessions_dir / victim).exists(), "the victim really is deleted"
 
     second = backup_mod.run_cycle(settings, store, state=state)
