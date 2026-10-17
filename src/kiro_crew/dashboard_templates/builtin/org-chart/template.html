@@ -37,6 +37,9 @@
      the connector pseudo-elements: this lets the outer grid row collapse without
      destroying the absolutely-positioned elbow lines. */
   .oc-kids { display: grid; grid-template-rows: 1fr; overflow: hidden;
+    /* minmax(0, 1fr), not auto: an auto column grows to the longest unwrapped line
+       inside, and this box clips, so a long row pushed its Hide button out of reach. */
+    grid-template-columns: minmax(0, 1fr);
     transition: grid-template-rows 0.2s ease; }
   .oc-kids.oc-kids-closed { grid-template-rows: 0fr; }
   /* Cut to the end state for users who prefer no motion. */
@@ -144,6 +147,9 @@
      check, a heavier weight and a stronger border, so colour is never the only carrier. */
   .oc-filter { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
   .oc-filter[hidden] { display: none; }
+  .oc-flabel { align-self: center; font-size: 11px; color: var(--muted, #7f7f88); }
+  /* A row kept only because a task under it matches: dashed, and it says so in words. */
+  .oc-chip.oc-ctx { border-style: dashed; }
   .oc-fbtn { font: inherit; font-size: 11px; line-height: 1; cursor: pointer;
     min-height: 26px; padding: 5px 10px; border-radius: 999px; box-sizing: border-box;
     color: var(--muted, #7f7f88);
@@ -176,6 +182,7 @@
   <div class="oc-sub" id="oc-scope">-</div>
 
   <div class="oc-filter" id="oc-filter" role="group" hidden>
+    <span class="oc-flabel" data-i18n="filter_prefix">Tasks:</span>
     <button type="button" class="oc-fbtn" data-oc-filter="open" aria-pressed="false"><span data-i18n="filter_open">Open</span><span class="oc-fn" data-oc-count="open">0</span></button>
     <button type="button" class="oc-fbtn" data-oc-filter="closed" aria-pressed="false"><span data-i18n="filter_closed">Closed</span><span class="oc-fn" data-oc-count="closed">0</span></button>
     <button type="button" class="oc-fbtn" data-oc-filter="all" aria-pressed="true"><span data-i18n="filter_all">All</span><span class="oc-fn" data-oc-count="all">0</span></button>
@@ -237,7 +244,7 @@
         fold_show_one: 'Show 1 item',
         fold_hint: 'Collapses this group in the graph only. The cards below stay.',
         filter_label: 'Show tasks by state', filter_open: 'Open', filter_closed: 'Closed',
-        filter_all: 'All',
+        filter_all: 'All', filter_prefix: 'Tasks:', fact_shown: ' shown', fact_context: 'shown for the tasks under it',
         filter_none_open: 'No open task to show.', filter_none_closed: 'No closed task to show.'
       },
       'zh-CN': {
@@ -275,6 +282,7 @@
         fold_hint: '\u53ea\u6536\u8d77\u5173\u7cfb\u56fe\u4e2d\u7684\u8fd9\u4e00\u7ec4\uff0c\u4e0b\u65b9\u7684\u5361\u7247\u4e0d\u53d8\u3002',
         filter_label: '\u6309\u72b6\u6001\u7b5b\u9009\u4efb\u52a1', filter_open: '\u8fdb\u884c\u4e2d',
         filter_closed: '\u5df2\u5173\u95ed', filter_all: '\u5168\u90e8',
+        filter_prefix: '\u4efb\u52a1\uff1a', fact_shown: ' \u4e2a\u5df2\u663e\u793a', fact_context: '\u56e0\u5176\u4e0b\u7684\u4efb\u52a1\u800c\u663e\u793a',
         filter_none_open: '\u6ca1\u6709\u8fdb\u884c\u4e2d\u7684\u4efb\u52a1\u3002',
         filter_none_closed: '\u6ca1\u6709\u5df2\u5173\u95ed\u7684\u4efb\u52a1\u3002'
       }
@@ -392,8 +400,8 @@
        open otherwise -- the same split `situation` makes, so a task the page draws as
        working, idle, silent or needing a person is open. */
     function isClosed(task) {
-      var state = text(task.state) || 'open';
-      return state === 'accepted' || state === 'rejected' || state === 'abandoned';
+      var situ = situation(task, 0);
+      return situ === 'done' || situ === 'bad' || situ === 'gone';
     }
     function matches(task, mode) {
       if (mode === 'open') return !isClosed(task);
@@ -435,7 +443,7 @@
         var sub = kid.sub ? pruneNode(kid.sub, mode) : null;
         var own = matches(kid.task, mode);
         if (!own && !sub) continue;
-        kids.push({ task: kid.task, board: kid.board, sub: sub });
+        kids.push({ task: kid.task, board: kid.board, sub: sub, context: !own });
       }
       if (!kids.length) return null;
       return { board: n.board, depth: n.depth, kids: kids };
@@ -559,12 +567,17 @@
     }
 
     /* A board's own counts, for the line under its name. */
-    function boardFacts(board) {
+    /* `shownRows` is set only while a filter is on: the dispatched count then reads
+       "2 shown" beside "4 dispatched" -- rows drawn, then the board's total -- so it does not
+       contradict the rows. */
+    function boardFacts(board, shownRows) {
       var out = [];
       var r = num(board.round);
       if (r !== null) out.push(i18n('fact_round') + r);
       var total = num(board.total);
-      out.push((total === null ? board.tasks.length : total) + i18n('fact_dispatched'));
+      var all = total === null ? board.tasks.length : total;
+      if (shownRows !== undefined && shownRows !== null) out.push(shownRows + i18n('fact_shown'));
+      out.push(all + i18n('fact_dispatched'));
       var acc = num(board.accepted);
       if (acc !== null) out.push(acc + i18n('fact_accepted'));
       var nd = num(board.needs_you);
@@ -673,6 +686,7 @@
       var line = i18n(SITU[situ][0]);
       var last = stamp(task.last_report_at);
       if (last !== null) line += ' ' + MID + ' ' + i18n('last_word') + ' ' + span(Math.max(0, now - last)) + i18n('ago_suffix');
+      if (kid.context) line += ' ' + MID + ' ' + i18n('fact_context');
 
       if (kid.sub) {
         var sub = kid.sub.board;
@@ -683,7 +697,7 @@
           i18n('role_sublead'),
           text(task.title) || text(task.item_id) || DASH,
           label + ' ' + MID + ' ' + line,
-          'oc-is-sub',
+          'oc-is-sub' + (kid.context ? ' oc-ctx' : ''),
           SITU[situ][1]
         );
         var subKids = el('div', 'oc-kids');
@@ -702,7 +716,7 @@
         own.appendChild(chip(
           i18n('role_its_board'),
           text(sub.goal) || i18n('no_goal_recorded'),
-          boardFacts(sub),
+          boardFacts(sub, filterMode === 'all' ? null : kid.sub.kids.length),
           null,
           null
         ));
@@ -724,7 +738,7 @@
         label,
         text(task.title) || text(task.item_id) || DASH,
         line,
-        null,
+        kid.context ? 'oc-ctx' : null,
         SITU[situ][1]
       ));
       into.appendChild(node);
@@ -768,7 +782,7 @@
       var leadChip = chip(
         i18n('role_lead'),
         text(board.goal) || i18n('no_goal_recorded'),
-        boardFacts(board),
+        boardFacts(board, filterMode === 'all' ? null : n.kids.length),
         'oc-is-lead',
         null
       );
@@ -999,7 +1013,6 @@
         shown = filterBoards(list, filterMode);
         if (!roots.length) {
           graph.appendChild(el('div', 'oc-empty', i18n('filter_none_' + filterMode)));
-          cardsTitle.hidden = true;
         }
       }
       for (var i = 0; i < roots.length; i++) drawNode(roots[i], graph, now);
@@ -1008,6 +1021,9 @@
       }
 
       var rows = cards(shown, now);
+      /* Under a filter the title goes only when neither the graph nor the cards have
+         a row: a filter can leave cards with no graph root to hang them on. */
+      if (filterMode !== 'all' && !roots.length && !rows.length) cardsTitle.hidden = true;
       for (var j = 0; j < rows.length; j++) holder.appendChild(drawCard(rows[j], now));
 
       var subs = 0;
@@ -1015,6 +1031,8 @@
         for (var s in g.subOf) if (Object.prototype.hasOwnProperty.call(g.subOf, s)) subs++;
       } else {
         for (var r = 0; r < roots.length; r++) subs += countSubs(roots[r]);
+        /* The footer counts the boards on the page, so it follows the filter. */
+        if (cell) cell.textContent = String(roots.length + subs);
       }
       scope.textContent = roots.length + i18n('scope_leads') + MID + ' ' + subs + i18n('scope_subleads')
         + MID + ' ' + rows.length + i18n('scope_sessions');
