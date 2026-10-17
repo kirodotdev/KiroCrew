@@ -22,13 +22,13 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from kiro_crew import pinned_fs
+from kiro_crew import pinned_fs, platform_compat
 from kiro_crew import seed as seed_mod
 from kiro_crew import user_json
 from kiro_crew.atomic_write import atomic_write_at
 from kiro_crew.identity_stores import StoreMapping, store_mappings
 from kiro_crew.platform_compat import is_link_or_junction, open_file_no_reparse, pin_directory
-from kiro_crew.pod import launchd, runtime
+from kiro_crew.pod import launchd, runtime, runtime_attestation, runtime_client, runtime_ports
 from kiro_crew.pod import windows as win_backend
 from kiro_crew.pod.config import PodConfig
 from kiro_crew.pod.runtime import PodError
@@ -1349,6 +1349,305 @@ def resolved_pod_home(cfg: PodConfig, name: str) -> Path:
         return (cfg.pod_root / name).resolve()
     except OSError:
         return runtime.pod_home(cfg, name)
+
+
+def _proc_uids(base: str) -> tuple[int, ...]:
+    """The uid set (real, effective, saved, fs) of ``/proc`` entry *base*.
+
+    Read from ``status``, never from the directory's owner: a process that made
+    itself non-dumpable has its ``/proc`` entries re-owned to root while its
+    ``status`` still names the true uids. A whole-file read, because ``status``
+    is a kernel pseudo-file with a kernel-bounded size, the same reading
+    :func:`kiro_crew.platform_compat.get_ppid` applies to it. Empty when the
+    process vanished or the file is unparsable.
+    """
+    try:
+        text = Path(f"{base}/status").read_text(encoding="utf-8", errors="replace")
+        for line in text.splitlines():
+            if line.startswith("Uid:"):
+                return tuple(int(f) for f in line.split()[1:5])
+    except (OSError, ValueError):
+        return ()
+    return ()
+
+
+def _task_links(base: str, *, fds: bool) -> list[str] | None:
+    """The readable ``cwd``/``root``/``exe`` links of ``/proc`` entry *base*, and
+    its ``fd`` links when *fds* is set.
+
+    ``None`` when the entry is gone. Links that cannot be read are left out:
+    this scan reports only what it SEES, and an unreadable link is not evidence
+    of anything (see :func:`_home_holders`).
+    """
+    links: list[str] = []
+    for special in ("cwd", "root", "exe"):
+        try:
+            links.append(os.readlink(f"{base}/{special}"))
+        except (FileNotFoundError, ProcessLookupError):
+            if special == "cwd" and not os.path.isdir(base):
+                return None
+        except OSError:
+            continue
+    if fds:
+        links.extend(_fd_links(base) or [])
+    return links
+
+
+def _fd_links(base: str) -> list[str] | None:
+    """The readable ``fd`` links of ``/proc`` entry *base*, or ``None`` when its
+    ``fd`` directory cannot be listed."""
+    try:
+        fd_names = os.listdir(f"{base}/fd")
+    except OSError:
+        return None
+    links: list[str] = []
+    for fd in fd_names:
+        try:
+            links.append(os.readlink(f"{base}/fd/{fd}"))
+        except OSError:
+            # A descriptor closed mid-scan, or one this scan may not read.
+            continue
+    return links
+
+
+def _cmdline(base: str) -> list[bytes]:
+    """``/proc`` entry *base*'s argv, or ``[]`` when it cannot be read."""
+    try:
+        return Path(f"{base}/cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return []
+
+
+def _proc_entries(proc_root: str) -> list[str]:
+    """The pid entries of *proc_root*, or none on a host without ``/proc``.
+
+    A host with no ``/proc`` has no process to observe this way, so it
+    contributes no positive signal; the unit-less arm that reads these scans
+    is reached only on a systemd host, which always mounts ``/proc``.
+    """
+    try:
+        return [e for e in os.listdir(proc_root) if e.isdigit()]
+    except FileNotFoundError:
+        return []
+
+
+#: One process as the reclaim judgment sees it: ``(pid, links, argv)``.
+_ProcEntry = tuple[int, list[str], list[bytes]]
+
+
+def _proc_snapshot(proc_root: str = "/proc") -> list[_ProcEntry]:
+    """One pass over ``/proc``: every process of this user's or root's, with the
+    links it exposes and its argv.
+
+    Taken once per judgment, or once per ``pod ls``/``pod prune`` and shared
+    across their orphans, so the cost does not scale with the number of orphans
+    times the number of processes. Another non-root user's process is skipped:
+    a pod HOME is created ``0700``.
+
+    Descriptors are read from the group leader once, since threads share the fd
+    table, and ``cwd``/``root``/``exe`` from every thread in ``task/*``. A
+    leader that exits through ``pthread_exit`` leaves a zombie entry whose own
+    links and ``fd`` are gone while its live threads still hold their files,
+    so in that case the descriptors are read from a live thread instead.
+    """
+    my_uid = platform_compat.local_user_id()
+    out: list[_ProcEntry] = []
+    for entry in _proc_entries(proc_root):
+        pid = int(entry)
+        base = f"{proc_root}/{entry}"
+        uids = _proc_uids(base)
+        if my_uid not in uids and 0 not in uids:
+            continue
+        links = _task_links(base, fds=False)
+        if links is None:
+            # The whole process vanished mid-scan; it stopped mattering.
+            continue
+        fds = _fd_links(base)
+        try:
+            tids = [t for t in os.listdir(f"{base}/task") if t != entry]
+        except OSError:
+            tids = []
+        for tid in tids:
+            thread = f"{base}/task/{tid}"
+            links.extend(_task_links(thread, fds=False) or [])
+            if not fds:
+                fds = _fd_links(thread)
+        links.extend(fds or [])
+        out.append((pid, links, _cmdline(base)))
+    return out
+
+
+def _arg_names_path(arg: bytes, root: bytes) -> bool:
+    """Whether argv element *arg* names *root* or a path under it.
+
+    A match must end at ``/`` or at the end of the argument, so ``pr-1``'s HOME
+    is not matched by an argument naming ``pr-12``'s.
+    """
+    start = arg.find(root)
+    while start >= 0:
+        end = start + len(root)
+        if end == len(arg) or arg[end : end + 1] == b"/":
+            return True
+        start = arg.find(root, start + 1)
+    return False
+
+
+def _home_holders(
+    home: Path, proc_root: str = "/proc", *, snapshot: list[_ProcEntry] | None = None
+) -> list[int]:
+    """PIDs of this user's or root's processes SEEN holding *home* or a path under it.
+
+    The unit-less reclaim has no cgroup to drain, so this ``/proc`` scan stands
+    in for it with positive evidence only: a ``cwd``, ``root``, ``exe`` or open
+    descriptor, of any thread, that resolves under the HOME, or a command-line
+    argument naming it.
+
+    A process whose links this scan cannot read (one that made itself
+    non-dumpable, or a root process seen from a non-root scan) is judged only by
+    its command line. Whether such a process holds the HOME cannot be decided
+    from an unprivileged ``/proc`` -- and refusing on the shape alone refuses
+    every reclaim on an ordinary host, where systemd's own ``(sd-pam)``,
+    ``ssh-agent`` and every ssh session's ``sshd`` present it. So this takes the
+    posture :func:`kiro_crew.pod.runtime_lifecycle.drain_cgroup` takes for an
+    unobservable cgroup: nothing more can be observed, the delete proceeds, and
+    the post-delete verification in
+    :func:`kiro_crew.pod.runtime_lifecycle.stop_pod` reports a survivor.
+
+    *proc_root* exists for the tests, which stage the shapes a real credential
+    transition or thread exit produces; *snapshot* reuses an earlier pass.
+    """
+    root = str(home).rstrip("/")
+    prefix = root + "/"
+    needle = root.encode()
+    procs = snapshot if snapshot is not None else _proc_snapshot(proc_root)
+    return [
+        pid
+        for pid, links, argv in procs
+        if any(ln == root or ln.startswith(prefix) for ln in links)
+        or any(_arg_names_path(arg, needle) for arg in argv)
+    ]
+
+
+def _booting_pids(
+    name: str, proc_root: str = "/proc", *, snapshot: list[_ProcEntry] | None = None
+) -> list[int]:
+    """PIDs of this user's (or root's) processes running ``pod _run <name>``.
+
+    The boot body, in every checkout version, runs under a command line naming
+    the verb and the pod until it execs the gateway, and a command line is
+    readable for every process. So this sees a boot between its pin read and
+    the liveness it publishes later, whichever checkout it came from.
+    """
+    procs = snapshot if snapshot is not None else _proc_snapshot(proc_root)
+    want = name.encode()
+    found: list[int] = []
+    me = os.getpid()
+    for pid, _links, argv in procs:
+        if pid == me:
+            continue
+        for i, arg in enumerate(argv[:-1]):
+            if arg == b"_run" and argv[i + 1] == want and b"pod" in argv[:i]:
+                found.append(pid)
+                break
+    return found
+
+
+def _bootable_checkout(cfg: PodConfig, name: str) -> tuple[str | None, str | None]:
+    """``(refusal, checkout)`` for whether pod *name*'s pin can still boot it.
+
+    A boot reads the pin, then refuses before it touches the HOME when there is
+    no ``CHECKOUT=`` or that checkout has no runnable venv -- every checkout
+    version makes that check in that order. So a pin that cannot get a boot
+    past it means nothing can rebuild or reuse the HOME, which is the one
+    condition under which a unit-less delete is provably safe. The pin is read
+    no-follow and non-blocking, regular files only
+    (:func:`kiro_crew.pod.runtime_ports._read_peer_env`): a plain read would
+    follow a link planted there out of the plane and block forever on a FIFO.
+    """
+    pin = cfg.env_file(name)
+    data = runtime_ports._read_peer_env(pin)
+    if data is None:
+        if os.path.lexists(pin):
+            return f"its pin {pin} is not a readable regular file", None
+        return None, None
+    checkout = data.get("CHECKOUT")
+    if not checkout:
+        return None, None
+    bin_path = runtime.prov.venv_bin(Path(checkout).expanduser())
+    if bin_path.exists() and os.access(bin_path, os.X_OK):
+        return (
+            f"its pinned checkout {checkout} still has a runnable venv, so a boot "
+            "could rebuild or reuse the HOME behind the delete. Bring it back up "
+            f"and stop it (`kirocrew pod up {name}`, then `kirocrew pod down "
+            f"{name}`), or remove its venv or its pin {pin} once nothing runs it"
+        ), checkout
+    return None, checkout
+
+
+def reclaim_blocker(
+    cfg: PodConfig, name: str, *, snapshot: list[_ProcEntry] | None = None
+) -> str | None:
+    """Why pod *name*'s HOME must NOT be deleted with no unit behind it, or
+    ``None`` when the delete is provably safe.
+
+    The one predicate behind both the deleting path
+    (:func:`kiro_crew.pod.runtime_lifecycle.stop_pod`, under the per-name mutex
+    every pin write also takes) and the reclaim hint ``pod ls`` prints beside an
+    orphan, so the two cannot give different answers. The service manager
+    cannot answer it: a gateway running outside the template unit is live with
+    no unit at all. It is answered in two parts, cheap first:
+
+    * **no boot can reach the HOME** (:func:`_bootable_checkout`). Every boot
+      reads the pin before the HOME, and the pin cannot change while the mutex
+      is held, so a boot that starts during the reclaim refuses on the same
+      pin -- including a boot by any older checkout.
+    * **no positive sign of a live pod**: a running ``pod _run <name>``; the
+      gateway pid record, accepted only with a matching start-time identity;
+      a responder on the pod's port that is not PROVABLY another process; a
+      process seen holding the HOME (:func:`_home_holders`).
+
+    A sign that cannot be read refuses, except an uninspectable process, for
+    the reason :func:`_home_holders` gives. *snapshot* reuses one ``/proc``
+    pass across several names.
+    """
+    # Names from directory contents reach here through ``pod ls``; one that is
+    # not a pod name has no pin or port, and is refused before any path.
+    if not runtime._NAME_RE.match(name):
+        return "its directory name is not a valid pod name"
+    try:
+        refusal, _ = _bootable_checkout(cfg, name)
+        if refusal is not None:
+            return refusal
+        procs = snapshot if snapshot is not None else _proc_snapshot()
+        booting = _booting_pids(name, snapshot=procs)
+        if booting:
+            shown = ", ".join(str(p) for p in booting[:5])
+            return f"a `pod _run {name}` is running (pid {shown})"
+        data = runtime_ports._read_peer_env(cfg.env_file(name)) or {}
+        pinned = runtime_ports._port_from_env(data.get("PORT"))
+        # The derivation derive_port applies, from the safe read above.
+        port = (
+            pinned
+            if pinned is not None
+            else cfg.base_port + (runtime_ports._posix_cksum(name.encode("utf-8")) % 199) + 1
+        )
+        if runtime_attestation._pod_recorded_pid(cfg, name, port) is not None:
+            return f"its gateway pid record still names a live process on port {port}"
+        if (
+            runtime_client._probe_health(port) != 0
+            and runtime_attestation.port_owner(cfg, name, port) != runtime_attestation.OWNER_FOREIGN
+        ):
+            return (
+                f"something answers on its port {port} and cannot be proven "
+                "to be another process"
+            )
+        holders = _home_holders(resolved_pod_home(cfg, name), snapshot=procs)
+        if holders:
+            shown = ", ".join(str(p) for p in holders[:5])
+            return f"{len(holders)} process(es) hold files under its HOME (pid {shown})"
+    except Exception as exc:
+        return f"its liveness could not be judged ({exc})"
+    return None
 
 
 def orphan_homes(cfg: PodConfig) -> list[str]:

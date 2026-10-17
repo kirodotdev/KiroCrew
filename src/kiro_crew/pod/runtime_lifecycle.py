@@ -253,6 +253,22 @@ def halt_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
         return runtime.systemctl("stop", runtime.pod_unit(cfg, name))
 
 
+def _stop_names_missing_unit(cp: subprocess.CompletedProcess) -> bool:
+    """Whether a failed ``systemctl stop`` refused because the unit is ABSENT.
+
+    ``stop`` acts only on loaded units -- unlike ``start`` it never instantiates
+    a template -- so a name with nothing running under systemd fails with
+    ``Unit <unit> not loaded.`` (``not found.`` on some systemd versions). Both
+    are stable C-locale messages: ``_systemctl_env`` pins ``LC_ALL=C`` exactly
+    so classifiers like this one cannot be defeated by a host locale. Every
+    other stop failure (a bus that cannot be reached, a timeout, a stop job
+    that genuinely failed) stays unclassified, because there the unit may
+    still be live.
+    """
+    err = cp.stderr or ""
+    return "Unit" in err and ("not loaded" in err or "not found" in err)
+
+
 def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     """Stop pod *name* and reclaim its isolated HOME, or say why it could not.
 
@@ -300,9 +316,27 @@ def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
         procs_file = cgroup_procs_file(cfg, name)
         cp = runtime.systemctl("stop", runtime.pod_unit(cfg, name))
         if cp.returncode != 0:
-            # The unit may still be live; deleting its HOME here is exactly the
-            # race this ordering exists to avoid.
-            return cp
+            if not _stop_names_missing_unit(cp):
+                # The unit may still be live; deleting its HOME here is exactly
+                # the race this ordering exists to avoid.
+                return cp
+            # systemd holds nothing under this name -- the shape every orphaned
+            # HOME presents, and the one stop failure that cannot mean a live
+            # unit. Still not proof of a dead pod: a gateway started outside the
+            # template unit serves with no unit at all. So the delete below runs
+            # only when the pod's own evidence proves it safe
+            # (runtime_home.reclaim_blocker): no boot can get past the pin to the
+            # HOME, and nothing shows a live pod. Judged under the name mutex
+            # every pin write takes, so a boot that starts now reads the same
+            # pin and refuses on it.
+            blocker = runtime_home.reclaim_blocker(cfg, name)
+            if blocker is not None:
+                return _unit_less_refusal(cp, cfg, name, blocker)
+            # There is nothing to stop and no cgroup to drain, so the reclaim
+            # below is what this call has left to do.
+            cp = subprocess.CompletedProcess(
+                args=cp.args, returncode=0, stdout=cp.stdout or "", stderr=""
+            )
         survivors = drain_cgroup(procs_file) if procs_file is not None else []
         # Resolved, because cleanup_home reports the resolved path: on a host
         # whose home is a symlink, naming it both ways reads as two directories.
@@ -372,6 +406,47 @@ def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
                 ),
             )
         return cp
+
+
+def reclaim_refusal(
+    cfg: PodConfig, name: str, *, snapshot: list[runtime_home._ProcEntry] | None = None
+) -> str | None:
+    """Why ``kirocrew pod down <name>`` would refuse to reclaim an orphaned HOME.
+
+    ``None`` when it would proceed. The reclaim hint ``pod ls`` prints and the
+    sweep ``pod prune`` runs use this, so a listed orphan never gets a reclaim
+    command the delete then refuses without saying why. A unit systemd still
+    has loaded is reclaimed through the unit path, which this judgment does not
+    gate; any other name on a systemd host gets the same
+    :func:`kiro_crew.pod.runtime_home.reclaim_blocker` answer the delete does.
+    launchd and Task Scheduler have per-pod definitions and no unit-less arm.
+    *snapshot* shares one ``/proc`` pass across a listing's orphans.
+    """
+    if runtime.IS_MACOS or runtime.IS_WINDOWS:
+        return None
+    if not runtime._NAME_RE.match(name):
+        return "its directory name is not a valid pod name"
+    cp = runtime.systemctl("show", runtime.pod_unit(cfg, name), "-p", "LoadState")
+    if cp.returncode == 0 and "LoadState=loaded" in (cp.stdout or ""):
+        return None
+    return runtime_home.reclaim_blocker(cfg, name, snapshot=snapshot)
+
+
+def _unit_less_refusal(
+    cp: subprocess.CompletedProcess, cfg: PodConfig, name: str, blocker: str
+) -> subprocess.CompletedProcess:
+    """The refusal :func:`stop_pod` returns when a unit-less HOME is not provably dead."""
+    return subprocess.CompletedProcess(
+        args=[],
+        returncode=1,
+        stdout=cp.stdout or "",
+        stderr=(
+            f"pod {name!r} has no unit loaded, but {blocker} -- "
+            f"refusing to delete its isolated HOME at "
+            f"{runtime_home.resolved_pod_home(cfg, name)}. Stop whatever runs "
+            f"there, then retry `kirocrew pod down {name}`."
+        ),
+    )
 
 
 def _stop_pod_launchd(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
