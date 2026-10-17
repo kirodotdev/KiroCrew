@@ -383,6 +383,33 @@ def test_start_creates_a_manual_run_only_task_then_runs_it(cfg, monkeypatch):
     assert script.exists(), "the wrapper must exist before the task points at it"
 
 
+def test_start_logs_only_the_current_boot_output(cfg, monkeypatch):
+    """Append-only redirection must not carry a previous boot's FATAL forward."""
+    out_log, err_log = win.log_paths(cfg, "smoke")
+    out_log.parent.mkdir(parents=True, exist_ok=True)
+    out_log.write_text("previous stdout\n")
+    err_log.write_text("FATAL: no built dist\n")
+
+    def task(*args):
+        if args[0] == "/Query":
+            return _cp(returncode=1)
+        if args[0] == "/Run":
+            with out_log.open("a") as stream:
+                stream.write("current stdout\n")
+            with err_log.open("a") as stream:
+                stream.write("current boot failure\n")
+        return _cp()
+
+    monkeypatch.setattr(win, "schtasks", task)
+    assert win.start(cfg, "smoke").returncode == 0
+
+    journal = win.recent_journal(cfg, "smoke")
+    assert "current stdout" in journal
+    assert "current boot failure" in journal
+    assert "previous stdout" not in journal
+    assert "FATAL: no built dist" not in journal
+
+
 def test_start_preserves_a_stale_result_until_its_run_is_retired(cfg, monkeypatch):
     """A stale result is prior-writer evidence, not permission to start over it."""
     monkeypatch.setattr(win, "schtasks", lambda *_a: pytest.fail("prior evidence blocks start"))

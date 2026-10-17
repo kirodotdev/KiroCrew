@@ -699,6 +699,10 @@ def start(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=str(exc))
     try:
         script = write_task_script(cfg, name)
+        # The wrapper appends to these files, so retire the previous boot's output
+        # before scheduling this one; otherwise a refusal can report a stale FATAL.
+        for log_path in log_paths(cfg, name):
+            log_path.unlink(missing_ok=True)
         # Refuse before scheduling if readers could see an old failure result.
         result_path(cfg, name).unlink(missing_ok=True)
         created = schtasks(
