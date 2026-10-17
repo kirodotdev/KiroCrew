@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from kiro_crew.executors import configure_default_executor
+from kiro_crew.mcp_gateway import agent_socket
 from kiro_crew.mcp_gateway.admission import DEFAULT_CAPACITY, DEFAULT_CEILING, DEFAULT_FLOOR
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.host_budget import resolve_limits
@@ -204,6 +205,8 @@ def _build_argparser() -> argparse.ArgumentParser:
 
 async def _amain(argv: Optional[list[str]] = None) -> int:
     args = _build_argparser().parse_args(argv)
+    # Out of this process's env before it starts anything, so no child inherits it.
+    backend_agent_socket = agent_socket.take_daemon_socket()
     logging.basicConfig(
         level=args.log_level.upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -272,6 +275,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
             stop_event=stop_event,
             prewarm_count=args.prewarm_count,
             credential_watch_paths=[Path(p) for p in args.credential_watch_paths],
+            backend_agent_socket=backend_agent_socket,
             owner_pid=max(0, int(args.owner_pid or 0)),
             spawn_concurrency=args.spawn_concurrency,
             spawn_concurrency_min=args.spawn_concurrency_min,

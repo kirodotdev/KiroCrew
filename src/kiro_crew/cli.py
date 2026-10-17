@@ -642,6 +642,11 @@ def main() -> None:
         parser.print_help()
         return
 
+    if args.command == "gateway":  # before companion code can repoint SSH_AUTH_SOCK
+        from kiro_crew.mcp_gateway.agent_socket import record_boot_agent_socket
+
+        record_boot_agent_socket()
+
     # ── Platform context boot (CPP seam) ──
     # Resolve + install the PlatformContext ONCE, before any subcommand spins up
     # services.  Standalone (no companion, no KIROCREW_PROFILE) composes the

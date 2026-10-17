@@ -14,13 +14,15 @@ import asyncio
 import json
 import os
 import shlex
+import threading
 from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Collection, Optional
 
+from kiro_crew import ssh_auth_sock_consent
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.env import _SPEC_ENV_DENIED_PREFIXES
-from kiro_crew.mcp_gateway import launch_approval
+from kiro_crew.mcp_gateway import agent_socket, launch_approval
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.daemon.control_plane import CONTROL_PLANE_BACKENDS
 from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env, non_secret_env
@@ -580,6 +582,81 @@ def resolve_once_resolver(inner: TargetResolver) -> TargetResolver:
             os.path.basename(command),
         )
         return resolved_command, resolved_args, env, work_dir
+
+    return _resolver
+
+
+def agent_socket_resolver(inner: TargetResolver, socket_path: str) -> TargetResolver:
+    """Wrap *inner* so a backend the operator named gets the gateway's agent socket.
+
+    *socket_path* is the ``SSH_AUTH_SOCK`` the supervising gateway was started
+    with. It is added to a COPY of the env *inner* returned -- after the scrub
+    there -- only when every check below holds, and each is made again on every
+    resolve:
+
+    * *inner* resolved a launch: an unapproved launch is ``None`` and stays so,
+      so this can never widen what may spawn;
+    * the exact server name is in ``ssh_auth_sock_consent.json``
+      (``mcp_gateway_backends``), read now, so a removed name stops at once;
+    * the name is not a control-plane backend under any spelling gatewayd
+      resolves to one;
+    * ``agent_socket.agent_socket_refusal`` finds nothing wrong with the path.
+
+    It covers every launch of the server, pooled or connection-private. gatewayd
+    resolves and approves a launch by the name's normalized form (``my-server``
+    and ``my_server`` are one), so a grant reaches every launch the operator
+    approved under that form. Anything else passes the target through
+    untouched. Each change in the decision for a server is logged and audited
+    once; it applies to every launch of that server from then on.
+    """
+    control_plane_stems = {launch_approval.target_stem(n) for n in CONTROL_PLANE_BACKENDS}
+    last_decision: dict[str, tuple[str, str]] = {}
+    decision_lock = threading.Lock()
+
+    def _decided(server_name: str, outcome: str, reason: str = "") -> None:
+        # Recorded under the lock so the audit trail's order is the decisions' order.
+        with decision_lock:
+            if last_decision.get(server_name) == (outcome, reason):
+                return
+            last_decision[server_name] = (outcome, reason)
+            if outcome == "allowed":
+                logger.info(
+                    "mcp-gateway: launches of %r get the gateway's ssh-agent socket", server_name
+                )
+            else:
+                logger.warning(
+                    "mcp-gateway: launches of %r get no ssh-agent socket: %s", server_name, reason
+                )
+            facade._audit_agent_socket_decision(server_name, outcome, reason)
+
+    def _resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dict[str, str], str]]:
+        target = inner(pool_key)
+        if target is None:
+            return None
+        name = pool_key.server_name
+        try:
+            granted = name in ssh_auth_sock_consent.mcp_gateway_backends_granted()
+        except Exception:
+            logger.debug("ssh-agent backend grant unreadable; offering no socket", exc_info=True)
+            granted = False
+        if not granted:
+            if last_decision.get(name, ("", ""))[0] == "allowed":
+                _decided(name, "denied", "no longer named in the operator's consent")
+            return target
+        if launch_approval.target_stem(name) in control_plane_stems:
+            _decided(name, "denied", "a control-plane backend never receives it")
+            return target
+        try:
+            refusal = agent_socket.agent_socket_refusal(socket_path)
+        except Exception:
+            logger.debug("agent socket check failed", exc_info=True)
+            refusal = "the socket could not be checked"
+        if refusal is not None:
+            _decided(name, "denied", refusal)
+            return target
+        _decided(name, "allowed")
+        command, args, env, work_dir = target
+        return command, args, {**env, "SSH_AUTH_SOCK": socket_path}, work_dir
 
     return _resolver
 

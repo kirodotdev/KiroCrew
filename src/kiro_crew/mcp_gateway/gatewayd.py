@@ -132,6 +132,7 @@ from kiro_crew.mcp_gateway.daemon.admission_protocol import (  # noqa: F401
 )
 from kiro_crew.mcp_gateway.daemon.audit import (  # noqa: F401
     _audit_abort_applied,
+    _audit_agent_socket_decision,
     _audit_caller_claimed,
     _audit_caller_rekey,
     _audit_disconnect_cancel,
@@ -224,6 +225,7 @@ from kiro_crew.mcp_gateway.daemon.launch import (  # noqa: F401
     _resolve_once_home,
     _resolve_target_off_loop,
     _TargetUnknown,
+    agent_socket_resolver,
     env_target_resolver,
     resolvable_target_stems,
     resolve_once_resolver,
@@ -403,6 +405,7 @@ async def run_gatewayd(
     target_resolver: Optional[TargetResolver] = None,
     prewarm_count: int = 0,
     credential_watch_paths: Optional[list[Path]] = None,
+    backend_agent_socket: Optional[str] = None,
     owner_pid: int = 0,
     spawn_concurrency: int = DEFAULT_CAPACITY,
     spawn_concurrency_min: int = DEFAULT_FLOOR,
@@ -451,6 +454,13 @@ async def run_gatewayd(
             caller-supplied (typically threaded through the seam-resolved
             ``--credential-watch-path`` argv flags); the daemon never
             hardcodes or interprets any credential path.
+        backend_agent_socket: The ssh-agent socket the supervising gateway was
+            started with (``agent_socket.DAEMON_ENV``, which ``_amain`` takes out
+            of the environment). When given, the resolver is wrapped by
+            :func:`agent_socket_resolver`, which offers it as ``SSH_AUTH_SOCK``
+            to the backends the operator names in
+            ``ssh_auth_sock_consent.json``. ``None`` (the default) wraps
+            nothing, so the run is byte-identical to a daemon without it.
         spawn_concurrency: Daemon-wide number of backend spawn+initialize
             windows allowed in flight at once (the :class:`SpawnGate`
             capacity); ``spawn_concurrency_min`` / ``_max`` clamp it and are
@@ -537,6 +547,10 @@ async def run_gatewayd(
     # handed through unchanged. Wrapping an INJECTED resolver too keeps the
     # behaviour identical whether the daemon resolves from env or a test's stub.
     resolver = resolve_once_resolver(resolver)
+    # Outermost, so the socket lands after every resolver step has built the env.
+    if backend_agent_socket:
+        resolver = agent_socket_resolver(resolver, backend_agent_socket)
+        logger.info("gatewayd: offering the gateway's ssh-agent socket to operator-named backends")
     # Shared circuit breaker keyed by server name: a server
     # that crash-loops on spawn trips OPEN and get_or_create rejects further
     # spawns so the stub falls back to per-session exec instead of churning.
@@ -1257,6 +1271,14 @@ async def _acquire_backend(
         )
         if fresh_target is None or fresh_target[:2] != (command, args):
             raise _TargetUnknown(f"target approval changed for server {pool_key.server_name!r}")
+        # The ssh-agent socket decision is re-judged here too: a grant withdrawn, or
+        # a path refused, while this spawn queued must not reach the child. A
+        # socket that became available meanwhile is left out, as first decided.
+        offered = env.get("SSH_AUTH_SOCK")
+        if offered is not None and fresh_target[2].get("SSH_AUTH_SOCK") != offered:
+            raise _TargetUnknown(
+                f"ssh-agent socket decision changed for server {pool_key.server_name!r}"
+            )
         backend = await spawn_backend(
             pool_key=pool_key,
             command=command,

@@ -1055,8 +1055,9 @@ and are **not** dimensions: `sandbox_mode`, `autoapprove_set_hash`,
   process rather than a second sandbox. The compensating controls that do the
   real work here — the target command coming only from the rewriter's
   `KIROCREW_MCP_TARGET_<SERVER>` vars, credential-env scrubbing before `gatewayd`
-  inherits, and backends running as the invoking user — are all per-host, not
-  per-key.
+  inherits (the one key added back is the gateway's boot-time `SSH_AUTH_SOCK`,
+  for the backends an operator names in `ssh_auth_sock_consent.json`), and
+  backends running as the invoking user — are all per-host, not per-key.
 - **Approval is decided before a call reaches the gateway.** Tool visibility, the
   `autoApprove` list, the approval mode and trust-all are kiro-cli's own
   per-agent decision, taken against that agent's overlay entry. What arrives at

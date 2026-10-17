@@ -215,7 +215,10 @@ this document names what the default leaves open so that choice is informed.
 (`off`, `standard`, `cc`) and whose harness mask does not hide it, so the
 agent can use the operator's ssh-agent there, including a forwarded one. Under
 `strict`, or a harness mask over `~/.ssh`, it is scrubbed unless the operator
-records consent in the keystone leaf `ssh_auth_sock_consent.json`.
+records consent in the keystone leaf `ssh_auth_sock_consent.json`. A shared MCP
+gateway backend never gets it unless the operator names that backend in the
+same leaf (`mcp_gateway_backends`), and then only the socket the gateway was
+started with.
 
 ## Layer 1: Filesystem gate (`security/` package + `hooks.py`)
 

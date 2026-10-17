@@ -591,6 +591,8 @@ async def spawn_backend(
        ``~/.aws`` etc. is a known residual risk — backends that need AWS
        credentials read them from disk via ``ada`` / default credential
        chain, same as today's non-pooled topology).
+       The one key added back is the boot-time ``SSH_AUTH_SOCK``, for the
+       backends an operator names.
     3. Backends run as the invoking user's UID, same as kiro-cli —
        the pool does not elevate privileges.
 
