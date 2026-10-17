@@ -2,7 +2,7 @@
  *  filter popover and native card drop, the column's folder blocks (the board's
  *  own folder rows, reorderable per column) and the unfile strip. */
 import { Fragment } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from '../../components/overlayRoot'
 import { Plus, X, EyeOff, FolderPlus, MessageSquarePlus, ChevronRight, Pencil, MoreVertical, Tag as TagIcon, GripVertical, Settings, Server } from 'lucide-react'
 import { FolderBody } from '../../components/FolderBody'
 import { FolderRail } from '../../components/FolderRail'
@@ -551,10 +551,10 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                       </span>
                     )}
                   </div>
-                  {/* Column filter popover — portaled to <body> so the column's
+                  {/* Column filter popover — portaled to the body-level overlay root so the column's
                       overflow-hidden ancestor cannot clip it; viewport-anchored
                       to the edit button via popoverPos. */}
-                  {columnEditId === col.id && popoverPos && createPortal(
+                  {columnEditId === col.id && popoverPos && <OverlayPortal>{
                     /* Non-modal disclosure: role=dialog + a Tab-trap contains keyboard
                        focus, but we deliberately omit aria-modal — the popover has no
                        backdrop and is outside-click-dismissible, so claiming the rest of
@@ -623,9 +623,8 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                       <div className="mt-2 flex justify-end">
                         <button className="text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer" onClick={() => { updateColumnMutation.mutate({ id: col.id, body: { tag_ids: [] } }) }}>{i18nT('pages.chatSidebar.clear_filter')}</button>
                       </div>
-                    </div>,
-                    document.body
-                  )}
+                    </div>
+                  }</OverlayPortal>}
                   <SessionRowWindowScroller className="flex-1 overflow-y-auto scrollbar-none p-1.5 flex flex-col" style={{ scrollbarWidth: 'none' }}>
                     {/* No onDrop here: folder assignment only changes via folder-header drop
                         (into a folder) and the unfile strip below this scroller (out of one).
@@ -686,18 +685,17 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                              *  same visual as the list-view overlay. DragOverlay renders
                              *  null unless THIS column's DndContext has an active drag,
                              *  so per-column overlays never stack. Portaled to
-                             *  document.body: the sidebar rides inside OverlayDrawer's
+                             *  the body-level overlay root: the sidebar rides inside OverlayDrawer's
                              *  morph clip-path, and a clip-path clips fixed-position
                              *  descendants too, so an in-place overlay is erased the
                              *  moment the ghost strays past the drawer edge. React
                              *  portals preserve context, so the overlay still reads
                              *  THIS column's active drag. */}
-                            {createPortal(
+                            <OverlayPortal>{
                               <DragOverlay dropAnimation={null}>
                                 {activeDrag?.type === 'folder' ? <FolderDragGhost folder={folders.find(x => x.id === activeDrag.id)} /> : null}
-                              </DragOverlay>,
-                              document.body,
-                            )}
+                              </DragOverlay>
+                            }</OverlayPortal>
                           </DndContext>
                           )}
                           {ungrouped.map((s, i) => {

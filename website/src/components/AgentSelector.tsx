@@ -11,6 +11,7 @@ import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 import { isAssistantMember } from '../lib/assistantMember'
+import { useInsideDialog } from './overlayRoot'
 export interface KiroCrewAgent {
   name: string
   kiro_agent: string
@@ -74,7 +75,7 @@ interface Props {
    * there is no host dialog to coexist with. The transfer has a transient
    * cost in modal mode: while the popup is open, the wheel lock belongs to
    * the popup, so the dialog body itself does not wheel-scroll until the
-   * popup closes.
+   * popup closes. Outside a dialog the shared Popover ignores it.
    */
   modal?: boolean
   /**
@@ -123,7 +124,11 @@ interface Props {
  * Popover has no option semantics of its own, so the listbox ARIA and roving
  * focus come from `useListboxKeyboard`, unchanged.
  */
-export default function AgentSelector({ agents, defaultAgent, value, onChange, modal = false, rosterFailure, groupByKind = false }: Props) {
+export default function AgentSelector({ agents, defaultAgent, value, onChange, modal: modalProp = false, rosterFailure, groupByKind = false }: Props) {
+  // The shared Popover is modal only inside a Radix dialog, so focus handling
+  // follows the modality it actually gets (components/overlayRoot).
+  const insideDialog = useInsideDialog()
+  const modal = modalProp && insideDialog
   const provider = useProvider()
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')

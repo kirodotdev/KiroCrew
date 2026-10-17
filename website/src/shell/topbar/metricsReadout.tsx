@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal, useCloseWhenCrewHidden } from '../../components/overlayRoot'
 import { useQuery } from '@tanstack/react-query'
 import { AudioWaveform, Monitor } from 'lucide-react'
 import { api } from '../../api/client'
@@ -218,7 +218,7 @@ export function useMetricsReadout(isMobile: boolean, updateAvailable: boolean, a
     metricsOpen, setMetricsOpen, metricsInlineFits, metricsPopoverOpen, metricsProbeRef, metricsGroupRef, metricsBtnRef,
     metricsPopoverRef, capsuleCollapsed, setCapsuleCollapsed, capsuleLayoutPulse, pulseCapsuleLayout, metricsHover,
     metricsHoverAnchor, metricsCardAnchor, metricsCardOpen, metricsCardId, sysMetrics, sysMetricsError, sysMetricsStale,
-    metricsCardRole, metricsDescribedBy, toggleMetricsPopover,
+    metricsCardRole, metricsDescribedBy, toggleMetricsPopover, closeMetricsPopover,
   }
 }
 
@@ -372,10 +372,13 @@ export function MetricsErrorNotice({ metrics }: { metrics: MetricsReadout }) {
 export function MetricsCard({ metrics }: { metrics: MetricsReadout }) {
   const {
     metricsOpen, metricsInlineFits, metricsPopoverOpen, metricsPopoverRef, metricsHover, metricsCardAnchor, metricsCardOpen,
-    metricsCardId, sysMetrics, sysMetricsError, sysMetricsStale, metricsCardRole,
+    metricsCardId, sysMetrics, sysMetricsError, sysMetricsStale, metricsCardRole, closeMetricsPopover,
   } = metrics
+  // The pinned card closes on a Crew switch like a click outside; its own
+  // listeners live in useMetricsReadout, above the overlay root.
+  useCloseWhenCrewHidden(metricsPopoverOpen, closeMetricsPopover)
   if (!metricsCardAnchor) return null
-  return createPortal(
+  return <OverlayPortal>{
     // One card, two ways in: a click pins it as a dialog (the narrow band),
     // and a hover previews it over any desktop form of the control. A clean
     // hover preview is a tooltip; a stale-fetch hand-off is interactive, so
@@ -465,7 +468,6 @@ export function MetricsCard({ metrics }: { metrics: MetricsReadout }) {
           message={i18nT('app.metrics_card_fetch_failed')}
         />
       )}
-    </div>,
-    document.body
-  )
+    </div>
+  }</OverlayPortal>
 }

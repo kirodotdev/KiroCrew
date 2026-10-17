@@ -118,7 +118,7 @@ export function useFocusChrome({ isMobile, navCollapsed, activeInstanceId, topRe
   }, [topPeek.open, railPeek.open, closeTopPeek, closeRailPeek])
   // A header-owned popover keeps the header on screen.
   //
-  // The instance switcher's menu is portaled to document.body (Radix), so moving
+  // The instance switcher's menu is portaled to the body-level overlay root (Radix), so moving
   // the pointer into it reads as leaving BOTH the trigger strip and the header:
   // the close grace elapses, the header slides away, and the menu's anchor moves
   // out from under it while the user is still using it.

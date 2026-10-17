@@ -43,7 +43,7 @@ the difference is whether the heading can ever have a sibling above it:
   heading, and that panel returns `null` when nothing is pending — so the heading moves in
   and out of `:first-child` with the pending count, and a positional rule would make the
   gap depend on it. (A conditionally rendered `Modal` does NOT have this effect: it
-  `createPortal`s to `document.body` and never occupies a sibling slot.)
+  portals to the body-level overlay root and never occupies a sibling slot.)
 - **A heading that repeats within one tab** (`SettingsSection`, used many times per
   Settings tab; `LocalStorageDebug`'s section headings) keeps `mt-6`, because the gap
   between two sections is real, and pairs it with `first:mt-0`. The fragment adds no DOM
@@ -437,7 +437,8 @@ data-owns-swipe={embedded ? undefined : 'left right'}
 Two kinds of surface need no attribute, and it is worth knowing why rather than
 copying:
 
-- **Anything portaled to `document.body`** is outside the shell entirely, so the
+- **Anything portaled to the body level** (`document.body` or the overlay root
+  under it, `src/components/overlayRoot.tsx`) is outside the shell entirely, so the
   gesture cannot reach it. That covers `Modal`, the notification sheet, and the
   collapsed-rail tooltips. A static read of the JSX suggests otherwise — the sheet is
   written inside the topbar — so check for `createPortal` before concluding a surface

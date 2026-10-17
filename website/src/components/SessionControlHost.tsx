@@ -21,7 +21,7 @@
  * @module components/SessionControlHost
  */
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal, useLocalCrewHidden } from './overlayRoot'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
 import ErrorNotice from './ErrorNotice'
@@ -163,8 +163,12 @@ export default function SessionControlHost({
     [bundlePath, resetKey] // eslint-disable-line react-hooks/exhaustive-deps
   )
 
-  // Close on outside click / Escape, matching the sibling pill popovers.
+  // Close on outside click / Escape, matching the sibling pill popovers. Not
+  // while its Crew is hidden behind a remote one (components/overlayRoot): closing
+  // discards the draft, and those keys belong to the Crew in front.
+  const crewHidden = useLocalCrewHidden()
   useEffect(() => {
+    if (crewHidden) return
     const onDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null
       // The triggering chip is not "outside". mousedown fires before click, so
@@ -189,7 +193,7 @@ export default function SessionControlHost({
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
     }
-  }, [onClose, imeLatch])
+  }, [onClose, imeLatch, crewHidden])
 
   const subscribeFn = useCallback((event: string, cb: (data: unknown) => void) => {
     const handler = (e: Event) => cb((e as CustomEvent).detail)
@@ -225,7 +229,7 @@ export default function SessionControlHost({
   const left = Math.max(8, Math.min(anchorRect.left, window.innerWidth - width - 8))
   const bottom = window.innerHeight - anchorRect.top + 6
 
-  return createPortal(
+  return <OverlayPortal>{
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- stopPropagation only: the dialog is a container that isolates global chords from the control inside it, so there is no gesture here to mirror with a keyboard equivalent. The control's own interactive elements carry their own handlers and are unaffected.
     <div
       ref={popRef}
@@ -286,7 +290,6 @@ export default function SessionControlHost({
           </Suspense>
         </AppApiProvider>
       </ControlErrorBoundary>
-    </div>,
-    document.body
-  )
+    </div>
+  }</OverlayPortal>
 }

@@ -1,5 +1,5 @@
 import { Fragment, useState, useEffect, useId, useLayoutEffect, useCallback, useRef } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal, useLocalCrewHidden } from './overlayRoot'
 import { motion, AnimatePresence } from 'framer-motion'
 import { MessageSquareQuote, MessageCircleQuestionMark, MessageSquarePlus, X, Copy, Check, Loader2 } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
@@ -395,7 +395,7 @@ interface SelectionToolbarProps {
   /**
    * Hide the toolbar without discarding its state. The file viewer keeps
    * inactive tabs MOUNTED (display:none), but this toolbar portals to
-   * `document.body`, so without this an open composer in a hidden tab would
+   * the body-level overlay root, so without this an open composer in a hidden tab would
    * stay on screen and submit against a file the user is no longer looking at.
    * The draft survives the suspension and comes back with the tab.
    */
@@ -447,7 +447,12 @@ function safeAreaBottomPx(): number {
 
 /** Generic floating toolbar that appears when user selects text within a container.
  *  Extensible — pass any actions (quote, copy, etc.) via the `actions` prop. */
-export default function SelectionToolbar({ containerRef, actions, externalSelection, composer, suspended = false, externalOnly = false, dock: dockProp = false }: SelectionToolbarProps) {
+export default function SelectionToolbar({ containerRef, actions, externalSelection, composer, suspended: suspendedProp = false, externalOnly = false, dock: dockProp = false }: SelectionToolbarProps) {
+  // Behind a remote Crew the toolbar is hidden with its Crew (components/overlayRoot)
+  // and suspends like a hidden tab, so a key aimed at the Crew in front cannot
+  // reach it. The draft survives and returns with the Crew.
+  const crewHidden = useLocalCrewHidden()
+  const suspended = suspendedProp || crewHidden
   // The composer is a floating annotation box by design; it never docks.
   const dock = dockProp && !composer
   const [visible, setVisible] = useState(false)
@@ -1206,7 +1211,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     }
   }, [visible, composer, containerRef])
 
-  return createPortal(
+  return <OverlayPortal>
     <AnimatePresence>
       {visible && !suspended && (
         <motion.div
@@ -1281,9 +1286,8 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
           )}
         </motion.div>
       )}
-    </AnimatePresence>,
-    document.body
-  )
+    </AnimatePresence>
+  </OverlayPortal>
 }
 
 /** `true` below `COMPOSER_STACK_BELOW_PX`; tracks window resizes. */

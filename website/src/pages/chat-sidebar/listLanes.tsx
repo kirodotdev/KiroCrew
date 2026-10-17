@@ -4,6 +4,7 @@
  *  share. */
 import { Fragment } from 'react'
 import { createPortal } from 'react-dom'
+import { OverlayPortal } from '../../components/overlayRoot'
 import { motion } from 'framer-motion'
 import { DndContext, DragOverlay, MeasuringStrategy, type Modifier } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
@@ -111,7 +112,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
       : <SessionDragGhost slot={localSlots.find(x => x.key === activeDrag.id)} fallbackLabel={activeDrag.id} />
     : null
   /**
-   * The drag preview is PORTALED to `document.body`.
+   * The drag preview is PORTALED to the body-level overlay root.
    *
    * dnd-kit positions the overlay `fixed`, which normally escapes ancestor
    * overflow — but the sidebar rides inside OverlayDrawer's morph `clip-path`,
@@ -121,10 +122,9 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
    * one gesture that aims there. Portaling keeps it visible until release; it
    * stays inside the DndContext because React portals preserve context.
    */
-  const dragOverlay = createPortal(
-    <DragOverlay dropAnimation={null} modifiers={activeDrag?.type === 'session' ? SESSION_DRAG_GHOST_MODIFIERS : undefined}>{dragGhost}</DragOverlay>,
-    document.body,
-  )
+  const dragOverlay = <OverlayPortal>{
+    <DragOverlay dropAnimation={null} modifiers={activeDrag?.type === 'session' ? SESSION_DRAG_GHOST_MODIFIERS : undefined}>{dragGhost}</DragOverlay>
+  }</OverlayPortal>
 
   const renderConductorLane = (): React.ReactNode => (
           // Conductor lane: every session nested under the session that OPENED it.

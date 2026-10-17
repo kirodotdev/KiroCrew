@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { useQuery } from '@tanstack/react-query'
 import { FileText, Folder, Eye } from 'lucide-react'
 import { api } from '../api/client'
@@ -299,7 +299,7 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // screen so the keyboard gate above keeps working unchanged.
   const searchFailed = isError && ready && debounced === query && !isFetching
 
-  return createPortal(
+  return <OverlayPortal>
     <div
       className="fixed z-[9999] bg-card border border-border rounded-lg shadow-lg overflow-y-auto py-1 animate-slide-up"
       role="listbox"
@@ -359,7 +359,6 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
         </div>
         )
       })}
-    </div>,
-    document.body
-  )
+    </div>
+  </OverlayPortal>
 }

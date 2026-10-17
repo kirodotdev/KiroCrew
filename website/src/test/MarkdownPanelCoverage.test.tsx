@@ -19,11 +19,12 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { forwardRef, useImperativeHandle, createRef } from 'react'
-import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act, within, createEvent } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { PierreEditorHandle } from '../pierre'
 import { evictDocumentBodies } from '../hooks/usePanelTabs'
+import { LocalOverlayRoot } from '../components/overlayRoot'
 
 // ── CSS Custom Highlight API stub (must precede the dynamic import) ──────────
 const highlightRegistry = new Map<string, Range[]>()
@@ -368,6 +369,13 @@ function mountPanel(opts: MountOpts = {}) {
 function openPanelMenu() {
   fireEvent.click(screen.getAllByTestId('markdown-panel-more-options')[0])
 }
+
+/** The panel inside the local Crew's overlay root, hidden as if a remote Crew were showing. */
+const behindCrew = (hidden: boolean, content: string) => (
+  <LocalOverlayRoot hidden={hidden}>
+    <MarkdownPanel embedded filePath="/tmp/notes.md" content={content} onContentChange={vi.fn()} onSave={vi.fn(async () => {})} onClose={vi.fn()} initialDiffMode={false} />
+  </LocalOverlayRoot>
+)
 
 /**
  * The unsaved-changes banner stays MOUNTED and animates its own row height
@@ -844,6 +852,26 @@ describe('MarkdownPanel — fullscreen overlay', () => {
     expect(screen.getByTitle('Click to copy path')).toHaveTextContent('/tmp/notes.md')
   })
 
+  it('hides while a remote Crew is showing and keeps its state for the return', async () => {
+    // The overlay root hides the overlay with the local pane; its Escape handler stands down.
+    const ui = (hidden: boolean) => behindCrew(hidden, '# Title\n')
+    const view = render(ui(false), { wrapper })
+    openPanelMenu()
+    fireEvent.click(screen.getByText('Full screen'))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toBeVisible()
+
+    view.rerender(ui(true))
+    expect(dialog).not.toBeVisible()
+    // Escape reaching the parent document must not exit a view nobody sees.
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.getByRole('dialog', { hidden: true })).toBe(dialog)
+
+    view.rerender(ui(false))
+    expect(screen.getByRole('dialog')).toBe(dialog)
+    expect(dialog).toBeVisible()
+  })
+
   it('closes the overlay and releases body scroll on Exit full screen', async () => {
     await goFullscreen()
     fireEvent.click(screen.getByLabelText('Exit full screen'))
@@ -924,6 +952,20 @@ describe('MarkdownPanel — preview find', () => {
 
   it('opens a find field scoped to the rendered preview', async () => {
     expect(await openFind()).toBeInTheDocument()
+  })
+
+  it('leaves Cmd+F alone while a remote Crew is showing', async () => {
+    const ui = (hidden: boolean) => behindCrew(hidden, 'alpha beta alpha gamma\n')
+    const view = render(ui(true), { wrapper })
+    await screen.findByText(/alpha beta alpha gamma/)
+    const ev = createEvent.keyDown(document, { key: 'f', metaKey: true })
+    fireEvent(document, ev)
+    expect(ev.defaultPrevented).toBe(false)
+    expect(screen.queryByLabelText('Find in document')).toBeNull()
+
+    view.rerender(ui(false))
+    fireEvent.keyDown(document, { key: 'f', metaKey: true })
+    expect(await screen.findByLabelText('Find in document')).toBeInTheDocument()
   })
 
   it('counts every match and paints them through the highlight registry', async () => {

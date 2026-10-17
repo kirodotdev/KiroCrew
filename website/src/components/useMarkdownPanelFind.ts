@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, type RefObject } from 'react'
 import { hasCommandModifier } from '../utils/commandModifier'
+import { useLocalCrewHidden } from './overlayRoot'
 
 /**
  * `MarkdownPanel`'s CSS Custom Highlight registry, and the preview find (Cmd+F)
@@ -52,6 +53,8 @@ export function useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fu
   // and we're in markdown preview (edit surface and non-markdown are untouched).
   // Highlights paint via the CSS Custom Highlight API (Range objects outside
   // the DOM) so the react-markdown subtree is never mutated.
+  // True while a remote Crew covers the local dashboard this panel lives in.
+  const crewHidden = useLocalCrewHidden()
   const [findOpen, setFindOpen] = useState(false)
   const [findTerm, setFindTerm] = useState('')
   const [findCase, setFindCase] = useState(false)
@@ -203,7 +206,7 @@ export function useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fu
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!hasCommandModifier(e) || e.key.toLowerCase() !== 'f') return
-      if (!active) return                                   // hidden tab: never claim the key
+      if (!active || crewHidden) return                     // hidden tab or another Crew showing: never claim the key
       if (editing) return                                   // editor owns it (#6397)
       if (!findActiveRef.current) return                    // cursor is in chat → let chat-find handle
       if (diffMode || !isMarkdown) {
@@ -223,7 +226,7 @@ export function useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fu
     }
     document.addEventListener('keydown', onKey, true)
     return () => document.removeEventListener('keydown', onKey, true)
-  }, [active, editing, diffMode, isMarkdown])
+  }, [active, editing, diffMode, isMarkdown, crewHidden])
 
   return { findOpen, findTerm, setFindTerm, findCase, setFindCase, findIdx, findCount, findInputRef, stepFind, closeFind }
 }

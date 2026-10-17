@@ -4,6 +4,7 @@ import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { i18nT } from '../../i18n/t'
+import { GlobalOverlayScope } from '../overlayRoot'
 
 /**
  * shadcn/ui `dialog` over Radix Dialog, themed to this repo's tokens the way
@@ -33,6 +34,12 @@ import { i18nT } from '../../i18n/t'
 
 const Dialog = DialogPrimitive.Root
 const DialogTrigger = DialogPrimitive.Trigger
+// Deliberately NOT in the local overlay root, and neither is anything opened
+// inside it (GlobalOverlayScope): a modal dialog holds the whole window while
+// open (pointer lock, the rest of the page aria-hidden), and that hold cannot be
+// lifted without remounting its content, which would lose what the user
+// entered. Hidden behind a remote Crew it would keep that hold invisibly, so it
+// stays on screen across a Crew switch instead. See components/overlayRoot.
 const DialogPortal = DialogPrimitive.Portal
 const DialogClose = DialogPrimitive.Close
 
@@ -124,7 +131,7 @@ const DialogContent = React.forwardRef<
       // alone so the visible Title still names the dialog.
       {...(props['aria-label'] ? { 'aria-labelledby': undefined } : {})}
     >
-      {children}
+      <GlobalOverlayScope>{children}</GlobalOverlayScope>
       {!hideClose && (
         <DialogPrimitive.Close
           aria-label={i18nT('components.dialog.close')}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from '../../components/overlayRoot'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowRight,
@@ -2680,7 +2680,7 @@ export default function CommandBarOverlay({
     )
   }
 
-  return createPortal(
+  return <OverlayPortal>
     <div
       className="fixed left-0 right-0 z-[9999] flex items-start justify-center bg-bg/60 backdrop-blur-xs animate-rise"
       style={{ top: vv.offsetTop, height: vv.height }}
@@ -3151,7 +3151,6 @@ export default function CommandBarOverlay({
           </div>
         )}
       </div>
-    </div>,
-    document.body,
-  )
+    </div>
+  </OverlayPortal>
 }

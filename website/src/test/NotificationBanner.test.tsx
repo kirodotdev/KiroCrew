@@ -16,6 +16,8 @@ import NotificationBanner, { computeExitDelta, exitTarget } from '../components/
 import { dispatchLiveNotification } from '../hooks/notificationEvent'
 import { BANNER_AUTO_HIDE_MS, BANNER_ENABLED_KEY, saveBannerEnabled, shouldBannerNote, targetsCurrentView } from '../hooks/notificationBanner'
 import type { RootState } from '../store'
+import { setActiveId } from '../store/instancesSlice'
+import { LocalOverlayRoot } from '../components/overlayRoot'
 import type { Notification } from '../types'
 
 const mockAck = vi.fn().mockResolvedValue({})
@@ -539,6 +541,23 @@ describe('NotificationBanner: stack and interaction', () => {
     await waitFor(() => expect(cards()).toHaveLength(0))
     expect(store.getState().notifications.items[0].acked).toBe(true)
     expect(mockAck).toHaveBeenCalledWith(n.ts)
+  })
+
+  it('over a remote Crew, an action brings the local Crew forward before it navigates', async () => {
+    const n = mkN({ actions: [{ id: 'a', label: 'Open run', url: '/schedule' }] })
+    const store = createTestStore({ notifications: { items: [n] } as RootState['notifications'] })
+    store.dispatch(setActiveId('remote-crew'))
+    const bellRef = createRef<HTMLButtonElement>()
+    renderWithProviders(
+      <LocalOverlayRoot hidden>
+        <NotificationBanner bellRef={bellRef} popoverOpen={false} onOpenNote={vi.fn()} />
+      </LocalOverlayRoot>,
+      { store, route: '/settings' },
+    )
+    arrive(n)
+    fireEvent.click(screen.getByText('Open run'))
+    expect(store.getState().instances.activeId).toBeNull()
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/schedule'))
   })
 
   it('an action refused by the leave guard acks nothing and keeps the card', async () => {

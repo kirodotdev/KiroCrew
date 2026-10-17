@@ -4,7 +4,7 @@
  */
 import { useCallback, useLayoutEffect, useState } from 'react'
 import { Brain, Minus } from 'lucide-react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { Input } from './ui'
 import { i18nT } from '../i18n/t'
 
@@ -77,7 +77,7 @@ export default function HookSkillsDropdown({
   }, [recompute, selected])
 
   if (!rect) return null
-  return createPortal(
+  return <OverlayPortal>{
     // The panel's only listener is keyboard-only Escape-to-dismiss (plus the
     // focus restore the trigger needs), delegated to the container because focus
     // can be on the filter Input or on any row. Nothing activates the panel
@@ -140,7 +140,6 @@ export default function HookSkillsDropdown({
           </span>
         </button>
       ))}
-    </div>,
-    document.body,
-  )
+    </div>
+  }</OverlayPortal>
 }

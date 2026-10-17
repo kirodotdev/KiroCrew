@@ -419,7 +419,8 @@ portal, so what decides coverage is where a component sits in JSX:
 <Modal open={open} onClose={close} title="…">
   …
   <SimpleSelect … />   {/* COVERED: a React descendant. Its popup portals to    */}
-</Modal>                {/* document.body at z-[9999], and is still covered,     */}
+</Modal>                {/* the body-level overlay root at z-[9999], and is      */}
+                        {/* still covered,                                        */}
                         {/* because coverage is about the React tree.            */}
 {pickerOpen && (
   <ProjectPicker … />   {/* NOT COVERED: a React SIBLING. It paints above the    */}
@@ -427,13 +428,14 @@ portal, so what decides coverage is where a component sits in JSX:
                         {/* on its dispatch path, so it needs its OWN boundary.  */}
 ```
 
-Both of those overlays portal to `document.body` and both paint above the dialog
+Both of those overlays portal to the body-level overlay root (see *Floating
+layers and Crew switches* below) and both paint above the dialog
 at the same `z-[9999]`. Only one of them is inside the boundary. **Sharing a
 stacking context is a paint-order fact and implies nothing about event
 routing** — conflating the two is what kept #6833 open, so do not reason about
 coverage from a z-index.
 
-A dialog rendered inside the App root rather than portalled to `document.body`
+A dialog rendered inside the App root rather than portalled to the body level
 shares the shell's stacking context, so it uses the `z-[65]` band: above the chat
 chrome (at most `z-[63]`) and below the `z-[100]` shell takeover layer, which a tie
 would otherwise cover by document order. `src/components/AppRootDialogZIndex.test.tsx`
@@ -454,7 +456,7 @@ const isolateKeys = (e: React.KeyboardEvent) => {
   if (e.key === 'Escape') { ime.claimKey(e); return }
   e.stopPropagation()
 }
-return createPortal(<div onKeyDown={isolateKeys} …>…</div>, document.body)
+return <OverlayPortal><div onKeyDown={isolateKeys} …>…</div></OverlayPortal>
 ```
 
 Three properties of that guard are load-bearing:
@@ -914,3 +916,27 @@ icons from a downstream edition instead of editing the seed maps.
 The Crew editor's Capabilities pane and its draft, preview and save contract are
 specified in [crew mode](../../docs/system-specs/modules/crew-mode.md) (*Crew
 capability drafts*).
+
+## Floating layers and Crew switches
+
+Switching to a remote Crew hides the local dashboard without unmounting it, so
+a floating layer must not portal straight to `document.body` (lint refuses
+`createPortal(…, document.body)` and Radix imports outside `components/ui/`).
+`src/components/overlayRoot.tsx` is the reference; in short:
+
+- Portal through `<OverlayPortal>` or `useOverlayRoot()`. Inside the local pane
+  that resolves to a body-level container hidden with the pane; anywhere else it
+  is `document.body`.
+- A switch counts as a click outside for layers that hold no input: the shared
+  Radix menus, context menus and selects close (`useCloseWhenCrewHidden`). A new
+  shared Radix wrapper passes `container={useOverlayRoot()}` inside
+  `MountAfterCommit`, then either closes the same way or, if it can hold input,
+  stays mounted and refuses dismissal while hidden (`standDownWhileHidden`, as
+  popovers do). A popover is modal only inside a Radix dialog.
+- Every other layer stays mounted and hidden, and hiding stops painting, not
+  listening. Required: every document- or window-level key handler of a layer
+  rendered under `<OverlayPortal>` that commits, discards or claims a key reads
+  `useLocalCrewHidden()` and stands down while it is true (as `Modal`,
+  `useDialogFocusTrap`, `useListKeyboardNav` and `useMenuKeyboard` do).
+- A Radix dialog and what it opens stay on `document.body` across a switch
+  (`GlobalOverlayScope`), as does the notification banner.

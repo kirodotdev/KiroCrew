@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext'
 import { useLexicalNodeSelection } from '@lexical/react/useLexicalNodeSelection'
 import {
@@ -118,7 +118,7 @@ function PasteTokenChip({ block, nodeKey }: { block: PasteBlock; nodeKey: NodeKe
       >
         {displayLabel}
       </Clickable>
-      {createPortal(
+      <OverlayPortal>
         <PastePreviewTooltip
           open={previewOpen}
           panelId={panelId}
@@ -126,9 +126,8 @@ function PasteTokenChip({ block, nodeKey }: { block: PasteBlock; nodeKey: NodeKe
           content={block.content}
           seq={block.seq}
           testIdPrefix="lexical-paste-preview"
-        />,
-        document.body,
-      )}
+        />
+      </OverlayPortal>
     </>
   )
 }

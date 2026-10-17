@@ -8,7 +8,7 @@ import QuoteCard from '../pages/chat/QuoteCard'
 import CopyBranchButton from './CopyBranchButton'
 import ProjectAwsProfileStatus from './ProjectAwsProfile'
 import RejectDropdown from './RejectDropdown'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
 import { useAppStore, useAppDispatch } from '../store'
@@ -1178,15 +1178,14 @@ function ChatInput({
         )}
         {/* Where a release would land: portalled so a transformed ancestor
             cannot offset its viewport coordinates. */}
-        {treeDrop.state === 'accept' && treeDrop.caret && createPortal(
+        {treeDrop.state === 'accept' && treeDrop.caret && <OverlayPortal>
           <div
             aria-hidden="true"
             data-testid="composer-tree-drop-caret"
             className="pointer-events-none fixed z-50 w-0.5 rounded-full bg-accent"
             style={{ left: treeDrop.caret.left - 1, top: treeDrop.caret.top, height: treeDrop.caret.height }}
-          />,
-          document.body,
-        )}
+          />
+        </OverlayPortal>}
         {/* A folder whose path cannot be written as a folder reference: say why
             instead of leaving only the no-drop cursor. */}
         {treeDrop.state === 'refuse' && (

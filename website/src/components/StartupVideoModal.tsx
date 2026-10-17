@@ -361,7 +361,7 @@ function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKe
     // stray click is not.
     //
     // z-[65]: this modal renders inside the App shell's `relative z-[1]` root
-    // (NOT portaled to document.body like Modal), so it must sit above every
+    // (NOT portaled to the body-level overlay root like Modal), so it must sit above every
     // chat-page layer it would otherwise paint under -- the sessions flyout
     // (z-[59]), its drawer morph (z-[60]), the focus-peek rail toggle (z-[61])
     // and the focus-mode rail (inline z 62/63) -- and below the shell's z-[70]

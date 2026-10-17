@@ -1,4 +1,4 @@
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter, defaultWriteKind, isCrewmateChat } from './AgentDropdownList'
@@ -40,7 +40,7 @@ export function ChatPaneAgentMenu({ paneSlot, models, actions, navigate }: Omit<
   return (
     <>
       {/* Agent picker portal — anchored to the input-bar agent button. */}
-      {agentDD.open && agentBtnRect && createPortal(
+      {agentDD.open && agentBtnRect && <OverlayPortal>{
         /* The labeled dialog owns roving-focus key handling for its descendants. */
         // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
         <div
@@ -73,9 +73,8 @@ export function ChatPaneAgentMenu({ paneSlot, models, actions, navigate }: Omit<
           {/* The default for new sessions is a template; a crewmate's chat offers no such write. */}
           {!isCrewmateChat(paneSlot?.agent_kind, paneAgentName, installedAgents) && <DefaultAgentRow agentName={paneAgentName} isDefault={paneAgentName === defaultAgent} memoryTag={sessionMemoryTag(paneSlot?.agent, paneSlot?.agent_kind, defaultAgent, agentChoices)} onSetDefault={() => toggleDefaultAgent(paneAgentName, defaultWriteKind(paneSlot?.agent_kind))} />}
           <ManageAgentsFooter error={defaultAgentFailed} onManage={() => { agentDD.setOpen(false); navigate('/capabilities?tab=crews') }} />
-        </div>,
-        document.body,
-      )}
+        </div>
+      }</OverlayPortal>}
     </>
   )
 }
@@ -86,7 +85,7 @@ export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate
   return (
     <>
       {/* Model picker portal — anchored to the input-bar model button. */}
-      {modelDD.open && modelBtnRect && createPortal(
+      {modelDD.open && modelBtnRect && <OverlayPortal>{
         /* The labeled dialog owns roving-focus key handling for its descendants. */
         // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
         <div
@@ -164,9 +163,8 @@ export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate
             </div>
           )}
          </div>
-        </div>,
-        document.body,
-      )}
+        </div>
+      }</OverlayPortal>}
     </>
   )
 }

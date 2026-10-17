@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { Check, Copy, Download, MoreHorizontal, Minus, Plus, Search, X } from 'lucide-react'
 import Clickable from '../Clickable'
 import { DOUBLE_TAP_MS, DOUBLE_TAP_SLOP, DOUBLE_TAP_ZOOM, usePinchZoom } from '../../hooks/usePinchZoom'
@@ -11,7 +11,10 @@ import {
 } from '../ui/dropdown-menu'
 import { i18nT } from '../../i18n/t'
 import { fmtNumber } from '../../i18n/format'
+import { useLocalCrewHidden } from '../overlayRoot'
 import { overlayCaptionClearancePx } from '../../lib/electron'
+import { ReactReduxContext } from 'react-redux'
+import { setActiveId } from '../../store/instancesSlice'
 
 type LightboxImage = { src: string; alt: string }
 type LightboxDetail = { images: LightboxImage[]; index: number }
@@ -133,6 +136,14 @@ export function dispatchLightbox(target: HTMLImageElement): void {
  *  (clamped at the ends). Accepts both the structured { images, index }
  *  payload and the legacy { src, alt } single-image shape. */
 export function Lightbox() {
+  // Behind a remote Crew the viewer is hidden with its Crew (components/overlayRoot)
+  // and its keys belong to the Crew in front; the image and zoom survive.
+  const crewHidden = useLocalCrewHidden()
+  const crewHiddenRef = useRef(crewHidden)
+  crewHiddenRef.current = crewHidden
+  // Read through the context so a viewer rendered without a store (isolated
+  // tests) still works; there is no Crew to switch then.
+  const store = useContext(ReactReduxContext)?.store
   const [state, setState] = useState<LightboxDetail | null>(null)
   // A fresh mirror of `state`, so handlers subscribed once per open — the global
   // keydown listener's download shortcut, and the paging gesture's read of the
@@ -492,6 +503,9 @@ export function Lightbox() {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as Partial<LightboxDetail> & Partial<LightboxImage> | undefined
       if (!detail) { setState(null); return }
+      // An image opened from content that stays on screen across a switch (a
+      // Radix dialog) while this viewer is hidden: show the local Crew it opens in.
+      if (crewHiddenRef.current) store?.dispatch(setActiveId(null))
       if (Array.isArray(detail.images) && detail.images.length > 0) {
         const raw = Number.isInteger(detail.index) ? (detail.index as number) : 0
         const idx = Math.max(0, Math.min(raw, detail.images.length - 1))
@@ -502,7 +516,7 @@ export function Lightbox() {
     }
     window.addEventListener('lightbox', handler)
     return () => window.removeEventListener('lightbox', handler)
-  }, [])
+  }, [store])
   const isOpen = state !== null
   // Reset the zoom whenever the lightbox opens/closes or the shown image
   // changes, so each image starts fit-to-screen rather than inheriting the
@@ -532,7 +546,7 @@ export function Lightbox() {
   // off-screen. Runs post-layout, so offsetWidth already reflects the new box.
   useEffect(() => { setPan(p => (zoom <= LIGHTBOX_ZOOM_MIN ? { x: 0, y: 0 } : clampPan(p.x, p.y))) }, [zoom, clampPan, setPan])
   useEffect(() => {
-    if (!isOpen) return
+    if (!isOpen || crewHidden) return
     const onKey = (e: KeyboardEvent) => {
       // While the actions menu is open it owns Escape (close the menu) and the
       // arrows (move between items). This capture-phase listener runs first, so
@@ -588,7 +602,7 @@ export function Lightbox() {
     // modal open and Escape closes only the viewer.
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [isOpen, zoomIn, zoomOut, setZoom, copyCurrentImage])
+  }, [isOpen, crewHidden, zoomIn, zoomOut, setZoom, copyCurrentImage])
   if (!state) return null
   const img = state.images[state.index]
   const zoomed = zoom > LIGHTBOX_ZOOM_MIN

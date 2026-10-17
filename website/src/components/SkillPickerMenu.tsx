@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { useQuery } from '@tanstack/react-query'
 import { Lock, Sparkles } from 'lucide-react'
 import { api } from '../api/client'
@@ -250,7 +250,7 @@ export default function SkillPickerMenu({
     // exists to prevent.
     : <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(emptyKey, { agent: scopedAgent })}</div>
 
-  return createPortal(
+  return <OverlayPortal>{
     // The portal is a flex column CAPPED at maxHeight: the listbox scrolls,
     // the scope footer (when shown) is a pinned non-scrolling sibling BELOW
     // it — always visible however long the list, and never an illegal child
@@ -327,7 +327,6 @@ export default function SkillPickerMenu({
           {scopedLabel}
         </div>
       )}
-    </div>,
-    document.body
-  )
+    </div>
+  }</OverlayPortal>
 }

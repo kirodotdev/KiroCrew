@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { Search, X, Pin, MessageSquare, Clock, Plus, RotateCw } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 
@@ -559,7 +559,7 @@ export default function CommandPalette({
     </div>
   )
 
-  return createPortal(
+  return <OverlayPortal>{
     // The backdrop's onMouseDown is click-outside dismissal, a pointer-only
     // convenience: Escape closes the palette through useListKeyboardNav, so the
     // keyboard already has the same exit and needs no path to this element.
@@ -833,7 +833,6 @@ export default function CommandPalette({
               })}
         </div>
       </div>
-    </div>,
-    document.body,
-  )
+    </div>
+  }</OverlayPortal>
 }

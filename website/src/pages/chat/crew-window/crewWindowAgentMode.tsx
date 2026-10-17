@@ -9,7 +9,7 @@
  *  peer runs its own owner and policy checks and its refusal comes back here.
  *  YOLO is not offered: it is the peer's app-wide switch, not this session's. */
 import { useCallback, useMemo } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from '../../../components/overlayRoot'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { apiErrorCode } from '../../../api/apiError'
@@ -117,7 +117,7 @@ export function useCrewWindowAgentMode({ instanceId, slotKey, slotPath, name, sl
       note: i18nT('pages.chat.crewWindow.yolo_elsewhere', { name }),
     } satisfies ApprovalModeRemote,
   }
-  const portal = dd.open && rect ? createPortal(
+  const portal = dd.open && rect ? <OverlayPortal>{
     // Same box as the local chat's agent picker (ComposerDockView).
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
     <div ref={dd.dropdownRef} role="dialog" aria-label={i18nT('pages.chatPage.agent_selector')} tabIndex={-1} onKeyDown={onListKeyDown} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl min-w-[260px] max-w-[340px] flex flex-col p-1 gap-0.5 animate-slide-up" style={{ bottom: window.innerHeight - rect.top + 4, left: Math.max(8, Math.min(rect.left, window.innerWidth - 348)) }}>
@@ -127,9 +127,8 @@ export function useCrewWindowAgentMode({ instanceId, slotKey, slotPath, name, sl
       <div role="listbox" aria-label={i18nT('pages.chatPage.agent_list')} className="overflow-y-auto max-h-[280px]">
         <AgentDropdownList agents={dd.filtered} activeAgent={activeAgent} defaultAgent={defaultAgent} onSelect={pickAgent} filter={dd.filter} />
       </div>
-    </div>,
-    document.body,
-  ) : null
+    </div>
+  }</OverlayPortal> : null
   const error = mutation.error
   const errorText = error == null || apiErrorCode(error) === 'mode_disabled_by_policy' ? '' : errMessage(error)
   // A failed read hides its control, so say so rather than let it look absent.

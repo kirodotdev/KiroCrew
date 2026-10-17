@@ -3,7 +3,7 @@
  * Manages git worktrees, pod instances, syncing, pruning, and rebasing.
  */
 import { useState, useRef, useCallback, useEffect, type CSSProperties, type ReactNode, type RefObject } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal, useCloseWhenCrewHidden } from '../components/overlayRoot'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Card, CardTitle, Btn, Checkbox, StatCard, EmptyState, ContentSkeleton, PageHeader, SearchInput, Badge } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
@@ -444,7 +444,7 @@ function PodReadout({ r }: { r?: PodResources | null }) {
 
 /* ─── Sub-components ─── */
 interface MenuItemDef { label: string; icon?: ReactNode; onClick: () => void; disabled?: boolean; danger?: boolean; title?: string }
-// Row-actions dropdown geometry. The menu is portaled to <body> so a row's
+// Row-actions dropdown geometry. The menu is portaled to the body-level overlay root so a row's
 // <Card overflow> can't clip it; these drive fixed positioning.
 const MENU_GAP = 6        // gap between trigger and menu
 const MENU_MARGIN = 8     // min gap from the viewport edge
@@ -452,6 +452,8 @@ const MENU_ITEM_H = 32    // estimated per-item height for the flip decision
 const MENU_PAD = 8        // container vertical padding (4px top + 4px bottom)
 function MenuBtn({ items }: { items: (MenuItemDef | null)[] }) {
   const [open, setOpen] = useState(false)
+  // Holds no input, so a Crew switch closes it like a click outside (components/overlayRoot).
+  useCloseWhenCrewHidden(open, useCallback(() => setOpen(false), []))
   // Trigger rect captured on open; drives the portaled menu's fixed position.
   const [rect, setRect] = useState<DOMRect | null>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -490,7 +492,7 @@ function MenuBtn({ items }: { items: (MenuItemDef | null)[] }) {
     // move it onto the first enabled item so a keyboard user lands inside
     // the menu they were just told is open, not still on the trigger.
     focusableItems()[0]?.focus()
-    // The menu is portaled to <body>, so it is not a DOM descendant of
+    // The menu is portaled to the body-level overlay root, so it is not a DOM descendant of
     // the trigger — the outside-click guard must exclude BOTH the trigger and
     // the menu (a plain trigger.contains() check would close on every menu
     // click).
@@ -574,7 +576,7 @@ function MenuBtn({ items }: { items: (MenuItemDef | null)[] }) {
       <Btn ref={triggerRef} onClick={toggle} title={i18nT('pages.devFleetPage.more_actions')} aria-label={i18nT('pages.devFleetPage.more_actions')} aria-haspopup="menu" aria-expanded={open}>
         <Ellipsis size={15} className="lucide-inline" />
       </Btn>
-      {open && rect && createPortal(
+      {open && rect && <OverlayPortal>
         <div
           ref={menuRef}
           role="menu"
@@ -593,9 +595,8 @@ function MenuBtn({ items }: { items: (MenuItemDef | null)[] }) {
               {item.icon || null}{item.label}
             </Clickable>
           ))}
-        </div>,
-        document.body,
-      )}
+        </div>
+      </OverlayPortal>}
     </span>
   )
 }
@@ -663,7 +664,7 @@ function ConfirmBtn({ title, desc, confirmLabel, onConfirm, btn, children }: Con
   // Trigger rect captured on open; drives the portaled popover's fixed
   // position. Same approach as MenuBtn above: an absolutely positioned
   // popover is clipped by the row's `.card-glow { overflow: hidden }`
-  // ancestor, so it must be portaled to <body> instead.
+  // ancestor, so it must be portaled to the body-level overlay root instead.
   const [rect, setRect] = useState<DOMRect | null>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const popRef = useRef<HTMLDivElement>(null)
@@ -675,7 +676,7 @@ function ConfirmBtn({ title, desc, confirmLabel, onConfirm, btn, children }: Con
 
   useEffect(() => {
     if (!open) return
-    // Portaled to <body>, so the popover is not a DOM descendant of the
+    // Portaled to the body-level overlay root, so the popover is not a DOM descendant of the
     // trigger — the outside-click guard must exclude BOTH, or every click
     // inside the popover (including Cancel/Start) would close it first.
     // Closing this way deliberately does NOT move focus: the browser routes
@@ -725,7 +726,7 @@ function ConfirmBtn({ title, desc, confirmLabel, onConfirm, btn, children }: Con
   return (
     <span style={{ display: 'inline-flex' } as CSSProperties}>
       <Btn ref={triggerRef} {...(btn || {})} onClick={toggle} aria-haspopup="dialog" aria-expanded={open}>{children}</Btn>
-      {open && rect && createPortal(
+      {open && rect && <OverlayPortal>
         <ConfirmPopover
           popRef={popRef}
           title={title}
@@ -735,9 +736,8 @@ function ConfirmBtn({ title, desc, confirmLabel, onConfirm, btn, children }: Con
           openUp={openUp}
           onCancel={close}
           onConfirm={() => { close(); onConfirm() }}
-        />,
-        document.body,
-      )}
+        />
+      </OverlayPortal>}
     </span>
   )
 }

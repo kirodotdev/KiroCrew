@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useState, useCallback, useRef, createContext, lazy, Suspense, type ReactNode, type ForwardedRef } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './components/overlayRoot'
 import { isLookPreviewFrame } from './utils/lookPreview'
 import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
@@ -96,6 +96,7 @@ import { useUpdateFlow, ChangelogModal } from './shell/updates/updateFlow'
 import KiroCrewNavBridge from './components/KiroCrewNavBridge'
 import InstanceTabBar from './components/InstanceTabBar'
 import InstancesViewport from './components/InstancesViewport'
+import { LocalOverlayRoot } from './components/overlayRoot'
 import EmbeddedHostBridge from './components/EmbeddedHostBridge'
 import EmbeddedDragRegionReporter from './components/EmbeddedDragRegionReporter'
 import EmbedTabStrip from './components/EmbedTabStrip'
@@ -750,7 +751,7 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
           against the row, so they render where they always did regardless of
           where in the children they appear. */}
       {badge}
-      {collapsed && tip && createPortal(
+      {collapsed && tip && <OverlayPortal>
         <div
           className={`fixed flex items-center gap-2.5 pl-3 pr-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
           style={{ top: tip.top, left: tip.left, height: tip.height }}
@@ -766,9 +767,8 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
               {shortcut.chord}
             </span>
           )}
-        </div>,
-        document.body
-      )}
+        </div>
+      </OverlayPortal>}
     </motion.div>
   )
 })
@@ -776,8 +776,8 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
 /**
  * Topbar Notifications bell. The Notifications surface is `hiddenFromNav`, so
  * this is its entry point. Click opens an Activity Feed popover
- * (portaled to <body> to escape the topbar's backdrop-filter containing
- * block); clicking an item slides out a detail panel. The full page is
+ * (portaled to the body-level overlay root to escape the topbar's
+ * backdrop-filter containing block); clicking an item slides out a detail panel. The full page is
  * preserved at /notifications via the popover's "Open inbox" link.
  */
 function NotificationsBellButton() {
@@ -1083,7 +1083,8 @@ export default function App() {
    * the panel, and the listener is on an element neither is inside.
    *
    * Widening the root does not widen what arms: dialogs render through a portal
-   * to `document.body`, so they are outside this element entirely, and a page
+   * to the body level (components/overlayRoot), so they are outside this
+   * element entirely, and a page
    * with its own drawer claims its sides with `data-owns-swipe`.
    */
   const shellRef = useRef<HTMLDivElement | null>(null)
@@ -1768,9 +1769,11 @@ export default function App() {
   return (
     <ZoomProvider>
     <WsContext.Provider value={{ subscribeLogs, subscribeSubagents, forceReconnect }}>
-    {/* Above the layout branch, so every layout that can host the import row
-        also hosts its outcome: the row's menu has closed by the time it lands. */}
-    <ImportSessionOutcomeNotice />
+    {/* The import row's outcome lands after its menu has closed, so every layout
+        that can host the row hosts the notice: the popout and embed frames here,
+        the dashboard inside the local pane (below), where it hides with the
+        local Crew. */}
+    {(isPopout || isEmbed) && <ImportSessionOutcomeNotice />}
     {isPopout ? (
       <Routes>
         <Route path="/popout/chat/:slug?" element={<ErrorBoundary><PopoutFrame /></ErrorBoundary>} />
@@ -1816,6 +1819,9 @@ export default function App() {
       {/* Local pane: the native dashboard. Hidden (not unmounted) while a remote
           instance tab is active, so local state/websocket survive the switch. */}
       <div className="absolute inset-0" style={{ display: activeInstanceId === null ? 'block' : 'none' }}>
+      {/* Floating layers this pane opens portal into a container hidden with it
+          (see components/overlayRoot). */}
+      <LocalOverlayRoot hidden={activeInstanceId !== null}>
     <div
       ref={shellRef}
       data-testid="dashboard-shell"
@@ -2578,7 +2584,7 @@ export default function App() {
 
         {/* Apps list: scrolls in its OWN frame when many apps are enabled —
             the top (menu/mains/header) and bottom sections stay pinned.
-            Collapsed hover labels are portaled to <body> (see NavItem /
+            Collapsed hover labels are portaled to the body-level overlay root (see NavItem /
             NavToggle) so this vertical clip never chops them at the rail
             edge. overscroll-y-none kills the macOS rubber-band bounce;
             scrollbar-none + scrollbarWidth hide the scrollbar across
@@ -2953,6 +2959,15 @@ export default function App() {
         <ComputerUseLiveView />
       </div>
     </div>{/* /Local dashboard grid */}
+      {/* Opened from the local Crew, so they hide with it (components/overlayRoot).
+          The image viewer and the import notice render in place, fixed layers
+          inside this pane, so the pane's own display:none hides them; the other
+          two portal. The popout and embed frames mount their own copies. */}
+      <MetricsCard metrics={metrics} />
+      <KiroAccountModal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} usage={kiroUsageState} />
+      <Lightbox />
+      <ImportSessionOutcomeNotice />
+      </LocalOverlayRoot>
       </div>{/* /Local pane */}
       {/* Remote instance panes — embedded dashboards kept warm (mounted, hidden)
           so switching is instant; the active instance fills the pane. */}
@@ -2972,8 +2987,6 @@ export default function App() {
     )}
     </WsContext.Provider>
     {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
-    <MetricsCard metrics={metrics} />
-    <KiroAccountModal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} usage={kiroUsageState} />
     <QuickSearchSurface
       owners={slotOwners}
       open={commandPalette.open}
@@ -2990,7 +3003,7 @@ export default function App() {
         <Overlay />
       </ErrorBoundary>
     ))}
-    <Lightbox />
+    {(isPopout || isEmbed) && <Lightbox />}
     </ZoomProvider>
   )
 }

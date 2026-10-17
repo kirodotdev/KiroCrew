@@ -5,6 +5,12 @@ import jsxA11y from 'eslint-plugin-jsx-a11y'
 import approvalOneShotDecision from './eslint-rules/approval-one-shot-decision.js'
 import { plugin as shadcn } from '@shadcn/lint'
 
+const HLJS_IMPORT_RULE = {
+  name: 'highlight.js',
+  message: "Import the core build instead: `import hljs from '<relative>/utils/hljs'`. The full barrel pulls every bundled grammar into the eager bundle.",
+  allowTypeImports: true,
+}
+
 export default [
   {
     ignores: ['src/vite-env.d.ts'],
@@ -59,10 +65,14 @@ export default [
       // go through it. Type-only imports are exempt: they erase at compile time and
       // carry no runtime weight (`utils/hljsLanguages.ts` needs `HLJSApi`).
       '@typescript-eslint/no-restricted-imports': ['error', {
-        paths: [{
-          name: 'highlight.js',
-          message: "Import the core build instead: `import hljs from '<relative>/utils/hljs'`. The full barrel pulls every bundled grammar into the eager bundle.",
-          allowTypeImports: true,
+        paths: [HLJS_IMPORT_RULE],
+        // Radix primitives portal to document.body unless told otherwise; the
+        // shared wrappers in components/ui/ route them through the owning
+        // pane's overlay root and close them on a Crew switch
+        // (src/components/overlayRoot.tsx). Import the wrapper, not the primitive.
+        patterns: [{
+          group: ['@radix-ui/react-*'],
+          message: 'Use the shared wrapper in src/components/ui/: it portals into the owning pane\'s overlay root and closes on a Crew switch (src/components/overlayRoot.tsx).',
         }],
       }],
       'no-console': 'warn',
@@ -109,9 +119,17 @@ export default [
       // hard-zero gate rather than a stored count, and it stays out of the
       // --max-warnings budget where a real regression would be indistinguishable
       // from an unrelated no-explicit-any.
+      //
+      // A floating layer portalled straight to `document.body` escapes the local
+      // pane a remote Crew hides, so it stays painted over the other Crew.
+      // OverlayPortal / useOverlayRoot resolve the owning pane's overlay root
+      // instead (see src/components/overlayRoot.tsx).
       'no-restricted-syntax': ['error', {
         selector: "JSXOpeningElement[name.name='select']",
         message: 'No native <select> — its popup is drawn by the OS and ignores the theme. Use SimpleSelect, SearchableSelect, SettingsSelect, or DropdownMenu. See website/docs/page-layout.md.',
+      }, {
+        selector: "CallExpression[callee.name='createPortal'][arguments.1.object.name='document'][arguments.1.property.name='body']",
+        message: 'Portal through <OverlayPortal> or useOverlayRoot() (src/components/overlayRoot.tsx), not document.body: a layer on document.body stays on screen over a remote Crew.',
       }],
     },
   },
@@ -218,6 +236,14 @@ export default [
     files: ['src/**/*.mjs'],
     rules: {
       'no-eval': 'error',
+    },
+  },
+  {
+    // The shared Radix wrappers are the one place a primitive is imported, and
+    // tests may mock a primitive directly (src/test/__mocks__/@radix-ui).
+    files: ['src/components/ui/**/*.{ts,tsx}', 'src/**/*.test.{ts,tsx}', 'src/test/**/*.{ts,tsx}'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', { paths: [HLJS_IMPORT_RULE] }],
     },
   },
   {
