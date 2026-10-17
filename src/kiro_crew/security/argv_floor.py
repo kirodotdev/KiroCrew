@@ -722,7 +722,7 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
                 # bash parses the body in a fresh context, so the span is
                 # proven from the slice at NEUTRAL state -- and the walk
                 # resumes with the OUTER state carried across the jump.
-                rel, proven = _matching_close_paren(source[off + 2 :], 0)
+                rel, proven = _matching_close_paren(source[off + 2 :])
                 body = source[off + 2 : off + 1 + rel] if proven else source[off + 2 :]
                 # An EMPTY substitution expands to NOTHING, so the word
                 # CONTINUES across it -- ``kill$()`` runs ``kill`` (the same
@@ -785,7 +785,7 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
                 break
             if step.active:
                 if ch in "<>" and source.startswith("(", off + 1):
-                    rel, proven = _matching_close_paren(source[off + 2 :], 0)
+                    rel, proven = _matching_close_paren(source[off + 2 :])
                     fresh_word = not word and not open_word
                     if not fresh_word and not _kill_prefix_keeps_anchor(words, word):
                         glued = True

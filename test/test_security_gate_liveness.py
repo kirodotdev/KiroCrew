@@ -372,7 +372,18 @@ def _url_payload_command(n: int) -> str:
 #: stall still refuses everywhere it did; only the words a refused agent reads moved.
 #: The prefix is named only while its cooldown is open, since most stall raises never
 #: charge it.
-_PACKAGE_LINE_BUDGET = 29_607
+#:
+#: Raised again, from 29,607, so the paren matcher skips a NESTED substitution,
+#: a ``${...}`` expansion (new ``_matching_close_brace``) and a heredoc body
+#: (new ``_heredoc_redirect`` / ``_skip_heredoc_bodies``) as units, keeping their
+#: inner quotes and parens sealed inside them instead of closing an enclosing
+#: span early at a quoted ``")"`` or a ``$(cat <<E)`` body line and leaving a
+#: ``bash -c '<push main>'`` behind it unscanned. A here-string ``<<<`` and an
+#: arithmetic ``<<`` shift are not read as heredoc operators. A heredoc a nested
+#: substitution leaves pending is handed to the enclosing walk, and the tag is
+#: read with bash's quote removal. Pure delimiter accuracy; no verdict,
+#: credential branch or pass moved.
+_PACKAGE_LINE_BUDGET = 29_847
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

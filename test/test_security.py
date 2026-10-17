@@ -12243,7 +12243,7 @@ class TestCaseArmingRequiresCommandPosition:
             "$(time -p case x in x) : ;; esac; pgrep -f kirocrew)",
             "$(time -- case x in x) : ;; esac; pgrep -f kirocrew)",
         ):
-            assert _matching_close_paren(text, 2) == (len(text), True), text
+            assert _matching_close_paren(text[2:]) == (len(text) - 2, True), text
         assert security._substitution_bodies("echo $(echo -n case x in y) tail") == [
             "echo -n case x in y"
         ]

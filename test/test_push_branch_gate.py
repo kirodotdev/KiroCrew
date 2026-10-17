@@ -1969,18 +1969,18 @@ class TestNestedPayloadExtractionSpansTheProvenBoundary:
     def test_the_span_helper_is_quote_aware_and_reports_proof(self):
         from kiro_crew.security import _matching_close_paren
 
-        # offset 2 is just past a ">(" / "$(" opener.
-        assert _matching_close_paren(">(a)", 2) == (4, True)
-        assert _matching_close_paren(">(a(b))", 2) == (7, True)
+        # The text is the slice just past a ">(" / "$(" opener.
+        assert _matching_close_paren("a)") == (2, True)
+        assert _matching_close_paren("a(b))") == (5, True)
         # A quoted closer is data and must not end the span.
-        assert _matching_close_paren(">(X=')' a)", 2) == (10, True)
-        assert _matching_close_paren('>(X=")" a)', 2) == (10, True)
-        assert _matching_close_paren(">(X=$')' a)", 2) == (11, True)
+        assert _matching_close_paren("X=')' a)") == (8, True)
+        assert _matching_close_paren('X=")" a)') == (8, True)
+        assert _matching_close_paren("X=$')' a)") == (9, True)
         # A quoted OPENER must not deepen it either.
-        assert _matching_close_paren(">(X='(' a)", 2) == (10, True)
+        assert _matching_close_paren("X='(' a)") == (8, True)
         # Never balanced -> not proven, and the span runs to the end.
-        assert _matching_close_paren(">(a", 2) == (3, False)
-        assert _matching_close_paren(">(X=')' a", 2) == (9, False)
+        assert _matching_close_paren("a") == (1, False)
+        assert _matching_close_paren("X=')' a") == (7, False)
 
     def test_the_self_protection_substitution_scan_is_quote_aware_too(self):
         # Same class at the self-protection rule: its private str.count walk
@@ -2014,3 +2014,209 @@ class TestNestedPayloadExtractionSpansTheProvenBoundary:
         )
         assert security._GIT_PUBLISH_UNGATED in floor("git push origin feature > >(echo main")
         assert security._git_push_args("bash -c '(cd /tmp && git push origin my-feature)'") is None
+
+
+class TestSubstitutionInsideDoubleQuotesIsExtractedFromAFreshContext:
+    """A ``$(`` inside a double-quoted word starts a FRESH quoting context.
+
+    bash parses a substitution body on its own, so ``"$(echo ")")"`` holds the
+    body ``echo ")"``. The extractor walked the span from the start of the whole
+    command instead, so the outer ``"`` made every ``)`` in the body read as
+    quoted. Two failures followed from the one mis-delimit:
+
+    * the span never proved, so the body swallowed the rest of the line and an
+      ordinary ``git commit -m "$(date)" && git push origin feat`` was refused
+      as an unverifiable push;
+    * a ``"`` inside the body flipped the outer state, so a nested wrapper after
+      it was cut out of the body: ``echo "$(echo ")"; bash -c '<push main>')"``
+      was allowed although bash runs the push.
+    """
+
+    def test_the_body_is_delimited_at_its_own_closer(self):
+        from kiro_crew.security import _substitution_bodies
+
+        assert _substitution_bodies('git commit -m "$(date)" && x') == ["date"]
+        assert _substitution_bodies('echo "$(echo ")")"') == ['echo ")"']
+        assert _substitution_bodies("git commit -m \"$(cat <<'eof'\nsubject\neof\n)\" && x") == [
+            "cat <<'eof'\nsubject\neof\n"
+        ]
+        # An unbalanced body is still the whole remainder, the fail-closed side.
+        assert _substitution_bodies('echo "$(date" && x') == ['date" && x']
+
+    def test_a_feature_push_after_a_quoted_substitution_is_allowed(self):
+        for cmd in (
+            'git commit -m "$(date)" && git push origin feat',
+            'echo "$(date)"; git push origin feat',
+            'git commit -m "fix $(git rev-parse --short HEAD)" && git push -u origin feat',
+        ):
+            assert security.is_denied(cmd) is None, cmd
+
+    def test_a_protected_push_around_a_quoted_substitution_stays_denied(self):
+        for cmd in (
+            'git commit -m "$(date)" && git push origin main',
+            'git commit -m "$(date)" && git push',
+            'git commit -m "$(date)" && git push origin $b',
+            'git commit -m "$(date)" && git push origin {feat,main}',
+            "git commit -m \"$(date)\" && git push origin $'main'",
+            'git commit -m "$(git push origin main)"',
+            'echo "$(echo ")"; bash -c \'git push origin main\')"',
+            "echo \"$(echo ')'; eval 'git push origin main')\"",
+            "echo '$(' \"$(bash -c 'git push origin main')\" ')'",
+        ):
+            assert security.is_denied(cmd) is not None, cmd
+
+    def test_a_heredoc_body_inside_the_substitution_stays_scanned(self):
+        msg = 'git commit -m "$(cat <<{tag}\n{body}\n{end}\n)" && git push origin feat'
+        for tag, body, end in (
+            ("'EOF'", "git push origin main", "EOF"),
+            ("EOF", "git push origin main", "EOF"),
+            ('"EOF"', "git push origin $b", "EOF"),
+            ("'EOF'", "git push origin {x,main}", "EOF"),
+            ("'EOF'", "git push origin main", "  EOF"),
+            ("-'EOF'", "\tgit push origin main", "\tEOF"),
+            ("EOF", "$(git push origin main)", "EOF"),
+            ("'EOF'", ")\nEOF\nbash -c 'git push origin main'", "x"),
+        ):
+            cmd = msg.format(tag=tag, body=body, end=end)
+            assert security.is_denied(cmd) is not None, cmd
+        unterminated = (
+            "git commit -m \"$(cat <<'EOF'\ngit push origin main\n)\" && git push origin feat"
+        )
+        assert security.is_denied(unterminated) is not None
+
+
+class TestANestedConstructDoesNotHideAPushBehindItsOwnQuoting:
+    """A substitution body, a ``${...}`` expansion, a backtick and a heredoc body
+    each open their OWN quoting context, so a ``)`` or ``"`` inside one is DATA,
+    not the close of the enclosing ``$(``. The matcher now skips each as a unit;
+    before it, the inner quoting leaked out and closed the span early, so a
+    ``bash -c '<push>'`` sitting after the real close went unscanned.
+
+    The exact command that regressed:
+    ``echo "$(echo "$(echo ")")" ; bash -c 'git push origin main')"`` -- bash runs
+    the push (the first ``)`` after the inner ``"`` closed the span and the body
+    came back as ``echo "$(echo "``). Every row below is a command bash really
+    runs a protected push for, generated across nesting depth, the construct that
+    carries the ``)``, the launcher and the push target.
+    """
+
+    _OPUS = 'echo "$(echo "$(echo ")")" ; bash -c \'git push origin main\')"'
+
+    def test_the_opus_command_is_denied(self) -> None:
+        assert security.is_denied(self._OPUS) is not None
+
+    def test_a_push_hidden_behind_any_nested_construct_is_denied(self) -> None:
+        # Each CARRIER puts a bare ``)`` (or re-quote) in a context the matcher
+        # must skip whole; a wrong delimit lets the launcher behind it run free.
+        carriers = (
+            'echo ")"',  # a nested $( whose body re-quotes
+            "echo ')'",
+            'echo "${x:-")"}"',  # a ${...} default value
+            'echo "`echo ")"`"',  # a backtick sub
+        )
+        launchers = ("bash -c", "sh -c", "eval")
+        targets = ("main", "mainline", "$b", "{feat,main}", "$'main'")
+        for depth in (1, 2, 3):
+            for carrier in carriers:
+                for sep in (" ; ", "; ", " && ", "\n"):
+                    for launcher in launchers:
+                        for target in targets:
+                            push = f"git push origin {target}"
+                            inner = f"\"$({carrier}{sep}{launcher} '{push}')\""
+                            cmd = inner
+                            for _ in range(depth - 1):
+                                cmd = f'"$(echo {cmd})"'
+                            cmd = "echo " + cmd
+                            assert security.is_denied(cmd) is not None, cmd
+        # a bare ``git push`` (current branch) is protected too.
+        assert security.is_denied('echo "$(echo ")" ; bash -c \'git push\')"') is not None
+
+    def test_a_heredoc_body_holding_the_close_paren_is_denied(self) -> None:
+        for sep in (" ; ", "; ", " && ", "\n"):
+            cmd = (
+                "echo \"$(cat <<'E'\n)\nE\n"
+                + sep.lstrip("\n")
+                + "bash -c 'git push origin main')\""
+            )
+            assert security.is_denied(cmd) is not None, cmd
+        # the substitution closing right after the heredoc, push after it.
+        assert (
+            security.is_denied("git commit -m \"$(cat <<'E'\n)\nE\n)\" && git push origin main")
+            is not None
+        )
+
+    def test_a_feature_push_after_a_quoted_substitution_stays_allowed(self) -> None:
+        for cmd in (
+            'git commit -m "$(date)" && git push origin feat',
+            'echo "$(date)"; git push -u origin feat',
+            'git commit -m "fix $(git rev-parse --short HEAD)" && git push origin feat',
+            'echo "$(echo ")")" && git push origin feat',
+        ):
+            assert security.is_denied(cmd) is None, cmd
+
+    def test_a_heredoc_left_pending_by_a_nested_substitution_is_denied(self) -> None:
+        # ``$(cat <<E)`` closes before the newline, so bash reads the body from
+        # the lines after it, in the ENCLOSING span; the ``)`` on a body line is
+        # data and the ``bash -c`` push behind the body runs.
+        push = "git push origin main"
+        for inner in ("$(cat <<E)", "$(cat <<'E')", "<(cat <<E)", "${x:-$(cat <<E)}"):
+            body = f"{inner}\n)\nE\nbash -c '{push}'"
+            for cmd in (
+                f'echo "$(echo {body})"',
+                f'eval "$(echo {body})"',
+                f'echo "`echo {body}`"',
+                f"echo $(echo {body})",
+            ):
+                assert security.is_denied(cmd) is not None, cmd
+        assert (
+            security.is_denied("echo \"$(echo $(cat <<E)\n)\nE\nbash -c 'git push')\"") is not None
+        )
+
+    def test_a_heredoc_tag_is_read_with_quote_removal(self) -> None:
+        # bash ends the body at the tag AFTER quote removal: ``$'\\x45'`` is ``E``
+        # and ``"E\\"F"`` is ``E"F``. A misread tag runs the body past its end.
+        for tag, end in (("$'E'", "E"), ("$'\\x45'", "E"), ('"E\\"F"', 'E"F'), ("\\E", "E")):
+            for push in ("git push origin main", "git push"):
+                cmd = f"echo \"$(cat <<{tag}\n)\n{end}\nbash -c '{push}')\""
+                assert security.is_denied(cmd) is not None, cmd
+
+    def test_a_body_line_that_differs_only_in_case_does_not_end_the_body(self) -> None:
+        # The gate reads lowercased text, but bash ends ``<<E`` only at ``E``:
+        # a body line ``e`` is data, so the ``)`` after it is data too.
+        for tag, decoy in (("E", "e"), ("EOF", "eof"), ("'EOF'", "Eof")):
+            end = tag.strip("'")
+            cmd = f"echo \"$(cat <<{tag}\n{decoy}\n)\n{end}\nbash -c 'git push origin main')\""
+            assert security.is_denied(cmd) is not None, cmd
+
+
+class TestALessThanPairThatIsNotAHeredocKeepsTheSpan:
+    """Two ``<<`` spellings are not heredoc operators: the tail of a here-string
+    ``<<<`` and an arithmetic shift. Reading either as a heredoc tag skips a
+    "body" up to a later line spelling the tag and reports a proven span past
+    the ``)`` where bash closes the substitution."""
+
+    def test_a_here_string_is_not_a_heredoc(self) -> None:
+        from kiro_crew.security.shell_normalizer import _matching_close_paren
+
+        # bash closes at the first ")" (index 10)
+        assert _matching_close_paren("cat <<<x\n) ; P\nx\n)") == (10, True)
+
+    def test_an_arithmetic_shift_is_not_a_heredoc(self) -> None:
+        from kiro_crew.security.shell_normalizer import _matching_close_paren
+
+        # bash closes at the first ")" (index 13)
+        assert _matching_close_paren(" (( 1<<2 ))\n) ; P\n2\n)") == (13, True)
+
+    def test_an_arithmetic_expansion_shift_is_not_a_heredoc(self) -> None:
+        from kiro_crew.security.shell_normalizer import _matching_close_paren
+
+        # ``$(( 1<<2\n))``: the body handed over starts with the second "(".
+        assert _matching_close_paren("( 1<<2\n))\n2\n)") == (9, True)
+        assert _matching_close_paren("echo $(( 1<<2\n))\n) ; P\n2\n)") == (18, True)
+
+    def test_a_heredoc_after_the_arithmetic_closes_is_still_read(self) -> None:
+        from kiro_crew.security.shell_normalizer import _matching_close_paren
+
+        # the body's ")" is data, the span closes at the last ")".
+        assert _matching_close_paren(" (( 1<<2 )); cat <<E\n)\nE\n)") == (26, True)
+        assert _matching_close_paren("cat <<<x <<E\n)\nE\n)") == (18, True)
