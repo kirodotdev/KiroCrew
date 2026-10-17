@@ -16,7 +16,7 @@ The cases here are the ones that shape the design rather than merely cover it:
   can produce that this app's pre-flight would have rejected (absent, and not an
   account id) must fail with a clean recorded error and touch no AWS;
 * a run left non-terminal by a process that is gone comes back RESOLVED, never
-  ``running`` (``job_sdk.py:768``);
+  ``running`` (``JobSDK.reconcile``);
 * the app's own terminal ledger -- what a backup PRODUCED -- still works.
 """
 
@@ -862,7 +862,7 @@ class TestReconcile:
     def test_a_run_left_running_by_a_dead_process_is_resolved(self, tmp_path):
         # DoD 3. Before reconciliation the record asserts `running` and nothing
         # can ever finish it, so `list_active` would serve a phantom the backup
-        # UI adopts on mount. `job_sdk.py:768` resolves it to `interrupted`.
+        # UI adopts on mount. `JobSDK.reconcile` resolves it to `interrupted`.
         sdk = job_sdk.JobSDK("aws-control", tmp_path)
         for kind in backup.JOB_KINDS:
             sdk.register(kind, backup.make_job_runner(sdk, kind))

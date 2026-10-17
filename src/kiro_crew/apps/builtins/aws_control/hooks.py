@@ -285,7 +285,7 @@ async def _register_job_runners(ctx: Any) -> None:
     backup UI adopts an in-flight record on mount, so that window is precisely
     when it would show a phantom "running" for work nothing can finish. Calling
     it here shortens the window to this app's own startup, and it is safe to run
-    twice: a terminal record is skipped (``job_sdk.py:786``), so the later pass
+    twice: a terminal record is skipped (``JobSDK.reconcile``), so the later pass
     finds nothing left to do.
     """
     sdk = getattr(ctx, "job", None)

@@ -290,7 +290,8 @@ argument, which is the point. It does not make the argument disappear.
 ### 5.5 Selecting a surface per group
 
 `jobFamilies` already exists as a manifest field with no reader
-(`apps/manifest.py:1010`). Whether it is the right selector is open (§10), but the
+(`apps/manifest.py`, `AppManifest.jobFamilies`). Whether it is the right selector is
+open (§10), but the
 shape it implies — an app declares which job families it serves, and the host
 resolves one owner per surface — is the mechanism this RFC needs, and it was
 declared before it was needed.
@@ -409,7 +410,7 @@ Phase 0 is documentation and a test. Phase 1 removes manifest fields, which is
 breaking for any manifest that declares them even though none of them does
 anything today; the parser must keep accepting an unknown field, which
 `AppManifest.from_dict`'s `extra` handling already guarantees
-(`apps/manifest.py:1214-1215`), so a stale manifest degrades to a warning rather
+(`apps/manifest.py`, `_KNOWN_FIELDS`), so a stale manifest degrades to a warning rather
 than a failed install. Phase 2 changes where the overview renders and must keep
 `/settings?tab=overview` resolving. Phase 3 changes no existing app's behavior.
 
