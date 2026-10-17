@@ -2138,6 +2138,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # seeing the real path is part of what the operator is consenting to.
         "cli_chat.py",
         "acp/_dispatch.py",
+        "acp/_dispatch_parts/adapter_signals.py",
+        "acp/_dispatch_parts/permission_requests.py",
+        "acp/_dispatch_parts/session_update_parser.py",
+        "acp/_dispatch_parts/surfaced_text.py",
+        "acp/_dispatch_parts/tool_result_events.py",
         # The client's owners: code that was acp/client.py's own, scrubbing the
         # same strings for the same records.
         "acp/client_lifecycle.py",

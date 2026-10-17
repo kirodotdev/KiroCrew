@@ -27,7 +27,7 @@ round-trip through a server that can be slow or wedged.
 **Two layers, one registry, exactly one sample.** There is no single choke point
 to instrument, because the two backends parse tool frames in different places.
 The kiro backend runs on ``AcpRuntime`` + ``AcpSessionHandle``, which parses
-through the shared ``acp/_dispatch.py`` builders; the claude backend (and the app
+through the shared ``acp/_dispatch_parts/`` builders; the claude backend (and the app
 worker pools that build a client directly, e.g. ``knowledge/llm_pool``) stays on
 ``AcpClient`` (its tool-frame shaping lives in ``acp/client_tool_events.py``), which
 re-implements the same shaping inline and never calls
@@ -140,7 +140,7 @@ def _registry_key(tool_call_id: str, scope: str) -> str:
     the second start is dropped as a duplicate and the first finish pops the
     shared entry, so one sample is misattributed and the other is lost.
 
-    ``acp/_dispatch.py`` already solved this for its tool-input caches with
+    ``acp/_dispatch_parts/tool_call_provenance.py`` already solved this for its tool-input caches with
     ``_ck = f"{cache_scope}|{tool_call_id}"``; this is the same key so the two
     cannot disagree about what "the same tool call" means.
     """

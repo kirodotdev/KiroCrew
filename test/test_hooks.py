@@ -1063,7 +1063,7 @@ class TestToolCallEvaluatesRawCommand:
     """Regression: the security gate must evaluate the ACTUAL shell command,
     not the LLM-authored pill title/description.
 
-    ``select_tool_title`` (acp/_dispatch.py) prefers a Bash tool's
+    ``select_tool_title`` (acp/_dispatch_parts/surfaced_text.py) prefers a Bash tool's
     ``description`` field over the literal ``command`` for the pill label,
     and that label is what reaches ``on_tool_call`` as ``tool_name``. A
     prompt-injection-influenceable description could therefore carry a
@@ -2430,7 +2430,7 @@ class TestMutatingKindBeatsTheTitle:
     """Only an explicitly READ-ONLY ``tool_kind`` may auto-approve on a title.
 
     ``tool_name`` is the display title, and ``select_tool_title``
-    (``acp/_dispatch.py``) prefers the LLM-authored ``description`` — so it is
+    (``acp/_dispatch_parts/surfaced_text.py``) prefers the LLM-authored ``description`` — so it is
     agent-controlled, which ``ToolCall.title``'s own documentation states outright. The
     computer-use read-only auto-approve must not be tested BEFORE any kind guard: otherwise,
     once the operator enabled computer use, an ``edit``/``execute``/``write``/

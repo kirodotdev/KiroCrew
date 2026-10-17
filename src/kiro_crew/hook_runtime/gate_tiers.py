@@ -1183,8 +1183,8 @@ def _tier_read_only(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
             return ToolHookResult.auto_approve(read_only=True)
         return ToolHookResult.allow()
     # Trust the SEMANTIC kind, as an ALLOW-list. ``kind`` is passed through
-    # verbatim from the ACP ``kind`` field (``acp/_dispatch.py``), so it is an
-    # arbitrary agent-influenced string and a DENYLIST of mutating kinds can never
+    # verbatim from the ACP ``kind`` field (``acp/_dispatch_parts/permission_requests.py``),
+    # so it is an arbitrary agent-influenced string and a DENYLIST of mutating kinds can never
     # be complete -- ``kind="other"`` is a real ACP value. Only these two spellings
     # mean "this cannot change anything".
     if kind in _READ_ONLY_TOOL_KINDS:

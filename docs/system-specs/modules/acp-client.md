@@ -94,6 +94,31 @@ forwarded in `_EXPORTS_BY_OWNER`, which `test_acp_refactor_facade.py` pins. New
 bound in the class (`acp/client_class.py`) under that owner's header, and a new timeout or turn budget to
 `acp/client_timeouts.py`.
 
+`acp/_dispatch.py`, the dispatch parser both transports share, is a mirror facade over
+the owners in `acp/_dispatch_parts/`. It keeps the session handshake -- the request shapes
+both transports send (`build_session_new_params`, `set_mode_params`, `set_model_params`),
+the initialize and `session/new` readers (`agent_version_from_init`,
+`parse_session_modes`, `advertised_mode_origin`) and the read loops' yield budget
+(`DRAIN_YIELD_AFTER_S`) -- the per-turn metadata, refusal and usage parsers, and
+`classify_notification`. Each other responsibility has the owner below, and an owner
+imports only the owners above it in this table, never the facade. Every name stays readable and patchable as
+`kiro_crew.acp._dispatch.<name>`: a patch through the facade reaches every owner that
+binds the name (`kiro_crew._facade_mirror`), and the owners log under the
+`kiro_crew.acp._dispatch` logger. `test/test__dispatch_facade.py` pins the owner set,
+the layer order and the reach. New frame-shaping code goes to the dispatch owner whose
+row names its responsibility, and a new request shape or turn-metadata parser to
+`acp/_dispatch.py` itself.
+
+| Dispatch owner | Owns |
+|---|---|
+| `acp/_dispatch_parts/tool_call_identity.py` | which tool a `tool_call` frame names: the shell-kind test, `classify_tool_call`'s transport-aware `ToolCallIdentity` verdict, the bounded harness tool ids and the harness-authored `_meta` identity channels |
+| `acp/_dispatch_parts/surfaced_text.py` | text made safe and readable before it is surfaced: the one redaction policy (`redact_text`, length-safe backend ids), the unified edit diff, the pill title and purpose line, and the JSON encode that degrades instead of raising |
+| `acp/_dispatch_parts/tool_call_provenance.py` | the per-turn tool-call provenance caches: their scoped key, caps, overflow record and admission, the release at a terminal status, and the liveness keys (`liveness_key`, `InFlightIdSet`) |
+| `acp/_dispatch_parts/adapter_signals.py` | claude-agent-acp and codex-acp signals that ride ordinary frames: compaction notices, adapter-written errors, background-launch records and codex compaction updates |
+| `acp/_dispatch_parts/tool_result_events.py` | a `tool_call_update`'s output as `EVENT_TOOL_RESULT`: content and `rawOutput` text, the unrenderable-content diagnostic, the output measure and the `todo_list` snapshot |
+| `acp/_dispatch_parts/permission_requests.py` | a `session/request_permission` as `EVENT_PERMISSION_REQUEST`: option kinds and the least-destructive reject, the gate-extension envelope, MCP identity and approval, KAS consent and `build_permission_event` |
+| `acp/_dispatch_parts/session_update_parser.py` | the `session/update` parser: chunk text and message ids, the `tool_call` and refinement builders, and `parse_session_update` |
+
 ## Native skill startup views
 
 Native CLI launches prepare a `skill_projection` after the existing spec freshness
@@ -2935,7 +2960,7 @@ layer. Reaching `chat_runner` would mean a new field on the `AcpEvent` /
 `LLMEvent` provider contract plus plumbing through `_dispatch` and the provider,
 and `scripts/check_agent_sdk_boundary.py` baselines the dashboard modules at a
 count that may not grow — a materially larger change than the fault it would
-report. Unknown `sessionUpdate` discriminants in `_dispatch.py` are still ignored
+report. Unknown `sessionUpdate` discriminants in `acp/_dispatch_parts/session_update_parser.py` are still ignored
 silently for a related reason: `parse_session_update` is a pure function on a hot
 path with no per-session state, so a bounded log there needs a dedupe set it does
 not have, and an unbounded one would log per frame.
@@ -2951,9 +2976,9 @@ that demuxes frames by `params.sessionId` into per-session queues (no
 **`AcpSessionProvider`** adapts a handle to the `LLMProvider` interface so it is
 a drop-in replacement for `AcpClient`.
 
-Both transports share one parser — `acp/_dispatch.py`
-(`parse_session_update`, `build_permission_event`, `parse_usage_update`, …) — so
-they cannot drift. `AcpRuntime.load_session()` mirrors `AcpClient`'s resume
+Both transports share one parser — `acp/_dispatch.py` and its owners in
+`acp/_dispatch_parts/` (`parse_session_update`, `build_permission_event`,
+`parse_usage_update`, …) — so they cannot drift. `AcpRuntime.load_session()` mirrors `AcpClient`'s resume
 handshake: it issues `session/load` directly under the original sessionId and
 registers the session queue **after** the load response so replayed transcript
 frames are dropped rather than counted against the current turn.

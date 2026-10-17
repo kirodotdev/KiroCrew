@@ -4508,7 +4508,7 @@ authenticated identity, applying the arguments validation had just refused; the
 vouch gate below is what stops that. A very long name would make the transport cut
 remove the result's refusal tag, so the decline would read as a lost marker:
 `tag_refusal` elides the middle of an over-long text against
-`MAX_TOOL_RESULT_CHARS`, the single constant `acp/_dispatch.py` slices on.
+`MAX_TOOL_RESULT_CHARS`, the single constant `acp/_dispatch_parts/tool_result_events.py` slices on.
 That bound alone is necessary but not sufficient, because the cut runs AFTER
 redaction and redaction GROWS text (a credential becomes a longer placeholder,
 measured 7,999 chars in and 8,755 out), so `preserve_tail_marker` re-attaches a

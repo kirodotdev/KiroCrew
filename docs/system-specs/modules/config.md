@@ -3718,7 +3718,7 @@ purpose, which the dashboard paints as the tool-call pill label and the
 messaging renderers reuse as the task title. Which field carries that string
 depends on the harness — the Kiro backend's reserved `__tool_use_purpose`
 argument, or the `description` field other backends' shell tool takes beside
-`command` (`acp/_dispatch.py::select_tool_title` reads it first) — so the block
+`command` (`acp/_dispatch_parts/surfaced_text.py::select_tool_title` reads it first) — so the block
 names both; a model on the second kind never sees a field called "purpose" and
 would otherwise miss the steer. That is the only piece
 of model-generated prose rendered as *chrome*, and without the block the model
@@ -3731,10 +3731,10 @@ kiro-cli injects the `__tool_use_purpose` property into every tool schema it
 exposes, and echoes it back in `rawInput` as either that name or a camelCased
 `__toolUsePurpose` — but nothing validates the key, and the model paraphrases
 it: `__purpose`, `__thinking_purpose` and `__woohoo_purpose` all appear in real
-transcripts. `acp/_dispatch.py::extract_tool_purpose` prefers the canonical
+transcripts. `acp/_dispatch_parts/surfaced_text.py::extract_tool_purpose` prefers the canonical
 spellings in `acp/types.py::TOOL_PURPOSE_KEYS`, then accepts any *reserved*
 (dunder-prefixed) key whose name ends in `purpose`
-(`_dispatch.py::is_tool_purpose_key`), scanned in sorted order so the reading is
+(`acp/_dispatch_parts/surfaced_text.py::is_tool_purpose_key`), scanned in sorted order so the reading is
 deterministic. It is the single reader for both transports; matching literals
 drops the purpose for every paraphrased spelling, and the concise pill silently
 falls back to the raw command line while the unrecognized key leaks into the
