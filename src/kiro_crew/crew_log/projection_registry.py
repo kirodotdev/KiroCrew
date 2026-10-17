@@ -55,6 +55,15 @@ from kiro_crew.crew_log.projection_internal import (
     _outline_step,
 )
 from kiro_crew.crew_log.projection_ledger import _ledger_render, _ledger_start, _ledger_step
+from kiro_crew.crew_log.projection_otel_usage import (
+    OTEL_USAGE_FOLD_NAME,
+    OTEL_USAGE_TYPES,
+    _otel_usage_copy,
+    _otel_usage_render,
+    _otel_usage_rows,
+    _otel_usage_start,
+    _otel_usage_step,
+)
 from kiro_crew.crew_log.projection_radar import _radar_render, _radar_start, _radar_step
 from kiro_crew.crew_log.projection_side_panel import (
     TIMELINE_TYPES,
@@ -501,6 +510,37 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _outline_render,
         affects=OUTLINE_TYPES,
         copy_state=_outline_copy,
+    ),
+    # Keyed by one SESSION and NOT advertised, for the reason stated beside
+    # :data:`INTERNAL_PROJECTION_NAMES`: its one reader is the OTel export
+    # subscriber, which asks for it by name through the crew-log bus rather than
+    # through the side panel. ``affects`` is the two entry types
+    # :mod:`~kiro_crew.crew_log.projection_otel_usage` reads; both are small and rare
+    # next to a session's message bodies, so ``copy_state`` is spelled out rather
+    # than falling back to a deep copy of a state that is already two scalars and a
+    # small dict.
+    OTEL_USAGE_FOLD_NAME: _Fold(
+        OTEL_USAGE_FOLD_NAME,
+        _otel_usage_start,
+        _otel_usage_step,
+        _otel_usage_render,
+        affects=OTEL_USAGE_TYPES,
+        copy_state=_otel_usage_copy,
+        count_rows=_otel_usage_rows,
+        # Three past the base. Two of those are the stored SHAPE: the state carries
+        # ``opened_ts`` beside ``opened`` / ``turns``, and the opened agent is held as
+        # the closed ``opened_agent_kind`` enum, not a raw name. A savepoint whose
+        # shape does not match -- one missing ``opened_ts``, or one carrying a raw
+        # agent string -- retires to a cold fold rather than resuming under a shape
+        # this version does not read.
+        #
+        # The third is a shape the keys cannot show: ``opened_agent_kind`` is answered
+        # from the opening entry's ``slot`` for the ``crewmate`` value, so a savepoint
+        # written by a build that read only ``agent`` holds ``other`` for every
+        # crewmate session it folded. The keys match, the meaning does not, and
+        # resuming such a file would serve that wrong value for the life of the unit --
+        # which is exactly what this number retires.
+        state_version=_FOLD_STATE_VERSION_BASE + 3,
     ),
     # The SLOT-keyed folds each answer to exactly ONE entry type -- their ``step``
     # returns on its first line for anything else -- so ``affects`` names that type and

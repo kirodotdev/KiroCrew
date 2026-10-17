@@ -101,6 +101,12 @@ _ANSWERS: dict[str, str] = {
         "long it ran and what it cost"
     ),
     "class": "What KIND of session this log belongs to, over the log's whole life",
+    "otel_usage": (
+        "Whether this session opened and which closed agent_kind value it opened "
+        "under -- never the raw agent name, which the fold folds to that enum and "
+        "does not keep -- and how many turns it has started per actor: the counts "
+        "the OTel usage export reads to mint session and turn counters"
+    ),
     "outline": (
         "The conversation one row per turn: the first line the human typed and the "
         "reply the turn settled on, both clipped, with no injected context and no "

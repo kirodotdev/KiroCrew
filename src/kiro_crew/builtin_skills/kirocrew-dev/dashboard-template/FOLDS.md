@@ -43,6 +43,7 @@ reaches a fold by its bus scope and a tree fold has none. A fold marked
 | `subagents` | session | Which children this session dispatched, and for each one what happened, how long it ran and what it cost |
 | `class` *(internal)* | session | What KIND of session this log belongs to, over the log's whole life |
 | `outline` *(internal)* | session | The conversation one row per turn: the first line the human typed and the reply the turn settled on, both clipped, with no injected context and no tool output |
+| `otel_usage` *(internal)* | session | Whether this session opened and which closed agent_kind value it opened under -- never the raw agent name, which the fold folds to that enum and does not keep -- and how many turns it has started per actor: the counts the OTel usage export reads to mint session and turn counters |
 | `ledger` | slot | One workstream's goal, phase and next step, what was tried and rejected, and its artifacts |
 | `radar` | slot | An issue crew's items, counts, phase lines and recorded skips |
 | `work` | slot | A conductor's board: the header, every work item, and what the fold dropped |
@@ -205,6 +206,19 @@ Moved by: `message/received`, `message/sent`, `turn/completed`, `turn/refused`, 
 | `prompt_chars` | `number` | no |
 | `reply_chars` | `number` | no |
 | `turns` | `array` | no |
+
+## `otel_usage`
+
+Whether this session opened and which closed agent_kind value it opened under -- never the raw agent name, which the fold folds to that enum and does not keep -- and how many turns it has started per actor: the counts the OTel usage export reads to mint session and turn counters.
+
+Moved by: `session/opened`, `turn/started`.
+
+| Field | Type | Optional |
+|---|---|---|
+| `opened` | `boolean` | no |
+| `opened_agent_kind` | `string` | no |
+| `opened_ts` | `number` | no |
+| `turns` | `object` | no |
 
 ## `ledger`
 

@@ -59,12 +59,16 @@ one this must not spend. A subscriber that raises, a full socket, a client that 
 each leaves the memo ahead of the consumer, and the next lazy read serves the current value.
 The publish is currency, never the record.
 
-WHAT IT IS NOT. Durable for a slot. A session fold has its savepoint beside the unit's
-file and the warm memo brings it forward; a slot memo lives in this process, so a
-restart folds a slot cold. A savepoint for a SLOT fold would be a store of its own, keyed by slot rather than by
-unit, with its own admission rules about the unit vector it was folded over. That is
-not this module's, and :func:`~kiro_crew.session_ledger._fold_checkpoint` already says
-so about the same cell.
+WHAT IT IS NOT. A second place a slot fold's durability lives. A session fold has its
+savepoint beside the unit's file; a slot fold has its own savepoint beside the slot's
+NEWEST unit (``kiro_crew.crew_log.checkpoint.SLOT_CHECKPOINT_DIR``), admitted on the
+same conditions the warm memo already checks before trusting a continuation
+(``_continuable`` and ``_folded_prefix_holds`` in
+:mod:`~kiro_crew.crew_log.projection_slot_memo`). Either way, a restart finds this
+process's in-memory memo empty and resumes from THAT savepoint rather than folding the
+whole unit vector cold -- this module owns neither file, it only drives the read path
+that reads them, and :func:`~kiro_crew.session_ledger._fold_checkpoint` already says so
+about the same cell.
 """
 
 from __future__ import annotations
