@@ -238,20 +238,31 @@ def _discard_queued_work(slot: Any) -> None:
     the queue by the end-of-turn block, so they become queue items) and
     ``_pending_synthesis`` (a subagent-synthesis turn).
 
+    The queue is emptied through the slot's queue repository, never by clearing
+    the list. A queued sub-agent completion carries a discard callback that
+    releases its count in the manager's completion ledger, and only the
+    repository runs it; a raw clear drops the row with the count still held, so
+    every later agent ``autonudge_stop``/``monitor_stop`` on the parent is
+    refused.
+
     Call this BEFORE any stop -- cooperative or cancel. A cooperative
     ``stop_turn`` ends the turn too, so clearing after it races the successor.
 
     Attribute-tolerant on purpose: a foreign or partially-built slot may not
     carry these, and failing to discard must never be what breaks teardown.
     """
-    for attr in ("_queue", "_pending_steers"):
-        seq = getattr(slot, attr, None)
-        if seq is None:
-            continue
+    discard_all = getattr(slot, "queue_discard_all", None)
+    if callable(discard_all):
         try:
-            seq.clear()
+            discard_all()
         except Exception:
-            logger.debug("could not clear %s during stop", attr, exc_info=True)
+            logger.debug("could not discard the queue during stop", exc_info=True)
+    steers = getattr(slot, "_pending_steers", None)
+    if steers is not None:
+        try:
+            steers.clear()
+        except Exception:
+            logger.debug("could not clear _pending_steers during stop", exc_info=True)
     try:
         slot._pending_synthesis = False
     except Exception:

@@ -535,8 +535,7 @@ async def stop_slot_turn(
         # acknowledged as queued; a clear after the await would discard it with
         # nothing settled and nothing said. The kill discards what was queued
         # when it was pressed, and a later send stays queued for the next turn.
-        discarded = list(slot._queue)
-        slot._queue.clear()
+        discarded = slot.queue_discard_all()
         # A drop reported while the settle below suspends must find no take-back,
         # or Queue instead would queue text this kill already discarded.
         from kiro_crew.dashboard import steer_retract

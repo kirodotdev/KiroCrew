@@ -25,6 +25,7 @@ Three defects a linked thread showed on mirrored turns:
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 from pathlib import Path
 from types import SimpleNamespace
@@ -605,10 +606,9 @@ class TestTheDrainCarriesOrigin:
             return _done()
 
         def _fake_spawn(_state: Any, _slot: Any, coro: Any) -> Any:
-            coro.close()
-            task = MagicMock()
-            task.done.return_value = True
-            return task
+            # The drain calls ``_run_chat`` inside its owned runner, so the
+            # spawned coroutine must run for the stub to see the kwargs.
+            return asyncio.create_task(coro)
 
         monkeypatch.setattr(cr, "_run_chat", _stub_run_chat)
         monkeypatch.setattr(cr, "spawn_guarded_turn", _fake_spawn)
@@ -628,6 +628,7 @@ class TestTheDrainCarriesOrigin:
             captured.clear()
             slot.task = None
             assert await cr._start_next_queued_turn(state, slot) is True
+            await slot.task
             return dict(captured)
 
         return state, _busy, _run

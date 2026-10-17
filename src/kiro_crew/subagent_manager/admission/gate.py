@@ -1567,9 +1567,9 @@ class _GateMixin(ManagerComponent):
             )
             logger.warning("Subagent %s rejected: no approval callback", agent_id)
             if self._manager._on_done:
-                self._manager._tasks[agent_id] = asyncio.ensure_future(
-                    self._manager._safe_announce(info)
-                )
+                _announce_task = asyncio.ensure_future(self._manager._safe_announce(info))
+                self._manager._tasks[agent_id] = _announce_task
+                self._own_announce_task(_announce_task, info)
 
         if info.done:
             # Rejected after the claim (no approval mechanism): terminal in the

@@ -451,8 +451,14 @@ class TestStopTurnSlotState:
         slot = state.get_or_create_slot("s1")
         slot.task = asyncio.ensure_future(asyncio.sleep(999))
         slot._stop_state = "soft_pending"
-        for content in ("msg1", "msg2", "msg3"):
-            slot.queue_append(content)
+        discarded: list[str] = []
+        slot.queue_insert(
+            0,
+            "completion",
+            on_discarded=lambda: discarded.append("completion"),
+        )
+        slot.queue_append("msg2")
+        slot.queue_append("msg3")
 
         async def fake_stop_turn(
             key, *, force=False, preserve_queue=False, on_soft=None, on_hard=None
@@ -468,6 +474,7 @@ class TestStopTurnSlotState:
             resp = await client.post("/api/chat/slots/s1/stop")
             assert resp.status == 200
         assert len(slot._queue) == 0
+        assert discarded == ["completion"]
         slot.task.cancel()
 
     @pytest.mark.asyncio

@@ -387,10 +387,20 @@ class RunEventCoordinator(ManagerComponent):
         )
 
     async def _queued_depth_async_impl(self, parent_session_key: str) -> int:
-        """:meth:`_queued_depth_impl` with its store count on the writer thread."""
-        in_window = self._window_depth(parent_session_key)
+        """:meth:`_queued_depth_impl` with its store count on the writer thread.
+
+        The window is read on both sides of the store await and the larger
+        reading counts. A spawn admission puts in the window during the await
+        still counts, and an incognito spawn has no store row to be counted
+        instead, so the agent stop fence would otherwise see zero. An entry
+        that STARTS during the await still counts too: a caller that read its
+        running children before this await (the attachment probe, the cron
+        reset) would otherwise see it nowhere. A row claimed from the store into
+        the window during the await can count twice, never zero times.
+        """
+        before = self._window_depth(parent_session_key)
         overflow = await self._manager._admission.taskq_overflow_async(parent_session_key)
-        return in_window + overflow
+        return max(before, self._window_depth(parent_session_key)) + overflow
 
     def queued_count_for_impl(self, parent_session_key: str) -> int:
         """Public queued-spawn count for *parent_session_key*.

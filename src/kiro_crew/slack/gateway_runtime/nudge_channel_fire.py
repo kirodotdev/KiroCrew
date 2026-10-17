@@ -304,6 +304,7 @@ async def _fire_slack_inner_nudge(
                 directive_consumer=build_directive_consumer(
                     session_key=key,
                     sessions=self.sessions,
+                    subagents=getattr(self, "subagent_mgr", None),
                 ),
                 monitor_completion=(
                     (

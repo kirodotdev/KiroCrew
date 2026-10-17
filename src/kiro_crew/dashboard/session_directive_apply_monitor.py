@@ -26,6 +26,10 @@ from kiro_crew.autonudge import (
     is_channel_key,
 )
 from kiro_crew.autonudge_judge import screen_phrase
+from kiro_crew.dashboard.chat_utils import (
+    SUBAGENT_ATTACHMENT_RECOVERY_GUIDANCE,
+    subagent_attachment_detail_async,
+)
 from kiro_crew.dashboard.session_directive_apply_outcome import (
     _describe_interval,
     _describe_next_wake,
@@ -969,13 +973,14 @@ async def _stop_resolved_loop(
 
 
 async def _monitor_stop(
+    state: Any,
     slot: Any,
     session_key: str,
     args: dict[str, Any],
     *,
     wake_loop_id: str = "",
 ) -> str:
-    from kiro_crew.autonudge import get_instance
+    from kiro_crew.autonudge import get_instance, is_structured_monitor_loop
 
     svc = get_instance()
     if svc is None:
@@ -990,6 +995,18 @@ async def _monitor_stop(
     loop = svc.get_by_slot(binding)
     if not loop:
         return _no_loop_message(svc, binding)
+    # One shared evaluation names the probe that holds the fence, the same
+    # bounded phrase the dashboard's 409 surface reports, so the agent can tell
+    # a running child (wait for it) from its own unconsumed completion turn.
+    attachment = await subagent_attachment_detail_async(state, slot, session_key, "monitor_stop")
+    if attachment is not None:
+        label = "Structured monitor" if is_structured_monitor_loop(loop) else "Auto-nudge loop"
+        guidance = SUBAGENT_ATTACHMENT_RECOVERY_GUIDANCE
+        raise _DirectiveDenied(
+            f"Error: {label} was not stopped: sub-agent work is still attached "
+            f"to this session ({attachment}); {guidance}. Stop only if "
+            "the goal is complete."
+        )
     return await _stop_resolved_loop(
         slot,
         svc,
@@ -1001,6 +1018,7 @@ async def _monitor_stop(
 
 
 async def _autonudge_stop(
+    state: Any,
     slot: Any,
     session_key: str,
     args: dict[str, Any],
@@ -1023,6 +1041,14 @@ async def _autonudge_stop(
     loop = svc.get_by_slot(binding)
     if not loop:
         return _no_loop_message(svc, binding)
+    attachment = await subagent_attachment_detail_async(state, slot, session_key, "autonudge_stop")
+    if attachment is not None:
+        guidance = SUBAGENT_ATTACHMENT_RECOVERY_GUIDANCE
+        raise _DirectiveDenied(
+            "Error: Auto-nudge loop was not stopped: sub-agent work is still attached "
+            f"to this session ({attachment}); {guidance}. Stop only if "
+            "the goal is complete."
+        )
     return await _stop_resolved_loop(
         slot,
         svc,

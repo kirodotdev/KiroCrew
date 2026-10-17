@@ -83,10 +83,18 @@ def _delivery(agent_id: str, *, elapsed: float = 12.0, credits: float = 0.25):
 def _spawned_on_consumed(coro):
     """The ``_on_consumed`` hook the drain passed to the ``_run_chat`` it spawned.
 
-    ``_run_chat`` runs under its exit guard, so before the coroutine first steps
-    its frame holds the dispatcher's keywords as ``kwargs``.
+    The drain dispatches an ownership wrapper whose closure holds the runner's
+    keywords as ``_run_kwargs``; a direct ``_run_chat`` runs under its exit
+    guard, so before the coroutine first steps its frame holds them as
+    ``kwargs``.
     """
-    return coro.cr_frame.f_locals["kwargs"].get("_on_consumed")
+    frame = coro.cr_frame
+    assert frame is not None
+    for name in ("_run_kwargs", "kwargs"):
+        kwargs = frame.f_locals.get(name)
+        if isinstance(kwargs, dict):
+            return kwargs.get("_on_consumed")
+    return None
 
 
 class _ObservedGate(asyncio.Event):
@@ -490,6 +498,93 @@ class TestConsumptionSignalIsPerTurn:
         assert not (agent_root / "a2" / "tombstone.json").exists()
 
 
+class TestQueueDrainPreEntryOwnership:
+    """A popped completion always has exactly one lifecycle owner."""
+
+    @staticmethod
+    def _queue_owned_completion(state, slot, agent_id: str):
+        parent_key = f"dashboard:{slot.key}"
+        manager = state.subagents
+        manager.retain_completion_delivery(parent_key, agent_id)
+        consumed: list[bool] = []
+        discarded: list[str] = []
+
+        def _release() -> None:
+            manager.release_completion_delivery(parent_key, agent_id)
+
+        def _note_consumed(value: bool = True) -> None:
+            consumed.append(value)
+            if value:
+                _release()
+
+        def _note_discarded() -> None:
+            discarded.append(agent_id)
+            _release()
+
+        slot.queue_insert(
+            0,
+            COMPLETION,
+            kind=SUBAGENT_COMPLETION_KIND,
+            on_consumed=_note_consumed,
+            on_discarded=_note_discarded,
+        )
+        return parent_key, manager, consumed, discarded
+
+    @pytest.mark.asyncio
+    async def test_slot_removal_before_runner_entry_discards_popped_owner_once(
+        self, tmp_path
+    ) -> None:
+        """Removing a slot after pop cannot strand its manager-owned completion."""
+        from chat_test_helpers import _make_state
+
+        state = _make_state(tmp_path / "state")
+        state.subagents = _manager()
+        slot = state.get_or_create_slot("drain-pre-entry-remove")
+        parent_key, manager, consumed, discarded = self._queue_owned_completion(state, slot, "a1")
+
+        assert await _start_next_queued_turn(state, slot) is True
+        assert slot._queue == []
+        assert state._slots.pop(slot.key) is slot
+        # The row already transferred into the not-yet-entered runner, so the
+        # slot teardown has no queued callback left to discover.
+        assert slot.queue_discard_all() == []
+        slot.task.cancel()
+        await asyncio.gather(slot.task, return_exceptions=True)
+        await asyncio.sleep(0)
+
+        assert consumed == []
+        assert discarded == ["a1"]
+        assert manager.terminal_delivery_inflight_for(parent_key) is False
+
+    @pytest.mark.asyncio
+    async def test_entered_runner_keeps_exclusive_consumption_ownership(self, tmp_path) -> None:
+        """The pre-entry guard cannot discard after the model runner takes ownership."""
+        from chat_test_helpers import _make_state
+
+        state = _make_state(tmp_path / "state")
+        state.subagents = _manager()
+        slot = state.get_or_create_slot("drain-runner-entered")
+        parent_key, manager, consumed, discarded = self._queue_owned_completion(state, slot, "a1")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _run_owned(_state, _slot, _message, **kwargs) -> None:
+            entered.set()
+            kwargs["_on_consumed"]()
+            await release.wait()
+
+        with patch("kiro_crew.dashboard.chat_runner._run_chat", new=_run_owned):
+            assert await _start_next_queued_turn(state, slot) is True
+            await asyncio.wait_for(entered.wait(), timeout=30)
+            assert consumed == [True]
+            assert discarded == []
+            assert manager.terminal_delivery_inflight_for(parent_key) is False
+            release.set()
+            await slot.task
+
+        assert discarded == []
+
+
 class TestTeardownGateOnQueuedSettlement:
     """A ``delivered`` tombstone excludes the folder from restart orphan
     reconciliation, so it must not be written while the run's teardown is still
@@ -536,6 +631,37 @@ class TestTeardownGateOnQueuedSettlement:
         tombstone = json.loads((agent_root / "evicted" / "tombstone.json").read_text())
         assert tombstone["elapsed"] == 42.0
         assert tombstone["credits"] == 1.5
+
+    @pytest.mark.asyncio
+    async def test_a_failed_owed_report_clear_still_writes_every_tombstone(
+        self, agent_root, monkeypatch
+    ):
+        """A digest carrying a memory-wait expiry and completed members settles both.
+
+        The expiry's owed-report clear is a task-store write. When that write
+        fails, the completed members still get their ``delivered`` tombstones, or
+        the next start re-announces results the parent already consumed. The
+        failure is still raised, after the tombstones, for the discard path that
+        needs the clear durable before it releases the stop fence.
+        """
+        from kiro_crew.taskq import TaskStoreUnavailable
+
+        mgr = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+        _finished_run("sibling", agent_root)
+
+        async def _refused_clear(_self, _agent_ids):
+            raise TaskStoreUnavailable("task store write failed")
+
+        # The admission coordinator has ``__slots__``, so the double goes on its class.
+        monkeypatch.setattr(type(mgr._admission), "taskq_clear_owed_reports_async", _refused_clear)
+
+        with pytest.raises(TaskStoreUnavailable):
+            await mgr.settle_queued_delivery(
+                [SubagentDelivery("expired", 0.0, 0.0, report_owed=True), _delivery("sibling")]
+            )
+
+        assert (agent_root / "sibling" / "tombstone.json").exists()
+        assert not (agent_root / "expired").exists()
 
     @pytest.mark.asyncio
     async def test_an_evicted_run_still_waits_for_its_teardown(self, agent_root):

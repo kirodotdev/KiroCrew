@@ -9,6 +9,7 @@ Exercises the steer path that reaches the running turn's live AcpClient via
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -220,10 +221,15 @@ class TestApiChatSteer:
 
         state.subagents = None
         with (
-            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
-            patch.object(chat_runner, "_run_chat", return_value=MagicMock()) as run_chat,
+            patch.object(
+                chat_runner,
+                "spawn_guarded_turn",
+                side_effect=lambda _state, _slot, coro: asyncio.create_task(coro),
+            ),
+            patch.object(chat_runner, "_run_chat", new=AsyncMock()) as run_chat,
         ):
             assert await chat_runner._start_next_queued_turn(state, slot) is True
+            await slot.task
 
         assert run_chat.call_args.args[2] == "also tag it"
         assert run_chat.call_args.kwargs.get("_steer_possibly_delivered") is True

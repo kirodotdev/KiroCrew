@@ -8,6 +8,7 @@ spec never inherits a deleted one's conversation.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import inspect
 import os
@@ -764,6 +765,10 @@ def _relaunchable_slot(*, running: bool = True):
         _pending_steers: list = []
         _pending_synthesis: bool = True
 
+        def queue_discard_all(self):
+            discarded, self._queue = self._queue, []
+            return discarded
+
     slot = _Slot()
     slot.running = running
     slot.task = _Task()
@@ -853,6 +858,53 @@ def test_discard_covers_every_relaunch_source():
 def test_discard_tolerates_a_slot_without_the_attributes():
     """A foreign or half-built slot must not make teardown raise."""
     routes._discard_queued_work(types.SimpleNamespace())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop", ["pause", "delete"])
+async def test_pause_and_delete_release_a_queued_completions_stop_fence(stop, monkeypatch):
+    """A queued sub-agent completion's ledger count goes with its dropped row.
+
+    While the count is held the manager reports child delivery in flight, and an
+    agent-issued autonudge_stop or monitor_stop on the parent is refused. Only
+    the slot's queue repository runs the row's discard callback, so a raw clear
+    left the count held after the row was gone.
+    """
+    from unittest.mock import MagicMock
+
+    from kiro_crew.dashboard.state import _ChatSlot
+    from kiro_crew.subagent import SubagentManager
+
+    manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+    slot = _ChatSlot(routes._slot_key(_RELAUNCH_SPEC))
+    slot._app = routes.APP_NAME
+    parent = f"dashboard:{slot.key}"
+    manager.retain_completion_delivery(parent, "child-1")
+    slot.queue_insert(
+        0,
+        "[Subagent completion event] child-1 finished",
+        on_discarded=lambda: manager.release_completion_delivery(parent, "child-1"),
+    )
+    parked = asyncio.Event()
+    slot.task = asyncio.create_task(parked.wait())
+    assert manager.terminal_delivery_inflight_for(parent) is True
+
+    state = _state_with(slot, {"stopped": []})
+    if stop == "pause":
+        assert await routes._halt_active_turn(state, _RELAUNCH_SPEC) is True
+    else:
+
+        async def _saved(*_a, **_k):
+            return None
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_persistence.save_slot_off_loop", _saved)
+        assert await routes._teardown_worker_slot(state, _RELAUNCH_SPEC) is True
+
+    assert slot.task.done(), "the parked turn was not stopped"
+    assert slot._queue == []
+    assert (
+        manager.terminal_delivery_inflight_for(parent) is False
+    ), "the dropped completion still holds its stop fence"
 
 
 def test_both_stop_helpers_discard_before_they_stop():

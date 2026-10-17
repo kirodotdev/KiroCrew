@@ -523,30 +523,37 @@ async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
             "msg msg-err",
             meta={"kind": TRANSIENT_RETRY_KIND},
         )
-        _requeue_text, _requeue_payload = build_recovery_requeue(
-            message,
-            _turn_emitted,
-            cause=ResetCause.CONNECTION_LOST,
-            message_is_synthetic=_is_synthetic,
-        )
-        # Snapshot BEFORE the enqueue: the reset in _turn_release_session
-        # (chat_turn/session_reset.py) is awaited, and a Stop landing there must veto the replay.
-        _snf_stop_gen = getattr(slot, "_stop_generation", 0)
-        _snf_session_stop_gen = _session_stop_generation(turn)
-        _snf_qid = _queue_recovery(
-            turn,
-            0,
-            _requeue_text,
-            kind=SYNTHETIC_RECOVERY_KIND,
-            payload=_requeue_payload,
-        )
-        replays_of(slot).arm(
-            ReplayFamily.SESSION_NOT_FOUND,
-            entry_id=_snf_qid or "",
-            session_key=session_key,
-            stop_gen=_snf_stop_gen,
-            session_stop_gen=_snf_session_stop_gen,
-        )
+        if _replay_owes_delivery(turn):
+            # An owed sub-agent completion is queued as the completion it
+            # is: no lost-session record, so a message the user sends while
+            # the reset is awaited cannot revoke the retry and settle the
+            # unread result as delivered.
+            _requeue_owed_completion(turn)
+        else:
+            _requeue_text, _requeue_payload = build_recovery_requeue(
+                message,
+                _turn_emitted,
+                cause=ResetCause.CONNECTION_LOST,
+                message_is_synthetic=_is_synthetic,
+            )
+            # Snapshot BEFORE the enqueue: the reset in _turn_release_session
+            # (chat_turn/session_reset.py) is awaited, and a Stop landing there must veto the replay.
+            _snf_stop_gen = getattr(slot, "_stop_generation", 0)
+            _snf_session_stop_gen = _session_stop_generation(turn)
+            _snf_qid = _queue_recovery(
+                turn,
+                0,
+                _requeue_text,
+                kind=SYNTHETIC_RECOVERY_KIND,
+                payload=_requeue_payload,
+            )
+            replays_of(slot).arm(
+                ReplayFamily.SESSION_NOT_FOUND,
+                entry_id=_snf_qid or "",
+                session_key=session_key,
+                stop_gen=_snf_stop_gen,
+                session_stop_gen=_snf_session_stop_gen,
+            )
     elif _creds:
         # The fresh process failed too, so the helper itself is broken
         # and a new chat would fail the same way: the provider's own
