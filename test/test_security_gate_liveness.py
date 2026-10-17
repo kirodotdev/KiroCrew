@@ -366,7 +366,14 @@ def _url_payload_command(n: int) -> str:
 #: Raised again, from 29,573, for the one ``pinned-order`` entry in
 #: ``paths._CREW_SECRET_LEAVES``: the person's pinned-session order is fenced from
 #: agent file tools like ``tag-grants`` beside it.
-_PACKAGE_LINE_BUDGET = 29_574
+#:
+#: Raised again, from 29,574, for the stream redactor's AWS key-value anchor: a
+#: recognised AWS label holds its value past the 512 floor up to the JWT ceiling and
+#: fails closed beyond it, the way the Bearer anchor already does. 194 lines are the
+#: new ``stream_aws_anchor`` module (the label grammar read off the batch label rules,
+#: its linear finder and the label-grammar discard) and 40 the ``feed`` call sites. No
+#: credential branch moved.
+_PACKAGE_LINE_BUDGET = 29_808
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
