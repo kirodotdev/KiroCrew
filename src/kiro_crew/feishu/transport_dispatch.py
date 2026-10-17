@@ -110,6 +110,9 @@ class FeishuDispatcher:
         self.agent = agent
         self.conv_log = conv_log
         self.approval_mode = approval_mode
+        # Set by maybe_start_feishu after construction. Needed when a channel turn
+        # has no attached dashboard state.
+        self.subagent_manager: Any = None
         # Set by maybe_start_feishu after construction to avoid a cycle.
         self.client: "LarkClient | None" = None
         # Set the same way; the config applier pushes reloaded authorization

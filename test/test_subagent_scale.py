@@ -316,10 +316,13 @@ class TestBatchIdentity:
         mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
         announced: list[SubagentInfo] = []
         registered: list[bool] = []
+        fenced: list[bool] = []
 
         async def _on_done(info):  # type: ignore[no-untyped-def]
             announced.append(info)
             registered.append(f"reject-{info.id}" in mgr._tasks)
+            # The parent's stop fence sees the delivery while it is in flight.
+            fenced.append(mgr.terminal_delivery_inflight_for("dashboard:chat-1"))
 
         mgr._on_done = _on_done
         mgr._queue = [
@@ -339,6 +342,7 @@ class TestBatchIdentity:
             task="waited too long",
             done=True,
             error="cwd does not exist or is not a directory",
+            parent_session_key="dashboard:chat-1",
         )
         mgr.spawn = lambda **kw: rejected
 
@@ -349,6 +353,9 @@ class TestBatchIdentity:
         assert [i.id for i in announced] == ["q-reject"], "a rejection at drain time was dropped"
         assert registered == [True]  # held in _tasks while in flight, so shutdown can cancel it
         assert "reject-q-reject" not in mgr._tasks, "a finished announce stayed registered"
+        assert fenced == [True], "the parent's stop fence missed an in-flight rejection"
+        assert mgr._announce_owners == {}, "a finished announce kept its stop-fence owner"
+        assert mgr.terminal_delivery_inflight_for("dashboard:chat-1") is False
 
     def test_a_drained_batch_rejection_is_not_double_announced(self):
         """`_announce_rejection` announces batch members ITSELF, from inside spawn.
@@ -381,8 +388,9 @@ class TestBatchIdentity:
         )
 
         mgr._drain_queue()
+        assert "reject-q-batch" not in mgr._tasks
         assert (
-            "reject-q-batch" not in mgr._tasks
+            not mgr._report_tasks
         ), "the drain announced a batch rejection that spawn already announced"
 
     def test_a_drained_success_is_not_announced_twice(self):
@@ -1910,10 +1918,11 @@ class TestWaveDigest:
         slot.task = None
         slot._subagent_deliveries_inflight = 0
         slot._subagents_inline_collected = set()
+        slot._queue = []
         queued: list[dict] = []
-        slot.queue_append = MagicMock(
-            side_effect=lambda content, kind="", meta=None: (
-                queued.append({"content": content, "kind": kind, "meta": meta}) or "qid"
+        slot.queue_insert = MagicMock(
+            side_effect=lambda index, content, **kwargs: (
+                queued.append({"index": index, "content": content, **kwargs}) or "qid"
             )
         )
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -1955,6 +1964,27 @@ class TestWaveDigest:
         held = [members[i].id for i in range(9)]
         assert list(ledger.keys()) == [queued[0]["content"]]
         assert [d.agent_id for d in ledger[queued[0]["content"]]] == [members[9].id] + held
+        mgr.retain_completion_delivery.assert_called_once_with(
+            members[9].parent_session_key, members[9].id
+        )
+        discard = queued[0].get("on_discarded")
+        assert callable(discard), "queued completion has no terminal discard owner"
+
+        with patch(
+            "kiro_crew.slack.gateway.read_tombstone",
+            return_value={"cause": "delivered"},
+        ):
+            discard()
+            await _settle(lambda: bool(settled), what="queued completion discard settled")
+
+        mgr.release_completion_delivery.assert_called_once_with(
+            members[9].parent_session_key, members[9].id
+        )
+        assert ledger == {}
+        assert settled == [[members[9].id] + held]
+        discard()
+        await asyncio.sleep(0)
+        assert settled == [[members[9].id] + held], "discard settlement duplicated"
 
     @pytest.mark.asyncio
     async def test_an_auth_required_turn_is_not_a_confirmed_hand_off(self):

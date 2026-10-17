@@ -178,7 +178,9 @@ class TestChatSlotContinue:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/s/continue")
             assert resp.status == 409
-            assert (await resp.json())["code"] == "slot_subagents_running"
+            body = await resp.json()
+            assert body["code"] == "slot_subagents_running"
+            assert body["error"] == "sub-agents are running"
         # Refused on the RUNNING child alone, with an empty queue.
         state.subagents.running_agents_for.assert_called_with("dashboard:s")
         assert not slot._queue
@@ -221,6 +223,36 @@ class TestChatSlotContinue:
             assert (await resp.json())["code"] == "slot_subagents_running"
         assert not slot._queue
         _patched.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ("manager", "failure"))
+    async def test_stop_only_completion_states_do_not_widen_continue(self, _patched, source):
+        """Continue keeps the established running, queued, and handoff fence."""
+
+        class _Subagents:
+            def running_agents_for(self, _session_key):
+                return []
+
+            def _queued_depth(self, _session_key):
+                return 0
+
+            def terminal_delivery_inflight_for(self, _session_key):
+                return True
+
+        slot = _ChatSlot("s")
+        slot.append("user", "spawn some agents", "msg msg-u")
+        state = _mock_state(slot)
+        state.subagents = _Subagents()
+        if source == "failure":
+            slot._pending_subagent_failures = ["retained notice"]
+        else:
+            assert source == "manager"
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s/continue")
+
+        assert resp.status == 200
+        _patched.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_channel_born_slot_probes_its_linked_session_key(self, _patched):

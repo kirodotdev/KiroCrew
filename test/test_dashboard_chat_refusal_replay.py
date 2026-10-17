@@ -76,7 +76,13 @@ class TestRunChatRefusalFallbackReplay:
             session_stop_gen=0,
         )
         # The correction the refusal card asked for, queued while the replay waited.
-        slot.queue_insert(1, "actually, do this instead")
+        from kiro_crew.dashboard.session_control import containment_meta
+
+        slot.queue_insert(
+            1,
+            "actually, do this instead",
+            meta=containment_meta(state, slot),
+        )
 
         _seen: list[str] = []
 
@@ -91,6 +97,8 @@ class TestRunChatRefusalFallbackReplay:
         monkeypatch.setattr(chat_runner, "_run_chat", _fake_run_chat)
 
         assert await _start_next_queued_turn(state, slot) is True
+        if slot.task is not None:
+            await slot.task
         assert _seen == [
             "actually, do this instead"
         ], "the correction must dispatch, never the purged replay"

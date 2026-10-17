@@ -218,14 +218,17 @@ async def test_the_tab_turn_runs_as_the_sub_agent_and_owes_its_delivery(done: _D
 
 
 @pytest.mark.asyncio
-async def test_a_failed_solo_run_owes_nothing_to_the_tab_turn(done: _Done) -> None:
+async def test_a_failed_solo_run_owes_no_tombstone_to_the_tab_turn(done: _Done) -> None:
     done.tab("main")
 
     await done.done(make_info(error="boom"))
     await done.drain()
 
+    # No result-file debt is armed, but the turn still releases the manager's
+    # completion ownership when it consumes the failure report.
     ((_slot, _text, kwargs),) = done.chats
-    assert "_on_consumed" not in kwargs
+    assert callable(kwargs["_on_consumed"])
+    assert callable(kwargs["_on_discarded"])
     gw_mod._arm_queued_delivery_settlement.assert_not_called()
 
 

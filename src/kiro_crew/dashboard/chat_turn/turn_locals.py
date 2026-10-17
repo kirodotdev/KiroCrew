@@ -36,6 +36,7 @@ class _ChatTurn:
     _crew_log_sid: "str"
     _crew_log_step: "int"
     _crew_log_turn_no: "int"
+    _discard_transferred: "bool"
     _dispatch_lock_held: "bool"
     _irreversible_consumption_reported: "bool"
     _is_refusal_retry_turn: "bool"

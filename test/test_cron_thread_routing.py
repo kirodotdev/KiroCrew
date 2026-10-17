@@ -7,11 +7,13 @@ _subagent_done routes cron-spawned subagent results via session injection.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
 from kiro_crew.cron import CronJob, CronSchedule
+from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.subagent import SubagentInfo
 
 # ── Helpers (same pattern as test_cron_slack_delivery.py) ──
@@ -157,9 +159,9 @@ class TestCronCallbackStoresThread:
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
         _run_callback(gateway, _make_job(thread_ts="1699999999.000111"))
         for call in gateway.sessions.set_thread.await_args_list:
-            assert call.args[1] == "", (
-                "cron claimed/kept a non-empty thread anchor for an inherited thread"
-            )
+            assert (
+                call.args[1] == ""
+            ), "cron claimed/kept a non-empty thread anchor for an inherited thread"
 
     def test_clears_stale_anchor_for_inherited_thread(self) -> None:
         # Scenario: cron:<id> already holds a stale thread anchor from a
@@ -387,8 +389,13 @@ class TestSubagentDoneCancelsBeforeRelease:
         info.done = True
         p1, p2 = self._patches()
         with (
-            patch("kiro_crew.slack.gateway.stream_and_collect", new_callable=AsyncMock, return_value="ok"),
-            p1, p2,
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="ok",
+            ),
+            p1,
+            p2,
         ):
             await subagent_done(info)
         assert call_order == ["cancel", "release"]
@@ -409,12 +416,17 @@ class TestSubagentDoneCancelsBeforeRelease:
         info.done = True
         p1, p2 = self._patches()
         with (
-            patch("kiro_crew.slack.gateway.stream_and_collect", new_callable=AsyncMock, return_value="ok"),
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="ok",
+            ),
             # gateway renders through the shared Slack pipeline now, so this is
             # the one seam to stub -- patching to_slack_mrkdwn/split_message
             # individually does not intercept anything.
             patch("kiro_crew.slack.gateway.render_for_slack", return_value=["ok"]),
-            p1, p2,
+            p1,
+            p2,
         ):
             await subagent_done(info)
         assert call_order == ["cancel", "release"]
@@ -430,8 +442,13 @@ class TestSubagentDoneCancelsBeforeRelease:
         info.done = True
         p1, p2 = self._patches()
         with (
-            patch("kiro_crew.slack.gateway.stream_and_collect", new_callable=AsyncMock, return_value="ok"),
-            p1, p2,
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="ok",
+            ),
+            p1,
+            p2,
         ):
             await subagent_done(info)
         gateway.sessions.release.assert_called_once_with("cron:j1")
@@ -445,7 +462,9 @@ class TestDashboardInjectionRoutesRunChat:
 
     def _patches(self):
         return (
-            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", side_effect=lambda s: (s, False)),
+            patch(
+                "kiro_crew.slack.gateway.redact_exfiltration_urls", side_effect=lambda s: (s, False)
+            ),
             patch("kiro_crew.slack.gateway.redact_credentials", side_effect=lambda s: (s, False)),
         )
 
@@ -466,7 +485,8 @@ class TestDashboardInjectionRoutesRunChat:
         p1, p2 = self._patches()
         with (
             patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock),
-            p1, p2,
+            p1,
+            p2,
         ):
             await subagent_done(info)
 
@@ -510,13 +530,161 @@ class TestDashboardInjectionRoutesRunChat:
         _mock_run_chat = AsyncMock(return_value=None)
         with (
             patch("kiro_crew.slack.gateway._run_chat", _mock_run_chat),
-            p1, p2,
+            p1,
+            p2,
         ):
             await subagent_done(info)
 
         # _run_chat should have been triggered
         assert _mock_run_chat.called, "_run_chat must be called after busy slot becomes idle"
-        assert slot.task is not _done_future, "slot.task must be reassigned to the new _run_chat task"
+        assert (
+            slot.task is not _done_future
+        ), "slot.task must be reassigned to the new _run_chat task"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("busy_after_wait", (False, True), ids=("inline", "busy-recheck"))
+    async def test_inline_collection_releases_manager_ownership_once(
+        self, busy_after_wait: bool
+    ) -> None:
+        """Inline collection after a wait balances the sole ownership count."""
+        from unittest.mock import PropertyMock
+
+        gateway = _make_gateway()
+        slot = MagicMock()
+        slot.key = "chat-1-inline"
+        slot.task = asyncio.get_running_loop().create_future()
+        slot.task.set_result(None)
+        slot._subagents_inline_collected = set()
+        slot._pending_synthesis = True
+        checks = 0
+
+        def _running() -> bool:
+            nonlocal checks
+            checks += 1
+            if checks == 2:
+                slot._subagents_inline_collected.add("inline1")
+            return True if checks == 1 else busy_after_wait
+
+        type(slot).running = PropertyMock(side_effect=_running)
+        gateway.dashboard_state.get_slot = MagicMock(return_value=slot)
+        gateway.dashboard_state._background_tasks = set()
+        subagent_done = _capture_subagent_done(gateway)
+        info = SubagentInfo(
+            id="inline1",
+            task="work",
+            parent_session_key="dashboard:chat-1-inline",
+        )
+        info.result = "done"
+        info.done = True
+        p1, p2 = self._patches()
+
+        with p1, p2:
+            await subagent_done(info)
+
+        gateway.subagent_mgr.retain_completion_delivery.assert_called_once_with(
+            info.parent_session_key, info.id
+        )
+        gateway.subagent_mgr.release_completion_delivery.assert_called_once_with(
+            info.parent_session_key, info.id
+        )
+        assert info._report_delivered is True
+        assert info.id not in slot._subagents_inline_collected
+        assert slot._pending_synthesis is False
+
+    @pytest.mark.asyncio
+    async def test_busy_slot_removed_settles_retained_completion(self) -> None:
+        """A close during the busy wait discards durably instead of stranding ownership."""
+        gateway = _make_gateway()
+        slot = _ChatSlot("chat-1-removed")
+        busy_release = asyncio.Event()
+        slot.task = asyncio.create_task(busy_release.wait())
+        gateway.dashboard_state.get_slot = MagicMock(return_value=slot)
+        gateway.dashboard_state._background_tasks = set()
+        subagent_done = _capture_subagent_done(gateway)
+        info = SubagentInfo(
+            id="removed1",
+            task="work",
+            parent_session_key="dashboard:chat-1-removed",
+        )
+        info.result = "done"
+        info.done = True
+        settled: list[list[str]] = []
+
+        async def _settle(deliveries) -> None:
+            settled.append([delivery.agent_id for delivery in deliveries])
+
+        gateway.subagent_mgr.settle_queued_delivery = _settle
+        run_chat = AsyncMock()
+        p1, p2 = self._patches()
+        with (
+            patch("kiro_crew.slack.gateway._run_chat", run_chat),
+            patch(
+                "kiro_crew.slack.gateway.read_tombstone",
+                return_value={"cause": "delivered"},
+            ),
+            p1,
+            p2,
+        ):
+            delivery = asyncio.create_task(subagent_done(info))
+            for _ in range(20):
+                await asyncio.sleep(0)
+                if gateway.subagent_mgr.retain_completion_delivery.called:
+                    break
+            gateway.subagent_mgr.retain_completion_delivery.assert_called_once_with(
+                info.parent_session_key,
+                info.id,
+            )
+
+            gateway.dashboard_state.get_slot.return_value = None
+            busy_release.set()
+            await delivery
+            background = tuple(gateway.dashboard_state._background_tasks)
+            if background:
+                await asyncio.gather(*background)
+
+        run_chat.assert_not_awaited()
+        assert settled == [[info.id]]
+        assert slot._subagent_delivery_pending == {}
+        gateway.subagent_mgr.release_completion_delivery.assert_called_once_with(
+            info.parent_session_key,
+            info.id,
+        )
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_busy_wait_releases_transferred_ownership(self) -> None:
+        """Cancellation before queue/runner handoff leaves no completion fence."""
+        gateway = _make_gateway()
+        slot = _ChatSlot("chat-1-cancelled-wait")
+        busy_release = asyncio.Event()
+        slot.task = asyncio.create_task(busy_release.wait())
+        gateway.dashboard_state.get_slot = MagicMock(return_value=slot)
+        gateway.dashboard_state._background_tasks = set()
+        subagent_done = _capture_subagent_done(gateway)
+        info = SubagentInfo(
+            id="cancelled-wait",
+            task="work",
+            parent_session_key="dashboard:chat-1-cancelled-wait",
+        )
+        info.result = "done"
+        info.done = True
+        run_chat = AsyncMock()
+        p1, p2 = self._patches()
+        with patch("kiro_crew.slack.gateway._run_chat", run_chat), p1, p2:
+            delivery = asyncio.create_task(subagent_done(info))
+            for _ in range(20):
+                await asyncio.sleep(0)
+                if gateway.subagent_mgr.retain_completion_delivery.called:
+                    break
+            delivery.cancel()
+            await asyncio.gather(delivery, return_exceptions=True)
+            busy_release.set()
+            await slot.task
+
+        gateway.subagent_mgr.release_completion_delivery.assert_called_once_with(
+            info.parent_session_key,
+            info.id,
+        )
+        run_chat.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_busy_slot_timeout_queues_result(self) -> None:
@@ -537,11 +705,16 @@ class TestDashboardInjectionRoutesRunChat:
         p1, p2 = self._patches()
         with (
             patch("kiro_crew.slack.gateway.INJECTION_TIMEOUT", 0.01),
-            p1, p2,
+            p1,
+            p2,
         ):
             await subagent_done(info)
 
-        slot.queue_append.assert_called_once()
+        slot.queue_insert.assert_called_once()
+        queued = slot.queue_insert.call_args
+        assert queued.args[0] == 0
+        assert callable(queued.kwargs["on_consumed"])
+        assert callable(queued.kwargs["on_discarded"])
 
     @pytest.mark.asyncio
     async def test_error_callback_notifies_with_redacted_reason(self) -> None:
@@ -563,7 +736,8 @@ class TestDashboardInjectionRoutesRunChat:
         p1, p2 = self._patches()
         with (
             patch("kiro_crew.slack.gateway._run_chat", _mock_run_chat),
-            p1, p2,
+            p1,
+            p2,
         ):
             await subagent_done(info)
             # Wait for the task's done callbacks to fire (may need multiple event-loop ticks under load)
@@ -575,6 +749,381 @@ class TestDashboardInjectionRoutesRunChat:
         gateway.subagent_mgr.notify_injection_failed.assert_called_once()
         call_kwargs = gateway.subagent_mgr.notify_injection_failed.call_args
         assert "provider crashed" in str(call_kwargs)
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_recovery_with_owned_row_suppresses_duplicate_failure_fallback(
+        self,
+    ) -> None:
+        """A timeout suppresses fallback only after a callback-owned row exists."""
+        from kiro_crew.dashboard.chat_utils import LIFECYCLE_RECOVERY_KIND
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        gateway = _make_gateway()
+        slot = _ChatSlot("chat-1-recovery")
+        gateway.dashboard_state.get_slot = MagicMock(return_value=slot)
+        gateway.dashboard_state._background_tasks = set()
+        subagent_done = _capture_subagent_done(gateway)
+        info = SubagentInfo(
+            id="recovery1", task="work", parent_session_key="dashboard:chat-1-recovery"
+        )
+        info.result = "done"
+        info.done = True
+
+        async def _retained_then_timeout(*_args, **kwargs) -> None:
+            slot.queue_insert(
+                0,
+                "recovery",
+                kind=LIFECYCLE_RECOVERY_KIND,
+                on_discarded=kwargs["_on_discarded"],
+            )
+            kwargs["_on_lifecycle_recovery_retained"]()
+            raise TimeoutError("turn deadline")
+
+        p1, p2 = self._patches()
+        with (
+            patch("kiro_crew.slack.gateway._run_chat", new=_retained_then_timeout),
+            patch("kiro_crew.slack.gateway._arm_queued_delivery_settlement"),
+            p1,
+            p2,
+        ):
+            await subagent_done(info)
+            tasks = tuple(gateway.dashboard_state._background_tasks)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        assert slot._queue[0]["kind"] == LIFECYCLE_RECOVERY_KIND
+        gateway.subagent_mgr.notify_injection_failed.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_signal_without_owned_row_uses_failure_fallback(self) -> None:
+        """A callback signal alone cannot suppress the sole recoverable owner."""
+        gateway = _make_gateway()
+        slot = MagicMock()
+        slot.running = False
+        slot.key = "chat-1-no-row"
+        slot.task = None
+        slot._queue = []
+        gateway.dashboard_state.get_slot = MagicMock(return_value=slot)
+        gateway.dashboard_state._background_tasks = set()
+        subagent_done = _capture_subagent_done(gateway)
+        info = SubagentInfo(id="no-row", task="work", parent_session_key="dashboard:chat-1-no-row")
+        info.result = "done"
+        info.done = True
+
+        async def _signal_then_timeout(*_args, **kwargs) -> None:
+            kwargs["_on_lifecycle_recovery_retained"]()
+            raise TimeoutError("queue insertion failed")
+
+        p1, p2 = self._patches()
+        with (
+            patch("kiro_crew.slack.gateway._run_chat", new=_signal_then_timeout),
+            patch("kiro_crew.slack.gateway._arm_queued_delivery_settlement"),
+            p1,
+            p2,
+        ):
+            await subagent_done(info)
+            tasks = tuple(gateway.dashboard_state._background_tasks)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        gateway.subagent_mgr.notify_injection_failed.assert_called_once()
+
+    @pytest.mark.parametrize(
+        ("settlement", "durable", "owner_released", "retained_reason"),
+        (
+            ("success", True, True, None),
+            ("success", False, False, "tombstone_not_durable"),
+            ("error", False, False, "settlement_failed"),
+            ("cancel", False, False, "settlement_cancelled"),
+        ),
+        ids=("durable", "missing-tombstone", "error", "cancel"),
+    )
+    @pytest.mark.asyncio
+    async def test_cancel_before_runner_entry_releases_only_after_durable_tombstone(
+        self, settlement, durable, owner_released, retained_reason
+    ) -> None:
+        """Pre-entry discard keeps ownership through settlement failure/cancel.
+
+        Every fail-closed branch also leaves one structured SEL row naming the
+        parent session, the child, and the reason: the retained fence has no
+        in-process retry, so a log line alone would leave the next stop
+        refusal unexplained until a restart reconciles it.
+        """
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        gateway = _make_gateway()
+        slot = _ChatSlot(f"chat-1-pre-entry-{settlement}-{durable}")
+        gateway.dashboard_state.get_slot = MagicMock(return_value=slot)
+        gateway.dashboard_state._background_tasks = set()
+        subagent_done = _capture_subagent_done(gateway)
+        info = SubagentInfo(
+            id=f"pre-entry-{settlement}-{durable}",
+            task="work",
+            parent_session_key=f"dashboard:{slot.key}",
+        )
+        info.result = "done"
+        info.done = True
+        bounded_started = asyncio.Event()
+        settle_started = asyncio.Event()
+        settle_release = asyncio.Event()
+
+        async def _hold_before_runner(coro, **_bounded_kwargs: Any) -> None:
+            bounded_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                coro.close()
+
+        async def _settle_queued_delivery(_owed) -> None:
+            settle_started.set()
+            if settlement == "error":
+                raise RuntimeError("tombstone writer failed")
+            await settle_release.wait()
+
+        gateway.subagent_mgr.settle_queued_delivery = _settle_queued_delivery
+        run_chat = AsyncMock()
+        mock_sel = MagicMock()
+        p1, p2 = self._patches()
+        with (
+            patch("kiro_crew.slack.gateway.bounded_chat_turn", new=_hold_before_runner),
+            patch("kiro_crew.slack.gateway._run_chat", run_chat),
+            patch("kiro_crew.slack.gateway._arm_queued_delivery_settlement"),
+            patch(
+                "kiro_crew.slack.gateway.read_tombstone",
+                return_value={"cause": "delivered"} if durable else None,
+            ),
+            patch("kiro_crew.slack.gateway.sel", return_value=mock_sel),
+            p1,
+            p2,
+        ):
+            await subagent_done(info)
+            gateway.subagent_mgr.retain_completion_delivery.assert_called_once_with(
+                info.parent_session_key, info.id
+            )
+            await asyncio.wait_for(bounded_started.wait(), timeout=30)
+            assert slot.task is not None
+            slot.task.cancel()
+            await asyncio.gather(slot.task, return_exceptions=True)
+            await asyncio.wait_for(settle_started.wait(), timeout=30)
+
+            # The discarded row is already gone, but the ownership fence stays
+            # until the writer has produced durable evidence.
+            writer = next(iter(gateway.dashboard_state._background_tasks), None)
+            if settlement == "cancel":
+                assert writer is not None
+                writer.cancel()
+            elif settlement == "success":
+                settle_release.set()
+            if writer is not None:
+                await asyncio.gather(writer, return_exceptions=True)
+
+        run_chat.assert_not_awaited()
+        assert (gateway.subagent_mgr.release_completion_delivery.call_count == 1) is owner_released
+        if owner_released:
+            gateway.subagent_mgr.release_completion_delivery.assert_called_once_with(
+                info.parent_session_key, info.id
+            )
+        else:
+            gateway.subagent_mgr.release_completion_delivery.assert_not_called()
+        gateway.subagent_mgr.notify_injection_failed.assert_not_called()
+
+        if retained_reason is None:
+            mock_sel.log_tool_invocation.assert_not_called()
+        else:
+            mock_sel.log_tool_invocation.assert_called_once()
+            audit = mock_sel.log_tool_invocation.call_args.kwargs
+            assert audit["session_key"] == info.parent_session_key
+            assert audit["source"] == "subagent"
+            assert audit["tool_name"] == "subagent_completion_discard"
+            assert audit["outcome"] == "retained"
+            assert audit["metadata"] == {"subagent_id": info.id, "reason": retained_reason}
+
+    @pytest.mark.asyncio
+    async def test_report_owed_discard_settles_store_without_a_tombstone(self) -> None:
+        """A memory-wait report has store debt, not a result-folder tombstone."""
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        gateway = _make_gateway()
+        slot = _ChatSlot("chat-1-report-owed-discard")
+        gateway.dashboard_state.get_slot = MagicMock(return_value=slot)
+        gateway.dashboard_state._background_tasks = set()
+        subagent_done = _capture_subagent_done(gateway)
+        info = SubagentInfo(
+            id="report-owed-discard",
+            task="work",
+            parent_session_key=f"dashboard:{slot.key}",
+        )
+        info.error = "memory wait expired"
+        info.done = True
+        info._report_owed = True
+        bounded_started = asyncio.Event()
+
+        async def _hold_before_runner(coro, **_bounded_kwargs: Any) -> None:
+            bounded_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                coro.close()
+
+        settle = AsyncMock()
+        gateway.subagent_mgr.settle_queued_delivery = settle
+        run_chat = AsyncMock()
+        p1, p2 = self._patches()
+        with (
+            patch("kiro_crew.slack.gateway.bounded_chat_turn", new=_hold_before_runner),
+            patch("kiro_crew.slack.gateway._run_chat", run_chat),
+            patch("kiro_crew.slack.gateway._arm_queued_delivery_settlement"),
+            patch("kiro_crew.slack.gateway.read_tombstone") as read_tombstone,
+            p1,
+            p2,
+        ):
+            await subagent_done(info)
+            await asyncio.wait_for(bounded_started.wait(), timeout=30)
+            assert slot.task is not None
+            slot.task.cancel()
+            await asyncio.gather(slot.task, return_exceptions=True)
+            writers = tuple(gateway.dashboard_state._background_tasks)
+            await asyncio.gather(*writers, return_exceptions=True)
+
+        settle.assert_awaited_once()
+        owed = settle.await_args.args[0]
+        assert [delivery.agent_id for delivery in owed] == [info.id]
+        assert all(delivery.report_owed for delivery in owed)
+        read_tombstone.assert_not_called()
+        gateway.subagent_mgr.release_completion_delivery.assert_called_once_with(
+            info.parent_session_key, info.id
+        )
+        run_chat.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_retained_completion_audit_failure_keeps_fail_closed_decision(self) -> None:
+        """An unwritable SEL must not alter the retain: no release, no raise."""
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        gateway = _make_gateway()
+        slot = _ChatSlot("chat-1-pre-entry-audit-broken")
+        gateway.dashboard_state.get_slot = MagicMock(return_value=slot)
+        gateway.dashboard_state._background_tasks = set()
+        subagent_done = _capture_subagent_done(gateway)
+        info = SubagentInfo(
+            id="pre-entry-audit-broken",
+            task="work",
+            parent_session_key=f"dashboard:{slot.key}",
+        )
+        info.result = "done"
+        info.done = True
+        bounded_started = asyncio.Event()
+
+        async def _hold_before_runner(coro, **_bounded_kwargs: Any) -> None:
+            bounded_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                coro.close()
+
+        gateway.subagent_mgr.settle_queued_delivery = AsyncMock(
+            side_effect=RuntimeError("tombstone writer failed")
+        )
+        broken_sel = MagicMock(side_effect=OSError("sel unwritable"))
+        run_chat = AsyncMock()
+        p1, p2 = self._patches()
+        with (
+            patch("kiro_crew.slack.gateway.bounded_chat_turn", new=_hold_before_runner),
+            patch("kiro_crew.slack.gateway._run_chat", run_chat),
+            patch("kiro_crew.slack.gateway._arm_queued_delivery_settlement"),
+            patch("kiro_crew.slack.gateway.sel", broken_sel),
+            p1,
+            p2,
+        ):
+            await subagent_done(info)
+            await asyncio.wait_for(bounded_started.wait(), timeout=30)
+            assert slot.task is not None
+            slot.task.cancel()
+            await asyncio.gather(slot.task, return_exceptions=True)
+            writer = next(iter(gateway.dashboard_state._background_tasks))
+            outcome = await asyncio.gather(writer, return_exceptions=True)
+
+        # The writer swallowed the audit failure rather than surfacing it, and
+        # the fence is still retained exactly as it would be with a healthy SEL.
+        assert outcome == [None]
+        broken_sel.assert_called_once()
+        gateway.subagent_mgr.release_completion_delivery.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cancel_before_runner_entry_with_owed_debt_and_no_manager_retains_ownership(
+        self,
+    ) -> None:
+        """Owed debt but no manager to settle it must fail closed, not release."""
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        gateway = _make_gateway()
+        slot = _ChatSlot("chat-1-pre-entry-no-manager")
+        gateway.dashboard_state.get_slot = MagicMock(return_value=slot)
+        gateway.dashboard_state._background_tasks = set()
+        subagent_done = _capture_subagent_done(gateway)
+        info = SubagentInfo(
+            id="pre-entry-no-manager",
+            task="work",
+            parent_session_key=f"dashboard:{slot.key}",
+        )
+        info.result = "done"
+        info.done = True
+        bounded_started = asyncio.Event()
+
+        # A spy that must never run: with no manager, settlement is unreachable.
+        settle_spy = AsyncMock()
+        gateway.subagent_mgr.settle_queued_delivery = settle_spy
+
+        async def _hold_before_runner(coro, **_bounded_kwargs: Any) -> None:
+            bounded_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                coro.close()
+
+        run_chat = AsyncMock()
+        mock_sel = MagicMock()
+        p1, p2 = self._patches()
+        with (
+            patch("kiro_crew.slack.gateway.bounded_chat_turn", new=_hold_before_runner),
+            patch("kiro_crew.slack.gateway._run_chat", run_chat),
+            patch("kiro_crew.slack.gateway._arm_queued_delivery_settlement"),
+            patch("kiro_crew.slack.gateway.sel", return_value=mock_sel),
+            p1,
+            p2,
+        ):
+            await subagent_done(info)
+            owner_manager = gateway.subagent_mgr
+            owner_manager.retain_completion_delivery.assert_called_once_with(
+                info.parent_session_key, info.id
+            )
+            await asyncio.wait_for(bounded_started.wait(), timeout=30)
+            assert slot.task is not None
+            # Precondition: the direct-injection path recorded delivery debt for
+            # this completed member, so the discard has real debt to weigh.
+            assert slot._subagent_delivery_pending, "precondition: debt was deferred"
+            # The manager is gone by the time the discard fires.
+            gateway.subagent_mgr = None
+            slot.task.cancel()
+            await asyncio.gather(slot.task, return_exceptions=True)
+            await asyncio.sleep(0)
+            # No settlement writer may be spawned when there is no manager.
+            assert not gateway.dashboard_state._background_tasks
+
+        run_chat.assert_not_awaited()
+        # Fail closed: the completion fence is retained (ownership kept) and no
+        # settlement was attempted, so no "delivered" tombstone is claimed and a
+        # restart can still recover the result rather than dropping it.
+        owner_manager.release_completion_delivery.assert_not_called()
+        settle_spy.assert_not_awaited()
+        # The retain is operator-visible on the same SEL row as the settlement
+        # branches, with the reason that distinguishes this one.
+        mock_sel.log_tool_invocation.assert_called_once()
+        audit = mock_sel.log_tool_invocation.call_args.kwargs
+        assert audit["session_key"] == info.parent_session_key
+        assert audit["tool_name"] == "subagent_completion_discard"
+        assert audit["outcome"] == "retained"
+        assert audit["metadata"] == {"subagent_id": info.id, "reason": "no_manager"}
 
 
 # ── Tests: _cron_callback dashboard slot auto-inject ──
@@ -588,13 +1137,15 @@ class TestCronCallbackDashboardChat:
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
         gateway.dashboard_state.has_slot = MagicMock(return_value=True)
         job = _make_job(persistent_session=True)
-        with patch(
-            "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
-        ) as mock_inject:
+        with patch("kiro_crew.slack.gateway.inject_cron_result_to_dashboard") as mock_inject:
             _run_callback(gateway, job, stream_result="cron output")
             mock_inject.assert_called_once_with(
-                gateway.dashboard_state, job, "cron output", history=ANY,
-                context_reading=ANY, turn_stats=ANY,
+                gateway.dashboard_state,
+                job,
+                "cron output",
+                history=ANY,
+                context_reading=ANY,
+                turn_stats=ANY,
             )
 
     def test_persistent_session_without_slot_still_injects(self) -> None:
@@ -602,13 +1153,15 @@ class TestCronCallbackDashboardChat:
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
         gateway.dashboard_state.has_slot = MagicMock(return_value=False)
         job = _make_job(persistent_session=True)
-        with patch(
-            "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
-        ) as mock_inject:
+        with patch("kiro_crew.slack.gateway.inject_cron_result_to_dashboard") as mock_inject:
             _run_callback(gateway, job, stream_result="cron output")
             mock_inject.assert_called_once_with(
-                gateway.dashboard_state, job, "cron output", history=ANY,
-                context_reading=ANY, turn_stats=ANY,
+                gateway.dashboard_state,
+                job,
+                "cron output",
+                history=ANY,
+                context_reading=ANY,
+                turn_stats=ANY,
             )
 
     def test_non_persistent_session_does_not_inject(self) -> None:
@@ -616,9 +1169,7 @@ class TestCronCallbackDashboardChat:
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
         gateway.dashboard_state.has_slot = MagicMock(return_value=True)
         job = _make_job(persistent_session=False)
-        with patch(
-            "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
-        ) as mock_inject:
+        with patch("kiro_crew.slack.gateway.inject_cron_result_to_dashboard") as mock_inject:
             _run_callback(gateway, job, stream_result="cron output")
             mock_inject.assert_not_called()
 
@@ -630,9 +1181,7 @@ class TestCronCallbackDashboardChat:
         job = _make_job(persistent_session=True)
         # Simulate dedup: set last_posted_hash to match result
         job.last_posted_hash = ""  # first run posts normally
-        with patch(
-            "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
-        ) as mock_inject:
+        with patch("kiro_crew.slack.gateway.inject_cron_result_to_dashboard") as mock_inject:
             # First run — normal path
             _run_callback(gateway, job, stream_result="same result")
             first_call_count = mock_inject.call_count
@@ -650,13 +1199,15 @@ class TestCronCallbackDashboardChat:
         gateway = _make_gateway()
         gateway.dashboard_state.has_slot = MagicMock(return_value=True)
         job = _make_job(persistent_session=True, silent=True)
-        with patch(
-            "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
-        ) as mock_inject:
+        with patch("kiro_crew.slack.gateway.inject_cron_result_to_dashboard") as mock_inject:
             _run_callback(gateway, job, stream_result="silent output")
             mock_inject.assert_called_once_with(
-                gateway.dashboard_state, job, "silent output", history=ANY,
-                context_reading=ANY, turn_stats=ANY,
+                gateway.dashboard_state,
+                job,
+                "silent output",
+                history=ANY,
+                context_reading=ANY,
+                turn_stats=ANY,
             )
 
     def test_silent_cron_no_slot_does_not_inject(self) -> None:
@@ -664,9 +1215,7 @@ class TestCronCallbackDashboardChat:
         gateway = _make_gateway()
         gateway.dashboard_state.has_slot = MagicMock(return_value=False)
         job = _make_job(persistent_session=True, silent=True)
-        with patch(
-            "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
-        ) as mock_inject:
+        with patch("kiro_crew.slack.gateway.inject_cron_result_to_dashboard") as mock_inject:
             _run_callback(gateway, job, stream_result="silent output")
             mock_inject.assert_not_called()
 
@@ -679,9 +1228,7 @@ class TestCronCallbackDashboardChat:
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
         gateway.dashboard_state.has_slot = MagicMock(return_value=False)
         job = _make_job(persistent_session=True, hide_in_chat=True)
-        with patch(
-            "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
-        ) as mock_inject:
+        with patch("kiro_crew.slack.gateway.inject_cron_result_to_dashboard") as mock_inject:
             _run_callback(gateway, job, stream_result="hidden output")
             mock_inject.assert_not_called()
 
@@ -692,13 +1239,15 @@ class TestCronCallbackDashboardChat:
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
         gateway.dashboard_state.has_slot = MagicMock(return_value=False)
         job = _make_job(persistent_session=True, hide_in_chat=False)
-        with patch(
-            "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
-        ) as mock_inject:
+        with patch("kiro_crew.slack.gateway.inject_cron_result_to_dashboard") as mock_inject:
             _run_callback(gateway, job, stream_result="shown output")
             mock_inject.assert_called_once_with(
-                gateway.dashboard_state, job, "shown output", history=ANY,
-                context_reading=ANY, turn_stats=ANY,
+                gateway.dashboard_state,
+                job,
+                "shown output",
+                history=ANY,
+                context_reading=ANY,
+                turn_stats=ANY,
             )
 
     def test_hide_in_chat_suppresses_inject_even_with_existing_slot(self) -> None:
@@ -708,9 +1257,7 @@ class TestCronCallbackDashboardChat:
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
         gateway.dashboard_state.has_slot = MagicMock(return_value=True)
         job = _make_job(persistent_session=True, hide_in_chat=True)
-        with patch(
-            "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
-        ) as mock_inject:
+        with patch("kiro_crew.slack.gateway.inject_cron_result_to_dashboard") as mock_inject:
             _run_callback(gateway, job, stream_result="hidden output")
             mock_inject.assert_not_called()
 
@@ -720,9 +1267,7 @@ class TestCronCallbackDashboardChat:
         gateway = _make_gateway()
         gateway.dashboard_state.has_slot = MagicMock(return_value=True)
         job = _make_job(persistent_session=True, silent=True, hide_in_chat=True)
-        with patch(
-            "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
-        ) as mock_inject:
+        with patch("kiro_crew.slack.gateway.inject_cron_result_to_dashboard") as mock_inject:
             _run_callback(gateway, job, stream_result="silent hidden output")
             mock_inject.assert_not_called()
 
@@ -735,9 +1280,7 @@ class TestCronCallbackDashboardChat:
             meta = call.kwargs.get("meta", {}) or {}
             if meta.get("job_id") == "j1" and "failure_hash" not in meta:
                 return meta
-        raise AssertionError(
-            f"no cron-result notify found; calls={notify_mock.call_args_list}"
-        )
+        raise AssertionError(f"no cron-result notify found; calls={notify_mock.call_args_list}")
 
     def test_hide_in_chat_notify_meta_omits_slot_even_with_existing_slot(self) -> None:
         """notify_meta['slot'] is gated on not hide_in_chat: a hidden cron that

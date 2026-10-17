@@ -83,6 +83,7 @@ def subagents_attached(
         return False
     running = subs.running_agents_for(session_key)
     queued = 0
+    queued_probe_failed = False
     if running is not None:
         try:
             queued = subs._queued_depth(session_key)
@@ -90,7 +91,17 @@ def subagents_attached(
             # An unreadable queue is unknown children, not zero children.
             logger.debug("%s: queued-depth probe failed", operation, exc_info=True)
             queued = 1
-    return _attached_verdict(running, queued, slot)
+            queued_probe_failed = True
+    detail = _attached_verdict(
+        subs,
+        running,
+        queued,
+        queued_probe_failed,
+        slot,
+        session_key,
+        operation,
+    )
+    return detail is not None
 
 
 async def subagents_attached_async(
@@ -98,13 +109,25 @@ async def subagents_attached_async(
 ) -> bool:
     """:func:`subagents_attached` for a caller on the event loop.
 
-    The same three probes with the same fail-closed rules; only WHERE the
-    queued half runs differs. ``_queued_depth`` counts this parent's rows that
-    live only in the store, so it takes the connection — and the store's writer
-    thread holds that connection's lock across ``BEGIN IMMEDIATE``'s busy wait,
-    so taking it here would stall every session's turn and the watchdog
-    heartbeat behind one teardown probe. ``queued_count_for_async`` is the same
-    count with the read on the writer thread.
+    The same probes with the same fail-closed rules; only WHERE the queued half
+    runs differs (:func:`subagent_attachment_detail_async`).
+    """
+    detail = await subagent_attachment_detail_async(state, slot, session_key, operation)
+    return detail is not None
+
+
+async def subagent_attachment_detail_async(
+    state: DashboardState, slot: _ChatSlot | None, session_key: str, operation: str
+) -> str | None:
+    """Return the bounded holding probe without blocking the gateway loop.
+
+    ``_queued_depth`` counts this parent's rows that live only in the store, so
+    it takes the connection — and the store's writer thread holds that
+    connection's lock across ``BEGIN IMMEDIATE``'s busy wait, so taking it here
+    would stall every session's turn and the watchdog heartbeat behind one
+    teardown probe. ``queued_count_for_async`` is the same count with the read
+    on the writer thread. Every other probe is the one the synchronous
+    evaluation uses.
 
     A manager double without the async sibling is asked synchronously — it
     models the pre-queue manager and has no store to block on — which is the
@@ -113,19 +136,30 @@ async def subagents_attached_async(
     """
     subs = getattr(state, "subagents", None)
     if subs is None:
-        return False
+        return None
     running = subs.running_agents_for(session_key)
-    if _attached_verdict(running, 0, slot):
-        # Running, unknown, or still delivering: attached whatever the store
-        # says, so the store read is not taken.
-        return True
+    # The in-memory probes first: running, unknown, or still delivering holds
+    # the session whatever the store says, so the store read is not taken.
+    detail = _attached_verdict(subs, running, 0, False, slot, session_key, operation)
+    if detail is not None:
+        return detail
+    queued_probe_failed = False
     try:
         queued = await _queued_depth_off_loop(subs, session_key)
     except Exception:
         # An unreadable queue is unknown children, not zero children.
         logger.debug("%s: queued-depth probe failed", operation, exc_info=True)
         queued = 1
-    return _attached_verdict(running, queued, slot)
+        queued_probe_failed = True
+    return _attached_verdict(
+        subs,
+        running,
+        queued,
+        queued_probe_failed,
+        slot,
+        session_key,
+        operation,
+    )
 
 
 #: :func:`synthesis_fire_verdict` answers.
@@ -185,14 +219,53 @@ async def _queued_depth_off_loop(subs: Any, session_key: str) -> int:
     return int(subs._queued_depth(session_key))
 
 
-def _attached_verdict(running: Any, queued: int, slot: _ChatSlot | None) -> bool:
-    """The verdict both entry points return, so the two cannot drift.
+def _attached_verdict(
+    subs: Any,
+    running: Any,
+    queued: int,
+    queued_probe_failed: bool,
+    slot: _ChatSlot | None,
+    session_key: str,
+    operation: str,
+) -> str | None:
+    """Return the first bounded reason child work still owns the session."""
+    terminal_delivery = False
+    terminal_delivery_probe_failed = False
+    goal_stop = operation in {"autonudge_stop", "monitor_stop"}
+    if goal_stop:
+        delivery_probe = getattr(type(subs), "terminal_delivery_inflight_for", None)
+        if callable(delivery_probe):
+            try:
+                terminal_delivery = delivery_probe(subs, session_key) is not False
+            except Exception:
+                logger.debug("%s: terminal-delivery probe failed", operation, exc_info=True)
+                terminal_delivery = True
+                terminal_delivery_probe_failed = True
 
-    *slot* may be ``None``: ``getattr`` on ``None`` reads the in-flight
-    delivery probe as 0 and the two registry probes still decide.
-    """
-    inflight = getattr(slot, "_subagent_deliveries_inflight", 0)
-    return bool(running is None or running or queued or inflight)
+    slot_delivery = getattr(slot, "_subagent_deliveries_inflight", 0)
+    attached = bool(running is None or running or queued or terminal_delivery or slot_delivery)
+    if not attached:
+        return None
+    if running is None:
+        return "child-work status unavailable"
+    if running:
+        return "running child work"
+    if queued_probe_failed:
+        return "queued-child status unavailable"
+    if queued:
+        return "queued child work"
+    if terminal_delivery_probe_failed:
+        return "terminal-report status unavailable"
+    if terminal_delivery:
+        return "terminal child report delivery"
+    if slot_delivery:
+        return "completion handoff in progress"
+    return "child-work status unavailable"
+
+
+SUBAGENT_ATTACHMENT_RECOVERY_GUIDANCE = (
+    "wait for it to settle, or use the direct Stop control before retrying"
+)
 
 
 async def chat_done_payload(

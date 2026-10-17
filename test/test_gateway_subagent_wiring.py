@@ -49,8 +49,25 @@ class _Slot:
         self.queued: list[tuple[str, str, Any]] = []
         self.owed: list[tuple[str, list[Any]]] = []
 
+    @property
+    def _queue(self) -> list[tuple[str, str, Any]]:
+        # The consumer appends at ``len(slot._queue)``; this tab's queue is what it queued.
+        return self.queued
+
     def queue_append(self, text: str, *, kind: str, meta: Any) -> None:
         self.queued.append((text, kind, meta))
+
+    def queue_insert(
+        self,
+        index: int,
+        text: str,
+        *,
+        kind: str,
+        meta: Any,
+        on_consumed: Any = None,
+        on_discarded: Any = None,
+    ) -> None:
+        self.queued.insert(index, (text, kind, meta))
 
     def note_pending_subagent_delivery(self, content: str, deliveries: list[Any]) -> None:
         self.owed.append((content, list(deliveries)))

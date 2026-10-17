@@ -25,12 +25,14 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.config import loader
 from kiro_crew.dashboard import chat_delivery as cd
+from kiro_crew.dashboard import chat_handlers
 from kiro_crew.dashboard import chat_runner as cr
 from kiro_crew.dashboard import create_rate_limit
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard import stop_retry
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers import session_control as handlers_sc
+from kiro_crew.subagent import SubagentManager
 from kiro_crew.validation import MAX_SHORT_STRING
 
 # The autouse fixture below replaces ``sc.session_control_enabled`` so every
@@ -5676,6 +5678,47 @@ def test_close_archives_a_peer_and_removes_the_slot(tmp_path):
     assert target.key not in state._slots
     # The per-tab kiro-cli session is torn down through the shared close path.
     state.sessions.remove.assert_awaited()
+
+
+@pytest.mark.parametrize(
+    "parent_key",
+    (
+        "dashboard:chat-2",
+        "slack:123.456",
+        "discord:kirocrew:direct:user-1",
+        "webex:person@example.com:room-1",
+    ),
+    ids=("dashboard", "slack", "discord", "webex"),
+)
+def test_close_discards_counted_completion_ownership(parent_key, tmp_path):
+    """A removed slot retires every queued completion-owner count exactly once."""
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-2")
+    if not parent_key.startswith("dashboard:"):
+        slot.linked_session_key = parent_key
+
+    manager = SubagentManager(sessions=MagicMock(), ctx_builder=None)
+    agent_id = "terminal-agent"
+    manager.retain_completion_delivery(parent_key, agent_id)
+    manager.retain_completion_delivery(parent_key, agent_id)
+
+    def _release_one() -> None:
+        manager.release_completion_delivery(parent_key, agent_id)
+
+    slot.queue_insert(0, "completion-1", on_discarded=_release_one)
+    slot.queue_insert(1, "completion-2", on_discarded=_release_one)
+
+    asyncio.run(chat_handlers.close_slot(state, slot, slot.key))
+
+    assert slot.key not in state._slots
+    assert manager.terminal_delivery_inflight_for(parent_key) is False
+    assert manager._retained_completion_owners == {}
+    assert [item["content"] for item in slot._queue] == ["completion-1", "completion-2"]
+    assert all("_on_discarded" not in item for item in slot._queue)
+    # A later retirement pass keeps the archive and cannot double-release either
+    # count.
+    assert slot.queue_retire_all() == slot._queue
+    assert manager._retained_completion_owners == {}
 
 
 def test_close_archives_the_caller_itself(tmp_path):

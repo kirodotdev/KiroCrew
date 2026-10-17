@@ -668,9 +668,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                 # Remove only the entries captured in the pre-await snapshot:
                 # an entry queued while the boundaries were pending belongs to
                 # the NEW timeline and must survive for the teardown drain.
-                slot._queue[:] = [
-                    entry for entry in slot._queue if entry["id"] not in discarded_queue_ids
-                ]
+                slot.queue_discard_by_ids(discarded_queue_ids)
                 # ``_pending`` is edited in place for the same reason the question
                 # set is: ``drain()`` does ``slot._pending.clear()``, so a client
                 # that drains mid-boundary has already DELIVERED those rows.

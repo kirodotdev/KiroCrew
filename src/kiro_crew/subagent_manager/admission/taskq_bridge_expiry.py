@@ -292,6 +292,18 @@ def taskq_clear_owed_reports(self: _TaskqBridgeMixin, agent_ids: "Collection[str
         self._post_store_write(store, f"report cleared {agent_id}", store.mark_reported, agent_id)
 
 
+async def taskq_clear_owed_reports_async(
+    self: _TaskqBridgeMixin, agent_ids: "Collection[str]"
+) -> None:
+    """Clear owed reports and return only after every write is durable."""
+    store = self.taskq_store()
+    if store is None:
+        raise RuntimeError("sub-agent task store unavailable")
+    posted = [store.post(store.mark_reported, agent_id) for agent_id in agent_ids]
+    for write in posted:
+        await write
+
+
 async def taskq_replay_owed_expiries_async(self: _TaskqBridgeMixin) -> int:
     """Report the memory-wait expiries an earlier process wrote and never reported.
 

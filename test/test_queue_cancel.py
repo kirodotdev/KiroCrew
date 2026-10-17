@@ -59,6 +59,74 @@ class TestQueueHelpers:
         assert item["content"] == "first"
         assert slot._queue[0]["content"] == "second"
 
+    def test_discard_callback_runs_only_for_discard_not_consumption(self):
+        slot = _ChatSlot("s1")
+        discarded: list[str] = []
+        consumed_id = slot.queue_insert(
+            0, "consume", on_discarded=lambda: discarded.append("consumed")
+        )
+        discarded_id = slot.queue_insert(
+            1, "discard", on_discarded=lambda: discarded.append("discarded")
+        )
+
+        assert slot.queue_pop(0)["id"] == consumed_id
+        assert discarded == []
+        assert slot.queue_remove_by_id(discarded_id) == "discard"
+        assert discarded == ["discarded"]
+
+    def test_bulk_discard_retires_each_callback_once(self):
+        slot = _ChatSlot("s1")
+        discarded: list[str] = []
+        slot.queue_insert(0, "one", on_discarded=lambda: discarded.append("one"))
+        slot.queue_insert(1, "two", on_discarded=lambda: discarded.append("two"))
+
+        removed = slot.queue_discard_all()
+
+        assert [item["content"] for item in removed] == ["one", "two"]
+        assert discarded == ["one", "two"]
+        assert slot._queue == []
+        assert slot.queue_discard_all() == []
+        assert discarded == ["one", "two"], "callbacks must be one-shot"
+
+    def test_bulk_retire_preserves_archived_rows_and_is_one_shot(self):
+        slot = _ChatSlot("s1")
+        discarded: list[str] = []
+        slot.queue_insert(0, "one", on_discarded=lambda: discarded.append("one"))
+        slot.queue_append("two")
+
+        retired = slot.queue_retire_all()
+
+        assert [item["content"] for item in retired] == ["one", "two"]
+        assert [item["content"] for item in slot._queue] == ["one", "two"]
+        assert discarded == ["one"]
+        assert slot.queue_retire_all() == slot._queue
+        assert discarded == ["one"], "callbacks must be one-shot"
+
+    def test_discard_by_ids_retires_only_rows_still_present(self):
+        slot = _ChatSlot("s1")
+        discarded: list[str] = []
+        first = slot.queue_insert(0, "first", on_discarded=lambda: discarded.append("first"))
+        second = slot.queue_insert(1, "second", on_discarded=lambda: discarded.append("second"))
+        slot.queue_append("keep")
+
+        assert slot.queue_remove_by_id(first) == "first"
+        removed = slot.queue_discard_by_ids({first, second})
+
+        assert [item["id"] for item in removed] == [second]
+        assert [item["content"] for item in slot._queue] == ["keep"]
+        assert discarded == ["first", "second"]
+
+    def test_discard_callback_failure_does_not_restore_the_row(self):
+        slot = _ChatSlot("s1")
+
+        def _reject() -> None:
+            raise RuntimeError("retirement unavailable")
+
+        queue_id = slot.queue_insert(0, "discard", on_discarded=_reject)
+
+        assert slot.queue_remove_by_id(queue_id) == "discard"
+        assert slot._queue == []
+
     def test_queue_remove_by_id_found(self):
         slot = _ChatSlot("s1")
         slot.queue_append("keep")

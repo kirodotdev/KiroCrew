@@ -659,6 +659,7 @@ class SlotQueueRepository:
         meta: dict | None = None,
         on_consumed: Callable[[bool], None] | None = None,
         on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
+        on_discarded: Callable[[], None] | None = None,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
     ) -> str:
@@ -678,6 +679,8 @@ class SlotQueueRepository:
             item["_on_consumed"] = on_consumed
         if on_irreversibly_consumed is not None:
             item["_on_irreversibly_consumed"] = on_irreversibly_consumed
+        if on_discarded is not None:
+            item["_on_discarded"] = on_discarded
         if directive_user_origin:
             item["_directive_user_origin"] = True
         if directive_channel_origin:
@@ -687,8 +690,56 @@ class SlotQueueRepository:
         return queue_id
 
     def queue_pop(self, owner: Any, index: int = 0) -> dict[str, Any]:
-        """Remove and return the exact entry at *index*."""
+        """Transfer the exact entry at *index* to its consumer."""
         return owner._queue.pop(index)
+
+    def queue_pop_many(self, owner: Any, count: int) -> list[dict[str, Any]]:
+        """Transfer the first *count* entries to one merged consumer."""
+        consumed = list(owner._queue[:count])
+        del owner._queue[:count]
+        return consumed
+
+    @staticmethod
+    def _notify_discarded(item: dict[str, Any]) -> None:
+        """Retire producer ownership when an entry will never be consumed."""
+        if not isinstance(item, dict):
+            return
+        callback = item.pop("_on_discarded", None)
+        if not callable(callback):
+            return
+        try:
+            callback()
+        except Exception:
+            # The row is already gone. A callback failure must not resurrect it
+            # or break a user Stop/cancel, but it must remain diagnosable.
+            logger.warning("queued-entry discard callback failed", exc_info=True)
+
+    def _retire_discarded(self, items: list[dict[str, Any]]) -> None:
+        """Retire callbacks after this repository removes their rows."""
+        for item in items:
+            self._notify_discarded(item)
+
+    def queue_discard_all(self, owner: Any) -> list[dict[str, Any]]:
+        """Remove every queued entry and retire each producer exactly once."""
+        discarded = list(owner._queue)
+        owner._queue.clear()
+        self._retire_discarded(discarded)
+        return discarded
+
+    def queue_retire_all(self, owner: Any) -> list[dict[str, Any]]:
+        """Retire producer ownership while preserving archived queue rows."""
+        retired = list(owner._queue)
+        self._retire_discarded(retired)
+        return retired
+
+    def queue_discard_by_ids(self, owner: Any, queue_ids: set[str]) -> list[dict[str, Any]]:
+        """Remove the named rows and retire only rows still present."""
+        if not queue_ids:
+            return []
+        discarded = [item for item in owner._queue if item.get("id") in queue_ids]
+        owner._queue[:] = [item for item in owner._queue if item.get("id") not in queue_ids]
+        self._retire_discarded(discarded)
+        return discarded
 
     def note_pending_subagent_delivery(
         self,
@@ -732,6 +783,7 @@ class SlotQueueRepository:
         for index, item in enumerate(owner._queue):
             if item["id"] == queue_id:
                 del owner._queue[index]
+                self._notify_discarded(item)
                 return item["content"]
         return None
 
@@ -750,7 +802,10 @@ class SlotQueueRepository:
                 continue
             # Retry callbacks settle the exact automatic payload that failed;
             # moving them to replacement text would acknowledge the wrong work.
-            if "_on_consumed" in item or "_on_irreversibly_consumed" in item:
+            if any(
+                key in item
+                for key in ("_on_consumed", "_on_irreversibly_consumed", "_on_discarded")
+            ):
                 return False
             # A system-injection entry's kind decides how the drain writes the
             # row (role, provenance meta, mirror suppression) — rewriting only

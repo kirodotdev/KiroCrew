@@ -238,12 +238,19 @@ class TestRunChatTransientRetryBindingMismatch:
         inserts = self._record_queue_inserts(monkeypatch, slot)
         slot.queue_insert(0, "a newer user message", kind="")
         consumed = MagicMock()
+        from kiro_crew.subagent import SubagentDelivery
+
+        completion = "[Subagent completion event] the child finished"
+        slot.note_pending_subagent_delivery(
+            completion,
+            [SubagentDelivery("child", 0.0, 0.0)],
+        )
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
             await _run_chat(
                 state,
                 slot,
-                "[Subagent completion event] the child finished",
+                completion,
                 _turn_actor="subagent",
                 _on_consumed=consumed,
             )
