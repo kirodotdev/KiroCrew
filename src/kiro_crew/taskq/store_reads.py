@@ -11,14 +11,14 @@ A function here whose first parameter is ``self`` is a ``TaskStore`` method: the
 binds it under the same name in ``taskq/store.py``, so it reads the store's fields and
 calls its sibling methods through ``self``.
 
-The ``TaskStore`` fields this module uses. Writes: none. Reads: ``_lock``.
+The ``TaskStore`` fields this module uses. Writes: none. Reads: ``_lock``, ``_window``.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Sequence
 
-from .model import ADMITTED, RECOVERING, TaskRecord
+from .model import ADMITTED, QUEUED, RECOVERING, TaskRecord
 from .store_vocab import _SQL_ACTIVE, _SQL_CLAIMABLE, _SQL_UNSTARTED, _typed_read
 
 if TYPE_CHECKING:
@@ -109,12 +109,12 @@ def fetch_dispatchable_fair(
     slot. With one lane pending this is exactly the FIFO order of
     :meth:`fetch_dispatchable`.
     """
-    if limit <= 0:
+    if limit <= 0 or not self.dispatch_open():
         return []
     if lanes is not None and not lanes:
         return []
     ts = self.now()
-    excl_sql, excl_args = self._exclusion(exclude_ids)
+    excl_sql, excl_args = self._exclusion([*self._release_settled_holds(), *exclude_ids])
     child_sql = _SQL_CHILD_ONLY if children_only else ""
     lane_sql, lane_args = ("", [])
     if lanes is not None:
@@ -152,8 +152,10 @@ def fetch_dispatchable(
     session_key: str | None = None,
 ) -> list[TaskRecord]:
     """Oldest-first rows of *kind* that a claim would succeed on right now."""
+    if not self.dispatch_open():
+        return []
     ts = self.now()
-    excl_sql, excl_args = self._exclusion(exclude_ids)
+    excl_sql, excl_args = self._exclusion([*self._release_settled_holds(), *exclude_ids])
     sess_sql, sess_args = ("", [])
     if session_key is not None:
         sess_sql, sess_args = " AND session_key=?", [session_key]
@@ -399,6 +401,28 @@ def list_rows(
     sql += " ORDER BY created_at, rowid LIMIT ? OFFSET ?"
     with self._lock:
         rows = self._c().execute(sql, [*args, int(limit), int(offset)]).fetchall()
+    return [TaskRecord.from_row(r) for r in rows]
+
+
+@_typed_read
+def queued_rows(self: TaskStore, *, after: tuple[float, str] | None = None) -> list[TaskRecord]:
+    """One page of the ``queued`` rows: accepted, claimed by no incarnation.
+
+    Oldest first, keyed by ``(created_at, id)``; *after* is the last key of
+    the previous page and the page is the dispatch window, so a caller
+    walking the whole backlog never holds more rows than the dispatcher
+    would. A page shorter than the window is the last one.
+    """
+    bound = self._window
+    sql = "SELECT * FROM tasks WHERE state=?"
+    args: list[Any] = [QUEUED]
+    if after is not None:
+        sql += " AND (created_at>? OR (created_at=? AND id>?))"
+        args.extend([float(after[0]), float(after[0]), str(after[1])])
+    sql += " ORDER BY created_at, id LIMIT ?"
+    args.append(bound)
+    with self._lock:
+        rows = self._c().execute(sql, args).fetchall()
     return [TaskRecord.from_row(r) for r in rows]
 
 

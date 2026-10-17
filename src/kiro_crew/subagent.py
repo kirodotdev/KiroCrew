@@ -427,6 +427,7 @@ from kiro_crew.subagent_parts.start_pricing import (  # noqa: F401
     _spawn_memory_floor_and_cost,
     _startup_memory_reserve_gb,
 )
+from kiro_crew.subagent_parts.terminal_surface import write_refusal_tombstone  # noqa: F401
 from kiro_crew.subagent_persistence import (  # noqa: F401 - read_tombstone resolved by run.py via bind_component_globals
     DISMISSAL_FAILED,
     _agent_dir,
