@@ -792,7 +792,7 @@ numberless call takes none of the work-item fields (they patch an item this call
 does not create, so they are refused rather than dropped). A present-but-invalid
 number stays a 400 and is never reinterpreted as "no issue".
 
-Validation lives in `validation.py` alongside the existing schemas. The handler
+Validation lives in `kiro_crew/validation_parts/app_schemas.py` alongside the existing schemas. The handler
 sends `owner`/`repo` explicitly so a same-numbered issue in another repo cannot
 overwrite this record, and refuses a second item entering an editing phase.
 

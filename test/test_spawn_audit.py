@@ -1861,7 +1861,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``subprocess.run(timeout=...)`` kill is the DoS bound, plus the pattern
         # and value are size-capped before the spawn. Fixed argv + isolated
         # interpreter + stdin-only data + killed on timeout ⇒ benign, not routed.
-        "validation.py::_bounded_pattern_search",
+        "validation_parts/json_schema_args.py::_bounded_pattern_search",
         "voice_reply.py::stitch_mp3s",
         # Enumerating the host speech engine's voices. The whole argv is fixed
         # by this module: the binary comes from ``trusted_system_bin`` (a system

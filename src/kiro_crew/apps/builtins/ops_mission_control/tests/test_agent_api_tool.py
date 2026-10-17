@@ -6,7 +6,7 @@ process holds the internal secret; the agent never sees a credential). Three
 planes must stay mutually consistent, and each has a failure mode this module
 pins:
 
-- the **(method, path) allowlist** in ``validation.py`` — widening it is an
+- the **(method, path) allowlist** in ``validation_parts/app_schemas.py`` — widening it is an
   authorization change and must look like one in review;
 - the **schema** rejecting off-surface calls before any HTTP happens;
 - the **gateway's mixed-internal path set** admitting exactly the allowlisted

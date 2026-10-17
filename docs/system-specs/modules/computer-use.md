@@ -376,7 +376,7 @@ check is kept as the last line of defence rather than deleted as redundant.
 `SKILL.md`'s tool table states the same thing, since an optional-looking argument
 there would have the model discover the refusal by hitting it.
 
-Every tool has a `MCP_COMPUTER_SCHEMAS` entry in `validation.py`. That is
+Every tool has a `MCP_COMPUTER_SCHEMAS` entry in `validation_parts/computer_use_schemas.py`. That is
 mandatory, not tidiness: an unregistered tool's arguments pass RAW through
 `_validate_args`, and a `ValidationError` raised inside a handler escapes the
 stdio loop and kills the server.

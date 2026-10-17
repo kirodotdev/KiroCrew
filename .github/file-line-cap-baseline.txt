@@ -137,7 +137,6 @@
 2730 src/kiro_crew/telegram/renderer.py
 2272 src/kiro_crew/tool_call_title.py
 2250 src/kiro_crew/ui_index.py
-5484 src/kiro_crew/validation.py
 2096 src/kiro_crew/webex/transport_dispatch.py
 4051 src/kiro_crew/work_ledger.py
 2641 test/conftest.py

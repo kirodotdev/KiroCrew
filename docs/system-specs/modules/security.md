@@ -2441,6 +2441,29 @@ Centralized validation for the registered MCP tool handlers (`MCP_CORE_SCHEMAS` 
 - **Response truncation**: 100K char limit prevents DoS from unbounded tool output
 - **JSON-RPC 2.0 envelope validation**: request + response structure
 
+`kiro_crew.validation` is the only import path; `validation.py` is a mirror facade (`kiro_crew._facade_mirror`) that keeps its import header and serves every name its owners in `src/kiro_crew/validation_parts/` define, so a patch through it reaches the owner that reads the name. Owners import only the owners listed before them, never the facade. New work goes to the owner of its responsibility:
+
+| Owner (`validation_parts/`) | Holds |
+|---|---|
+| `input_bounds.py` | string-length tiers, fan-out and roster caps, and the shared identifier grammars (agent, template, model, workspace, Slack, Jira, cron) |
+| `text_sanitizer.py` | hidden-character stripping, `sanitize_string`, `sanitize_json_values`, `sanitize_response` |
+| `field_engine.py` | `ValidationError`, `FieldSpec`, `ToolSchema`, `validate_field`, `validate_tool_args` and the MCP int-to-string repair |
+| `json_schema_args.py` | `validate_mcp_tool_arguments`: untrusted arguments against a declared MCP `inputSchema` |
+| `wire_envelopes.py` | JSON-RPC request and response envelopes, `build_tool_response`, dashboard API request bodies |
+| `core_agent_schemas.py` | `kirocrew-core` schemas for spawn, lessons, the session ledger and monitor loops (with the wake-judge brief) |
+| `ask_question_card.py` | the `ask_question` bounds, its schema, `format_ask_answers` and `validate_ask_user_question` |
+| `core_turn_schemas.py` | `kirocrew-core` schemas for messages, skills, the project, `chat_tag`, follow-ups and workflows |
+| `artifact_schemas.py` | artifact tools, and the artifact and chat folder, tag and column tools |
+| `app_schemas.py` | the builtin apps' agent tools |
+| `cron_schemas.py` | the `kirocrew-cron` tools and `MCP_CRON_SCHEMAS` |
+| `dashboard_route_schemas.py` | the dashboard hook and file route bodies |
+| `messaging_session_schemas.py` | messaging, crews, knowledge, chat history and session control |
+| `server_registries.py` | `MCP_CORE_SCHEMAS` and `MCP_DASHBOARD_SCHEMAS` |
+| `computer_use_schemas.py` | the `kirocrew-computer` tools and `MCP_COMPUTER_SCHEMAS` |
+| `opt_in_server_schemas.py` | the opt-in servers (crew log, debug, work, panel, guide, mate) and their registries |
+
+A new tool's schema goes in the owner of its domain and is registered in its server's registry. `ValidationError` and `JsonRpcEnvelopeError` keep `kiro_crew.validation` as their `__module__`, and the response-truncation warning logs under `kiro_crew.validation`. `test/test_validation_parts_facade.py` pins the owner list, the facade's surface and its frozen import inventory.
+
 ### Foreign-Agent Import Boundary
 
 Foreign-agent import treats every discovered file and database as untrusted

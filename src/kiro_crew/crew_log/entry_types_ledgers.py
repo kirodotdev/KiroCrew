@@ -147,7 +147,7 @@ RADAR_CLEARABLE_FIELDS: tuple[str, ...] = (
 RADAR_CI_KEYS: tuple[str, ...] = ("state", "passed", "total", "round", "inherited_reds")
 
 #: Each CI member's type and ceiling -- the record tool's own bounds on its ``ci_*``
-#: arguments (``validation.py``), restated here so the fold re-applies them to the
+#: arguments (``validation_parts/app_schemas.py``), restated here so the fold re-applies them to the
 #: bytes it reads and the carry applies them to a pre-projection file: a string
 #: verdict clipped to its length, a counter kept only as a non-negative int within
 #: the tool's range. A test pins this table against the tool's field specs.

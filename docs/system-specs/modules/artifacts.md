@@ -464,7 +464,7 @@ doc stored as `widget` renders as raw inner HTML).
 | `artifact_reply_comment` | Reply to an existing comment thread; a reply to a provider-origin parent posts back to the provider |
 | `artifact_delete_comment` | Delete a fully-applied comment thread (root cascades to replies); provider-synced comments refused; SEL-audited with a `reason` |
 
-Schemas live in `validation.py` (`ARTIFACT_*_SCHEMA`) and are registered in
+Schemas live in `validation_parts/artifact_schemas.py` (`ARTIFACT_*_SCHEMA`) and are registered in
 `MCP_CORE_SCHEMAS`. The MCP tool layer always proxies through the HTTP API so
 SEL audit, restricted-session enforcement, and any future authorization
 middleware live in one place. The `tags` and `tag` arguments are checked by the

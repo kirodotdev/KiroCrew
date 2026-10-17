@@ -78,7 +78,7 @@ CONTROL_SECRET_HEADER = "X-SMC-Control-Secret"
 # resolver already is.
 CREW_AGENT_ID_PREFIX = "crew-"
 
-# ``_AGENT_NAME_RE`` in ``kiro_crew/validation.py`` caps a dispatchable agent name at 64
+# ``_AGENT_NAME_RE`` in ``kiro_crew/validation_parts/input_bounds.py`` caps a dispatchable agent name at 64
 # characters. Mirrored rather than imported, for the same reason as the prefix above.
 MAX_CREW_AGENT_ID_LEN = 64
 

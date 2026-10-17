@@ -3,7 +3,7 @@ import path from 'node:path'
 import { describe, it, expect } from 'vitest'
 import { ASK_ANSWERED_HEADER, ASK_MAX_ANSWER_LEN, ASK_PAIR_SEPARATOR, MAX_TOOL_RESULT_CHARS, NATIVE_MAX_ANSWER_LEN } from '../utils/askQuestionTool'
 
-// Blocking-card cap stays synchronized with validation.py's derived server bound.
+// Blocking-card cap stays synchronized with validation_parts/ask_question_card.py's derived server bound.
 
 const SRC = path.resolve(__dirname, '../../../src/kiro_crew')
 
@@ -14,8 +14,8 @@ function pyInt(source: string, name: string): number {
 }
 
 describe('ASK_MAX_ANSWER_LEN', () => {
-  it('mirrors the bound validation.py derives from the tool-result cap', () => {
-    const validation = readFileSync(path.join(SRC, 'validation.py'), 'utf-8')
+  it('mirrors the bound ask_question_card.py derives from the tool-result cap', () => {
+    const validation = readFileSync(path.join(SRC, 'validation_parts', 'ask_question_card.py'), 'utf-8')
     const directive = readFileSync(path.join(SRC, 'session_directive.py'), 'utf-8')
     const cap = pyInt(directive, 'MAX_TOOL_RESULT_CHARS')
     const questions = pyInt(validation, '_ASK_MAX_QUESTIONS')

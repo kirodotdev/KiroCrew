@@ -231,7 +231,7 @@ def normalize_tag(tag: str) -> str:
     spelling is the NFC form, so one label has one spelling however it was typed.
 
     This is the ONE tag rule: the store validates through it and the MCP
-    argument gate (``validation.py``) checks tag arguments through it, so the
+    argument gate (``validation_parts/artifact_schemas.py``) checks tag arguments through it, so the
     two cannot drift. The reason in the ``ValueError`` is plain English and is
     shown to the caller as-is.
     """

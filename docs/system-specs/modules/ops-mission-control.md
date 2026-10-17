@@ -2930,7 +2930,7 @@ review time, not to simulate the platform.
   forwards only a frozen (method, path) allowlist; the agent never sees a credential
   (the `issue_radar_record_investigation` precedent). Each SOP names the tool and its
   paths because a cron agent may read **only** its own SOP. Tests pin the three planes
-  to one surface: the allowlist in `validation.py`, the schema rejecting off-surface
+  to one surface: the allowlist in `validation_parts/app_schemas.py`, the schema rejecting off-surface
   calls, and the gateway's mixed-internal path set admitting exactly the allowlisted
   routes — see `apps/builtins/ops_mission_control/tests/test_agent_api_tool.py`.
 

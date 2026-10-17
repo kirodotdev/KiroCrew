@@ -219,7 +219,7 @@ _BASE_NAMES: dict[str, str] = {
     "is_claude_code": "func:kiro_crew.agent_sdk.provider_identity",
     "is_dispatchable_member_name": "func:kiro_crew.members",
     "is_local_only": "func:kiro_crew.dashboard.urls",
-    "is_registered_agent_name": "func:kiro_crew.validation",
+    "is_registered_agent_name": "func:kiro_crew.validation_parts.input_bounds",
     "is_sensitive_path": "func:kiro_crew.security.paths",
     "job_pause_state_from_disk": "func:kiro_crew.cron",
     "json": "module:json",
