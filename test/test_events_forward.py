@@ -974,7 +974,9 @@ class TestPastedTableBlocks:
              patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as mock_handle:
             await _route_message(orch, dict(event, user="U123", channel="C456", ts="1.2", team="T789"), seen, is_mention=True)
         assert mock_handle.called
-        return str(mock_handle.call_args)
+        # The turn's positional arguments only: the ``spool_text`` keyword carries
+        # the same message again for the shutdown spool.
+        return str(mock_handle.call_args.args)
 
     @pytest.mark.asyncio
     async def test_table_in_attachment_is_appended_to_present_text(self):

@@ -251,11 +251,16 @@ async def handle_message_transport(
     from_trusted_bot: bool = False,
     dm_single_session: bool = False,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    spool_text: str | None = None,
+    spool_attachments: int = 0,
 ) -> None:
     """Drive a Slack message through the new transport path end-to-end.
 
     ``start_priority``: as for ``handler.handle_message`` (rule:
     ``kiro_crew.start_priority``).
+
+    ``spool_text`` / ``spool_attachments``: as for ``handler.handle_message`` --
+    the pre-ingestion message the shutdown spool records instead of *text*.
 
     This replaces handle_message when the feature flag is on. It uses
     TurnDriver + SlackRenderer instead of the inline stream loop.
@@ -268,7 +273,7 @@ async def handle_message_transport(
     """
     Stats().inc_message_received()
     _t0 = time.monotonic()
-    inbound_text = text
+    inbound_text = text if spool_text is None else spool_text
     # Same key discipline as native handle_message: reply_ts is the bare Slack
     # thread timestamp (posting + thread-index key); session_key is the
     # canonical namespaced form (registry, conversation log, thread overrides
@@ -394,6 +399,7 @@ async def handle_message_transport(
         user_id=user_id,
         thread_id=reply_ts,
         message_id=msg_ts,
+        attachments_dropped=spool_attachments,
     )
     if not await admit_inbound_callback(
         sessions,
@@ -1241,6 +1247,7 @@ async def handle_message_transport(
                     user_id=user_id,
                     thread_id=reply_ts,
                     message_id=msg_ts,
+                    attachments_dropped=spool_attachments,
                 ),
             )
         with contextlib.suppress(Exception):

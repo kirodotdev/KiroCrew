@@ -922,6 +922,8 @@ async def handle_message(
     from_trusted_bot: bool = False,
     channel_activation: str | None = None,
     had_voice_input: bool = False,
+    spool_text: str | None = None,
+    spool_attachments: int = 0,
     _compaction_replay: _CompactionReplay | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> None:
@@ -941,6 +943,12 @@ async def handle_message(
 
     *channel_agent* overrides the default agent for this channel (set via
     per-channel config in ``slack.channels``).
+
+    *spool_text* / *spool_attachments* are what the user sent before voice-memo
+    transcription and file ingestion rewrote *text*. The shutdown spool records
+    these, never the ingested *text*, which inlines turn-owned temp paths (dead
+    after a restart) and extracted file contents. ``None`` means *text* was not
+    ingested (button and interaction re-dispatches), so it is spooled as is.
 
     *_compaction_replay* is set only by this function's own turn, when it re-runs a
     message whose previous attempt was abandoned after a transient compaction
@@ -983,10 +991,11 @@ async def handle_message(
         channel_type="slack",
         route=InboundRoute(
             conversation_id=channel,
-            text=text,
+            text=text if spool_text is None else spool_text,
             user_id=user_id,
             thread_id=reply_ts,
             message_id=msg_ts,
+            attachments_dropped=spool_attachments,
         ),
         restricted=_is_slack_restricted(session_key),
     ):
@@ -1021,6 +1030,8 @@ async def handle_message(
         from_trusted_bot=from_trusted_bot,
         channel_activation=channel_activation,
         had_voice_input=had_voice_input,
+        spool_text=spool_text,
+        spool_attachments=spool_attachments,
         _compaction_replay=_compaction_replay,
         start_priority=start_priority,
         _t0=_t0,

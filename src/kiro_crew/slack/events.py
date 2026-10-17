@@ -2077,6 +2077,12 @@ async def _dispatch_queued(
     channel = kwargs.get("channel", "")
     thread_ts = kwargs.get("thread_ts")
     from_trusted_bot = bool(kwargs.get("from_trusted_bot", False))
+    # The pre-ingestion message the enqueue site captured (see _route_message):
+    # the queued ``text`` is the ingested form, which the spool must not record.
+    _q_spool_text = kwargs.get("spool_text")
+    if not isinstance(_q_spool_text, str):
+        _q_spool_text = None
+    _q_spool_attachments = int(kwargs.get("spool_attachments") or 0)
     if orch.slack:
         try:
             await orch.slack.remove_reaction(channel, msg_ts, "hourglass_flowing_sand")
@@ -2126,6 +2132,8 @@ async def _dispatch_queued(
                 from_trusted_bot=from_trusted_bot,
                 dm_single_session=KiroCrewConfig.load().slack.dm_single_session,
                 start_priority=person_priority(not from_trusted_bot),
+                spool_text=_q_spool_text,
+                spool_attachments=_q_spool_attachments,
             )
             return
         await handle_message(
@@ -2147,6 +2155,8 @@ async def _dispatch_queued(
             channel_agent=kwargs.get("agent_override"),
             user_display_name=kwargs.get("user_display_name"),
             from_trusted_bot=from_trusted_bot,
+            spool_text=_q_spool_text,
+            spool_attachments=_q_spool_attachments,
             start_priority=person_priority(not from_trusted_bot),
         )
     finally:
@@ -3024,6 +3034,15 @@ async def _route_message(
     if seen.check_and_add(msg_ts):
         return
 
+    # What the user sent, captured BEFORE transcription and file ingestion
+    # rewrite ``text``. The shutdown spool records this, never the ingested form,
+    # which inlines turn-owned temp paths (dead after a restart) and extracted
+    # file contents -- the ``InboundRoute.text`` contract that Weixin, WeCom and
+    # WhatsApp already keep. It reuses ``_gate_text``, the mention-stripped
+    # message captured above before transcription and ingestion.
+    _spool_text = _gate_text
+    _spool_attachments = len(files) if files else 0
+
     # ── Transcribe audio files (voice memos) ──
     # Placed after dedup + auth to avoid expensive work on duplicate events
     # or unauthorized users.
@@ -3461,6 +3480,8 @@ async def _route_message(
             # Historical key; carries every attachment temp path for cleanup.
             image_temp_paths=list(_attachment_temp_paths),
             from_trusted_bot=from_trusted_bot,
+            spool_text=_spool_text,
+            spool_attachments=_spool_attachments,
             **_queue_tags(sender_id, channel),
         )
         if not _queued:
@@ -3480,6 +3501,8 @@ async def _route_message(
                         user_display_name=_sender_display,
                         image_temp_paths=list(_attachment_temp_paths),
                         from_trusted_bot=from_trusted_bot,
+                        spool_text=_spool_text,
+                        spool_attachments=_spool_attachments,
                         **_queue_tags(sender_id, channel),
                     ),
                 )
@@ -3508,6 +3531,8 @@ async def _route_message(
         user_display_name=_sender_display,
         image_temp_paths=list(_attachment_temp_paths),
         from_trusted_bot=from_trusted_bot,
+        spool_text=_spool_text,
+        spool_attachments=_spool_attachments,
         **_queue_tags(sender_id, channel),
     ):
         logger.info("Message %s queued for busy session %s", msg_ts, session_key)
@@ -3588,6 +3613,8 @@ async def _route_message(
                 from_trusted_bot=from_trusted_bot,
                 dm_single_session=_dm_single_session,
                 start_priority=person_priority(not from_trusted_bot),
+                spool_text=_spool_text,
+                spool_attachments=_spool_attachments,
             )
         )
         orch._session_tasks[session_key] = t
@@ -3648,6 +3675,8 @@ async def _route_message(
                 from_trusted_bot=from_trusted_bot,
                 channel_activation=activation,
                 had_voice_input=_had_voice_input,
+                spool_text=_spool_text,
+                spool_attachments=_spool_attachments,
                 start_priority=person_priority(not from_trusted_bot),
             )
         )

@@ -135,6 +135,8 @@ class _SlackTurn:
     from_trusted_bot: "bool"
     channel_activation: "str | None"
     had_voice_input: "bool"
+    spool_text: "str | None"
+    spool_attachments: "int"
     _compaction_replay: "_CompactionReplay | None"
     start_priority: "StartPriority"
 
@@ -192,6 +194,8 @@ class _SlackTurn:
         from_trusted_bot: "bool",
         channel_activation: "str | None",
         had_voice_input: "bool",
+        spool_text: "str | None",
+        spool_attachments: "int",
         _compaction_replay: "_CompactionReplay | None",
         start_priority: "StartPriority",
         _t0: "float",
@@ -222,6 +226,8 @@ class _SlackTurn:
         self.from_trusted_bot = from_trusted_bot
         self.channel_activation = channel_activation
         self.had_voice_input = had_voice_input
+        self.spool_text = spool_text
+        self.spool_attachments = spool_attachments
         self._compaction_replay = _compaction_replay
         self.start_priority = start_priority
         self._t0 = _t0
@@ -507,6 +513,8 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 from_trusted_bot=from_trusted_bot,
                 channel_activation=channel_activation,
                 had_voice_input=had_voice_input,
+                spool_text=turn.spool_text,
+                spool_attachments=turn.spool_attachments,
                 _compaction_replay=replay,
                 start_priority=start_priority,
             )

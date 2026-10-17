@@ -55,10 +55,11 @@ from kiro_crew.acp.types import (
     STOP_REASON_STALE_RECOVER,
 )
 from kiro_crew.messaging.link import canonical_key
+from kiro_crew.slack import handler as slack_handler
 from kiro_crew.slack import transport_dispatch
 
 
-def _run_transport(monkeypatch, thread_agent=None, agent_override=None):
+def _run_transport(monkeypatch, thread_agent=None, agent_override=None, **extra):
     # Empty configured default -> exercises the canonical-agent fallback.
     monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "")
     monkeypatch.setattr(
@@ -97,6 +98,7 @@ def _run_transport(monkeypatch, thread_agent=None, agent_override=None):
             context_builder=None,
             conversation_log=None,
             agent_override=agent_override,
+            **extra,
         )
     )
     return sessions
@@ -179,7 +181,92 @@ class TestTransportAdmissionSpool:
         assert route.user_id == "U_OWNER"
         assert route.thread_id == _MSG_TS
         assert route.message_id == _MSG_TS
+        assert route.attachments_dropped == 0
         assert sessions.agents == []
+
+    @pytest.mark.parametrize("site", ["admission", "dispatch"])
+    def test_spool_records_the_pre_ingestion_message(self, monkeypatch, site):
+        """The ingested *text* inlines temp paths and file contents.
+
+        Both refusal points -- the admission gate and a SessionClosingError at
+        dispatch -- must record what the user sent and how many files it had,
+        never the turn's prompt.
+        """
+        from kiro_crew.session_allocation import SessionClosingError
+
+        routes: list = []
+        if site == "admission":
+
+            async def refuse(_sessions, *, channel_type, route, restricted=False):
+                routes.append(route)
+                return False
+
+            monkeypatch.setattr(transport_dispatch, "admit_inbound_callback", refuse)
+        else:
+
+            async def reject_turn(*_args, **_kwargs):
+                raise SessionClosingError("automatic update owns admission")
+
+            async def spool(*, channel_type, route):
+                routes.append(route)
+
+            monkeypatch.setattr(_CapturingSessions, "get_or_create", reject_turn)
+            monkeypatch.setattr(transport_dispatch, "spool_refused_turn", spool)
+            monkeypatch.setattr(transport_dispatch, "_is_slack_restricted", lambda _key: False)
+
+        _run_transport(monkeypatch, spool_text="look at this", spool_attachments=2)
+
+        assert len(routes) == 1
+        assert routes[0].text == "look at this"
+        assert routes[0].attachments_dropped == 2
+
+    @pytest.mark.parametrize(
+        ("extra", "text", "dropped"),
+        [
+            ({"spool_text": "look at this", "spool_attachments": 2}, "look at this", 2),
+            # No pre-ingestion capture (interaction re-dispatch): text as is.
+            ({}, "approve the plan", 0),
+        ],
+    )
+    def test_native_admission_spools_the_pre_ingestion_message(
+        self, monkeypatch, extra, text, dropped
+    ):
+        turn_text = (
+            "hello\n/tmp/kiro-attach-dead.png\n\n[File: notes.txt]\nbody"
+            if extra
+            else "approve the plan"
+        )
+        routes: list = []
+
+        async def refuse(_sessions, *, channel_type, route, restricted=False):
+            routes.append(route)
+            return False
+
+        monkeypatch.setattr(slack_handler, "admit_inbound_callback", refuse)
+        monkeypatch.setattr(
+            slack_handler, "channel_inbound_permitted", AsyncMock(return_value=True)
+        )
+        monkeypatch.setattr(slack_handler, "_hydrate_thread_overrides", AsyncMock())
+        monkeypatch.setattr(slack_handler, "_hydrate_conv_header", AsyncMock())
+        monkeypatch.setattr(slack_handler, "_hydrate_conv_flags", lambda *a, **k: None)
+        monkeypatch.setattr(slack_handler, "_is_slack_restricted", lambda _key: False)
+
+        asyncio.run(
+            slack_handler.handle_message(
+                RecordingSlackClient(),
+                _CapturingSessions(ScriptedProvider([])),
+                "C1",
+                turn_text,
+                None,
+                _MSG_TS,
+                "U_OWNER",
+                **extra,
+            )
+        )
+
+        assert len(routes) == 1
+        assert routes[0].text == text
+        assert routes[0].attachments_dropped == dropped
 
     def test_session_closing_does_not_spool_restricted_slack_turn(self, monkeypatch):
         from kiro_crew.session_allocation import SessionClosingError

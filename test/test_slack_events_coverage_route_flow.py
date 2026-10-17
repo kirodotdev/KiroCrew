@@ -252,6 +252,62 @@ class TestRouteMessageAttachments:
         assert not img.exists()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("use_transport", [False, True])
+    async def test_spool_gets_the_pre_ingestion_message(self, tmp_path, use_transport):
+        """The shutdown spool must not quote temp paths or file bodies.
+
+        The turn's text is the ingested form; the spool gets what the user typed
+        (mention stripped, before transcription) and how many files it carried.
+        """
+        orch = _make_orch(use_transport=use_transport)
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG")
+        files = [
+            {"mimetype": "image/png", "url_private": "https://x.invalid/a.png"},
+            {"mimetype": "text/plain", "url_private": "https://x.invalid/b.txt"},
+        ]
+        target = "handle_message_transport" if use_transport else "handle_message"
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.stt_available", return_value=False):
+                with patch(
+                    "kiro_crew.slack.events.process_slack_files",
+                    new_callable=AsyncMock,
+                    return_value=([str(img)], ["[File: b.txt]\nfile body"]),
+                ):
+                    with patch(f"kiro_crew.slack.events.{target}", new_callable=AsyncMock) as hm:
+                        with patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()):
+                            await ev._route_message(
+                                orch,
+                                _event(text="<@UBOT> look", files=files),
+                                ev.SeenCache(),
+                                is_mention=True,
+                            )
+                            await _drain(orch)
+        assert str(img) in hm.await_args[0][3]
+        assert hm.await_args.kwargs["spool_text"] == "look"
+        assert hm.await_args.kwargs["spool_attachments"] == 2
+
+    @pytest.mark.asyncio
+    async def test_busy_session_queues_the_pre_ingestion_message(self, tmp_path):
+        orch = _make_orch()
+        orch._session_tasks = {"100.0": MagicMock()}
+        orch.sessions.enqueue = MagicMock(return_value=True)
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG")
+        files = [{"mimetype": "image/png", "url_private": "https://x.invalid/a.png"}]
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.stt_available", return_value=False):
+                with patch(
+                    "kiro_crew.slack.events.process_slack_files",
+                    new_callable=AsyncMock,
+                    return_value=([str(img)], []),
+                ):
+                    await ev._route_message(orch, _event(text="look", files=files), ev.SeenCache())
+        kw = orch.sessions.enqueue.call_args.kwargs
+        assert kw["spool_text"] == "look"
+        assert kw["spool_attachments"] == 1
+
+    @pytest.mark.asyncio
     async def test_no_recoverable_text_cleans_up_temp_images(self, tmp_path):
         orch = _make_orch()
         img = tmp_path / "empty.png"
@@ -468,6 +524,18 @@ class TestDispatchQueued:
             await ev._dispatch_queued(orch, "100.0", "101.0", "queued text", kwargs)
         hm.assert_awaited_once()
         assert not img.exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("use_transport", [False, True])
+    async def test_pre_ingestion_message_travels_to_the_handler(self, use_transport):
+        orch = _make_orch(use_transport=use_transport)
+        kwargs = {"channel": "D1", "spool_text": "look", "spool_attachments": 1}
+        target = "handle_message_transport" if use_transport else "handle_message"
+        with patch(f"kiro_crew.slack.events.{target}", new_callable=AsyncMock) as hm:
+            with patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()):
+                await ev._dispatch_queued(orch, "100.0", "101.0", "look\n/tmp/x.png", kwargs)
+        assert hm.await_args.kwargs["spool_text"] == "look"
+        assert hm.await_args.kwargs["spool_attachments"] == 1
 
     @pytest.mark.asyncio
     async def test_missing_temp_path_is_tolerated(self, tmp_path):
