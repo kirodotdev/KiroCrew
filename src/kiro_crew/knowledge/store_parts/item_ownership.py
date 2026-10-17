@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, AbstractSet
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -76,7 +76,7 @@ _DOC_STATE_KEY_COL: dict[str, str] = {
 # separately, in ``text_hash``; the aggregate tables already store a text hash in
 # ``content_hash`` and need no second column.
 _OWNERSHIP_HASH_COL: dict[str, str] = {
-    "folder_file_state": "COALESCE(text_hash, content_hash)",
+    "folder_file_state": "COALESCE(NULLIF(text_hash, ''), content_hash)",
     "artifact_item_state": "content_hash",
     "agent_item_state": "content_hash",
 }
@@ -176,7 +176,13 @@ def _adopt_reassigned_item(self: KnowledgeStore, item_id: str, new_source_id: st
         )
 
 
-def detach_source_location_by_hash(self: KnowledgeStore, source_id: str, content_hash: str) -> int:
+def detach_source_location_by_hash(
+    self: KnowledgeStore,
+    source_id: str,
+    content_hash: str,
+    *,
+    exclude_folder_paths: AbstractSet[str] = frozenset(),
+) -> int:
     """Drop this source's CLAIM on a document it has no copy of.
 
     The counterpart to :meth:`_adopt_reassigned_item`. A source that lost a dedup
@@ -200,12 +206,24 @@ def detach_source_location_by_hash(self: KnowledgeStore, source_id: str, content
     dropping it would strand that other document when the winner goes away. On
     ambiguity the claim is kept: a stale claim can resurface content that exists
     elsewhere, which is recoverable, while a released one destroys a document.
+    ``exclude_folder_paths`` omits rows the current sweep will remove from the
+    claimant count; those rows cannot back a surviving shared claim.
     """
     if not content_hash:
         return 0
     claimants = 0
     for table, _healthy in _DOC_STATE_TABLES:
         hash_col = _OWNERSHIP_HASH_COL[table]
+        if table == "folder_file_state" and exclude_folder_paths:
+            # Filtered here rather than as a NOT IN list: a sweep can remove more
+            # files than SQLite accepts as bound parameters.
+            rows = self.db.execute(
+                f"SELECT file_path FROM {table} "  # noqa: S608
+                f"WHERE source_id = ? AND {hash_col} = ?",
+                (source_id, content_hash),
+            ).fetchall()
+            claimants += sum(1 for r in rows if r["file_path"] not in exclude_folder_paths)
+            continue
         hit = self.db.execute(
             f"SELECT COUNT(*) AS n FROM {table} "  # noqa: S608
             f"WHERE source_id = ? AND {hash_col} = ?",

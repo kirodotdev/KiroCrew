@@ -838,7 +838,12 @@ class TestAsyncToThread:
             fw,
             "_load_state",
             lambda source_id: {
-                str(note): {"status": "done", "mtime": 2.0, "item_ids": "[]"}
+                str(note): {
+                    "status": "done",
+                    "mtime": 2.0,
+                    "item_ids": "[]",
+                    "content_hash": "hashed",
+                }
             },
         )
         monkeypatch.setattr(fw, "_is_paused", lambda source_id: paused)

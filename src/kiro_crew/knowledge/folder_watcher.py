@@ -11,7 +11,7 @@ import os
 from datetime import datetime
 from fnmatch import fnmatch, fnmatchcase
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Collection
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.embeddings import PRIORITY_NORMAL
@@ -164,6 +164,11 @@ def _within(candidate: str, base: str) -> bool:
     except ValueError:
         # Different drives on Windows -- definitionally not contained.
         return False
+
+
+#: Statuses whose bytes hash a retired stale includer keeps: 'failed'/'skipped'
+#: name the version that failed, and 'scanning' keys its retry budget.
+_KEEPS_BYTES_HASH = frozenset({"failed", "skipped", "scanning"})
 
 
 def _prop_int(value: object) -> int:
@@ -419,15 +424,28 @@ class FolderWatcher:
         filters = walk_filters(props, source_type)
 
         # 1. Discover files
-        discovered = await asyncio.to_thread(self._walk, uri, **filters)
+        screened: set[str] = set()
+        discovered = await asyncio.to_thread(self._walk, uri, screened_out=screened, **filters)
 
         # Capture all discovered paths before cap (for accurate deletion detection)
         all_discovered_paths = {fp for fp, _ in discovered}
+        # An AsciiDoc ``include::`` may inline only a file this walk selected, so
+        # every walk rule holds for included text at the time the includer is
+        # read; an includer whose recorded targets are not all in a later walk
+        # is read again (step 4). Built from the
+        # FULL walk (not the capped list) and handed to every file; only the
+        # AsciiDoc reader uses it.
+        # The members are the resolved strings the walk itself screened, never a
+        # second resolution: a name re-pointed after the walk cannot admit a file
+        # the walk rejected. They are normcased once here so the reader can look
+        # a candidate up without copying the set per document.
+        include_paths = frozenset(os.path.normcase(r) for r in screened)
 
         # Newest first, unconditionally: it is the order both the file cap and the
         # chunk budget need, so the most recently touched documents are the ones
         # that land when either bound truncates the sweep.
         discovered.sort(key=lambda f: f[1], reverse=True)
+        walked = discovered
 
         # 2. Enforce cap
         capped = 0
@@ -443,6 +461,7 @@ class FolderWatcher:
         # whole event loop for that wait -- past the loop-stall watchdog on a
         # slow disk. The store's on-loop guard names this exact frame.
         existing = await asyncio.to_thread(self._load_state, source_id)
+        records = await asyncio.to_thread(self._load_include_records, source_id)
         now = datetime.now().isoformat()
 
         stats: dict[str, int] = {"new": 0, "changed": 0, "deleted": 0, "skipped": 0, "capped": capped, "failed": 0}
@@ -450,10 +469,47 @@ class FolderWatcher:
         chunks_ingested = 0  # against chunk_budget
 
         # 4. Detect deleted files (use full set, not capped set, to avoid false deletions)
-        for file_path in list(existing.keys()):
-            if file_path not in all_discovered_paths:
-                await self._handle_deleted(source_id, file_path, existing[file_path])
-                stats["deleted"] += 1
+        removed = [fp for fp in existing if fp not in all_discovered_paths]
+        # An includer's indexed text holds every target its record names. One that
+        # left this walk (deleted, newly excluded, or now rejected by a walk rule;
+        # the walk set is pre-cap, so a capped part still counts while it exists)
+        # makes the includer stale. Recomputed every sweep from the record and the
+        # walk, with nothing marked, so a stopped or cancelled sweep loses nothing.
+
+        def _targets_gone(fp: str) -> bool:
+            targets = records.get(fp, [])
+            return targets is None or not include_paths.issuperset(targets)
+
+        gone = sorted(fp for fp in existing if fp in all_discovered_paths and _targets_gone(fp))
+        if gone:
+            # The stale text leaves now, in this sweep, as the removed file's own
+            # items do below, whatever the chunk budget, a pause or a failed
+            # re-read later does.
+            await run_to_completion(
+                lambda: self._retire_stale_include_text(source_id, gone, removed))
+            for fp in gone:
+                existing[fp].update(item_ids="[]", text_hash=None)
+                if existing[fp].get("status") not in _KEEPS_BYTES_HASH:
+                    existing[fp]["content_hash"] = ""
+        # Each stale row the scan can read is read first, past the file cap; a
+        # 'failed'/'skipped' one waits for the user. So does an includer an
+        # earlier sweep retired but did not reach (its bytes hash is empty), even
+        # if its target has come back, and one left 'scanning', which may hold a
+        # newer group than its record names. Both have a record: retirement keeps
+        # it, and a group is never named before its record is written.
+        reread = {
+            fp for fp in records
+            if fp in existing and fp in all_discovered_paths
+            and existing[fp].get("status") not in ("failed", "skipped")
+            and (existing[fp].get("status") == "scanning"
+                 or not existing[fp].get("content_hash"))}
+        reread.update(fp for fp in gone if existing[fp].get("status") not in ("failed", "skipped"))
+        if reread:
+            discovered = ([f for f in walked if f[0] in reread]
+                          + [f for f in discovered if f[0] not in reread])
+        for file_path in removed:
+            await self._handle_deleted(source_id, file_path, existing[file_path])
+            stats["deleted"] += 1
 
         # 5. Process discovered files
         namespace = props.get("namespace", "default")
@@ -492,7 +548,9 @@ class FolderWatcher:
             # content is unique. Skipping it unconditionally would strand it: the
             # marker outlives the copy that caused it, so the file could never be
             # indexed again even after the other copy was deleted.
-            if (state and state.get("status") in ("done", "deduped")
+            forced = file_path in reread
+            if (state and not forced and state.get("status") in ("done", "deduped")
+                    and state.get("content_hash")
                     and mtime <= state.get("mtime", 0)):
                 # Unchanged — just update last_seen
                 last_seen_batch.append((now, source_id, file_path))
@@ -539,7 +597,8 @@ class FolderWatcher:
                     stats["failed"] += 1
                     continue
 
-            if state and state.get("status") == "done" and content_hash == state.get("content_hash"):
+            if (state and not forced and state.get("status") == "done"
+                    and content_hash == state.get("content_hash")):
                 # Touched but content unchanged
                 await self._persist_state(source_id, file_path, content_hash, mtime, state.get("item_ids", "[]"), now, "done", commit=False)
                 continue
@@ -574,11 +633,15 @@ class FolderWatcher:
                                       json.dumps(old_ids), now, "scanning",
                                       attempts=prior_attempts + 1)
 
+            # For every file, not only an AsciiDoc name: the reader is picked by
+            # the resolved suffix, so a `.md` link to an `.adoc` file inlines too.
+            included: set[str] = set()
             item_ids, outcome = await self._ingest_file(
                 file_path, source_id, namespace, props, old_ids, root=uri,
                 embed_priority=embed_priority,
+                include_paths=include_paths, included=included,
                 on_duplicate=lambda text_hash: self._record_deduped_state(
-                    source_id, file_path, content_hash, mtime, now, text_hash))
+                    source_id, file_path, content_hash, mtime, now, text_hash, included))
             if item_ids is None:
                 # Ingestion failed. The 'scanning' marker above is only a crash hint,
                 # so it has to be replaced with a terminal status here rather than
@@ -609,7 +672,7 @@ class FolderWatcher:
                 # here would leave that commit unrecorded.
                 stats["skipped"] += 1
             else:
-                await self._persist_state(source_id, file_path, content_hash, mtime, json.dumps(item_ids), now, "done", commit=False)
+                await self._persist_state(source_id, file_path, content_hash, mtime, json.dumps(item_ids), now, "done", commit=False, included=included)
                 ingested_paths.append(file_path)
                 if chunk_budget:
                     chunks_ingested += len(item_ids)
@@ -656,8 +719,12 @@ class FolderWatcher:
     def _walk(self, root: str, ignore_patterns: list[str], extra_skip_dirs: set[str],
               include_extensions: set[str] | None = None,
               min_size: int = 0,
-              confine_to_root: bool = False) -> list[tuple[str, float]]:
+              confine_to_root: bool = False,
+              screened_out: set[str] | None = None) -> list[tuple[str, float]]:
         """Walk directory, return [(file_path, mtime)] for supported files.
+
+        ``screened_out``, when given, receives the resolved path each returned
+        file was screened under (``is_sensitive_path``, ``confine_to_root``).
 
         ``include_extensions`` NARROWS what is taken; it can never widen it. A
         value of ``None`` means "no extension allowlist" -- every reader-supported
@@ -751,6 +818,8 @@ class FolderWatcher:
                 if min_size and st.st_size < min_size:
                     continue
                 results.append((full_path, st.st_mtime))
+                if screened_out is not None:
+                    screened_out.add(resolved)
 
         return results
 
@@ -773,9 +842,12 @@ class FolderWatcher:
             "WHERE source_id = ? AND file_path = ?", (source_id, file_path)).fetchone()
         return row["error_message"] if row else None
 
-    def _update_state(self, source_id: str, file_path: str, content_hash: str, mtime: float, item_ids: str, now: str, status: str = "done", error_message: str | None = None, *, attempts: int = 0, commit: bool = True):
+    def _update_state(self, source_id: str, file_path: str, content_hash: str, mtime: float, item_ids: str, now: str, status: str = "done", error_message: str | None = None, *, attempts: int = 0, commit: bool = True, included: set[str] | None = None):
         """Write one state row. Synchronous: callers on the event loop use
-        :meth:`_persist_state`, which runs this on a worker thread."""
+        :meth:`_persist_state`, which runs this on a worker thread. *included*,
+        when given, replaces the file's include record first."""
+        if included is not None:
+            self._write_include_record(source_id, file_path, included)
         self._write_state_row(source_id, file_path, content_hash, mtime, item_ids, now,
                               status, error_message, attempts=attempts)
         if commit:
@@ -832,7 +904,8 @@ class FolderWatcher:
 
     def _record_deduped_state(self, source_id: str, file_path: str, content_hash: str,
                               mtime: float, now: str,
-                              text_hash: str | None = None) -> None:
+                              text_hash: str | None = None,
+                              included: set[str] | None = None) -> None:
         """Terminal write for a file the pre-ingest gate refused.
 
         Invoked BY the gate as its ``on_duplicate`` finalizer, from inside the
@@ -850,6 +923,10 @@ class FolderWatcher:
         and undeletable.
         """
         adopted = self._surviving_group(source_id, file_path)
+        if included is not None:
+            # The claim names the includer's expanded text, so its targets commit
+            # with it.
+            self._write_include_record(source_id, file_path, included)
         self._write_state_row(
             source_id, file_path, content_hash, mtime, json.dumps(adopted), now,
             "done" if adopted else "deduped", known_text_hash=text_hash)
@@ -881,6 +958,97 @@ class FolderWatcher:
         self.store.db.execute(
             "INSERT OR REPLACE INTO folder_file_state (source_id, file_path, content_hash, text_hash, mtime, item_ids, last_seen, status, error_message, attempts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (source_id, file_path, content_hash, text_hash, mtime, item_ids, now, status, error_message, attempts))
+
+    def _load_include_records(self, source_id: str) -> dict[str, list[str] | None]:
+        """Each includer's recorded targets; ``None`` for a record that does not
+        parse, which the caller treats as stale. Synchronous: run off the loop."""
+        out: dict[str, list[str] | None] = {}
+        for row in self.store.db.execute(
+                "SELECT file_path, targets FROM folder_include_targets WHERE source_id = ?",
+                (source_id,)).fetchall():
+            try:
+                targets = json.loads(row["targets"])
+            except (TypeError, ValueError):
+                targets = None
+            ok = isinstance(targets, list) and all(isinstance(t, str) for t in targets)
+            out[row["file_path"]] = targets if ok else None
+        return out
+
+    def _write_include_record(self, source_id: str, file_path: str,
+                              included: set[str]) -> None:
+        """Replace *file_path*'s include record with *included*, or drop it when
+        empty. No commit: it belongs to the caller's write."""
+        if included:
+            self.store.db.execute(
+                "INSERT OR REPLACE INTO folder_include_targets "
+                "(source_id, file_path, targets) VALUES (?, ?, ?)",
+                (source_id, file_path, json.dumps(sorted(included))))
+        else:
+            self.store.db.execute(
+                "DELETE FROM folder_include_targets WHERE source_id = ? AND file_path = ?",
+                (source_id, file_path))
+
+    def _retire_stale_include_text(self, source_id: str, file_paths: list[str],
+                                   removed: Collection[str] = ()) -> None:
+        """Take a removed target's text out of each stale includer's index entry.
+
+        A row with items has them archived (a copy another source holds
+        survives, as in ``_handle_deleted``) and keeps its status with no items.
+        A row with none may still hold a dedup claim on the holder's copy of its
+        expanded text, and its bytes did not change, so ``release_stale_claim``
+        cannot see that; the claim is released by text hash. Removed paths and
+        the batch's other rows are left out of the claimant count, so a hash
+        shared only within this batch is released while a row outside it keeps
+        the claim; each of these rows is re-read and re-claims through the dedup
+        gate if it is still a duplicate. The record stays, so a sweep stopped
+        before the re-read still finds the row stale, except on a 'failed' or
+        'skipped' row, which the scan does not re-read. One write transaction,
+        then the graph reload. Synchronous: run off the event loop.
+        """
+        not_claimants = {*removed, *file_paths}
+        self.store.db.execute("BEGIN IMMEDIATE")
+        try:
+            rows = []
+            claims: dict[str, str] = {}  # text hash -> one row that claimed under it
+            for file_path in file_paths:
+                row = self.store.db.execute(
+                    "SELECT status, item_ids, text_hash, content_hash FROM folder_file_state "
+                    "WHERE source_id = ? AND file_path = ?",
+                    (source_id, file_path)).fetchone()
+                if row is None:
+                    continue
+                ids = json.loads(row["item_ids"] or "[]")
+                rows.append((file_path, ids, row["status"]))
+                if not ids:
+                    claims.setdefault(row["text_hash"] or row["content_hash"] or "", file_path)
+            # One release per text hash, before any row loses it: once it runs,
+            # the claim is gone for every row of the batch that shared it. That
+            # row stays counted, so the helper keeps the claim only when a second
+            # claimant remains.
+            for text_hash, file_path in claims.items():
+                not_claimants.discard(file_path)
+                self.store.detach_source_location_by_hash(
+                    source_id, text_hash, exclude_folder_paths=not_claimants)
+                not_claimants.add(file_path)
+            for file_path, ids, status in rows:
+                if ids:
+                    self.store.delete_items_batch_in_txn(ids, owner_source_id=source_id)
+                # No text hash: the row names no document any more. An empty
+                # bytes hash on a 'done'/'deduped'/'pending' row fails both
+                # unchanged checks, so it is read again even if the target comes
+                # back first. A 'scanning' row is re-read anyway and its bytes hash
+                # carries its retry budget, so it keeps it.
+                self.store.db.execute(
+                    "UPDATE folder_file_state SET item_ids = '[]', text_hash = NULL"
+                    + ("" if status in _KEEPS_BYTES_HASH else ", content_hash = ''")
+                    + " WHERE source_id = ? AND file_path = ?", (source_id, file_path))
+                if status in ("failed", "skipped"):
+                    self._write_include_record(source_id, file_path, set())
+            self.store.db.execute("COMMIT")
+        except Exception:
+            self.store.db.execute("ROLLBACK")
+            raise
+        self.store.reload_graph()
 
     def _flush_last_seen(self, batch: list[tuple[str, str, str]]):
         """Apply accumulated ``(now, source_id, file_path)`` last_seen touches.
@@ -945,12 +1113,14 @@ class FolderWatcher:
                 # would later hand this source a document whose file is gone, so it is
                 # released by content hash. Nothing is deleted: the items are the winner's.
                 # The TEXT hash, not the bytes one: this resolves items, and for a PDF or
-                # HTML file the two differ.
+                # HTML file the two differ. A row written before ``text_hash`` existed has
+                # none; its bytes hash is the plaintext hash it claimed under.
                 self.store.detach_source_location_by_hash(
-                    source_id, state.get("text_hash") or "")
+                    source_id, state.get("text_hash") or state.get("content_hash") or "")
             self.store.db.execute(
                 "DELETE FROM folder_file_state WHERE source_id = ? AND file_path = ?",
                 (source_id, file_path))
+            self._write_include_record(source_id, file_path, set())
             self.store.db.commit()
 
         await run_to_completion(_archive_and_forget)
@@ -961,8 +1131,15 @@ class FolderWatcher:
                            root: str = "",
                            on_duplicate: Callable[[str], None] | None = None,
                            embed_priority: int = PRIORITY_NORMAL,
+                           include_paths: frozenset[str] | None = None,
+                           included: set[str] | None = None,
                            ) -> tuple[list[str] | None, str]:
         """Ingest one file.
+
+        *include_paths* is forwarded to the pipeline as the normcased set an
+        AsciiDoc ``include::`` may expand into; every other reader ignores it.
+        *included* collects the targets the read inlined, and is recorded with
+        the committed group.
 
         Returns ``(item_ids, outcome)`` where *outcome* is ``"done"``,
         ``"failed"`` (``item_ids`` is ``None``), or ``"deduped"`` -- the
@@ -1083,6 +1260,11 @@ class FolderWatcher:
                         (committed[0],)).fetchone()
                     if row:
                         text_hash = row["content_hash"]
+                # The targets first: a group whose record is missing could keep
+                # a removed target's text unnoticed, while a record ahead of its
+                # row only costs a re-read.
+                if included is not None:
+                    self._write_include_record(source_id, file_path, included)
                 self.store.db.execute(
                     "UPDATE folder_file_state SET item_ids = ?, text_hash = ?, "
                     "status = 'done', error_message = NULL, attempts = 0, "
@@ -1125,7 +1307,8 @@ class FolderWatcher:
                 on_committed=_record_committed,
                 on_duplicate=_record_refused,
                 embed_priority=embed_priority,
-                count_toward_import_budget=False)
+                count_toward_import_budget=False,
+                include_paths=include_paths, included=included)
 
             if refused:
                 return [], "deduped"

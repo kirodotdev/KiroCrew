@@ -356,6 +356,7 @@ def delete_source_cascade(self: KnowledgeStore, source_id):
                     )
         self.db.execute("DELETE FROM ingestion_jobs WHERE source_id = ?", (source_id,))
         self.db.execute("DELETE FROM folder_file_state WHERE source_id = ?", (source_id,))
+        self.db.execute("DELETE FROM folder_include_targets WHERE source_id = ?", (source_id,))
         self.db.execute("DELETE FROM artifact_item_state WHERE source_id = ?", (source_id,))
         self.db.execute("DELETE FROM agent_item_state WHERE source_id = ?", (source_id,))
         self.db.execute("DELETE FROM agent_ingest_intent WHERE source_id = ?", (source_id,))

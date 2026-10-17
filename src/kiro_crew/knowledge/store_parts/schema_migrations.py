@@ -157,6 +157,18 @@ def _init_schema(self: KnowledgeStore):
                 PRIMARY KEY (source_id, file_path)
             );
 
+            -- The real paths an AsciiDoc includer inlined when it was last read
+            -- (normcased JSON list), so removing one of them re-reads exactly that
+            -- includer. Kept apart from folder_file_state, whose many INSERT OR
+            -- REPLACE writers would otherwise each have to carry it; no row means
+            -- the file inlined nothing.
+            CREATE TABLE IF NOT EXISTS folder_include_targets (
+                source_id TEXT NOT NULL REFERENCES sources(id),
+                file_path TEXT NOT NULL,
+                targets TEXT NOT NULL,
+                PRIMARY KEY (source_id, file_path)
+            );
+
             CREATE TABLE IF NOT EXISTS artifact_item_state (
                 source_id TEXT NOT NULL REFERENCES sources(id),
                 slug TEXT NOT NULL,

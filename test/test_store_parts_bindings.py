@@ -107,7 +107,7 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "delete_items_batch": ("function", "403c1f3a03c9", "item_rows"),
     "delete_items_batch_in_txn": ("function", "403c1f3a03c9", "item_rows"),
     "delete_source_cascade": ("function", "99191a176ec8", "item_rows"),
-    "detach_source_location_by_hash": ("function", "5e6387d396e1", "item_ownership"),
+    "detach_source_location_by_hash": ("function", "75820b543a01", "item_ownership"),
     "ensure_fts_index_current": ("function", "b60c5fea256e", "fulltext_index"),
     "ensure_graph_loaded": ("function", "b60c5fea256e", "entity_graph"),
     "ensure_search_indexes": ("function", "b60c5fea256e", "schema_migrations"),

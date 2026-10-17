@@ -764,7 +764,7 @@ class TestFileReader:
         assert ".asc" not in reader.SUPPORTED
         for ext in (".adoc", ".asciidoc"):
             assert ext in reader.SUPPORTED
-            assert ext not in reader._DISPATCH
+            assert reader._DISPATCH[ext] == "_read_asciidoc"
             f = tmp_path / f"guide{ext}"
             f.write_text("= Guide\n\nhello asciidoc", encoding="utf-8")
             text, meta = reader.read(str(f))

@@ -149,6 +149,7 @@ class DocRef:
     recency: float          # mtime epoch (folder) or updated_at epoch (otherwise)
     resident_since: float   # earliest item created_at epoch (tiebreak)
     file_path: str | None = None  # set only for folder-file docs
+    inlines: bool = False  # a folder file with an AsciiDoc include record
     embedding: list[float] | None = field(default=None, repr=False)
     _norm_stem: str | None = field(default=None, repr=False, compare=False)
 
@@ -345,7 +346,7 @@ def _doc_embedding(store, doc: DocRef) -> list[float] | None:
 
 
 def _build_doc(store, *, source_id, source_type, filename, item_ids, file_path,
-               recency) -> DocRef | None:
+               recency, inlines=False) -> DocRef | None:
     if not item_ids:
         return None
     placeholders = ",".join("?" * len(item_ids))
@@ -361,7 +362,21 @@ def _build_doc(store, *, source_id, source_type, filename, item_ids, file_path,
     return DocRef(
         source_id=source_id, source_type=source_type, filename=filename,
         item_ids=list(item_ids), content_hash=content_hash, embedding_sig=embedding_sig,
-        recency=recency or 0.0, resident_since=resident_since, file_path=file_path)
+        recency=recency or 0.0, resident_since=resident_since, file_path=file_path,
+        inlines=inlines)
+
+
+def _includers(store, source_id: str | None = None) -> set[tuple[str, str]]:
+    """``(source_id, file_path)`` of every folder file with an include record."""
+    sql = "SELECT source_id, file_path FROM folder_include_targets"
+    args: tuple[str, ...] = ()
+    if source_id is not None:
+        sql += " WHERE source_id = ?"
+        args = (source_id,)
+    try:
+        return {(r["source_id"], r["file_path"]) for r in store.db.execute(sql, args)}
+    except Exception:  # pragma: no cover - table absent on an old schema
+        return set()
 
 
 def _doc_labels(store) -> dict[str, str]:
@@ -402,13 +417,15 @@ def enumerate_docs(store) -> list[DocRef]:
         "SELECT ffs.source_id, ffs.file_path, ffs.item_ids, ffs.mtime, s.source_type "
         "FROM folder_file_state ffs JOIN sources s ON s.id = ffs.source_id "
         "WHERE ffs.status = 'done'").fetchall()
+    includers = _includers(store)
     for r in folder_rows:
         folder_source_ids.add(r["source_id"])
         item_ids = json.loads(r["item_ids"] or "[]")
         doc = _build_doc(
             store, source_id=r["source_id"], source_type=r["source_type"],
             filename=r["file_path"].rsplit("/", 1)[-1], item_ids=item_ids,
-            file_path=r["file_path"], recency=r["mtime"])
+            file_path=r["file_path"], recency=r["mtime"],
+            inlines=(r["source_id"], r["file_path"]) in includers)
         if doc:
             docs.append(doc)
 
@@ -574,6 +591,13 @@ def _match_reason(store, a: DocRef, b: DocRef, threshold: float) -> str | None:
         return None
     if a.content_hash and b.content_hash and a.content_hash == b.content_hash:
         return "exact"
+    # A fuzzy collapse moves the loser's claim onto items under the WINNER's hash,
+    # and nothing records that hash. An includer must be able to release its claim
+    # when one of its targets leaves the walk, and it releases by its own text
+    # hash, so it is never paired by the fuzzy tier. The exact tier is safe: both
+    # hashes are the same.
+    if a.inlines or b.inlines:
+        return None
     if not _stems_near_match(a.norm_stem(), b.norm_stem(), a.filename, b.filename):
         return None
     if not a.embedding_sig or a.embedding_sig != b.embedding_sig:
@@ -1025,7 +1049,8 @@ def _build_doc_for(store, source_id: str, file_path: str | None,
             store, source_id=source_id, source_type=s["source_type"],
             filename=file_path.rsplit("/", 1)[-1],
             item_ids=json.loads(row["item_ids"] or "[]"),
-            file_path=file_path, recency=row["mtime"])
+            file_path=file_path, recency=row["mtime"],
+            inlines=(source_id, file_path) in _includers(store, source_id))
     if not content_hash:
         row = store.db.execute(
             "SELECT content_hash FROM items WHERE source_id = ? "

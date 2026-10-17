@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from kiro_crew.pdf_extract import PDF_MAX_PAGES, extract_pdf_segments, pdfplumber_available
+from kiro_crew.pinned_fs import open_fenced_for_read
 from kiro_crew.security import is_sensitive_path
 
 try:
@@ -75,6 +76,162 @@ _PDF_MAX_CHARS = 4_000_000
 _PDF_WALL_SECS = 120.0
 
 
+#: AsciiDoc ``include::target[attrs]`` directive, matched the way Asciidoctor's
+#: preprocessor does: at the very start of a line, target without spaces at its
+#: ends, attribute list closing the line. ``\include::`` (escaped) never matches.
+_ADOC_INCLUDE_RE = re.compile(r'^include::([^\s\[](?:[^\[]*[^\s\[])?)\[(.*)\]$')
+#: A target with a ``scheme:`` prefix is a URL or an Antora resource id
+#: (``partial$x.adoc`` with a module, ``https://...``). Ingest is local-only, so
+#: those directives stay as written rather than becoming a network fetch.
+_ADOC_SCHEME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*:')
+#: Bounds on one document's include expansion. Depth stops deep chains, the
+#: count stops fan-out (a partial included many times per level), and the
+#: per-file and whole-document caps stop size blow-up.
+_ADOC_MAX_INCLUDE_DEPTH = 8
+_ADOC_MAX_INCLUDES = 256
+_ADOC_MAX_INCLUDE_BYTES = 1_000_000
+_ADOC_MAX_CHARS = 4_000_000
+
+
+class _AdocIncludes:
+    """Expand local ``include::`` directives into one AsciiDoc document's text.
+
+    A target is read only when its ``realpath`` lies inside the top-level
+    document's own directory (Asciidoctor's safe-mode jail) AND is a member of
+    *include_paths*, the canonical set of files the folder scan selected for
+    this source, each already passed through ``os.path.normcase`` by the scan.
+    The set is used as given, never copied, so a read costs nothing per
+    member; only the candidate path is normcased for the lookup. Membership is
+    what carries every walk rule (``.kiroignore``,
+    ``ignore_patterns``, ``include_extensions``, pruned and dot-named
+    directories, ignored basenames, supported suffixes, ``is_sensitive_path``,
+    ``confine_to_root``): a file the scan would not index is not a member, so
+    it is not inlined either. No part below the root may be dot-named (the
+    walk still selects a dot-named file such as ``.env``). The target must
+    also be a regular file with no NUL byte that is not already on the include
+    stack. The kernel's own path for the opened descriptor is judged again by
+    the same jail, dot-name and membership rules, so a
+    directory swapped for a symlink around the open cannot redirect the read;
+    a hardlinked file is refused because its path says nothing about what it
+    aliases. A directive that fails any check -- or names a URL, an absolute
+    path, or an unresolved ``{attribute}`` -- stays in the text as written,
+    which is what Asciidoctor itself leaves for an include it cannot resolve.
+    Attributes such as ``tag=`` or ``lines=`` are not applied: the whole file
+    is indexed. Every directive that reaches the filesystem counts toward
+    ``_ADOC_MAX_INCLUDES``, failed or not, so a document cannot buy unbounded
+    reads with directives that fail late. *included*, when given, receives the
+    normcased real path of every target actually inlined, at every depth.
+    """
+
+    def __init__(self, root: str, include_paths: frozenset[str],
+                 included: set[str] | None = None):
+        self.root = root
+        self.members = include_paths
+        self.included = included
+        self.opened: list[str] = []
+        self.attempts = 0
+        self.chars = 0
+
+    def expand(self, text: str, current: str, stack: tuple[str, ...]) -> str:
+        if 'include::' not in text:
+            return text
+        out = []
+        for line in text.split('\n'):
+            # Asciidoctor strips trailing whitespace before it looks for a directive.
+            m = _ADOC_INCLUDE_RE.match(line.rstrip())
+            if m is None:
+                out.append(line)
+                continue
+            body = self._load(m.group(1), current, stack)
+            out.append(line if body is None else body)
+        return '\n'.join(out)
+
+    def _load(self, target: str, current: str, stack: tuple[str, ...]) -> str | None:
+        if ('\x00' in target or '{' in target or _ADOC_SCHEME_RE.match(target)
+                or os.path.isabs(target)):
+            return None
+        if (len(stack) > _ADOC_MAX_INCLUDE_DEPTH or self.attempts >= _ADOC_MAX_INCLUDES
+                or self.chars >= _ADOC_MAX_CHARS):
+            return None
+        self.attempts += 1
+        real = os.path.realpath(os.path.join(os.path.dirname(current), target))
+        if not self._allowed(real) or real in stack or not os.path.isfile(real):
+            return None
+        self.opened = [real]
+        raw = self._read_pinned(real)
+        if raw is None or b'\x00' in raw:
+            return None
+        body = _decode_text_bytes(raw).rstrip('\n')
+        if self.chars + len(body) > _ADOC_MAX_CHARS:
+            return None
+        self.chars += len(body)
+        if self.included is not None:
+            # The kernel path the fence accepted, too: that is the file read.
+            self.included.update(os.path.normcase(p) for p in self.opened)
+        return self.expand(body, real, stack + (real,))
+
+    def _allowed(self, real: str) -> bool:
+        """Whether canonical *real* sits under the root and the scan selected it.
+
+        A dot-named part below the root is refused as well: the walk prunes
+        dot-named directories but still selects a dot-named file such as
+        ``.env``, which an include must not pull into another document. Purely
+        lexical: no name is resolved, so the verdict is about this exact string
+        and nothing a filesystem change can re-point.
+        """
+        try:
+            if os.path.commonpath([self.root, real]) != self.root:
+                return False
+        except ValueError:  # different drives on Windows
+            return False
+        rel = os.path.relpath(real, self.root)
+        if any(part.startswith('.') for part in rel.split(os.sep)):
+            return False
+        return os.path.normcase(real) in self.members
+
+    def _refuse_opened(self, kernel_path: str) -> bool:
+        """Fence for the kernel's own path of an opened include.
+
+        That path is already canonical, so it is judged as given, lexically,
+        rather than resolved again: a second resolution would answer for
+        whatever the name points at by then, not for the descriptor held.
+        """
+        if not self._allowed(kernel_path):
+            return True
+        self.opened.append(kernel_path)
+        return False
+
+    def _read_pinned(self, real: str) -> bytes | None:
+        """Read *real* only if the file actually opened is inside the jail.
+
+        ``open_fenced_for_read`` refuses a link at the final name and a
+        hardlinked or non-regular file, then reads the kernel's own path for
+        the opened descriptor; when that path differs from *real* it goes to
+        ``_refuse_opened``, which judges that exact string. That path names the
+        inode already held, so a parent directory swapped for a symlink at any
+        moment cannot redirect the read.
+        """
+        try:
+            fd = open_fenced_for_read(real, fence=self._refuse_opened)
+        except OSError:
+            return None
+        try:
+            f = os.fdopen(fd, 'rb')
+        except OSError:
+            os.close(fd)
+            return None
+        try:
+            with f:
+                if os.fstat(f.fileno()).st_size > _ADOC_MAX_INCLUDE_BYTES:
+                    return None
+                raw = f.read(_ADOC_MAX_INCLUDE_BYTES + 1)
+        except OSError:
+            return None
+        if len(raw) > _ADOC_MAX_INCLUDE_BYTES:
+            return None
+        return raw
+
+
 def _missing_dep(fmt: str, package: str) -> tuple[str, dict]:
     """The reader result when an optional extraction dependency is absent.
 
@@ -111,9 +268,16 @@ class FileReader:
         '.docx': '_read_docx',
         '.html': '_read_html',
         '.htm': '_read_html',
+        '.adoc': '_read_asciidoc',
+        '.asciidoc': '_read_asciidoc',
     }
 
-    def read(self, path: str) -> tuple[str, dict]:
+    def read(
+        self, path: str, *, include_paths: frozenset[str] | None = None,
+        included: set[str] | None = None,
+    ) -> tuple[str, dict]:
+        """Read *path*. *include_paths* and *included* reach only the AsciiDoc
+        reader and every other reader ignores them; see :meth:`_read_asciidoc`."""
         if is_sensitive_path(path):
             raise PermissionError(f"Refusing to read sensitive path: {path}")
         p = Path(path)
@@ -125,7 +289,9 @@ class FileReader:
             'extension': ext,
         }
         method_name = self._DISPATCH.get(ext)
-        if method_name:
+        if method_name == '_read_asciidoc':
+            text, meta = self._read_asciidoc(path, include_paths, included)
+        elif method_name:
             text, meta = getattr(self, method_name)(path)
         else:
             text, meta = self._read_text(path, ext.lstrip('.'))
@@ -143,6 +309,32 @@ class FileReader:
             return _decode_text_bytes(raw), {'format': fmt}
         except Exception as e:
             return _read_error(e)
+
+    def _read_asciidoc(
+        self, path: str, include_paths: frozenset[str] | None = None,
+        included: set[str] | None = None,
+    ) -> tuple[str, dict]:
+        """Read AsciiDoc as text, with local ``include::`` directives expanded.
+
+        Included content is indexed inside the document that includes it, so a
+        search hit carries its surrounding context. Expansion runs only when
+        *include_paths* is given -- the folder scan's canonical walk set, with
+        every member already normcased -- and only into its members; see
+        :class:`_AdocIncludes`. Every other caller (single-file sources,
+        uploads, artifacts, agent docs, remote syncs) passes ``None`` and the
+        directives stay as text. A document with no ``include::`` at all never
+        touches the set. *included* receives the real path of each target
+        inlined, so the scan can tell when one leaves the walk.
+        """
+        fmt = Path(path).suffix.lower().lstrip('.')
+        text, meta = self._read_text(path, fmt)
+        if (meta.get('format') == 'error' or include_paths is None
+                or 'include::' not in text):
+            return text, meta
+        real = os.path.realpath(path)
+        includes = _AdocIncludes(os.path.dirname(real), include_paths, included)
+        includes.chars = len(text)
+        return includes.expand(text, real, (real,)), meta
 
     def _read_pdf(self, path: str) -> tuple[str, dict]:
         """Extract a PDF through the memory-bounded child (``kiro_crew.pdf_extract``).

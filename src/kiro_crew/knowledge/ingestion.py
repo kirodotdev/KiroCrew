@@ -807,6 +807,8 @@ class IngestionPipeline:
         count_toward_import_budget: bool = True,
         import_budget_token: int | None = None,
         on_committed_in_txn: bool = False,
+        include_paths: frozenset[str] | None = None,
+        included: set[str] | None = None,
     ) -> str | None:
         """Full pipeline. Returns job_id, or None if content hash unchanged.
 
@@ -893,8 +895,8 @@ class IngestionPipeline:
                     path=path, on_progress=on_progress, original_name=original_name,
                     namespace=namespace, source_id=source_id, old_item_ids=old_item_ids,
                     on_committed=on_committed, on_duplicate=on_duplicate,
-                    embed_priority=embed_priority,
-                    on_committed_in_txn=on_committed_in_txn,
+                    embed_priority=embed_priority, on_committed_in_txn=on_committed_in_txn,
+                    include_paths=include_paths, included=included,
                 )
             finally:
                 # Reclaim the reservation on EVERY exit that did not settle it: an
@@ -919,6 +921,8 @@ class IngestionPipeline:
         on_duplicate: Callable[[str], None] | None = None,
         embed_priority: int = PRIORITY_NORMAL,
         on_committed_in_txn: bool = False,
+        include_paths: frozenset[str] | None = None,
+        included: set[str] | None = None,
     ) -> str | None:
         p = Path(path)
         display_name = original_name or p.name
@@ -984,7 +988,8 @@ class IngestionPipeline:
         # python-docx, etc. -- which must not block the event loop on a large file)
         if on_progress:
             on_progress('reading', 0, 1)
-        text, meta = await asyncio.to_thread(self.reader.read, path)
+        text, meta = await asyncio.to_thread(
+            self.reader.read, path, include_paths=include_paths, included=included)
         if meta.get('format') == 'error':
             raise RuntimeError(f"Failed to read {path}: {meta.get('error')}")
 
