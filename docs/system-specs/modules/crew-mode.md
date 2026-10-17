@@ -1846,7 +1846,11 @@ never in the chat. Each pick writes the crew record (`approval_mode`, `model`,
 the open thread follows at once. `approval_mode` is `""` until the user picks one, and while it is `""` the
 thread opens in `trust` (`_seed_member_approval` seeds the slot from `mode or
 "trust"`); picking `Normal` is what opens it without trust, and `trust_reads` /
-`trust` are applied as stored. A stored choice is applied as stored, a grant already on the slot is
+`trust` are applied as stored. `POST /api/agents` takes the same optional
+`approval_mode` (one of `MEMBER_APPROVAL_MODES`, else 400
+`invalid_approval_mode` before any write) and stores it in the create's own
+write, so a caller that must never leave a new crewmate in `trust` pins it there
+instead of in a later PUT. A stored choice is applied as stored, a grant already on the slot is
 kept, and the seed runs once per in-memory slot (`_member_approval_seeded`).
 YOLO is never a crewmate setting: it is process-global.
 The permission PUT is compare-and-set: the profile sends

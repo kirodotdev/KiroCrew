@@ -323,6 +323,21 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             {"error": effort_reason, "code": "invalid_reasoning_effort"}, status=400
         )
     reasoning_effort = _raw_effort.strip()
+    # Absent leaves the mode unset, which a thread opens in
+    # MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE. A caller that must never leave the new
+    # crewmate in that mode, even before a follow-up PUT, pins it in this write.
+    # Local: same reason as crew_update's import of the tuple.
+    from kiro_crew.config.sections import MEMBER_APPROVAL_MODES
+
+    if "approval_mode" in body and body["approval_mode"] not in MEMBER_APPROVAL_MODES:
+        return web.json_response(
+            {
+                "error": "approval_mode must be one of " + ", ".join(MEMBER_APPROVAL_MODES),
+                "code": "invalid_approval_mode",
+            },
+            status=400,
+        )
+    approval_mode = body.get("approval_mode", "")
     # Same placement rule as the other pre-lock validations: refused before any
     # state is touched. Presentation only, but strictly a string — every roster
     # surface renders it verbatim in place of the name.
@@ -441,6 +456,7 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             memory_store=memory_store,
             model=model,
             reasoning_effort=reasoning_effort,
+            approval_mode=approval_mode,
             display_name=display_name,
             description=body.get("description", ""),
             triggers=body.get("triggers", ""),
