@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kiro-byo"
+version = "0.1.0"
+description = "Provider-neutral ACP Harness for KiroCrew"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "Kiro BYO contributors"}]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9,<10",
+    "coverage>=7,<8",
+    "ruff>=0.14,<1",
+    "mypy>=1.14,<2",
+    "build>=1.2,<2",
+]
+code-intel = [
+    "tree-sitter>=0.25.2,<0.27",
+    "tree-sitter-python>=0.25,<0.26",
+    "tree-sitter-javascript>=0.25,<0.26",
+    "tree-sitter-typescript>=0.23.2,<0.24",
+]
+
+[project.scripts]
+kiro-byo = "kiro_byo.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+kiro_byo = ["policy_packs/*.json"]
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["kiro_byo"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 60
+show_missing = true
+skip_covered = true
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+check_untyped_defs = true
+show_error_codes = true
+pretty = true
+ignore_missing_imports = true

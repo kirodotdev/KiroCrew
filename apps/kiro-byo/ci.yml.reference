@@ -1,0 +1,112 @@
+name: Kiro BYO CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install project and test tooling
+        run: python -m pip install -e ".[dev]"
+      - name: Compile Python sources
+        run: python -m compileall -q src backend scripts
+      - name: Test with branch coverage
+        run: |
+          coverage erase
+          coverage run --branch -m pytest -q
+          coverage report --fail-under=60
+      - name: Release metadata consistency
+        run: python scripts/release_check.py --metadata-only
+      - name: Build wheel
+        run: python -m build --wheel
+      - name: Wheel install smoke test
+        run: |
+          python -m venv /tmp/kiro-byo-smoke
+          /tmp/kiro-byo-smoke/bin/python -m pip install dist/*.whl
+          /tmp/kiro-byo-smoke/bin/kiro-byo --version
+
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e ".[dev]"
+      - name: Ruff critical correctness checks
+        run: ruff check src tests scripts backend --select E9,F63,F7,F82
+      - name: Typed core boundary
+        run: >-
+          mypy
+          src/kiro_byo/protocol.py
+          src/kiro_byo/agent_projection.py
+          src/kiro_byo/crew09_patch.py
+          src/kiro_byo/web_tools.py
+          src/kiro_byo/process_manager.py
+          src/kiro_byo/code_intelligence.py
+
+  crew-09-source-contract:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        crew-ref: ["v0.9.0-insider.6", "release/0.9.0"]
+    steps:
+      - name: Check out Kiro BYO
+        uses: actions/checkout@v4
+      - name: Check out public KiroCrew 0.9 source target
+        uses: actions/checkout@v4
+        with:
+          repository: kirodotdev/KiroCrew
+          ref: ${{ matrix.crew-ref }}
+          path: _upstream/kirocrew-09
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify adaptive Crew 0.9 source contract without writing upstream
+        env:
+          PYTHONPATH: src
+        run: >-
+          python scripts/verify_crew09_integration.py
+          --crew-package
+          "$GITHUB_WORKSPACE/_upstream/kirocrew-09/src/kiro_crew"
+
+  process-model-cross-platform:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e ".[dev]"
+      - name: Process ownership / lifecycle tests
+        run: python -m pytest -q tests/test_process_model.py tests/test_process_session_lifecycle.py
+
+  tree-sitter-code-intelligence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install real Tree-sitter adapter and grammars
+        run: python -m pip install -e ".[dev,code-intel]"
+      - name: Verify Tree-sitter path (not fallback)
+        run: python -m pytest -q tests/test_code_intelligence.py tests/test_native_tools.py
+
