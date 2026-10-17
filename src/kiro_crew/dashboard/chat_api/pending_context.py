@@ -201,12 +201,10 @@ def _source_cap_reached(slot: _ChatSlot, source: str) -> bool:
     ``contextSkipped``. The same predicate decides both, so a count and a drain
     cannot disagree about which entries are live.
 
-    Entries HELD for the deferred-note flush count as well. They are not in the
-    queue yet, so a cap that reads the queue alone admits every one of them:
-    ten same-source notes posted during one turn each see a clear cap, and the
-    flush then promotes all ten at once, carrying that source past its
-    per-source ceiling. Counting the held halves here holds the ceiling at
-    admission so the flush never overfills the bucket.
+    Entries HELD for the deferred-note flush and merge-card contexts IN FLIGHT
+    on the running turn count as well. Neither is in the queue, so a cap that
+    reads the queue alone admits replacements before the existing obligations
+    return there. Counting both holds the per-source ceiling at admission.
     """
     if not source:
         return False
@@ -214,7 +212,7 @@ def _source_cap_reached(slot: _ChatSlot, source: str) -> bool:
     held = [n["context"] for n in slot._deferred_notes if n.get("context") is not None]
     pending = sum(
         1
-        for e in (*slot._pending_context, *held)
+        for e in (*slot._pending_context, *held, *slot._inflight_merge_contexts)
         if e.get("source") == source and not context_entry_expired(e, now)
     )
     return pending >= _MAX_CONTEXT_PER_SOURCE

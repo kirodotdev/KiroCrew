@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+from unittest.mock import patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_app_with_agent_routes, _make_state
+
+from kiro_crew.dashboard.slot_buffers import (
+    MAX_FORK_PARENT_KEY_CHARS,
+    MERGED_FROM_MAX_CREATED_AT_CHARS,
+)
+
+_OVER_LONG_FORK_PARENT = "s" * (MAX_FORK_PARENT_KEY_CHARS + 1)
 
 
 class TestForkSlot:
@@ -612,6 +622,209 @@ class TestForkSlot:
         disk_msgs = state.conversation_log.read_messages(hk)
         assert meta.get("forked_from") == "dashboard:src", f"forked_from not persisted; meta={meta}"
         assert len(disk_msgs) == 2, f"forked messages not persisted (got {len(disk_msgs)})"
+
+    @pytest.mark.asyncio
+    async def test_fork_records_the_parent_transcript_it_was_copied_from(self, tmp_path):
+        """The fork keeps the parent transcript's ``created_at``, on disk as well, so a
+        merge back can tell that transcript from a chat later made on the same key."""
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        slot.append("user", "hi", "msg msg-u")
+        slot.append("assistant", "hello", "msg msg-a")
+        slot.drain()
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/src/fork", json={})
+            new_key = (await resp.json())["key"]
+
+        from kiro_crew.dashboard.chat import _history_key_for
+
+        identity = state.conversation_log.get_metadata(_history_key_for("src")).get("created_at")
+        assert identity, "the fork saves its parent first, so the parent has a created_at"
+        assert state._slots[new_key].forked_from_created_at == identity
+        meta = state.conversation_log.get_metadata(_history_key_for(new_key))
+        assert meta.get("forked_from_created_at") == identity
+
+    @pytest.mark.asyncio
+    async def test_fork_discards_an_oversized_parent_transcript_identity(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        slot.append("user", "hi", "msg msg-u")
+        slot.drain()
+        state.flush_slot_now(slot)
+        long_identity = "t" * (MERGED_FROM_MAX_CREATED_AT_CHARS + 1)
+        state.conversation_log.update_metadata("dashboard:src", {"created_at": long_identity})
+        state._slots.pop("src")
+
+        from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
+
+        restored = _rehydrate_slot_from_history(state, "src")
+        assert restored is not None
+        assert restored._disk_meta_created_at == long_identity
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/src/fork", json={})
+            assert resp.status == 200
+            new_key = (await resp.json())["key"]
+
+        assert state._slots[new_key].forked_from_created_at == ""
+
+    @pytest.mark.asyncio
+    async def test_fork_discards_an_oversized_effective_parent_key(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        slot.append("user", "hi", "msg msg-u")
+        slot.drain()
+        state.flush_slot_now(slot)
+        slot.linked_session_key = _OVER_LONG_FORK_PARENT
+
+        with (
+            patch("kiro_crew.dashboard.chat_fork.slot_history_key", return_value="dashboard:src"),
+            patch("kiro_crew.dashboard.chat_fork.session_was_deleted", return_value=False),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/src/fork", json={})
+                assert resp.status == 200
+                data = await resp.json()
+
+        new_slot = state._slots[data["key"]]
+        assert new_slot.forked_from is None
+        assert new_slot.forked_from_created_at == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("restore", ["resume", "recent", "open_slots"])
+    async def test_every_restore_path_brings_back_the_forks_parent_identity(
+        self, tmp_path, monkeypatch, restore
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:leaf", "user", "hello")
+        identity = "2026-10-01T09:00:00+00:00"
+        log.update_metadata(
+            "dashboard:leaf", {"forked_from": "dashboard:src", "forked_from_created_at": identity}
+        )
+
+        if restore == "resume":
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/leaf/resume", json={"key": "dashboard:leaf"}
+                )
+                assert resp.status == 200
+        elif restore == "recent":
+            from kiro_crew.dashboard.chat import restore_recent_sessions
+
+            restore_recent_sessions(state, window_minutes=9999)
+        else:
+            from kiro_crew.dashboard.chat_persistence import restore_open_slots
+
+            (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["leaf"], "ts": 0.0}))
+            assert restore_open_slots(state) == 1
+
+        slot = state._slots["leaf"]
+        assert (slot.forked_from, slot.forked_from_created_at) == ("dashboard:src", identity)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("restore", ["resume", "recent", "open_slots"])
+    @pytest.mark.parametrize(
+        ("forked_from", "logged"),
+        [
+            (7, "7"),
+            ([], "[]"),
+            ({}, "{}"),
+            ("", "''"),
+            (True, "True"),
+            (_OVER_LONG_FORK_PARENT, f"{len(_OVER_LONG_FORK_PARENT)} characters"),
+        ],
+    )
+    async def test_every_restore_path_discards_invalid_fork_lineage(
+        self, tmp_path, monkeypatch, caplog, restore, forked_from, logged
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:leaf", "user", "hello")
+        log.update_metadata(
+            "dashboard:leaf",
+            {
+                "forked_from": forked_from,
+                "forked_from_created_at": "2026-10-01T09:00:00+00:00",
+            },
+        )
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.chat_persistence"):
+            if restore == "resume":
+                async with TestClient(TestServer(_make_app(state))) as client:
+                    resp = await client.post(
+                        "/api/chat/slots/leaf/resume", json={"key": "dashboard:leaf"}
+                    )
+                    assert resp.status == 200
+            elif restore == "recent":
+                from kiro_crew.dashboard.chat import restore_recent_sessions
+
+                restore_recent_sessions(state, window_minutes=9999)
+            else:
+                from kiro_crew.dashboard.chat_persistence import restore_open_slots
+
+                (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["leaf"], "ts": 0.0}))
+                assert restore_open_slots(state) == 1
+
+        slot = state._slots["leaf"]
+        assert slot.forked_from is None
+        assert slot.forked_from_created_at == ""
+        warnings = [
+            record
+            for record in caplog.records
+            if "Discarding invalid persisted forked_from" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert logged in warnings[0].getMessage()
+        assert _OVER_LONG_FORK_PARENT not in warnings[0].getMessage()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("restore", ["resume", "recent", "open_slots"])
+    @pytest.mark.parametrize(
+        "forked_from_created_at",
+        [5, {}, "t" * (MERGED_FROM_MAX_CREATED_AT_CHARS + 1)],
+    )
+    async def test_every_restore_path_discards_invalid_fork_parent_identity(
+        self, tmp_path, monkeypatch, restore, forked_from_created_at
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:leaf", "user", "hello")
+        log.update_metadata(
+            "dashboard:leaf",
+            {
+                "forked_from": "dashboard:src",
+                "forked_from_created_at": forked_from_created_at,
+            },
+        )
+
+        if restore == "resume":
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/leaf/resume", json={"key": "dashboard:leaf"}
+                )
+                assert resp.status == 200
+        elif restore == "recent":
+            from kiro_crew.dashboard.chat import restore_recent_sessions
+
+            restore_recent_sessions(state, window_minutes=9999)
+        else:
+            from kiro_crew.dashboard.chat_persistence import restore_open_slots
+
+            (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["leaf"], "ts": 0.0}))
+            assert restore_open_slots(state) == 1
+
+        slot = state._slots["leaf"]
+        assert slot.forked_from == "dashboard:src"
+        assert slot.forked_from_created_at == ""
 
     @pytest.mark.asyncio
     async def test_fork_rejects_oversized_prompt(self, tmp_path):

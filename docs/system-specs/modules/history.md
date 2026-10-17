@@ -919,7 +919,8 @@ message, OpenAI-compatible turn, script cron result, heartbeat result, loop nudg
 subagent notice delivered into a session, a reply in a Slack or transport thread linked
 to the tab (which resolves the link again after the load), a change card or guide row
 recorded or settled in its conversation (`chat_cards.load_conversation_window`), a
-workflow result, a resume of the live tab,
+workflow result, a resume of the live tab, every parent tab a fork's merge-back
+draft or merge reads (`chat_merge_back._read_inputs`),
 and every consistent-transcript read (`transcript_snapshot.read_consistent_transcript`:
 the slot detail page read, a fork and a peer transfer). A read that reaches a pending
 row on the loop without that still loads it and logs a warning. A load reads the
@@ -1566,7 +1567,8 @@ no longer destroy older turns.
   body) rides onto the user row it becomes and reaches every
   reader unchanged: ingress drops only `RESERVED_ROW_META_KEYS`
   (`chat_handlers.py`: the keys the gateway mints itself -- `decisions_strip`,
-  its receipt carrier, the human-turn marker and the turn-actor stamp), plus
+  its receipt carrier, the human-turn marker, the turn-actor stamp, and the note
+  identity keys `mergedFrom` and `noteId` that make a row a merge card), plus
   `mid` on an app's send to a user session through `permissions.sessionApproval`,
   where the gateway mints the row id (see
   [app-kit-platform](app-kit-platform.md)); `_redact_meta` (`chat_utils_display.py`) redacts credential- and exfiltration-shaped

@@ -55,6 +55,7 @@ _ASYNC_CHECKED_FILES = [
     "dashboard/chat_turn/slash_commands.py",
     "dashboard/chat_turn/tool_approval.py",
     "dashboard/chat_turn/tool_rows.py",
+    "dashboard/chat_turn/turn_context.py",
     "dashboard/chat_turn/turn_marker.py",
     "dashboard/chat_turn/turn_spec_hooks.py",
     "dashboard/handlers/knowledge.py",
