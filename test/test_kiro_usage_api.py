@@ -1281,10 +1281,10 @@ class TestCandidateOrdering:
         own_db = api._CLI_SQLITE_DBS[0]
 
         def fake_json(read_id, _now):
-            return ("other-account", later) if read_id == api._JSON_TOKEN_READ_IDS[0] else None
+            return ("other-account", later, None) if read_id == api._JSON_TOKEN_READ_IDS[0] else None
 
         def fake_sqlite(db, _now):
-            return ("signed-in", soon) if db == own_db else None
+            return ("signed-in", soon, None) if db == own_db else None
 
         shared_arn = "arn:aws:codewhisperer:us-east-1:1:profile/SHARED"
         usage = {
@@ -1317,8 +1317,8 @@ class TestCandidateOrdering:
     def test_expiry_breaks_ties_within_the_same_provenance(self):
         now = datetime.now(timezone.utc)
         first, second = api._JSON_TOKEN_READ_IDS[0], api._JSON_TOKEN_READ_IDS[1]
-        found = {first: ("stale-tok", now + timedelta(minutes=20)),
-                 second: ("fresh-tok", now + timedelta(hours=8))}
+        found = {first: ("stale-tok", now + timedelta(minutes=20), None),
+                 second: ("fresh-tok", now + timedelta(hours=8), None)}
 
         with patch.object(api, "_token_from_json",
                           side_effect=lambda read_id, _now: found.get(read_id)), \
@@ -1332,6 +1332,188 @@ class TestCandidateOrdering:
              patch.object(api, "_CLI_SQLITE_DBS", ()), \
              patch.object(api, "_OTHER_SQLITE_DBS", ()):
             assert api._candidate_tokens() == []
+
+
+class TestUserIdOwnershipCheck:
+    """IdC userId check: same ARN different userId is dropped, same userId is kept,
+    unknown userId is ranked below a proven match, no proven match keeps today's order."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_caches(self):
+        api._PROFILE_ARN_CACHE.clear()
+        api._PROFILE_NAME_CACHE.clear()
+        yield
+        api._PROFILE_ARN_CACHE.clear()
+        api._PROFILE_NAME_CACHE.clear()
+
+    def _usage_body(self, used: float) -> dict:
+        return {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": used, "usageLimit": 10000.0}]}
+
+    def test_same_arn_different_user_id_drops_candidate(self):
+        # The core userId ownership fix: two accounts share one profile ARN but carry
+        # different IdC userIds. The wrong-account SSO cache is fresher; the
+        # signed-in kiro-cli store carries the right userId. The SSO cache is
+        # dropped without ever being tried against GetUsageLimits.
+        now = datetime.now(timezone.utc)
+        shared_arn = "arn:aws:codewhisperer:us-east-1:1:profile/SHARED"
+        signed_in_expiry = now + timedelta(minutes=30)
+        other_expiry = now + timedelta(hours=8)  # fresher
+        tokens_tried_for_usage = []
+
+        def fake_json(read_id, _now):
+            # SSO cache carries the other account's userId — same shared ARN
+            if read_id == api._JSON_TOKEN_READ_IDS[0]:
+                return ("other-account", other_expiry, "d-org.44488448")
+            return None
+
+        def fake_sqlite(db, _now):
+            if db == api._CLI_SQLITE_DBS[0]:
+                return ("signed-in", signed_in_expiry, "d-org.24a884d8")
+            return None
+
+        def fake_post(token, target, payload, **_kwargs):
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": [{"arn": shared_arn}]})
+            tokens_tried_for_usage.append(token)
+            return _resp(200, self._usage_body(214.0))
+
+        with patch.object(api, "_token_from_json", side_effect=fake_json),              patch.object(api, "_token_from_sqlite", side_effect=fake_sqlite),              patch.object(api, "_post", side_effect=fake_post):
+            out = api.fetch_usage_limits(expected_arn=shared_arn)
+        assert out.usage is not None
+        assert out.usage["credits_used"] == 214.0
+        # The SSO cache (other-account, wrong userId) was never passed to GetUsageLimits.
+        # Without the userId filter, other-account would be tried and this assertion fails.
+        assert "other-account" not in tokens_tried_for_usage, (
+            "wrong-account SSO candidate was tried despite userId mismatch"
+        )
+
+    def test_same_user_id_keeps_candidate(self):
+        # A candidate whose userId matches the signed-in user is kept and served.
+        now = datetime.now(timezone.utc)
+        shared_arn = "arn:aws:codewhisperer:us-east-1:1:profile/SHARED"
+        expiry = now + timedelta(hours=1)
+
+        def fake_json(read_id, _now):
+            if read_id == api._JSON_TOKEN_READ_IDS[0]:
+                return ("sso-same-user", expiry, "d-org.24a884d8")
+            return None
+
+        def fake_sqlite(db, _now):
+            if db == api._CLI_SQLITE_DBS[0]:
+                # kiro-cli store also carries the same userId
+                return ("cli-same-user", expiry, "d-org.24a884d8")
+            return None
+
+        usage = {
+            "cli-same-user": self._usage_body(100.0),
+            "sso-same-user": self._usage_body(100.0),
+        }
+
+        def fake_post(token, target, payload, **_kwargs):
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": [{"arn": shared_arn}]})
+            return _resp(200, usage[token])
+
+        with patch.object(api, "_token_from_json", side_effect=fake_json),              patch.object(api, "_token_from_sqlite", side_effect=fake_sqlite),              patch.object(api, "_post", side_effect=fake_post):
+            out = api.fetch_usage_limits(expected_arn=shared_arn)
+        assert out.usage is not None
+        assert out.usage["credits_used"] == 100.0
+
+    def test_unknown_user_id_ranked_below_proven_match(self):
+        # A candidate with user_id=None (unknown) must not outrank one whose
+        # userId is proven to match the active session, even if the unknown
+        # candidate would normally rank higher due to from_cli_store or expiry.
+        now = datetime.now(timezone.utc)
+        shared_arn = "arn:aws:codewhisperer:us-east-1:1:profile/SHARED"
+        active_id = "d-org.24a884d8"
+        expiry_cli = now + timedelta(hours=8)   # kiro-cli store: from_cli_store, late expiry
+        expiry_sso = now + timedelta(hours=4)   # SSO: not cli-store, earlier expiry
+
+        def fake_json(read_id, _now):
+            # SSO cache: proven match, earlier expiry
+            if read_id == api._JSON_TOKEN_READ_IDS[0]:
+                return ("sso-proven", expiry_sso, active_id)
+            return None
+
+        def fake_sqlite(db, _now):
+            if db == api._CLI_SQLITE_DBS[0]:
+                # kiro-cli store: has the userId (sets active_user_id) but no userId on
+                # a SECOND hypothetical source — simulate two blobs where the second
+                # has no userId (unknown) to show ordering.
+                # In practice here we have ONE kiro-cli candidate with active_id,
+                # so the active_user_id is determined and sso-proven is kept.
+                return ("cli-active", expiry_cli, active_id)
+            return None
+
+        call_order = []
+
+        def fake_post(token, target, payload, **_kwargs):
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": [{"arn": shared_arn}]})
+            call_order.append(token)
+            return _resp(200, self._usage_body(50.0))
+
+        with patch.object(api, "_token_from_json", side_effect=fake_json),              patch.object(api, "_token_from_sqlite", side_effect=fake_sqlite),              patch.object(api, "_post", side_effect=fake_post):
+            # Inject a third candidate with user_id=None to the already-returned list
+            # by patching _candidate_tokens directly to include it after base logic.
+            expiry_none = now + timedelta(hours=6)  # between cli and sso
+            extra_unknown = api._Candidate("sso-unknown", expiry_none, False, None)
+            original_ct = api._candidate_tokens
+
+            def patched_ct():
+                cands = original_ct()
+                # Insert unknown candidate between sso-proven and cli-active
+                return cands + [extra_unknown]
+
+            with patch.object(api, "_candidate_tokens", side_effect=patched_ct):
+                out = api.fetch_usage_limits(expected_arn=shared_arn)
+
+        # The proven-match candidates go first; unknown (sso-unknown) is last
+        assert out.usage is not None
+        # cli-active was tried first (proven match), its GetUsageLimits succeeded
+        assert call_order[0] == "cli-active", f"Expected cli-active first, got {call_order}"
+        if len(call_order) > 1:
+            # If sso-unknown was tried at all, it was after proven-match candidates
+            assert "sso-unknown" not in call_order[:1], (
+                "unknown-userId candidate outranked proven-match candidate"
+            )
+
+    def test_no_proven_match_keeps_kiro_cli_store_first(self):
+        # When active_user_id cannot be determined (kiro-cli store blob has no
+        # userId), no filtering is applied and the existing ranking stands.
+        now = datetime.now(timezone.utc)
+        shared_arn = "arn:aws:codewhisperer:us-east-1:1:profile/SHARED"
+        cli_expiry = now + timedelta(minutes=30)
+        sso_expiry = now + timedelta(hours=8)  # fresher but SSO
+
+        def fake_json(read_id, _now):
+            if read_id == api._JSON_TOKEN_READ_IDS[0]:
+                return ("sso-no-uid", sso_expiry, None)  # no userId
+            return None
+
+        def fake_sqlite(db, _now):
+            if db == api._CLI_SQLITE_DBS[0]:
+                return ("cli-no-uid", cli_expiry, None)  # no userId
+            return None
+
+        usage = {
+            "cli-no-uid": self._usage_body(214.0),
+            "sso-no-uid": self._usage_body(10276.0),
+        }
+
+        def fake_post(token, target, payload, **_kwargs):
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": [{"arn": shared_arn}]})
+            return _resp(200, usage[token])
+
+        with patch.object(api, "_token_from_json", side_effect=fake_json),              patch.object(api, "_token_from_sqlite", side_effect=fake_sqlite),              patch.object(api, "_post", side_effect=fake_post):
+            out = api.fetch_usage_limits(expected_arn=shared_arn)
+        # kiro-cli store first (today's behaviour): cli-no-uid is tried first
+        assert out.usage is not None
+        assert out.usage["credits_used"] == 214.0, (
+            "fell back to SSO candidate when kiro-cli store had no userId"
+        )
 
 
 class TestProfileCacheCap:

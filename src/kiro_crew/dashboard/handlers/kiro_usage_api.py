@@ -385,7 +385,7 @@ def _unexpired(exp: object, now: datetime) -> bool:
     return _expiry_if_unexpired(exp, now) is not None
 
 
-def _token_from_json(read_id: str, now: datetime) -> tuple[str, datetime] | None:
+def _token_from_json(read_id: str, now: datetime) -> tuple[str, datetime, str | None] | None:
     """Return ``(accessToken, expiry)`` from a sanctioned JSON SSO cache read.
 
     The bytes are read via ``hooks.safe_read_file_internal`` (not a direct
@@ -407,10 +407,15 @@ def _token_from_json(read_id: str, now: datetime) -> tuple[str, datetime] | None
     if not isinstance(tok, str) or not tok:
         return None
     expiry = _expiry_if_unexpired(exp, now)
-    return (tok, expiry) if expiry is not None else None
+    if expiry is None:
+        return None
+    # IdC userId when the cache file carries it. Bounded; not a secret, not logged.
+    uid_raw = data.get("userId") or data.get("user_id")
+    user_id = uid_raw[:128] if isinstance(uid_raw, str) and uid_raw else None
+    return (tok, expiry, user_id)
 
 
-def _token_from_sqlite(db: Path, now: datetime) -> tuple[str, datetime] | None:
+def _token_from_sqlite(db: Path, now: datetime) -> tuple[str, datetime, str | None] | None:
     """Return ``(access_token, expiry)`` from a kiro-cli/amazon-q SQLite store.
 
     Opened read-only; the token value is never logged. This is the live token
@@ -466,7 +471,10 @@ def _token_from_sqlite(db: Path, now: datetime) -> tuple[str, datetime] | None:
                 # is never returned — the caller degrades to the text scrape.
                 if not hooks.emit_internal_read_audit(_SQLITE_AUDIT_READ_ID, "success"):
                     return None
-                return (tok, expiry)
+                # IdC userId when the blob carries it. Bounded; not a secret.
+                uid_raw = blob.get("userId") or blob.get("user_id")
+                user_id = uid_raw[:128] if isinstance(uid_raw, str) and uid_raw else None
+                return (tok, expiry, user_id)
         # Audit-on-every-outcome: the DB was opened, so record the access even
         # when it yielded no usable token (missing rows / malformed blob / query
         # failure) — otherwise an opened credential store would leave no trail.
@@ -488,11 +496,18 @@ class _Candidate(NamedTuple):
     caches and from other products' stores carry False — they may well be the
     same account, but nothing here proves it, so they are usable only when a
     matching ARN proves it independently.
+
+    ``user_id`` carries the IdC userId read from the token blob when the store
+    includes it (``userId`` / ``user_id`` key). It is an opaque identifier, not
+    a secret: bounded, never logged, used only to compare ownership against the
+    signed-in session's userId. ``None`` means the blob carried no userId — the
+    candidate is kept but ranked below one whose userId is proven to match.
     """
 
     token: str
     expiry: datetime
     from_cli_store: bool
+    user_id: str | None = None
 
 
 def _candidate_tokens() -> list[_Candidate]:
@@ -528,17 +543,20 @@ def _candidate_tokens() -> list[_Candidate]:
     # Deduped by token value, keeping the latest expiry seen for it and ORing the
     # provenance: the same token can appear in more than one store, and if any of
     # them is kiro-cli's own store then it is kiro-cli's credential.
-    freshest: dict[str, tuple[datetime, bool]] = {}
+    freshest: dict[str, tuple[datetime, bool, str | None]] = {}
 
-    def _add(found: tuple[str, datetime] | None, *, from_cli_store: bool) -> None:
+    def _add(found: tuple[str, datetime, str | None] | None, *, from_cli_store: bool) -> None:
         if not found:
             return
-        tok, exp = found
+        tok, exp, uid = found
         current = freshest.get(tok)
         if current is None:
-            freshest[tok] = (exp, from_cli_store)
+            freshest[tok] = (exp, from_cli_store, uid)
         else:
-            freshest[tok] = (max(exp, current[0]), current[1] or from_cli_store)
+            cur_exp, cur_cli, cur_uid = current
+            # OR provenance; prefer first non-None userId (same token = same user).
+            freshest[tok] = (max(exp, cur_exp), cur_cli or from_cli_store,
+                             cur_uid if cur_uid is not None else uid)
 
     for read_id in _JSON_TOKEN_READ_IDS:
         _add(_token_from_json(read_id, now), from_cli_store=False)
@@ -548,7 +566,7 @@ def _candidate_tokens() -> list[_Candidate]:
         _add(_token_from_sqlite(db, now), from_cli_store=False)
     # (from_cli_store, expiry) descending: own-store tokens first, freshest first.
     ranked = sorted(freshest.items(), key=lambda kv: (kv[1][1], kv[1][0]), reverse=True)
-    return [_Candidate(tok, exp, own) for tok, (exp, own) in ranked]
+    return [_Candidate(tok, exp, own, uid) for tok, (exp, own, uid) in ranked]
 
 
 def _load_bearer_token() -> str | None:
@@ -1008,6 +1026,33 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
     # GetUsageLimits hit the same regional host. Unknown/absent region stays
     # on the us-east-1 default (control 1: the URL is still a file literal).
     endpoint = _rts_endpoint(expected_arn)
+    # Apply IdC userId ownership filter when the signed-in user's userId is
+    # available from kiro-cli's own store. This is the third proof of ownership,
+    # beyond ARN-anchored and source-anchored: two accounts on the same IdC org
+    # can share a profile ARN, so the ARN proof cannot tell them apart. Comparing
+    # userId is the discriminating step.
+    #
+    # active_user_id comes from kiro-cli's own store token — it is the signed-in
+    # account's credential by construction, so its userId is the reference. When
+    # the blob carries no userId, active_user_id is None and no filtering is
+    # applied (today's behaviour is preserved rather than failing open).
+    # Anchor userId on the FIRST kiro-cli store candidate — never skip one
+    # whose blob carried no userId. The first from_cli_store token is the
+    # signed-in account's credential by construction (provenance + expiry
+    # ordering in _candidate_tokens). Skipping it to find a later store entry
+    # with a userId would anchor on the wrong identity.
+    active_user_id: str | None = None
+    for _c in candidates:
+        if _c.from_cli_store:
+            active_user_id = _c.user_id  # None means blob had no userId
+            break
+    if active_user_id is not None:
+        # Drop candidates whose userId is known and differs from the signed-in user.
+        candidates = [c for c in candidates
+                      if c.user_id is None or c.user_id == active_user_id]
+        # Stable re-sort: proven-match (userId == active) before unknown (userId is None).
+        # Within each group the existing ordering from _candidate_tokens is kept.
+        candidates.sort(key=lambda c: 0 if c.user_id == active_user_id else 1)
     reason = "unknown"
     # Set when GetUsageLimits itself answers 401 for some candidate. Tracked
     # separately from ``reason`` (which is prose for the log) because it is the
