@@ -287,6 +287,8 @@ A session subscribes with the `resource_subscribe` MCP tool once `mcp_gateway.re
 | `kirocrew consolidate` | List sessions with unconsolidated messages |
 | `kirocrew consolidate SESSION_KEY` | Force consolidate a session (triggers auto-skill extraction) |
 | `kirocrew consolidate --all` | Consolidate all pending sessions |
+| `kirocrew skills list` | List pending skill candidates, read-only (`--live` for live skills, `--all` for both, `--json` for JSON) |
+| `kirocrew skills show <slug>` | Show one pending skill candidate, read-only |
 
 ## Artifacts
 
