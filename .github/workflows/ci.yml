@@ -811,6 +811,7 @@ jobs:
         group: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
       SHARD_COUNT: 8
+      WAIT_RATCHET_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -883,6 +884,27 @@ jobs:
           fi
           echo "reduced=true" >> "$GITHUB_OUTPUT"
           echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
+
+      - name: Fetch PR base commit for wait-discipline ratchet
+        # The depth-1 checkout has WAIT_RATCHET_BASE in the env but has not
+        # fetched that commit object yet.  One cheap git fetch makes it readable
+        # so _pr_mode_base() in test_wait_discipline_ratchet.py can compare
+        # the PR's touched files against their counts at the base.
+        # safe.directory: on CodeBuild the checkout is owned by a different uid
+        # than the step user; git refuses ('dubious ownership') without this
+        # exemption -- the same pattern code-review.yml uses for its SAST step.
+        if: env.WAIT_RATCHET_BASE != ''
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          # Depth-1 clones lack HEAD^1 as a parsed object even though the SHA
+          # is embedded in HEAD's commit.  Deepen by one to get HEAD^1, then
+          # fetch it with depth=1 to guarantee the full commit object is present.
+          # This is identical on Linux and Windows; the earlier Linux failures
+          # were unrelated infra issues (apt, extras.py) before this step ran.
+          git fetch --deepen=1 origin
+          HEAD1=$(git rev-parse HEAD^1 2>/dev/null) || { echo '::error::Cannot resolve HEAD^1 after deepen -- checkout shape unexpected'; exit 1; }
+          git fetch --depth=1 origin "$HEAD1"
 
       - name: Run tests (shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         shell: /usr/local/bin/ci-shell {0}
@@ -1048,6 +1070,7 @@ jobs:
         group: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
       SHARD_COUNT: 8
+      WAIT_RATCHET_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
       # windows-latest subprocess spawn + filesystem latency is slow and
       # highly variable; the md_notebook git-ops default (30s) intermittently
       # times out on plain `git add` here (#1673). Give git invocations a
@@ -1089,6 +1112,27 @@ jobs:
       # file list does not shorten a shard, and the cross-surface files are not
       # the cheap ones. Running everything is both cheaper and strictly more
       # coverage, so there is nothing to select.
+
+      - name: Fetch PR base commit for wait-discipline ratchet
+        # The depth-1 checkout has WAIT_RATCHET_BASE in the env but has not
+        # fetched that commit object yet.  One cheap git fetch makes it readable
+        # so _pr_mode_base() in test_wait_discipline_ratchet.py can compare
+        # the PR's touched files against their counts at the base.
+        # safe.directory: on CodeBuild the checkout is owned by a different uid
+        # than the step user; git refuses ('dubious ownership') without this
+        # exemption -- the same pattern code-review.yml uses for its SAST step.
+        if: env.WAIT_RATCHET_BASE != ''
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          # Depth-1 clones lack HEAD^1 as a parsed object even though the SHA
+          # is embedded in HEAD's commit.  Deepen by one to get HEAD^1, then
+          # fetch it with depth=1 to guarantee the full commit object is present.
+          # This is identical on Linux and Windows; the earlier Linux failures
+          # were unrelated infra issues (apt, extras.py) before this step ran.
+          git fetch --deepen=1 origin
+          HEAD1=$(git rev-parse HEAD^1 2>/dev/null) || { echo '::error::Cannot resolve HEAD^1 after deepen -- checkout shape unexpected'; exit 1; }
+          git fetch --depth=1 origin "$HEAD1"
 
       - name: Run tests (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         # bash (Git Bash on windows-latest), not pwsh: the invocation shares

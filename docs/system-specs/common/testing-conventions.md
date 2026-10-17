@@ -49,8 +49,11 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   executor thread), and a ceiling of 30 s or more only names a hang -- a
   `wait_for(..., timeout=2)`, a `.result(timeout=5)` or a poll of N short sleeps bets
   on the runner's speed, and `test/test_wait_discipline_ratchet.py` holds each test
-  file to the number of those it already has (a renamed file keeps its line under its
-  new path: `python test/test_wait_discipline_ratchet.py --move OLD NEW`).
+  file to the number of those it already has: on a pull request each touched file is
+  compared to its count at the PR's merge-base (so a PR is not blamed for drift in
+  files it did not touch); merge-order drift in touched files is still caught by the
+  committed baseline on main and in the merge queue.  A renamed file
+  keeps its line under its new path: `python test/test_wait_discipline_ratchet.py --move OLD NEW`.
   [Class 2](#2-wall-clock-races).
 - **D2. One clock, injected or frozen at the seam the code reads.** Replace the module's
   own `time` / `datetime` name with a `ManualClock` (`kiro_crew.testing.clock`, or the
