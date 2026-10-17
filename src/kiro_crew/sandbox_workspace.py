@@ -665,7 +665,11 @@ def _directory_ancestor_identities(descriptor: int) -> tuple[tuple[int, int], ..
             current_identity = (current_info.st_dev, current_info.st_ino)
             identities.append(current_identity)
             parent = _open_directory_descriptor("..", dir_fd=current)
-            parent_info = os.fstat(parent)
+            try:
+                parent_info = os.fstat(parent)
+            except OSError:
+                os.close(parent)
+                raise
             parent_identity = (parent_info.st_dev, parent_info.st_ino)
             if parent_identity == current_identity:
                 os.close(parent)
