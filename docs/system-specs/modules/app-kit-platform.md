@@ -836,6 +836,15 @@ complete). The callers act on it as follows:
 | `file_entry_point_refusal` (backend spawn) | `refused by the path screen` | `path resolution failed` |
 | `_declared_agent_names` / `manager._app_agent_names` | no name | no name on this pass; the next pass asks again |
 
+A session a palette command opens for its app's own agent (`app_agent_owner`) runs
+only on a backend whose routing is `Routing.AGENT_SPEC` (KAS and Kiro), the hosts that
+launch the agent from its spec. Any other backend would run the app-authored prompt
+without the app's spec, so `dashboard/chat_runner.py` refuses the turn before the
+claim (the selected backend) and again after it (the claimed provider's
+capabilities), with `apps.manager.app_agent_backend_refusal` as the message and the
+`app_agent_refused` row kind. The bare-name check `app_command_agent_refusal` runs
+only on an allowed backend.
+
 A `contributes.commands[].agent` that no checked agent path declares is an install
 error. When an agent path was unchecked, that miss is reported as unchecked too, so
 builtin discovery keeps the app listed. An app root the screen refuses links no
