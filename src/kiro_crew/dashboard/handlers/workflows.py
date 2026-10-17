@@ -17,6 +17,7 @@ Routes (registered in dashboard/server.py):
   GET  /api/workflows/definitions                   → reusable global definitions
   POST /api/workflows/definitions                   → explicitly save a definition
   GET/PATCH /api/workflows/definitions/{ref}        → view or append a revision
+  DELETE /api/workflows/definitions/{ref}           → remove (tombstone) a saved workflow
   POST /api/workflows/definitions/{ref}/run         → run the exact saved revision
 """
 
@@ -39,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 _OP_DEFINITION_CREATE = "workflow_definition_create"
 _OP_DEFINITION_UPDATE = "workflow_definition_update"
+_OP_DEFINITION_REMOVE = "workflow_definition_remove"
 _OP_DEFINITION_RUN = "workflow_definition_run"
 _OP_DEFINITION_PROMOTE = "workflow_definition_promote"
 
@@ -108,6 +110,7 @@ def _audit_authorization(
     outcome: str,
     *,
     error: str = "",
+    resources: str = "",
 ) -> None:
     """Best-effort audit for a workflow authorization decision."""
     try:
@@ -116,7 +119,7 @@ def _audit_authorization(
             operation=operation,
             outcome=outcome,
             source="browser_api",
-            resources=request.path,
+            resources=resources or request.path,
             error=error,
         )
     except Exception:
@@ -364,6 +367,58 @@ async def api_workflow_definition_update(request: web.Request) -> web.Response:
             "code": "workflow_definition_invalid",
         },
         status=400,
+    )
+
+
+async def api_workflow_definition_remove(request: web.Request) -> web.Response:
+    """DELETE /api/workflows/definitions/{ref} — tombstone a saved workflow.
+
+    Owner-only, like every other library write. No agent tool or CLI reaches
+    this: saved workflows are runnable, so removal stays a dashboard action.
+    The record and its revisions stay on disk so lineage keeps resolving.
+    """
+    denied = _require_dashboard_user(request, _OP_DEFINITION_REMOVE)
+    if denied is not None:
+        return denied
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, _OP_DEFINITION_REMOVE)
+    if owner_denied is not None:
+        return owner_denied
+    svc = _svc(request)
+    if svc is None:
+        return _error("workflows not available", "workflows_unavailable", 503)
+    workflow_ref = request.match_info.get("workflow_ref", "")
+    try:
+        out = await asyncio.to_thread(svc.remove_definition, workflow_ref)
+    except Exception:
+        logger.exception("workflow definition remove failed")
+        _audit_authorization(
+            request, _OP_DEFINITION_REMOVE, "failed", error="workflow definition remove failed"
+        )
+        return _error("could not remove workflow", "workflow_definition_write_failed", 500)
+    if not out.get("ok"):
+        return _error("no such saved workflow", "workflow_definition_not_found", 404)
+    definition = out.get("definition") or {}
+    # One audit row per removal, naming the stable id the tombstone keeps.
+    _audit_authorization(
+        request,
+        _OP_DEFINITION_REMOVE,
+        "completed",
+        resources=f"workflow_definition:{definition.get('id', '')}",
+    )
+    return web.json_response(
+        _redact_obj(
+            {
+                "ok": True,
+                "id": definition.get("id", ""),
+                "removed_at": definition.get("removed_at", ""),
+            }
+        )
     )
 
 

@@ -1252,7 +1252,9 @@ class WorkflowService:
             if errors:
                 return {"ok": False, "error": "; ".join(errors), "errors": errors}
             if derived_from is not None:
-                definitions = self._definition_library.list()
+                # Removed definitions stay valid lineage parents; only this
+                # read sees them.
+                definitions = self._definition_library.lineage_candidates()
                 if not _lineage_exists(derived_from, definitions):
                     error = "workflow lineage does not resolve to a saved revision"
                     return {"ok": False, "error": error, "errors": [error]}
@@ -1388,6 +1390,20 @@ class WorkflowService:
                 "error": "workflow definition has a newer revision",
                 "conflict": True,
             }
+        return {"ok": True, "definition": definition}
+
+    def remove_definition(self, workflow_ref: str) -> dict[str, Any]:
+        """Tombstone a saved workflow: it leaves listing, saved runs and authoring examples.
+
+        Every revision stays on disk and the id keeps resolving as a lineage
+        parent, so saved definitions, drafts and runs adapted from it are
+        unaffected. The slug stays reserved, so a saved ``/workflow <slug>`` never
+        reaches a different workflow.
+        """
+        with self._definition_lock:
+            definition = self._definition_library.remove(workflow_ref)
+        if definition is None:
+            return {"ok": False, "error": "no such saved workflow", "not_found": True}
         return {"ok": True, "definition": definition}
 
     @admission_errors

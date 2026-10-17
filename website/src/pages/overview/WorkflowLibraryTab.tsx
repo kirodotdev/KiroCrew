@@ -8,6 +8,7 @@ import {
   Play,
   Plus,
   Save,
+  Trash2,
   Workflow,
 } from 'lucide-react'
 
@@ -25,8 +26,13 @@ import {
   Input,
   SearchInput,
 } from '../../components/ui'
+import { isNotFoundError } from '../../api/apiError'
+import { useConfirm } from '../../components/ConfirmDialog'
+import ErrorDetails from '../../components/ErrorDetails'
+import ErrorNotice from '../../components/ErrorNotice'
 import { activeLocale, fmtDateTime } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { reportForError } from '../../utils/errorReport'
 import SegmentedControl from '../../components/SegmentedControl'
 import WorkflowSourceCode from '../../apps/workflows/WorkflowSourceCode'
 import WorkflowsRuns from '../../apps/workflows/WorkflowsRuns'
@@ -100,6 +106,7 @@ export default function WorkflowLibraryTab() {
   const [runInput, setRunInput] = useState('')
   const [lastRunId, setLastRunId] = useState('')
   const editorGeneration = useRef(0)
+  const { confirm, confirmDialog } = useConfirm()
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['workflow-definitions'],
@@ -239,12 +246,118 @@ export default function WorkflowLibraryTab() {
     },
   })
 
-  const choose = (definition: WorkflowDefinition) => {
+  const dropDefinition = (definitionId: string) => {
+    const remaining = (
+      queryClient.getQueryData<{ definitions: WorkflowDefinition[] }>([
+        'workflow-definitions',
+      ])?.definitions ?? []
+    ).filter((definition) => definition.id !== definitionId)
+    queryClient.setQueryData<{ definitions: WorkflowDefinition[] }>(
+      ['workflow-definitions'],
+      { definitions: remaining },
+    )
+    if (selectedId !== definitionId) return
+    // Nothing the removed workflow left behind (a revision conflict, a save
+    // or run outcome, its run input) may carry over onto the next one. The
+    // next one is selected here, in the same update, the way the auto-select
+    // effect would pick it: left to that effect, it lands a commit later and
+    // the "removed" note shows over an empty editor in between.
+    resetEditorOutcomes()
+    setRunInput('')
+    const next = remaining[0]
+    setSelectedId(next?.id ?? null)
+    if (!next) return
+    setEditor(editorFromDefinition(next))
+    setEditorRevision(next.revision)
+  }
+
+  const removeDefinition = useMutation({
+    mutationFn: async ({
+      definitionId,
+    }: {
+      definitionId: string
+      name: string
+    }) => {
+      try {
+        await api.removeWorkflowDefinition(definitionId)
+      } catch (error) {
+        // A 404 means another tab already removed it: the outcome the user
+        // asked for, so it settles as a success and shows no error.
+        if (!isNotFoundError(error)) throw error
+      }
+    },
+    // The row leaves only once the server has tombstoned it, so a failed
+    // removal leaves the list exactly as the user saw it.
+    onSuccess: (_result, variables) => dropDefinition(variables.definitionId),
+  })
+
+  // A retry from the failure notice keeps that notice mounted, holding the
+  // failure it answers, until the retry settles. Unmounting it would drop
+  // the focused retry to the page body. Only a settled failure retries, so a
+  // second click while the retry is pending sends nothing.
+  const [retryHeldError, setRetryHeldError] = useState<unknown>(null)
+  const retrying = retryHeldError !== null && removeDefinition.isPending
+  const removingHere = removeDefinition.isPending && !retrying
+  // A successful retry unmounts the notice and the focused retry with it, so
+  // focus moves to the editor's Remove for the workflow now shown, or to the
+  // "removed" line when the library is now empty. It waits a frame for that
+  // editor or line to mount.
+  const removeButtonRef = useRef<HTMLButtonElement>(null)
+  const removedNoteRef = useRef<HTMLParagraphElement>(null)
+  const retryRemove = () => {
+    const variables = removeDefinition.variables
+    if (!removeDefinition.isError || !variables) return
+    setRetryHeldError(removeDefinition.error)
+    removeDefinition.mutate(variables, {
+      onSuccess: () =>
+        requestAnimationFrame(() =>
+          (removeButtonRef.current ?? removedNoteRef.current)?.focus(),
+        ),
+      onSettled: () => setRetryHeldError(null),
+    })
+  }
+
+  const confirmRemove = async (definition: WorkflowDefinition) => {
+    const confirmed = await confirm({
+      title: i18nT('pages.overview.workflowLibrary.remove_confirm_title', {
+        name: definition.name,
+      }),
+      body: (
+        <>
+          <strong className="font-semibold">
+            {i18nT('pages.overview.workflowLibrary.remove_confirm_permanent')}
+          </strong>
+          {/* The dialog renders its body inside a paragraph, so the list is
+              phrasing content: spans with list roles shown as list items. */}
+          <span role="list" className="block mt-2 pl-5 list-disc space-y-1">
+            <span role="listitem" className="list-item">
+              {i18nT('pages.overview.workflowLibrary.remove_confirm_listing')}
+            </span>
+            <span role="listitem" className="list-item">
+              {i18nT('pages.overview.workflowLibrary.remove_confirm_name', {
+                slug: definition.slug,
+              })}
+            </span>
+            <span role="listitem" className="list-item">
+              {i18nT('pages.overview.workflowLibrary.remove_confirm_lineage')}
+            </span>
+          </span>
+        </>
+      ),
+      confirmLabel: i18nT('pages.overview.workflowLibrary.remove'),
+    })
+    if (!confirmed) return
+    removeDefinition.mutate({
+      definitionId: definition.id,
+      name: definition.name,
+    })
+  }
+
+  // Clears what the current editor's own actions produced. Every switch of
+  // the editor to another workflow goes through here, so a late response
+  // for the previous one is dropped by the generation bump.
+  function resetEditorOutcomes() {
     editorGeneration.current += 1
-    setCreating(false)
-    setSelectedId(definition.id)
-    setEditor(editorFromDefinition(definition))
-    setEditorRevision(definition.revision)
     setRevisionConflict(false)
     authorDraft.reset()
     saveDraft.reset()
@@ -253,26 +366,62 @@ export default function WorkflowLibraryTab() {
     setLastRunId('')
   }
 
+  // The "removed" note describes the last removal only until the user acts
+  // on the workflow now shown, so it never reads as being about that one.
+  const clearRemovedNote = () => {
+    if (removeDefinition.isSuccess) removeDefinition.reset()
+  }
+
+  // An in-flight removal is never reset. Resetting detaches its observer, so
+  // its callbacks would keep the selection they closed over (and clear the
+  // editor now shown) and its failure would show nowhere.
+  const resetSettledRemoval = () => {
+    if (!removeDefinition.isPending) removeDefinition.reset()
+  }
+
+  const choose = (definition: WorkflowDefinition) => {
+    resetEditorOutcomes()
+    resetSettledRemoval()
+    setCreating(false)
+    setSelectedId(definition.id)
+    setEditor(editorFromDefinition(definition))
+    setEditorRevision(definition.revision)
+  }
+
   const beginCreate = () => {
-    editorGeneration.current += 1
+    resetEditorOutcomes()
+    resetSettledRemoval()
     setCreating(true)
     setSelectedId(null)
     setIntent('')
     setEditor(EMPTY_EDITOR)
     setEditorRevision(null)
-    setRevisionConflict(false)
-    authorDraft.reset()
-    saveDraft.reset()
-    saveRevision.reset()
-    runDefinition.reset()
-    setLastRunId('')
   }
 
   const write = (
     key: keyof Omit<EditorState, 'derivedFrom' | 'format'>,
     value: string,
-  ) =>
+  ) => {
+    clearRemovedNote()
     setEditor((current) => ({ ...current, [key]: value }))
+  }
+
+  // The notice carries no hand-off (it would leave this page with the editor's
+  // unsaved edits), so the recorded cause sits behind a collapsed Details
+  // disclosure instead: the status, the backend code and the failing path.
+  const shownRemoveError = removeDefinition.isError
+    ? removeDefinition.error
+    : retrying
+      ? retryHeldError
+      : null
+  const removeReport = shownRemoveError
+    ? reportForError(shownRemoveError)
+    : undefined
+  const removeCause = removeReport
+    ? [removeReport.status, removeReport.code, removeReport.endpoint]
+        .filter((part) => part !== undefined && part !== '')
+        .join(' · ')
+    : ''
 
   const mutationError =
     authorDraft.error ||
@@ -363,6 +512,67 @@ export default function WorkflowLibraryTab() {
         </aside>
 
         <section className="min-w-0">
+          {/* A removal's outcome sits outside the create/edit branches, so it
+              shows whichever the user moved to while the request was in
+              flight, and a divider keeps it from reading as the status of the
+              workflow below. No hand-off on the failure: the hand-off leaves
+              this page, and the editor holds unsaved edits. */}
+          {removeDefinition.isSuccess || shownRemoveError ? (
+            <div className="mb-3 pb-3 border-b border-border">
+              {removeDefinition.isSuccess ? (
+                <p
+                  ref={removedNoteRef}
+                  role="status"
+                  tabIndex={-1}
+                  className="text-sm text-ok m-0 focus:outline-none"
+                >
+                  {i18nT('pages.overview.workflowLibrary.removed', {
+                    name: removeDefinition.variables?.name ?? '',
+                  })}
+                </p>
+              ) : null}
+              <ErrorNotice
+                message={
+                  shownRemoveError
+                    ? i18nT('pages.overview.workflowLibrary.remove_failed', {
+                        name: removeDefinition.variables?.name ?? '',
+                      })
+                    : null
+                }
+                report={removeReport}
+                footer={
+                  <>
+                    {/* The retry re-sends the removal the user already
+                        confirmed, from the notice that asks for it, so the
+                        editor and its unsaved edits stay where they are.
+                        While it is in flight it stays focusable
+                        (aria-disabled, not disabled, which would blur it)
+                        and its label is the progress cue. */}
+                    {removeDefinition.variables ? (
+                      <Btn
+                        className={retrying ? 'mt-2 cursor-progress' : 'mt-2'}
+                        onClick={retryRemove}
+                        aria-disabled={retrying || undefined}
+                        aria-busy={retrying || undefined}
+                      >
+                        {retrying ? (
+                          <Loader2
+                            className="lucide-inline animate-spin"
+                            aria-hidden="true"
+                          />
+                        ) : null}
+                        {retrying ? ' ' : null}
+                        {retrying
+                          ? i18nT('pages.overview.workflowLibrary.removing')
+                          : i18nT('pages.overview.workflowLibrary.remove_retry')}
+                      </Btn>
+                    ) : null}
+                    <ErrorDetails details={removeCause} />
+                  </>
+                }
+              />
+            </div>
+          ) : null}
           {creating ? (
             <div className="space-y-3">
               <h4 className="text-sm font-semibold text-text-strong">
@@ -458,7 +668,8 @@ export default function WorkflowLibraryTab() {
               <div className="flex flex-wrap gap-2">
                 <Btn
                   primary
-                  onClick={() =>
+                  onClick={() => {
+                    clearRemovedNote()
                     saveRevision.mutate({
                       definitionId: selected.id,
                       body: {
@@ -471,7 +682,7 @@ export default function WorkflowLibraryTab() {
                       generation: editorGeneration.current,
                       editorSnapshot: editor,
                     })
-                  }
+                  }}
                   disabled={
                     editorRevision === null ||
                     revisionConflict ||
@@ -480,6 +691,35 @@ export default function WorkflowLibraryTab() {
                 >
                   <Save className="lucide-inline" />{' '}
                   {i18nT('pages.overview.workflowLibrary.save_revision')}
+                </Btn>
+                <Btn
+                  ref={removeButtonRef}
+                  danger
+                  // While a removal confirmed here is in flight this button is
+                  // its only progress cue, so it keeps full danger contrast
+                  // instead of the faded disabled look that reads as "nothing
+                  // happened". A retry shows its progress on the notice's
+                  // retry, so this one stays plain, only disabled.
+                  className={
+                    removingHere
+                      ? 'ml-auto disabled:opacity-100 disabled:cursor-progress'
+                      : 'ml-auto'
+                  }
+                  onClick={() => void confirmRemove(selected)}
+                  disabled={removeDefinition.isPending}
+                  aria-busy={removingHere || undefined}
+                >
+                  {removingHere ? (
+                    <Loader2
+                      className="lucide-inline animate-spin"
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <Trash2 className="lucide-inline" aria-hidden="true" />
+                  )}{' '}
+                  {removingHere
+                    ? i18nT('pages.overview.workflowLibrary.removing')
+                    : i18nT('pages.overview.workflowLibrary.remove')}
                 </Btn>
               </div>
               <div className="border-t border-border pt-3">
@@ -500,13 +740,14 @@ export default function WorkflowLibraryTab() {
                   />
                 </label>
                 <Btn
-                  onClick={() =>
+                  onClick={() => {
+                    clearRemovedNote()
                     runDefinition.mutate({
                       slug: selected.slug,
                       input: runInput,
                       generation: editorGeneration.current,
                     })
-                  }
+                  }}
                   disabled={runDefinition.isPending}
                 >
                   <Play className="lucide-inline" />{' '}
@@ -539,6 +780,7 @@ export default function WorkflowLibraryTab() {
           </div>
         </>
       )}
+      {confirmDialog}
     </Card>
   )
 }

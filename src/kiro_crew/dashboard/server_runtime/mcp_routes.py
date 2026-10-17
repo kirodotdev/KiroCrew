@@ -571,6 +571,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     from kiro_crew.dashboard.handlers.workflows import (
         api_workflow_author,
         api_workflow_definition_get,
+        api_workflow_definition_remove,
         api_workflow_definition_run,
         api_workflow_definition_update,
         api_workflow_definitions,
@@ -595,6 +596,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/workflows/definitions/{workflow_ref}", api_workflow_definition_get)
     app.router.add_patch(
         "/api/workflows/definitions/{workflow_ref}", api_workflow_definition_update
+    )
+    app.router.add_delete(
+        "/api/workflows/definitions/{workflow_ref}", api_workflow_definition_remove
     )
     app.router.add_get("/api/workflows/runs", api_workflow_runs)
     app.router.add_get("/api/workflows/runs/{run_id}", api_workflow_run_get)

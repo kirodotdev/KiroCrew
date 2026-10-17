@@ -220,6 +220,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'pages.overview.skillsTab.delete_confirm',
   'pages.overview.skillsTab.dismiss_confirm',
   'pages.overview.steeringTab.delete_confirm',
+  'pages.overview.workflowLibrary.remove_confirm_title', // quoted in all catalogs at introduction (#18998)
   'pages.schedulePage.cronFolders.confirm_delete_folder',
   'pages.schedulePage.delete_named_job', // ASCII quotes → locale pair #5725
   'pages.settings.remoteCrewPanel.confirm_delete_of', // was fully bare #4821
@@ -299,6 +300,11 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
     + 'mints itself (uuid4, never user-supplied text), and it already sits inside '
     + 'parentheses after the words "another install" -- so the risk glyph quotes exist '
     + 'to close, a crafted operand blending into the sentence, cannot arise here (#9554)',
+  'pages.overview.workflowLibrary.remove_confirm_name':
+    'the {{slug}} operand is a slash-command slug the workflow library itself wrote (lowercase '
+    + 'letters, digits and hyphens, no space or quote) and it sits directly after the literal '
+    + '\"/workflow\" command word, so the command shape delimits it and glyph quotes would '
+    + 'double-decorate a command whose own slash is the delimiter a reader checks (#18998)',
   'pages.settings.connectionsPanel.remove_confirm':
     'the {{provider}} operand is a Connections registry display name (GitHub, Asana), '
     + 'a fixed vendor brand never typed by a user, and the kind words "OAuth app" sit '

@@ -1,6 +1,6 @@
 /**
  * The dynamic-workflow engine (/api/workflows): the run list, definition
- * list/save/update/run, authoring from intent, and promoting a run to a
+ * list/save/update/remove/run, authoring from intent, and promoting a run to a
  * definition.
  */
 
@@ -43,7 +43,7 @@ export interface WorkflowDefinitionWrite {
   derived_from?: WorkflowLineage | null
 }
 
-export function createWorkflowsEndpoints({ get, post, patch, j }: ClientTransport) {
+export function createWorkflowsEndpoints({ get, post, patch, del, j }: ClientTransport) {
   const engine = {
     /** Compact list of dynamic-workflow runs, newest first — the AUTHORITY for a
      *  run's status.
@@ -80,6 +80,14 @@ export function createWorkflowsEndpoints({ get, post, patch, j }: ClientTranspor
       workflowRef: string,
       body: Omit<WorkflowDefinitionWrite, 'derived_from'> & { expected_revision: number },
     ) => patch(`/api/workflows/definitions/${encodeURIComponent(workflowRef)}`, body).then(j) as Promise<{ ok: boolean; definition: WorkflowDefinition }>,
+    /** Owner-only. Tombstones the definition: it leaves every list and run
+     *  path, while its id still resolves as the parent of adapted workflows. */
+    removeWorkflowDefinition: (workflowRef: string) =>
+      del(`/api/workflows/definitions/${encodeURIComponent(workflowRef)}`).then(j) as Promise<{
+        ok: boolean
+        id: string
+        removed_at: string
+      }>,
     runWorkflowDefinition: (workflowRef: string, input: string, args: Record<string, unknown> = {}) =>
       post(`/api/workflows/definitions/${encodeURIComponent(workflowRef)}/run`, { input, args }).then(j) as Promise<{ run_id: string; workflow_id: string; revision: number; slug: string }>,
   }

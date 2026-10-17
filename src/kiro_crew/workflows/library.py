@@ -8,9 +8,10 @@ import logging
 import os
 import re
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Iterator, List, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import replace_with_retry
@@ -82,6 +83,11 @@ def _token_matches(query: str, candidate: str) -> bool:
     return query == candidate or query.startswith(candidate) or candidate.startswith(query)
 
 
+def _is_removed(definition: dict[str, Any]) -> bool:
+    """A tombstoned definition: kept on disk for lineage, absent everywhere else."""
+    return bool(definition.get("removed_at"))
+
+
 class WorkflowDefinitionLibrary:
     """JSON-per-definition library in the agent-protected Crew data home."""
 
@@ -103,10 +109,16 @@ class WorkflowDefinitionLibrary:
             safe = f"{safe}-{digest}" if safe else digest
         return self._library_dir / f"{safe}.json"
 
-    def _load_all(self) -> list[dict[str, Any]]:
+    def _load_entries(self) -> list[tuple[Path, dict[str, Any]]]:
+        """Every readable definition paired with the file it was read from.
+
+        A record's file name is not part of its identity: a hand-placed or
+        copied record can sit under any ``*.json`` name, so a write that must
+        land on the record a reader sees uses this path, not ``_path_for``.
+        """
         if not self._library_dir.is_dir():
             return []
-        definitions: list[dict[str, Any]] = []
+        entries: list[tuple[Path, dict[str, Any]]] = []
         for path in self._library_dir.glob("*.json"):
             try:
                 value = json.loads(path.read_text(encoding="utf-8"))
@@ -114,10 +126,36 @@ class WorkflowDefinitionLibrary:
                     # Version 1 predates multi-format definitions and every
                     # record it could contain was validated Python source.
                     value.setdefault("format", SOURCE_FORMAT_PYTHON)
-                    definitions.append(value)
+                    entries.append((path, value))
             except Exception:  # noqa: BLE001 - one corrupt definition must not hide the library
                 logger.debug("workflow library: skip unreadable %s", path, exc_info=True)
-        return definitions
+        return entries
+
+    def _load_all(self) -> list[dict[str, Any]]:
+        return [definition for _, definition in self._load_entries()]
+
+    def _live(self) -> list[dict[str, Any]]:
+        """Definitions a user can list, search or run."""
+        return [item for item in self._load_all() if not _is_removed(item)]
+
+    @contextmanager
+    def _revisions_lock(self) -> Iterator[None]:
+        """Cross-process lock ordering revision updates and removals.
+
+        Each service has its own in-process lock. The definition library is
+        shared by gateway and adapted harness processes, so a read, its check
+        (revision, slug, tombstone) and the replacement must share one
+        cross-process lock, or a removal could land between an update's read
+        and its write and be overwritten by a live record.
+        """
+        platform_compat.make_owner_only_dir(self._library_dir)
+        lock_path = self._library_dir / ".revisions.lock"
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            with platform_compat.file_lock(fd, exclusive=True, wait=True):
+                yield
+        finally:
+            os.close(fd)
 
     def _write(self, definition: dict[str, Any]) -> None:
         sources = [definition.get("source")]
@@ -130,10 +168,21 @@ class WorkflowDefinitionLibrary:
             raise SensitiveWorkflowSourceError(
                 "workflow source contains sensitive data or an exfiltration URL"
             )
+        self._replace(_redact(definition))
+
+    def _replace(self, definition: dict[str, Any], path: Optional[Path] = None) -> None:
+        """Atomically store ``definition`` exactly as given, at ``path`` if named.
+
+        ``_write`` is the gated path for new source. A tombstone calls this
+        directly: it adds only ``removed_at`` to a record already on disk, so
+        re-running today's source gate over revisions saved under older rules
+        would make exactly the stale workflow a user wants gone unremovable.
+        """
         platform_compat.make_owner_only_dir(self._library_dir)
-        path = self._path_for(str(definition["id"]))
+        if path is None:
+            path = self._path_for(str(definition["id"]))
         temp_path = path.with_suffix(".json.tmp")
-        payload = json.dumps(_redact(definition), ensure_ascii=False, indent=2, default=str)
+        payload = json.dumps(definition, ensure_ascii=False, indent=2, default=str)
         try:
             temp_path.write_text(payload, encoding="utf-8")
             platform_compat.restrict_to_owner(temp_path)
@@ -212,25 +261,59 @@ class WorkflowDefinitionLibrary:
         description: Optional[str] = None,
         slug: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
-        """Append a revision, or return ``None`` on missing/stale definitions."""
-        # Each service has its own in-process lock.  The definition library is
-        # shared by gateway and adapted harness processes, so the read, revision
-        # check, and replacement must also share a cross-process lock.
-        platform_compat.make_owner_only_dir(self._library_dir)
-        lock_path = self._library_dir / ".revisions.lock"
-        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            with platform_compat.file_lock(fd, exclusive=True, wait=True):
-                return self._update_unlocked(
-                    workflow_id,
-                    source=source,
-                    expected_revision=expected_revision,
-                    name=name,
-                    description=description,
-                    slug=slug,
-                )
-        finally:
-            os.close(fd)
+        """Append a revision, or return ``None`` on missing/stale/removed definitions."""
+        with self._revisions_lock():
+            return self._update_unlocked(
+                workflow_id,
+                source=source,
+                expected_revision=expected_revision,
+                name=name,
+                description=description,
+                slug=slug,
+            )
+
+    def remove(self, workflow_ref: str) -> Optional[dict[str, Any]]:
+        """Tombstone a definition, or return ``None`` when no live one matches.
+
+        The record and every revision stay on disk with ``removed_at`` set.
+        Who removed it is recorded by the route's SEL audit row, not here.
+        From then on it is absent from ``get``, ``list`` and ``search``, and
+        only ``lineage_candidates`` still returns it, so drafts and runs
+        adapted from it keep saving. Its slug stays reserved, so a
+        ``/workflow <slug>`` saved elsewhere never reaches a different workflow.
+
+        Each tombstone replaces the file its record was read from. When more
+        than one file holds a live copy of the id, every copy is tombstoned,
+        so no copy stays runnable after a removal reports success. A failed
+        write raises, leaving the remaining copies live for a retry.
+
+        A slug ref resolves to the first live record carrying that slug, so
+        two hand-made records with different ids but one slug need one
+        removal each. Until its own removal, the other record stays live and
+        runnable under that slug. The dashboard removes by id.
+        """
+        with self._revisions_lock():
+            live = [
+                (path, definition)
+                for path, definition in self._load_entries()
+                if not _is_removed(definition)
+            ]
+            current = next(
+                (
+                    definition
+                    for _, definition in live
+                    if definition.get("id") == workflow_ref
+                    or definition.get("slug") == workflow_ref
+                ),
+                None,
+            )
+            if current is None:
+                return None
+            removed_at = _now()
+            for path, definition in live:
+                if definition.get("id") == current["id"]:
+                    self._replace({**definition, "removed_at": removed_at}, path)
+            return {**current, "removed_at": removed_at}
 
     def _update_unlocked(
         self,
@@ -274,17 +357,24 @@ class WorkflowDefinitionLibrary:
         return updated
 
     def get(self, workflow_ref: str) -> Optional[dict[str, Any]]:
-        """Resolve a definition by stable id or unique slash-command slug."""
-        for definition in self._load_all():
+        """Resolve a live definition by stable id or unique slash-command slug."""
+        for definition in self._live():
             if definition.get("id") == workflow_ref or definition.get("slug") == workflow_ref:
                 return definition
         return None
 
     def list(self) -> list[dict[str, Any]]:
-        """List definitions with most recently updated first."""
-        return sorted(
-            self._load_all(), key=lambda item: str(item.get("updated_at", "")), reverse=True
-        )
+        """List live definitions with most recently updated first."""
+        return sorted(self._live(), key=lambda item: str(item.get("updated_at", "")), reverse=True)
+
+    def lineage_candidates(self) -> List[dict[str, Any]]:
+        """Every definition a ``derived_from`` reference may name, removed ones included.
+
+        This is the only read that returns tombstoned definitions. Lineage
+        names a parent by id and revision, never by slug, so a removed
+        parent still proves where a draft or run came from.
+        """
+        return self._load_all()
 
     def search(
         self,
@@ -299,7 +389,7 @@ class WorkflowDefinitionLibrary:
             return []
 
         ranked: list[tuple[int, str, dict[str, Any]]] = []
-        for definition in self._load_all():
+        for definition in self._live():
             if source_format and definition.get("format") != source_format:
                 continue
             title_tokens = _tokens(f"{definition.get('slug', '')} {definition.get('name', '')}")
