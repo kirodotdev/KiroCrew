@@ -12,6 +12,7 @@ const PROFILE_STOP_REASON_KEYS: Readonly<Record<string, string>> = {
   manual: 'pages.membersPage.profile_monitor_reason_manual',
   user_stop: 'pages.membersPage.profile_monitor_reason_manual',
   autonudge_stop: 'pages.membersPage.profile_monitor_reason_agent',
+  agent_stop: 'pages.membersPage.profile_monitor_reason_agent',
   cycle_cap: 'pages.membersPage.profile_monitor_reason_cycles',
   runtime_budget: 'pages.membersPage.profile_monitor_reason_runtime',
   agent_turn_budget: 'pages.membersPage.profile_monitor_reason_budget',

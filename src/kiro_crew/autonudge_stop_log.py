@@ -112,7 +112,7 @@ def _stored_reason(row: Mapping[str, Any]) -> tuple[str, str]:
         detail = str(monitor.get("user_stop_reason") or "")
         if reason:
             return reason, detail
-    return str(row.get("stopped_reason") or ""), ""
+    return str(row.get("stopped_reason") or ""), str(row.get("stopped_detail") or "")
 
 
 def stop_records(

@@ -71,6 +71,7 @@ const defaultMsg = () => i18nT('components.autoNudgePopover.default_goal', {
 const PAUSED_STATUS_KEY: Record<string, string> = {
   manual: 'components.autoNudgePopover.paused_manual',
   autonudge_stop: 'components.autoNudgePopover.paused_agent',
+  agent_stop: 'components.autoNudgePopover.paused_agent',
   cycle_cap: 'components.autoNudgePopover.paused_cycle_cap',
   runtime_budget: 'components.autoNudgePopover.paused_runtime_budget',
   approval_stalled: 'components.autoNudgePopover.paused_approval_stalled',

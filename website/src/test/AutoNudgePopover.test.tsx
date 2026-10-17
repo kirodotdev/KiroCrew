@@ -647,6 +647,7 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
   it.each([
     ['manual', 'Paused · you paused it'],
     ['autonudge_stop', 'Paused · the agent stopped it'],
+    ['agent_stop', 'Paused · the agent stopped it'],
     ['cycle_cap', `Paused · cycle limit reached (3 of 3). ${FRESH_BUDGET}`],
     ['runtime_budget', `Paused · time limit reached. ${FRESH_BUDGET}`],
     ['approval_stalled', 'Paused · waiting for your approval'],

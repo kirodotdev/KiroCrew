@@ -489,6 +489,7 @@ async def update(
     fresh_run: bool = False,
     max_runtime_secs: int | None = None,
     stopped_reason: str | None = None,
+    stopped_detail: str | None = None,
     banner: str | None = None,
     judge: dict | None = None,
     watch: str | None = None,
@@ -528,6 +529,7 @@ async def update(
             fresh_run=fresh_run,
             max_runtime_secs=max_runtime_secs,
             stopped_reason=stopped_reason,
+            stopped_detail=stopped_detail,
             banner=banner,
             judge=judge,
             watch=watch,
@@ -565,6 +567,7 @@ async def _update_locked(
     fresh_run: bool = False,
     max_runtime_secs: int | None = None,
     stopped_reason: str | None = None,
+    stopped_detail: str | None = None,
     banner: str | None = None,
     judge: dict | None = None,
     watch: str | None = None,
@@ -586,6 +589,7 @@ async def _update_locked(
             fresh_run=fresh_run,
             max_runtime_secs=max_runtime_secs,
             stopped_reason=stopped_reason,
+            stopped_detail=stopped_detail,
             banner=banner,
             judge=judge,
             watch=watch,
@@ -609,6 +613,7 @@ async def _update_unserialized(
     fresh_run: bool = False,
     max_runtime_secs: int | None = None,
     stopped_reason: str | None = None,
+    stopped_detail: str | None = None,
     banner: str | None = None,
     judge: dict | None = None,
     watch: str | None = None,
@@ -1079,6 +1084,7 @@ async def _update_unserialized(
                 # "manual", which the revive logic never auto-resumes.
                 if loop.active:
                     loop.stopped_reason = ""
+                    loop.stopped_detail = ""
                     # Spent only by an actual REVIVAL, hence ``not
                     # was_active``. A still-active loop also receives
                     # ``active=True`` from an ordinary settings save (the
@@ -1140,6 +1146,7 @@ async def _update_unserialized(
                             restart_runtime_clock(loop)
                 else:
                     loop.stopped_reason = stopped_reason or MANUAL_STOP_REASON
+                    loop.stopped_detail = stopped_detail or ""
         if (
             refused_revival
             and not any(
