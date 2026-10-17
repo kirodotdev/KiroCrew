@@ -18,12 +18,17 @@ import asyncio
 
 import pytest
 
+from kiro_crew.testing.wait import await_until
+from kiro_crew.workflows import WorkflowEvent
 from kiro_crew.workflows.registry import (
     STATUS_CANCELLED,
+    STATUS_FAILED,
     STATUS_FINISHED,
+    STATUS_PAUSED,
     STATUS_RUNNING,
     RunHandle,
     RunRegistry,
+    start_background_run,
 )
 from kiro_crew.workflows.runner import WorkflowRunner
 
@@ -184,6 +189,96 @@ async def test_list_is_compact_no_result_payload() -> None:
     # terminal transition the poll above returned on.
     await asyncio.wait_for(notified.wait(), timeout=3.0)
     assert done_snapshots and done_snapshots[0]["result"] == {"done": True}
+
+
+async def test_list_reports_when_a_run_ended() -> None:
+    """``ended_at`` is the terminal event's ``ts``, so a reader can tell a fresh
+    failure from an old one; a run still going has none."""
+    reg = RunRegistry()
+    runner = WorkflowRunner(agent_fn=_echo, audit=lambda *a, **k: None)
+    rid = await runner.run_background(GOOD, registry=reg, run_id="wf_end1", now=NOW, name="d")
+    snap = await _wait_terminal(reg, rid)
+    terminal = [
+        e for e in reg.status(rid, include_events=True)["events"] if e["type"] == "run_finished"
+    ]
+
+    (row,) = reg.list()
+    assert row["ended_at"] == snap["ended_at"] == terminal[-1]["ts"]
+
+
+async def test_a_run_interrupted_by_restart_ends_at_its_last_event() -> None:
+    stored = RunHandle(
+        run_id="wf_old",
+        name="d",
+        events=[
+            WorkflowEvent("wf_old", 0, "2026-06-01T00:00:00Z", "run_started"),
+            WorkflowEvent("wf_old", 1, "2026-06-01T00:05:00Z", "log"),
+        ],
+    ).to_store_json()
+
+    handle = RunHandle.from_store_json(stored)
+    again = RunHandle.from_store_json(handle.to_store_json())
+
+    assert handle.status == STATUS_FAILED
+    assert handle.snapshot()["ended_at"] == "2026-06-01T00:05:00Z"
+    assert again.snapshot()["ended_at"] == "2026-06-01T00:05:00Z"
+
+
+@pytest.mark.parametrize("status", [STATUS_RUNNING, STATUS_PAUSED])
+async def test_an_active_run_without_a_terminal_event_has_not_ended(status: str) -> None:
+    handle = RunHandle(
+        run_id="wf_live",
+        name="d",
+        status=status,
+        events=[WorkflowEvent("wf_live", 0, NOW, "run_started")],
+    )
+
+    assert handle.snapshot()["ended_at"] is None
+
+
+@pytest.mark.parametrize(
+    "status", [STATUS_RUNNING, STATUS_PAUSED, STATUS_FAILED, STATUS_FINISHED, STATUS_CANCELLED]
+)
+async def test_a_run_without_events_has_no_known_end_time(status: str) -> None:
+    handle = RunHandle(run_id="wf_empty", name="d", status=status)
+
+    assert handle.snapshot()["ended_at"] is None
+    restored = RunHandle.from_store_json(handle.to_store_json())
+    assert restored.snapshot()["ended_at"] is None
+
+
+@pytest.mark.parametrize("event_type", ["run_failed", "run_finished", "run_cancelled"])
+async def test_a_terminal_event_sets_ended_at_over_later_events(event_type: str) -> None:
+    handle = RunHandle(
+        run_id="wf_ended",
+        name="d",
+        status=STATUS_FAILED,
+        events=[
+            WorkflowEvent("wf_ended", 0, "2026-06-01T00:01:00Z", event_type),
+            WorkflowEvent("wf_ended", 1, "2026-06-01T00:02:00Z", "log"),
+        ],
+    )
+
+    assert handle.snapshot()["ended_at"] == "2026-06-01T00:01:00Z"
+
+
+async def test_a_driver_exception_without_terminal_event_ends_at_its_last_event() -> None:
+    reg = RunRegistry()
+
+    async def crash(record):
+        record(WorkflowEvent("wf_crash", 0, NOW, "run_started"))
+        raise RuntimeError("driver failed")
+
+    rid = await start_background_run(reg, crash, run_id="wf_crash", name="d")
+    handle = reg.get(rid)
+    assert handle is not None and handle.task is not None
+    await await_until(handle.task, what="crashing workflow driver")
+
+    (row,) = reg.list()
+    assert row["status"] == STATUS_FAILED
+    assert row["error"] == "RuntimeError('driver failed')"
+    assert row["ended_at"] == NOW
+    assert RunHandle.from_store_json(handle.to_store_json()).snapshot()["ended_at"] == NOW
 
 
 async def test_cancel_unknown_run_is_false() -> None:

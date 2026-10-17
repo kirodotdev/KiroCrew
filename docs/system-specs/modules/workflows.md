@@ -662,6 +662,11 @@ Two distinct serializations:
   the chat that launched the run gets the failure through the normal completion
   notice. The load writes the failed status back, so a later boot never
   notifies the same run again.
+  Snapshot `ended_at` is the terminal event's timestamp; if a nonactive run
+  has none (a restored interruption or driver exception), it uses the last
+  recorded event as the latest known activity. This fallback remains unchanged
+  across restarts. An active (`running`/`paused`) run without a terminal event,
+  or any run without events, reports `None`.
 
 Before each model turn, authoring, pooled workers and named sessions publish the
 ordinary strict transport identity for their acquired key. The run itself owns

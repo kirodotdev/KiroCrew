@@ -179,6 +179,11 @@ does not automatically retry. Native answers steer their own waiting turn when
 either live run state or that slot's reloaded dashboard snapshot is running;
 sibling sessions never determine this decision. Approvals are separate from informational blockers.
 
+Failed workflows count as blocked through 24 hours after `ended_at`. Past that
+window they rest in the command-center model as `failed`, distinct from a
+cancelled run's `stopped`; their error and last log remain attached. Missing or
+invalid end times stay blocked. The workflow history retains the failed outcome.
+
 The automatic card (`SessionStatusFrame`) uses the sandbox-document service with
 an empty sandbox (`TASK_DASHBOARD_SANDBOX`): no scripts, same-origin, forms,
 popups or control bridge. A dedicated document builder (`dashboardDocument.ts`)
