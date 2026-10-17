@@ -32,8 +32,8 @@ through two channels of very different reliability:
 
 1. **A structured channel that already exists.** kiro-cli's edit tools emit a
    `type: "diff"` content block (`{path, oldText, newText}`) on the ACP
-   `tool_call` event. `acp/_dispatch.py` converts it to a unified diff string
-   (`make_unified_diff` in `_dispatch.py`) and attaches it to the tool-call
+   `tool_call` event. `acp/_dispatch_parts/session_update_parser.py` converts it to a unified diff string
+   (`make_unified_diff` in `surfaced_text.py`) and attaches it to the tool-call
    event as `tool_input`. The frontend renders it — but only inside the
    tool-call row's expanded details panel, which is collapsed by default
    (`ToolCallLine.tsx:174`), and turns with more than two working steps fold
@@ -189,7 +189,7 @@ exact-string pin.
 ## 4. What does NOT change
 
 - `make_unified_diff` and the ACP diff-content-block parsing (the
-  `type == "diff"` content-block checks in `_dispatch.py`, including
+  `type == "diff"` content-block checks in `acp/_dispatch_parts/session_update_parser.py`, including
   `_build_tool_call_event`) — already correct.
 - The `/api/file-diff` Activity Files tab — an independent channel, untouched.
 - `DiffBlock`, `diffUtils`, `useBlockAssembler` — the model can still emit

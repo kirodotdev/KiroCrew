@@ -183,6 +183,8 @@ _SCANNED_PACKAGES = {
     "src/kiro_crew/slack/gateway_runtime": 5,
     # The owners composed into the dashboard chat runner, dashboard/chat_runner.py.
     "src/kiro_crew/dashboard/chat_turn": 7,
+    # The owners of the ACP dispatch facade, acp/_dispatch.py.
+    "src/kiro_crew/acp/_dispatch_parts": 5,
 }
 
 # Every module the issue names, then every module of the packages scanned whole,

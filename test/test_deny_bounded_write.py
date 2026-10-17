@@ -1617,7 +1617,14 @@ class TestEveryBackendIdLogSiteIsSanitized:
             "answer for permission request id=%s could not be written in ",
             "failed to answer unroutable permission request id=%s",
         ],
-        "src/kiro_crew/acp/_dispatch.py": [
+        "src/kiro_crew/acp/_dispatch.py": [],
+        "src/kiro_crew/acp/_dispatch_parts/tool_call_identity.py": [],
+        "src/kiro_crew/acp/_dispatch_parts/surfaced_text.py": [],
+        "src/kiro_crew/acp/_dispatch_parts/tool_call_provenance.py": [],
+        "src/kiro_crew/acp/_dispatch_parts/adapter_signals.py": [],
+        "src/kiro_crew/acp/_dispatch_parts/tool_result_events.py": [],
+        "src/kiro_crew/acp/_dispatch_parts/session_update_parser.py": [],
+        "src/kiro_crew/acp/_dispatch_parts/permission_requests.py": [
             "(req=%s tool_call_id=%s)",
         ],
     }

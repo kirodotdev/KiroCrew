@@ -2,7 +2,7 @@
 
 Three landed fixes are pinned here:
 
-1. **ACP identity plumbing** (``acp/types.py`` + ``acp/_dispatch.py``): an
+1. **ACP identity plumbing** (``acp/types.py`` + ``acp/_dispatch_parts/tool_call_identity.py``): an
    ``AcpEvent`` now carries the NON-model-authored tool identity from
    ``_meta.kiro`` — ``tool_name`` (``_kiro_tool_name``) and ``mcp_server_name``
    (``_kiro_mcp_server_name``). A non-empty ``mcp_server_name`` is the trusted

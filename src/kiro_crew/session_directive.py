@@ -97,14 +97,14 @@ _SENTINEL = "[[KIROCREW_SESSION_DIRECTIVE]]"
 SENTINEL = _SENTINEL
 
 # The ACP tool-result parser truncates each output part at 4000 chars
-# (``acp/_dispatch.py`` ``str(text)[:4000]``). The marker is the TAIL of the
+# (``acp/_dispatch_parts/tool_result_events.py`` ``str(text)[:4000]``). The marker is the TAIL of the
 # result, so an oversized payload loses the marker entirely — the effect would be
 # silently dropped after the model was told the request was made. Encode refuses
 # above this bound instead, leaving headroom under the transport cap.
 MAX_DIRECTIVE_CHARS = 3800
 
 # The ACP layer truncates a joined tool result to this many characters before the
-# consumer sees it (``acp/_dispatch.py``, which imports this constant so the two
+# consumer sees it (``acp/_dispatch_parts/tool_result_events.py``, which imports this constant so the two
 # cannot drift). It lives HERE because both markers are tail-anchored and so must
 # survive it: :data:`MAX_DIRECTIVE_CHARS` is deliberately far below it, and
 # :func:`tag_refusal` bounds its text against it. An unbounded refusal is

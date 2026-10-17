@@ -2078,7 +2078,7 @@ absence of a kind (indistinguishable from an honest omission). They must agree.
 
 Three findings shaped this, and all are worth keeping in view:
 
-1. `tool_name` is the display title, and `select_tool_title` (`acp/_dispatch.py`)
+1. `tool_name` is the display title, and `select_tool_title` (`acp/_dispatch_parts/surfaced_text.py`)
    prefers the LLM-authored `description`, so it is **agent-controlled** — as
    `ToolCall.title`'s own documentation states. The computer-use branch originally sat
    *above* any kind test, so once the operator enabled computer use, a mutating call

@@ -188,7 +188,7 @@ call, goose writes `_meta.goose.toolCall`, codex-acp marks MCP calls with
 built-ins, but Crew reads that key only on a Side Chat session the harness itself
 launched read-only (`claude-code-provider.md`, "A Side Chat session"); it is not a row
 of `_MCP_IDENTITY_META_CHANNELS`, so a heartbeat event on claude-agent-acp carries no
-trusted identity. opencode sends `kind="other"` and no identity (`acp/_dispatch.py`,
+trusted identity. opencode sends `kind="other"` and no identity (`acp/_dispatch_parts/tool_call_identity.py`,
 `classify_tool_call`). On those two, every heartbeat tool call is denied and audited
 `reason=no_trusted_identity`, with one gateway warning per denied call naming the
 backend condition, and the heartbeat cycle runs as a text-only poller. The signal is

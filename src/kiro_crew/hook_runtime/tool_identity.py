@@ -90,7 +90,7 @@ class ToolCall:
 
     #: The display title / pill label. For shell tools it may be an LLM-authored
     #: ``description`` rather than the literal command (``select_tool_title`` in
-    #: ``acp/_dispatch.py`` prefers ``description`` over ``command``), so it is
+    #: ``acp/_dispatch_parts/surfaced_text.py`` prefers ``description`` over ``command``), so it is
     #: UNTRUSTED for security decisions: every deny tier also runs against
     #: ``command`` when one is present, and a match on EITHER denies. Auto-approve
     #: stays keyed on the title only -- failing to auto-approve merely falls
