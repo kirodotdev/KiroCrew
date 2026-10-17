@@ -586,9 +586,9 @@ What Crew injects is a bounded directory of the mapped set, plus the full body o
 every `always: true` skill inside it — a required instruction is never reduced to a
 directory entry. The rest load on demand through `skill_search`. It is the same
 injection on every backend: on kiro-cli the native launch view carries no
-`skill://` resources at all (`acp/skill_projection.py`), so nothing duplicates it
-there, and on KAS the wire projection forwards the array while Crew's own directory
-stays the bounded one.
+`skill://` resources at all (`acp/skill_projection_parts/preparation.py`), so
+nothing duplicates it there, and on KAS the wire projection forwards the array
+while Crew's own directory stays the bounded one.
 
 The `file://` steering block does NOT follow that shape. It is still gated on the
 backend: injected only on the Claude Code backend, and only for the default agent,
