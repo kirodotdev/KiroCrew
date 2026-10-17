@@ -5159,6 +5159,7 @@
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "डायनामिक वर्कफ़्लो लिखें, चलाएँ और देखें",
         "budget": "बजट",
+        "couldn_t_load_the_example_workflows": "उदाहरण वर्कफ़्लो लोड नहीं हो सके",
         "couldn_t_start_the_run": "रन शुरू नहीं हो सका",
         "couldn_t_validate_the_script": "स्क्रिप्ट मान्य नहीं हो सकी",
         "invalid_fix_before_running": "अमान्य — चलाने से पहले ठीक करें:",

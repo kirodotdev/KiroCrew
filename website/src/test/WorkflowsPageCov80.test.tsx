@@ -70,6 +70,7 @@ beforeEach(() => {
       ok: r.ok ?? true,
       status: r.status ?? 200,
       json: () => Promise.resolve(r.body ?? {}),
+      text: () => Promise.resolve(JSON.stringify(r.body ?? {})),
     })
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -127,11 +128,11 @@ describe('WorkflowsPage', () => {
   })
 
   it('surfaces a transport failure as the could-not-start-the-run banner', async () => {
-    routes['/run'] = { ok: false, status: 500, body: {} }
+    routes['/run'] = { ok: false, status: 500, body: { error: 'zzq run exploded' } }
     wrap(<WorkflowsPage />)
     fireEvent.click(runBtn())
 
-    await screen.findByText(new RegExp(`POST /run`))
+    await screen.findByText('zzq run exploded')
     expect(screen.getByText(i18nT('apps.workflows.workflowsPage.couldn_t_start_the_run'))).toBeInTheDocument()
     expect(screen.queryByText(i18nT('apps.workflows.workflowsPage.couldn_t_validate_the_script'))).not.toBeInTheDocument()
     expect(screen.queryByTestId('zzq-tree-stub')).not.toBeInTheDocument()

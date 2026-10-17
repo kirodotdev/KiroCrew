@@ -5159,6 +5159,7 @@
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "ডায়নামিক ওয়ার্কফ্লো লিখুন, চালান ও পর্যবেক্ষণ করুন",
         "budget": "বাজেট",
+        "couldn_t_load_the_example_workflows": "উদাহরণ ওয়ার্কফ্লো লোড করা যায়নি",
         "couldn_t_start_the_run": "রান শুরু করা যায়নি",
         "couldn_t_validate_the_script": "স্ক্রিপ্ট যাচাই করা যায়নি",
         "invalid_fix_before_running": "অবৈধ — চালানোর আগে ঠিক করুন:",

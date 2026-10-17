@@ -5248,6 +5248,7 @@
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "Crea, ejecuta y observa flujos de trabajo dinámicos",
         "budget": "presupuesto",
+        "couldn_t_load_the_example_workflows": "No se pudieron cargar los flujos de trabajo de ejemplo",
         "couldn_t_start_the_run": "No se pudo iniciar la ejecución",
         "couldn_t_validate_the_script": "No se pudo validar el script",
         "invalid_fix_before_running": "No válido — corrígelo antes de ejecutar:",

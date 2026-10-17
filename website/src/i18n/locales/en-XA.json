@@ -4930,6 +4930,7 @@
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "[Àùţĥøŕ, ŕùñ, àñð ẁàţçĥ ðýñàɱìç ẁøŕķƒĺøẁş ····················]",
         "budget": "[ƀùðğèţ ·········]",
+        "couldn_t_load_the_example_workflows": "[Çøùĺðñ'ţ ĺøàð ţĥè èẋàɱþĺè ẁøŕķƒĺøẁş ··················]",
         "couldn_t_start_the_run": "[Çøùĺðñ'ţ şţàŕţ ţĥè ŕùñ ···············]",
         "couldn_t_validate_the_script": "[Çøùĺðñ'ţ ṽàĺìðàţè ţĥè şçŕìþţ ····················]",
         "invalid_fix_before_running": "[Ìñṽàĺìð — ƒìẋ ƀèƒøŕè ŕùññìñğ: ····················]",

@@ -5337,6 +5337,7 @@
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "Создавайте, запускайте и отслеживайте динамические рабочие процессы",
         "budget": "бюджет",
+        "couldn_t_load_the_example_workflows": "Не удалось загрузить примеры рабочих процессов",
         "couldn_t_start_the_run": "Не удалось начать запуск",
         "couldn_t_validate_the_script": "Не удалось проверить скрипт",
         "invalid_fix_before_running": "Некорректно — исправьте перед запуском:",

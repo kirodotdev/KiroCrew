@@ -13,9 +13,10 @@
 import { Suspense, lazy, useMemo, useState, useCallback, useEffect } from 'react'
 import React from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, RefreshCw, PowerOff, AlertTriangle, Package, Bot } from 'lucide-react'
+import { ArrowLeft, RefreshCw, AlertTriangle, Package, Bot } from 'lucide-react'
 import { AppApiProvider } from '../app-sdk'
 import { ContentSkeleton, Btn, PageHeader } from './ui'
+import AppDisabledPage from './AppDisabledPage'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 
@@ -176,25 +177,6 @@ function AppNotFound({ name }: { name: string }) {
   )
 }
 
-function AppDisabled({ app }: { app: AppHostProps['app'] }) {
-  const navigate = useNavigate()
-  return (
-    <>
-      <PageHeader
-        title={appDisplayName(app)}
-        subtitle={i18nT('components.appHost.this_app_is_disabled')}
-      />
-      <div className="flex-1 flex items-center justify-center p-8">
-        <div className="text-center max-w-md">
-          <PowerOff size={48} className="text-muted mx-auto mb-4 opacity-30" />
-          <p className="text-sm text-muted mb-4">{i18nT('components.appHost.enable_this_app_from_apps_to_use_it')}</p>
-          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('components.appHost.apps')}</Btn>
-        </div>
-      </div>
-    </>
-  )
-}
-
 function AppNoUI({ app }: { app: AppHostProps['app'] }) {
   const navigate = useNavigate()
   return (
@@ -330,7 +312,7 @@ export default function AppHost({ app, entry, active, sessionKey }: AppHostProps
   // Guard: not installed
   if (!app) return <AppNotFound name="unknown" />
   // Guard: disabled
-  if (app.enabled === false) return <AppDisabled app={app} />
+  if (app.enabled === false) return <AppDisabledPage title={appDisplayName(app)} />
   // Guard: no UI bundle. An explicit `entry` (a panel-tab body) is its own
   // bundle, so it does not require the app to also declare a routed `ui.entry`.
   if (!entry && !app.manifest?.ui?.entry) return <AppNoUI app={app} />
