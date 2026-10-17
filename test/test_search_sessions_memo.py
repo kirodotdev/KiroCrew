@@ -128,9 +128,9 @@ def test_chunked_text_round_trips(tmp_path):
     index.close()
 
 
-def test_count_memo_stays_within_budget_and_keeps_early_hits(tmp_path, monkeypatch):
-    """A full memo refuses new entries instead of evicting, so a cyclic walk
-    larger than the budget keeps hitting on what it already holds."""
+def test_count_memo_stays_within_budget_and_admits_later_queries(tmp_path, monkeypatch):
+    """A full memo evicts older queries' terms, so a query first seen after the
+    budget filled is still memoized, and the budget is never exceeded."""
     monkeypatch.setattr(history_search, "_SEARCH_COUNT_MEMO_BYTES", 8192)
     log = _indexed_log(tmp_path, _corpus())
     memo = log._catalog_projection._count_memo
@@ -138,12 +138,11 @@ def test_count_memo_stays_within_budget_and_keeps_early_hits(tmp_path, monkeypat
     queries = [f"{a} {b}" for a, b in zip(words, words[3:] + words[:3])]
     for q in queries:
         log.search_sessions(q, 50)
-    stats = memo.stats()
-    assert stats["bytes"] <= 8192
-    assert stats["refused"] > 0, "the walk is larger than the budget"
+        assert memo.stats()["bytes"] <= 8192
+    assert memo.stats()["evicted"] > 0, "the walk is larger than the budget"
     reads = _count_calls(monkeypatch, SessionSearchIndex, "document")
-    log.search_sessions(queries[0], 50)
-    assert reads == [], "the first query's counts were admitted and kept"
+    log.search_sessions(queries[-1], 50)
+    assert reads == [], "the newest query's counts were admitted and kept"
 
 
 def test_full_memo_drops_entries_for_changed_text(tmp_path, monkeypatch):
@@ -159,7 +158,8 @@ def test_full_memo_drops_entries_for_changed_text(tmp_path, monkeypatch):
         assert projection.index_session(f"s{n}")
     for q in ("session message", "about pipelines", "deployment about", "pipelines session"):
         log.search_sessions(q, 50)
-    assert memo.stats()["refused"] > 0
+    stats = memo.stats()
+    assert stats["refused"] + stats["evicted"] > 0
     log.search_sessions("message about", 50)
     held = {key[:32] for key in memo._data}
     assert held, "entries for the current text are kept"
