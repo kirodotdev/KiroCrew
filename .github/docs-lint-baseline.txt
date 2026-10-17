@@ -238,9 +238,6 @@ line-ref	docs/request-for-change/rfc-everything-is-an-app.md	manifest.py:664
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	manifest.py:712
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	manifest.py:718-763
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	manifest.py:976
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	platform/governance.py:1803-1807
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	platform/governance.py:599
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	platform/governance.py:955-963
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	slack/gateway.py:653
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	src/kiro_crew/apps/manifest.py:1010
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	src/kiro_crew/apps/module_loader.py:34-39

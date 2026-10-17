@@ -2842,8 +2842,8 @@ def _policy(args: argparse.Namespace) -> None:
             print(f"Policy: v{ceiling.version} OK ({len(ceiling.controls)} governed scopes).")
             # A capability the policy does not name is UNGOVERNED, and an
             # ungoverned control is permitted — omission never denies (see the
-            # CAPABILITY-DEFAULT CONTRACT in platform/governance.py). That is the
-            # same rule every other archetype follows, but it is the one authors
+            # CAPABILITY-DEFAULT CONTRACT in platform/governance_parts/catalog.py). That is
+            # the same rule every other archetype follows, but it is the one authors
             # most often get wrong, because a partial `capabilities` block LOOKS
             # like a complete statement. Report the gap so an unpinned row reads
             # as a choice instead of an oversight.

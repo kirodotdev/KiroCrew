@@ -124,8 +124,8 @@ The whole of `src/kiro_crew/apps/permissions.py` is dead in production:
 `validate_permissions` (`:34`), `check_tool_permission` (`:71`) and
 `format_permissions_summary` (`:82`) have zero non-test callers, so the
 install-time permission warnings and the permission summary are never shown.
-`governance.register_matcher` (`platform/governance.py:599`) and
-`register_scope` (`:1119`) likewise have zero call sites repository-wide.
+`governance.register_matcher` (in `platform/governance_parts/matching.py`) and
+`register_scope` (in `platform/governance_parts/catalog.py`) likewise have zero call sites repository-wide.
 Separately, `lifecycle`, `resources`, `openCommand` and `heroImage*` are
 documented as first-class in
 [`../app-kit/manifest-reference.md`](../app-kit/manifest-reference.md) but are not
@@ -439,8 +439,9 @@ blocked phase.
   supply-chain question first and a UI question second.
 - Two pre-existing weaknesses are relevant enough to name: a governance policy
   cannot deny by omission, since an absent scope key permits
-  (`platform/governance.py:955-963`), and policy signature verification is off
-  when the trust root is absent or unreadable (`platform/governance.py:1803-1807`).
+  (`resolve` in `platform/governance_parts/evaluator.py`), and policy signature verification is off
+  when the trust root is absent or unreadable (`_policy_signature_required` in
+  `platform/governance_parts/signature.py`).
   Neither is created by this RFC; both bound what Phase 3 can promise.
 
 ## 10. Alternatives considered

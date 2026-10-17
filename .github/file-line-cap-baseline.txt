@@ -101,7 +101,6 @@
 2703 src/kiro_crew/messaging/dispatch.py
 2440 src/kiro_crew/name_grant.py
 2646 src/kiro_crew/pinned_fs.py
-5279 src/kiro_crew/platform/governance.py
 2030 src/kiro_crew/platform/interfaces.py
 2998 src/kiro_crew/platform/policy_distribution.py
 2275 src/kiro_crew/platform/wheel_engine.py

@@ -495,8 +495,8 @@ defines extension-point Protocols (`interfaces.py`) and ships a `Default*`
 adapter for each; `PlatformContext` (`context.py`) is the frozen bundle read via
 `current_context()`. The core never imports a companion edition and never
 branches on which edition is running. Same package, same boot:
-`security_authority.py` holds the ADD-only deny floor and `governance.py` holds
-the ceiling evaluator, which dispatches by control archetype and is
+`security_authority.py` holds the ADD-only deny floor and `governance.py` (with its
+`governance_parts/` owners) holds the ceiling evaluator, which dispatches by control archetype and is
 scope-name-agnostic (adding a scope is a `SCOPE_CATALOG` data change).
 
 Spec: [`../system-specs/modules/platform-context.md`](../system-specs/modules/platform-context.md).
@@ -712,7 +712,7 @@ detail; this table is only an index.
 | Computer use (desktop GUI automation) | `src/kiro_crew/computer_use/` | [computer-use.md](../system-specs/modules/computer-use.md) |
 | Configuration (dataclasses, loader, schema) | `src/kiro_crew/config/` | [config.md](../system-specs/modules/config.md) |
 | Dev Fleet app | `src/kiro_crew/apps/builtins/dev_fleet/` | [dev-fleet.md](../system-specs/modules/dev-fleet.md) |
-| Governance model (POLICY ∩ PROFILE) | `src/kiro_crew/platform/governance.py` | [governance.md](../system-specs/modules/governance.md) |
+| Governance model (POLICY ∩ PROFILE) | `src/kiro_crew/platform/governance.py` + `governance_parts/` | [governance.md](../system-specs/modules/governance.md) |
 | Heartbeat (periodic background tasks) | `src/kiro_crew/heartbeat.py` | [heartbeat.md](../system-specs/modules/heartbeat.md) |
 | Conversation history (JSONL + consolidation) | `src/kiro_crew/history.py` | [history.md](../system-specs/modules/history.md) |
 | Instances (multi-instance over SSH) | `src/kiro_crew/instances/` | [instances.md](../system-specs/modules/instances.md) |
