@@ -119,7 +119,7 @@ const INITIAL_STATE = {
   focusToolCallId: null, mcpApps: {}, slotActivity: {}, slotMessages: {}, slotPaneHasMore: {},
   slotPaneBounded: {}, slotServerTotal: {}, slotServerTotalSeq: {}, thinkingOrphans: {},
   slotRun: {}, slotHydrated: {}, slotLoading: false, slotSide: {}, slotSideClosed: {},
-  slotHistory: [], slotsSnapshotSeen: false, pendingQuestions: {}, questionRequestsInFlight: {}, questionsSettled: {}, restoredQuestionNotices: {}, followups: {},
+  slotHistory: [], slotsSnapshotSeen: false, slotListPartial: false, slotListHeldKeys: [], slotListHoldChannels: false, pendingQuestions: {}, questionRequestsInFlight: {}, questionsSettled: {}, restoredQuestionNotices: {}, followups: {},
   folderSuggestions: {}, stopPressedAt: {}, runEpoch: {}, activeRunEpochAtEntry: 0,
   endedTurn: {}, pendingTurnSlot: null,
   closeRefused: null,

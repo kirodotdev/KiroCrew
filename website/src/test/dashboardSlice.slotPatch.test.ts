@@ -7,6 +7,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import reducer, {
   sseSlots,
+  sseSlotsPartial,
   sseSlotPatch,
   markSlotUnread,
   sseSubagentStatus,
@@ -26,7 +27,10 @@ const row = (key: string, extra: Partial<ChatSlot> = {}): ChatSlot => ({
   key, title: key, messages: 1, running: false, folder_id: '', pinned: false, ...extra,
 })
 
-const loaded = () => reducer(undefined, sseSlots([row('a'), row('b'), row('c')]))
+// A complete list, the way the hook delivers one: the frame's `slotsPartial`
+// label lands before its rows, and a frame without the label releases the
+// boot-time unread hold so a removal drains the key's badge.
+const loaded = () => reducer(reducer(undefined, sseSlotsPartial(false)), sseSlots([row('a'), row('b'), row('c')]))
 
 describe('sseSlotPatch', () => {
   it('merges only the named fields into the named row', () => {
@@ -155,6 +159,23 @@ describe('sseSlotPatch', () => {
     expect(state.unreadSince?.a).toBe('2026-01-01T00:00:00Z')
   })
 
+  it('drains an explicitly removed unread key while the partial-list hold is active', () => {
+    localStorage.clear()
+    let state = loaded()
+    state = reducer(state, markSlotUnread({ slot: 'a', ts: '2026-01-01T00:00:00Z' }))
+    state = reducer(state, markSlotUnread({ slot: 'b', ts: '2026-01-02T00:00:00Z' }))
+    state = reducer(state, sseSlotsPartial(true))
+
+    state = reducer(state, sseSlotPatch({ slots: [], removed: ['b'] }))
+
+    expect(state.unreadSlots).toEqual(['a'])
+    expect(state.unreadSince.b).toBeUndefined()
+    expect(state.unreadSince.a).toBe('2026-01-01T00:00:00Z')
+    expect(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}')).toEqual({
+      a: '2026-01-01T00:00:00Z',
+    })
+  })
+
   it('records a durable removal before the first snapshot without changing slot visibility', () => {
     const initial = reducer(undefined, { type: '@@INIT' })
     const after = reducer(initial, sseSlotPatch({ slots: [], removed: ['a'] }))
@@ -196,7 +217,8 @@ describe('chatSlice on sseSlotPatch', () => {
       activeSlot: 'keep',
       slotMessages: { gone: [], keep: [] },
     } as unknown as typeof initial
-    const after = chatReducer(seeded, sseSlotPatch({ slots: [], removed: ['gone', 'keep'] }))
+    const partial = chatReducer(seeded, sseSlotsPartial(true))
+    const after = chatReducer(partial, sseSlotPatch({ slots: [], removed: ['gone', 'keep'] }))
     const messages = (after as unknown as { slotMessages: Record<string, unknown> }).slotMessages
     expect(messages.gone).toBeUndefined()
     expect(messages.keep).toBeDefined()

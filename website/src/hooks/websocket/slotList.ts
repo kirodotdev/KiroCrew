@@ -4,7 +4,7 @@
 import { useMemo, useRef } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { store, type AppDispatch } from '../../store'
-import { sseSlots, sseYolo, setChannelTrusted, sseSlotPatch, fetchSlots, type SlotPatchFrame } from '../../store/dashboardSlice'
+import { sseSlots, sseSlotsPartial, sseSlotListHolds, sseYolo, setChannelTrusted, sseSlotPatch, fetchSlots, type SlotPatchFrame } from '../../store/dashboardSlice'
 import { reconcileSubagentQueuedFromSlots, refreshSlot, wireTurnIdentity } from '../../store/chatSlice'
 import type { ChatSlot, ChatFolder } from '../../types'
 import type { FrameData } from './frames'
@@ -61,6 +61,20 @@ export function useSlotListSync(
       // one still corrects a count a `subagent_queued` frame moved in between,
       // which is the very case the reconcile exists for.
       if (Array.isArray(data)) dispatch(reconcileSubagentQueuedFromSlots(data))
+      // The gateway labels the lists it pushes while a restart is still
+      // restoring sessions; `reconcileSlots` must not drain unread entries
+      // against one of those. Set before the list is applied so the frame's
+      // own reconcile reads it, and before the repeat check: a frame that
+      // flips the label differs in `raw`, but the hold must also be re-read
+      // from a frame this socket repeats. Absent on an older gateway, which
+      // means complete and keeps the base behaviour.
+      dispatch(sseSlotListHolds({
+        heldKeys: Array.isArray(msg.slotsHeldKeys)
+          ? msg.slotsHeldKeys.filter((key: unknown): key is string => typeof key === 'string')
+          : [],
+        holdChannels: msg.slotsHoldChannels === true,
+      }))
+      dispatch(sseSlotsPartial(msg.slotsPartial === true))
       // An identical repeat carries identical values for every arm below, but
       // only while no other writer (fetchSlots) has since replaced the list.
       // Current history replies carry turn identity and cannot restore busy

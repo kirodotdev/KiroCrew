@@ -28,6 +28,7 @@ from kiro_crew.dashboard.handlers.sessions import (
     CRON_STORE_BUSY_CODE,
     CRON_STORE_UNREADABLE_CODE,
 )
+from kiro_crew.dashboard.state import DashboardState
 
 
 class TestAJobBornDuringTheDeleteIsNotStranded:
@@ -541,6 +542,11 @@ class TestALinkedKeyMustNameItsOwnTranscript:
         assert CronService(base_dir=tmp_path).get_job(job.id).session_key == channel_key
 
 
+def test_the_handlers_call_a_method_the_real_state_has() -> None:
+    """The handler tests use a specless mock state, which accepts any attribute."""
+    assert callable(getattr(DashboardState, "release_deleted_slot_keys", None))
+
+
 class _SweepBlockedCrons:
     """A store whose strict owner scan never lands.
 
@@ -689,6 +695,50 @@ class TestAnUnrecordedChannelOwnerIsFoundFromTheStore:
         assert reloaded.get_job(theirs.id).session_key == "dashboard:chat-9-999"
         assert reloaded.get_job(channel.id).session_key == "slack:1785370133.085469"
         assert reloaded.get_job(unowned.id).session_key == ""
+
+    @pytest.mark.asyncio
+    async def test_a_delete_releases_the_rows_drain_hold(self, tmp_path):
+        """A dropped tab deleted from History must not keep its unread entry held.
+
+        The restore notice that names dropped tabs is written once per boot, so the
+        delete is the only event that can tell the slot list the key is gone for good.
+        """
+        history_key = "dashboard_chat-9-gone"
+        log = _FakeTranscriptStore(history_key, "")
+        state = self._state(None, log)
+        request = self._request(state)
+        request.match_info = {"key": history_key}
+
+        resp = await api_session_delete(request)
+
+        assert json.loads(resp.body.decode("utf-8")) == {"ok": True}
+        (released,) = state.release_deleted_slot_keys.call_args.args
+        assert "chat-9-gone" in list(released)
+
+    @pytest.mark.asyncio
+    async def test_a_refused_delete_keeps_the_rows_drain_hold(self, tmp_path):
+        history_key = "slack_1785370133.085469"
+        log = _FakeTranscriptStore(history_key, "")
+        state = self._state(_SweepBlockedCrons(), log)
+        request = self._request(state)
+        request.match_info = {"key": history_key}
+
+        await api_session_delete(request)
+
+        state.release_deleted_slot_keys.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_bulk_clear_releases_each_cleared_rows_drain_hold(self, tmp_path):
+        history_key = "dashboard_chat-9-gone"
+        log = _FakeTranscriptStore(history_key, "")
+        log.list_sessions = lambda: [{"key": history_key}]  # type: ignore[method-assign]
+        state = self._state(None, log)
+
+        resp = await api_sessions_clear(self._request(state))
+
+        assert json.loads(resp.body.decode("utf-8"))["cleared"] == 1
+        (released,) = state.release_deleted_slot_keys.call_args.args
+        assert "chat-9-gone" in list(released)
 
     @pytest.mark.asyncio
     async def test_a_sweep_that_cannot_run_refuses_the_delete(self, tmp_path, caplog):

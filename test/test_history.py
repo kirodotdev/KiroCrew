@@ -17,9 +17,14 @@ session's context is built with).
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+from unittest.mock import patch
 
+import pytest
+
+from kiro_crew import history_search
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.history import (
     _SESSION_KEEP_LINES,
@@ -307,6 +312,65 @@ class TestConversationLog:
         by_key = {s["key"]: s for s in log.list_sessions()}
         assert by_key["t-filed"].get("folder_id") == "folder-123"
         assert "folder_id" not in by_key["t-unfiled"]
+
+    def test_list_sessions_status_reports_scandir_failure(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+
+        with patch.object(history_search.os, "scandir", side_effect=OSError("disk gone")):
+            assert log.list_sessions_status() == ([], False)
+            assert log.list_sessions() == []
+
+    def test_list_sessions_status_treats_missing_directory_as_complete(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path / "missing")
+
+        assert log.list_sessions_status() == ([], True)
+
+    @pytest.mark.parametrize(
+        ("error", "expected_complete"),
+        [
+            (FileNotFoundError(errno.ENOENT, "gone"), True),
+            (OSError(errno.EIO, "read failed"), False),
+        ],
+    )
+    def test_list_sessions_status_distinguishes_vanished_and_unreadable_entries(
+        self, tmp_path, error, expected_complete
+    ):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("visible", "user", "positive control")
+        assert log.list_sessions_status()[1] is True
+
+        broken_path = os.fspath(tmp_path / "broken.jsonl")
+
+        class _Entry:
+            name = "broken.jsonl"
+            path = broken_path
+
+            @staticmethod
+            def stat():
+                raise error
+
+        class _Scan:
+            def __enter__(self):
+                return iter([_Entry()])
+
+            def __exit__(self, *_args):
+                return None
+
+        real_os_stat = os.stat
+
+        def _os_stat(path, *args, **kwargs):
+            if os.fspath(path) == broken_path:
+                raise error
+            return real_os_stat(path, *args, **kwargs)
+
+        with (
+            patch.object(history_search.os, "scandir", return_value=_Scan()),
+            patch.object(history_search.os, "stat", _os_stat),
+        ):
+            sessions, complete = log.list_sessions_status()
+
+        assert sessions == []
+        assert complete is expected_complete
 
     def test_search_sessions_surfaces_folder_id(self, tmp_path):
         """search_sessions() results carry folder_id — the frontend groups on it."""

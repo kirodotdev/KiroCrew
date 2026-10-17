@@ -58,7 +58,7 @@ import logging
 import time
 import weakref
 from itertools import islice
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Iterable
 
 from kiro_crew.dashboard.channel_folders import (
     CHANNEL_CONFIG_SECTIONS,
@@ -76,6 +76,7 @@ from kiro_crew.dashboard.state import (
     row_mid,
 )
 from kiro_crew.history import HUMAN_TURN_META_KEY, carry_provenance, is_incognito_transcript
+from kiro_crew.history_projection import METADATA_LINE_CORRUPT
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.messaging.upload_gate import live_dashboard_slot
@@ -974,12 +975,32 @@ def _tombstone_blocks(state: "DashboardState", session: dict[str, Any]) -> bool:
     return modified <= when
 
 
+class _IncompleteChannelReconcile(RuntimeError):
+    """The channel-session snapshot could not be read in full."""
+
+
 def _reconcile_lock(state: "DashboardState") -> LoopBoundLock:
     lock = _RECONCILE_LOCKS.get(state)
     if lock is None:
         lock = LoopBoundLock()
         _RECONCILE_LOCKS[state] = lock
     return lock
+
+
+def _replace_channel_slot_holds(
+    state: "DashboardState", session_keys: "Iterable[str]", *, hold_channels: bool
+) -> bool:
+    """Replace one pass's held dashboard keys without accumulating stale failures."""
+    return state.replace_channel_slot_holds(
+        (channel_slot_name(key) for key in session_keys),
+        hold_channels=hold_channels,
+    )
+
+
+def _hold_every_channel_key(state: "DashboardState") -> None:
+    """Hold every channel key, for a pass that cannot name the sessions it missed."""
+    if _replace_channel_slot_holds(state, (), hold_channels=True):
+        state.push_slots_update()
 
 
 async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) -> int:
@@ -990,31 +1011,73 @@ async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) 
     touched from a worker thread). Passes are serialized per state so the
     periodic loop and a dispatcher-triggered immediate pass cannot interleave
     their snapshot/surface/clear sequences.
+
+    Direct callers retain the historical no-op result when the session listing
+    is unreadable. The lifetime reconciler uses :func:`_reconcile_with_status`
+    so it can distinguish that incomplete snapshot from a complete pass with no
+    work.
     """
-    async with _reconcile_lock(state):
-        return await _reconcile_channel_slots_locked(state, window_minutes)
+    surfaced, _complete = await _reconcile_with_status(state, window_minutes)
+    return surfaced
 
 
-async def _reconcile_channel_slots_locked(state: "DashboardState", window_minutes: int) -> int:
+async def _reconcile_with_status(state: "DashboardState", window_minutes: int) -> tuple[int, bool]:
+    """One serialized pass, returning ``(surfaced, complete)``.
+
+    ``complete`` is False when any part of the snapshot could not be read or
+    applied, so the lifetime reconciler keeps the slot list marked partial.
+
+    An unexpected exception is held open the same way, then re-raised for the
+    caller to log: a pass that died mid-snapshot knows no more about which
+    sessions it missed than a pass whose listing was unreadable, and leaving the
+    previous pass's hold state in place would let the partial-label deadline
+    authorize a drain of every channel key this pass never surfaced. The guard
+    wraps the lock too, because acquisition runs before any hold is written.
+    """
+    try:
+        async with _reconcile_lock(state):
+            try:
+                return await _reconcile_channel_slots_locked(state, window_minutes)
+            except _IncompleteChannelReconcile:
+                _hold_every_channel_key(state)
+                return 0, False
+    except Exception:
+        _hold_every_channel_key(state)
+        raise
+
+
+async def _reconcile_channel_slots_locked(
+    state: "DashboardState", window_minutes: int
+) -> tuple[int, bool]:
     log = state.conversation_log
     if log is None:
-        return 0
+        changed = _replace_channel_slot_holds(state, (), hold_channels=False)
+        if changed:
+            state.push_slots_update()
+        return 0, True
     loop = asyncio.get_running_loop()
     cutoff = time.time() - (window_minutes * 60) if window_minutes > 0 else None
 
     try:
-        sessions = await loop.run_in_executor(None, log.list_sessions)
-    except Exception:
+        sessions, listing_complete = await loop.run_in_executor(None, log.list_sessions_status)
+    except Exception as exc:
         logger.debug("channel reconcile: list_sessions failed", exc_info=True)
-        return 0
+        raise _IncompleteChannelReconcile from exc
+    if not listing_complete:
+        raise _IncompleteChannelReconcile
 
     candidates = [s for s in sessions if is_channel_session_key(s.get("key", ""))]
     if not candidates:
-        return 0
+        changed = _replace_channel_slot_holds(state, (), hold_channels=False)
+        if changed:
+            state.push_slots_update()
+        return 0, True
 
-    def _load_meta() -> tuple[dict[str, dict[str, Any]], dict[str, float]]:
+    def _load_meta() -> tuple[dict[str, dict[str, Any]], dict[str, float], set[str], bool]:
         out: dict[str, dict[str, Any]] = {}
         mt: dict[str, float] = {}
+        deferred: set[str] = set()
+        complete = True
         # One key per session: the tab and the channel share one transcript, so
         # `closed` is written once and read once. File mtimes ride along as the
         # fallback close instant for legacy `closed` flags that predate the
@@ -1025,9 +1088,14 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
             if not key or key in out:
                 continue
             try:
-                out[key] = log.get_metadata(key)
+                out[key], readable = log.get_metadata_status(key)
+                if not readable and log.metadata_line_state(key) != METADATA_LINE_CORRUPT:
+                    deferred.add(key)
+                    complete = False
             except Exception:
                 out[key] = {}
+                deferred.add(key)
+                complete = False
             if mtime_of is not None:
                 try:
                     stamp = mtime_of(key)
@@ -1035,16 +1103,20 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
                     stamp = None
                 if stamp is not None:
                     mt[key] = stamp
-        return out, mt
+        return out, mt, deferred, complete
 
     # Instant the metadata snapshot below is taken. The stale-flag clear later
     # in this pass is scoped to closes OLDER than this — a `closed` written
     # after the snapshot (the user dismissing a tab mid-pass, or any writer
     # this pass cannot see) must survive the clear.
     snapshot_time = time.time()
-    metadata, mtimes = await loop.run_in_executor(None, _load_meta)
+    metadata, mtimes, deferred, complete = await loop.run_in_executor(None, _load_meta)
+    held_sessions = set(deferred)
     eligible = eligible_channel_sessions(
-        candidates, metadata=metadata, cutoff=cutoff, mtimes=mtimes
+        [session for session in candidates if session.get("key", "") not in deferred],
+        metadata=metadata,
+        cutoff=cutoff,
+        mtimes=mtimes,
     )
     # Skip transcript reads for sessions that already own a slot — the steady state.
     pending = [s for s in eligible if channel_slot_name(s.get("key", "")) not in state._slots]
@@ -1076,7 +1148,10 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
             if resolved:
                 rebindable.append((resolved, slot))
     if not pending and not refreshable and not rebindable:
-        return 0
+        changed = _replace_channel_slot_holds(state, held_sessions, hold_channels=False)
+        if changed:
+            state.push_slots_update()
+        return 0, complete
 
     def _load_messages() -> dict[str, list[dict[str, Any]]]:
         out: dict[str, list[dict[str, Any]]] = {}
@@ -1199,6 +1274,7 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
             logger.debug("channel reconcile: %s closed by tombstone, skipping", key)
             continue
         if key not in transcripts:
+            held_sessions.add(key)
             # The read failed in the executor. ``_load_messages`` omits the key
             # rather than storing ``[]`` exactly so this is distinguishable from
             # a genuinely empty transcript — surfacing an empty window here would
@@ -1206,6 +1282,7 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
             # reply would write its turns ahead of the history still on disk.
             # Leave it for the next pass.
             logger.debug("channel reconcile: %s transcript unread, deferring", key)
+            complete = False
             continue
         if to_file:
             # Re-check right before writing: this pass snapshotted metadata, then
@@ -1322,8 +1399,13 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
             )
             if slot:
                 surfaced += 1
+            elif channel_slot_name(key) not in state._slots:
+                held_sessions.add(key)
+                complete = False
         except Exception:
             logger.warning("channel reconcile: failed to surface %s", key, exc_info=True)
+            held_sessions.add(key)
+            complete = False
 
     refreshed = 0
     for s in refreshable:
@@ -1352,7 +1434,8 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
             rebound += 1
             logger.info("channel reconcile: rebound previously unbound slot %s", slot.key)
 
-    if surfaced or refreshed or rebound:
+    holds_changed = _replace_channel_slot_holds(state, held_sessions, hold_channels=False)
+    if surfaced or refreshed or rebound or holds_changed:
         if surfaced:
             # Publish the new tab to the dashboard-surface registry BEFORE the
             # broadcast. Every gate that asks "does this session have a tab?"
@@ -1363,7 +1446,7 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
 
             _sync_dashboard_slots(state)
         state.push_slots_update()
-    return surfaced
+    return surfaced, complete
 
 
 def _live_slot_placement(state: "DashboardState", key: str) -> tuple[Any, str]:
@@ -1758,17 +1841,21 @@ async def surface_dispatcher_session(dispatcher: object) -> None:
     )
 
 
-async def channel_slot_reconciler(state: "DashboardState", window_minutes: int) -> None:
-    """Background task: reconcile now, then every ``RECONCILE_INTERVAL_SECS``.
+async def _reconcile_pass(state: "DashboardState", window_minutes: int) -> bool:
+    """Run one lifetime-reconciler pass and report whether its snapshot was complete."""
+    try:
+        _surfaced, complete = await _reconcile_with_status(state, window_minutes)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("channel slot reconciler pass failed", exc_info=True)
+        return False
+    return complete
 
-    Runs for the gateway's lifetime. Every iteration is guarded so a transient
-    filesystem error can never kill the loop.
-    """
+
+async def channel_slot_reconciler(state: "DashboardState", window_minutes: int) -> None:
+    """Reconcile now and every interval, clearing the partial label once complete."""
     while True:
-        try:
-            await reconcile_channel_slots(state, window_minutes)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning("channel slot reconciler pass failed", exc_info=True)
+        if await _reconcile_pass(state, window_minutes):
+            state.finish_slot_list_rebuild()
         await asyncio.sleep(RECONCILE_INTERVAL_SECS)

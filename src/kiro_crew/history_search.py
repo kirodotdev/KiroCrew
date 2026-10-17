@@ -1315,6 +1315,15 @@ class SessionCatalogProjection:
         return [(stem, mtime) for mtime, stem in newest], counted > max_entries
 
     def list_sessions(self, *, keys: Iterable[str] | None = None) -> list[dict]:
+        return self._list_sessions_status(keys=keys)[0]
+
+    def list_sessions_status(self) -> tuple[list[dict], bool]:
+        """Return sessions plus whether the directory listing was complete."""
+        return self._list_sessions_status()
+
+    def _list_sessions_status(
+        self, *, keys: Iterable[str] | None = None
+    ) -> tuple[list[dict], bool]:
         """Return metadata for session files, newest first.
 
         Deduplicates stacked ``dashboard_`` prefix files, keeping the
@@ -1324,8 +1333,13 @@ class SessionCatalogProjection:
         holding one transcript lock can refresh its row without a directory scan.
         """
         sessions: list[dict] = []
-        if not self._log._dir.exists():
-            return sessions
+        try:
+            self._log._dir.stat()
+        except FileNotFoundError:
+            return sessions, True
+        except OSError:
+            return sessions, False
+        complete = True
         # Deduplicate stacked dashboard_ prefixes by canonical key, keeping newer
         by_canon: dict[str, dict] = {}
         if keys is None:
@@ -1346,7 +1360,7 @@ class SessionCatalogProjection:
                         if os.path.normcase(e.name).endswith(".jsonl")
                     ]
             except OSError:
-                entries = []
+                return [], False
         else:
             entries = []
             for key in keys:
@@ -1363,7 +1377,10 @@ class SessionCatalogProjection:
                 # identity would never equal the one every other reader takes
                 # from path.stat(); there the entry answers only is_symlink.
                 stat = os.stat(path) if entry is None or os.name == "nt" else entry.stat()
+            except FileNotFoundError:
+                continue
             except OSError:
+                complete = False
                 continue
             identity = self._log._cache_identity(stat)
             # Skip symlinks — these are handoff aliases pointing to the real session
@@ -1478,7 +1495,7 @@ class SessionCatalogProjection:
                 by_canon[canon] = meta
         sessions = list(by_canon.values())
         sessions.sort(key=lambda s: s.get("modified", 0), reverse=True)
-        return sessions
+        return sessions, complete
 
     def agent_usage(self) -> dict[str, tuple[int, float]]:
         """Return ``{agent_name: (session_count, last_used_mtime)}`` per agent.

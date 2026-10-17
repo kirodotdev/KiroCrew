@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
 import reducer, {
   sseSlots,
+  sseSlotsPartial,
   sseConnected,
+  markSlotUnread,
   sseSlotTitle,
   sseSlotColor,
   sseTodoUpdate,
@@ -14,6 +16,7 @@ import reducer, {
   patchSlotSourceLinks,
   fetchSlots,
   addSlotOptimistic,
+  sseSlotListHolds,
 } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
 
@@ -478,5 +481,55 @@ describe('a fetchSlots reply cannot drop a slot whose creation raced it', () => 
     const renamed = reducer(added, sseSlotTitle({ key: 'a', title: 'renamed' }))
     const settled = reducer(renamed, reply([mk('a', { title: 'old' }), mk('b')], 'r1'))
     expect(rowOf(settled, 'a')?.title).toBe('renamed')
+  })
+})
+
+describe('fetchSlots unread hold supersession', () => {
+  const reconnectWithUnread = () => {
+    localStorage.clear()
+    let state = reducer(loaded(mk('a'), mk('b')), sseSlotsPartial(false))
+    state = reducer(state, markSlotUnread({ slot: 'a', ts: '2026-01-01T00:00:00Z' }))
+    return reducer(state, sseConnected())
+  }
+
+  it('keeps the held GET from draining when no complete frame arrived', () => {
+    let state = reducer(reconnectWithUnread(), started('held'))
+
+    state = reducer(state, reply([mk('b')], 'held'))
+
+    expect(state.unreadSlots).toEqual(['a'])
+    expect(state.unreadSince.a).toBe('2026-01-01T00:00:00Z')
+    expect(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}')).toHaveProperty('a')
+  })
+
+  it('keeps request-time held keys after a live frame releases the hold', () => {
+    let state = reducer(reconnectWithUnread(), sseSlotsPartial(false))
+    state = reducer(state, sseSlotListHolds({ heldKeys: ['a'], holdChannels: false }))
+    state = reducer(state, started('held-key'))
+
+    // The live frame restores A and releases its hold before the older GET lands.
+    state = reducer(state, sseSlotListHolds({ heldKeys: [], holdChannels: false }))
+    state = reducer(state, sseSlots([mk('a'), mk('b')]))
+    state = reducer(state, reply([mk('b')], 'held-key'))
+
+    expect(state.unreadSlots).toEqual(['a'])
+    expect(state.unreadSince.a).toBe('2026-01-01T00:00:00Z')
+    expect(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}')).toHaveProperty('a')
+  })
+
+  it('keeps request-time channel holds after a live frame releases the hold', () => {
+    const channel = mk('slack_1.1')
+    let state = reducer(loaded(channel, mk('b')), sseSlotsPartial(false))
+    state = reducer(state, markSlotUnread({ slot: channel.key, ts: '2026-01-01T00:00:00Z' }))
+    state = reducer(state, sseSlotListHolds({ heldKeys: [], holdChannels: true }))
+    state = reducer(state, started('held-channel'))
+
+    state = reducer(state, sseSlotListHolds({ heldKeys: [], holdChannels: false }))
+    state = reducer(state, sseSlots([channel, mk('b')]))
+    state = reducer(state, reply([mk('b')], 'held-channel'))
+
+    expect(state.unreadSlots).toEqual([channel.key])
+    expect(state.unreadSince[channel.key]).toBe('2026-01-01T00:00:00Z')
+    expect(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}')).toHaveProperty(channel.key)
   })
 })
