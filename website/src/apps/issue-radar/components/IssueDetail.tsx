@@ -42,6 +42,7 @@ import AssigneePicker from './AssigneePicker'
 import MemberBadge from './MemberBadge'
 import DetailHeader from './DetailHeader'
 import DetailOverflowMenu from './DetailOverflowMenu'
+import TimelineComposer from './TimelineComposer'
 import {
   DropdownMenuItem, DropdownMenuSeparator,
 } from '../../../components/ui/dropdown-menu'
@@ -576,6 +577,14 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
     detailQuery.refetch().finally(() => setRefreshing(false))
   }
 
+  // Post to THIS issue, then re-read it so the comment is the top node of the
+  // timeline rather than a poll away. The write goes through the issue route, not the
+  // pull route: GitLab and Azure DevOps number the two independently.
+  const postComment = async (body: string) => {
+    await issueRadarApi.addIssueComment(active, issue.number, body)
+    await queryClient.invalidateQueries({ queryKey: detailKey })
+  }
+
   // AI triage (summary + suggested labels): fires on open, cache-first
   // server-side (one model call per issue, served instantly on re-open). The
   // regenerate button forces a recompute via ?refresh=1 (same ref trick).
@@ -979,6 +988,10 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               <CircleDot size={12} /> {i18nT('apps.issueRadar.components.issueDetail.timeline')}
               <span className="text-muted normal-case tracking-normal opacity-70">{i18nT('apps.issueRadar.components.issueDetail.newest_first')}</span>
             </div>
+
+            {canWrite && !awaitingFirstPaint && (
+              <TimelineComposer itemKey={`${scopeKey}#${issue.number}`} post={postComment} />
+            )}
 
             {activityDesc.map((ev, i) => {
               const isOldest = i === activityDesc.length - 1

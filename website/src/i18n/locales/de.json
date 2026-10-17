@@ -2582,6 +2582,10 @@
           "repository_settings": "Repository-Einstellungen",
           "gitlab_groups": "GitLab-Gruppen"
         },
+        "timelineComposer": {
+          "clear": "Leeren",
+          "timeline_comment_title": "Timeline-Kommentar hinzufügen"
+        },
         "depsSection": {
           "title": "Abhängigkeiten",
           "blocked_by": "Blockiert durch",

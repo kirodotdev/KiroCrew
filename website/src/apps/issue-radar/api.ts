@@ -568,6 +568,14 @@ export interface PrCommentResponse {
   created_at: string | null
 }
 
+export interface IssueCommentResponse {
+  owner: string
+  repo: string
+  number: number
+  comment_id: number | null
+  url: string | null
+}
+
 export interface PrAutoMergeResponse {
   owner: string
   repo: string
@@ -1642,6 +1650,24 @@ export const issueRadarApi = {
     ref: RepoRef, number: number, body: string,
   ): Promise<PrCommentResponse> => {
     const r = await fetch(`${API}/pull/comment`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...repoBody(ref), number, body }),
+    })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Post a conversation comment on an ISSUE.
+   *
+   * Its own route rather than `addPrComment`: GitLab and Azure DevOps number issues
+   * and change requests independently, so the pull route given an issue number would
+   * comment on whichever change request carries that number. */
+  addIssueComment: async (
+    ref: RepoRef, number: number, body: string,
+  ): Promise<IssueCommentResponse> => {
+    const r = await fetch(`${API}/issue/comment`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },

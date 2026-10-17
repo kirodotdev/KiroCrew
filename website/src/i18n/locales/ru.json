@@ -2613,6 +2613,10 @@
           "repository_settings": "Настройки репозитория",
           "gitlab_groups": "Группы GitLab"
         },
+        "timelineComposer": {
+          "clear": "Очистить",
+          "timeline_comment_title": "Добавить комментарий в ленту"
+        },
         "depsSection": {
           "title": "Зависимости",
           "blocked_by": "Заблокировано",

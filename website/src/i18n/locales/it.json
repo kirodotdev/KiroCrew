@@ -2553,6 +2553,10 @@
           "repository_settings": "Impostazioni del repository",
           "gitlab_groups": "Gruppi GitLab"
         },
+        "timelineComposer": {
+          "clear": "Cancella",
+          "timeline_comment_title": "Aggiungi un commento alla timeline"
+        },
         "depsSection": {
           "title": "Dipendenze",
           "blocked_by": "Bloccato da",

@@ -2643,6 +2643,10 @@
           "repository_settings": "Paramètres du dépôt",
           "gitlab_groups": "Groupes GitLab"
         },
+        "timelineComposer": {
+          "clear": "Effacer",
+          "timeline_comment_title": "Ajouter un commentaire à la chronologie"
+        },
         "depsSection": {
           "title": "Dépendances",
           "blocked_by": "Bloqué par",

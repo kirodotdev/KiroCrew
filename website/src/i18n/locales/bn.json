@@ -2493,6 +2493,10 @@
           "repository_settings": "রিপোজিটরি সেটিংস",
           "gitlab_groups": "GitLab গ্রুপ"
         },
+        "timelineComposer": {
+          "clear": "সাফ করো",
+          "timeline_comment_title": "টাইমলাইনে মন্তব্য যোগ করো"
+        },
         "depsSection": {
           "title": "নির্ভরতা",
           "blocked_by": "যার কারণে অবরুদ্ধ",
