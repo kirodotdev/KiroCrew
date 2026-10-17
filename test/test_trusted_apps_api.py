@@ -1,6 +1,6 @@
 """Tests for the per-app third-party trust-grant REST API.
 
-Covers the 4 endpoints in ``dashboard/handlers/security.py`` that write
+Covers the 4 endpoints in ``dashboard/handlers/security_trusted_apps.py`` that write
 ``agent.apps_trusted`` / ``agent.apps_allow_third_party`` in ``config.json``,
 plus the end-to-end property that actually matters: a grant flips
 ``apps.execution.app_execution_denied`` for THAT app and leaves every other

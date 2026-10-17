@@ -2609,7 +2609,7 @@ class TestMemoryTuningPlumbing:
         "slack/gateway_runtime/service_boot.py",
         "cli_server.py",
         "cli_commands.py",
-        "dashboard/handlers/memory.py",
+        "dashboard/handlers/memory_services.py",
         "apps/builtins/ops_mission_control/backend/dispatch.py",
         "apps/builtins/ops_mission_control/backend/routes.py",
         # Named stores, through declared_store.
