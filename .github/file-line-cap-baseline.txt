@@ -128,8 +128,6 @@
 2115 src/kiro_crew/snapshot.py
 4774 src/kiro_crew/subagent_manager/run.py
 2594 src/kiro_crew/subagent_persistence.py
-2195 src/kiro_crew/telegram/client.py
-2730 src/kiro_crew/telegram/renderer.py
 2272 src/kiro_crew/tool_call_title.py
 2250 src/kiro_crew/ui_index.py
 5484 src/kiro_crew/validation.py

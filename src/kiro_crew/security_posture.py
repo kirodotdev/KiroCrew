@@ -1082,7 +1082,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Telegram rendered-form seal",
-        "telegram/renderer.py",
+        "telegram/renderer_display.py",
         "Every text this channel posts, scanned against the form Telegram RENDERS "
         "rather than the bytes sent. The TurnDriver's stream scan runs before this "
         "renderer introduces any markup, so it cannot see a credential the markup "

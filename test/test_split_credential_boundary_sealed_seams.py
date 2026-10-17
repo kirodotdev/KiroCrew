@@ -269,7 +269,14 @@ class TestEverySealingPathInheritsTheSeamGuard:
     TELEGRAM = "telegram/renderer.py"
 
     def _tree(self) -> ast.AST:
-        return ast.parse((SRC / self.TELEGRAM).read_text(encoding="utf-8"))
+        # The facade and the owners its methods are bound from, read as one module.
+        paths = [SRC / self.TELEGRAM, *sorted((SRC / "telegram").glob("renderer_*.py"))]
+        return ast.Module(
+            body=[
+                node for path in paths for node in ast.parse(path.read_text(encoding="utf-8")).body
+            ],
+            type_ignores=[],
+        )
 
     def test_both_sinks_run_the_seam_helper(self) -> None:
         tree = self._tree()
