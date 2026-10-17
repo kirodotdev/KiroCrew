@@ -946,7 +946,7 @@ def test_a_re_render_gives_focus_back_to_the_rebuilt_fold_button(
         0 <= source.find("document.activeElement") < clear
     ), "render does not read which fold button has focus before clearing the graph"
     assert "foldButtons = {}" in source, "render keeps the previous render's buttons"
-    draw = source.index("drawNode(g.roots[i], graph, now)")
+    draw = source.index("drawNode(roots[i], graph, now)")
     assert (
         source.find("foldButtons[focusKey].focus(") > draw
     ), "render does not focus the rebuilt button after drawing the graph"
