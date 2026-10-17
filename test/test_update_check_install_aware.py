@@ -36,6 +36,7 @@ from update_check_install_aware_helpers import (  # noqa: F401 -- the autouse fi
 
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.platform import update_capability, update_layout
+from kiro_crew.testing.wait import await_until
 
 # A well-formed manifest, shaped like the real feed document.
 _FEED_TEMPLATE = {
@@ -1152,7 +1153,7 @@ class TestCheckIsRateLimitedEvenOnFailure:
 
         async def _drive() -> None:
             leader = asyncio.create_task(updates._do_update_check())
-            await asyncio.wait_for(started.wait(), timeout=1)
+            await await_until(started)
             follower = asyncio.create_task(updates._do_update_check())
             await asyncio.sleep(0)
             assert not follower.done(), "a follower returned before the shared verdict existed"
@@ -1175,7 +1176,7 @@ class TestCheckIsRateLimitedEvenOnFailure:
 
         async def _drive() -> None:
             creator = asyncio.create_task(updates._do_update_check())
-            await asyncio.wait_for(started.wait(), timeout=1)
+            await await_until(started)
             worker = updates._check_task
             assert worker is not None
 
@@ -1210,7 +1211,7 @@ class TestCheckIsRateLimitedEvenOnFailure:
 
         async def _drive() -> None:
             creator = asyncio.create_task(updates._do_update_check())
-            await asyncio.wait_for(started.wait(), timeout=1)
+            await await_until(started)
             worker = updates._check_task
             assert worker is not None
 
@@ -1242,7 +1243,7 @@ class TestCheckIsRateLimitedEvenOnFailure:
 
         async def _drive() -> None:
             coordinator = asyncio.create_task(updates._do_update_check())
-            await asyncio.wait_for(started.wait(), timeout=1)
+            await await_until(started)
             await updates._cancel_update_check()
             with pytest.raises(asyncio.CancelledError):
                 await coordinator

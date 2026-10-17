@@ -48,6 +48,7 @@ from kiro_crew.subprocess_pool import (
 )
 from kiro_crew.subprocess_pool.executor import proc_syscall
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew.testing.wait import wait_until
 
 # Captured BEFORE the autouse fixture below can stub it.  The fixture replaces this
 # helper for every test in the file, so a test that wants to exercise the real state
@@ -865,14 +866,18 @@ def test_cumulative_wait_is_independent_for_each_calling_thread(monkeypatch) -> 
     pool = _TimedResolutionPool(monkeypatch)
     pool.delay = 1.0
     with ThreadPoolExecutor(max_workers=1) as background:
-        assert background.submit(
+        _fut1 = background.submit(
             security._run_resolution_bounded, "/mount/background/file", lambda p: p, budget=1.0
-        ).result(timeout=5.0)
+        )
+        wait_until(_fut1.done)
+        assert _fut1.result()
         assert security._run_resolution_bounded("/mount/loop/file", lambda p: p, budget=1.0)
         with pytest.raises(security.PathResolutionStalled):
-            background.submit(
+            _fut2 = background.submit(
                 security._run_resolution_bounded, "/mount/background/next", lambda p: p, budget=1.0
-            ).result(timeout=5.0)
+            )
+            wait_until(_fut2.done)
+            _fut2.result()
     with pytest.raises(security.PathResolutionStalled):
         security._run_resolution_bounded("/mount/loop/next", lambda p: p, budget=1.0)
     assert len(pool.submissions) == 2
@@ -1443,7 +1448,9 @@ def test_a_thread_stuck_in_a_monitored_syscall_reads_as_blocked(monkeypatch) -> 
         tid = tid_seen[0]
         samples: list[bytes] = []
         for _ in range(20):
-            time.sleep(0.02)
+            time.sleep(
+                0.02
+            )  # flake-ok: measurement interval; sampling /proc/<tid>/syscall at regular intervals
             try:
                 with open(f"/proc/self/task/{tid}/syscall", "rb") as fh:
                     head = fh.read().split()
@@ -1677,7 +1684,9 @@ def test_an_in_s_filesystem_wait_is_sampled_stably_and_reads_as_blocked(
         states: set[str] = set()
         calls: set[bytes] = set()
         for _ in range(15):
-            time.sleep(0.05)
+            time.sleep(
+                0.05
+            )  # flake-ok: measurement interval; sampling /proc/<tid>/stat and /syscall at regular intervals
             try:
                 with open(f"/proc/self/task/{tid}/stat", "rb") as fh:
                     states.add(fh.read().rpartition(b")")[2].split()[0].decode())

@@ -44,6 +44,7 @@ from kiro_crew.start_priority import (
     StartPriority,
     person_priority,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 #: This module drives real cold starts through ``SessionManager``, and one test
 #: reaches ``SubagentManager.spawn``, which refuses while the host looks short of
@@ -62,21 +63,15 @@ _SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 
 async def until(predicate: Callable[[], bool], what: str) -> None:
     """Yield until *predicate* holds; fail naming *what* after the backstop."""
-
-    async def _poll() -> None:
-        while not predicate():
-            await asyncio.sleep(0)
-
-    try:
-        await asyncio.wait_for(_poll(), timeout=SETTLE_BACKSTOP)
-    except asyncio.TimeoutError:
-        raise AssertionError(f"never reached: {what}") from None
+    await async_wait_until(predicate, describe=lambda: what)
 
 
 async def bounded(awaitable: Awaitable[T], what: str) -> T:
     """Await *awaitable*; fail naming *what* after the backstop."""
     try:
-        return await asyncio.wait_for(awaitable, timeout=SETTLE_BACKSTOP)
+        return await asyncio.wait_for(  # flake-ok: SETTLE_BACKSTOP bounds cleanup; cancels hung acquire to free semaphore queue
+            awaitable, timeout=SETTLE_BACKSTOP
+        )
     except asyncio.TimeoutError:
         raise AssertionError(f"never finished: {what}") from None
 
@@ -1261,8 +1256,8 @@ async def test_a_pending_drain_waits_for_the_widened_total() -> None:
     assert not entered.is_set()  # the holder is still inside
     assert sem._drain_held == 3
     sem.release(StartPriority.BACKGROUND)
-    await asyncio.wait_for(entered.wait(), 5)
+    await await_until(entered)
     assert sem._drain_held == 4
     leave.set()
-    await asyncio.wait_for(task, 5)
+    await await_until(task)
     assert sem._value == 4

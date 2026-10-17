@@ -14,6 +14,7 @@ import os
 import pytest
 
 from kiro_crew import platform_compat, task_executor
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.mark.asyncio
@@ -37,7 +38,9 @@ async def test_reap_process_group_kills_children() -> None:
     child_reaped = False
     try:
         assert proc.stdout is not None
-        line = await asyncio.wait_for(proc.stdout.readline(), timeout=5)
+        line = await await_until(
+            asyncio.ensure_future(proc.stdout.readline()), timeout=5
+        )  # flake-ok: timeout bounds subprocess startup assertion; process must write PID line within the test window
         child_pid = int(line.decode().strip())
         child_start_id = platform_compat.get_process_start_id(child_pid)
 
@@ -50,13 +53,11 @@ async def test_reap_process_group_kills_children() -> None:
         # through the repo's own probe (AGENTS.md "Cross-platform"): a raw
         # ``os.kill(pid, 0)`` TERMINATES the target on Windows, and the sweep's
         # caller filter recognises only the sanctioned helper.
-        for _ in range(50):
-            if not platform_compat.pid_exists(child_pid):
-                child_reaped = True
-                break
-            await asyncio.sleep(0.1)
-        else:
-            pytest.fail("child process in the group survived reaping")
+        await async_wait_until(
+            lambda: not platform_compat.pid_exists(child_pid),
+            describe=lambda: "child process in the group survived reaping",
+        )
+        child_reaped = True
     finally:
         # Every failing exit above — the readline timeout, the int() parse, the
         # returncode assertion and the for-else pytest.fail — leaves a REAL
@@ -92,7 +93,9 @@ async def test_reap_process_group_kills_children() -> None:
             # ceiling only exists so a wedged wait in a `finally` cannot replace
             # the real assertion failure with a hang.
             with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(proc.wait(), timeout=10)
+                await asyncio.wait_for(  # flake-ok: bounded teardown in finally; SIGKILL is unblockable, ceiling prevents a wedged wait from masking the real failure
+                    proc.wait(), timeout=10
+                )
         # Close the transport the test would otherwise leak: its __del__ emits
         # ResourceWarning and can raise "Event loop is closed" once the loop is
         # gone, attributed to whichever later test happens to trigger the GC.
@@ -106,8 +109,8 @@ async def test_run_tests_timeout_returns_and_reaps(monkeypatch, tmp_path) -> Non
     monkeypatch.setattr(task_executor, "TEST_TIMEOUT", 1)
 
     try:
-        success, output = await asyncio.wait_for(
-            task_executor.run_tests(["sleep", "300"], tmp_path), timeout=20
+        success, output = await await_until(
+            asyncio.ensure_future(task_executor.run_tests(["sleep", "300"], tmp_path)),
         )
     except RuntimeError as exc:
         # No OS-level sandbox backend on this host at argv-build time (e.g. user

@@ -19,6 +19,7 @@ import pytest
 
 import kiro_crew.executors as ex
 from kiro_crew.hooks import TOOL_DENY
+from kiro_crew.testing.wait import await_until
 from kiro_crew.tool_gate_busy import TOOL_GATE_BUSY_REASON, hook_gate_busy
 
 _BOUND = 0.3
@@ -67,9 +68,11 @@ def test_a_call_no_worker_claims_is_refused_unjudged_and_never_runs(small_bound)
         release = threading.Event()
         held = await _hold_every_worker(release)
         try:
-            return await asyncio.wait_for(
-                ex.run_in_tool_gate_pool(gate, "queued call", on_queue_timeout=refuse),
-                _DEADLINE,
+            return await await_until(
+                asyncio.ensure_future(
+                    ex.run_in_tool_gate_pool(gate, "queued call", on_queue_timeout=refuse)
+                ),
+                timeout=_DEADLINE,
             )
         finally:
             release.set()
@@ -97,8 +100,11 @@ def test_a_call_a_worker_claims_runs_to_its_verdict_past_the_bound(small_bound) 
 
     async def main() -> str:
         asyncio.get_running_loop().call_later(_BOUND * 3, finish.set)
-        return await asyncio.wait_for(
-            ex.run_in_tool_gate_pool(slow_gate, "t", on_queue_timeout=refuse), _DEADLINE
+        return await await_until(
+            asyncio.ensure_future(
+                ex.run_in_tool_gate_pool(slow_gate, "t", on_queue_timeout=refuse)
+            ),
+            timeout=_DEADLINE,
         )
 
     assert asyncio.run(main()) == "verdict"
@@ -115,9 +121,11 @@ def test_a_queued_call_frees_inside_the_bound_and_runs(small_bound, monkeypatch)
         held = await _hold_every_worker(release)
         asyncio.get_running_loop().call_later(_BOUND, release.set)
         try:
-            return await asyncio.wait_for(
-                ex.run_in_tool_gate_pool(gate, "t", on_queue_timeout=lambda w: "refused"),
-                _DEADLINE,
+            return await await_until(
+                asyncio.ensure_future(
+                    ex.run_in_tool_gate_pool(gate, "t", on_queue_timeout=lambda w: "refused")
+                ),
+                timeout=_DEADLINE,
             )
         finally:
             release.set()
@@ -149,11 +157,13 @@ def test_settle_refuses_a_call_the_gate_never_judged(small_bound) -> None:
         release = threading.Event()
         held = await _hold_every_worker(release)
         try:
-            return await asyncio.wait_for(
-                ex.run_in_tool_gate_pool(
-                    _Gate().judge, SimpleNamespace(), on_queue_timeout=tp._gate_unjudged
+            return await await_until(
+                asyncio.ensure_future(
+                    ex.run_in_tool_gate_pool(
+                        _Gate().judge, SimpleNamespace(), on_queue_timeout=tp._gate_unjudged
+                    )
                 ),
-                _DEADLINE,
+                timeout=_DEADLINE,
             )
         finally:
             release.set()

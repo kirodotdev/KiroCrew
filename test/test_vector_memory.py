@@ -17,6 +17,7 @@ import pytest
 import source_corpus
 
 import kiro_crew.embeddings as embeddings_mod
+from kiro_crew.testing.wait import wait_until
 from kiro_crew.vector_memory import (
     _HAS_FAISS,
     _HAS_NUMPY,
@@ -505,7 +506,8 @@ class TestConflictResolution:
                 executor.submit(write_once),
                 executor.submit(write_once),
             ]
-            assert sorted(future.result(timeout=5) for future in futures) == [False, True]
+            wait_until(lambda: all(f.done() for f in futures))
+            assert sorted(f.result() for f in futures) == [False, True]
 
         assert (
             store.db.execute(
@@ -574,7 +576,8 @@ class TestConflictResolution:
                         preserve_existing=True,
                     ),
                 ]
-                assert sorted(future.result(timeout=5) for future in futures) == [False, True]
+                wait_until(lambda: all(f.done() for f in futures))
+            assert sorted(f.result() for f in futures) == [False, True]
 
             counts = first.db.execute(
                 "SELECT is_deleted, COUNT(*) FROM episodic_memories GROUP BY is_deleted"
@@ -1373,8 +1376,11 @@ class TestEpisodicCRUD:
                     future = executor.submit(lookup)
                     assert lookup_started.wait(timeout=5)
                     with pytest.raises(FutureTimeoutError):
-                        future.result(timeout=0.1)
-                assert future.result(timeout=5)
+                        future.result(
+                            timeout=0.1
+                        )  # flake-ok: timeout IS the assertion; proves future cannot complete while the db lock is held
+                wait_until(future.done)
+                assert future.result()
         finally:
             store.close()
 

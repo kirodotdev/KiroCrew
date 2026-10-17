@@ -42,6 +42,7 @@ from fake_pool_mcp_server import recorded
 from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway import gatewayd as gw
 from kiro_crew.mcp_gateway import transport
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _FAKE_SERVER = Path(__file__).with_name("fake_pool_mcp_server.py")
 
@@ -221,14 +222,19 @@ async def _start_daemon(sock: Path, resolver) -> tuple[asyncio.Event, asyncio.Ta
             prewarm_count=0,
         )
     )
-    deadline = asyncio.get_running_loop().time() + _BIND_TIMEOUT
-    while asyncio.get_running_loop().time() < deadline:
-        if transport.endpoint_exists(sock):
-            return stop, task
-        await asyncio.sleep(0.05)
-    stop.set()
-    await asyncio.wait_for(task, timeout=30)
-    raise AssertionError("gatewayd never bound its endpoint")
+    try:
+        await async_wait_until(  # flake-ok: timeout bounds daemon bind assertion; gatewayd must bind within _BIND_TIMEOUT
+            lambda: transport.endpoint_exists(sock),
+            timeout=_BIND_TIMEOUT,
+            describe=lambda: "gatewayd endpoint not yet bound",
+        )
+    except AssertionError:
+        stop.set()
+        await asyncio.wait(
+            {task}, timeout=30
+        )  # bounded join; prevents resource leak on bind failure
+        raise
+    return stop, task
 
 
 async def _stop_daemon(stop: asyncio.Event, task: asyncio.Task) -> None:
@@ -256,7 +262,9 @@ async def _reap(procs: list[asyncio.subprocess.Process]) -> None:
         if p.returncode is not None:
             continue
         try:
-            await asyncio.wait_for(p.wait(), timeout=15)
+            await asyncio.wait_for(  # flake-ok: bounded teardown kill sequence; fallback SIGKILL requires a time boundary
+                p.wait(), timeout=15
+            )
             continue
         except asyncio.TimeoutError:
             pass
@@ -265,7 +273,9 @@ async def _reap(procs: list[asyncio.subprocess.Process]) -> None:
         except Exception:  # noqa: BLE001 - teardown must never mask a failure
             pass
         try:
-            await asyncio.wait_for(p.wait(), timeout=15)
+            await asyncio.wait_for(  # flake-ok: bounded teardown kill sequence; fallback SIGKILL requires a time boundary
+                p.wait(), timeout=15
+            )
         except (asyncio.TimeoutError, ProcessLookupError):
             pass
 
@@ -677,16 +687,17 @@ async def test_a_closed_stdin_is_not_a_reconnectable_ending() -> None:
         loop,
     )
 
-    await asyncio.wait_for(
-        run_bridge(
-            gw_reader,
-            _CaptureWriter(),  # type: ignore[arg-type]
-            asyncio.Event(),
-            stdin=stdin,
-            stdout_writer=stdout_writer,
-            session=session,
+    await await_until(
+        asyncio.ensure_future(
+            run_bridge(
+                gw_reader,
+                _CaptureWriter(),  # type: ignore[arg-type]
+                asyncio.Event(),
+                stdin=stdin,
+                stdout_writer=stdout_writer,
+                session=session,
+            )
         ),
-        timeout=10,
     )
     assert session.reason == "stdin_eof"
     assert session.reason not in StubSession.RECONNECTABLE

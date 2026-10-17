@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 import aiohttp
 import pytest
 
+from kiro_crew.testing.wait import async_wait_until, await_until
 from kiro_crew.wecom.client import (
     WeComClient,
     WeComInbound,
@@ -868,20 +869,19 @@ async def _feed_response(client: WeComClient, req_prefix: str, frame: dict) -> N
     shape testing-conventions.md warns against.
     """
 
-    async def _await_single_pending() -> list[str]:
-        while True:
-            pending = [rid for rid in client._pending_responses if rid.startswith(req_prefix)]
-            if len(pending) == 1:
-                return pending
-            if len(pending) > 1:
-                raise AssertionError(f"expected one pending upload req_id, got {pending}")
-            await asyncio.sleep(0)
+    def _find_single_pending() -> list[str] | None:
+        p = [rid for rid in client._pending_responses if rid.startswith(req_prefix)]
+        if len(p) > 1:
+            raise AssertionError(f"expected one pending upload req_id, got {p}")
+        return p if len(p) == 1 else None
 
-    try:
-        pending = await asyncio.wait_for(_await_single_pending(), timeout=5.0)
-    except asyncio.TimeoutError:
-        current = [rid for rid in client._pending_responses if rid.startswith(req_prefix)]
-        raise AssertionError(f"expected one pending upload req_id, got {current}")
+    pending = await async_wait_until(
+        _find_single_pending,
+        timeout=5.0,
+        describe=lambda: str(
+            [rid for rid in client._pending_responses if rid.startswith(req_prefix)]
+        ),
+    )
     frame = {**frame, "headers": {"req_id": pending[0]}}
     await client._handle_message(json.dumps(frame))
 
@@ -922,7 +922,7 @@ class TestUploadMedia:
                 "errmsg": "ok",
             },
         )
-        media_id = await asyncio.wait_for(task, timeout=2)
+        media_id = await await_until(task)
 
         assert media_id == "MID42"
         # Three frames, correct cmds and correlated upload_id.
@@ -956,7 +956,7 @@ class TestUploadMedia:
             },
         )
         with pytest.raises(WeComUploadError, match="refused"):
-            await asyncio.wait_for(task, timeout=2)
+            await await_until(task)
 
     async def test_missing_media_id_raises(self) -> None:
         from kiro_crew.wecom.media_upload import WeComUploadError
@@ -980,7 +980,7 @@ class TestUploadMedia:
         await asyncio.sleep(0.05)
         await _feed_response(client, "aibot_upload_media-", {"body": {}, "errcode": 0})
         with pytest.raises(WeComUploadError, match="media_id"):
-            await asyncio.wait_for(task, timeout=2)
+            await await_until(task)
 
     async def test_no_ws_raises(self) -> None:
         from kiro_crew.wecom.media_upload import WeComUploadError

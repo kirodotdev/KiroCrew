@@ -31,6 +31,7 @@ from meetings_routes_helpers import BASE, _start, _start_and_get_session
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
 from kiro_crew.apps.builtins.meetings.backend.routes import _common
+from kiro_crew.testing.wait import await_until
 
 
 class TestMeetingLifecycleRoutes:
@@ -422,7 +423,7 @@ class TestMeetingLifecycleRoutes:
             assert await asyncio.to_thread(init_entered.wait, 5)
 
             delete_request = asyncio.create_task(client.delete(f"{BASE}/meetings/standup"))
-            await asyncio.wait_for(observed_lock.waiter.wait(), timeout=5)
+            await await_until(observed_lock.waiter)
             release_init.set()
 
             assert (await init_request).status == 200
@@ -471,10 +472,10 @@ class TestMeetingLifecycleRoutes:
                     json={"agent_id": "sketch-artist", "enable": True},
                 )
             )
-            await asyncio.wait_for(toggle_entered.wait(), timeout=5)
+            await await_until(toggle_entered)
 
             delete_request = asyncio.create_task(client.delete(f"{BASE}/meetings/standup"))
-            await asyncio.wait_for(observed_lock.waiter.wait(), timeout=5)
+            await await_until(observed_lock.waiter)
             release_toggle.set()
 
             assert (await toggle_request).status == 200
@@ -1289,7 +1290,7 @@ class TestATeardownNeverClearsAReplacement:
         await asyncio.sleep(0)  # let it reach the flush
         active.set(replacement)  # type: ignore[arg-type]
         release.set()
-        drained = await asyncio.wait_for(teardown, timeout=5)
+        drained = await await_until(teardown)
 
         # The replacement is still installed, and the drained session is what came back.
         assert active.get("the-new-one") is replacement

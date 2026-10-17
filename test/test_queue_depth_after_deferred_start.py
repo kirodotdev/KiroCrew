@@ -18,6 +18,7 @@ import kiro_crew.subagent as subagent_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.subagent import SubagentManager
 from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.mark.asyncio
@@ -58,25 +59,32 @@ async def test_deferred_row_that_starts_clears_the_queued_count(monkeypatch) -> 
     try:
         info = await mgr.spawn_async("work", parent_session_key="dash:depth")
         assert info is not None and info.queued is True
-        for _ in range(100):
-            if events and events[-1].get("queued") == 1:
-                break
-            await asyncio.sleep(0.02)
+        await async_wait_until(
+            lambda: bool(events and events[-1].get("queued") == 1),
+            describe=lambda: f"queue depth event: {events[-1:]}",
+        )
         assert events[-1]["queued"] == 1
         free["gb"] = 32.0
-        for _ in range(250):
-            if started.is_set():
-                break
+
+        def _drain_until_started() -> bool:
             mgr._drain_queue()
-            await asyncio.sleep(0.02)
+            return started.is_set()
+
+        await async_wait_until(
+            _drain_until_started, describe=lambda: "the deferred row never started"
+        )
         assert started.is_set(), "the deferred row never started"
-        for _ in range(25):
-            await asyncio.sleep(0.02)
+        await async_wait_until(
+            lambda: bool(events and events[-1]["queued"] == 0),
+            describe=lambda: f"queue depth event: {events[-1:]}",
+        )
         assert events[-1]["queued"] == 0, events
     finally:
         mgr._shutting_down = True
         tasks = [task for task in mgr._tasks.values() if not task.done()]
         for task in tasks:
             task.cancel()
-        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+        await await_until(
+            asyncio.ensure_future(asyncio.gather(*tasks, return_exceptions=True)), timeout=5
+        )
         mgr._taskq.close()

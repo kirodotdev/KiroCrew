@@ -26,6 +26,7 @@ from kiro_crew.config import live
 from kiro_crew.config.live import ConfigWatch
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.subagent import _STALL_IDLE_SECS, _TIMEOUT_SECS, SubagentInfo, SubagentManager
+from kiro_crew.testing.wait import await_until
 
 
 def _mgr(max_concurrent: int = 4) -> SubagentManager:
@@ -365,7 +366,7 @@ class TestCapRaiseReachesTheRunnerLane:
 
         # No lane.release() and no lane.set_effective_cap(): the manager's raise
         # is the whole wake, and it is FIFO.
-        await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
+        await await_until(asyncio.ensure_future(asyncio.gather(first, second)))
         assert granted == ["s1", "s2"]
         assert adm.lane.running == 2 and adm.lane.waiting == 0
 
@@ -389,7 +390,7 @@ class TestCapRaiseReachesTheRunnerLane:
         assert granted == [] and adm.lane.waiting == 1  # the one slot is taken
 
         held.release_slot()  # the ordinary wake, once the slot is actually free
-        await asyncio.wait_for(parked, timeout=5)
+        await await_until(parked)
         assert granted == ["b"]
 
     @pytest.mark.asyncio
@@ -408,7 +409,7 @@ class TestCapRaiseReachesTheRunnerLane:
         fresh.agent.max_subagents = 4
         mgr.apply_limits(fresh)
 
-        await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
+        await await_until(asyncio.ensure_future(asyncio.gather(first, second)))
         assert granted == ["b", "c"]
         assert mgr.max_concurrent == 4 and adm.lane.running == 3
 
@@ -426,7 +427,7 @@ class TestCapRaiseReachesTheRunnerLane:
 
         assert mgr.set_effective_cap(None) == 3
 
-        await asyncio.wait_for(parked, timeout=5)
+        await await_until(parked)
         assert granted == ["b"]
 
     @pytest.mark.asyncio

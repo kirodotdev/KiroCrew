@@ -36,6 +36,7 @@ from kiro_crew.apps.builtins.mochi.queue_poller import (
     QueuePoller,
 )
 from kiro_crew.apps.spawn_sdk import SpawnError
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 def _execute_queue(n_tasks: int) -> dict:
@@ -207,8 +208,13 @@ async def test_healthy_host_is_never_throttled(tmp_path, monkeypatch):
             # Bound both waits: a broken handshake fails here, loudly and
             # locally, instead of hanging until the suite timeout kills the
             # worker (tests-are-deterministic).
-            await asyncio.wait_for(_resolve_when_waiting(poll_task), timeout=5)
-            await asyncio.wait_for(poll_task, timeout=5)
+            await async_wait_until(
+                lambda pt=poll_task: pt.done() or poller._spawn_future is not None,
+                timeout=5,
+                describe=lambda: "spawn future not yet created",
+            )
+            poller.notify_agent_done()
+            await await_until(poll_task)
         except BaseException:
             poll_task.cancel()
             with contextlib.suppress(BaseException):
@@ -336,12 +342,16 @@ async def test_queued_spawn_that_expires_is_fail_counted_not_silently_dropped(
 
     poll_task = asyncio.ensure_future(poller.poll())
     try:
-        await asyncio.wait_for(_wait_until_awaited(poll_task), timeout=5)
+        await async_wait_until(
+            lambda: poll_task.done() or poller._spawn_future is not None,
+            timeout=5,
+            describe=lambda: "spawn future not yet created",
+        )
         assert poller._spawn_future is not None, "the spawn should be awaited serially, not dropped"
         # Expire the serial wait by firing the timeout tick.
         now[0] += SPAWN_TIMEOUT_MS + 1_000
         poller.tick(now[0])
-        await asyncio.wait_for(poll_task, timeout=5)
+        await await_until(poll_task)
     except BaseException:
         poll_task.cancel()
         with contextlib.suppress(BaseException):

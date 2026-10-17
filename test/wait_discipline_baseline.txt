@@ -222,14 +222,11 @@
  1 test_mcp_preflight.py
  3 test_mcp_shared_deferred_tools.py
  1 test_meetings_audio_import.py
- 4 test_meetings_routes_lifecycle.py
  3 test_member_memory_mcp_routing.py
  1 test_members_eventlog_wiring_append_ordering.py
  1 test_memory_admission_queue.py
- 4 test_memory_backup.py
  3 test_memory_multistore_stress.py
  2 test_memv2_audit_a_prompt.py
- 4 test_memv2_audit_b_regressions.py
  2 test_memv2_audit_c_followup.py
  1 test_messaging_approval.py
  1 test_messaging_attachments.py
@@ -237,7 +234,6 @@
  3 test_messaging_driver.py
  1 test_mochi_activity.py
  1 test_mochi_autonomous_unfreeze.py
- 4 test_mochi_poller_freestyle_backoff.py
  1 test_model_access_fallback_interactive.py
  3 test_monitor_controller.py
  3 test_monitor_runtime_policy.py
@@ -252,22 +248,17 @@
  2 test_pod_windows_boot.py
  1 test_pptx_maker_routes.py
  2 test_private_cron_proxy.py
- 4 test_private_spawn_approval.py
  1 test_proc_non_utf8_kill_paths.py
  1 test_provider_spawn_off_loop_18172.py
- 4 test_publish_delete_race.py
- 4 test_published_queue_depth.py
  2 test_push_guard_diagnostics.py
  1 test_push_guard_squash.py
  1 test_queue_boundary_finalize.py
- 4 test_queue_depth_after_deferred_start.py
  3 test_queue_receipt.py
  1 test_registry_store_art_prewarm.py
  1 test_registry_store_art_prewarm_rewarm.py
  1 test_remote_crew_chaining.py
  1 test_resource_pressure_notify.py
  9 test_resume_publishes_hydrated_slot.py
- 4 test_run_tests_reap.py
  5 test_runloop_integration.py
  1 test_runtime_start_gate_headroom.py
  3 test_safe_read_file_bytes_descriptor.py
@@ -275,7 +266,6 @@
  2 test_sandbox_mount_source_sweep.py
  1 test_scenarios_v2_logic.py
  2 test_security_conductor_scripts_verify_finding.py
- 4 test_security_path_resolve_bounded.py
  2 test_sel.py
  2 test_sel_prune_streaming.py
  1 test_session_autocompact_override.py
@@ -332,17 +322,12 @@
  1 test_spawn_approval_channel_governance_13491.py
  1 test_spawn_approval_mid_wait_deny_13559.py
  1 test_spawn_exec_shim.py
- 4 test_spawn_reasoning_effort.py
  3 test_spawn_release_queued.py
  2 test_stall_enrichment.py
- 4 test_start_priority.py
  1 test_stop_kill_cancel.py
  1 test_stt_config_field_types.py
  3 test_stt_session.py
- 4 test_stub_bridge_liveness.py
- 4 test_stub_broker_reconnect.py
  2 test_stub_writer_death.py
- 4 test_subagent_config_hot_reload.py
  1 test_subagent_coverage_live_runs.py
  1 test_subagent_error_detail.py
  3 test_subagent_memory_bounds_concurrency.py
@@ -370,20 +355,15 @@
  1 test_terminal_ctty_shim.py
  1 test_theme_install.py
  1 test_todo_pill_resync.py
- 4 test_tool_gate_queue_bound.py
  2 test_tool_permission.py
- 4 test_truncating_save_recreate_order.py
  1 test_trusted_apps_api.py
  3 test_turn_dispatch.py
- 4 test_update_check_install_aware.py
  2 test_update_ownership.py
  1 test_vector_commit_failures.py
- 4 test_vector_memory.py
  1 test_wait_tool_early_end.py
  2 test_wake_judge_feedback_decision_log.py
  4 test_webhook_memory_preparation.py
  2 test_webhook_permission_requests.py
- 4 test_wecom_client.py
  1 test_wecom_client_cov80.py
  1 test_wheel_engine_lifecycle.py
  3 test_windows_fail_closed_optin.py
