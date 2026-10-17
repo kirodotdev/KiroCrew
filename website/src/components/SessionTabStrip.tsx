@@ -268,6 +268,13 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
               // already imports for OPENING on a sidebar row. A user who learned
               // the open gesture will try it here, and getting nothing reads as
               // the strip being broken rather than the gesture being unbound.
+              // Chromium on Windows enters middle-click autoscroll on the
+              // middle-button MOUSEDOWN when the target sits in a scroll
+              // container (this strip is overflow-x-auto), and then `auxclick`
+              // never fires, so the close below never runs. Cancelling the
+              // mousedown is the only place that stops it, the same guard the
+              // sidebar rows carry.
+              onMouseDownCapture={e => { if (e.button === 1) e.preventDefault() }}
               onAuxClick={e => {
                 if (e.button !== 1) return
                 e.preventDefault()
