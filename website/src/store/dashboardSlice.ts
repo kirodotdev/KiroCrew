@@ -1,8 +1,10 @@
-import { safeSetItem, safeSetSessionItem } from '../utils/safeStorage'
-import { newerTs } from '../lib/slotReadRelay'
+import { safeRemoveItem, safeSetItem, safeSetSessionItem } from '../utils/safeStorage'
+import { secureRandomId } from '../utils/secureId'
+import { newerTs, emitSlotRead, relaySlotReadWatermark, slotReadWatermark } from '../lib/slotReadRelay'
 import { jsonEqual } from '../utils/structuralEqual'
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { api } from '../api/client'
+import { withDeadline } from '../lib/withDeadline'
 import { ApiError } from '../api/apiError'
 import { sanitizeLlmOutput, isUnsafeKey } from '../utils/sanitize'
 import type { StatusData, ChatSlot, TodoList, McpSessionReport } from '../types'
@@ -185,6 +187,38 @@ const readCovers = (read: string | undefined, since: string): boolean => {
 }
 
 
+const UNREAD_ORPHAN_KEY_PREFIX = 'mc-unread-orphaned:'
+const UNREAD_ARRIVAL_KEY_PREFIX = 'mc-unread-arrival:'
+
+/** Read the marker for an arrival absorbed by a newer shared watermark. */
+export const readUnreadArrival = (slot: string): string | undefined => {
+  try { return localStorage.getItem(UNREAD_ARRIVAL_KEY_PREFIX + slot) ?? undefined } catch { return undefined }
+}
+
+export const holdUnreadArrival = (slot: string): string | undefined => {
+  const marker = secureRandomId()
+  if (!safeSetItem(UNREAD_ARRIVAL_KEY_PREFIX + slot, marker)) return undefined
+  return readUnreadArrival(slot) === marker ? marker : undefined
+}
+
+export const clearUnreadArrival = (slot: string): void =>
+  safeRemoveItem(UNREAD_ARRIVAL_KEY_PREFIX + slot)
+
+/** Read the exact shared watermark the gateway proved names no row. */
+const readUnreadOrphan = (slot: string): string | undefined => {
+  try { return localStorage.getItem(UNREAD_ORPHAN_KEY_PREFIX + slot) ?? undefined } catch { return undefined }
+}
+
+/** A tombstone has its own slot key, so windows retiring different slots never
+ *  overwrite each other. Windows retiring the same slot write the same proven
+ *  value. A tombstone whose slot holds another value matches nothing and stays
+ *  as one short key. */
+const recordUnreadOrphan = (slot: string, watermark: string): boolean =>
+  safeSetItem(UNREAD_ORPHAN_KEY_PREFIX + slot, watermark)
+
+const clearUnreadOrphan = (slot: string): void =>
+  safeRemoveItem(UNREAD_ORPHAN_KEY_PREFIX + slot)
+
 /** THE shared unread record ('mc-unread-shared' in localStorage): slot ->
  *  message watermark, or '' for a badge no watermark guards (any relayed
  *  read clears it). Badge presence and watermark are one key in one JSON
@@ -202,7 +236,9 @@ const readCovers = (read: string | undefined, since: string): boolean => {
  *  sentinels persist to per-tab sessionStorage via persistManualSentinels.
  *  'mc-unread-slots' is kept as a write-only PROJECTION of the record's
  *  keys — the pre-existing hub relay (safeSet) and tabs still running
- *  older code read it; nothing in this file does. */
+ *  older code read it; nothing in this file does. A value equal to its
+ *  per-slot tombstone is one the gateway disproved, and every reader here
+ *  treats it as absent. */
 const persistSharedUnread = (add: Record<string, string>, remove: readonly string[]): void => {
   try {
     let stored: Record<string, string>
@@ -210,7 +246,7 @@ const persistSharedUnread = (add: Record<string, string>, remove: readonly strin
     for (const k of remove) delete stored[k]
     for (const [k, v] of Object.entries(add)) {
       if (v === MANUAL_UNREAD) continue  // sentinels never publish
-      const prev = stored[k]
+      const prev = stored[k] === readUnreadOrphan(k) ? undefined : stored[k]
       if (prev === undefined) { stored[k] = v; continue }
       if (v === '') continue  // presence already recorded; never demote a watermark
       stored[k] = prev === '' ? v : (newerTs(prev, v) ?? prev)
@@ -285,7 +321,9 @@ export const restoreUnreadSince = (): Record<string, string> => {
       if (legacy.length > 0) safeSetItem('mc-unread-shared', JSON.stringify(record))
     }
     const since: Record<string, string> = {}
-    for (const [k, v] of Object.entries(record)) if (v !== '') since[k] = v
+    for (const [k, v] of Object.entries(record)) {
+      if (v !== '' && v !== readUnreadOrphan(k)) since[k] = v
+    }
     let manual: Record<string, string>
     try { manual = JSON.parse(sessionStorage.getItem('mc-unread-since') ?? '{}') as Record<string, string> } catch { manual = {} }
     for (const [k, v] of Object.entries(manual)) if (v === MANUAL_UNREAD) since[k] = MANUAL_UNREAD
@@ -298,7 +336,10 @@ export const restoreUnreadSince = (): Record<string, string> => {
  *  without writing shared state. */
 export const restoreUnreadBadges = (since: Record<string, string>): string[] => {
   let badges: string[]
-  try { badges = Object.keys(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>) } catch { badges = [] }
+  try {
+    const record = JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>
+    badges = Object.keys(record).filter(k => record[k] !== readUnreadOrphan(k))
+  } catch { badges = [] }
   for (const [k, v] of Object.entries(since)) {
     if (v === MANUAL_UNREAD && !badges.includes(k)) badges.push(k)
   }
@@ -417,7 +458,12 @@ export const changeApprovalMode = createAsyncThunk<
  *  through here, so the two cannot drift apart the way the eviction lists this
  *  PR unified once did. `unreadSlots` is written back only when it actually
  *  shrank, since the live-frame writer runs on every slots frame. */
-const reconcileSlots = (state: DashboardState, liveKeys: Set<string>, evictStale = true): void => {
+const reconcileSlots = (
+  state: DashboardState,
+  liveKeys: Set<string>,
+  evictStale = true,
+  previousKeys: Iterable<string> = [],
+): void => {
   // `countUnreadByMode` deliberately keeps orphan unread keys contributing to
   // the badge, on the premise that a reconcile drains them shortly. Draining on
   // both writers is what keeps that premise true. Always run: a wrongly drained
@@ -436,7 +482,13 @@ const reconcileSlots = (state: DashboardState, liveKeys: Set<string>, evictStale
       if (droppedManual) persistManualSentinels(state.unreadSince)
     }
     state.unreadSlots = drained
-    persistSharedUnread({}, unread.filter(k => !liveKeys.has(k)))
+    const departed = unread.filter(k => !liveKeys.has(k))
+    persistSharedUnread({}, departed)
+    // Slot keys are never reused, so a departed slot's per-slot tombstone and
+    // arrival marker name a row that can never come back: they would sit in
+    // localStorage for the tab's lifetime. Bounded to the slots this branch
+    // already walks — no key scan, because this runs on every slots frame.
+    for (const k of departed) { clearUnreadOrphan(k); clearUnreadArrival(k) }
     _relayUnreadToParent(JSON.stringify(state.unreadSlots))
   }
   // Eviction is NOT recoverable, so it is skipped when the caller cannot vouch
@@ -444,6 +496,13 @@ const reconcileSlots = (state: DashboardState, liveKeys: Set<string>, evictStale
   // frames that arrived while it travelled, and would then delete a slot the
   // stream has since created.
   if (!evictStale) return
+  // A retired slot has already left `unreadSlots`, so the drain above never
+  // names it; its shared entry and per-slot keys go when a live-stream list
+  // drops a slot this window had listed. Gated like eviction: a stale reply that
+  // predates a new slot must not strip the tombstone that slot's retire wrote.
+  const unlisted = [...previousKeys].filter(k => !liveKeys.has(k))
+  if (unlisted.length) persistSharedUnread({}, unlisted)
+  for (const k of unlisted) { clearUnreadOrphan(k); clearUnreadArrival(k) }
   for (const key of Object.keys(state.subagentRunning ?? {})) {
     if (!liveKeys.has(key)) evictSlotSubagents(state, key)
   }
@@ -967,10 +1026,11 @@ const dashboardSlice = createSlice({
       // the sidebar until restoration finishes, and marking it loaded would
       // claim a snapshot arrived when none has.
       if (action.payload.length === 0 && !state.slotsLoaded) return
+      const listedBefore = (state.slots ?? []).map(s => s.key) // row-read: keys this window listed, for per-slot key cleanup
       applySlots(state, action.payload)
       state.slotsGeneration = (state.slotsGeneration ?? 0) + 1
       state.slotsLoaded = true
-      reconcileSlots(state, new Set(action.payload.map(s => s.key)))
+      reconcileSlots(state, new Set(action.payload.map(s => s.key)), true, listedBefore)
     },
     // Sidebar → shortcut and close-landing order feed (see
     // DashboardState.sidebarOrder). The dispatch site diff-guards, so every
@@ -1081,7 +1141,7 @@ const dashboardSlice = createSlice({
         // are torn down.
         const live = new Set(remaining.map(s => s.key))
         for (const key of Object.keys(state.closingSlots ?? {})) if (!gone.has(key)) live.add(key)
-        reconcileSlots(state, live)
+        reconcileSlots(state, live, true, gone)
       }
       // `removed` is durable, so record it even before the first reconnect
       // snapshot and confirm any awaiting hold. History may trust this at once;
@@ -1174,6 +1234,12 @@ const dashboardSlice = createSlice({
         if (wasManual) persistManualSentinels(state.unreadSince)
       }
       persistSharedUnread({}, [action.payload])
+      // The slot's own tombstone and arrival marker go with its shared entry.
+      // Harmless if the delete then fails: the shared entry was dropped here
+      // too, so the tombstone guards nothing, and a missing marker only makes
+      // an in-flight read retire nothing.
+      clearUnreadOrphan(action.payload)
+      clearUnreadArrival(action.payload)
       _relayUnreadToParent(JSON.stringify(state.unreadSlots))
     },
     updateSlot(state, action: PayloadAction<Partial<ChatSlot> & { key: string }>) {
@@ -1359,7 +1425,13 @@ const dashboardSlice = createSlice({
         // record entry ('' = badge with no watermark, any relayed read
         // clears). The RMW keeps the newest instant, so publishing on every
         // arrival converges.
-        persistSharedUnread({ [slot]: effectiveTs ?? '' }, [])
+        const published = effectiveTs ?? ''
+        persistSharedUnread({ [slot]: published }, [])
+        // A new message voids any marker a read is holding and the slot's tombstone, so
+        // no waiting read retires and a value the record holds after it shows a dot.
+        // The marker goes first: a retire racing this either sees it gone or is undone here.
+        clearUnreadArrival(slot)
+        clearUnreadOrphan(slot)
         const prev = state.unreadSince[slot]
         // `localTs` is the row's own server ts and guards THIS window only.
         // A row the gateway never saves (a permission row) publishes the
@@ -1422,7 +1494,9 @@ const dashboardSlice = createSlice({
       // watermark survives, and this window adopts it: badge stays lit for
       // the message the relay did not cover.
       const survivor = clearSharedUnreadIfCovered(slot, readTs)
-      if (survivor !== undefined) {
+      // A survivor equal to the slot's tombstone is the watermark the gateway
+      // disproved, so it lights nothing.
+      if (survivor !== undefined && survivor !== readUnreadOrphan(slot)) {
         if (!state.unreadSince) state.unreadSince = {}
         state.unreadSince[slot] = survivor
         if (!state.unreadSlots.includes(slot)) state.unreadSlots.push(slot)
@@ -1434,6 +1508,26 @@ const dashboardSlice = createSlice({
         // deleted key is always a shared message watermark.
         delete state.unreadSince[slot]
       }
+      if (!state.unreadSlots.includes(slot)) return
+      state.unreadSlots = state.unreadSlots.filter(k => k !== slot)
+      _relayUnreadToParent(JSON.stringify(state.unreadSlots))
+    },
+    /** Retire a saved dot whose watermark the gateway cannot account for (see
+     *  orphanedWatermark). The exact watermark is recorded as a tombstone
+     *  without rewriting the shared record. This window's dot goes only while
+     *  it carries that same watermark, so a manual reminder or a newer local
+     *  watermark stays. */
+    retireSlotUnread(state, action: PayloadAction<{ slot: string; watermark: string; arrival: string }>) {
+      const { slot, watermark, arrival } = action.payload
+      // Check marker ownership around the tombstone write to close either arrival ordering.
+      if (readUnreadArrival(slot) !== arrival) return
+      if (!recordUnreadOrphan(slot, watermark)) return
+      if (readUnreadArrival(slot) !== arrival) {
+        clearUnreadOrphan(slot)
+        return
+      }
+      if (state.unreadSince?.[slot] !== watermark) return
+      delete state.unreadSince[slot]
       if (!state.unreadSlots.includes(slot)) return
       state.unreadSlots = state.unreadSlots.filter(k => k !== slot)
       _relayUnreadToParent(JSON.stringify(state.unreadSlots))
@@ -1704,8 +1798,81 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, retireSlotUnread, setUpdateProgress,
   setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink, dropSlotLinks, setPinRanks, setPendingPinOrder, setPinOrderError } = dashboardSlice.actions
+
+/** Newest parseable timestamp in a gateway transcript page. */
+export const newestRowTs = (messages: ReadonlyArray<{ ts?: string }>): string | undefined => {
+  let newest: string | undefined
+  for (const message of messages) {
+    if (!message.ts || !Number.isFinite(Date.parse(message.ts))) continue
+    newest = newerTs(newest, message.ts)
+  }
+  return newest
+}
+
+/** A saved message watermark the gateway response cannot account for.
+ *  The response was built after the gesture captured `held`, so it includes
+ *  every gateway row that watermark can name. Manual and empty marks are not
+ *  message watermarks and are never retired. */
+export const orphanedWatermark = (
+  held: string | undefined,
+  newestTs: string | undefined,
+): string | undefined =>
+  held && held !== MANUAL_UNREAD && !readCovers(newestTs, held) ? held : undefined
+
+/** The saved watermark a gateway page disproves. A page whose rows carry no
+ *  time, such as a turn still streaming, proves nothing, and neither does a
+ *  reply without a rows array. */
+export const watermarkDisprovedBy = (
+  held: string | undefined,
+  rows: ReadonlyArray<{ ts?: string }> | undefined,
+): string | undefined => {
+  if (!Array.isArray(rows)) return undefined
+  const newest = newestRowTs(rows)
+  if (newest === undefined && rows.length > 0) return undefined
+  return orphanedWatermark(held, newest)
+}
+
+/** How long a read waits for the gateway's proof before it relays anyway. */
+export const UNREAD_PROOF_TIMEOUT_MS = 10_000
+
+/** A read gesture that shows no transcript (Mark as read): clear this window's
+ *  dot, then relay the read at the click-time last_ts. A watermark that
+ *  last_ts cannot cover needs the gateway's word first: a one-row page fetched
+ *  after `held` was captured includes every row a saved watermark can name, so
+ *  an orphan tombstone is recorded before the relay and its echo cannot light
+ *  the dot again. The relay carries the watermark captured at the click, so a
+ *  row that arrives while the proof is in flight stays unread. A proof that
+ *  outlives UNREAD_PROOF_TIMEOUT_MS counts as no proof, so the relay still goes out. */
+export const readSlot = (key: string) => (
+  dispatch: (action: ReturnType<typeof markSlotRead> | ReturnType<typeof retireSlotUnread>) => unknown,
+  getState: () => unknown,
+): Promise<void> | void => {
+  const dashboard = (getState() as { dashboard?: DashboardState } | undefined)?.dashboard
+  const held = dashboard?.unreadSince?.[key]
+  const readTs = dashboard?.slots?.find(s => s.key === key)?.last_ts
+  const orphanSuspected = orphanedWatermark(held, readTs) !== undefined
+  const heldArrival = orphanSuspected ? holdUnreadArrival(key) : undefined
+  if (dashboard?.unreadSlots?.includes(key)) dispatch(markSlotRead(key))
+  if (!orphanSuspected) {
+    emitSlotRead(key, readTs)
+    return
+  }
+  const relayWatermark = slotReadWatermark(key, readTs)
+  return withDeadline(UNREAD_PROOF_TIMEOUT_MS, undefined, (signal) => api.chatSlotDetail(key, 1, undefined, signal))
+    .then((page) => {
+      const orphan = watermarkDisprovedBy(held, page.messages)
+      if (!orphan || heldArrival === undefined) return
+      dispatch(retireSlotUnread({ slot: key, watermark: orphan, arrival: heldArrival }))
+    })
+    // No proof, so the saved dot keeps its guard; the read still relays.
+    .catch(() => undefined)
+    .finally(() => {
+      if (heldArrival !== undefined && readUnreadArrival(key) === heldArrival) clearUnreadArrival(key)
+    })
+    .then(() => { relaySlotReadWatermark(key, relayWatermark) })
+}
 
 /**
  * Resolve a slot's surface key. Backend emits `surface` (mirrors `mode` today

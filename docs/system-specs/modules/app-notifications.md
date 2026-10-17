@@ -132,6 +132,24 @@ Settings › Notifications › "Mark sessions unread only when they need you" (`
 
 A member DM thread (`slot.mode === 'member'`, key prefix `member-`, which `slot_registry.py` reserves for that mode) is narrower in both modes: `memberThreadRowMarksUnread` badges it only on a row the crewmate wrote to the user, `assistant` or `permission`, with the opt-in still applied on top. Its `tool_call`, `tool_result`, `inject` and streaming rows never badge it: the Crewmates rail dot means "a crewmate said something to you", not "a crewmate ran a tool". `isMemberThreadSlot` reads the mode from `dashboard.slots` and falls back to the reserved prefix for a thread the list has not caught up to. Its `chat_done` is narrowed the same way (`turnCompletion.ts`): `chatStream` records every such row on the thread's running turn (`noteMemberThreadRow`, on or off screen), and the finished turn badges only when the turn delivered one (`takeMemberThreadSpoke`, which also clears the record) or paused for input (`needs_input` / a live question card). A patrol turn that only ran tools and ended quietly badges nothing. The question-card path is unchanged.
 
+### Shared unread record and retired watermarks
+
+Windows of one browser share unread state through `localStorage` (`store/dashboardSlice.ts`). Three key families take part:
+
+- `mc-unread-shared` is one JSON document mapping slot to message watermark, or `''` for a badge no watermark guards. Writes are per-slot deltas where the newest parseable timestamp wins, and a `''` arrival never demotes a real watermark. `mc-unread-slots` is a write-only projection of its keys for the hub relay and older tabs.
+- `mc-unread-orphaned:<slot>` is a tombstone. It holds the exact watermark the gateway proved names no row, which only builds before #15014 could save. Every reader of `mc-unread-shared` treats an entry equal to its slot's tombstone as absent.
+- `mc-unread-arrival:<slot>` is a per-read marker. `readSlot` writes a fresh one before it asks the gateway for proof, and removes it afterwards if it is still its own.
+
+The ordering rules:
+
+1. An arrival (`markSlotUnread`) publishes to `mc-unread-shared` first. It then clears the marker, then the tombstone.
+2. `retireSlotUnread` checks that the marker is still the read's own, writes the tombstone, and checks the marker again. If the marker changed, it removes the tombstone it wrote.
+3. Closing a slot and `reconcileSlots`' departed branch remove both per-slot keys.
+
+The marker exists because the shared record cannot tell an orphan from an absorbed arrival. An arrival that publishes `''` or an older timestamp leaves the stored watermark unchanged, so deleting the entry when it still equals the disproved value would also clear a real new message's dot. The marker, not the stored value, records that something arrived during the read.
+
+Removal condition: the tombstone and marker keys, and the readers' tombstone filter, can go once `mc-unread-shared` is migrated in a way that discards entries saved before #15014, such as a versioned record that drops unversioned entries on first read. Until then a saved orphan can surface on any later read, so the path stays.
+
 ## Plain-text previews
 
 The native notification body, feed-row preview and transcript turn minimap share

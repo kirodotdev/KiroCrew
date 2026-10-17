@@ -8,7 +8,7 @@ import type { RootState } from '../index'
 import type { ChatMessage } from '../../types'
 import { emitSlotRead } from '../../lib/slotReadRelay'
 import { devLog, inspectorOn } from '../../dev/scrollInspector'
-import { armConfirmedCloseHold, markSlotRead, removeSlotOptimistic } from '../dashboardSlice'
+import { armConfirmedCloseHold, clearUnreadArrival, holdUnreadArrival, markSlotRead, orphanedWatermark, readUnreadArrival, removeSlotOptimistic, retireSlotUnread, watermarkDisprovedBy } from '../dashboardSlice'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import { errMessage, isMissingSlotError, type StatusRejection } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
@@ -188,6 +188,12 @@ export const switchSlot = createAsyncThunk<
     // Safe unconditionally: this fetch resets the pane's messages and cursor, so
     // any older page still in flight is superseded even when the key is unchanged.
     abortActiveOlderFetch()
+    // Read before markSlotRead clears it, so a saved dot the fetched
+    // transcript cannot account for can be retired after the fetch.
+    const heldWatermark = (getState() as RootState).dashboard?.unreadSince?.[key]
+    const heldArrival = orphanedWatermark(heldWatermark, rowAtDispatch?.last_ts) === undefined
+      ? undefined
+      : holdUnreadArrival(key)
     dispatch(markSlotRead(key))
     // Opening a session is the canonical read gesture: relay it so every
     // other open dashboard window retires this slot's unread bubble too —
@@ -251,10 +257,22 @@ export const switchSlot = createAsyncThunk<
         // badges for messages nobody displayed. `pending` assigns activeSlot
         // atomically before this thunk body runs, so a superseded request
         // observes someone else's key here.
-        if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
+        if ((getState() as { chat: ChatState }).chat.activeSlot === key) {
+          const orphan = watermarkDisprovedBy(heldWatermark, first.messages)
+          if (orphan && heldArrival !== undefined) {
+            dispatch(retireSlotUnread({ slot: key, watermark: orphan, arrival: heldArrival }))
+          }
+          emitSlotRead(key, _newestSlotTs())
+        }
         return { ...walked, comparableTotal: first.total }
       }
-      if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
+      if ((getState() as { chat: ChatState }).chat.activeSlot === key) {
+        const orphan = watermarkDisprovedBy(heldWatermark, first.messages)
+        if (orphan && heldArrival !== undefined) {
+          dispatch(retireSlotUnread({ slot: key, watermark: orphan, arrival: heldArrival }))
+        }
+        emitSlotRead(key, _newestSlotTs())
+      }
       return first
     } catch (e) {
       // A thrown error crosses the thunk boundary as `miniSerializeError(e)`,
@@ -388,6 +406,8 @@ export const switchSlot = createAsyncThunk<
         }))
       }
       throw e
+    } finally {
+      if (heldArrival !== undefined && readUnreadArrival(key) === heldArrival) clearUnreadArrival(key)
     }
   },
 )
