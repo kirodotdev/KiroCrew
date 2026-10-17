@@ -590,59 +590,105 @@ def call_input_digest(tool: str, raw_args: Any) -> str:
 _RUNNING_PREFIX = "Running: "
 
 
-def directive_tool_from_call(mcp_server_name: str, tool_name: str, title: str) -> str:
-    """The directive tool a tool CALL frame was for, or ``""`` -- the consumer's
-    half of :func:`call_input_digest`'s ``tool`` argument.
+def _extract_code_mode_invocation(code: str) -> tuple[str, str] | None:
+    """Extract (server, tool) from opencode Code-Mode JS invocation in rawInput.code."""
+    if not code or not isinstance(code, str):
+        return None
+    idx = code.find("tools")
+    if idx < 0:
+        return None
+    i = idx + len("tools")
+    parts: list[str] = []
+    while True:
+        while i < len(code) and code[i] in " \t\n\r":
+            i += 1
+        if i >= len(code):
+            break
+        if code[i] == ".":
+            i += 1
+            while i < len(code) and code[i] in " \t\n\r":
+                i += 1
+            j = i
+            if i < len(code) and (code[i].isalpha() or code[i] == "_" or code[i] == "$"):
+                i += 1
+                while i < len(code) and (code[i].isalnum() or code[i] in "_$"):
+                    i += 1
+                parts.append(code[j:i])
+                continue
+            else:
+                break
+        elif code[i] == "[":
+            i += 1
+            while i < len(code) and code[i] in " \t\n\r":
+                i += 1
+            if i < len(code) and (code[i] == '"' or code[i] == "'"):
+                quote = code[i]
+                i += 1
+                j = i
+                while i < len(code):
+                    if code[i] == "\\" and i + 1 < len(code):
+                        i += 2
+                        continue
+                    if code[i] == quote:
+                        parts.append(code[j:i])
+                        i += 1
+                        break
+                    i += 1
+                else:
+                    break
+                while i < len(code) and code[i] in " \t\n\r":
+                    i += 1
+                if i < len(code) and code[i] == "]":
+                    i += 1
+                continue
+            else:
+                break
+        else:
+            break
+        while i < len(code) and code[i] in " \t\n\r":
+            i += 1
+        if i < len(code) and code[i] == "(":
+            break
+    if len(parts) < 2:
+        return None
+    return parts[0], parts[1]
 
-    Trusted identity first: :func:`directive_tool_for` over the ``_meta.kiro``
-    pair (kiro-cli). A backend that emits none still names the tool on the
-    wire: kiro-agent's MCP wrapper (KAS) sets the ``tool_call`` title to
-    ``@<serverName>/<toolName>`` from its own tool config, and claude-agent-acp
-    (Claude) passes Claude's raw tool name ``mcp__<server>__<tool>`` through as
-    the title. opencode names an MCP tool ``<server>_<tool>`` with a SINGLE
-    underscore and emits no ``_meta.kiro`` at all, so for that harness the title
-    is the only identity a call carries (measured on 1.18.30 --
-    ``agent-host-contract.md`` section 9). Any of the three spellings with
-    ``kirocrew-core`` as the server resolves.
-    Anything else is ``""``, and a call with no resolvable tool records no digest.
 
-    *title* MUST be the frame's ``wire_title`` -- the backend's own field -- and
-    never the display ``title``: ``acp/_dispatch.select_tool_title`` fills the
-    display label from a shell call's ``rawInput.description``, which the model
-    writes, so a shell call described as ``@kirocrew-core/reset_conversation``
-    would otherwise resolve here and record a digest it has no business holding.
-
-    This is a SELECTOR input, never a grant: a model that forges the title has
-    only chosen which record to look up, and the record was still parked by a real
-    tool call under this session's kernel-checked key with the tool's own name.
-    Forging it buys exactly what forging the marker's ``kind`` buys.
-    """
+def directive_tool_from_call(
+    mcp_server_name: str,
+    tool_name: str,
+    title: str,
+    raw_input: Any = None,
+) -> str:
+    """The directive tool a tool CALL frame was for, or ``""``."""
     resolved = directive_tool_for(mcp_server_name or "", tool_name or "")
     if resolved:
         return resolved
+    # try v2 code-mode if it's an execute frame
+    try_code_mode = False
+    if (tool_name == "execute" or title == "execute") and raw_input is not None:
+        try_code_mode = True
+    if not resolved and try_code_mode:
+        code = None
+        if isinstance(raw_input, dict):
+            code = raw_input.get("code") or raw_input.get("text") or raw_input.get("source")
+        if isinstance(code, str):
+            inv = _extract_code_mode_invocation(code)
+            if inv is not None:
+                server_c, tool_c = inv
+                if server_c == CORE_MCP_SERVER and tool_c in DIRECTIVE_TOOLS:
+                    return tool_c
     if not isinstance(title, str) or not title:
         return ""
-    # kiro-cli and KAS both prefix a tool-call title with the backend's own
-    # ``Running: `` (agent-host-contract.md §7, "Tool-call titles"): a recorded
-    # KAS frame carried ``Running: @kirocrew-core/ask_question``. The prefix is
-    # the backend's, not the model's -- rawInput.description never reaches the
-    # WIRE title -- so stripping it here widens nothing.
     if title.startswith(_RUNNING_PREFIX):
         title = title[len(_RUNNING_PREFIX) :]
-    # KAS: kiro-agent's wrapper stamps ``@<serverName>/<toolName>``.
     prefix = f"@{CORE_MCP_SERVER}/"
     if title.startswith(prefix):
         candidate = title[len(prefix) :].strip()
         return candidate if candidate in DIRECTIVE_TOOLS else ""
-    # Claude (claude-agent-acp): ``toolInfoFromToolUse`` has no MCP case, so the
-    # title is the raw Claude tool name, ``mcp__<server>__<tool>``. Same server
-    # check, spelled the way that adapter spells it; the server half is what a
-    # third-party server exposing a same-named tool fails.
     if title.startswith(f"mcp__{CORE_MCP_SERVER}__"):
         candidate = title[len(f"mcp__{CORE_MCP_SERVER}__") :].strip()
         return candidate if candidate in DIRECTIVE_TOOLS else ""
-    # opencode: ``<server>_<tool>``, joined by ONE underscore, and no
-    # ``_meta.kiro`` anywhere -- so this is the only channel that names the tool.
     return _server_underscore_qualified(title)
 
 

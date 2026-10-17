@@ -32,7 +32,12 @@ from kiro_crew.acp.harness_tool_names import (
     opencode_rewrites_name,
 )
 from kiro_crew.acp.transport_errors import AcpToolGateUnroutable
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_OPENCODE, launch_for
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_OPENCODE,
+    OPENCODE_ACP_V2_MAJOR,
+    launch_for,
+    opencode_major_version,
+)
 from kiro_crew.sandbox import scrub_agent_subprocess_env, wrap_argv, wrap_argv_async
 
 # The client's logger name: these lines have always been filed under it.
@@ -340,20 +345,173 @@ def _opencode_seeded_deny_rules(config_content: str, setting_key: str) -> tuple[
     """The deny rules Crew wrote into *config_content*, in seed order.
 
     Read back out of the seed itself rather than handed in separately, so the
-    read-back judges exactly what the harness was given.
+    read-back judges exactly what the harness was given. Handles both seed
+    generations: the v1 ``permission`` map and the v2 ``permissions`` array.
     """
     try:
         seed = json.loads(config_content)
     except ValueError:
         return ()
     value = seed.get(setting_key) if isinstance(seed, dict) else None
-    if not isinstance(value, dict):
-        return ()
-    return tuple(
-        str(key)
-        for key, action in value.items()
-        if key != "*" and action in ("deny", {"*": "deny"})
-    )
+    if isinstance(value, dict):
+        return tuple(
+            str(key)
+            for key, action in value.items()
+            if key != "*" and action in ("deny", {"*": "deny"})
+        )
+    rules = seed.get("permissions") if isinstance(seed, dict) else None
+    if isinstance(rules, list):
+        return tuple(
+            str(rule.get("action"))
+            for rule in rules
+            if isinstance(rule, dict)
+            and rule.get("effect") == "deny"
+            and rule.get("action") not in ("*", "")
+        )
+    return ()
+
+
+#: How long the binary version probe may take. A local exec, so seconds, not
+#: the read-back's tens of seconds.
+_OPENCODE_VERSION_TIMEOUT_S = 15
+
+#: Resolved binary path -> probed major version (``None`` when the probe
+#: failed). A binary replaced mid-process keeps its first answer; the
+#: read-back re-asserts the major per spawn, so a swap surfaces there.
+_OPENCODE_MAJOR_CACHE: dict[str, int | None] = {}
+
+
+def _probe_opencode_major(binary: str) -> int | None:
+    """Major version of the opencode *binary*, or ``None`` when undeterminable.
+
+    Runs ``binary --version`` (``1.18.35`` on the v1 line, ``opencode v2.0.29``
+    on v2) and parses the major. ``None`` covers a missing binary, a timeout,
+    a nonzero exit and an unparseable banner -- every one of which refuses the
+    session at the call sites rather than guessing a contract generation.
+    """
+    if binary in _OPENCODE_MAJOR_CACHE:
+        return _OPENCODE_MAJOR_CACHE[binary]
+    major: int | None = None
+    try:
+        completed = subprocess_mod.run(
+            [binary, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_OPENCODE_VERSION_TIMEOUT_S,
+        )
+    except (OSError, subprocess_mod.SubprocessError):
+        completed = None
+    if completed is not None and completed.returncode == 0:
+        major = opencode_major_version(completed.stdout.strip())
+    _OPENCODE_MAJOR_CACHE[binary] = major
+    return major
+
+
+def _opencode_v2_routing_config(
+    deny_rules: Collection[str] = (),
+    *,
+    mcp_deny_servers: Collection[str] = (),
+) -> str:
+    """The v2 inline harness config that makes this session ask, as one env value.
+
+    A ``permissions`` array (not the v1 ``permission`` map, which v2 ignores
+    except for a compat translation of the ask-all): Crew's ask-all rule rides
+    LAST so last-match-wins keeps it above both the operator's ambient rules
+    (merged first, same as the v1 builder) and the deny rules it precedes.
+    Deny rules keep the harness's MCP ``<server>_<tool>`` ids, which v2 spells
+    exactly as v1 did. Measured live on 2.0.29 that the env content outranks
+    project and user-global file scopes.
+
+    *mcp_deny_servers* names servers withheld whole this session: each becomes
+    an ``integration.use`` policy deny, which removes the server however it
+    was mounted -- the session array Crew builds AND native mounts from the
+    harness's own config, which v2 exposes no introspection for. Per-tool MCP
+    denies cannot be enforced on v2 (calls arrive framed as ``execute``;
+    ``tool.use`` with the fused id matches nothing, measured), so narrowed
+    servers are withheld rather than narrowed -- see settle, which marks them
+    unenforced for exactly this reason.
+    """
+    rules: list[dict[str, str]] = []
+    ambient = os.environ.get(_ENV_OPENCODE_CONFIG_CONTENT) or ""
+    if ambient:
+        try:
+            parsed = json.loads(ambient)
+        except ValueError:
+            logger.warning(
+                "%s is not valid JSON, so this session's harness config carries only "
+                "Crew's permission routing.",
+                _ENV_OPENCODE_CONFIG_CONTENT,
+            )
+        else:
+            if isinstance(parsed, dict) and isinstance(parsed.get("permissions"), list):
+                rules.extend(
+                    {k: str(v) for k, v in rule.items() if k in ("action", "resource", "effect")}
+                    for rule in parsed["permissions"]
+                    if isinstance(rule, dict)
+                )
+            elif isinstance(parsed, dict):
+                logger.warning(
+                    "%s carries no v2 permissions array, so this session's harness "
+                    "config carries only Crew's permission routing.",
+                    _ENV_OPENCODE_CONFIG_CONTENT,
+                )
+            else:
+                logger.warning(
+                    "%s is not a JSON object, so this session's harness config carries "
+                    "only Crew's permission routing.",
+                    _ENV_OPENCODE_CONFIG_CONTENT,
+                )
+    for rule in sorted(set(deny_rules)):
+        # Each switched-off tool BEFORE the ask-all, because v2 lets the last
+        # matching rule win.
+        rules.append({"action": str(rule), "resource": "*", "effect": "deny"})
+    rules.append({"action": "*", "resource": "*", "effect": "ask"})
+    doc: dict[str, object] = {"permissions": rules}
+    servers = sorted(set(mcp_deny_servers))
+    if servers:
+        doc["policies"] = [
+            {"action": "integration.use", "resource": f"mcp:{name}", "effect": "deny"}
+            for name in servers
+        ]
+    return json.dumps(doc)
+
+
+#: Native v2 permission actions: rules under these ids are enforced by the
+#: harness itself (measured: a ``shell`` deny fails the call with "Blocked by
+#: configuration policy" and no prompt). Anything else in a deny rule is an
+#: MCP ``<server>_<tool>`` id, which v2 never frames calls under -- such
+#: rules are unenforceable, and the servers they narrow are withheld whole.
+_V2_NATIVE_DENY_ACTIONS = frozenset(
+    {
+        "read",
+        "edit",
+        "glob",
+        "grep",
+        "shell",
+        "subagent",
+        "skill",
+        "question",
+        "webfetch",
+        "websearch",
+        "external_directory",
+        "execute",
+        "opencode_list_mcp_resources",
+        "opencode_read_mcp_resource",
+    }
+)
+
+
+def _opencode_v2_unenforced_denies(seeded: Collection[str]) -> frozenset[str]:
+    """Seeded deny rules v2 cannot enforce, so their servers are withheld.
+
+    Per-tool MCP denies arrive framed as ``execute`` and match nothing, while
+    native-action denies are honored by the harness -- so only the latter
+    stay in force. Fail-closed by construction: an unknown id withholds
+    rather than runs.
+    """
+    return frozenset(rule for rule in seeded if rule not in _V2_NATIVE_DENY_ACTIONS)
 
 
 def _opencode_routing_config(backend: str, deny_rules: Collection[str] = ()) -> str:
@@ -401,6 +559,89 @@ def _opencode_routing_config(backend: str, deny_rules: Collection[str] = ()) -> 
     else:
         merged[setting_key] = value
     return json.dumps(merged)
+
+
+def _verify_opencode_v2_routing(
+    session: ProcessSession,
+    backend: str,
+    argv: list[str],
+    config_content: str,
+    env: dict[str, str],
+    major: int | None,
+) -> tuple[str, str]:
+    """Verify the v2 routing seed, and report any issue.
+
+    v2 exposes no resolved-permission introspection: ``debug config`` lists
+    sources, never the effective value, and no API operation returns it. So
+    this half verifies what v2 DOES expose, and says plainly what it does not:
+
+    - the binary is the v2 generation the seed was built for (a swap under us
+      refuses rather than seeding a shape the binary may ignore);
+    - the binary runs with the seed in its environment (a malformed seed
+      fails startup loudly, so a child that exits nonzero is a harness
+      problem with the harness's own remedy);
+    - the seed document Crew hands over ends in the required ask-all rule,
+      with the deny rules it was asked to carry (this guards the builder).
+
+    What carries the rest of the v1 guarantee is structural, measured live on
+    2.0.29 rather than parsed per spawn: ``OPENCODE_CONFIG_CONTENT`` outranks
+    project AND user-global file scopes, so no file source can defeat the
+    seed, and per-call ``session/request_permission`` emission is re-proven by
+    the contract lane's live capture, not here. Agent-scoped permission
+    overrides are the known residual: v2 agents carry their own rules, the
+    seed does not reach them, and no introspection reveals them -- custom
+    agents with permissive rules are an operator configuration this check
+    cannot see.
+
+    *env* is the caller-built scrubbed environment, reused rather than rebuilt,
+    because this child is the same foreign binary the session spawns.
+    """
+    if major is None or major < OPENCODE_ACP_V2_MAJOR:
+        return (
+            f"expected an opencode v2+ binary for the v2 routing seed, but got " f"major {major!r}",
+            _opencode_readback_remedy(),
+        )
+    try:
+        seed = json.loads(config_content)
+    except ValueError:
+        seed = None
+    rules = seed.get("permissions") if isinstance(seed, dict) else None
+    if (
+        not isinstance(rules, list)
+        or not rules
+        or rules[-1] != {"action": "*", "resource": "*", "effect": "ask"}
+    ):
+        return (
+            "the v2 routing seed does not end in the required ask-all rule",
+            _opencode_readback_remedy(),
+        )
+    try:
+        completed = subprocess_mod.run(
+            argv,
+            cwd=session._spawn_work_dir,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_OPENCODE_READBACK_TIMEOUT_S,
+        )
+    except (OSError, subprocess_mod.SubprocessError) as exc:
+        return (
+            f"the resolved configuration could not be read back ({exc})",
+            _opencode_readback_remedy(),
+        )
+    if completed.returncode != 0:
+        detail = f"exit {completed.returncode}"
+        detail = launch_mod._readback_detail_with_diagnosis(detail, completed.stderr)
+        return (
+            f"the resolved configuration could not be read back ({detail})",
+            _opencode_readback_remedy(),
+        )
+    issue = acp_tool_gate.seeded_setting_issue(backend, session._scrub_observed("ask"))
+    if issue:
+        return issue, acp_tool_gate.remediation_for(backend)
+    return "", ""
 
 
 def _verify_opencode_routing(
@@ -467,6 +708,9 @@ def _verify_opencode_routing(
     )
     env["PATH"] = augmented_path(env.get("PATH", ""))
     env[_ENV_OPENCODE_CONFIG_CONTENT] = config_content
+    major = _probe_opencode_major(argv[0] if argv else "")
+    if (major or 0) >= OPENCODE_ACP_V2_MAJOR:
+        return _verify_opencode_v2_routing(session, backend, argv, config_content, env, major)
     try:
         completed = subprocess_mod.run(
             argv,
@@ -595,6 +839,15 @@ def _native_mount_refusal(session: ProcessSession, native: Collection[str]) -> t
     )
 
 
+def _is_v2_seed_shape(config_content: str) -> bool:
+    """Whether *config_content* is a v2 seed document (a ``permissions`` array)."""
+    try:
+        seed = json.loads(config_content or "")
+    except ValueError:
+        return False
+    return isinstance(seed, dict) and isinstance(seed.get("permissions"), list)
+
+
 def settle_opencode_denies(session: ProcessSession, config_content: str) -> frozenset[str]:
     """Record which deny rules are in force after the read-back; return the lost ones.
 
@@ -603,10 +856,17 @@ def settle_opencode_denies(session: ProcessSession, config_content: str) -> froz
     value that leaves the rules out cannot be read as having put them in. The lost
     rules are the ones the projection asked for that are not in force; the caller
     re-projects, and each one's server is withheld whole.
+
+    On a v2 seed, per-tool MCP denies are additionally unenforceable by
+    construction (v2 frames those calls as ``execute``), so they join the lost
+    set whatever the read-back found -- the servers they narrow are withheld
+    whole instead of narrowed.
     """
     setting_key = acp_tool_gate.permission_setting_for(ACP_BACKEND_OPENCODE)[0]
     seeded = frozenset(_opencode_seeded_deny_rules(config_content or "", setting_key))
     unenforced: frozenset[str] = getattr(session, "_opencode_denies_unenforced", frozenset())
+    if _is_v2_seed_shape(config_content or ""):
+        unenforced = unenforced | _opencode_v2_unenforced_denies(seeded)
     session._opencode_denies_in_force = seeded - unenforced
     asked = frozenset(getattr(session, "_session_harness_deny_rules", ()) or ())
     return asked - session._opencode_denies_in_force
@@ -675,9 +935,31 @@ class OpencodeLaunch(ProcessAdapter):
         # member promises. OFF-LOOP: the read-back spawns a short-lived child, and a
         # synchronous spawn on the gateway loop is the stall this path guards
         # against everywhere else.
-        self._config_content = _opencode_routing_config(
-            self.backend, getattr(session, "_session_harness_deny_rules", ())
-        )
+        deny_rules = getattr(session, "_session_harness_deny_rules", ())
+        major = await asyncio.to_thread(_probe_opencode_major, opencode_bin)
+        if major is None:
+            # No contract generation to build a seed for: refuse before any
+            # foreign binary starts rather than seed a shape it may ignore.
+            try:
+                acp_tool_gate.enforce_runtime_routing(
+                    self.backend,
+                    f"could not determine the opencode major version from {opencode_bin}",
+                    remedy=f"Run '{opencode_bin} --version' to see what fails, and "
+                    f"reinstall with '{OPENCODE_INSTALL_COMMAND}' if the command itself "
+                    "is broken.",
+                )
+            except acp_tool_gate.ToolGateUnroutable as exc:
+                raise AcpToolGateUnroutable(str(exc)) from None
+        if (major or 0) >= OPENCODE_ACP_V2_MAJOR:
+            # Servers already withheld are additionally denied by policy, so a
+            # native mount from the harness's own config -- which v2 exposes
+            # no introspection for -- cannot resurrect them either.
+            withheld = tuple(sorted(getattr(session, "_session_mcp_unhonoured", ()) or ()))
+            self._config_content = _opencode_v2_routing_config(
+                deny_rules, mcp_deny_servers=withheld
+            )
+        else:
+            self._config_content = _opencode_routing_config(self.backend, deny_rules)
         # Wrapped in the SAME sandbox, with the SAME credential mask, as the session
         # spawn. The read-back runs the harness's own binary, and this harness
         # resolves its configuration by reading the work dir -- which can load a

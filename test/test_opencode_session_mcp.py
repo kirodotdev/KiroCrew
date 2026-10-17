@@ -1260,15 +1260,28 @@ def test_the_real_read_back_helper_reaches_the_routing_read_back(
         stdout = json.dumps({"permission": resolved_permission})
         stderr = ""
 
+    class _Version:
+        returncode = 0
+        stdout = "1.18.35"
+        stderr = ""
+
     def _run(argv, **kwargs):
-        ran.append((list(argv), dict(kwargs["env"])))
+        # The read-back probes the binary generation first (``--version``,
+        # no env); the generation answer pins the v1 path under test.
+        if list(argv)[1:] == ["--version"]:
+            ran.append((list(argv), {}))
+            return _Version()
+        ran.append((list(argv), dict(kwargs.get("env", {}))))
         return _Completed()
 
     monkeypatch.setattr(opencode_mod.subprocess_mod, "run", _run)
+    # The generation probe caches per binary path; isolate it so each param
+    # drives the probe and the read-back deterministically.
+    monkeypatch.setattr(opencode_mod, "_OPENCODE_MAJOR_CACHE", {})
     issue, _remedy = _real_opencode_read_back(tmp_path, {"bash": {"pwd": "deny"}})
 
-    assert len(ran) == 1
-    argv, env = ran[0]
+    assert len(ran) == 2
+    argv, env = ran[1]
     assert argv[1:] == ["debug", "config"]
     assert env["HOME"] == str(tmp_path / "home")
     assert json.loads(env["OPENCODE_CONFIG_CONTENT"]) == json.loads(

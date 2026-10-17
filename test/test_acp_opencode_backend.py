@@ -57,6 +57,15 @@ def _no_ambient_opencode_env(monkeypatch):
     monkeypatch.delenv(_ENV_CONFIG, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _v1_binary_generation(monkeypatch):
+    """Every binary named here is a v1 fake: ``/opt/opencode`` cannot answer
+    ``--version``, so without this the seed site's generation probe would
+    refuse before the v1 seed and read-back under test. These tests pin v1
+    behavior; v2 has its own file."""
+    monkeypatch.setattr(opencode_mod, "_probe_opencode_major", lambda binary: 1)
+
+
 # ── Resolution ───────────────────────────────────────────────────────────────
 
 
