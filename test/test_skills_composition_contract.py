@@ -1542,6 +1542,9 @@ class TestTheLedgerAliasFold:
         def snapshot(self) -> dict[str, tuple[int, float]]:
             return {key: (1, 0.0) for key in self._keys}
 
+        def close(self) -> None:
+            pass  # the loader's shutdown flush; the fake holds nothing to write
+
     def test_an_alias_key_folds_under_the_served_key(self, tmp_path, make_loader) -> None:
         root = tmp_path / "skills"
         _skill(root, "real")

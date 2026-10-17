@@ -533,6 +533,38 @@ class TestSkillsLoader:
         assert any(s["description"] == "Refined" for s in _settled(loader).list_skills())
 
 
+class TestUsageLedgerShutdown:
+    """``close`` persists the usage ledger.
+
+    ``record`` debounces, so hits accepted inside the 60 s window live only in
+    memory until some later record falls outside it — a host that closes its
+    loader first (a gateway restart, the unsigned MCP fallback) dropped them.
+    """
+
+    def test_close_flushes_dirty_usage_ledger(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        _create_skill(skills_dir, "alpha", "---\nname: alpha\ndescription: A\n---\n# Alpha\n")
+        loader = _settled(SkillsLoader(skills_path=skills_dir, install_builtins=False))
+        ledger_path = tmp_path / "skill-usage.json"
+        loader._usage = SkillUsageLedger(ledger_path)
+        # Arm the debounce, so only the shutdown flush can persist the hit.
+        loader._usage._last_flush = time.time()
+        loader._usage.record("alpha")
+        loader.close()
+        # Assert the RELOAD, not the in-memory tally: a fresh ledger is what the
+        # ranking consults on the next run, and only that proves persistence.
+        assert SkillUsageLedger(ledger_path).score("alpha")[0] == 1.0
+
+    def test_close_tolerates_a_ledger_that_failed_to_init(self, tmp_path):
+        # ``_usage`` is best-effort telemetry: when its init failed it is None,
+        # and the shutdown flush must skip it rather than raise out of close.
+        skills_dir = tmp_path / "skills"
+        _create_skill(skills_dir, "alpha", "---\nname: alpha\ndescription: A\n---\n# Alpha\n")
+        loader = _settled(SkillsLoader(skills_path=skills_dir, install_builtins=False))
+        loader._usage = None
+        loader.close()  # must not raise
+
+
 class TestRepoScope:
     """``repo_scope:`` frontmatter mechanically suppresses a skill unless the
     SESSION's active project directory (or an ancestor) contains the named

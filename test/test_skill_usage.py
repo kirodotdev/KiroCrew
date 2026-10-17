@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import os
+import threading
 import time
+import weakref
 
 import pytest
 
@@ -17,6 +20,18 @@ from kiro_crew.skill_usage import (
 
 def _ledger(tmp_path):
     return SkillUsageLedger(tmp_path / "skill-usage.json")
+
+
+def _join_flush_threads(timeout: float = 2.0) -> None:
+    """Wait out the background flush thread(s) ``record`` spawned, bounded.
+
+    ``flush()`` snapshots under the ledger lock before any IO, so an overlapping
+    write can only carry an older tally — a test that asserts persisted state
+    must first let the spawn write finish.
+    """
+    for thread in threading.enumerate():
+        if thread.name == "skill-usage-flush":
+            thread.join(timeout)
 
 
 class TestSkillUsageLedger:
@@ -171,3 +186,101 @@ class TestPersistenceWithoutPosixFchmod:
         assert led.flush() is True
         assert len(attempts) == 2
         assert _ledger(tmp_path).score("x")[0] == 1.0
+
+
+class TestShutdownFlush:
+    """A hit ``record()`` accepted inside the debounce window must reach disk.
+
+    ``record`` only spawns the flush thread when ``_FLUSH_DEBOUNCE_SECS`` have
+    passed since the last write, and that thread is a daemon — so a gateway that
+    exits inside the window (restart, upgrade) dropped every hit it had just
+    accepted: nothing flushed on shutdown, and the tally lived only in memory
+    until some later ``record`` fell outside the window. These tests pin the
+    shutdown flush without weakening the write-rate limit the debounce exists
+    for.
+    """
+
+    def test_exit_inside_debounce_window_keeps_accepted_hits(self, tmp_path):
+        led = _ledger(tmp_path)
+        led.record("a")
+        _join_flush_threads()  # the first record always flushes (_last_flush starts at 0.0)
+        assert _ledger(tmp_path).score("a")[0] == 1.0
+
+        # Arm the debounce, so the next hit lands inside the 60 s window.
+        led._last_flush = time.time()
+        led.record("b")
+        saved = json.loads((tmp_path / "skill-usage.json").read_text())
+        assert set(saved["keys"]) == {"a"}, "precondition: b is debounced, not written"
+
+        # The gateway exits inside the window; no later record() falls outside it.
+        led.close()
+        assert (
+            _ledger(tmp_path).score("b")[0] == 1.0
+        ), "a hit record() accepted must survive an exit inside the debounce window"
+
+    def test_close_is_idempotent(self, tmp_path):
+        led = _ledger(tmp_path)
+        led.record("a")
+        _join_flush_threads()
+        led.close()
+        led.close()  # must not raise or double-write
+        assert _ledger(tmp_path).score("a")[0] == 1.0
+
+    def test_deferred_flush_writes_when_window_expires(self, tmp_path, monkeypatch):
+        # A hit inside the window arms a deferred flush for the rest of it, so
+        # the tally reaches disk even if no further record() ever falls outside
+        # the window (and at a hard-kill only hits of the last window are lost).
+        monkeypatch.setattr(skill_usage, "_FLUSH_DEBOUNCE_SECS", 0.2)
+        led = _quiet(tmp_path)
+        led.record("x")
+        timer = led._deferred_timer
+        assert timer is not None, "a hit inside the window must arm the deferred flush"
+        timer.join(5)
+        assert not timer.is_alive()
+        assert led._dirty is False, "the deferred write completed"
+        assert _ledger(tmp_path).score("x")[0] == 1.0
+
+    def test_records_inside_window_do_not_write_per_hit(self, tmp_path):
+        # The debounce is a deliberate write-rate limit (at most one write per
+        # window); arming the deferred flush must not turn record() into a
+        # write-per-hit path.
+        led = _ledger(tmp_path)
+        led.record("a")
+        _join_flush_threads()
+        led._last_flush = time.time()
+        for i in range(50):
+            led.record(f"k{i}")
+        saved = json.loads((tmp_path / "skill-usage.json").read_text())
+        assert set(saved["keys"]) == {"a"}
+        assert led._dirty is True, "the window's hits wait for the deferred flush"
+        assert led._deferred_timer is not None
+
+    def test_atexit_hook_flushes_dirty_hits(self, tmp_path):
+        led = _quiet(tmp_path)
+        led.record("x")
+        led._flush_at_exit()  # the interpreter-exit hook, registered in __init__
+        assert _ledger(tmp_path).score("x")[0] == 1.0
+
+    def test_close_releases_the_atexit_hook(self, tmp_path):
+        # __init__ registers one exit hook per ledger, and the registration pins
+        # the ledger for the whole process. A host that closes one loader per
+        # call — the unsigned MCP fallback (mcp_tools/skills.py) — would pin one
+        # ledger per call on a long-running gateway, so close() must release its
+        # hook. An unclosed ledger keeps its: that registration IS its exit
+        # path, which is the design.
+        unclosed = _ledger(tmp_path)
+        unclosed_ref = weakref.ref(unclosed)
+        del unclosed
+        gc.collect()
+        assert (
+            unclosed_ref() is not None
+        ), "precondition: an unclosed ledger stays pinned by its exit hook"
+
+        closed = _ledger(tmp_path)
+        closed_ref = weakref.ref(closed)
+        closed.close()  # the shutdown flush; the hook is redundant from here on
+        del closed
+        gc.collect()
+        assert (
+            closed_ref() is None
+        ), "a close()d ledger must be collectable, not pinned by its exit hook"

@@ -554,6 +554,12 @@ class SkillsLoader:
         self._catalog_wakeup.set()
         if index is not None:
             index.close()
+        if self._usage is not None:
+            # Persist the hits accepted inside the debounce window before the
+            # loader goes away: the ranking signal must not depend on some later
+            # record() falling outside the window, or on the process exiting
+            # gracefully — the ledger's own atexit hook covers only that last case.
+            self._usage.close()
 
     # ── Skill discovery: ``kiro_crew.skills_discovery`` ──
     _on_config_change = _discovery._on_config_change

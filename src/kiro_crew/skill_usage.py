@@ -18,12 +18,17 @@ via ``resolve_dollar_skills``, not from an async event-loop hot path, so:
   the in-memory tally with zero IO.
 
 Losing up to a debounce window of counts on a hard crash is acceptable — this
-is a ranking heuristic, not durable state. The file is best-effort throughout:
-a missing / corrupt file yields an empty ledger and is self-healed on next flush.
+is a ranking heuristic, not durable state — but a *graceful* exit keeps what
+``record`` accepted: a hit that lands inside the debounce window arms a
+deferred flush for the rest of it, and ``close`` (from the owning loader) plus
+an ``atexit`` hook flush whatever is still dirty at shutdown. The file is
+best-effort throughout: a missing / corrupt file yields an empty ledger and is
+self-healed on next flush.
 """
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import math
@@ -168,7 +173,15 @@ class SkillUsageLedger:
         self._lock = threading.Lock()
         self._dirty = False
         self._last_flush = 0.0
+        # The deferred flush for hits accepted inside the debounce window, and
+        # the shutdown state that stops them at teardown. See ``record``/``close``.
+        self._deferred_timer: threading.Timer | None = None
+        self._closed = False
         self._load()
+        # A gateway exiting inside the debounce window (a restart, an upgrade)
+        # shuts the interpreter down normally, which kills the daemon flush
+        # thread with the tally still dirty — this hook is the last writer.
+        atexit.register(self._flush_at_exit)
 
     # --- read path (used by get_context ranking) -------------------------
 
@@ -208,6 +221,7 @@ class SkillUsageLedger:
             return
         now = time.time()
         should_flush = False
+        timer = None
         with self._lock:
             self._hits[key] = self._hits.get(key, 0) + 1
             self._last_seen[key] = now
@@ -217,6 +231,19 @@ class SkillUsageLedger:
             if now - self._last_flush >= _FLUSH_DEBOUNCE_SECS:
                 self._last_flush = now
                 should_flush = True
+            elif self._deferred_timer is None and not self._closed:
+                # A hit inside the window would otherwise sit in memory until
+                # some later record() fell outside it — and a process that exits
+                # first (a gateway restart or upgrade) lost it. Arm ONE deferred
+                # flush for the rest of the window: the tally still reaches disk
+                # even if nothing else ever writes, while the write rate stays at
+                # the bound the debounce sets (at most one write per window)
+                # instead of degrading into write-per-hit.
+                delay = max(0.0, _FLUSH_DEBOUNCE_SECS - (now - self._last_flush))
+                timer = threading.Timer(delay, self._deferred_flush)
+                timer.name = "skill-usage-deferred-flush"
+                timer.daemon = True
+                self._deferred_timer = timer
         if should_flush:
             # record() runs on the gateway event loop (via the body-delivery loop /
             # resolve_dollar_skills), so the blocking file write is offloaded to a
@@ -225,6 +252,8 @@ class SkillUsageLedger:
             threading.Thread(
                 target=self.flush, name="skill-usage-flush", daemon=True
             ).start()
+        elif timer is not None:
+            timer.start()
 
     def _prune_locked(self, now: float) -> None:
         """Shrink to the hottest ``_MAX_TRACKED`` live keys. Caller holds lock."""
@@ -242,6 +271,55 @@ class SkillUsageLedger:
         self._last_seen = {k: self._last_seen.get(k, 0.0) for k in fresh}
 
     # --- IO --------------------------------------------------------------
+
+    def _deferred_flush(self) -> None:
+        """Write the tally when the debounce window expires with hits still held.
+
+        Runs on the deferred-flush timer thread (daemon), never on a caller's
+        loop. Re-arms nothing: once the window has closed, the next ``record``
+        falls outside it and goes back to the immediate-flush path.
+        """
+        with self._lock:
+            self._deferred_timer = None
+            if self._closed or not self._dirty:
+                return
+            self._last_flush = time.time()
+        self.flush()
+
+    def close(self) -> None:
+        """Flush accepted hits and stop background flushing. Idempotent.
+
+        Called from the owning loader's ``close`` (``SkillsLoader.close``), and
+        reached for a process that exits without one through the ``atexit`` hook
+        installed in ``__init__``. A graceful exit inside the debounce window
+        must not drop the hits ``record`` already accepted: this is the shutdown
+        flush.
+        """
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            timer = self._deferred_timer
+            self._deferred_timer = None
+        if timer is not None:
+            timer.cancel()
+        self.flush()
+        # The flush above was the shutdown write, so the hook is redundant from
+        # here on — and a registration pins this ledger for the whole process, so
+        # a host that closes one loader per call (the unsigned MCP fallback,
+        # mcp_tools/skills.py) would pin one per call on a long-running gateway.
+        # An unclosed ledger keeps its hook: that registration IS its exit path.
+        atexit.unregister(self._flush_at_exit)
+
+    def _flush_at_exit(self) -> None:
+        """``atexit`` hook: last-chance flush for an exit that skips ``close``.
+
+        Interpreter shutdown does not wait for daemon threads, so the debounced
+        flush thread dies with the process — anything still dirty would be lost.
+        ``close`` unregisters this hook after its own flush, so a closed ledger
+        never reaches it and stays collectable.
+        """
+        self.flush()
 
     def _load(self) -> None:
         """Populate from the persisted file, dropping TTL-stale entries."""
