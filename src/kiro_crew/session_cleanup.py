@@ -168,6 +168,32 @@ def _no_background_launch(provider: LLMProvider) -> tuple[float, str] | None:
     return None
 
 
+#: Passive backend activity may defer the sweep for at most this many idle
+#: windows past a session's last dispatched turn. A backend that never stops
+#: emitting therefore retains its session for a bounded time -- with the usual
+#: ``timeout_secs`` window, expiry lands two windows after the last turn --
+#: rather than for as long as it keeps talking. Every path that honours the
+#: stamp goes through :func:`_activity_ceiling`.
+ACTIVITY_GRACE_WINDOWS = 1
+
+
+def _activity_ceiling(session: SessionEntry, timeout_secs: int) -> float:
+    """The last instant at which backend activity still counts for a session."""
+    return session.last_used + ACTIVITY_GRACE_WINDOWS * timeout_secs
+
+
+def _last_activity(session: SessionEntry, timeout_secs: int) -> float:
+    """Backend frames grant at most ``ACTIVITY_GRACE_WINDOWS`` extra windows.
+
+    Passive traffic is not proof of finite work. Capping its contribution keeps
+    a looping backend from retaining an unlocked session indefinitely.
+    """
+    at = getattr(getattr(session, "provider", None), "session_activity_at", None)
+    if isinstance(at, (int, float)) and not isinstance(at, bool):
+        return max(session.last_used, min(at, _activity_ceiling(session, timeout_secs)))
+    return session.last_used
+
+
 @dataclass(slots=True)
 class CleanupState:
     """Mutable state exclusively owned by :class:`SessionCleanup`."""
@@ -1630,7 +1656,10 @@ class SessionCleanup:
                 total_checked += 1
                 if session.semaphore.locked():
                     continue
-                idle = key not in idle_exempt_keys and now - session.last_used > timeout_secs
+                idle = (
+                    key not in idle_exempt_keys
+                    and now - _last_activity(session, timeout_secs) > timeout_secs
+                )
                 orphaned = self._owner_is_gone(key)
                 if idle or orphaned:
                     expired.append((key, orphaned, session))
@@ -1754,9 +1783,12 @@ class SessionCleanup:
             # finished inside the await released the semaphore again but bumped
             # ``last_used`` on its way in, so the session is not idle now.
             # The orphan axis ignores the clock and re-asks the live set below.
-            if not is_orphan and self._deps.monotonic() - scanned.last_used <= timeout_secs:
+            if (
+                not is_orphan
+                and self._deps.monotonic() - _last_activity(scanned, timeout_secs) <= timeout_secs
+            ):
                 self._deps.logger.info(
-                    "Idle sweep: %s took a turn mid-sweep - left running",
+                    "Idle sweep: %s became active mid-sweep - left running",
                     key,
                 )
                 continue
