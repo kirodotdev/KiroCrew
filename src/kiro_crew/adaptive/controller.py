@@ -40,6 +40,7 @@ import asyncio
 import logging
 import math
 import os
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -56,6 +57,7 @@ from kiro_crew.metrics.events import (
 )
 from kiro_crew.metrics.process_gauges import cpu_utilization, read_logical_cores
 
+from .busy import LoopBusySampler
 from .policy import (
     ACTION_DECREASE,
     ACTION_FIXED,
@@ -67,7 +69,7 @@ from .policy import (
     PolicyParams,
     params_from_config,
 )
-from .signals import Sample, SpawnGateStats
+from .signals import SIGNAL_LOOP_LAG, Sample, SpawnGateStats
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +294,18 @@ class AdaptiveController:
         self._applied_exec: Optional[int] = None
         self._applied_gate: Optional[int] = None
         self._gate_pending: Optional[int] = None
+        #: Reads the loop thread's frame when a sample's timer is late; built by
+        #: :meth:`start`.
+        self._busy_sampler: Optional[LoopBusySampler] = None
+        #: What the loop was running during this tick's lag, ``""`` if it was on
+        #: time or nothing was read.
+        self._last_busy = ""
+        #: The open throttled period: clock time of its first cut and the caps the
+        #: policy held just before it. ``None`` while no cut is outstanding.
+        self._cut_since: Optional[float] = None
+        self._cut_from: tuple[int, int] = (0, 0)
+        #: The caps of the previous applied decision, ``None`` before the first.
+        self._decided_caps: Optional[tuple[int, int]] = None
         self._last_error: str = ""
         self._ticks = 0
         # Previous CPU-seconds reading and the clock time it was taken at. A
@@ -411,11 +425,18 @@ class AdaptiveController:
     def start(self) -> None:
         if not self._enabled:
             return
+        if self._busy_sampler is None:
+            self._busy_sampler = LoopBusySampler()
+        # Called on the loop thread: that is the thread a late timer means is busy.
+        self._busy_sampler.start(threading.get_ident())
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self.run(), name="adaptive-controller")
 
     async def stop(self) -> None:
         task, self._task = self._task, None
+        if self._busy_sampler is not None:
+            # Off the loop: the stop joins the sampler's thread.
+            await asyncio.to_thread(self._busy_sampler.stop)
         if task is not None and not task.done():
             task.cancel()
             try:
@@ -435,11 +456,20 @@ class AdaptiveController:
         # Read the period once: a hot-reload of controller_sample_secs that
         # lands during the sleep must not be measured as loop lag.
         secs = self._sample_secs
-        await self._sleep(secs)
+        sampler = self._busy_sampler
+        if sampler is not None:
+            # Look at the loop only once it is late by as much as counts as
+            # pressure, so a punctual tick reads no frame.
+            lag_secs = self._policy.params.thresholds.lag_decrease_ms / 1000.0
+            sampler.arm(secs + lag_secs)
+        try:
+            await self._sleep(secs)
+        finally:
+            busy = sampler.disarm() if sampler is not None else ""
         lag_ms = max(0.0, (self._clock() - t0 - secs) * 1000.0)
         emit_histogram(LOOP_LAG_MS, lag_ms, {"process": _PROCESS}, unit="ms")
         try:
-            await self.tick(loop_lag_ms=lag_ms)
+            await self.tick(loop_lag_ms=lag_ms, loop_busy=busy)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # the loop must outlive any one bad sample
@@ -507,9 +537,13 @@ class AdaptiveController:
             unit=NON_MS_HISTOGRAM_UNITS[PROCESS_CPU_UTILIZATION],
         )
 
-    async def tick(self, *, loop_lag_ms: float = 0.0) -> Decision:
-        """Sample, decide, apply. Public so tests drive one cycle at a time."""
+    async def tick(self, *, loop_lag_ms: float = 0.0, loop_busy: str = "") -> Decision:
+        """Sample, decide, apply. Public so tests drive one cycle at a time.
+
+        ``loop_busy`` is what the loop was running while this sample's timer was
+        late (see :class:`LoopBusySampler`); a cut caused by loop lag names it."""
         self._ticks += 1
+        self._last_busy = loop_busy
         if not self._enabled:
             return await self.step(Sample(t=self._clock()))
         if self._host_probe is None:
@@ -687,14 +721,25 @@ class AdaptiveController:
                 if decision.action in (ACTION_DECREASE, ACTION_PAUSE, ACTION_RESUME)
                 else logger.info
             )
+            # A cut that loop lag caused names what the loop was running during
+            # that lag, so the cut's cause can be read back from gateway.log.
+            busy = (
+                f" busy={self._last_busy}"
+                if self._last_busy
+                and SIGNAL_LOOP_LAG in decision.signals
+                and decision.action in (ACTION_DECREASE, ACTION_PAUSE)
+                else ""
+            )
             log(
-                "adaptive concurrency %s: exec_cap=%d gate_cap=%d paused=%s (%s)",
+                "adaptive concurrency %s: exec_cap=%d gate_cap=%d paused=%s (%s)%s",
                 decision.action,
                 decision.effective_exec_cap,
                 decision.spawn_gate_capacity,
                 decision.paused,
                 decision.reason,
+                busy,
             )
+        self._track_throttled_period(decision)
         if moved or (decision.changed and decision.action not in (ACTION_HOLD, ACTION_FIXED)):
             # Any confirmed move belongs in the history, whatever the decision
             # said: a hold after a live ``agent.max_subagents`` drop clamps the
@@ -720,6 +765,65 @@ class AdaptiveController:
                     "loop_lag_ms": round(last.loop_lag_ms, 1) if last else None,
                 }
             )
+
+    def _track_throttled_period(self, decision: Decision) -> None:
+        """Open a throttled period at its first cut, and close it with one
+        WARNING once the policy's caps are back where they were before it.
+
+        gateway.log keeps WARNING and above. The cut that opens a period is
+        logged there, while each growth step stays at INFO, so without this
+        line the end of a throttled period, and so its length, is not in that
+        log. A ceiling lowered meanwhile lowers the target with it, and a switch
+        to fixed mode, which pins both caps, ends the period too.
+        """
+        # Before the first decision the policy holds its start caps, so a cut on
+        # the very first tick opens a period too.
+        params = self._policy.params
+        prev = self._decided_caps or (params.exec_start, params.gate_start)
+        self._decided_caps = (decision.effective_exec_cap, decision.spawn_gate_capacity)
+        if self._cut_since is None:
+            if decision.action in (ACTION_DECREASE, ACTION_PAUSE) and (
+                decision.paused
+                or decision.effective_exec_cap < prev[0]
+                or decision.spawn_gate_capacity < prev[1]
+            ):
+                self._cut_since = self._clock()
+                self._cut_from = prev
+            return
+        if decision.paused:
+            return
+        from_exec, from_gate = self._cut_from
+        ceiling = max(1, int(self._manager.user_max_concurrent))
+        # Demand can grow a cap past where the policy starts it, and with no
+        # demand left the policy only restores toward that start, so an idle
+        # return to it ends the period too; otherwise it would stay open and
+        # fold every later episode into one length.
+        last = self._samples[-1] if self._samples else None
+        idle = last is not None and last.demand == 0
+        back = (
+            decision.action == ACTION_FIXED
+            or (
+                decision.effective_exec_cap >= min(from_exec, ceiling)
+                and decision.spawn_gate_capacity >= min(from_gate, self._gate_bounds[2])
+            )
+            or (
+                idle
+                and decision.effective_exec_cap >= min(from_exec, params.exec_start)
+                and decision.spawn_gate_capacity >= min(from_gate, params.gate_start)
+            )
+        )
+        if not back:
+            return
+        logger.warning(
+            "adaptive concurrency restored: exec_cap=%d gate_cap=%d after %ds "
+            "(before the cut: exec_cap=%d gate_cap=%d)",
+            decision.effective_exec_cap,
+            decision.spawn_gate_capacity,
+            round(max(0.0, self._clock() - self._cut_since)),
+            from_exec,
+            from_gate,
+        )
+        self._cut_since = None
 
     def _apply_exec(self, cap: Optional[int]) -> None:
         try:
