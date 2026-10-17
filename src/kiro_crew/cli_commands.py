@@ -1535,15 +1535,17 @@ def _agent_list_label(label: str) -> str:
     return safe_terminal_line(label)
 
 
-def _agent_model_or_exit(raw: str, provider: str) -> str:
+def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig) -> str:
     """The ``--model`` value to store on an agent, or exit with the reason.
 
     ``""`` and ``auto`` both mean "no pin", stored as ``""`` the way the crew
     editor stores them. A CLI call is judged on shape (the same pattern
-    ``cron add --model`` checks), then on the two registry spellings the crew
-    editor refuses before it reaches entitlement: a wrong-flavour id kiro-cli
-    does not serve, and a display-only canonical key. Entitlement itself needs
-    a live session's advertised list, which this offline command does not have,
+    ``cron add --model`` checks), then by the two gates the crew editor runs
+    before it reaches entitlement: a wrong-flavour id kiro-cli does not serve
+    (``model_registry.acp_id_correction``), and the backend-aware display-only
+    check (``_model_rejected_reason``, judged against the same harness the crew
+    editor picks with ``_pin_entitlement_backend``). Entitlement itself needs a
+    live session's advertised list, which this offline command does not have,
     so an unknown id is accepted, as the crew editor accepts it with no live
     session.
     """
@@ -1553,7 +1555,7 @@ def _agent_model_or_exit(raw: str, provider: str) -> str:
     if len(model) > MAX_SHORT_STRING or not _MODEL_NAME_RE.match(model):
         print("Error: invalid model format", file=sys.stderr)
         sys.exit(1)
-    if is_claude_code(provider):
+    if is_claude_code(cfg.agent.provider):
         return model
     correction = model_registry.acp_id_correction(model)
     if correction:
@@ -1563,13 +1565,14 @@ def _agent_model_or_exit(raw: str, provider: str) -> str:
             file=sys.stderr,
         )
         sys.exit(1)
-    if model_registry.is_canonical_key(model):
-        print(
-            f"Error: {model!r} is a display-only model identifier the "
-            f"{provider or 'active'} provider does not accept; use a served model id "
-            "or 'auto'.",
-            file=sys.stderr,
-        )
+    # Imported here, as the crew editor's own validator imports it, so the
+    # dashboard modules load only when a --model value is actually judged.
+    from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
+    from kiro_crew.dashboard.handlers.agents import _pin_entitlement_backend
+
+    reason = _model_rejected_reason(model, _pin_entitlement_backend(cfg))
+    if reason:
+        print(f"Error: {reason}", file=sys.stderr)
         sys.exit(1)
     return model
 
@@ -1634,7 +1637,7 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        model = _agent_model_or_exit(getattr(args, "model", None) or "", cfg.agent.provider)
+        model = _agent_model_or_exit(getattr(args, "model", None) or "", cfg)
         # A crew that carried this name before may still be listed on a team
         # (every removal path drops it best-effort). persist_member_config
         # purges that INSIDE the registry's locked mutation, right before the
@@ -1713,7 +1716,7 @@ def _handle_agent(args: argparse.Namespace) -> None:
             agent.workspace = args.workspace
         new_model = getattr(args, "model", None)
         if new_model is not None:
-            agent.model = _agent_model_or_exit(new_model, cfg.agent.provider)
+            agent.model = _agent_model_or_exit(new_model, cfg)
         new_label = getattr(args, "display_name", None)
         if new_label is not None:
             try:

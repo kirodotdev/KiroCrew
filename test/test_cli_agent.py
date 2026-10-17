@@ -851,3 +851,21 @@ class TestAgentModel:
         assert exc_info.value.code == 1
         assert "display-only" in capsys.readouterr().err
         assert cfg_path.read_text(encoding="utf-8") == before
+
+    def test_a_canonical_key_the_backend_translates_is_accepted(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The display-only refusal is the crew editor's backend-aware gate, not a
+        # bare registry lookup: on a harness whose namespace carries an id for the
+        # key (claude maps fable-5-1m), the crew editor accepts it, so the CLI must.
+        from kiro_crew import model_registry
+
+        monkeypatch.setattr(model_registry, "acp_id_correction", lambda _model: None)
+        config = _base_config()
+        config["agent"] = {"acp_backend": "claude", "member_acp_backend": "claude"}
+        cfg_path = _write_config(tmp_path, config)
+
+        _run_agent_cli(cfg_path, "create", "--name", "oncall", "--model", "fable-5-1m")
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agents"]["oncall"]["model"] == "fable-5-1m"
