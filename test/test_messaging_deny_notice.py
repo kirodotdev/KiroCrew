@@ -862,7 +862,10 @@ class TestEveryHostDenyOnTheMessagingSurfacesSteersFirst:
                 # The steer is inside _steer_deny_cause, gated on the decider's
                 # recorded host cause; pin that gate rather than a source line.
                 src = "\n".join(lines)
-                assert "if cause != DENY_CAUSE_APPROVAL_TIMEOUT:\n            return" in src
+                assert (
+                    "if cause not in (DENY_CAUSE_APPROVAL_TIMEOUT, DENY_CAUSE_APPROVAL_UNDELIVERABLE):\n"
+                    "            return"
+                ) in src
                 continue
             steer = _last_match(surface.steer, lines, max(0, i - surface.window), i)
             assert steer >= 0, f"{surface.path}:{i + 1}: the host half is not steered"

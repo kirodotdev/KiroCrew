@@ -51,7 +51,7 @@ from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, DENY_CAUSE_APPROVAL_UNDELIVERABLE
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.renderer import new_approval_nonce, nonce_eq
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -419,6 +419,7 @@ class TextReplyApprovalDecider:
                 "approval: no prompt was delivered for %s; denying immediately",
                 request_id,
             )
+            self.last_deny_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
             return False
         verdict = await entry.wait(self._timeout_s)
         if verdict == TRUST:

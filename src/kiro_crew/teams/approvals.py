@@ -33,7 +33,7 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable
 
-from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, DENY_CAUSE_APPROVAL_UNDELIVERABLE
 from kiro_crew.messaging.approval import adoptable_reservation
 from kiro_crew.messaging.renderer import nonce_eq
 from kiro_crew.sel import sel
@@ -178,6 +178,7 @@ class TeamsApprovalDecider:
             self._nonces.pop(request_id, None)
             if TeamsApprovalDecider._REGISTRY.get(key) is self:
                 TeamsApprovalDecider._REGISTRY.pop(key, None)
+            self.last_deny_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
             return False
         loop = asyncio.get_running_loop()
         # Adopt the reservation opened when this card's nonce was armed. The click

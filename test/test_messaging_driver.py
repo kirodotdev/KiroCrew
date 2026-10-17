@@ -24,6 +24,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.constants import (
     DENY_CAUSE_APPROVAL_TIMEOUT,
+    DENY_CAUSE_APPROVAL_UNDELIVERABLE,
     STEER_NOTICE_BOUND_SECS,
     split_trailing_protocol_suffix,
 )
@@ -632,6 +633,25 @@ class TestApprovalTimeoutInbandNotice:
             p, r, approval_mode=APPROVAL_INTERACTIVE, decider=_ExpiringDecider(cause="")
         ).run("hi")
         assert [c[0] for c in p.calls] == ["reject_tool"]
+
+    @pytest.mark.asyncio
+    async def test_an_undeliverable_prompt_steers_the_cause_before_the_reject(self):
+        """An approval prompt that could not reach the operator steers the
+        undeliverable cause, not the generic deny, so the model knows
+        the host blocked it and can explain the constraint."""
+        r = _RecordingRenderer()
+        p = _SteerRecordingProvider(self._perm_script())
+        await TurnDriver(
+            p,
+            r,
+            approval_mode=APPROVAL_INTERACTIVE,
+            decider=_ExpiringDecider(cause=DENY_CAUSE_APPROVAL_UNDELIVERABLE),
+        ).run("hi")
+        assert [c[0] for c in p.calls] == ["steer", "reject_tool"]
+        notice = p.calls[0][1]
+        assert "could not be delivered" in notice
+        assert "bash: rm -rf build" in notice
+        assert p.rejected == ["rq1"]
 
     @pytest.mark.asyncio
     async def test_a_plain_callable_decider_denies_without_a_cause(self):
