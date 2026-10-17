@@ -54,7 +54,7 @@ MAX_FOLDER_DEPTH = 20
 class ArtifactFolderStore:
     """Filesystem-backed store for the nested artifact-library folder tree.
 
-    Mirrors the chat-folder subsystem (``dashboard/state.py`` folders): a flat
+    Mirrors the chat-folder subsystem (``dashboard/state_parts/sidebar_stores.py`` folders): a flat
     JSON list persisted to ``artifact_folders.json`` in the config dir, with
     nesting expressed via ``parent_id`` pointers rather than nested storage or
     path strings. Membership lives on the artifact record (``Artifact.folder_id``),

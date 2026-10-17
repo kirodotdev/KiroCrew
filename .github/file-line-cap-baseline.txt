@@ -72,7 +72,6 @@
 2818 src/kiro_crew/dashboard/server.py
 2255 src/kiro_crew/dashboard/session_directive_apply.py
 3095 src/kiro_crew/dashboard/session_transfer.py
-5385 src/kiro_crew/dashboard/state.py
 2795 src/kiro_crew/deploy/handlers.py
 2177 src/kiro_crew/discord/client.py
 2103 src/kiro_crew/discord/renderer.py

@@ -657,7 +657,7 @@ async def send_to_target(
         # `_run_chat` is passed straight through, NOT wrapped in
         # `state.run_background_turn`: that cap is structurally unreachable here.
         # `run_background_turn` returns the coroutine untouched for an attended slot
-        # (`state.py`, "this wrapper is inert"), `_ChatSlot.unattended` is
+        # (`state_parts/dashboard_services.py`, "this wrapper is inert"), `_ChatSlot.unattended` is
         # `bool(self._app) and not self._human_seen`, and `authorize_target` refuses
         # every `_app` target above (`app_scoped_target`) — so no target this
         # function can reach is ever unattended, and a wrapper would only add a

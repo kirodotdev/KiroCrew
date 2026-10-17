@@ -4,7 +4,7 @@ Three surfaces need it and MUST agree, because a disagreement is silent:
 
 * ``diagnostics.py`` tags a bug report with ``channel: <lane>`` so triage can
   filter prerelease reports as a group.
-* ``dashboard/state.py`` ships it in the status payload, so the dashboard can
+* ``dashboard/state_parts/status_payload.py`` ships it in the status payload, so the dashboard can
   show a prerelease user an obvious way to report a bug.
 * ``.github/workflows/issue-triage.yml`` maps the issue form's answer to the
   same label vocabulary.

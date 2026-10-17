@@ -16,8 +16,8 @@ from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
-    from kiro_crew.dashboard import DashboardState
     from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
+    from kiro_crew.dashboard.state_parts.dashboard_state import DashboardState
 
 logger = logging.getLogger("kiro_crew.dashboard.state")
 

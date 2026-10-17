@@ -188,7 +188,7 @@ class TestBroadcastCompactionResultBackoff:
         assert tagged and all((m.get("meta") or {}).get("kind") == "compaction" for m in tagged)
 
     def test_state_notice_glyphs_pin_the_frontend_status_regex(self):
-        """The other half of the same contract: ``state.py`` writes three more
+        """The other half of the same contract: ``state_parts/session_events.py`` writes three more
         ``kind="compaction"`` shapes whose LEAD GLYPH the frontend strips
         (``STATUS_LEAD_RE`` in ``CompactionCard.tsx``: 🔄 U+1F504, ♻ U+267B,
         ⏳ U+23F3) and one ⚠-led failure it routes to the error surface. A glyph

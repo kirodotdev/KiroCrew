@@ -86,7 +86,7 @@ def test_backend_recovery_markers_match_the_frontend_prefix_list() -> None:
         f"them: {sorted(missing_in_backend)}. Remove them, or add the constant to state.py."
     )
     # Redundant given the two set checks, but it names the invariant the
-    # `state.py` comment states in prose and pins the count against a duplicate
+    # `state_parts/injected_turns.py` comment states in prose and pins the count against a duplicate
     # entry on either side.
     assert len(backend) == len(frontend), (
         f"{len(backend)} backend marker(s) vs {len(frontend)} frontend entr(ies) — "

@@ -165,7 +165,7 @@ def compaction_notice(content: str = "Conversation compacted: summary") -> dict:
     """A compaction result row: an assistant row tagged ``meta.kind="compaction"``.
 
     Four writers emit this shape -- ``chat_utils._append_compaction_notice``
-    plus three direct ``slot.append`` sites in ``state.py`` (the proactive
+    plus three direct ``slot.append`` sites in ``state_parts/session_events.py`` (the proactive
     auto-compact paths, which bypass the chat_utils helper to avoid an import
     cycle). The tag, not the writer, is what this predicate keys on.
     """

@@ -1296,8 +1296,8 @@ def _flush_file_changes(
         _dropped,
         _MAX_TURN_SNAPSHOT_CHARS,
     )
-    # Honour the in-place-mutation contract (see resolve_permission_message in
-    # state.py): "the periodic flush skips non-dirty slots, so an unflagged
+    # Honour the in-place-mutation contract (see _mark_permission_resolved in
+    # state_parts/transcript_rows.py): "the periodic flush skips non-dirty slots, so an unflagged
     # in-place mutation can be lost on restart". The assistant-message branch
     # above mutates meta in place without appending, so nothing else marks the
     # slot dirty. That matters on the error/cancel call path, which — unlike the

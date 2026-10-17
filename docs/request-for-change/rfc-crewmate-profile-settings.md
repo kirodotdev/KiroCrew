@@ -35,7 +35,7 @@ At `99c76a43d6`:
 
 - A crewmate's DM slot is created by `POST /api/members/{slug}/thread`
   (`dashboard/handlers/members.py`, `api_member_thread`) with no approval state,
-  so `_trust` / `_trust_reads` are `False` (`dashboard/state.py`) and every tool
+  so `_trust` / `_trust_reads` are `False` (`dashboard/state_parts/chat_slot.py`) and every tool
   call asks.
 - The crew record (`KiroCrewAgentConfig`, `config/sections_session.py`) has `model` and
   `reasoning_effort` but no approval field, so a permission can only be picked

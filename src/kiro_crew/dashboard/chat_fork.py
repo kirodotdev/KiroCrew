@@ -416,7 +416,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         request_app=request_app,
         origin=request_slot_origin(request_app),
         # Human request-layer path: a person forking a conversation. The
-        # origin conjunct in state.py still excludes app-token callers.
+        # origin conjunct in state_parts/slot_directory.py still excludes app-token callers.
         count_user_session=True,
         # Inheriting is arming a SECOND routed session, so it answers to the
         # same owner predicate as the arm itself: this route is gated on app

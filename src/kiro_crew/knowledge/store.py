@@ -256,8 +256,8 @@ class IngestionGate:
 # finalizes its job row inline on its cancellation path, where an interrupted
 # ``to_thread`` could drop the write -- ``start_rebuild_job`` sweeps a stale
 # 'processing' row to 'abandoned', so the single-flight guard recovers either
-# way. And ``dashboard/state.py`` builds this store lazily, whose migrations run
-# under ``allow_on_loop()`` below.
+# way. And ``dashboard/state_parts/dashboard_state.py`` builds this store lazily, whose migrations
+# run under ``allow_on_loop()`` below.
 #
 # * ``strict_env=STORE_STRICT_ENV`` keeps this store off the SHARED
 #   ``KIROCREW_STRICT_ON_LOOP_PERSIST`` switch, which ``setup.py``'s ``test_e2e``

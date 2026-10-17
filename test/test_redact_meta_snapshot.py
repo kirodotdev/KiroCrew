@@ -139,7 +139,7 @@ def test_flush_file_changes_marks_slot_dirty() -> None:
     the success path, is not followed by an explicit `save_slot_off_loop`) the
     `file_changes` would never reach disk.
 
-    `state.py`'s in-place-mutation contract states it directly: "the periodic
+    `state_parts/transcript_rows.py`'s in-place-mutation contract states it directly: "the periodic
     flush skips non-dirty slots, so an unflagged in-place mutation can be lost on
     restart."
     """

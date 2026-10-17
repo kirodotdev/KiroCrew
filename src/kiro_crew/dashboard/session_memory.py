@@ -297,7 +297,7 @@ def session_title(key: str, get_slot: Callable[[str], object]) -> dict[str, obje
 
     A session key is opaque (``dashboard:chat-69-1785905004``); the chat it belongs
     to already has an LLM-generated title, and a list keyed by the raw id is
-    unreadable. The mapping is exact — ``state.py`` documents that a slot key
+    unreadable. The mapping is exact — ``state_parts/slot_directory.py`` documents that a slot key
     *becomes* the session key as ``dashboard:{slot.key}``.
 
     Reads ``slot.display_title`` rather than the persisted value, and redacts here.

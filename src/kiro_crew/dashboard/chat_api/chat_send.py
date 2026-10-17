@@ -104,7 +104,7 @@ def _sweep_stale_permissions(slot: "_ChatSlot") -> None:
         if not isinstance(cls, dict):
             # Valid JSON but not an object (e.g. [], "x", 123, null) — cannot
             # carry a "resolved" key; skip rather than raise TypeError and
-            # abort the whole sweep. Mirrors parse_cls_meta() in state.py.
+            # abort the whole sweep. Mirrors parse_cls_meta() in state_parts/transcript_rows.py.
             continue
         if "resolved" in cls:
             continue
@@ -420,7 +420,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             mode=requested_mode,
             memory_mode=requested_memory_mode,
             # Human request-layer path: a person sending a chat message. The
-            # origin conjunct in state.py still excludes app-token callers. A
+            # origin conjunct in state_parts/slot_directory.py still excludes app-token callers. A
             # slot an attested cron opens is not a person's and is not counted.
             count_user_session=not cron_creator,
         )

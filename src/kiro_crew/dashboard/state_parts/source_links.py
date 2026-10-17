@@ -10,13 +10,23 @@ Writes: ``_dismissed_hydrated``, ``_dismissed_source_links``, ``_dismissed_txn_d
 ``_dismissed_txn_pending``, ``_projection``, ``_source_links_cache``,
 ``_source_links_revision``.
 
+Instance fields of ``DashboardState`` this module reads and writes:
+
+Writes: ``_source_active_at``.
+Reads only: ``_owner_ws_clients``, ``_slots``.
+
 A function whose first parameter is ``self`` is a ``_ChatSlot`` method: the
 class binds it under the same name (``state_parts/chat_slot.py``), so it reads
 and writes the slot's own fields and calls its siblings through ``self``.
+
+A function whose first parameter is ``self`` is a ``DashboardState`` method: the
+class binds it under the same name (``state_parts/dashboard_state.py``), so it reads
+and writes the state's own fields and calls its siblings through ``self``.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import TYPE_CHECKING
@@ -26,6 +36,7 @@ from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
+    from kiro_crew.dashboard.state_parts.dashboard_state import DashboardState
 
 logger = logging.getLogger("kiro_crew.dashboard.state")
 
@@ -409,6 +420,175 @@ def source_links_view(
         include_check_status,
         dashboard_user=dashboard_user,
     )
+
+
+def source_link_urls(self: DashboardState) -> list[str]:
+    """URLs of the sidebar-visible PR/MR chips across all slots.
+
+    Only the links each slot actually serializes (the first
+    ``_SERIALIZED_SOURCE_LINKS_PER_SLOT``) are returned — these are the
+    chips whose check status the periodic owner-WS refresh keeps fresh.
+    Reads the per-slot revision cache, so this is cheap to call on a timer.
+
+    Issue links are excluded: the check-status path reaches ``gh pr view``
+    and has no meaning for an issue.
+
+    Returns nothing while the chips are switched off. This is the point of
+    gating here rather than only in the payload: the periodic refresh this
+    feeds spawns a credentialed provider subprocess per round, and a user who
+    turned the chips off should stop paying for status nobody renders.
+    """
+    from kiro_crew.dashboard.handlers.source_providers import (
+        session_card_source_links_enabled,
+    )
+
+    if not session_card_source_links_enabled():
+        return []
+    urls: list[str] = []
+    for s in self._slots.values():
+        urls.extend(self._slot_chip_urls(s))
+    return urls
+
+
+def _slot_chip_urls(slot: _ChatSlot) -> list[str]:
+    """The PR/MR chip URLs one slot serializes (sidebar budget, no issues)."""
+    return [
+        link["url"]
+        for link in _budgeted_source_links(slot._pr_source_links())
+        if link.get("kind", "change") == "change"
+    ]
+
+
+def note_source_activity(self: DashboardState, key: str) -> None:
+    """Keep this slot's chips on the fast refresh tier for a while.
+
+    Called when a turn ends on the slot and when the owner opens it. Spends
+    no credentials itself: it only decides which tier the owner's own
+    periodic driver puts the slot's chips on.
+    """
+    now = time.monotonic()
+    stamps = self._prune_source_activity(now)
+    if key in self._slots:
+        stamps[key] = now
+
+
+def _prune_source_activity(self: DashboardState, now: float) -> dict[str, float]:
+    """The activity stamps, minus closed slots and lapsed windows.
+
+    Run on every write as well as every read, so the map never holds more
+    than one entry per live slot however its readers are scheduled.
+    """
+    stamps = getattr(self, "_source_active_at", None)
+    if stamps is None:
+        stamps = self._source_active_at = {}
+    for key in [
+        key
+        for key, at in stamps.items()
+        if key not in self._slots or now - at >= _SOURCE_ACTIVE_WINDOW_SECS
+    ]:
+        del stamps[key]
+    return stamps
+
+
+def idle_source_link_urls(self: DashboardState) -> set[str]:
+    """Chip URLs that only slots nobody is using link to.
+
+    A slot is in use while a turn runs on it, and for
+    ``_SOURCE_ACTIVE_WINDOW_SECS`` after :meth:`note_source_activity`. Every
+    other slot is idle -- in particular every tab restored from
+    ``open_slots.json`` at boot, until it is opened or runs a turn. The
+    periodic driver re-reads these on the slower idle tier, so a long
+    sidebar history stops costing a provider burst every chip TTL. A URL
+    that any in-use slot also links stays on the fast tier.
+    """
+    stamps = self._prune_source_activity(time.monotonic())
+    active: set[str] = set()
+    idle: set[str] = set()
+    for key, slot in self._slots.items():
+        in_use = key in stamps or bool(getattr(slot, "turn_running", False))
+        (active if in_use else idle).update(self._slot_chip_urls(slot))
+    return idle - active
+
+
+def source_link_urls_for_slot(self: DashboardState, key: str) -> list[str]:
+    """Sidebar-visible PR/MR chip URLs for one slot (same cap and kind filter).
+
+    Empty while the chips are switched off, for the same reason
+    :meth:`source_link_urls` is: this feeds the turn-boundary status refresh.
+    """
+    from kiro_crew.dashboard.handlers.source_providers import (
+        session_card_source_links_enabled,
+    )
+
+    if not session_card_source_links_enabled():
+        return []
+    slot = self._slots.get(key)
+    if slot is None:
+        return []
+    return self._slot_chip_urls(slot)
+
+
+def push_source_status(self: DashboardState, delta: dict) -> None:
+    """Push a single PR/MR status delta to owner websockets only.
+
+    Chip status is credential-backed provider data, so this never reaches
+    non-owner or app-token clients. Fire-and-forget: the panel's own poll
+    remains the safety net if a client misses the event.
+    """
+    if not self._owner_ws_clients:
+        return
+    self._send_ws_owners(json.dumps({"type": "source_status", "data": delta}))
+
+
+def refresh_slot_source_status(self: DashboardState, key: str) -> None:
+    """Re-read this slot's PR/MR status now — called at agent turn boundaries.
+
+    A turn that just ran ``gh pr create``, pushed a revision, or drove a PR
+    review is exactly when a PR's lifecycle moved, and nothing else in
+    the system invalidates the status caches on that event: the chips would
+    wait out the periodic rotation and the detail panel would not refetch at
+    all. Fires ONLY when an OWNER window is open: the read runs the
+    operator's credentials, so a non-owner window must not drive it (a
+    non-owner renders the owner-populated caches read-only). With no owner
+    window open there is nobody entitled to a credentialed read, so no
+    provider subprocess is spawned. Rate-floored inside
+    ``request_check_refresh_now``.
+    """
+    # Both the status read and the visibility revalidation below run the
+    # operator's `gh`/`glab` credentials, so this turn-boundary refresh runs
+    # ONLY when an OWNER window is open. A non-owner dashboard window never
+    # drives it: the owner's own connection keeps the caches warm
+    # and non-owner windows render the result read-only via the fail-closed
+    # is_repo_public gate. With no owner window open there is nobody entitled
+    # to drive a credentialed read, so this is a no-op.
+    #
+    # The slot just ran a turn, so it is in use whoever is watching: its
+    # chips stay on the fast tier of the periodic driver for a while.
+    self.note_source_activity(key)
+    if not self._owner_ws_clients:
+        return
+    try:
+        urls = self.source_link_urls_for_slot(key)
+        if not urls:
+            return
+        from kiro_crew.dashboard.handlers.source_providers import (
+            request_check_refresh_now,
+            schedule_visibility_refresh,
+        )
+
+        request_check_refresh_now(urls, self.push_slots_update)
+        # force=True: the status read above bypasses the TTL, so visibility
+        # MUST be revalidated in lockstep — otherwise fresh (now-private)
+        # status could be projected against a still-cached-public visibility
+        # entry, leaking private status to a non-owner. Runs
+        # AFTER the status schedule: both are fire-and-forget schedulers, and
+        # ordering the status call first preserves the turn-boundary contract
+        # while the downstream render gate (`_project_source_links` ->
+        # is_repo_public) is what actually withholds status until visibility
+        # reconfirms.
+        schedule_visibility_refresh(urls, self.push_slots_update, force=True)
+    except Exception:
+        logger.debug("turn-boundary source status refresh failed", exc_info=True)
 
 
 def _cached_check_status(url: str) -> dict | None:
