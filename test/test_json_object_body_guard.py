@@ -181,7 +181,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_voice.py::api_voice_cancel": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/feedback.py::api_feedback_submit": ("<default>", _BOUNDED_BY_DEFAULT),
     "handlers/redaction.py::api_redaction_allow_host": ("_MAX_BODY", _BOUNDED_BY_DEFAULT),
-    "handlers/messaging.py::api_notification_agent_push": (
+    "messaging_api/agent_push.py::api_notification_agent_push": (
         "<default>",
         _BOUNDED_BY_DEFAULT,
     ),
@@ -233,7 +233,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/memory.py::api_memory_settings": ("None", _CONTROL_FIELDS_CAP_PENDING),
     "handlers/memory.py::api_memory_consolidate": ("None", _CONTROL_FIELDS_CAP_PENDING),
     "handlers/memory.py::api_memory_promote": ("None", _CONTROL_FIELDS_CAP_PENDING),
-    "handlers/memory.py::api_memory_embedding_model": (
+    "handlers/memory_embeddings.py::api_memory_embedding_model": (
         "None",
         _CONTROL_FIELDS_CAP_PENDING,
     ),

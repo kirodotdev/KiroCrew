@@ -349,7 +349,7 @@ def _init_database(self: VectorMemoryStore) -> None:
     # volume) — so calling it directly on an event loop stalls every task.
     # All async callers offload: ``eval.runner``, ``slack.gateway`` and
     # ``cli_server._run_task`` via ``asyncio.to_thread``;
-    # ``dashboard/handlers/memory.py``'s standalone fallback routes
+    # ``dashboard/handlers/memory_services.py``'s standalone fallback routes
     # through ``_get_vector_store_async``, which offloads the init-bearing
     # path.
     self._restrict_memory_files()

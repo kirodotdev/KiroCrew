@@ -2326,7 +2326,7 @@ Writers: `apps/official_catalog.py` (`list_catalog_rows`, `inventory`,
 `fetch_inventory_entries`, `inventory_for_install`), `apps/registry_pipeline/catalog.py`
 (`list_catalog_apps`, `_resolve_registry_row`, `_append_external_registry_apps`,
 `_detect_installed_probe`), `apps/registry_pipeline/checkout.py` (`_git_fetch_commit`),
-`dashboard/handlers/security.py` (`api_trusted_app_grant`),
+`dashboard/handlers/security_trusted_apps.py` (`api_trusted_app_grant`),
 `apps/routes.py` (`handle_registry`, `handle_list_apps`, `handle_get_app`), and
 `website/src/components/appstore/TrustAppModal.tsx`.
 
@@ -2642,7 +2642,7 @@ agent cannot forge.
 operator's configured registries and lets the operator grant each one `owner`
 trust; the dashboard writes `POST /api/security/trusted-registries` (revoke:
 `…/trusted-registries/revoke`, snapshot: `GET …/trusted-registries`, handlers in
-`dashboard/handlers/security.py`). The grant is on the same read+write keystone
+`dashboard/handlers/security_trusted_registries.py`). The grant is on the same read+write keystone
 floor as `denied_commands.json` — `security._CREW_SECRET_LEAVES` (the agent's
 file tools refuse it), `sandbox._CREW_READONLY_LEAVES` and
 `_CREW_CHILD_WITHHELD_LEAVES` (the OS sandbox mounts it read-only / withholds it
@@ -2657,8 +2657,8 @@ and the FIRST grant lands rather than being refused as a wrong-version document.
 A NON-empty document is held to the schema: only a version-1 document whose
 `owner_trusted` is a list parses; an unknown `version`, a dict-shaped
 `owner_trusted`, or any other shape is refused. The read/write core lives in
-`apps/registry_trust.py`, a leaf both `dashboard/handlers/security.py` and
-`apps/routes.py` import (`security.py` top-level imports `apps.routes`, so the
+`apps/registry_trust.py`, a leaf both `dashboard/handlers/security_trusted_registries.py` and
+`apps/routes.py` import (the security handlers top-level import `apps.routes`, so the
 writer cannot live there without a cycle). Properties that carry the design:
 
 - **Keyed by REPOSITORY, never by name.** `_granted_owner_repos` returns a

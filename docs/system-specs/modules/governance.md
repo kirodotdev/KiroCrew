@@ -2414,7 +2414,7 @@ as denied (prompt refusal) rather than returning without resolving.
 
 ### Governance policy viewer (`GET /api/governance/policy`)
 
-`GET /api/governance/policy` (`handlers/security.build_governance_policy_snapshot`,
+`GET /api/governance/policy` (`handlers/security_governance_policy.build_governance_policy_snapshot`,
 registered in `dashboard/routes/system.py`, same dashboard-token auth) returns the
 effective ceiling across ALL scopes on the **host surface**, for the read-only
 Settings → Security viewer. It iterates `SCOPE_CATALOG` (so it auto-covers any
@@ -3715,8 +3715,8 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
 - `executors.py` — `governance_executor` (`mc-gov`), the bounded pool the
   externally-paced governance checks run on.
 - `dashboard/handlers_system.py` — `GET /api/governance/channels`.
-- `dashboard/handlers/security.py` — `GET /api/governance/policy` (posture-only
-  serialization).
+- `dashboard/handlers/security_governance_policy.py` — `GET /api/governance/policy`
+  (posture-only serialization), served through `dashboard/handlers/security.py`.
 - chokepoints: `sandbox.py`, `mcp_cron.py`, `subagent_parts/agent_policy.py`, `mcp_core.py`,
   plus the audit-only seam `computer_use/gate.py` (not a governance chokepoint:
   `require_computer_use` always proceeds and audits, and `apply_observation_ceiling`

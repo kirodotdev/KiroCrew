@@ -2848,7 +2848,7 @@ start, a mirror send) is never handed the client about to be closed.
 **A two-file save runs under `live.hold()`.** Every channel saver that writes
 `config.json` and then `.env` (Slack, Teams, Webex, WeCom, Feishu, Discord,
 Telegram) rolls the config back when the credential write fails, through the one
-shared `_write_env_or_roll_back` in `handlers/messaging.py`, and wraps the whole
+shared `_write_env_or_roll_back` in `messaging_api/channel_config_writes.py`, and wraps the whole
 transaction — snapshot through rollback and the `os.environ` sync — in
 `with live.hold():`. Without it the
 config write's own kick (`_atomic_json_write` → `notify_config_written`) wakes

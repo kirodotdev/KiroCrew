@@ -11,7 +11,7 @@ These tests pin:
   routes stay guarded, and the seams other modules import keep their identity;
 * the composition: every owner function runs on the facade's globals, reads only
   names the facade binds, and captures no name a test rebinds on the facade;
-* the guards: what repository guards read in ``messaging.py`` by path stays there,
+* the guards: what repository guards read by path stays in the file they read,
   and each guard widened to read the owners still fails when its construct is
   planted in an owner;
 * the send route's split: its audit row still reads what a fallback leg reached
@@ -159,6 +159,11 @@ _OWNER_MODULES = (
     "imessage_settings",
     "wecom_settings",
     "feishu_settings",
+    "browser_routes",
+    "channel_config_writes",
+    "slack_workspace",
+    "channel_folder_backfill",
+    "agent_push",
 )
 
 #: Each moved name and the owner its responsibility puts it in.
@@ -223,12 +228,31 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
         _channel_sdk_status _feishu_config_save_locked _is_valid_feishu_id
         api_feishu_config_get api_feishu_config_save
         """.split()),
+    "browser_routes": tuple("""
+        _browser_install_active _browser_install_conflict _browser_install_job
+        _browser_install_status _browser_view_payload _deny_non_owner_browser_request
+        _start_browser_install_job _terminate_install_scope api_browser_command
+        api_browser_command_drain api_browser_command_result api_browser_engine_install
+        api_browser_install_get api_browser_install_start api_browser_open
+        api_browser_token_put api_browser_view_get api_browser_view_start
+        stop_browser_install
+        """.split()),
+    "channel_config_writes": tuple("""
+        _LockedSectionWrite _clean_id_list _mask_secret _threshold_pct_rejection
+        _wide_env_refusal _write_env_or_roll_back _write_env_updates _write_env_updates_locked
+        """.split()),
+    "slack_workspace": tuple("""
+        _missing_scope_message api_slack_manifest api_slack_pins api_slack_profile
+        api_slack_reactions
+        """.split()),
+    "channel_folder_backfill": ("api_channel_folder_backfill",),
+    "agent_push": ("api_notification_agent_push",),
 }
 
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
-#: ``_BASE_OWNERS``, captured from the one-module file before the split: each moved
-#: name keeps the kind and signature it had there.
-_BASE_SHAPE_DIGEST = "140f95078d00ee2c3b73e500e5ec24d015d4dd307d18a5cf2efbbf232c4dfc3d"
+#: ``_BASE_OWNERS``, captured from the facade before the split that moved it: each
+#: moved name keeps the kind and signature it had there.
+_BASE_SHAPE_DIGEST = "2c20b392e339e1d74c03a21bebc7aa0baa18f2f15e0d1dbe32adaa416fe46dd0"
 
 
 #: Helpers the split of ``api_send_message`` added to the send owner: the body it
@@ -559,7 +583,7 @@ def test_the_moved_names_keep_their_base_shapes() -> None:
     lines = sorted(
         f"{name} {_shape(getattr(msg, name))}" for names in _BASE_OWNERS.values() for name in names
     )
-    assert len(lines) == 86
+    assert len(lines) == 120
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     assert digest == _BASE_SHAPE_DIGEST, "\n".join(lines)
 
@@ -576,37 +600,26 @@ def _facade_module_assignments() -> set[str]:
 
 
 #: Definitions that stay in the facade file, each because something reads it there:
-#: the census-pinned Slack routes and the redact-then-authorize block of
-#: ``api_send_message`` with its origin-session injection; the two routes and the
-#: iMessage save entry that path-keyed registers name; the two predicates unowned
-#: specs cite by this path; and the shared channel-config transaction every
-#: settings owner commits through.
+#: the redact-then-authorize block of ``api_send_message`` with its origin-session
+#: injection and its two census sites; the Teams activity route and the iMessage save
+#: entry that path-keyed registers name; the two predicates unowned specs cite by this
+#: path; the two finalizer exceptions; the helpers several owners call; and the
+#: ``.env`` write's off-loop drain, whose open code-scanning finding stays at the path
+#: that tracks it. The Slack workspace routes and their ten census sites live in
+#: ``slack_workspace``, the rest of the channel-config write path every settings owner
+#: commits through in ``channel_config_writes``, and the backfill and agent-push routes
+#: in owners of their own (``_BASE_OWNERS``).
 _FACADE_DEFS = (
     "api_send_message",
-    "api_slack_pins",
-    "api_slack_reactions",
-    "api_slack_profile",
-    "_missing_scope_message",
-    "api_notification_agent_push",
     "api_teams_activity",
     "api_imessage_config_save",
-    "api_channel_folder_backfill",
-    "api_slack_manifest",
     "_run_belongs_to_caller",
     "parent_work_supported",
-    "_LockedSectionWrite",
     "_ThresholdPairInverted",
     "_CredentialTupleChanged",
     "_sel",
     "_is_slack_ts",
-    "_mask_secret",
-    "_clean_id_list",
-    "_threshold_pct_rejection",
-    "_wide_env_refusal",
     "_write_env_off_loop",
-    "_write_env_or_roll_back",
-    "_write_env_updates",
-    "_write_env_updates_locked",
 )
 
 
@@ -1316,40 +1329,57 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 
 # ── the path-keyed guards keep their reach ────────────────────────────────────
 
-#: Constructs repository guards read in ``dashboard/handlers/messaging.py`` by
-#: path: the cron origin-session dispatch the turn-timeout scan counts, the slot
-#: task publish the slot-reader inventory keys by
-#: ``api_send_message``, and the two bounded body reads the JSON-body register
-#: keys by function. An owner that grew one would move it out of the guard's
-#: sight, so each stays in the facade.
+#: Constructs repository guards read by path, each with the owners that hold it beside
+#: ``dashboard/handlers/messaging.py``: the cron origin-session dispatch the
+#: turn-timeout scan counts, the slot task publish the slot-reader inventory keys by
+#: ``api_send_message``, and the two bounded body reads the JSON-body register keys
+#: by function -- the Teams activity route's in the facade, the agent push's in
+#: ``agent_push``, a row the register names by that path. An owner that grew one would
+#: move it out of the guard's sight, so each stays in exactly these files.
 _STAYS_IN_THE_FACADE = (
-    r"spawn_guarded_turn\(",
-    r"\b_run_chat\(",
-    r"\bslot\.task = task\b",
-    r"await read_bounded_json\(",
+    (r"spawn_guarded_turn\(", ()),
+    (r"\b_run_chat\(", ()),
+    (r"\bslot\.task = task\b", ()),
+    (r"await read_bounded_json\(", ("agent_push",)),
 )
 
 
-@pytest.mark.parametrize("pattern", _STAYS_IN_THE_FACADE)
-def test_a_construct_a_guard_reads_in_the_facade_stays_there(pattern: str) -> None:
+@pytest.mark.parametrize(
+    ("pattern", "owners"), _STAYS_IN_THE_FACADE, ids=[row[0] for row in _STAYS_IN_THE_FACADE]
+)
+def test_a_construct_a_guard_reads_in_the_facade_stays_there(
+    pattern: str, owners: tuple[str, ...]
+) -> None:
     assert re.search(pattern, _FACADE_PATH.read_text(encoding="utf-8"))
     holders = [stem for stem, source in _owner_sources().items() if re.search(pattern, source)]
-    assert holders == []
+    assert holders == list(owners)
 
 
-def test_the_census_sites_stay_in_the_facade() -> None:
-    """``test_security_posture``'s census pins twelve gate-side baseline log sites
-    to this path; every one stays here and no owner grows one."""
+#: Where ``test_security_posture``'s census pins this family's twelve gate-side
+#: baseline log sites: the send route's two in the facade, and the Slack workspace
+#: routes' ten in their owner.
+_CENSUS_HOMES = {
+    "dashboard/handlers/messaging.py": 2,
+    "dashboard/messaging_api/slack_workspace.py": 10,
+}
+
+
+def test_the_census_sites_stay_in_their_census_homes() -> None:
+    """``test_security_posture``'s census pins twelve gate-side baseline log sites to
+    two paths of this family; each stays in its home and no other owner grows one."""
     from test_security_posture import _BASELINE_LOG_SITE_CENSUS, _gate_side_baseline_log_sites
 
-    sites = _gate_side_baseline_log_sites(_FACADE_PATH.read_text(encoding="utf-8"))
-    assert len(sites) == _BASELINE_LOG_SITE_CENSUS["dashboard/handlers/messaging.py"] == 12
-    grown = {
-        stem: len(found)
+    found = {
+        f"dashboard/messaging_api/{stem}.py": len(sites)
         for stem, source in _owner_sources().items()
-        if (found := _gate_side_baseline_log_sites(source))
+        if (sites := _gate_side_baseline_log_sites(source))
     }
-    assert grown == {}
+    found["dashboard/handlers/messaging.py"] = len(
+        _gate_side_baseline_log_sites(_FACADE_PATH.read_text(encoding="utf-8"))
+    )
+    assert found == _CENSUS_HOMES
+    assert {path: _BASELINE_LOG_SITE_CENSUS.get(path) for path in _CENSUS_HOMES} == _CENSUS_HOMES
+    assert sum(_CENSUS_HOMES.values()) == 12
 
 
 def test_every_owner_coroutine_file_is_checked_for_config_dir() -> None:

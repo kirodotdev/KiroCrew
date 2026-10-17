@@ -2383,7 +2383,7 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
     # accept a name this guard would reject, which is how a junk key — including
     # one written before this guard existed — can still be cleared. Guarding a
     # remover would strand exactly what the writer guard is meant to prevent.
-    # Same writer-validates / remover-does-not split that ``security.py``'s
+    # Same writer-validates / remover-does-not split that ``security_trusted_apps.py``'s
     # trusted-app grant and revoke pair documents.
     if not _is_valid_mcp_name(name):
         return web.json_response(

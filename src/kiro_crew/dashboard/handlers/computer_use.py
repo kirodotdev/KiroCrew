@@ -138,7 +138,7 @@ ERR_DISPATCH_FAILED = "Error: computer use failed unexpectedly"
 class StateCorruptError(Exception):
     """A settings file exists but is unreadable/not-a-dict — refuse to mutate it.
 
-    Mirrors ``handlers/security.py::ConfigCorruptError``, for the same reason: a
+    Mirrors ``handlers/security_audit.py::ConfigCorruptError``, for the same reason: a
     mutation that read a corrupt keystone as ``{}`` and wrote it back would
     silently reset the operator's allow-list and blocked-app additions, and one
     that read a corrupt ``config.json`` as ``{}`` would replace the user's entire
@@ -188,7 +188,7 @@ def _audit(
 async def _off_loop(fn):
     """Run a blocking (filesystem / governance-resolution) callable in a thread.
 
-    Same rationale as ``handlers/security.py::_run_off_loop``: reading the
+    Same rationale as ``handlers/security_audit.py::_run_off_loop``: reading the
     keystone and resolving governance profiles both walk the filesystem, and a
     slow or stalled FS must not freeze the gateway's sole event loop.
 
@@ -557,7 +557,7 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
     cannot), so without this gate an agent that can author an app manifest could read
     its own ``.app_secret``, mint an app token and flip ``enabled: true`` on its own
     desktop automation. Same guard as ``handlers/kiro_prerequisite.py`` and
-    ``handlers/messaging.py``'s notification push.
+    ``messaging_api/agent_push.py``'s notification push.
 
     **There is no governance ceiling on this route, and therefore no 409.** Computer
     use is one operator opt-in: ``SCOPE_CATALOG`` carries no ``computer_use*`` row, so

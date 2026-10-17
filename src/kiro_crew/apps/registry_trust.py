@@ -7,12 +7,12 @@ the tolerant runtime reader in ``apps/registry_pipeline/sources.py``
 :func:`read_registry_trust_strict`) validate against, so two callers can share it
 without an import cycle:
 
-- ``dashboard/handlers/security.py`` — the three ``/api/security/trusted-registries``
-  endpoints (snapshot, grant, revoke).
+- ``dashboard/handlers/security_trusted_registries.py`` — the three
+  ``/api/security/trusted-registries`` endpoints (snapshot, grant, revoke).
 - ``apps/registry_pipeline/sources.py`` — the clone-time reader.
 
-``security.py`` cannot host the reader the ``apps`` layer needs, because it
-top-level imports ``apps.routes`` (``app_lifecycle_lock``); a top-level import the
+The security handlers cannot host the reader the ``apps`` layer needs, because they
+top-level import ``apps.routes`` (``app_lifecycle_lock``); a top-level import the
 other way would be a cycle. Both callers instead import this leaf module.
 """
 
