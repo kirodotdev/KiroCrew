@@ -944,6 +944,16 @@ class TestEdgeCases:
             cfg = _load_from_dict({"dashboard": {"session_sort": junk}})
             assert cfg.dashboard.session_sort == "date-desc", junk
 
+    def test_a_build_without_manual_reads_it_as_the_default(self, monkeypatch) -> None:
+        """A downgrade breaks nothing: the loader of a build whose key list ends
+        before ``manual`` reads a stored ``manual`` as ``date-desc``."""
+        from kiro_crew.config import sections
+
+        before_manual = tuple(k for k in sections.SESSION_SORT_MODES if k != "manual")
+        monkeypatch.setattr(sections, "SESSION_SORT_MODES", before_manual)
+        cfg = _load_from_dict({"dashboard": {"session_sort": "manual"}})
+        assert cfg.dashboard.session_sort == "date-desc"
+
     def test_update_nudge_loaded_from_config(self) -> None:
         """The popup's snooze/skip record round-trips through load, so a GET
         after a PATCH reads back what was written."""

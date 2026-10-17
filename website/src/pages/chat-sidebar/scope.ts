@@ -190,10 +190,14 @@ export interface SidebarScope {
   setCollapsedHistoryGroups: SetState<Set<string>>
   setFolderModal: SetState<FolderModalTarget | null>
   sortKey: SortKey
+  /** The sort menu's pick: Manual with nothing saved seeds the order on screen first. */
   setSortKey: (key: SortKey) => void
   /** The last sort pick that did not save (null for none), and its dismiss. */
   sortError: SessionSortError | null
   dismissSortError: () => void
+  /** Why the last manual-order write did not take ('' for none), and its setter. */
+  manualOrderError: string
+  setManualOrderError: (message: string) => void
   flatView: boolean
   conductorView: boolean
   creatingSlot: RootState['chat']['creatingSlot']
