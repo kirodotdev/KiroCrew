@@ -962,6 +962,60 @@ def _corpus_patched_names() -> dict[str, set[str]]:
     )
 
 
+def one_facade_patched_names(
+    text: str, facade: str, spellings: Mapping[str, str], table: Mapping[str, str]
+) -> set[str]:
+    """The names *text* patches through the one facade *facade*, read by both readers.
+
+    *spellings* holds *facade*'s own spellings and *table* the whole spelling table.
+    :func:`text_patched_names` reads each spelling on its own, so the regular expressions
+    run with *spellings* alone. A file holding none of their leaves spells nothing either
+    reader resolves to *facade*; every other file is also parsed with *table*, the
+    spellings the corpus scan parses with, so no routing decides what the tree sees.
+    """
+    if not any(spelling.rpartition(".")[2] in text for spelling in spellings):
+        return set()
+    names = text_patched_names(text, spellings).get(facade, set())
+    try:
+        events = patch_events(text, table)
+    except SyntaxError:
+        return names
+    return names | names_by_target(events, [facade]).get(facade, set())
+
+
+def facade_patched_names(facade: str) -> set[str]:
+    """Every name the test trees patch through *facade* (:func:`one_facade_patched_names`
+    of each test-tree file): one facade's share of :func:`_corpus_patched_names`, without
+    reading every file for every facade's spellings."""
+    spellings = {
+        spelling: target for spelling, target in _SPELLINGS_FOUND.items() if target == facade
+    }
+    table = dict(_SCAN_SPELLINGS)
+    found: set[str] = set()
+    for path in _test_tree_files():
+        text = path.read_text(encoding="utf-8", errors="replace")
+        found |= one_facade_patched_names(text, facade, spellings, table)
+    return found
+
+
+def test_the_one_facade_read_answers_both_ways() -> None:
+    """Both readers run on a file holding the facade's leaf: the regular expressions read
+    the alias patch, the tree reads the attribute chain they cannot see, and another
+    module's patch adds nothing."""
+    table = {**_SPELLINGS, "pkg.other": "pkg.other"}
+    source = (
+        "import pkg.handler as h\nimport pkg.other as o\nfrom pkg import facade as fa\n"
+        "def test_x(monkeypatch):\n"
+        "    monkeypatch.setattr(fa, 'a', 1)\n"
+        "    h.facade.b = 2\n"
+        "    o.c = 3\n"
+    )
+    assert "b" not in text_patched_names(source, _SPELLINGS).get(_FACADE_NAME, set())
+    assert one_facade_patched_names(source, _FACADE_NAME, _SPELLINGS, table) == {"a", "b"}
+    other_only = "import pkg.other as o\no.c = 3\n"
+    assert one_facade_patched_names(other_only, _FACADE_NAME, _SPELLINGS, table) == set()
+
+
 def unreached_readers(index: _facade_mirror.MirrorIndex, sources: Mapping[str, str]) -> list[str]:
     """Owners whose code reads an indexed name as a global without binding it.
 

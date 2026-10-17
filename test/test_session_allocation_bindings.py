@@ -478,7 +478,7 @@ _KNOWN_PATCHES = {
 def _patched_through_the_facade() -> set[str]:
     import test_facade_mirror_guards as guards
 
-    return guards._corpus_patched_names().get(facade.__name__, set())
+    return guards.facade_patched_names(facade.__name__)
 
 
 def test_every_name_patched_through_the_facade_reaches_every_owner_reading_it() -> None:
