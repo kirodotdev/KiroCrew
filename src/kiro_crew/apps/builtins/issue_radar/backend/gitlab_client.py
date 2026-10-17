@@ -829,6 +829,23 @@ def list_issue_timeline(
     return events
 
 
+def list_issue_label_events(
+    owner: str, repo: str, number: int, *, host: str = "", timeout: float = GL_PAGINATE_TIMEOUT_SEC
+) -> list[dict]:
+    """Label added/removed events for one issue, oldest first, with their actor.
+
+    ONE paginated read of ``resource_label_events`` -- not the whole timeline, which
+    also pays for every note, the repo's label list and the state events. Same
+    normalized shape as the timeline's label rows (``kind`` ``labeled`` /
+    ``unlabeled``, ``actor`` = ``user.username``, ``created_at``, ``label.name``).
+    """
+    path = f"projects/{project_path(owner, repo)}/issues/{int(number)}/resource_label_events"
+    raw = _rows(_glab_api(path, host=host, timeout=timeout, paginate=True))
+    events = [e for e in (_norm_label_event(item, {}) for item in raw) if e is not None]
+    events.sort(key=lambda e: e.get("created_at") or "")
+    return events
+
+
 def list_pr_timeline(
     owner: str, repo: str, number: int, *, host: str = "", timeout: float = GL_PAGINATE_TIMEOUT_SEC
 ) -> list[dict]:

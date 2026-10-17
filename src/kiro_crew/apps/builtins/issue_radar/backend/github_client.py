@@ -135,6 +135,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         get_issue_detail,
         get_ref_summary,
         list_issue_blocked_by,
+        list_issue_label_events,
         list_issue_timeline,
         list_pr_review_comments,
         list_pr_timeline,

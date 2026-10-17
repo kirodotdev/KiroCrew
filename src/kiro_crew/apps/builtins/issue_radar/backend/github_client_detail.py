@@ -167,6 +167,27 @@ def list_issue_timeline(
     return events
 
 
+def list_issue_label_events(
+    owner: str, repo: str, number: int, *, timeout: float = GH_PAGINATE_TIMEOUT_SEC
+) -> list[dict]:
+    """Label added/removed events for one issue, oldest first, with their actor.
+
+    The issue EVENTS endpoint rather than the timeline: it carries ``labeled`` /
+    ``unlabeled`` with ``actor`` and none of the comment bodies, which is all the crew
+    sweep needs to tell who removed the needs-human label. Same normalized shape as
+    the timeline rows (``kind``, ``actor``, ``created_at``, ``label.name``).
+    """
+    path = f"repos/{owner}/{repo}/issues/{int(number)}/events?per_page=100"
+    raw = _run_gh_api(path, ".[]", timeout=timeout, paginate=True)
+    events = [
+        e
+        for e in (_normalize_timeline_event(ev) for ev in raw if isinstance(ev, dict))
+        if e is not None and e.get("kind") in ("labeled", "unlabeled")
+    ]
+    events.sort(key=lambda e: e.get("created_at") or "")
+    return events
+
+
 # Inline review comments live on their own endpoint: the issues TIMELINE does not
 # carry them, so a PR read purely from the timeline is missing exactly the
 # comments that carry the review's substance ("this retry is unbounded" attached
