@@ -855,6 +855,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.security.redaction_allow import (  # noqa: F401
         allowed_hosts_for,
+        normalize_workspace,
     )
     from kiro_crew.session_surface import (  # noqa: F401
         has_dashboard_surface,

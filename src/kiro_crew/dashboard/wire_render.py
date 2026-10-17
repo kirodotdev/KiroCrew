@@ -226,7 +226,9 @@ def prepare_message_rows(
     chunk, an OAuth row (its render reads live endpoint approvals), a row that is
     not plain JSON, and every row inside an owner-view scope.
     """
-    with _cu.scoped_exempt_hosts(_cu.allowed_hosts_for(workspace)):
+    with _cu.scoped_exempt_hosts(
+        _cu.allowed_hosts_for(workspace), _cu.normalize_workspace(workspace)
+    ):
         bypassed = credential_pass_bypassed()
         memo = use_memo and not bypassed
         context = b"" if bypassed else _context_digest()

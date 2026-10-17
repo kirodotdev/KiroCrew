@@ -372,7 +372,17 @@ def _url_payload_command(n: int) -> str:
 #: stall still refuses everywhere it did; only the words a refused agent reads moved.
 #: The prefix is named only while its cooldown is open, since most stall raises never
 #: charge it.
-_PACKAGE_LINE_BUDGET = 29_607
+#: Then by 130 more for the allowed link hosts. 43 are the
+#: ``redaction_allowed_host_used`` audit event in ``exfil.py``. It shares
+#: ``_log_operator_list_use`` with the OAuth extension event, so the event
+#: construction was folded into one helper rather than copied, and the
+#: allowed-host list reuses ``_OAUTH_EXTENSION_HOST_RE`` instead of a second host
+#: regex. Its per-process dedupe memo carries a count ceiling so revoked hosts
+#: cannot grow it without bound. 87 make the list's narrowing auditable: the
+#: render scope's workspace in that event and its memo key, the ``*.localhost``
+#: refusal and its reason, and one ``redaction.allowed_hosts.dropped_invalid``
+#: event per file when a load drops entries. No check was relaxed.
+_PACKAGE_LINE_BUDGET = 29_737
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

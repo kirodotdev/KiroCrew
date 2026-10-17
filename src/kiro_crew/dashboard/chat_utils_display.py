@@ -40,7 +40,7 @@ from kiro_crew.security.exfil import (
     scoped_exempt_hosts,
 )
 from kiro_crew.security.redaction import _token_param_exempt_prefixes
-from kiro_crew.security.redaction_allow import allowed_hosts_for
+from kiro_crew.security.redaction_allow import allowed_hosts_for, normalize_workspace
 
 logger = logging.getLogger("kiro_crew.dashboard.chat_utils")
 
@@ -826,7 +826,7 @@ def _prepare_messages(
     hosts a reader allowed there, the same hosts the segment flush relaxed, so
     an allowed link reaches the page it was kept for.
     """
-    with scoped_exempt_hosts(allowed_hosts_for(workspace)):
+    with scoped_exempt_hosts(allowed_hosts_for(workspace), normalize_workspace(workspace)):
         return _prepare_messages_scoped(messages, running, live_child=live_child)
 
 

@@ -404,6 +404,7 @@ _ENDPOINT_EXTENSION_CAP = 50
 # rejects wildcards, schemes, ports, userinfo, percent-escapes, whitespace,
 # backslashes, and bracketed IPv6. Empty labels reject leading/trailing dots.
 # The lookahead bounds total length to the DNS maximum.
+# ``redaction_allow`` validates allowed link hosts with this same regex.
 _OAUTH_EXTENSION_HOST_RE = re.compile(
     r"\A(?=.{1,253}\Z)"
     r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
@@ -540,35 +541,54 @@ def _emit_oauth_extension_used_event(host: str, path: str) -> None:
     if (host, path) in _OAUTH_EXTENSION_AUDITED:
         return
     _OAUTH_EXTENSION_AUDITED.add((host, path))
-    try:
+
+    def metadata() -> dict:
         # Function-local for the same loader-cycle reason as
         # _load_operator_oauth_endpoints.
         from kiro_crew.config import loader as config_loader
 
+        return {
+            "host": host,
+            "path": path,
+            "file": str(config_loader.oauth_endpoints_path()),
+            "mechanism": "OAUTH_ENDPOINT_EXTENSION",
+        }
+
+    _log_operator_list_use(
+        "oauth_endpoint_extension_used", "oauth_banner_check", f"{host}{path}", metadata
+    )
+
+
+def _log_operator_list_use(
+    event_type: str,
+    operation: str,
+    resources: str,
+    metadata: Callable[[], dict],
+    outcome: str = "allowed",
+) -> None:
+    """Write one best-effort SEL event for an operator-list use or change.
+
+    Shared by the OAuth endpoint extension and the allowed link hosts (their
+    use, and entries dropped on load). A failed write, ``metadata()`` included,
+    is logged at debug and never raised, so the audit never changes the outcome.
+    """
+    try:
         SecurityEventLog().log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
                 timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                event_type="oauth_endpoint_extension_used",
+                event_type=event_type,
                 caller_identity="",
                 agent="kirocrew",
                 source="security",
-                operation="oauth_banner_check",
-                outcome="allowed",
-                resources=f"{host}{path}",
-                metadata={
-                    "host": host,
-                    "path": path,
-                    "file": str(config_loader.oauth_endpoints_path()),
-                    "mechanism": "OAUTH_ENDPOINT_EXTENSION",
-                },
+                operation=operation,
+                outcome=outcome,
+                resources=resources,
+                metadata=metadata(),
             )
         )
     except Exception:
-        logger.debug(
-            "SEL audit failed for oauth_endpoint_extension_used (allow stands)",
-            exc_info=True,
-        )
+        logger.debug("SEL audit failed for %s (allow stands)", event_type, exc_info=True)
 
 
 def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:
@@ -1561,15 +1581,25 @@ def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
 _SCOPED_EXEMPT_HOSTS: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
     "kiro_crew_scoped_exempt_hosts", default=frozenset()
 )
+#: The workspace those hosts were allowed in, so a use audit names the allowance.
+_SCOPED_EXEMPT_WORKSPACE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "kiro_crew_scoped_exempt_workspace", default=""
+)
 
 
 @contextlib.contextmanager
-def scoped_exempt_hosts(hosts: frozenset[str]) -> Iterator[None]:
-    """Relax the length and base64 checks for ``hosts`` inside the block only."""
+def scoped_exempt_hosts(hosts: frozenset[str], workspace: str | None = None) -> Iterator[None]:
+    """Relax the length and base64 checks for ``hosts`` inside the block only.
+
+    ``workspace`` is the stored workspace key the hosts came from; it is only
+    written into the use audit and changes no verdict.
+    """
     token = _SCOPED_EXEMPT_HOSTS.set(frozenset(h.lower() for h in hosts))
+    ws_token = _SCOPED_EXEMPT_WORKSPACE.set(workspace or "")
     try:
         yield
     finally:
+        _SCOPED_EXEMPT_WORKSPACE.reset(ws_token)
         _SCOPED_EXEMPT_HOSTS.reset(token)
 
 
@@ -1631,7 +1661,46 @@ def restore_allowed_links(
         return address.get(m.group(1).lower(), m.group(0))
 
     out = _PLACEHOLDER_RE.sub(swap, text)
+    for domain in address:
+        _emit_allowed_host_used_event(domain, records)
     return out, [r for i, r in enumerate(records) if i not in restored]
+
+
+# One ``redaction_allowed_host_used`` event per (workspace, host) per process:
+# every history load and live frame re-restores the same links. The memo holds
+# at most ``_ALLOWED_HOST_AUDITED_MAX`` pairs; past it a new pair is audited on
+# every restore but not remembered: more SEL records, bounded memory, owner-added
+# hosts. A revoke forgets the host, so a later re-allow is audited on first use.
+_ALLOWED_HOST_AUDITED: set[tuple[str, str]] = set()
+_ALLOWED_HOST_AUDITED_MAX = 1024
+
+
+def forget_allowed_host_use(host: str) -> None:
+    """Drop ``host`` from the use memo in every workspace (called on revoke)."""
+    for key in [k for k in _ALLOWED_HOST_AUDITED if k[1] == host]:
+        _ALLOWED_HOST_AUDITED.discard(key)
+
+
+def _emit_allowed_host_used_event(host: str, records: list[dict]) -> None:
+    """SEL-audit that a reader-allowed host put a blocked link back on screen."""
+    workspace = _SCOPED_EXEMPT_WORKSPACE.get()
+    key = (workspace, host)
+    if key in _ALLOWED_HOST_AUDITED:
+        return
+    if len(_ALLOWED_HOST_AUDITED) < _ALLOWED_HOST_AUDITED_MAX:
+        _ALLOWED_HOST_AUDITED.add(key)
+    rules = sorted(
+        {str(r.get("rule")) for r in records if str(r.get("domain", "")).lower() == host}
+    )
+    meta = {
+        "workspace": workspace,
+        "host": host,
+        "rules": rules,
+        "mechanism": "REDACTION_ALLOWED_HOST",
+    }
+    _log_operator_list_use(
+        "redaction_allowed_host_used", "restore_allowed_links", host, lambda: meta
+    )
 
 
 def current_scoped_exempt_hosts() -> frozenset[str]:
