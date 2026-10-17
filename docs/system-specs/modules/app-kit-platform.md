@@ -3650,8 +3650,9 @@ spawn row (`test_internal_python_isolation.py`) and its `NON_EGRESS_REDACTION_MO
 row name `apps/backend_runtime/provisioning.py`, whose pip stderr scrub is the
 backend's only redactor call. `test_app_backend_composition_contract.py` pins the
 surface, the one-namespace writes, the reach of every global a backend function reads,
-the import order, the four facade call sites, the reload and the `create=True` guard
-end to end, and `test_app_backend_refactor_characterization.py` pins the generation,
+the import order, the four facade call sites and the reload end to end,
+`test_app_backend_composition_contract_patch_spellings.py` pins the `create=True`
+guard, and `test_app_backend_refactor_characterization.py` pins the generation,
 ordering and identity guards that cross owners.
 
 Writers: `apps/backend.py`, `apps/backend_runtime/`.

@@ -118,7 +118,6 @@
 2641 test/conftest.py
 2852 test/test_acp_pi_backend.py
 2780 test/test_admission_gate.py
-2200 test/test_app_backend_composition_contract.py
 4051 test/test_app_manager.py
 5489 test/test_apps_backend_coverage.py
 5531 test/test_apps_routes_coverage.py
@@ -134,14 +133,12 @@
 2260 test/test_config_live.py
 2868 test/test_connections_mint.py
 6406 test/test_crew_log_emit.py
-2195 test/test_crew_turn_proxy.py
 3125 test/test_cron_script.py
 2247 test/test_cron_secret_env.py
 3175 test/test_dashboard_approval.py
 2718 test/test_dashboard_server_composition_contract.py
 2478 test/test_dashboard_updates_coverage.py
 11203 test/test_denied_commands_security.py
-2194 test/test_deploy_web_handlers.py
 2240 test/test_eager_spawn.py
 2861 test/test_embeddings.py
 2417 test/test_ephemeral_sessions.py
@@ -172,7 +169,6 @@
 2405 test/test_monitor_controller.py
 2096 test/test_monitor_directive_apply.py
 5822 test/test_onboarding_import.py
-2190 test/test_onboarding_import_refactor_contract.py
 3579 test/test_overload_integration_glue.py
 4048 test/test_pipeline_conductor_fleet_probe.py
 2725 test/test_plugin_import.py

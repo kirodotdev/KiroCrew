@@ -764,7 +764,7 @@ class _ReExportModule(ModuleType):
     remember and one place to put it. ``mock.patch`` with a truthy ``create`` is
     the spelling this cannot serve: its exit deletes the name, which reaches the
     owner, and then skips the restore because it believes it created the name. So
-    ``test_onboarding_import_refactor_contract.py`` scans the test trees for that
+    ``test_onboarding_import_refactor_contract_patch_guards.py`` scans the test trees for that
     spelling on a mirrored name, over the patch and module bindings it resolves.
     """
 

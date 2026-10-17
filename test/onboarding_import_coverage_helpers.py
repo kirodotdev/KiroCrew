@@ -3,7 +3,7 @@
 ``_scan`` builds a scan wired the way ``_scan_source`` wires a real one and
 ``_reasons`` reads its skip reasons; ``_POSIX_FS_ONLY`` skips, on Windows, the cases
 that assert POSIX filesystem semantics. ``_api`` is not shared from here: each module
-defines its own, so ``test_onboarding_import_refactor_contract.py`` still sees which
+defines its own, so ``test_onboarding_import_refactor_contract_patch_guards.py`` still sees which
 local names hold the facade when it scans that module's patches.
 """
 

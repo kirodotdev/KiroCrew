@@ -37,7 +37,7 @@ def _run(coro):
     is what turned Backend Tests shard 3 red on 5ff7c2fe7 while every assertion
     passed. ``asyncio.run`` closes the loop and awaits
     ``shutdown_default_executor()`` on the way out. This mirrors
-    ``test_deploy_web_handlers._run``.
+    ``deploy_web_handlers_helpers._run``.
     """
     return asyncio.run(coro)
 

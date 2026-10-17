@@ -103,7 +103,7 @@ Placement rules that are load-bearing:
   reaches it too. `mock.patch` with a truthy `create` through the facade is the
   one spelling this cannot serve: its exit deletes the name, which reaches the
   owner, and then skips the restore. An AST guard in
-  `test_onboarding_import_refactor_contract.py` reads every file under `test/`
+  `test_onboarding_import_refactor_contract_patch_guards.py` reads every file under `test/`
   and every `tests/` package under `src/` whose text contains
   `onboarding_import`. It fails on a `patch`, `patch.object`, `patch.dict` or
   `patch.multiple` call or decorator whose target resolves to a mirrored name on
@@ -123,7 +123,7 @@ Placement rules that are load-bearing:
   facade, a name only computed at runtime is a hit too. The one exemption is an
   explicit allowlist keyed on (path, test); the scan must equal it exactly, and
   it is empty. Each rule is pinned on a synthetic source it must flag and one it
-  must ignore. The same file pins that the owner is the only engine module
+  must ignore. `test_onboarding_import_refactor_contract.py` pins that the owner is the only engine module
   binding each seam, that the facade's own code reads no mirrored name as a bare
   global, that the facade's `TYPE_CHECKING` block imports every mirrored name
   from its owner, that `__getattr__` stays hidden from type checkers while every
@@ -142,7 +142,7 @@ Placement rules that are load-bearing:
   owner's `_frontmatter`, `_column0_activation_declared` and
   `_load_no_alias_yaml`, and the pre-split public names. No owner reads the
   facade's copy, so a facade patch of one reaches the facade's own code at most.
-  A second guard in `test_onboarding_import_refactor_contract.py` reads the same
+  A second guard in `test_onboarding_import_refactor_contract_patch_guards.py` reads the same
   test files and collects every name a test rebinds on the facade (`setattr` or
   `delattr` on any receiver, `patch`, `patch.object`, `patch.multiple`; not
   `patch.dict`, which mutates the shared object in place). It fails when an engine

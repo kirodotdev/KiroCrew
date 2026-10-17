@@ -355,6 +355,8 @@ _IGNORE_LIST = _REPO_ROOT / "test" / "windows-collect-ignore.txt"
 _OBSERVED_WINDOWS_FAILURES = (
     "test_acp_client.py",
     "test_deploy_web_handlers.py",
+    "test_deploy_web_handlers_manifest_reaper.py",
+    "test_deploy_web_handlers_webapp.py",
     "test_dev_fleet_app.py",
     "test_pid_lifecycle.py",
     "test_sandbox_argv.py",
@@ -459,6 +461,8 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_outbox_notify_broadcast.py",
         "test_outbox_binary.py",
         "test_deploy_web_handlers.py",
+        "test_deploy_web_handlers_manifest_reaper.py",
+        "test_deploy_web_handlers_webapp.py",
         "test_snapshot.py",
         "test_theme_install.py",
         "test_theme_install_declarations.py",
