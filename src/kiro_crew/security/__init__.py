@@ -66,6 +66,7 @@ from . import (
     paths,
     perm_verb_mention,
     redaction,
+    rm_floor,
     shell_normalizer,
     vocabulary,
 )
@@ -1465,6 +1466,29 @@ def is_denied(
     pattern_denial = _deny_pattern_passes(tool_name, lower, all_patterns, _reason)
     if pattern_denial is not None:
         return pattern_denial
+    # ── Recursive-force rm floor (argv-structural, UNION with the regex) ──
+    # Runs only after the regex tier cleared every view, so whatever a rm row
+    # already refused keeps its refusal text and event. It reads every rm argv
+    # for recursive + force in any spelling against the root or home dir itself,
+    # only for a row still in the effective set, and only when the text could
+    # hold an rm at all, so a command with none is never refused by it.
+    _rm = _submodule("rm_floor")
+    rm_enabled = {
+        kind: rule for kind, rule in _rm._RM_FLOOR_BY_KIND.items() if rule[1] in regex_patterns
+    }
+    if rm_enabled and _rm._can_fire(tool_name):
+        note = _rm._RM_FLOOR_NOTE
+        try:
+            rm_targets = _rm._rm_wipe_targets(tool_name)
+        except Exception as exc:  # incl. RecursionError and the depth cap
+            # Fail closed: a command the floor cannot read may hide a wipe.
+            logger.warning("rm floor could not read the command, refusing: %r", exc)
+            rm_targets, note = set(rm_enabled), _rm._RM_FLOOR_UNREAD_NOTE
+        for kind in sorted(rm_targets & rm_enabled.keys()):
+            rule_id, pattern = rm_enabled[kind]
+            # The raw input, not ``lower``: see the audit note below.
+            _emit_deny_event(tool_name, pattern, tool_name)
+            return _reason(pattern, note, rule=rule_id, component="argv-floor")
     # All windows cleared the deny passes — the input is allowed.  If it was a
     # feature-branch push, emit the deferred allow audit now (final outcome).
     #

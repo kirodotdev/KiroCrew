@@ -6602,10 +6602,14 @@ class TestDenyMatchingIsQuoteNormalized:
         anything.
         """
         from kiro_crew import security
+        from kiro_crew.security import rm_floor
 
         monkeypatch.setattr(
             security, "_deny_segment_views", lambda segment, emit_self=True: (segment.lower(),)
         )
+        # The argv floor reads quote-removed argv on its own, so it is switched off
+        # here to keep this cross about the normalized VIEW alone.
+        monkeypatch.setattr(rm_floor, "_RM_FLOOR_BY_KIND", {})
         for cmd in self.RESPELLINGS:
             assert security.is_denied(cmd) is None, (
                 f"raw text now matches {cmd!r} on its own -- the cross above no longer "
@@ -7282,27 +7286,19 @@ class TestDenyMatchingIsQuoteNormalized:
         assert is_denied(r"$'dd\0junk' if=/dev/zero of=/dev/sda") is not None
         assert is_denied(r"$'mkfs\0junk' /dev/sda") is not None
 
-    def test_flag_interposition_is_a_catalog_gap_not_a_view_gap(self):
-        """DOCUMENTED GAP, with the evidence that places it outside this change.
+    def test_flag_interposition_is_caught_by_the_argv_floor(self):
+        """An interposed flag breaks the contiguous catalog text, not the argv.
 
         ``$'rm\\0junk' -rf --no-preserve-root /`` normalizes to exactly the command
-        bash runs -- the view is correct -- but the rule ``rm -rf /.*`` requires its
-        text contiguous and does not tolerate an interposed flag, so nothing matches.
-        The PLAIN spelling is allowed too, on base and here alike, which is what
-        shows this is the built-in rule's authoring rather than anything
-        normalization can reach: no view can make a non-matching pattern match.
-
-        Closing it means editing a shipped rule's regex, which changes matching for
-        the whole catalog and is a separate decision.  Pinned so the gap is findable;
-        when it is closed, the first assertion flips.
+        bash runs, and the rule ``rm -rf /.*`` requires its text contiguous, so no
+        view makes the pattern match. The recursive-force argv floor reads the flags
+        wherever they sit, so both spellings are refused.
         """
         from kiro_crew import security
 
-        # The catalog cannot see the flag-interposed form in ANY spelling...
-        assert is_denied("rm -rf --no-preserve-root /") is None
-        # ...while the contiguous shape the rule is authored for is refused.
+        assert is_denied("rm -rf --no-preserve-root /") is not None
+        assert is_denied(r"$'rm\0junk' -rf --no-preserve-root /") is not None
         assert is_denied("rm -rf /") is not None
-        # ...and the view for the escaped spelling IS the command bash runs.
         views = security._deny_segment_views(r"$'rm\0junk' -rf --no-preserve-root /")
         assert "rm -rf --no-preserve-root /" in views, views
 
@@ -11233,3 +11229,86 @@ class TestHostsFileWarmUp:
         monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (big,))
         _argv_floor._hosts_file_warm_worker()
         assert _argv_floor._host_is_self("swapbox") is False
+
+
+class TestRecursiveForceRmFloor:
+    """The rm seatbelt: recursive + force against root or home itself."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "RM -fr /",
+            "RM -r -f /",
+            "RM -Rf /",
+            "RM --recursive --force /",
+            "RM -rf --no-preserve-root /",
+            "RM / -rf",
+            "RM -fr -- /",
+            "RM -fr /*",
+            "RM -fr '/'",
+            "/bin/RM -fr /",
+            "RM -fr ~",
+            "RM -fr ~/",
+            "RM -fr ~/*",
+            "RM -rf $HOME",
+            "RM -rf ${HOME}",
+            'RM -rf "$HOME"',
+            'RM -rf "${HOME}/"',
+            "X=1 RM -fr ~",
+            "cd /tmp && RM -fr ~",
+            "# clean up\nRM -fr ~",
+            "# don't keep old files\nRM -fr ~",
+            'echo "$(RM -fr ~)"',
+            "echo $(RM -fr /)",
+        ],
+    )
+    def test_a_recursive_force_wipe_of_root_or_home_is_denied(self, command):
+        assert is_denied(command.replace("RM", "rm")) is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "RM -fr /tmp/x",
+            "RM -rf $HOME/.cache",
+            "RM -rf ./build",
+            "RM -f /",
+            "RM -r /tmp/x",
+            "RM -fr $HOME_BACKUP",
+            "echo RM -fr /",
+            # Quoted text and heredoc bodies are data, not commands.
+            'git commit -m "pin floor; RM -fr / and RM -fr ~ are refused"',
+            'rg -n "RM -fr /|RM -fr ~" src/',
+            "cat > /tmp/body.md <<'EOF'\nRM -fr / is refused\nEOF",
+            "RM -rf dist build  # wipe artifacts / rebuild",
+            "RM -rf '$HOME'",
+            # The double quote resumes after a quoted substitution closes.
+            'git commit -m "$(date +%F): pin floor; RM -fr / and RM -fr ~ are refused"',
+            'echo "Cleaning $(pwd); RM -fr ~ is never run here"',
+            'gh pr create --body "Built from $(git rev-parse HEAD)\nRM -fr ~ and RM -r -f /"',
+            'printf "%s\\n" "$(printf example:) RM -fr ~"',
+            'RM -fr "~/"',
+        ],
+    )
+    def test_descendants_and_partial_flags_stay_allowed(self, command):
+        assert is_denied(command.replace("RM", "rm")) is None
+
+    def test_the_floor_reports_the_catalog_row(self):
+        reason = is_denied("rm -fr /")
+        assert reason is not None
+        assert "local-destructive-rm-rf-root" in reason
+
+    def test_a_disabled_row_disables_its_floor(self):
+        only_home = ["rm -rf ~.*"]
+        assert is_denied("rm -fr /", denied_regexes=only_home) is None
+        assert is_denied("rm -fr ~", denied_regexes=only_home) is not None
+
+    def test_a_floor_error_refuses_only_a_command_that_could_hold_rm(self, monkeypatch):
+        from kiro_crew.security import rm_floor
+
+        def _boom(_text):
+            raise RuntimeError("walk failed")
+
+        monkeypatch.setattr(rm_floor, "_rm_wipe_targets", _boom)
+        assert "could not read" in is_denied("rm -fr /")
+        assert is_denied("git status") is None
+        assert is_denied("echo $PATH") is None
