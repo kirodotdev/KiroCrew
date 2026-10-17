@@ -135,6 +135,7 @@
     "files": [
       "main.js",
       "gateway-supervisor.js",
+      "shell-bundle-watch.js",
       "runtime/gateway/launch-preflight.js",
       "runtime/gateway/port-holders.js",
       "runtime/gateway/family-takeover.js",
