@@ -12,7 +12,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import FolderGlyph from '../../components/FolderGlyph'
 import { useQuery } from '@tanstack/react-query'
 import { useLocation } from 'react-router-dom'
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../../components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../../components/ui/dropdown-menu'
 import { setCloseRefused } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
@@ -475,15 +475,27 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     which list each one changes. The members page keeps the bare
                     key -- it has no second list. */}
                 <FilterMenuLabel>{i18nT('pages.chatSidebar.sort_sessions_by')}</FilterMenuLabel>
-                {SORT_OPTIONS.map(o => (
-                  <DropdownMenuItem
-                    key={o.value}
-                    onSelect={() => setSortKey(o.value)}
-                  >
-                    <span className="flex-1">{i18nT(SORT_LABEL_KEY[o.value])}</span>
-                    {sortKey === o.value && <Check size={14} className="text-accent shrink-0" />}
-                  </DropdownMenuItem>
-                ))}
+                {/* A switcher over mutually exclusive sorts, so each row is a
+                    `menuitemradio` reporting `aria-checked` -- a screen reader
+                    says WHICH sort is in effect, which a plain item's check icon
+                    (kept, sighted-only) cannot convey. The write stays on each
+                    row's `onSelect`, NOT the group's `onValueChange`: `sortKey`
+                    is the OPTIMISTIC overlay value (a pick shows at once, before
+                    its save lands), so the group's `value` already reflects an
+                    in-flight pick -- and Radix fires `onValueChange` only on a
+                    change against that value. `setSortKey` must run on every
+                    pick regardless, because it also decides this load's
+                    carry-over (`carryChecked`) and queues the pick against the
+                    one in flight; routing through `onValueChange` would drop a
+                    re-pick of the shown-but-not-yet-saved sort. */}
+                <DropdownMenuRadioGroup value={sortKey}>
+                  {SORT_OPTIONS.map(o => (
+                    <DropdownMenuRadioItem key={o.value} value={o.value} onSelect={() => setSortKey(o.value)}>
+                      <span className="flex-1">{i18nT(SORT_LABEL_KEY[o.value])}</span>
+                      {sortKey === o.value && <Check size={14} className="text-accent shrink-0" aria-hidden="true" />}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
                 {/* Folder order: the same row grammar as Sort by, one section down,
                     because it answers the same kind of question about this list.
                     Custom is the person's own arrangement (drag, or an agent's
@@ -498,25 +510,37 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     the lane they are in is the trap. */}
                 <DropdownMenuSeparator />
                 <FilterMenuLabel>{i18nT('pages.chatSidebar.folder_order')}</FilterMenuLabel>
-                {FOLDER_SORT_MODES.map(mode => (
-                  <DropdownMenuItem
-                    key={mode}
-                    data-testid={`folder-order-${mode}`}
-                    // "Already the mode" is the value in flight while a save is
-                    // pending (the newest pick, queued or on the wire), not the
-                    // cache (which moves only when a save lands): pick Name,
-                    // reopen, pick Custom -- Custom must go out, not be read as
-                    // a no-op against the still-Custom cache. A pick that is a
-                    // change goes into `folderSortMut`'s one-at-a-time queue.
-                    onSelect={() => {
-                      const current = folderSortMut.isPending ? folderSortMut.variables : folderSortMode
-                      if (mode !== current) folderSortMut.mutate(mode)
-                    }}
-                  >
-                    <span className="flex-1">{i18nT(FOLDER_SORT_LABEL_KEY[mode])}</span>
-                    {folderSortMode === mode && <Check size={14} className="text-accent shrink-0" />}
-                  </DropdownMenuItem>
-                ))}
+                {/* A switcher like Sort by, so the rows are `menuitemradio`s that
+                    report `aria-checked` too. The group's `value` is the
+                    COMMITTED mode (the cache), so the checked row tracks what is
+                    actually in effect. The write stays on each row's `onSelect`,
+                    NOT the group's `onValueChange`: a re-pick of a mode equal to
+                    the group's committed value fires no change event, yet it must
+                    still go out when a different pick is in flight (pick Name,
+                    reopen, pick Custom while Name is still saving -- Custom must
+                    be sent, not read as a no-op against the still-Custom cache). */}
+                <DropdownMenuRadioGroup value={folderSortMode}>
+                  {FOLDER_SORT_MODES.map(mode => (
+                    <DropdownMenuRadioItem
+                      key={mode}
+                      value={mode}
+                      data-testid={`folder-order-${mode}`}
+                      // "Already the mode" is the value in flight while a save is
+                      // pending (the newest pick, queued or on the wire), not the
+                      // cache (which moves only when a save lands): pick Name,
+                      // reopen, pick Custom -- Custom must go out, not be read as
+                      // a no-op against the still-Custom cache. A pick that is a
+                      // change goes into `folderSortMut`'s one-at-a-time queue.
+                      onSelect={() => {
+                        const current = folderSortMut.isPending ? folderSortMut.variables : folderSortMode
+                        if (mode !== current) folderSortMut.mutate(mode)
+                      }}
+                    >
+                      <span className="flex-1">{i18nT(FOLDER_SORT_LABEL_KEY[mode])}</span>
+                      {folderSortMode === mode && <Check size={14} className="text-accent shrink-0" aria-hidden="true" />}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
                 {/* Outside Custom a folder drag can re-parent but not reorder
                     (the rows' droppable side is off). Said here, where the mode
                     is chosen, the same caption grammar as the stale control's
