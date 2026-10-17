@@ -1174,6 +1174,36 @@ async def test_knowledge_agent_document_is_registered_internal_path() -> None:
     assert denied.status == 403
 
 
+@pytest.mark.asyncio
+async def test_knowledge_session_project_namespace_is_registered_internal_path() -> None:
+    """Regression: the MCP-only GET /api/knowledge/session-project-namespace route
+    (project-scoped local_knowledge_search / knowledge_add_document) MUST be in
+    the strict internal allowlist. Its sole caller is the knowledge MCP tools over
+    X-Internal-Secret with no browser token, so a missing entry falls through to
+    cookie auth and the lookup 403s -- scoping would then silently stop working.
+
+    Drives the REAL _STRICT_INTERNAL_API_PATHS so a dropped entry fails here."""
+    from kiro_crew.dashboard.server import _STRICT_INTERNAL_API_PATHS
+
+    assert "/api/knowledge/session-project-namespace" in _STRICT_INTERNAL_API_PATHS
+    secret = "test-secret-123"
+    mw = token_auth_middleware(internal_paths=_STRICT_INTERNAL_API_PATHS, internal_secret=secret)
+    ok = await mw(
+        _make_request(
+            path="/api/knowledge/session-project-namespace",
+            method="GET",
+            headers={"X-Internal-Secret": secret},
+        ),
+        _ok_handler,
+    )
+    assert ok.status == 200
+    denied = await mw(
+        _make_request(path="/api/knowledge/session-project-namespace", method="GET"),
+        _ok_handler,
+    )
+    assert denied.status == 403
+
+
 # -- Property 9b: mixed_internal_paths (loopback MCP + non-loopback browser) --
 
 

@@ -716,6 +716,14 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # dashboard ingests via its own cookie-authed knowledge routes. Same
         # wiring class as "/api/notifications/agent" above.
         "/api/knowledge/agent-document",
+        # MCP-only (local_knowledge_search / knowledge_add_document scope their
+        # work to the caller's project through it); no browser caller. STRICT for
+        # the same reason as the block above: the project it answers for is
+        # derived from the X-Session-Key this secret backs, so a cookie
+        # fall-through would let a browser bearer name any session as itself and
+        # read that session's project namespace. It returns only the caller's own
+        # derived namespace, never a folder id or another session's data.
+        "/api/knowledge/session-project-namespace",
         "/api/mcp/servers",
         # Session control -- the three routes behind the session_create /
         # session_stop / session_read_message MCP tools.

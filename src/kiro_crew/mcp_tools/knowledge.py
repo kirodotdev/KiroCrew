@@ -197,11 +197,42 @@ def schemas() -> list[dict[str, Any]]:
 # knows meaning-based (and CJK) matches were not tried.
 _KEYWORD_ONLY_NOTE = " (vector path unavailable; keyword results only)"
 
+#: How many of a project-scoped search's `limit` result slots are reserved for
+#: the GLOBAL (unscoped) pass when it has hits the project pass did not already
+#: surface. The project's own documents lead, but this many slots are always kept
+#: for the shared library so a project that holds `limit`-or-more weakly-matching
+#: documents cannot crowd a strongly-relevant global runbook out of the window
+#: entirely. Only ever reserved up to what the global pass can actually fill, so
+#: a query with no fresh global hit still gives the project every slot.
+GLOBAL_RESERVED_SLOTS = 1
+
 #: Bound on the ``knowledge_add_document`` ingest POST: chunking, extraction and
 #: embedding of one document. A synchronous call on the pooled backend's worker,
 #: so it stays well under ``mcp_gateway.backend.PROGRESS_WEDGE_CEILING_SECS``
 #: (``test_mcp_gateway_inflight_report.py`` pins the relation).
 _ADD_DOCUMENT_TIMEOUT_SECS = 180.0
+
+
+def _project_namespace() -> str:
+    """The caller's project knowledge namespace, resolved server-side, or ``""``.
+
+    Asks the gateway for the namespace of the project the CALLER's own session is
+    filed in (``/api/knowledge/session-project-namespace``). The gateway derives
+    it from the verified ``X-Session-Key``, never from any argument — a session
+    can only ever scope to its OWN project, so there is no tool parameter a model
+    could forge to read another folder's knowledge. Any failure (route absent on
+    an older gateway, transport error, a session filed in no folder) answers
+    ``""``, and the search then runs globally exactly as it did before project
+    scoping existed.
+    """
+    try:
+        resp = mcp_core._get("/api/knowledge/session-project-namespace")
+    except Exception:  # noqa: BLE001 — a scoping lookup must never fail the search
+        return ""
+    if not isinstance(resp, dict) or resp.get("error"):
+        return ""
+    ns = resp.get("namespace")
+    return ns if isinstance(ns, str) else ""
 
 
 def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
@@ -210,6 +241,13 @@ def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
     limit = args.get("limit", 3)
     source_id = args.get("source_id") or None
     namespace = args.get("namespace") or None
+    # The caller's project (the sidebar folder its session is filed in) scopes the
+    # search by default: a session in project X searches X's knowledge first. This
+    # is resolved server-side from the verified session key, NOT from an argument,
+    # and is skipped entirely when the caller already named an explicit namespace
+    # (an explicit organisational scope is the caller's own choice and wins) or a
+    # session filed in no folder (project_ns == "").
+    project_ns = _project_namespace() if namespace is None else ""
 
     db_path = Path(mcp_core.config_dir()) / "workspace" / "knowledge" / "knowledge.db"
     if not db_path.exists():
@@ -260,11 +298,58 @@ def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
     embed_fn, embed_sig = mcp_core.vector_leg(embedder if available else None)
     retriever = mcp_core.HybridRetriever(store, embedder=embed_fn, embed_sig=embed_sig)
 
-    results = retriever.search(query, limit=limit, source_id=source_id, namespace=namespace)
-
-    # Filter by minimum confidence score
     min_score = 0.012
-    results = [r for r in results if r.get("score", 0) >= min_score]
+    if project_ns:
+        # Project-first with a RESERVED global slot. BOTH passes always run -- a
+        # namespace-scoped one and an unscoped one. The project's own hits lead,
+        # but a strict "project first, then global" ordering was rejected because
+        # it starves the shared library: the project pass is a hybrid search whose
+        # legs return the nearest in-namespace items however weak the match (the
+        # keyword leg RRF-scores a rank-1 in-namespace hit the same as a rank-1
+        # global one), so once a project holds `limit` items it fills every slot
+        # and a strongly-relevant global runbook is never reached. So at least
+        # GLOBAL_RESERVED_SLOTS of the `limit` slots are kept for the global pass
+        # whenever it has hits the project pass did not already surface: the
+        # project leads, and the shared library always contributes. A document is
+        # never shown twice (deduped by id), and the whole result is capped at
+        # `limit`. A session filed in no folder never reaches this branch
+        # (project_ns == ""), so its results are identical to the single unscoped
+        # pass below. The explicit `source_id` composes with both passes.
+        project_hits = [
+            r
+            for r in retriever.search(query, limit=limit, source_id=source_id, namespace=project_ns)
+            if r.get("score", 0) >= min_score
+        ]
+        global_hits = [
+            r
+            for r in retriever.search(query, limit=limit, source_id=source_id, namespace=None)
+            if r.get("score", 0) >= min_score
+        ]
+        seen_ids = {r["id"] for r in project_hits}
+        fresh_global = [r for r in global_hits if r["id"] not in seen_ids]
+        # Reserve slots for the global library only up to what it can actually
+        # fill, so a query with no fresh global hit still gives the project all
+        # `limit` slots.
+        reserved = min(GLOBAL_RESERVED_SLOTS, len(fresh_global)) if fresh_global else 0
+        project_budget = max(0, limit - reserved)
+        results = project_hits[:project_budget]
+        for r in fresh_global:
+            if len(results) >= limit:
+                break
+            results.append(r)
+        # Backfill any slots the global pass could not fill with the remaining
+        # project hits, so the window is never left short when docs exist.
+        if len(results) < limit:
+            taken = {r["id"] for r in results}
+            for r in project_hits[project_budget:]:
+                if len(results) >= limit:
+                    break
+                if r["id"] not in taken:
+                    results.append(r)
+    else:
+        results = retriever.search(query, limit=limit, source_id=source_id, namespace=namespace)
+        # Filter by minimum confidence score
+        results = [r for r in results if r.get("score", 0) >= min_score]
 
     if not results:
         mcp_core.sel().log_tool_invocation(

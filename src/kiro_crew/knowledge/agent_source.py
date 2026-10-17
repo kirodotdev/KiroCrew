@@ -410,6 +410,7 @@ async def add_agent_document(
     content: str,
     reason: str = "",
     source_uri: str = "",
+    namespace: str = "",
 ) -> dict:
     """Add one document to the aggregate "Auto-added" source.
 
@@ -433,13 +434,26 @@ async def add_agent_document(
     path, so the document gets the same chunker, extractor and embedder every
     other source gets -- and the same pre-ingest duplicate gate.
 
+    ``namespace`` files the document's items under one organisational label on
+    the Knowledge Library's ``items.namespace`` column -- the project namespace of
+    the folder the adding session is filed in, so that project's later searches
+    rank it first. It is resolved server-side from the verified session key by the
+    gateway route, never taken from a tool argument. Empty (a session filed in no
+    folder, or a pre-project caller) maps to the global ``"default"`` namespace --
+    the pre-project behaviour, so an unscoped add is byte-identical.
+
     Returns a result dict with ``status`` in ``added`` / ``duplicate`` /
     ``error``.
     """
     async with _ADD_LOCK:
         return await _add_agent_document(
-            pipeline, title=title, content=content, reason=reason,
-            source_uri=source_uri)
+            pipeline,
+            title=title,
+            content=content,
+            reason=reason,
+            source_uri=source_uri,
+            namespace=namespace,
+        )
 
 
 async def _add_agent_document(
@@ -449,6 +463,7 @@ async def _add_agent_document(
     content: str,
     reason: str,
     source_uri: str = "",
+    namespace: str = "",
 ) -> dict:
     store = pipeline.store
     title = (title or "").strip()[:_MAX_TITLE_LEN]
@@ -608,6 +623,7 @@ async def _add_agent_document(
             job_id = await pipeline.ingest_file(
                 tmp_path,
                 original_name=f"{title}{_DEFAULT_EXT}",
+                namespace=namespace or "default",
                 source_id=source_id,
                 old_item_ids=old_item_ids,
                 on_committed=_record_ownership,

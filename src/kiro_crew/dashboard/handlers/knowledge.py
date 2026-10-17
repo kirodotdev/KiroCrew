@@ -39,6 +39,7 @@ from kiro_crew.dashboard.handlers.files import (
     _content_matches_ext,
 )
 from kiro_crew.dashboard.origin import is_direct_local_request
+from kiro_crew.dashboard.project_knowledge import session_project_namespace_route
 from kiro_crew.dashboard.upload_limits import bytes_to_mb_figure, knowledge_upload_max_bytes
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.knowledge.agent_fetch import fetch_url_content
@@ -3118,12 +3119,23 @@ async def add_agent_document_route(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    # Project scope is resolved from the VERIFIED session key, never from the
+    # request body: a document added by a session filed in project X lands in X's
+    # namespace so that session's later searches find it first. A session filed in
+    # no folder resolves to "", which add_agent_document maps to the global
+    # "default" namespace -- the pre-project behaviour.
+    from kiro_crew.dashboard.project_knowledge import resolve_session_project_namespace
+
+    namespace = await resolve_session_project_namespace(
+        request.app["state"], request.headers.get("X-Session-Key", "").strip()
+    )
     result = await add_agent_document(
         pipeline,
         title=str(body.get("title") or ""),
         content=str(body.get("content") or ""),
         reason=str(body.get("reason") or ""),
         source_uri=str(body.get("source_uri") or ""),
+        namespace=namespace,
     )
     if result.get("status") == "error":
         return web.json_response(
@@ -3243,6 +3255,7 @@ def setup_knowledge_routes(app: web.Application) -> None:
     app.router.add_get("/api/knowledge/export", export_all)
     app.router.add_post("/api/knowledge/ingest", ingest_file)
     app.router.add_post("/api/knowledge/agent-document", add_agent_document_route)
+    app.router.add_get("/api/knowledge/session-project-namespace", session_project_namespace_route)
     app.router.add_post("/api/knowledge/import", import_bundle)
     app.router.add_get("/api/knowledge/items/{id}", get_item)
     app.router.add_patch("/api/knowledge/items/{id}", update_item)

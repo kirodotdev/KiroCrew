@@ -83,3 +83,47 @@ def _is_descendant(folders: list[dict], *, ancestor_id: str, folder_id: str) -> 
         node = by_id.get(cur)
         cur = str(node.get("parent_id") or "") if node else None
     return False
+
+
+def project_root_folder_id(folders: list[dict[str, Any]], folder_id: str) -> str:
+    """The id of the top-level folder *folder_id* ultimately nests under.
+
+    A Kiro Crew project is the top of a folder's ancestor chain, so a session
+    filed in a sub-team or worker folder belongs to the SAME project as one filed
+    in the project folder itself. Walks ``parent_id`` upward from *folder_id* to
+    the row that has no live parent and returns its id -- the project root that
+    derives the knowledge namespace (``knowledge.project_scope.project_namespace``).
+
+    Robust to the same corrupt input every walk here guards against:
+
+    * an empty *folder_id* -> ``""`` (a session filed nowhere has no project);
+    * a *folder_id* that names no row -> itself, so a session pointing at a
+      deleted folder still resolves to a stable, non-empty namespace rather than
+      silently collapsing to the global scope;
+    * a parent link that dangles (names a missing row) -> the last existing id on
+      the chain, for the same reason;
+    * a cycle -> the id at which the cycle is detected, via the visited-set
+      guard, so a corrupt ``folders.json`` cannot hang the caller.
+
+    Returns the ROOT id, never the leaf, which is what makes a nested session
+    inherit its project's knowledge instead of forking a private slice.
+    """
+    folder_id = (folder_id or "").strip()
+    if not folder_id:
+        return ""
+    by_id = {str(f.get("id") or ""): f for f in folders if isinstance(f, dict)}
+    seen: set[str] = set()
+    cur = folder_id
+    while cur and cur not in seen:
+        seen.add(cur)
+        node = by_id.get(cur)
+        parent = str(node.get("parent_id") or "") if node else ""
+        # No live parent (top of the tree, or a dangling/absent link): cur is the
+        # root. A parent that names no row stops here too, so a broken chain
+        # resolves to its highest existing ancestor rather than to "".
+        if not parent or parent not in by_id:
+            return cur
+        cur = parent
+    # Only reachable when a cycle sent the walk back to a visited id; cur is that
+    # id, a stable non-empty value.
+    return cur

@@ -196,6 +196,52 @@ class TestAddDocument:
         assert sorted(_items(kstore, a["source_id"])) == ["body a", "body b"]
 
     @pytest.mark.asyncio
+    async def test_namespace_stamps_the_project_on_the_items(self, pipeline, kstore):
+        # A document added by a session in project X lands under X's namespace, so
+        # that project's later searches rank it first. The namespace is a keyword
+        # argument resolved server-side from the session key, never a body field.
+        res = await add_agent_document(
+            pipeline,
+            title="Doc",
+            content="scoped body",
+            source_uri="test://Doc",
+            namespace="project:fid-x",
+        )
+        assert res["status"] == "added"
+        rows = kstore.db.execute(
+            "SELECT namespace FROM items WHERE source_id = ?", (res["source_id"],)
+        ).fetchall()
+        assert rows and all(r["namespace"] == "project:fid-x" for r in rows)
+
+    @pytest.mark.asyncio
+    async def test_empty_namespace_falls_back_to_default(self, pipeline, kstore):
+        # A session filed in no folder resolves to "" -> the global "default"
+        # namespace, which is the pre-project behaviour.
+        res = await add_agent_document(
+            pipeline,
+            title="Doc",
+            content="unscoped body",
+            source_uri="test://Doc",
+            namespace="",
+        )
+        assert res["status"] == "added"
+        rows = kstore.db.execute(
+            "SELECT namespace FROM items WHERE source_id = ?", (res["source_id"],)
+        ).fetchall()
+        assert rows and all(r["namespace"] == "default" for r in rows)
+
+    @pytest.mark.asyncio
+    async def test_namespace_defaults_to_default_when_omitted(self, pipeline, kstore):
+        # Every pre-existing caller omits the new keyword and must be unchanged.
+        res = await add_agent_document(
+            pipeline, title="Doc", content="legacy body", source_uri="test://Doc")
+        assert res["status"] == "added"
+        rows = kstore.db.execute(
+            "SELECT namespace FROM items WHERE source_id = ?", (res["source_id"],)
+        ).fetchall()
+        assert rows and all(r["namespace"] == "default" for r in rows)
+
+    @pytest.mark.asyncio
     async def test_there_is_no_path_parameter(self, pipeline, tmp_path):
         # A path would have to be opened here on behalf of whatever supplied it,
         # and an agent-supplied path is exactly where a component can be swapped
