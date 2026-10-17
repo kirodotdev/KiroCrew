@@ -21,7 +21,7 @@
 # pytest-timeout has no SIGALRM to interrupt with, so it kills the process and
 # takes the session with it (measured). Give such a test an explicit skipif at the
 # test, with the reason -- see
-# test_config_loader.py::TestAgentWorkspaceBindingsProperties::test_workspace_path_resolution.
+# test_config_loader_workspace_bindings.py::TestAgentWorkspaceBindingsProperties::test_workspace_path_resolution.
 test/metrics/test_local_exporter.py::test_export_locks_only_the_prune_phase
 test/test_acp_offload.py::TestOffloadRunsOnSubprocessPool::test_kill_process_runs_scan_and_sweep_off_loop
 test/test_acp_runtime_client_parity.py::test_periodic_sweep_skips_protected_runtime_pid

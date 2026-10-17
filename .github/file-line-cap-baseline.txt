@@ -185,7 +185,6 @@
 2166 test/test_computer_use_snapshot_macos.py
 2074 test/test_conductor_wake.py
 2260 test/test_config_live.py
-8527 test/test_config_loader.py
 2868 test/test_connections_mint.py
 2418 test/test_context.py
 2226 test/test_context_composition_contract.py

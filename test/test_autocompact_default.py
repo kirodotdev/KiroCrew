@@ -36,7 +36,7 @@ from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
 def _load_with_session(session_block: dict) -> KiroCrewConfig:
     """Load config from a temp file holding *session_block*.
 
-    Mirrors ``test_config_loader._load_from_dict``: patch ``config_path`` rather
+    Mirrors ``config_loader_helpers._load_from_dict``: patch ``config_path`` rather
     than touching the real data home. A distinct temp file per call also keeps
     the loader's fingerprint-keyed hot-path cache from serving one test's data
     to another.

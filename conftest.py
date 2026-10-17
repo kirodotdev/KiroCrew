@@ -3450,7 +3450,7 @@ def _apply_tracked_gap_list(items, listname: str, platform_label: str) -> None:
     fine is a hang. On Windows there is no ``SIGALRM``, so pytest-timeout cannot
     interrupt the test -- it kills the process, which is why the Windows shards pass
     ``--max-worker-restart=0``. MEASURED: one listed entry
-    (``test_config_loader.py::TestAgentWorkspaceBindingsProperties::test_workspace_path_resolution``)
+    (``test_config_loader_workspace_bindings.py::TestAgentWorkspaceBindingsProperties::test_workspace_path_resolution``)
     hangs on a native Windows host, and running the list killed the session at 22%
     with no summary line printed at all. A hanging test therefore cannot be tracked
     here; it needs an explicit ``skipif`` at the test, with the reason, so nothing

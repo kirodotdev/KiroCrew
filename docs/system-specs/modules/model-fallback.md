@@ -24,7 +24,7 @@ is the shared derivation used by the fallback callers:
 - An empty value produces an empty chain, so the fallback branch remains inert
   and the existing terminal error path handles the failure.
 
-`TestFallbackModelLoad` in `test/test_config_loader.py` and
+`TestFallbackModelLoad` in `test/test_config_loader_agent_section.py` and
 `TestCoerceFallbackModel` in `test/test_role_models.py` pin the default,
 normalization, concrete-value ordering, and empty-value opt-out. The dashboard
 PATCH schema in `dashboard/handlers/core.py` applies the model-id grammar and
@@ -343,6 +343,6 @@ sub-agents) keep the terminal refusal behavior.
 state, story handling, and unattended restore. `test/test_dashboard_chat.py`
 covers dashboard fallback and slot restore. `test/test_subagent_turn_resilience.py`
 and `test/test_cron_gateway_integration_llm.py` cover sub-agent and gateway wiring.
-`test/test_config_loader.py`, `test/test_role_models.py`, and
+`test/test_config_loader_agent_section.py`, `test/test_role_models.py`, and
 `test/test_dashboard_handlers_core_coverage_agent_settings.py` cover configuration
 loading and PATCH validation.

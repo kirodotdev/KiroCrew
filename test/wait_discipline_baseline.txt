@@ -100,7 +100,7 @@
  6 test_conductor_wake.py
  1 test_config_api.py
  6 test_config_live.py
- 1 test_config_loader.py
+ 1 test_config_loader_agent_resolution.py
  2 test_config_save_locking.py
  1 test_config_savers_locked_write.py
  1 test_connections_l1_smoke.py
