@@ -26,6 +26,7 @@ from kiro_crew import platform_compat as pc
 from kiro_crew import session, session_pid, session_pool
 from kiro_crew.acp.client import _capture_child_records
 from kiro_crew.config import KiroCrewConfig
+from kiro_crew.testing.wait import await_until
 
 pytestmark = [
     pytest.mark.skipif(sys.platform != "darwin", reason="requires the real Darwin kernel"),
@@ -77,7 +78,9 @@ def _await(predicate, message):
     deadline = time.monotonic() + 5
     while not predicate():
         assert time.monotonic() < deadline, message
-        time.sleep(0.01)
+        time.sleep(
+            0.01
+        )  # flake-ok: process-state poll works on the loop thread; no asyncio primitive signals readiness
 
 
 def _line(pipe):
@@ -276,22 +279,25 @@ async def test_native_expiry_repeatedly_reclaims_whole_trees(native, monkeypatch
             if path == "idle":
                 entry = session._Session(provider=provider, last_used=clock[0])
                 manager._sessions[key] = entry
-                await asyncio.wait_for(manager._expire_idle(14400), 10)
+                await await_until(asyncio.ensure_future(manager._expire_idle(14400)))
                 assert manager._sessions[key] is entry
                 assert all(not _stopped(pid) for pid in tree.identities)
                 clock[0] += 14401
-                await asyncio.wait_for(manager._expire_idle(14400), 10)
+                await await_until(asyncio.ensure_future(manager._expire_idle(14400)))
                 assert key not in manager._sessions
             else:
                 manager._warm_pool.put_nowait((provider, clock[0]))
-                await asyncio.wait_for(manager._sweep_warm_pool_once(), 10)
+                await await_until(asyncio.ensure_future(manager._sweep_warm_pool_once()))
                 assert manager._warm_pool.qsize() == 1
                 assert all(not _stopped(pid) for pid in tree.identities)
                 clock[0] += 1801
                 if path == "pool_health":
-                    await asyncio.wait_for(manager._sweep_warm_pool_once(), 10)
+                    await await_until(asyncio.ensure_future(manager._sweep_warm_pool_once()))
                 else:
-                    assert await asyncio.wait_for(manager._drain_and_claim(None), 10) is None
+                    assert (
+                        await await_until(asyncio.ensure_future(manager._drain_and_claim(None)))
+                        is None
+                    )
                 assert manager._warm_pool.empty()
                 assert manager._pool_sweep_pids == set()
             provider.shutdown.assert_awaited_once()

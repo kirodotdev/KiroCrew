@@ -26,6 +26,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from kiro_crew import webhooks
 from kiro_crew.dashboard.handlers import hooks as hooks_handlers
 from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 TS = 1_700_000_000
 
@@ -60,28 +61,25 @@ class _Runs:
     async def run(self, state, session_key, message, *args, **kwargs):  # type: ignore[no-untyped-def]
         self.keys.append(session_key)
         try:
-            await asyncio.wait_for(self.release.wait(), 10)
+            await await_until(self.release)
         finally:
             hooks_handlers._hook_inflight_sessions.discard(session_key)
             hooks_handlers._hook_semaphore.release()
 
 
 async def _until_runs(runs: _Runs, n: int) -> None:
-    async def _wait() -> None:
-        while len(runs.keys) < n:
-            await asyncio.sleep(0.01)
-
-    await asyncio.wait_for(_wait(), 5)
+    await async_wait_until(
+        lambda: len(runs.keys) >= n,
+        describe=lambda: f"runs.keys={runs.keys}",
+    )
 
 
 async def _until_idle(session_key: str) -> None:
     """Wait until no turn holds *session_key*, the check a new call is refused on."""
-
-    async def _wait() -> None:
-        while session_key in hooks_handlers._hook_inflight_sessions:
-            await asyncio.sleep(0.01)
-
-    await asyncio.wait_for(_wait(), 5)
+    await async_wait_until(
+        lambda: session_key not in hooks_handlers._hook_inflight_sessions,
+        describe=lambda: f"session_key={session_key!r} still in flight",
+    )
 
 
 def _app() -> web.Application:

@@ -12,7 +12,6 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -129,10 +128,10 @@ class TestCopyCancellation:
 
         def _slow_copy(entry, mdir, manifest, cancel=None):
             started.set()
-            # Busy-wait on the cooperative cancel flag, then defer to the real copy so
+            # Wait on the cooperative cancel flag, then defer to the real copy so
             # the cancelled-path early-return is exercised.
-            while cancel is not None and not cancel.is_set():
-                time.sleep(0.01)
+            if cancel is not None:
+                cancel.wait()
             return real_copy(entry, mdir, manifest, cancel)
 
         _fake_fetch(
@@ -142,7 +141,9 @@ class TestCopyCancellation:
         monkeypatch.setattr(reg_mod, "_PREWARM_BATCH_BUDGET", 0.2)
         entry = _entry()
 
-        fetched = await asyncio.wait_for(_prewarm_owner_tier_store_assets(reg, [entry]), timeout=5)
+        fetched = await await_until(
+            asyncio.ensure_future(_prewarm_owner_tier_store_assets(reg, [entry]))
+        )
 
         assert fetched == 0, "the cancelled row is not counted as fetched"
         # No sidecar and no partial art for the cancelled row.
@@ -838,7 +839,9 @@ class TestBoundedPostBudgetCleanup:
             # The old code: one wait_for over the gather, whose timeout cancels the
             # worker and then awaits its (hanging) cleanup before raising.
             try:
-                await asyncio.wait_for(asyncio.gather(_worker()), timeout=0.2)
+                await asyncio.wait_for(
+                    asyncio.gather(_worker()), timeout=0.2
+                )  # flake-ok: negative control simulating pre-fix bug; the timeout IS the assertion proving the old code blocked
             except asyncio.TimeoutError:
                 return 0
 
@@ -873,8 +876,8 @@ class TestBoundedPostBudgetCleanup:
         monkeypatch.setattr(reg_mod, "_PREWARM_CLEANUP_BUDGET", 2.0)
         assert not reg_mod._PENDING_PREWARM_CLEANUPS
 
-        fetched = await asyncio.wait_for(
-            _prewarm_owner_tier_store_assets(reg, [_entry()]), timeout=5
+        fetched = await await_until(
+            asyncio.ensure_future(_prewarm_owner_tier_store_assets(reg, [_entry()]))
         )
 
         assert fetched == 0
@@ -934,10 +937,10 @@ class TestOuterCancellationSettlesTheBatch:
         entry = _entry()
 
         task = asyncio.ensure_future(_prewarm_owner_tier_store_assets(reg, [entry]))
-        await asyncio.wait_for(started.wait(), timeout=5)
+        await await_until(started)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5)
+            await await_until(task)
 
         # The in-flight clone was cancelled (not abandoned) and its scratch dir removed.
         assert cancelled, "the worker clone was not cancelled on outer cancellation"

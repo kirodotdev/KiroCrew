@@ -45,13 +45,11 @@
  5 test_adaptive_startup_memory.py
  4 test_admission_gate.py
  2 test_agent_fork_templates.py
- 6 test_agent_slash_command.py
  2 test_ai_pr_watchers_coverage.py
  2 test_ai_runner_coverage.py
  2 test_api_agent_config_put_succeeds.py
  3 test_app_dev_mode.py
  1 test_app_manager.py
- 6 test_app_route_trust_gate.py
  3 test_app_ui_file_route.py
  2 test_apple_speech.py
  1 test_approval_and_update_task.py
@@ -76,7 +74,6 @@
  1 test_channel_approval_nonce_nonascii.py
  4 test_channel_boot_hot_reload.py
  3 test_channel_env_write_off_loop.py
- 6 test_channel_prompt_busy.py
  2 test_channel_subscribe_timeout.py
  5 test_chat_close_interrupts_turn.py
  3 test_chat_fork_member_memory.py
@@ -99,7 +96,6 @@
  3 test_conductor_wake.py
  3 test_conductor_wake_pushed_ticks.py
  1 test_config_api.py
- 6 test_config_live.py
  1 test_config_loader_agent_resolution.py
  2 test_config_save_locking.py
  1 test_config_savers_locked_write.py
@@ -129,7 +125,6 @@
  2 test_cron_undispatched_one_shot.py
  1 test_cron_wake_budget.py
  7 test_cross_surface_stop_gate.py
- 6 test_darwin_native_provider_reap.py
  4 test_dashboard_approval.py
  1 test_dashboard_cron_run_guard.py
  1 test_dashboard_execution_retention.py
@@ -142,7 +137,6 @@
  1 test_decisions_gate.py
  1 test_decisions_integration.py
  2 test_decisions_local_provider.py
- 6 test_decisions_local_runtime.py
  5 test_decisions_local_runtime_real_spawn.py
  1 test_decisions_points.py
  2 test_denied_commands_security.py
@@ -161,7 +155,6 @@
  2 test_embeddings.py
  5 test_executors.py
  1 test_explain_for_skill.py
- 6 test_external_logout_detection_retirement.py
  1 test_fairness_lanes.py
  2 test_fargate_closed_forward_remedy.py
  2 test_feishu_client.py
@@ -252,7 +245,6 @@
  2 test_oneshot_supervisor.py
  1 test_opencode_session_mcp.py
  1 test_papyrus_latex.py
- 6 test_pathres_loop_starvation.py
  1 test_pid_lifecycle_process_sweeps.py
  2 test_plan_mode.py
  3 test_platform_log_append.py
@@ -270,9 +262,7 @@
  1 test_queue_boundary_finalize.py
  4 test_queue_depth_after_deferred_start.py
  3 test_queue_receipt.py
- 6 test_queued_prompt_durability.py
  1 test_registry_store_art_prewarm.py
- 6 test_registry_store_art_prewarm_batch.py
  1 test_registry_store_art_prewarm_rewarm.py
  1 test_remote_crew_chaining.py
  1 test_resource_pressure_notify.py
@@ -344,7 +334,6 @@
  1 test_spawn_exec_shim.py
  4 test_spawn_reasoning_effort.py
  3 test_spawn_release_queued.py
- 6 test_ssh_tunnel_manager_cov80.py
  2 test_stall_enrichment.py
  4 test_start_priority.py
  1 test_stop_kill_cancel.py
@@ -392,18 +381,15 @@
  4 test_vector_memory.py
  1 test_wait_tool_early_end.py
  2 test_wake_judge_feedback_decision_log.py
- 5 test_webhook_generated_session_key.py
  4 test_webhook_memory_preparation.py
  2 test_webhook_permission_requests.py
  4 test_wecom_client.py
  1 test_wecom_client_cov80.py
- 5 test_wheel_apply.py
  1 test_wheel_engine_lifecycle.py
  3 test_windows_fail_closed_optin.py
  1 test_windows_job_limits.py
  2 test_windows_tree_reap.py
  1 test_work_ledger_projection.py
- 6 test_work_ledger_projection_rebuild_guards.py
  1 test_workflow_agent_spawn_governance.py
  2 test_workflow_execution_capture_async.py
  4 test_workflow_memory_backend_reset.py

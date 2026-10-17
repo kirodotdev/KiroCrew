@@ -43,6 +43,7 @@ from kiro_crew.channel import (
 from kiro_crew.llm_helpers import is_prompt_busy
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.session import SessionManager
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 def _make_agent():
@@ -362,16 +363,13 @@ async def test_recover_swallows_a_failed_teardown_of_the_abandoned_replacement()
 async def _run_until(agent, ch, sessions, done: asyncio.Event, text: str) -> asyncio.Task:
     task = asyncio.create_task(run_channel_agent(agent, ch, sessions))
     await ch.post("human", text)
-    await asyncio.wait_for(done.wait(), timeout=5)
+    await await_until(done)
     return task
 
 
 async def _wait_for(predicate) -> bool:
-    for _ in range(100):
-        if predicate():
-            return True
-        await asyncio.sleep(0.05)
-    return False
+    await async_wait_until(predicate, describe=lambda: "predicate not yet true")
+    return True
 
 
 @pytest.mark.asyncio
@@ -417,7 +415,7 @@ async def test_loop_reports_an_unrecoverable_agent_once_and_stops():
     sessions = FakeSessions([_wedged_client(done), _wedged_client(done)])
 
     task = await _run_until(agent, ch, sessions, done, "start the review")
-    await asyncio.wait_for(task, timeout=5)
+    await await_until(task)
 
     assert agent.state == "failed"
     stuck = [m.content for m in ch.messages if "could not be recovered" in m.content]
@@ -448,8 +446,8 @@ async def test_an_unrecoverable_agent_stops_consuming_its_inbox():
         await ch.post("human", f"msg {i}")
     assert agent.inbox.qsize() == 3
     task = asyncio.create_task(run_channel_agent(agent, ch, sessions))
-    await asyncio.wait_for(done.wait(), timeout=5)
-    await asyncio.wait_for(task, timeout=5)
+    await await_until(done)
+    await await_until(task)
 
     assert agent.state == "failed"
     assert len([m for m in ch.messages if "could not be recovered" in m.content]) == 1
@@ -476,7 +474,7 @@ async def test_the_stuck_card_still_lands_when_the_teardown_reset_fails():
     )
 
     task = await _run_until(agent, ch, sessions, done, "start the review")
-    await asyncio.wait_for(task, timeout=5)
+    await await_until(task)
 
     assert agent.state == "failed"
     assert len([m for m in ch.messages if "could not be recovered" in m.content]) == 1
