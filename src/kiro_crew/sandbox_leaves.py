@@ -631,6 +631,14 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # fence how a command SPELLS this path, and the kernel denial is what still
     # holds when a spelling is built at runtime (``$(printf ...)``).
     "settings_seeds.json",
+    # The Slack code-channel record (``slack.code_channels.store``): which
+    # dashboard session each code channel runs in and where its replies go. An
+    # input to a decision the gateway makes outside the sandbox, so a sandboxed
+    # writer could route a channel's messages into another session. Read-only,
+    # not hidden: channel ids, slot keys, paths and timestamps, no secret. Its
+    # only writer is the gateway. Paired with the file-edit floor in
+    # ``security.paths._WRITE_PROTECTED_HOME_PATHS``.
+    "slack-code-channels.json",
     # The crew webview template directory. A ceiling in exactly the sense above:
     # the whole value of splitting a panel into human-authored TEMPLATE and
     # agent-published DATA is that layout is authored by a person, so a crew must
@@ -913,6 +921,7 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # sealed for the same reason: a forged entry decides a later grant.
     "apps/.dev-grants.json",
     "settings_seeds.json",
+    "slack-code-channels.json",
     "agent_model_state.json",
     "agent_model_state.json.lock",
     # Gateway-owned run records, read to restore app authorization on a cold

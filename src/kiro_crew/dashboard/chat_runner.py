@@ -691,6 +691,13 @@ from kiro_crew.session_agent_selection import (  # noqa: F401
     session_agent_selection_kind,
 )
 from kiro_crew.session_capabilities import CapabilityStartupError
+from kiro_crew.slack.code_channels.binding import mirror_post_thread as code_channel_post_thread
+from kiro_crew.slack.code_channels.binding import (
+    notify_turn_end as notify_code_channel_turn_end,
+)
+from kiro_crew.slack.code_channels.binding import (
+    notify_turn_start as notify_code_channel_turn_start,
+)
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.start_priority import StartPriority, person_priority
@@ -8296,6 +8303,10 @@ async def _run_chat(
     _mirror_active_task = ""
     _mirror_active_task_title = ""
     _mirror_thread: str | None = ""
+    # Where mirrored posts go: `_mirror_thread`, or None (top-level) for a Slack
+    # code channel's own session. `_mirror_thread` keeps its ownership meaning.
+    _mirror_post_ts: str | None = ""
+    _code_channel_turn = False
     _mirror_task_counter = 0
     _memory_preparation_admitted = False
     # Zero until the marker below is written, so a cancellation that lands during
@@ -10156,7 +10167,17 @@ async def _run_chat(
         # answer as much as to the echo — so it is one gate, not four.
         if state.slack_client and not is_slash and not slack_mirror_is_paused(state, session_key):
             _mirror_thread, _mirror_chan = state.sessions.get_slack_link(session_key)
+            _mirror_post_ts = code_channel_post_thread(_mirror_chan, _mirror_thread)
             if _mirror_thread and _mirror_chan:
+                try:
+                    _code_channel_turn = await notify_code_channel_turn_start(
+                        _mirror_chan,
+                        _mirror_thread,
+                        session_key,
+                        source="slack" if slot._turn_channel_origin else "dashboard",
+                    )
+                except Exception:
+                    logger.debug("code channel turn-start hooks failed", exc_info=True)
                 try:
                     if not _is_synthetic:
                         from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
@@ -10168,12 +10189,12 @@ async def _run_chat(
                         # <!channel> / <@U…> in `text`, so escape at this sink.
                         _mirror_msg = escape_mrkdwn(_prepare_mirror_msg(_user_msg_for_mirror))
                         await state.slack_client.post_message(
-                            _mirror_chan, f"💬 _{_mirror_msg}_", _mirror_thread
+                            _mirror_chan, f"💬 _{_mirror_msg}_", _mirror_post_ts
                         )
                     # Start a stream for real-time tool animations
                     _mirror_stream_ts = (
                         await state.slack_client.start_stream(
-                            _mirror_chan, _mirror_thread, initial_text="Thinking…"
+                            _mirror_chan, _mirror_post_ts or "", initial_text="Thinking…"
                         )
                         or ""
                     )
@@ -16546,7 +16567,7 @@ async def _run_chat(
                 _mirror_body, _mirror_options = extract_options(turn.assistant_text)
 
                 for _part in render_for_slack(_mirror_body):
-                    await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
+                    await state.slack_client.post_message(_mirror_chan, _part, _mirror_post_ts)
                 if _mirror_options:
                     # Keep the ts this posts: the control has to be spendable
                     # later, and discarding the ts is what leaves a superseded
@@ -16576,7 +16597,7 @@ async def _run_chat(
                         _mirror_chan,
                         _mirror_blocks,
                         "Options",
-                        _mirror_thread,
+                        _mirror_post_ts,
                     )
                     if _mirror_ts:
                         _owner = (
@@ -18589,6 +18610,28 @@ async def _run_chat(
         # clears it. The nested try/finally makes the release unconditional
         # while preserving the reset-then-release ordering.
         try:
+            if _code_channel_turn:
+                # Exactly one end per start, on every exit path: the channel's
+                # status goes back to ready and subscribers settle the turn.
+                # First in this block and shielded, so a cancel landing in the
+                # cleanup below still lets it finish.
+                _code_channel_turn = False
+                try:
+                    await asyncio.shield(
+                        notify_code_channel_turn_end(
+                            _mirror_chan,
+                            _mirror_thread,
+                            session_key,
+                            source="slack" if slot._turn_channel_origin else "dashboard",
+                            outcome=(
+                                "stopped"
+                                if _stop_reason == STOP_REASON_CANCELLED
+                                else "ok" if _stop_reason == STOP_REASON_END_TURN else "error"
+                            ),
+                        )
+                    )
+                except Exception:
+                    logger.debug("code channel turn-end hooks failed", exc_info=True)
             if _deferred_options_expiry:
                 _deferred_options_expiry = False
                 await expire_slack_options(state, session_key)

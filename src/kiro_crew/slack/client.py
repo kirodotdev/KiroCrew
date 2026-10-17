@@ -754,9 +754,13 @@ class RealSlackClient(SlackClientOps):
             await self.ensure_channel_team(channel)
             body: dict[str, Any] = {
                 "channel": channel,
-                "thread_ts": thread_ts,
                 "task_display_mode": "plan",
             }
+            # A Slack Code channel streams TOP-LEVEL (the whole channel is one
+            # session), which Slack spells by omitting thread_ts: an empty string
+            # is rejected. Every threaded caller passes a real ts, unchanged.
+            if thread_ts:
+                body["thread_ts"] = thread_ts
             # Workspace routing for org-wide installs.  Prefer the cached
             # home team for this channel — that's the workspace the channel
             # lives in, which is what ``body["team_id"]`` must route to.
