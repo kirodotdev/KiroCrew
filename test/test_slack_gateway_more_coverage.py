@@ -526,6 +526,41 @@ class TestShutdownExtras:
         ds.file_indexes.stop_all.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_a_pending_eager_spawn_ends_inside_the_shutdown(self):
+        """A slot's speculative start is cancelled and awaited by the shutdown.
+
+        Left running, a start still debouncing wakes mid-teardown and spawns an
+        agent no session teardown can reach, and the task outlives the gateway.
+        """
+        orch = _make_orchestrator()
+        orch.cron_svc = None
+        orch.heartbeat_svc = None
+        orch.subagent_mgr = None
+        orch.sessions = None
+        orch._dashboard_runner = None
+        orch._stop_mcp_broker = AsyncMock()
+        ds = _mock_dashboard_state()
+        ds._loop_watchdog = None
+        ds._loop_heartbeat = None
+        orch.dashboard_state = ds
+        debouncing = asyncio.Event()
+
+        async def _debouncing_start() -> None:
+            debouncing.set()
+            await asyncio.Event().wait()
+
+        start = asyncio.create_task(_debouncing_start())
+        ds._slots = {"s1": SimpleNamespace(_eager_spawn_task=start)}
+        try:
+            await await_until(debouncing, what="the eager start's debounce")
+            with patch("kiro_crew.dashboard.chat.save_all_slots_to_history"):
+                await await_until(asyncio.ensure_future(orch._shutdown()), what="the shutdown")
+            assert start.cancelled()
+        finally:
+            start.cancel()
+            await asyncio.gather(start, return_exceptions=True)
+
+    @pytest.mark.asyncio
     async def test_cancels_background_tasks_and_closes_socket(self):
         orch = _make_orchestrator()
         orch.cron_svc = None

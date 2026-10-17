@@ -71,6 +71,14 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
     update_stop_deadline = asyncio.get_running_loop().time() + UPDATE_INSTALLER_STOP_SECS
     for task in installer_tasks:
         task.cancel()
+    # Stop speculative session starts before anything below awaits. One still
+    # debouncing would otherwise spawn an agent mid-teardown that close_all()
+    # cannot see. They are awaited with the session teardown further down.
+    eager_spawns: list[asyncio.Task[None]] = []
+    if self.dashboard_state:
+        from kiro_crew.dashboard.chat_runner import stop_eager_spawns
+
+        eager_spawns = stop_eager_spawns(self.dashboard_state)
     self._memory_repair_stop.set()
     if self._memory_repair_task is not None:
         self._memory_repair_task.cancel()
@@ -209,6 +217,8 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
         cleanup_tasks.append(self.subagent_mgr.cancel_all())
     if self.sessions:
         cleanup_tasks.append(self.sessions.close_all())
+    if eager_spawns:
+        cleanup_tasks.append(asyncio.gather(*eager_spawns, return_exceptions=True))
     if self._dashboard_runner:
         # Close WS connections first so handlers exit promptly
         if self.dashboard_state:
