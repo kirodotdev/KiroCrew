@@ -313,6 +313,49 @@ export function computePinPush(bannerH: number, foldY: number, nextTop: number |
 }
 
 /**
+ * Breathing room, in px, between the pinned card's bottom edge and the first
+ * readable transcript row, on top of the strip the card itself occupies. The
+ * mirror of `DOCK_CLEARANCE_PX` at the bottom: there the last line stops this
+ * far clear of the composer glass, here the first row starts this far clear of
+ * the card, so a reserve of exactly the card height would otherwise butt the
+ * row against the card's own ring.
+ */
+export const PINNED_RESERVE_CLEARANCE_PX = 8
+
+/**
+ * Height, in px, the transcript scroller must give back from its TOP so the
+ * first readable row starts below the pinned card instead of under it — the
+ * top-edge mirror of the dock reserve (`paddingBottom: dockH + DOCK_CLEARANCE_PX`,
+ * #15820) at the bottom.
+ *
+ * The card is a `position: absolute` overlay beside the scroller, so the
+ * scroller's own flow knows nothing of its footprint; without this the first
+ * row paints under the card (#15993 — the "N agents queued" card sliced under
+ * the bar). The card sits `ROW_PAD_Y` below the fold and stands `bannerH` tall,
+ * so it occupies `ROW_PAD_Y + bannerH` of the scroller's top edge; the
+ * clearance adds the same gap the dock reserve leaves at the bottom.
+ *
+ * Sized from the SETTLED resting height (`pinCollapsedHRef`, what the card
+ * reports through `onCollapsedHeight`), never the live fold/peek/expansion
+ * height: those grow the card DOWNWARD over content it already stands in for,
+ * never upward past its top, so the reserve is stable while the fold runs and
+ * cannot feed back into the geometry that sets it. The reason #16021's
+ * `padding-top` on the scroll content was rejected is NOT this value — it is
+ * WHERE the host applies it: content padding only reserves at `scrollTop === 0`,
+ * the one position the card is never pinned at, so the hook applies this as a
+ * viewport-anchored inset that shrinks the scroller from the top (a top margin),
+ * compensating `scrollTop` by the delta so no row shifts across the fold and the
+ * pin cannot flicker. Zero when nothing is pinned, so an unpinned transcript is
+ * byte-for-byte the prior layout; clamped at 0 for a degenerate negative height.
+ *
+ * @param bannerH the card's settled resting height
+ */
+export function computePinnedTopReserve(bannerH: number): number {
+  if (bannerH <= 0) return 0
+  return ROW_PAD_Y + bannerH + PINNED_RESERVE_CLEARANCE_PX
+}
+
+/**
  * Lines of prompt text the card shows AT REST — one.
  *
  * The card sits over the top of whatever reply the reader is scrolling through,
