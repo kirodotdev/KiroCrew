@@ -138,7 +138,7 @@ class TestUpdateCheckGitGuard:
         # "run `kirocrew update`" message instead of running git status/pull
         # and failing. `kirocrew update` (unlike this endpoint) dispatches on
         # install layout and handles wheel/cli.sh installs correctly, so it is
-        # the right redirect — see cli_server.py::_update().
+        # the right redirect — see cli_server_update.py::_update().
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
 
         def _boom(*a, **k):  # pragma: no cover - must not be called

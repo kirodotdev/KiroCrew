@@ -180,11 +180,15 @@ class TestRegistrationIsNotRouteDependent:
         assert 'getattr(task_runner, "_ctx", None)' in src
 
     def test_the_cli_entry_point_registers_without_importing_the_dashboard(self):
+        import sys
         from pathlib import Path
 
         import kiro_crew.cli_server as mod
 
-        src = Path(mod.__file__).read_text(encoding="utf-8")
+        src = "".join(
+            Path(sys.modules[m].__file__).read_text(encoding="utf-8")
+            for m in (mod.__name__, *mod._OWNERS)
+        )
         assert "register_skill_read_observer(ctx)" in src
         # The helper is homed in a leaf module, so no runtime needs to import
         # another surface just to register.

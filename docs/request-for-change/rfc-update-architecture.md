@@ -157,7 +157,7 @@ so no rc-to-rc step was detectable.
 **Phase 1, the architectural half — landed since this snapshot:**
 
 - `platform/update_capability.py` exists and `derive_capability` serves the §2
-  contract to `dashboard/handlers/updates.py` and `cli_server.py`; the tactical
+  contract to `dashboard/handlers/updates.py` and `cli_server_update.py`; the tactical
   `install_kind` / `self_updatable` fields are gone.
 - The `.git` derivation is collapsed into `update_capability.py`.
 - The gateway skips a detached HEAD (`is_primary_branch`) rather than coercing it
@@ -262,7 +262,7 @@ re-asked which shapes it still governs.
 ### Problems
 
 As of `9348a25a34`: Problem 1 is closed (a managed-venv install updates through
-`_update_wheel` / `_update_managed_venv` in `cli_server.py`; #1734, #16202).
+`_update_wheel` / `_update_managed_venv` in `cli_server_update.py`; #1734, #16202).
 Problem 2 is closed for the changelog modal (`updateFlow.tsx` reads
 `update_can_apply` / `update_can_arm` through `updateAffordance`, and #16245
 replaced the inert toggle with `WhatsNewAutoUpdateToggle` under the
@@ -475,7 +475,7 @@ permanently indeterminate.
 `can_apply` means **appliable by the running process without the user leaving
 the app**. It is not "can this install ever be updated": `source` and `wheel`
 can both be updated from a terminal, and `kirocrew update` genuinely applies on
-`source` today (`cli_server.py`). `can_apply` is the field an
+`source` today (`cli_server_update.py`). `can_apply` is the field an
 implementer reads to decide whether to render an in-app Apply button, so it must
 answer only that question.
 

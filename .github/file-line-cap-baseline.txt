@@ -36,7 +36,6 @@
 2058 src/kiro_crew/change_card_catalog.py
 5223 src/kiro_crew/cli_commands.py
 2478 src/kiro_crew/cli_doctor.py
-3552 src/kiro_crew/cli_server.py
 2339 src/kiro_crew/connections/warm.py
 5311 src/kiro_crew/crew_log/emit.py
 2260 src/kiro_crew/crew_log/session_tree_projection.py
@@ -72,7 +71,6 @@
 3928 src/kiro_crew/llm_helpers.py
 3951 src/kiro_crew/mcp_cron.py
 3778 src/kiro_crew/mcp_discovery.py
-3415 src/kiro_crew/mcp_shared.py
 2129 src/kiro_crew/members.py
 2440 src/kiro_crew/name_grant.py
 2646 src/kiro_crew/pinned_fs.py

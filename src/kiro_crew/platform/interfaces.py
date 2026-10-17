@@ -442,7 +442,7 @@ class IdentityProvider(Protocol):
         """Already-resolved pre-launch checks for ``gateway``/``token``.
 
         WIRED: ``kiro_crew.preflight.run_preflight_checks`` (called from the
-        ``gateway`` dispatch in ``cli.py`` and ``_token`` in ``cli_server.py``)
+        ``gateway`` dispatch in ``cli.py`` and ``_token`` in ``cli_server_requests.py``)
         runs each callable in order.  ``SystemExit`` from a check aborts the
         launch; other exceptions are logged and swallowed per check.  Public
         default = ``[]`` (no checks, startup unchanged); the companion returns
