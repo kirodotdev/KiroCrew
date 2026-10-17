@@ -118,7 +118,7 @@ const API_KEY_ORDER = [
   'createChatSlot', 'chatSlotContext', 'deleteChatSlot', 'cleanupSessions',
   'stopChatSlot', 'stopChatSlotForce', 'cancelQueuedMessage', 'editQueuedMessage',
   'reorderQueuedMessages', 'interruptSlot', 'endWait', 'approveChatSlot',
-  'resumeChatSlot', 'forkChatSlot', 'sideTools', 'sideOpen',
+  'resumeChatSlot', 'forkChatSlot', 'sideTools', 'mergeBackDraft', 'mergeBack', 'sideOpen',
   'sideTurn', 'sideQueueCancel', 'sideQueueEdit', 'sideClose', 'sideStop',
   'chatMode', 'generateTitle', 'resolveNavLinks', 'renameSlot', 'setTodoTask',
   'regenerateSlot', 'continueSlot', 'resetConversation', 'switchVariant', 'editResend',

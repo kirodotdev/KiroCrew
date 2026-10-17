@@ -6,9 +6,11 @@ import { JiraHostsCtx } from '../../../lib/jiraHosts'
 import type { ChatConfig } from '../ChatSettings'
 import { SidePanelDockHost } from '../../../components/SidePanelGlyph'
 import { TagPopoverProvider } from '../../../hooks/useTagPopover'
+import { MergeBackDialogProvider } from '../../../hooks/useMergeBackDialog'
 
 interface ChatPageFrameProps {
   embedded?: boolean
+  popout?: boolean
   activeSlot: string | null
   chatConfig: ChatConfig
   jiraSourceHosts: string[]
@@ -21,10 +23,10 @@ interface ChatPageFrameProps {
 }
 
 /**
- * The page's frame: the contexts every surface inside it reads (run-in-terminal scope, row disclosure, the side panel's dock host, tag popovers, Jira hosts, the sidebar folder and closed-session actions) and the root element both drawer swipes bind to, which carries the message font size the side panel inherits.
+ * The page's frame: the contexts every surface inside it reads (run-in-terminal scope, row disclosure, the side panel's dock host, tag popovers, the merge-back dialog, Jira hosts, the sidebar folder and closed-session actions) and the root element both drawer swipes bind to, which carries the message font size the side panel inherits.
  */
 export default function ChatPageFrame({
-  embedded, activeSlot, chatConfig, jiraSourceHosts, runInTerminalScope, activitySlot, chatContainerRef, closedSessionActions, sidebarFolderActions, children,
+  embedded, popout, activeSlot, chatConfig, jiraSourceHosts, runInTerminalScope, activitySlot, chatContainerRef, closedSessionActions, sidebarFolderActions, children,
 }: ChatPageFrameProps) {
   return (
     <RunInTerminalScope.Provider value={runInTerminalScope}>
@@ -34,6 +36,10 @@ export default function ChatPageFrame({
         right, so every panel glyph on this page resolves against that. */}
     <SidePanelDockHost value={!!activitySlot}>
     <TagPopoverProvider>
+    {/* Merge into parent is offered exactly where a fork is (the `onFork` gate
+        in the transcript): the dashboard and a popped-out window, not the
+        embedded panes. */}
+    <MergeBackDialogProvider enabled={!embedded || !!popout}>
     {/* Self-hosted Jira allowlist for every markdown anchor in the page --
         message bodies, previews, and panels alike -- so a pasted Jira URL
         chips identically wherever it renders. Cloud URLs need no provider. */}
@@ -77,6 +83,7 @@ export default function ChatPageFrame({
     </ClosedSessionCtx.Provider>
     </SidebarFolderCtx.Provider>
     </JiraHostsCtx.Provider>
+    </MergeBackDialogProvider>
     </TagPopoverProvider>
     </SidePanelDockHost>
     </RowDisclosureProvider>

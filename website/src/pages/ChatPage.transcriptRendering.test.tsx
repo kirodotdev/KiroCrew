@@ -36,7 +36,7 @@ function props(over: Partial<Props> = {}): Props {
     slotHasMore: false, slotOldestIndex: 0, cursorIsForActiveSlot: true, loadingOlder: false, chatConfig: loadChatConfig(),
     activeSlotRemoteBound: false, automationId: undefined, setAutomationOpen: fn(), handleArtifactOpen: vi.fn(async () => undefined),
     handleFileOpen: fn() as never, handleFolderOpen: fn(), handleOpenDiff: fn(), handleSubagentPanelOpen: fn(), sessionTitles: new Map(),
-    handleFork: vi.fn(async () => undefined), highlightTs: null, selectSessionTab: fn(), linkPreviewsOn: false, socialShareOn: false,
+    handleFork: vi.fn(async () => undefined), highlightTs: null, selectSessionTab: fn(), openMergedFork: fn(), linkPreviewsOn: false, socialShareOn: false,
     connectionsUiOn: false, planTaskId: '', showRefusedPress: fn(), approve: vi.fn(async () => undefined), dismissApproval: fn(),
     revealAppInPanel: fn(), lastTextIdx: -1, regenerating: false, handleRegenerate: fn(), continuable: false, continuing: false,
     freshSession: { phase: 'idle' } as never, handleContinue: fn(), handleFreshSession: fn(), interrupted: false, openDefaultModelSetting: fn(),

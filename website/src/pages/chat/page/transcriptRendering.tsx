@@ -32,6 +32,8 @@ import type { ParsedSubagentCompletion } from '../subagentCompletion'
 import TurnBlock from '../TurnBlock'
 import { i18nT } from '../../../i18n/t'
 import { fmtMessageTime, fmtMessageTimeFull } from '../messageTime'
+import MergedFromLabel from '../MergedFromLabel'
+import { mergedFromOf, type MergedFromBlock } from '../../../types/mergeBack'
 import type { useActiveSlotState } from './activeSlotState'
 import type { RefusedPressAction } from './turnActions'
 
@@ -74,6 +76,9 @@ interface TranscriptRenderingOptions {
   handleFork: (visibleIndex: number, messageId?: string) => Promise<void>
   highlightTs: string | null
   selectSessionTab: (key: string) => void
+  /** Opens the fork a merge card names (ChatPage's `useOpenMergedFork`). One
+   *  identity, so the renderer memo below lists it as a dependency. */
+  openMergedFork: (block: MergedFromBlock) => void
   linkPreviewsOn: boolean
   socialShareOn: boolean
   connectionsUiOn: boolean
@@ -130,7 +135,7 @@ const restartGatewayFromError = (): Promise<unknown> => api.restartGateway()
 export function useTranscriptRendering({
   embedded, mode, popout, filteredSlots, connected, activeSlot, voiceRecoverySlot, appToolCallIds, mcpAppPanel, messages, messagesRef, slotRunning, toolDisclosure, setToolDisclosureFor, slotState,
   activityOpen, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, chatConfig, activeSlotRemoteBound, automationId, setAutomationOpen, handleArtifactOpen, handleFileOpen,
-  handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, highlightTs, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress,
+  handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, highlightTs, selectSessionTab, openMergedFork, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress,
   approve, dismissApproval, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, continuable, continuing, freshSession, handleContinue, handleFreshSession, interrupted,
   openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
   handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,
@@ -268,6 +273,7 @@ export function useTranscriptRendering({
             (() => {
               const cronLabel = (m.meta?.cronLabel as string) || ''
               const appLabel = (m.meta?.appLabel as string) || ''
+              const mergedFrom = mergedFromOf(m.meta)
               // Strip wrapper tags — LLM needs them for context but user sees clean content
               const stripped = cronLabel
                 ? m.content.replace(/^\[Cron notification from ".*"\]\n/, '').replace(/\n\[End of cron notification\]$/, '')
@@ -280,6 +286,7 @@ export function useTranscriptRendering({
               return <>
                 {cronLabel && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1"><Clock className="lucide-inline" /> {cronLabel}</span>}
                 {!cronLabel && appLabel && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1 cursor-help" title={i18nT('components.mcpApp.from_app_tooltip')}><AppWindow className="lucide-inline" /> {i18nT('components.mcpApp.from_app', { app: appLabel.split('/')[0] })}</span>}
+                {!cronLabel && !appLabel && mergedFrom && <MergedFromLabel block={mergedFrom} onOpen={() => openMergedFork(mergedFrom)} />}
                 {/* Same session wiring as the assistant branch. Without it `resolveSessionChip`
                     refuses at its first guard and a `/chat?sid=` link gains `target="_blank"`. */}
                 <div className="mc-message-font-scope msg-content px-4 py-3 leading-relaxed rounded-lg bg-warn-subtle text-text ring-1 ring-inset forced-colors:border ring-warn/30 rounded-bl-[4px] overflow-hidden min-w-0" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}><MessageErrorBoundary rawContent={cleanContent}><MarkdownRenderer content={cleanContent} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} messageTs={m.ts} softBreaks /></MessageErrorBoundary></div>
@@ -418,7 +425,7 @@ export function useTranscriptRendering({
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, quoteWholeMessage, handleJumpToQuote, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, openMergedFork, sessionTitles, connected, handleFork, handleQuote, handleAsk, quoteWholeMessage, handleJumpToQuote, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role

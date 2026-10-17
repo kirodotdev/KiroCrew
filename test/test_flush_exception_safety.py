@@ -119,12 +119,11 @@ class TestPartialFlushKeepsUnwrittenNotes:
         assert [m["content"] for m in slot.messages] == ["first", "second", "third"]
         assert slot._deferred_notes == []
 
-    def test_a_restored_note_does_not_re_promote_its_context_half(self, tmp_path: Path):
-        """The context half is promoted before the visible line is appended.
+    def test_a_failed_note_restores_its_context_half_for_one_retry(self, tmp_path: Path):
+        """A failed visible append rolls back that note's queued context.
 
-        So a note whose ``append`` raised has ALREADY put its context on the
-        pending queue. Restoring the note for a retry must not queue that
-        context a second time, or the next turn reads the note twice.
+        The held note regains its context half, so a save cannot replace the
+        durable copy with a context-less retry. The next flush promotes it once.
         """
         slot = _slot()
         _hold(slot, "first", "second")
@@ -140,9 +139,9 @@ class TestPartialFlushKeepsUnwrittenNotes:
             with pytest.raises(_Boom):
                 slot.flush_deferred_notes()
 
-        assert [e["content"] for e in slot._pending_context] == ["first", "second"]
+        assert [e["content"] for e in slot._pending_context] == ["first"]
+        assert slot._deferred_notes[0]["context"]["content"] == "second"
         slot.flush_deferred_notes()
-        # "second" must appear exactly once, not twice.
         assert [e["content"] for e in slot._pending_context] == ["first", "second"]
 
 

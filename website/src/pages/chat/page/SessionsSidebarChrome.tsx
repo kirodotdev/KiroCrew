@@ -19,6 +19,7 @@ import OverlayDrawer from '../../../components/OverlayDrawer'
 import SessionFlyout, { TOGGLE_RECT } from '../SessionFlyout'
 import { PanelLeftLight, PanelLeftSolid } from '../../../components/icons/panels'
 import SlotTagPopover from '../../../components/SlotTagPopover'
+import MergeBackDialogHost from '../../../components/MergeBackDialogHost'
 import { i18nT } from '../../../i18n/t'
 import { uiLocation } from '../../../uiLocations/uiLocation'
 import { GuideRevealScope } from '../../../guide/GuideRevealScope'
@@ -341,6 +342,8 @@ export default function SessionsSidebarChrome({
       {/* Per-slot tag picker — a single connected popover, opened from any session
           menu (sidebar row or header) via the ChatPage-scoped TagPopover context. */}
       <SlotTagPopover />
+      {/* Merge a fork into its parent -- one dialog, opened from any session menu. */}
+      <MergeBackDialogHost />
     </>
   )
 }

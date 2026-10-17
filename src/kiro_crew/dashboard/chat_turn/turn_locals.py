@@ -39,6 +39,7 @@ class _ChatTurn:
     _dispatch_lock_held: "bool"
     _irreversible_consumption_reported: "bool"
     _is_refusal_retry_turn: "bool"
+    _message_without_merge_cards: "str"
     _produced_visible_output: "bool"
     _reply_flushed: "bool"
     _spec_hooks: "list[Any]"

@@ -35,6 +35,7 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 - **Rename a session**: choose **Rename** from a sidebar row's `⋮` menu (or right-click the row), double-click the bold title in the row, or click the title in the session header. A name you set is kept: background title refreshes skip it, and only **Regenerate title** replaces it. **Regenerate title** sits on the session header (on hover) and in a sidebar row's `⋮` menu, so a stale name can be refreshed without opening the session.
 - **Edit & resend**: edit and resend previous user messages with history preserved. From an empty composer, ⌘↑ (macOS) or Ctrl+↑ opens the last user message for editing.
 - **Fork session**: fork a session into a new tab with full context carried over.
+- **Merge a fork back**: on a fork, session menu → **Merge into parent…** drafts a summary of the fork's new messages, lets you edit it, and writes it into the chat it was forked from as a card that chat's agent reads on its next turn. The fork stays open; merging again covers only what is new. A fork cannot merge into a parent that takes turns outside the dashboard; the menu explains this on its greyed row.
 - **Regenerate replies**: regenerate assistant replies with variant history navigation.
 - **Prompt history**: ↑/↓ arrow keys navigate through previous prompts.
 - **Tool purpose pills**: tool call labels show purpose text, persisted across reloads.
