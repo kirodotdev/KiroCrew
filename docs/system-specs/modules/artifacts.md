@@ -669,6 +669,22 @@ doors (`useArtifactsPageCreate.ts`); and the React-free list logic, the kind
 options, column sort and import-refusal wording (`artifactsPageModel.ts`).
 Every other module imports the page, never an owner.
 
+The `/artifacts/<slug>` page is `website/src/pages/ArtifactDetailPage.tsx`
+(the pop-out window renders the same page). It calls the owner hooks beside it in
+the page's hook order, which `ArtifactDetailPage.owners.test.tsx` pins, and keeps
+the comment counts and the side-panel state machine, the revert, the
+companion-chat open path with its context entry, and the upstream sync banner.
+Its owners take new work for their part: the route, the edit buffer and the
+artifact with its versions and events (`useArtifactDetailPageDocument.ts`); the
+record writes the header and the editor make and the editor lifecycle, including
+the fresh-blank clean-up and the leave guards (`useArtifactDetailPageEditor.ts`);
+the comment reads and writes, the anchored-selection composer with its draft
+guards, and thread read state (`useArtifactDetailPageComments.ts`); the companion
+chat session and the batch submit (`useArtifactDetailPageCompanion.ts`); the
+sticky header and its More menu (`ArtifactDetailPageHeader.tsx`); and everything
+below the header (`ArtifactDetailPageBody.tsx`). Every other module imports the
+page, never an owner.
+
 ### Publish panel (`PublishHub`) — reading a publish outcome
 
 `PublishHub` posts to the row's declared `endpoint` and must recognize **two**

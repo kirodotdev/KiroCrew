@@ -126,7 +126,7 @@ function PanelHarness({ slotKey }: { slotKey: string | null }) {
 function Wrapper({ store }: { store: ReturnType<typeof makeStore> }) {
   const [slotKey, setSlotKey] = useState<string | null>(null)
   ;(globalThis as unknown as { __openCompanion: () => void }).__openCompanion = () => {
-    // Mirror the FIXED createBoundSession ordering (ArtifactDetailPage.tsx):
+    // Mirror the FIXED createBoundSession ordering (useArtifactDetailPageCompanion.ts):
     // writePrefill + switchSlot back-to-back BEFORE the bound slot surfaces to
     // the panel, so the embedded ChatPage mounts with the target already active
     // — the same contract as ChatPage's follow-up worktree handler. Without the

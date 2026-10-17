@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
+import { readPageFamily } from './pageFamily'
+
 const read = (p: string) => readFile(join(__dirname, '..', p), 'utf8')
 
 // Both side panels on the artifact page are fixed-width `shrink-0` siblings of the
@@ -30,10 +32,10 @@ describe('artifact side panels at phone widths', () => {
     // The condition is named once and shared with the selection toolbars, which
     // stand down while the panel covers the body.
     expect(s).toMatch(/const narrowPanelOpen = isMobile && panel !== 'none'/)
-    expect(s).toMatch(/\$\{narrowPanelOpen \? 'hidden' : ''\}/)
+    expect(await read('pages/ArtifactDetailPageBody.tsx')).toMatch(/\$\{narrowPanelOpen \? 'hidden' : ''\}/)
     // Hidden, not unmounted: the body holds scroll position and, for markdown, an
     // in-progress anchored comment selection.
-    expect(s, 'the body must not be unmounted by a responsive branch')
+    expect(readPageFamily('ArtifactDetailPage'), 'the body must not be unmounted by a responsive branch')
       .not.toMatch(/\{!narrowPanelOpen && \(/)
   })
 })

@@ -304,8 +304,6 @@
 4155 website/src/guide/GuideLayer.test.tsx
 4065 website/src/index.css
 2125 website/src/pages/AppDetailPage.tsx
-2777 website/src/pages/ArtifactDetailPage.tsx
-2699 website/src/pages/DevFleetPage.tsx
 2117 website/src/pages/chat/SidePanel.tsx
 2026 website/src/pages/connections/ConnectionsPage.tsx
 6529 website/src/pages/members/MembersPage.test.tsx

@@ -34,6 +34,12 @@ describe('window.confirm ratchet (converted files)', () => {
     'components/useMarkdownPanelFileState.ts',
     'components/useMarkdownPanelFind.ts',
     'pages/ArtifactDeployPage.tsx',
+    'pages/ArtifactDetailPageBody.tsx',
+    'pages/ArtifactDetailPageHeader.tsx',
+    'pages/useArtifactDetailPageComments.ts',
+    'pages/useArtifactDetailPageCompanion.ts',
+    'pages/useArtifactDetailPageDocument.ts',
+    'pages/useArtifactDetailPageEditor.ts',
   ])('%s never calls window.confirm', rel => {
     expect(count(rel)).toBe(0)
   })

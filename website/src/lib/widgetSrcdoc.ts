@@ -38,7 +38,7 @@
 //
 // Used by:
 // - WidgetFrame.tsx (inline <mcwidget> rendering in chat)
-// - ArtifactDetailPage.tsx (full-screen artifact view at /artifacts/<slug>)
+// - useArtifactDetailPageDocument.ts (full-screen artifact view at /artifacts/<slug>)
 
 import { parseCssColor, relativeLuminance } from './iconContrast'
 import { TAILWIND_RUNTIME_PATH as TAILWIND_RUNTIME_PATH_ROOT } from './vendorPaths'
