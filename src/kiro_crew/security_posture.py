@@ -2938,6 +2938,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # the keystone and audits the change. The output it produces is that
         # boolean, never agent-authored text, so it is not an egress boundary.
         "dashboard/handlers/credential_redaction.py",
+        # Normalizer, not an egress: `normalize_spawn_label` redacts a spawn's
+        # display label BEFORE cutting it to one bounded line, so the cut cannot
+        # leave a key fragment that the egress redactors would miss.
+        # The label leaves the process only through sinks registered above (the
+        # sub-agent frames and snapshots, which redact it again).
+        "spawn_label.py",
     }
 )
 

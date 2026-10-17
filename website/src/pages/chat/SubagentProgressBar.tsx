@@ -432,7 +432,11 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             // and still does not say WHICH agent is running it. The kind is named
             // alongside the id because a bare "#bb2222" reads as a hex colour
             // code rather than as something that identifies an agent.
-            const agentLabel = taskPreview
+            // A caller-given label names the row ahead of the task text: an
+            // orchestrator's task is a long prompt whose first 80 characters
+            // rarely say which job it is.
+            const agentLabel = sanitizeLlmOutput(a.label || '')
+              || taskPreview
               || sanitizeLlmOutput(a.agent)
               || (a.id ? `agent #${a.id.slice(-6)}` : 'agent')
             const elapsed = Math.round((Date.now() - a.startedAt) / 1000)
@@ -466,7 +470,13 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                   <span aria-hidden="true" className="shrink-0 font-mono text-border select-none">{isLast ? '└─' : '├─'}</span>
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-1.5">
-                      <span className="min-w-0 flex-1 truncate text-text">{agentLabel}</span>
+                      <span className="min-w-0 flex-1 truncate text-text" title={a.label ? sanitizeLlmOutput(a.task || '') || undefined : undefined}>
+                        {agentLabel}
+                        {/* The label names the run; the start of its task follows,
+                            muted, so the row still says what the run was asked to
+                            do without a hover. */}
+                        {a.label && taskPreview ? <span className="text-muted"> · {taskPreview}</span> : null}
+                      </span>
                       <span className="shrink-0 font-mono tabular-nums text-muted/50">{elapsedShown ? fmtElapsed(elapsed * 1000, { wholeSeconds: true }) : '--'}{typeof a.toolCount === 'number' && a.toolCount > 0 ? ` · ${i18nT('pages.chat.subagentProgressBar.tool', { count: a.toolCount })}` : ''}</span>
                     </span>
                     {isSpawnApprovalGone(a) ? (

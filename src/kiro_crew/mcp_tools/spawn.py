@@ -33,6 +33,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.mcp_tools.spawn_parts.listing import spawn_list, spawn_status
 from kiro_crew.mcp_tools.spawn_parts.wave import _SA_ERROR_MAX_CHARS, spawn_sub_agents
+from kiro_crew.spawn_label import normalize_spawn_label
 from kiro_crew.subagent import (
     AGENT_INTERNAL_CODE,
     AGENT_NOT_AVAILABLE_CODE,
@@ -245,6 +246,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     model = args.get("model") or ""
     reasoning_effort = args.get("reasoning_effort") or ""
     backend = args.get("backend") or ""
+    label = normalize_spawn_label(args.get("label"))
     keep = bool(args.get("keep"))
     # Context scope: absent ⇒ true, so a parent that passes nothing gets the
     # same context a normal session would.
@@ -269,6 +271,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     # no model pinned the provider binds it to the model the backend serves.
     effort_pendings: list[tuple[str, tuple[str, str]]] = []
     agent_tasks: list[str] = []
+    # Each accepted member's label, "" where the call gave none.
+    agent_labels: list[str] = []
     # subagent id -> the gate's reason, for members the gateway accepted but
     # answered ``status: "queued"`` (deferred, not started).
     queued_reasons: dict[str, str] = {}
@@ -333,6 +337,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
         t_model = over.get("model") or model
         t_effort = over.get("reasoning_effort") or reasoning_effort
         t_backend = over.get("backend") or backend
+        t_label = normalize_spawn_label(over.get("label")) or label
         if a in refused_agents:
             # Short line on purpose: the full roster is already on the first
             # refusal above, and repeating it once per remaining member would
@@ -360,6 +365,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             body["reasoning_effort"] = t_effort
         if t_backend:
             body["backend"] = t_backend
+        if t_label:
+            body["label"] = t_label
         if keep:
             body["keep"] = True
         if not inc_memory:
@@ -402,6 +409,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
         agent_ids.append(d.get("id", "?"))
         agent_names.append(a)
         agent_tasks.append(t)
+        agent_labels.append(t_label)
         if d.get("status") == "queued":
             # Accepted but DEFERRED by the gate (memory floor, critical posture,
             # adaptive cap at 0): keyed and counted like a started member, but
@@ -425,6 +433,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             agent_ids=agent_ids,
             agent_names=agent_names,
             agent_tasks=agent_tasks,
+            agent_labels=agent_labels,
             effort_drops=effort_drops,
             effort_applies=effort_applies,
             effort_pendings=effort_pendings,
@@ -460,6 +469,7 @@ def _spawn_run_receipt(
     parent_session: str,
     can_work: bool,
     keep: bool,
+    agent_labels: list[str] | None = None,
 ) -> str:
     """Render the accumulated background-run receipt without gateway requests."""
     spawn_lines: list[str] = []
@@ -497,7 +507,11 @@ def _spawn_run_receipt(
             "session_pid / claim-push.)"
         )
     if agent_ids:
-        members = list(zip(agent_ids, agent_names, agent_tasks))
+        # A member's line names it by its label when the call gave one, else by
+        # the start of its task text.
+        labels = agent_labels or [""] * len(agent_tasks)
+        shown = [lbl or t[:80] for t, lbl in zip(agent_tasks, labels)]
+        members = list(zip(agent_ids, agent_names, shown))
         started = [m for m in members if m[0] not in queued_reasons]
         deferred = [m for m in members if m[0] in queued_reasons]
         if started:
@@ -815,6 +829,7 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
     from kiro_crew.execution_context import read_session_execution  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
+    from kiro_crew.spawn_label import SPAWN_LABEL_MAX_CHARS  # noqa: F401
     from kiro_crew.subagent import (  # noqa: F401
         agent_matches_allowlist,
         format_subagent_usage,

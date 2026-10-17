@@ -68,6 +68,8 @@ SPAWN_RUN_TASK_ITEM_SCHEMA = ToolSchema(
         FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
         FieldSpec("reasoning_effort", str, allowed=EFFORT_VALUES),
         FieldSpec("backend", str, max_len=MAX_SHORT_STRING, pattern=_BACKEND_NAME_RE),
+        # Display name for this task's row; see ``normalize_spawn_label``.
+        FieldSpec("label", str, max_len=MAX_SHORT_STRING),
     ],
 )
 
@@ -119,6 +121,10 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # here: whether it is selectable on this gateway is the spawn endpoint's
         # answer, which refuses with the selectable list.
         FieldSpec("backend", str, max_len=MAX_SHORT_STRING, pattern=_BACKEND_NAME_RE),
+        # Optional display name the task box shows instead of the task text.
+        # Display only: the task the sub-agent receives is unchanged, and the
+        # value is normalized to one bounded line (``normalize_spawn_label``).
+        FieldSpec("label", str, max_len=MAX_SHORT_STRING),
         # keep=True makes the run a continuable conversation: its session
         # persists (hibernated on disk) after completion, and spawn_continue
         # can dispatch follow-up turns into it with full prior context.
