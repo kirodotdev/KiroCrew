@@ -15,3 +15,11 @@
 *.tsx text eol=lf
 *.css text eol=lf
 *.json text eol=lf
+
+# public/vendor/lucide-react.mjs is compared byte for byte against the string
+# scripts/gen-vendor-lucide.mjs builds (src/test/vendorLucideStub.test.ts, and
+# the generator's own --check), so it belongs to the class above even though it
+# is .mjs. Without this pin a CRLF checkout reports the unchanged stub as STALE.
+# Only this file: the other .mjs here are read line-wise or not at all, and
+# pinning all 860 of them would be a working-tree change far beyond the class.
+public/vendor/lucide-react.mjs text eol=lf

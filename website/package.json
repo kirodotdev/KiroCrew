@@ -31,6 +31,7 @@
     "jscpd": "jscpd .",
     "gen:settings": "node scripts/gen-settings-registry.mjs",
     "gen:ui": "node scripts/gen-ui-index.mjs",
+    "gen:vendor-lucide": "node scripts/gen-vendor-lucide.mjs",
     "lint:theme-colors": "node scripts/check-theme-colors.mjs",
     "lint:phantom-classes": "node scripts/check-phantom-classes.mjs",
     "lint:restyle-ratchet": "node scripts/check-restyle-ratchet.mjs",
