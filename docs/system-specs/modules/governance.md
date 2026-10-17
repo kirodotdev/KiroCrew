@@ -3748,12 +3748,14 @@ degraded and fail-closed chokepoints), `test_governance_channels_endpoint.py`
 `test_governance_policy_viewer.py` (`/api/governance/policy` posture-only, incl.
 `test_detail_never_leaks_rule_contents` and `TestScopeAttribution` — that a
 host-profile pin is reported as surface-scoped, not install-wide),
-`test_governance_distribution.py` (the `distribution` block, the fetcher seam and
+`test_governance_distribution.py` and its `test_governance_distribution_*.py`
+siblings `_fetch_checks`, `_redaction`, `_publish`, `_cache_trust` and `_ladder`
+(the `distribution` block, the fetcher seam and
 its transport refusals, the cache and its repoint/staleness rules, the
 unavailable dispositions, the live-refresh reject-and-keep path — and the three
-controls on the cache itself — `TestAnExposedCacheIsStillReadOnly`,
-`TestTheCachePairIsWrittenUnderOneLock` and
-`TestAnUnverifiableSourceIsTreatedAsWritable`),
+controls on the cache itself — `TestAnExposedCacheIsStillReadOnly` and
+`TestTheCachePairIsWrittenUnderOneLock` in `_cache_trust`, and
+`TestAnUnverifiableSourceIsTreatedAsWritable` in `_fetch_checks`),
 `test_sandbox_mount_checked.py` (that all six launcher mounts, including the
 read-only bind and its sealing remount, refuse the spawn when they fail),
 `test_governance_updates.py` (the

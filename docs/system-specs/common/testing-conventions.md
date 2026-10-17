@@ -2455,7 +2455,7 @@ The ten failures were the venv, not the code:
   `sys.executable`, so `resolve_app_python` and `venv_provided_command` both "prefer" the
   running interpreter. `python -m venv` — where real venvs come from — uses symlinks on
   POSIX. Build fixture venvs with `symlinks=not IS_WINDOWS`
-  (`test_apps_backend_coverage._create_real_venv`).
+  (`test_apps_backend_coverage_dispatch._create_real_venv`).
 - **A probe of the RUNNING interpreter's packaging.** `_run_app_build` decides whether
   to plan a `pip install` with `importlib.util.find_spec("pip")`, which is `None` in a uv
   venv, so every build-planning test captured an empty command list. Already a documented

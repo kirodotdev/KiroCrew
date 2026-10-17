@@ -129,7 +129,6 @@
 3538 test/test_agent_panel_routes.py
 2200 test/test_app_backend_composition_contract.py
 4051 test/test_app_manager.py
-5489 test/test_apps_backend_coverage.py
 5531 test/test_apps_routes_coverage.py
 3299 test/test_artifacts_handlers.py
 4053 test/test_auto_research.py
@@ -170,7 +169,6 @@
 2765 test/test_fargate_launch_engine.py
 4162 test/test_gateway_appkit_endpoints.py
 4437 test/test_github_pull_request_monitor.py
-5410 test/test_governance_distribution.py
 3102 test/test_handlers_memory_coverage.py
 2261 test/test_handlers_messaging_coverage.py
 2026 test/test_handlers_taskrunner_coverage.py
