@@ -520,6 +520,27 @@ def test_transport_types_are_validated_before_any_write(editor):
     assert len(list(specs.glob("*.json"))) == 1
 
 
+def test_stdio_row_with_empty_url_can_still_be_pinned(editor):
+    """Regression: a stdio transport that reaches the Capabilities API with
+    an empty ``url`` (now valid, see agent_state tests) must also be
+    pinnable through the editor, not merely readable. Before this fix the
+    editor's own ``set`` check refused ``command`` + ``url`` together
+    unconditionally, so a row that loaded could not be saved.
+    """
+    service, home, specs, parent = editor
+    parent["mcpServers"]["search"].pop("env")
+    parent["mcpServers"]["search"]["url"] = ""
+    (specs / "parent.json").write_text(json.dumps(parent))
+    row = next(r for r in service.get("A")["rows"] if r["section"] == "mcpServers")
+    assert row["value"]["url"] == ""
+    save(
+        service,
+        [{"section": "mcpServers", "id": "search", "action": "set", "value": row["value"]}],
+        enroll=True,
+    )
+    assert spec_for(home, specs)["mcpServers"]["search"]["command"] == row["value"]["command"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "caller,app_id,expected",
