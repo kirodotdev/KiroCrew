@@ -47,6 +47,8 @@ from kiro_crew.apps.bridges import (
     register_app_crons_with_service,
 )
 from kiro_crew.apps.builtins import BUILTIN_NAMES
+from kiro_crew.apps.catalog_ranking import forget_cache as forget_ranking_cache
+from kiro_crew.apps.catalog_ranking import load_ranking_document
 from kiro_crew.apps.dependencies import clean_dependencies
 from kiro_crew.apps.dependencies import resolve_dependencies as _resolve_deps
 from kiro_crew.apps.dependency_ledger import (
@@ -2542,6 +2544,36 @@ async def handle_open_app(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+def _annotate_install_counts(apps: list, document: Any) -> None:
+    """Stamp each store row with its install count from the ranking document.
+
+    An app's name IS its catalog slug, which is the key the ranking document is
+    built on, so the row's own name is what resolves its rank.
+
+    A row the document does not rank is left WITHOUT the field rather than
+    carrying a zero: "unranked" and "ranked zero installs" are different facts,
+    and a client that cannot tell them apart would sort a brand-new app and an
+    unmeasured one into the same place. An absent key reads as ``undefined``
+    client-side, which is what keeps the distinction on the wire.
+
+    A count WITHHELD under the document's small-count floor arrives as None
+    from the same getter, and is therefore served the same way: as an absent
+    key. That is deliberate rather than incidental. Publishing a withheld count
+    as any number -- a zero, or a bound like "<5" -- would hand back the very
+    figure the floor exists to suppress, so the wire format must not be able to
+    express it.
+    """
+    for row in apps:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name")
+        if not isinstance(name, str):
+            continue
+        count = document.get_cumulative_rank(name)
+        if count is not None:
+            row["installs"] = count
+
+
 async def handle_registry(request: web.Request) -> web.Response:
     """GET /api/apps/registry — list all apps available for installation."""
     # The published catalog is the storefront's source of truth when it is
@@ -2550,16 +2582,17 @@ async def handle_registry(request: web.Request) -> web.Response:
     apps = await list_catalog_apps()
     if not apps:
         apps = await list_registry()
-    # Published rail order and layout ride along on the response the store already
-    # makes, rather than endpoints the page would have to wait on separately. They
-    # are two documents with two caches, loaded CONCURRENTLY: each cold-cache load
-    # does network I/O, and paying two fetch timeouts in series would delay the
-    # whole store response. Both are presentation, so a failure degrades to the
-    # client's own defaults per document and must never 500 the store -- the same
-    # contract the catalog annotation keeps.
-    order_result, sections_result = await asyncio.gather(
+    # Published rail order, layout, and install ranking ride along on the response
+    # the store already makes, rather than endpoints the page would have to wait on
+    # separately. They are three documents with three caches, loaded CONCURRENTLY:
+    # each cold-cache load does network I/O, and paying three fetch timeouts in
+    # series would delay the whole store response. All three are presentation, so a
+    # failure degrades to the client's own defaults per document and must never 500
+    # the store -- the same contract the catalog annotation keeps.
+    order_result, sections_result, ranking_result = await asyncio.gather(
         asyncio.to_thread(load_category_order),
         asyncio.to_thread(load_sections),
+        asyncio.to_thread(load_ranking_document),
         return_exceptions=True,
     )
     if isinstance(order_result, BaseException):
@@ -2572,6 +2605,10 @@ async def handle_registry(request: web.Request) -> web.Response:
         sections: list = []
     else:
         sections = sections_result
+    if isinstance(ranking_result, BaseException):
+        logger.warning("ignoring the install ranking", exc_info=ranking_result)
+    elif ranking_result is not None:
+        _annotate_install_counts(apps, ranking_result)
     return web.json_response(
         {
             "apps": apps,
@@ -2585,12 +2622,13 @@ async def handle_registry(request: web.Request) -> web.Response:
 async def handle_registry_refresh(request: web.Request) -> web.Response:
     """POST /api/app-store/refresh — drop the published-document caches.
 
-    Drops the on-disk caches of all three published documents (catalog,
-    category order, editorial), so the NEXT ``GET /api/apps/registry`` is
-    rebuilt from fresh fetches. This exists because the caches degrade
-    SILENTLY: a failed fetch overwrites the catalog cache with a failure
-    sentinel and the store quietly falls back to the seed listing, and without
-    an explicit refresh the user's only remedy is waiting out ``CACHE_TTL``.
+    Drops the on-disk caches of all four published documents (catalog,
+    category order, editorial, install ranking), so the NEXT
+    ``GET /api/apps/registry`` is rebuilt from fresh fetches. This exists
+    because the caches degrade SILENTLY: a failed fetch overwrites the catalog
+    cache with a failure sentinel and the store quietly falls back to the seed
+    listing, and without an explicit refresh the user's only remedy is waiting
+    out ``CACHE_TTL``.
 
     Deliberately OUTSIDE ``/api/apps/``: token_auth's ``_app_owns_path``
     grants an app token implicit ownership of everything under
@@ -2611,12 +2649,13 @@ async def handle_registry_refresh(request: web.Request) -> web.Response:
       fetch on the exact same code path as a cold start, so refresh cannot
       behave differently from the load it is trying to repair.
     """
-    # Off the event loop like every other disk touch on these routes; three
+    # Off the event loop like every other disk touch on these routes; four
     # unlinks gathered because none depends on another.
     await asyncio.gather(
         asyncio.to_thread(official_catalog.forget_cache),
         asyncio.to_thread(forget_category_order_cache),
         asyncio.to_thread(forget_editorial_cache),
+        asyncio.to_thread(forget_ranking_cache),
     )
     return web.json_response({"ok": True})
 
