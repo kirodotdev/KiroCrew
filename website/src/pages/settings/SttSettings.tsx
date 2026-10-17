@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
 import { Download, Sparkles } from 'lucide-react'
@@ -858,28 +858,33 @@ export default function SttSettings({ cardIndex }: {
         : false,
   })
 
-  const initRef = useRef(false)
-  useEffect(() => {
-    if (sttQ.data && !initRef.current) {
-      initRef.current = true
-      setLocalProfile(sttQ.data.transcribe_profile || '')
-      setLocalRegion(sttQ.data.transcribe_region || '')
-      setLocalCustomPath(sttQ.data.custom_model_path || '')
-      setLocalCustomSha(sttQ.data.custom_model_sha256 || '')
-      // Already-configured weights keep their rows open, so what is in force is
-      // visible without hunting for the option that reveals it.
-      if (sttQ.data.custom_model_path || sttQ.data.model === CUSTOM_MODEL) setCustomOpen(true)
-      // Intent survives a reload in exactly two shapes the served config can prove:
-      // custom is in force, or HALF a pair is stored. A half pair is a custom model
-      // someone started and did not finish, which is the state whose selection
-      // silently degraded. A COMPLETE pair with a catalog model in force is NOT
-      // intent — that is a deliberate switch back, and telling that user "both are
-      // needed" would be false.
-      const halfPair =
-        Boolean(sttQ.data.custom_model_path) !== Boolean(sttQ.data.custom_model_sha256)
-      if (sttQ.data.model === CUSTOM_MODEL || halfPair) setCustomIntended(true)
-    }
-  }, [sttQ.data])
+  // The served config seeds the editable rows ONCE, in the render that first has
+  // it. Setting state during render is React's shape for state derived from a
+  // value that just arrived: the in-progress output is discarded and the
+  // component re-renders before anything commits, so the commit that shows the
+  // model select is the same one that shows what the config implies — rows open,
+  // a half pair explained. Seeding from an effect instead commits one frame
+  // where the select is on screen but these still read as empty and unintended.
+  const [seeded, setSeeded] = useState(false)
+  if (sttQ.data && !seeded) {
+    setSeeded(true)
+    setLocalProfile(sttQ.data.transcribe_profile || '')
+    setLocalRegion(sttQ.data.transcribe_region || '')
+    setLocalCustomPath(sttQ.data.custom_model_path || '')
+    setLocalCustomSha(sttQ.data.custom_model_sha256 || '')
+    // Already-configured weights keep their rows open, so what is in force is
+    // visible without hunting for the option that reveals it.
+    if (sttQ.data.custom_model_path || sttQ.data.model === CUSTOM_MODEL) setCustomOpen(true)
+    // Intent survives a reload in exactly two shapes the served config can prove:
+    // custom is in force, or HALF a pair is stored. A half pair is a custom model
+    // someone started and did not finish, which is the state whose selection
+    // silently degraded. A COMPLETE pair with a catalog model in force is NOT
+    // intent — that is a deliberate switch back, and telling that user "both are
+    // needed" would be false.
+    const halfPair =
+      Boolean(sttQ.data.custom_model_path) !== Boolean(sttQ.data.custom_model_sha256)
+    if (sttQ.data.model === CUSTOM_MODEL || halfPair) setCustomIntended(true)
+  }
 
   // The consent gate's own cache entry (same key, same fetch), read here because
   // the vocabulary list exists only once Amazon Transcribe is confirmed: until

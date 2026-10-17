@@ -303,6 +303,11 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     <div
       className="fixed z-[9999] bg-card border border-border rounded-lg shadow-lg overflow-y-auto py-1 animate-slide-up"
       role="listbox"
+      // While a search is in flight the rows on screen are the PREVIOUS payload
+      // (`placeholderData`), relativized against that payload's root; busy says
+      // so, and clearing it is the one signal that the rows now answer the
+      // current query and project.
+      aria-busy={isFetching}
       style={{ ...(above ? { bottom } : { top }), left, width: Math.min(width, 420), maxHeight }}
     >
       {searchFailed && (

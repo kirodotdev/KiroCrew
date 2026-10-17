@@ -494,6 +494,22 @@ Six more CI reds (#17237) added two shapes to the ones above:
   (`MISSING_FILE_RETRY_MS`, `RUNTIME_POLL_MS`, `CACHE_WARM_BOUND_MS`), never a literal
   that silently stops matching when the value changes. Every case starts from reset
   mocks and restored window stubs, so a file never passes only in file order.
+- **A placeholder row is not a settled search.** `FilePickerMenu` keeps the PREVIOUS
+  payload's rows on screen (`placeholderData`) while a re-rooted query is in flight,
+  and a row's rendered name is root-independent, so `findByText('main.ts')` resolves
+  on the stale rows and a click there relativizes against the OLD root. Waiting for
+  the mock to have been CALLED, or for its promise plus a `setTimeout(0)`, is a timing
+  barrier, not a state one. The listbox is `aria-busy` exactly while the fetch is in
+  flight; wait for the re-rooted call AND for `aria-busy` to clear
+  (`pickerSettledFor` in `ChatPage.dirStaging.test.tsx`).
+- **A one-shot init effect is a latch that lags its source.** `SttSettings` seeded
+  its editable rows and the custom-model intent from the served config in an effect,
+  so the commit that first showed the model select was one frame short of the
+  explanation the config implied, and a `getBy` right after `waitFor(select)` read
+  `null`. The seed now runs during render (React's set-state-during-render shape, which
+  re-renders before committing), and a `<Profiler onRender>` probe pins that the first
+  commit with the select already carries the explanation. Derive what a value implies
+  in the render that has it; an effect is for work the DOM must exist for.
 
 ## Manual procedures
 
