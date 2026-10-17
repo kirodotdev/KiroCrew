@@ -1150,9 +1150,9 @@ class TestRunMarkerSidecarReadRetry:
         """Keep the bounded retry instant; attempt COUNT is what matters here.
 
         Only the simulator tests belong under this fixture. The real-file
-        concurrency test lives in ``TestRunMarkerSidecarConcurrentRewrite``
-        below, OUTSIDE it, because there the attempts must be spaced in time:
-        with the sleep zeroed the whole budget fits inside one writer syscall.
+        sequential-rewrite test lives in ``TestRunMarkerSidecarSequentialRewrite``
+        below, OUTSIDE it, so it runs against the product's REAL backoff rather
+        than a zeroed one.
 
         Patches through ``_floor_monkeypatch`` (the isolation floor's own
         ``MonkeyPatch``), not the shared ``monkeypatch``: an autouse fixture that
@@ -1210,6 +1210,52 @@ class TestRunMarkerSidecarReadRetry:
 
         assert got == str(launcher)  # not None
         assert sim["n"] == 3
+
+    def test_read_launcher_folds_only_when_the_whole_budget_is_exhausted(
+        self, tmp_path, monkeypatch
+    ):
+        """A window that outlasts the ENTIRE retry budget still folds to None.
+
+        Deterministic coverage of the budget's far edge, complementing the
+        shorter-window simulator test above (two faults then a success). This one
+        faults every one of the ``_REPLACE_MAX_ATTEMPTS``
+        reads, so the reader runs out of attempts and ``read_launcher`` folds the
+        final ``PermissionError`` to ``""`` -> ``None``.
+
+        It takes no time (the autouse ``_no_backoff_sleep`` zeroes the backoff,
+        so faulting the whole budget is instant), with no dependence on a live
+        filesystem's sharing-violation timing. The budget
+        is finite by design (a window that stays open forever MUST eventually be
+        given up on), so a reader that meets a window outlasting the whole budget
+        folds -- which is what this test pins. This and the shorter-window
+        simulator test are the owners of the Windows sharing-violation fold;
+        ``TestRunMarkerSidecarSequentialRewrite`` below is a separate,
+        deliberately sequential test that reads only settled files and asserts
+        the no-false-absence invariant on every platform -- it does not reproduce
+        the fold. The product matches the sequential shape -- the marker is
+        published once at startup, not in a loop -- so neither test asserts
+        against the design.
+        """
+        from windows_sim import read_sharing_violation
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew import atomic_write as aw
+        from kiro_crew import platform_compat
+        from kiro_crew.instances import run_marker
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        self._write_full_marker(run_marker, 6776, monkeypatch, tmp_path)
+
+        # Fault every attempt: the budget is _REPLACE_MAX_ATTEMPTS reads, so
+        # faulting that many (and one more, to be unambiguous) leaves no read to
+        # succeed.
+        with read_sharing_violation(
+            match="gateway-6776.bin", times=aw._REPLACE_MAX_ATTEMPTS + 1
+        ) as sim:
+            got = run_marker.read_launcher(6776)
+
+        assert got is None  # the whole budget was spent inside the window
+        assert sim["n"] == aw._REPLACE_MAX_ATTEMPTS  # every attempt faulted
 
     def test_read_pid_retries_the_sharing_violation(self, tmp_path, monkeypatch):
         """read_pid -- the identity claim the issue names -- must not fold to None.
@@ -1280,42 +1326,66 @@ class TestRunMarkerSidecarReadRetry:
         assert run_marker.read_pid(7001) == os.getpid()
 
 
-class TestRunMarkerSidecarConcurrentRewrite:
-    """Real files, real threads: a reader racing a tight ``atomic_write`` loop.
+class TestRunMarkerSidecarSequentialRewrite:
+    """Real files, real threads: a reader of a sidecar a writer rewrites in turn.
 
     Deliberately NOT a member of ``TestRunMarkerSidecarReadRetry``. That class's
     autouse fixture zeroes ``_REPLACE_BACKOFF_SECONDS`` because its simulator
-    tests count attempts; here the attempts must be spaced in TIME. On Windows
-    the writer's ``os.replace`` (``MoveFileEx`` superseding the target) runs with
-    the GIL released, and every read that opens the file meanwhile raises
-    WinError 32, so with the sleep zeroed the reader burns all ten attempts in a
-    few microseconds INSIDE that one syscall and folds to ``None`` -- a false
-    absence the ``Backend Tests (Windows)`` matrix saw intermittently. The
-    product's 50 ms backoff is what rides the window out, so it stays in force.
+    tests count attempts instantly; here the product's REAL backoff stays in
+    force so the exercise runs against the shipped read-retry, not a zeroed one.
+
+    The one test here lock-steps the writer and reader with events: the writer
+    completes one ``atomic_write`` (its ``os.replace`` finished), signals, and
+    waits; the reader then reads the already-settled file and signals back
+    before the writer rewrites again. So the reader never observes an
+    ``os.replace`` mid-flight -- it reads a published, settled file each round.
+    This is NOT the uncoordinated concurrent race the issue first described, and
+    it does NOT measure the Windows sharing-violation window; it pins the
+    orthogonal invariant that a reader walking a file through a long series of
+    whole rewrites only ever returns a value some writer published, never ``""``
+    or a torn value while the file exists, on every platform.
+
+    The Windows sharing-violation fold -- a read landing inside an ``os.replace``
+    window, and the budget-exhaustion case where that window outlasts the WHOLE
+    retry budget -- has deterministic coverage in
+    ``TestRunMarkerSidecarReadRetry`` (the simulator tests, including
+    ``test_read_launcher_folds_only_when_the_whole_budget_is_exhausted``). That
+    is the owner of the Windows fold; this test does not reproduce it.
     """
 
-    def test_concurrent_rewrites_never_fold_to_a_false_absence(self, tmp_path, monkeypatch):
-        """The issue's own reproduction, on real files.
+    def test_sequential_rewrites_never_fold_to_a_false_absence(self, tmp_path, monkeypatch):
+        """A reader walking a file through many whole rewrites sees no false absence.
 
-        One thread rewrites a sidecar in a tight ``atomic_write`` (mkstemp +
-        os.replace) loop while the main thread reads it thousands of times. On
-        POSIX no sharing violation occurs, so this asserts the positive invariant
-        that holds on every platform: a read that returns a value never returns a
-        TORN or EMPTY one -- it is always a value some writer published, never ""
-        while the file exists. (The Windows-specific fold is covered
-        deterministically by the simulator tests in
-        ``TestRunMarkerSidecarReadRetry``.)
+        One thread rewrites a sidecar through ``atomic_write`` (mkstemp +
+        ``os.replace``) and the main thread reads it, in LOCK STEP: the writer
+        publishes ONE value and its ``os.replace`` is already complete before it
+        signals; it then blocks until the reader has finished its read; only then
+        does it publish the next. So the reader always reads a settled file and
+        the read must never fold to ``None`` nor return a torn/empty value while
+        the file exists.
+
+        This is deliberately sequential, not a concurrent race: the reader never
+        opens the file during an ``os.replace``, so it does not reproduce the
+        Windows sharing violation and makes no claim about OS rename timing. It
+        exercises the shape the product actually has -- the run-marker is
+        published once at startup and the writer then sits idle (there is no
+        tight rewrite loop anywhere in the product) -- walked across a long
+        series of whole rewrites to pin the no-false-absence invariant on every
+        platform.
 
         The launcher-marker sidecar stands in for the whole sidecar family here:
         the read-retry chokepoint (``read_bytes_with_retry``) is shared by every
-        reader, so the concurrent-rewrite invariant is identical whichever sidecar
-        is exercised. ``read_secret`` has its own deterministic coverage.
+        reader, so this invariant is identical whichever sidecar is exercised.
+        ``read_secret`` has its own deterministic coverage. The Windows
+        sharing-violation fold, including the budget-exhaustion case where a
+        window outlasts the WHOLE retry budget, has deterministic coverage of its
+        own in
+        ``test_read_launcher_folds_only_when_the_whole_budget_is_exhausted``.
 
         The writer's failure is surfaced, not swallowed: a writer that dies
-        (``replace_with_retry`` out of budget against a reader's open handle)
-        leaves a stable file behind, and every later read would then pass this
-        test vacuously. The reads also start only after the writer's first
-        publish, so they are known to race a live writer.
+        (``replace_with_retry`` out of budget) would leave a stable file behind
+        and every later read would pass this test vacuously, so its exception is
+        re-raised on the main thread.
         """
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         from kiro_crew.atomic_write import atomic_write
@@ -1325,35 +1395,52 @@ class TestRunMarkerSidecarConcurrentRewrite:
         values = {f"/opt/venv-{i}/bin/kirocrew" for i in range(50)}
         atomic_write(marker, "/opt/venv-0/bin/kirocrew\n", mode=0o600)
 
+        rounds = 500
         stop = threading.Event()
-        first_publish = threading.Event()
         writer_error: list[BaseException] = []
+        # The handoff: the reader waits on ``published`` for the writer's next
+        # value, and the writer waits on ``read_done`` for the reader to finish
+        # one read before publishing again. Bounded and signalled -- no sleep, so
+        # nothing here depends on wall-clock timing.
+        published = threading.Event()
+        read_done = threading.Event()
 
         def _rewrite():
-            i = 0
             try:
-                while not stop.is_set():
+                for i in range(rounds):
+                    if stop.is_set():
+                        return
                     atomic_write(marker, f"/opt/venv-{i % 50}/bin/kirocrew\n", mode=0o600)
-                    i += 1
-                    first_publish.set()
+                    published.set()
+                    # Wait for the reader to consume this value before the next
+                    # os.replace, so each rename window stays single and short.
+                    if not read_done.wait(5):
+                        return
+                    read_done.clear()
             except BaseException as exc:  # surfaced on the main thread below
                 writer_error.append(exc)
+                published.set()  # unblock a reader waiting on a value that will never come
 
         writer = threading.Thread(target=_rewrite, daemon=True)
         writer.start()
         try:
-            # The reads must race a live writer: on a saturated host the main
-            # thread could otherwise finish every read before the writer's first
-            # publish and prove nothing.
-            assert first_publish.wait(5), "the writer never published: the reads raced nothing"
-            for _ in range(3000):
+            for _ in range(rounds):
+                # Read only after the writer has published this round's value
+                # (its os.replace already complete), so the read is of a settled
+                # file, never a rename in flight.
+                assert published.wait(5), "the writer never published: nothing to read"
+                if writer_error:
+                    break
+                published.clear()
                 got = run_marker.read_launcher(6776)
                 # The sidecar exists for the whole run, so a reader must never
                 # see it as absent, and must only ever see a published value.
-                assert got is not None, "a reader folded a concurrent write into a false absence"
+                assert got is not None, "a reader folded a settled rewrite into a false absence"
                 assert got in values, f"a reader saw a torn value: {got!r}"
+                read_done.set()
         finally:
             stop.set()
+            read_done.set()  # release the writer if it is waiting on this round
             writer.join(timeout=5)
         assert not writer.is_alive(), "the writer thread did not stop"
         assert not writer_error, f"the writer died mid-run: {writer_error[0]!r}"
