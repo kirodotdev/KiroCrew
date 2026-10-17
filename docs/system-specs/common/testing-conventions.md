@@ -3423,7 +3423,16 @@ that survives neither is the probe's.
   may get, and `a-ratchet-may-only-tighten` forbids raising it to fit -- concurrency fixes
   the budget, a looser cap would only hide the stall. Every nested run gets `--basetemp`
   under `tmp_path` (the rule from the fifth pass). Why one collect passed 60 s on this host
-  is NOT explained by this pass; the design defect was real regardless.
+  is NOT explained by this pass; the design defect was real regardless. A later pass found
+  most of the child's work: given three file arguments, pytest still walks every sibling in
+  `test/` (about 4,600 entries) through `pytest_ignore_collect` and `pytest_collect_file`.
+  Each child now passes `--ignore-glob=*`, which pytest never applies to a named argument,
+  so it reads only the three files and collects the same nodes in about 60% of the time
+  (Linux, six children in series: 26.3 s -> 15.7 s). The 60 s cap stays.
+  `test_a_nested_collection_reads_only_the_named_files` pins that only the named files
+  reach `pytest_collect_file`. A Windows runner is slower at the per-entry `stat` and
+  `relative_to` work this removes, so the saving is likely larger there; this pass did not
+  measure it on Windows.
 - **Reading a claim's task after the POST names whichever task won the race.**
   `test_cron_manual_run_claim_window.py::test_the_manual_wrappers_backstop_leaves_a_replacement_claim_alone`
   took `first = svc._claims[job.id].task` after the route answered; when the first run's
