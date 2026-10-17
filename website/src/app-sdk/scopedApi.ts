@@ -20,6 +20,7 @@ import { noteSessionExpiredResponse } from '../api/sessionExpirySignal'
 import { AcceptedBodyUnreadable, ApiError } from '../api/apiError'
 import { AppApiPermissionError } from './apiError'
 import { useAppIdentity } from './identity'
+import type { SlotPush } from './slotPush'
 
 export interface AppApi {
   /** Unparsed successful response for downloads or streaming; HTTP failures still throw AppApiError.
@@ -79,6 +80,8 @@ export interface AppSdkContextValue {
   subscribe: (event: string, cb: (data: unknown) => void) => () => void
   navigate: (path: string) => void
   notify: (message: string, opts?: { type?: 'info' | 'success' | 'error' }) => void
+  /** The host's per-slot change signal; absent when the host has none (see slotPush.ts). */
+  slotPush?: SlotPush
 }
 
 export const AppSdkContext = createContext<AppSdkContextValue | null>(null)
@@ -256,6 +259,7 @@ export function AppScopedApiProvider({
   subscribeFn = noopSubscribe,
   notifyFn = hostNotify,
   sessionKey,
+  slotPush,
   children,
 }: {
   allowedApiPaths: string[]
@@ -282,6 +286,8 @@ export function AppScopedApiProvider({
    * restricted-session guard fire, since that guard fails open on absence.
    */
   sessionKey?: string
+  /** The host's per-slot change signal (slotPush.ts). Omitted, embeds poll. */
+  slotPush?: SlotPush
   children: ReactNode
 }) {
   const identity = useAppIdentity()
@@ -307,8 +313,9 @@ export function AppScopedApiProvider({
     subscribe: subscribeFn,
     navigate: navigateFn,
     notify: notifyFn,
+    slotPush,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [resolvedName, appDisplayName, appVersion, apiKey, eventsKey, sessionKey, active, subscribeFn, navigateFn, notifyFn])
+  }), [resolvedName, appDisplayName, appVersion, apiKey, eventsKey, sessionKey, active, subscribeFn, navigateFn, notifyFn, slotPush])
 
   return React.createElement(AppSdkContext.Provider, { value }, children)
 }

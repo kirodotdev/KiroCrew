@@ -19,6 +19,7 @@ import NewSpecView from './components/NewSpecView'
 import SettingsModal from './components/SettingsModal'
 
 import { i18nT } from '../../i18n/t'
+import { useAppSlotPush } from '../../utils/appSlotPush'
 // ChatEmbed only needs the chat endpoints; scope the provider tightly.
 //
 // NOT /api/approvals. A mid-turn permission prompt is actionable through
@@ -128,11 +129,14 @@ function SpecBuilderInner() {
 
 export default function SpecBuilderPage() {
   const navigate = useNavigate()
+  // The spec chats are slots this app owns, so their changes are signalled.
+  const slotPush = useAppSlotPush('spec-builder')
   return (
     <AppScopedApiProvider
       appName="spec-builder"
       allowedApiPaths={CHAT_API_PATHS}
       navigateFn={(path) => navigate(path)}
+      slotPush={slotPush}
     >
       <SpecBuilderInner />
     </AppScopedApiProvider>

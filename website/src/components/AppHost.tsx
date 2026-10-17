@@ -22,6 +22,7 @@ import { errMessage } from '../utils/thunkError'
 import { i18nT } from '../i18n/t'
 import { appDisplayName, appDescription } from './appstore/appManifest'
 import { withBase } from '@/lib/basePath'
+import { useAppSlotPush } from '../utils/appSlotPush'
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -289,6 +290,8 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
   }, [])
 
   const navigateFn = useCallback((path: string) => navigate(path), [navigate])
+  // Own-slot change signals from the dashboard socket (appSlotPush.ts).
+  const slotPush = useAppSlotPush(app.name)
 
   // Kept explicit rather than relying on the SDK's default, which is byte-identical:
   // `AppHostCoverage` asserts this bridge's behaviour at the surface that owns it,
@@ -317,6 +320,7 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
         navigateFn={navigateFn}
         notifyFn={notifyFn}
         sessionKey={sessionKey}
+        slotPush={slotPush}
       >
         <Suspense fallback={<AppLoadingSkeleton appName={appDisplayName(app)} />}>
           <LazyApp />

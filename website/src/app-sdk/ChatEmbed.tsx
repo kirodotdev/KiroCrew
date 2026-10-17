@@ -6,8 +6,15 @@
  * only chat-state imports are the pure queue-hydration helpers, so a queued
  * send renders here exactly as the dashboard's QueueStack shows it.
  *
- * State management: polling via useQuery refetchInterval.
- * Poll faster during streaming (1s), slower when idle (5s). A poll that keeps
+ * State management: one bounded slot read (useQuery), issued on a push signal
+ * when the host has one and on a poll otherwise. A host that passes `slotPush`
+ * (slotPush.ts) signals each change to this slot over its realtime channel;
+ * the embed re-reads at once, coalescing a burst into at most one read in
+ * flight plus one trailing read, and while that channel is up the poll is only
+ * a backstop (5s running, 15s idle). Without the channel, or while it is down,
+ * it polls faster during streaming (1s), slower when idle (5s). A read that
+ * fails always falls back to that cadence, so the stall below is noticed on
+ * the same clock with or without push. A poll that keeps
  * failing backs off to at most 30s, and once it has kept failing for
  * EMBED_STALL_MS (counted from its first failure) the page on screen is
  * flagged as stale instead of still reading as running.
@@ -57,6 +64,7 @@ import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { drainEmbedRecovery, stashEmbedRecovery, subscribeEmbedRecovery, type PendingEmbedRecovery } from './embedSendRecovery'
 import { retireSendTail, type SendTail } from './embedSendTails'
 import { embedReadPath, isEmbedCursor, mergeEmbedRead, type EmbedCursor } from './embedIncrementalRead'
+import { useSlotPush } from './slotPush'
 import type { ChatMessage } from '../types'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from '../components/QueueStack'
@@ -263,6 +271,15 @@ export const EMBED_STREAM_IDLE_MS = RUNNING_POLL_MS * 2 + 500
 export const EMBED_STALL_MS = 10_000
 /** Ceiling of the failing poll's back-off. Exported for tests. */
 export const EMBED_STALL_POLL_MAX_MS = 30_000
+/** Backstop poll while the host's push channel is up and reads succeed: a
+ *  change the channel failed to signal still shows within this long. Exported
+ *  for tests. */
+export const EMBED_PUSH_BACKSTOP_RUNNING_MS = 5000
+export const EMBED_PUSH_BACKSTOP_IDLE_MS = 15_000
+/** Least time between two push-triggered reads, so a streamed reply's chunks
+ *  re-read the slot a few times a second rather than once per chunk. Exported
+ *  for tests. */
+export const EMBED_PUSH_MIN_GAP_MS = 250
 
 interface PollState {
   status: string
@@ -294,13 +311,18 @@ export function embedOutageMs(runs: FailureRuns, key: string, state: PollState):
   return state.errorUpdatedAt - run.since
 }
 
-/** Next poll delay. A healthy poll runs at the running/idle cadence. A failing
- *  one keeps that cadence until the outage reaches EMBED_STALL_MS (so the stall
- *  is noticed on time), then waits as long as the outage has lasted, up to the
- *  ceiling, so a dead endpoint is not hit every second forever. Exported for
- *  tests. */
-export function embedPollInterval(state: PollState, outage: number): number {
-  const base = state.data?.running ? RUNNING_POLL_MS : 5000
+/** Next poll delay. A healthy poll runs at the running/idle cadence, or at the
+ *  backstop cadence while `pushed` (the host's push channel is up). A failing
+ *  one ignores `pushed`: it keeps the running/idle cadence until the outage
+ *  reaches EMBED_STALL_MS (so the stall is noticed on time), then waits as long
+ *  as the outage has lasted, up to the ceiling, so a dead endpoint is not hit
+ *  every second forever. Exported for tests. */
+export function embedPollInterval(state: PollState, outage: number, pushed = false): number {
+  const running = state.data?.running
+  if (pushed && state.status !== 'error') {
+    return running ? EMBED_PUSH_BACKSTOP_RUNNING_MS : EMBED_PUSH_BACKSTOP_IDLE_MS
+  }
+  const base = running ? RUNNING_POLL_MS : 5000
   if (state.status !== 'error' || outage < EMBED_STALL_MS) return base
   return Math.min(EMBED_STALL_POLL_MAX_MS, Math.max(base, outage))
 }
@@ -356,6 +378,12 @@ function ChatEmbed({
   // stall notice so both measure the same outage.
   const failureRunsRef = useRef<FailureRuns>(new Map())
   const queryClient = useQueryClient()
+  // The host's push channel (slotPush.ts), and whether it signals THIS slot
+  // now. The state re-renders on a connection change; the poll cadence reads
+  // the channel again at each tick, so a slot that changes hands (or is not
+  // yet listed) is judged by its owner at that moment, not at mount.
+  const slotPush = useSlotPush()
+  const [pushLive, setPushLive] = useState(() => slotPush?.connected(slotKey) ?? false)
   const { data: slotData, refetch, isPlaceholderData, isError, isFetching, status, dataUpdatedAt, errorUpdatedAt } = useQuery({
     queryKey: ['app-sdk-embed', slotKey, limit],
     // Incremental: the held page's cursor is echoed, and only the rows after
@@ -377,8 +405,54 @@ function ChatEmbed({
     refetchInterval: (query) => embedPollInterval(
       query.state,
       embedOutageMs(failureRunsRef.current, `${String(query.queryKey[1])}:${String(query.queryKey[2])}`, query.state),
+      pushLive && (slotPush?.connected(slotKey) ?? false),
     ),
   })
+
+  // Push-triggered reads. A signal re-reads now; signals that arrive while a
+  // read is in flight collapse into one trailing read, spaced at least
+  // EMBED_PUSH_MIN_GAP_MS after the last. `cancelRefetch: false` joins a read
+  // already in flight instead of aborting it, so a fast stream cannot starve
+  // every read. Each connect (reconnects included) re-reads once: a change made
+  // while the channel was down was never signalled.
+  const refetchRef = useRef(refetch)
+  refetchRef.current = refetch
+  useEffect(() => {
+    if (!slotPush) { setPushLive(false); return }
+    setPushLive(slotPush.connected(slotKey))
+    let disposed = false
+    let inFlight = false
+    let dirty = false
+    let lastAt = 0
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const run = () => {
+      timer = undefined
+      if (disposed) return
+      inFlight = true
+      lastAt = Date.now()
+      void refetchRef.current({ cancelRefetch: false }).finally(() => {
+        inFlight = false
+        if (dirty && !disposed) { dirty = false; schedule() }
+      })
+    }
+    const schedule = () => {
+      if (inFlight) { dirty = true; return }
+      if (timer !== undefined) return
+      timer = setTimeout(run, Math.max(0, lastAt + EMBED_PUSH_MIN_GAP_MS - Date.now()))
+    }
+    const unwatch = slotPush.watch(slotKey, {
+      onChange: schedule,
+      onConnection: (up) => {
+        setPushLive(up)
+        if (up) schedule()
+      },
+    })
+    return () => {
+      disposed = true
+      if (timer !== undefined) clearTimeout(timer)
+      unwatch()
+    }
+  }, [slotPush, slotKey])
 
   // The last SETTLED page for this slot. A placeholder covers the in-flight
   // window of a widen, but a REJECTED widen leaves the wider key with no data
