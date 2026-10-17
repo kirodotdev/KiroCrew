@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import sys
 
 from kiro_crew.acp import session_handle
 from kiro_crew.acp.mcp_session_report import (
@@ -413,7 +414,11 @@ class TestEventOwnershipReachesTheReport:
     """
 
     def test_every_mcp_event_passes_the_frames_ownership_through(self):
-        src = inspect.getsource(session_handle)
+        # The facade and every owner its code moved to, as one text.
+        src = "\n".join(
+            inspect.getsource(sys.modules[name])
+            for name in (session_handle.__name__, *session_handle._SESSION_HANDLE_OWNERS)
+        )
         for kind in (
             "EVENT_MCP_OAUTH_REQUEST",
             "EVENT_MCP_SERVER_INITIALIZED",

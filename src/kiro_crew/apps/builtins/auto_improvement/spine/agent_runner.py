@@ -112,7 +112,7 @@ CLAUDE_BIN = os.environ.get("AUTO_IMPROVEMENT_CLAUDE_BIN", "claude")
 _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
 #: The stop reason on the ``EVENT_COMPLETE`` the ACP session handle yields when a prompt
-#: times out before the backend finished the turn (``acp/session_handle.py``). It has no
+#: times out before the backend finished the turn (``acp/session_handle_dispatch.py``). It has no
 #: constant in ``acp.types``.
 _STOP_REASON_PROMPT_TIMEOUT = "timeout"
 

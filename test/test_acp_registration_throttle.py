@@ -98,7 +98,7 @@ def test_error_message_keeps_one_cause_and_guidance():
     assert msg.count("Try again later") == 1  # one retained cause, never a wall
 
 
-# ── session_handle._died ──
+# ── session_handle_lifecycle._died ──
 
 
 class _ThrottledRuntime:

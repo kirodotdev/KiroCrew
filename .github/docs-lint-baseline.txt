@@ -284,7 +284,6 @@ line-ref	docs/request-for-change/rfc-perpetual-agent.md	mcp_core.py:758
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/runtime.py:1014,1030-1034
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/runtime.py:406-425
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/runtime.py:905-926
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/session_handle.py:799-814
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/session_provider.py:126,138
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/session_provider.py:173
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/session_provider.py:180-200

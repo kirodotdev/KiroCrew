@@ -2156,6 +2156,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # permission event, whose sinks are already registered.
         "acp/runtime.py",
         "acp/session_handle.py",
+        "acp/session_handle_compaction.py",
+        "acp/session_handle_dispatch.py",
+        "acp/session_handle_lifecycle.py",
+        "acp/session_handle_turn.py",
         "platform/defaults.py",
         "platform/interfaces.py",
         # Inbound sanitization: the browser MCP tool redacts UNTRUSTED native-panel

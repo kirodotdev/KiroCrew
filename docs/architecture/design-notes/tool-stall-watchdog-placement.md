@@ -252,7 +252,7 @@ cannot see the evidence it would need.
 ## 3. Not fighting the in-band recovery path
 
 In-band recovery already exists end to end. `_end_stalled_tool`
-(`session_handle.py`) cancels **this session only** on a bounded 5s budget —
+(`session_handle_watchdog.py`) cancels **this session only** on a bounded 5s budget —
 never the process, because co-tenant sessions share the runtime — and yields one
 terminal `EVENT_COMPLETE` carrying `STOP_REASON_TOOL_STALL` plus the tool title,
 redacted command, and evidence. The consumer's `STOP_REASON_TOOL_STALL` branch

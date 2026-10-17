@@ -136,7 +136,7 @@ extension without a published contract. What the code relies on, per backend:
   `compaction_status`), `_kiro.dev/clear/status` (→ `clear_status`) and
   `_kiro.dev/agent/switched` (→ `agent_switched`). Evidence is the shipped
   binary's own method strings (kiro-cli 2.21.4) plus the local parsers in
-  `acp/client.py` and `acp/session_handle.py`; no end-to-end run against a real
+  `acp/client.py` and `acp/session_handle_dispatch.py`; no end-to-end run against a real
   kiro-cli has confirmed that every silent trim path emits one of these.
 - KAS: `summarization_started/completed/failed` session-info frames map to
   `compaction_status`; `/compact` and `/clear` are plain prompt text there,

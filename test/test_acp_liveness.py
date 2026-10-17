@@ -1,7 +1,7 @@
 """Unit tests for the per-session liveness oracle (``acp/liveness.py``).
 
 The oracle is the detector behind the verdict-driven watchdogs in
-``session_handle._dispatch_events``: WORKING is never acted on, DEAD acts
+``session_handle_dispatch._dispatch_events``: WORKING is never acted on, DEAD acts
 immediately, UNKNOWN falls back to (non-lethal) timeouts. These tests exercise
 the /proc evidence paths against a fake proc tree — no real processes.
 """
