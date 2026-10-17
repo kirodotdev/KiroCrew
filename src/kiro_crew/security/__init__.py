@@ -478,12 +478,13 @@ _STREAM_DISCARD_RUN_RES = {
 _STREAM_DISCARD_MAX = 1 << 20
 
 # The withheld tail is a partial JWT/JWE when it ends with the `eyJ` base64url
-# header prefix optionally followed by up to FOUR `.`-separated base64url segments
-# (the final segment may be empty mid-stream). Three segments = a JWS/JWT
-# (header.payload.sig); five = a compact JWE (header.key.iv.ciphertext.tag), so the
-# `{0,4}` trailing quantifier admits the full JWE shape too — matching the batch
-# `_CREDENTIAL_PATTERNS` JWE ceiling — instead of bisecting a >512-char JWE at the
-# 512 floor. Anchored to the buffer end (`\Z`).
+# header prefix followed by header bytes and up to FOUR `.`-separated base64url
+# segments (the final segment may be empty mid-stream). Three segments
+# = a JWS/JWT (header.payload.sig); five = a compact JWE
+# (header.key.iv.ciphertext.tag), so the `{0,4}` trailing quantifier admits the
+# full JWE shape too — matching the batch `_CREDENTIAL_PATTERNS` JWE ceiling —
+# instead of bisecting a >512-char JWE at the 512 floor. Anchored to the buffer
+# end (`\Z`).
 _PARTIAL_JWT_TAIL_RE = re.compile(
     rf"eyJ{_JWT_SEGMENT_VALUE_CLASS}+(?:\.{_JWT_SEGMENT_VALUE_CLASS}*){{0,4}}\Z"
 )
@@ -551,12 +552,22 @@ class StreamRedactor:
     Feed raw chunks in order; ``feed`` returns the redacted, safe-to-broadcast
     prefix (possibly empty while a partial credential is buffered). Call
     ``flush`` when the stream/segment ends to redact and return the remainder.
-    Adds at most one chunk of latency. A credential is never split across a
-    commit boundary because commits only ever end at a non-credential-class
-    character, while a credential is a contiguous credential-class run.
+    Ordinary trailing runs add at most one chunk of latency. A validated pako
+    candidate is held through its bounded payload until termination because its
+    compressed state cannot be judged piecemeal. A credential is never split
+    across a commit boundary because commits only ever end at a non-credential-
+    class character, while a credential is a contiguous credential-class run.
     """
 
-    __slots__ = ("_buf", "_redact", "_discarding", "_discard_kind", "_discarded")
+    __slots__ = (
+        "_buf",
+        "_redact",
+        "_discarding",
+        "_discard_kind",
+        "_discarded",
+        "_pako_chunks",
+        "_pako_payload_len",
+    )
 
     def __init__(self, redactor: "Callable[[str], str] | None" = None) -> None:
         self._buf = ""
@@ -565,6 +576,8 @@ class StreamRedactor:
         self._discarding = False
         self._discard_kind: str | None = None
         self._discarded = 0
+        self._pako_chunks: list[str] | None = None
+        self._pako_payload_len = 0
 
     def _redact_window(self, text: str) -> str:
         """Redact one context-incomplete window without URL-prefix exemptions."""
@@ -583,6 +596,28 @@ class StreamRedactor:
 
         if not chunk:
             return ""
+
+        # A Mermaid pako route candidate can be much larger than the ordinary
+        # holdback. Once its exact prefix is isolated, classify each new payload
+        # byte once and retain chunks without repeatedly joining or rescanning the
+        # prefix. On a terminator or at the payload ceiling, reassemble the entire
+        # candidate with the full current chunk before normal credential-safe cut
+        # selection. Splitting there would let a credential containing `/` straddle
+        # the payload alphabet boundary and reach live output as two safe-looking
+        # fragments.
+        emitted = ""
+        if self._pako_chunks is not None:
+            payload_end = _redaction._MERMAID_PAKO_PAYLOAD_CHUNK_RE.match(chunk).end()
+            within_cap = (
+                self._pako_payload_len + payload_end <= _redaction._MERMAID_PAKO_PAYLOAD_CAP
+            )
+            if payload_end == len(chunk) and within_cap:
+                self._pako_chunks.append(chunk)
+                self._pako_payload_len += payload_end
+                return ""
+            self._buf = "".join(self._pako_chunks)
+            self._pako_chunks = None
+            self._pako_payload_len = 0
         self._buf += chunk
 
         # Invariant: `_buf` is always "" on entry when `_discarding` is true;
@@ -600,9 +635,9 @@ class StreamRedactor:
             if run == len(self._buf):
                 self._buf = ""
                 if self._discarded < _STREAM_DISCARD_MAX:
-                    return ""
+                    return emitted
                 self._discarded = 0
-                return _redaction._REDACTED_CREDENTIAL_TAG
+                return emitted + _redaction._REDACTED_CREDENTIAL_TAG
             self._discarding = False
             self._discard_kind = None
             self._buf = self._buf[run:]
@@ -653,6 +688,14 @@ class StreamRedactor:
         # holdback so a chunk boundary cannot split the name, but it is not yet a
         # credential and must never escalate the cap or authorize data loss.
         token_anchor = _redaction._TOKEN_PARAM_PARTIAL_RE.search(self._buf)
+        pako_anchor = _redaction._MERMAID_PAKO_PARTIAL_RE.search(self._buf)
+        pako_candidate: tuple[int, int] | None = None
+        if pako_anchor is not None:
+            pako_payload_len = len(pako_anchor.group()) - len(_redaction._MERMAID_PAKO_URL_PREFIX)
+            if pako_payload_len <= _redaction._MERMAID_PAKO_PAYLOAD_CAP:
+                pako_candidate = (pako_anchor.start(), pako_payload_len)
+        if pako_candidate is not None:
+            safety_cuts.append(pako_candidate[0])
         weak_token_anchor = None
         strong_token_anchor = False
         if token_anchor is not None:
@@ -682,6 +725,17 @@ class StreamRedactor:
         # so the tag prefix itself can neither raise a cap nor authorize a drop.
         if partial_tag_start is not None:
             i = min(i, partial_tag_start)
+
+        # Isolate only a weak pako candidate whose prefix is the earliest cut.
+        # Any STRONG anchor retains its 4096-byte fail-closed ceiling. The chunk
+        # list makes one-byte feeds linear: each byte is classified once here,
+        # joined once at termination, then scanned once by batch redaction.
+        if pako_candidate is not None and not strong_anchored and i == pako_candidate[0]:
+            commit, held = self._buf[:i], self._buf[i:]
+            self._buf = ""
+            self._pako_chunks = [held]
+            self._pako_payload_len = pako_candidate[1]
+            return emitted + (self._redact_window(commit) if commit else "")
 
         # PHASE B -- BOUNDS.
         # Invariant: STRONG anchors may fail closed instead of exposing a secret;
@@ -740,7 +794,7 @@ class StreamRedactor:
                     drop_end = complete_token_crossing.end(1)
                 commit, self._buf = self._buf[:i], self._buf[drop_end:]
                 out = self._redact_window(commit) if commit else ""
-                return out + _redaction._REDACTED_CREDENTIAL_TAG
+                return emitted + out + _redaction._REDACTED_CREDENTIAL_TAG
             i = len(self._buf) - cap
             i -= self._buf.startswith("${", i - 1)  # keep a JS/TS `${` placeholder whole
 
@@ -761,12 +815,16 @@ class StreamRedactor:
                 i = weak_token_anchor.start()
 
         if i <= 0:
-            return ""  # whole buffer is a (possibly partial) credential run — hold
+            return emitted  # whole buffer is a (possibly partial) credential run — hold
         commit, self._buf = self._buf[:i], self._buf[i:]
-        return self._redact_window(commit)
+        return emitted + self._redact_window(commit)
 
     def flush(self) -> str:
         """Redact and return the buffered remainder; clears the buffer."""
+        if self._pako_chunks is not None:
+            self._buf = "".join(self._pako_chunks)
+            self._pako_chunks = None
+            self._pako_payload_len = 0
         if self._discarding:
             self._buf = ""
             self._discarding = False
@@ -779,6 +837,8 @@ class StreamRedactor:
     @property
     def held(self) -> str:
         """The raw run withheld so far (``""`` while a value is being dropped)."""
+        if self._pako_chunks is not None:
+            return "".join(self._pako_chunks)
         return self._buf
 
     @property
@@ -792,6 +852,8 @@ class StreamRedactor:
         self._discarding = False
         self._discard_kind = None
         self._discarded = 0
+        self._pako_chunks = None
+        self._pako_payload_len = 0
 
 
 def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]:
