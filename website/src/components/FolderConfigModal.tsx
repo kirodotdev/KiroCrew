@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
-import { Zap, FolderOpen, ChevronRight, Check, Plus, X } from 'lucide-react'
+import { Zap, FolderOpen, ChevronRight, Check, Plus, Send, X } from 'lucide-react'
 import Modal from './Modal'
 import ErrorNotice from './ErrorNotice'
 import { Input, Btn } from './ui'
@@ -15,7 +15,7 @@ import { ChatFolder, ChatTag } from '../types'
 import { i18nT } from '../i18n/t'
 
 /** The folder fields this modal owns. */
-export type FolderConfigField = 'name' | 'color' | 'icon' | 'projectDir' | 'defaultAgent' | 'tags' | 'steeringDirs'
+export type FolderConfigField = 'name' | 'color' | 'icon' | 'projectDir' | 'defaultAgent' | 'defaultDestinationCrew' | 'tags' | 'steeringDirs'
 
 export interface FolderConfigDraft {
   name: string
@@ -31,6 +31,9 @@ export interface FolderConfigDraft {
   regenerateIcon: boolean
   projectDir: string
   defaultAgent: string
+  /** Instance id of the crew *Send a copy to* lists first for this folder's
+   *  sessions; '' = use the global default destination crew. */
+  defaultDestinationCrew: string
   /** Tag ids the folder carries; copied onto new chats filed into it. */
   tags: string[]
   /** Extra steering directories loaded for every chat in this folder's subtree
@@ -68,6 +71,9 @@ interface Props {
    *  Retry action on the error line so recovery never requires dismissing the
    *  modal (closing would discard a mid-draft form). */
   onRetryTags: () => void
+  /** Registered crews for the Default destination crew picker. Empty/absent
+   *  hides the picker, the same way *Send a copy to* hides with no crews. */
+  destinationCrews?: readonly { id: string; name: string }[]
   /** Resolves on a persisted save; REJECTS on failure so the modal can stay
    *  open with the draft intact and surface the reason. */
   onSubmit: (draft: FolderConfigDraft) => Promise<void>
@@ -87,7 +93,7 @@ function ancestorChain(folders: ChatFolder[], id: string | undefined): ChatFolde
   return out
 }
 
-const EMPTY: FolderConfigDraft = { name: '', color: '', icon: '', regenerateIcon: false, projectDir: '', defaultAgent: '', tags: [], steeringDirs: [], touched: [] }
+const EMPTY: FolderConfigDraft = { name: '', color: '', icon: '', regenerateIcon: false, projectDir: '', defaultAgent: '', defaultDestinationCrew: '', tags: [], steeringDirs: [], touched: [] }
 
 /** Set-equality on two tag-id lists (order-insensitive): the picker toggles
  *  membership, so "changed?" is about which ids are present, not their order. */
@@ -118,7 +124,7 @@ function sameDirs(a: string[], b: string[]): boolean {
  * spatial cue the inline input got for free from its own indentation.
  */
 export default function FolderConfigModal({
-  open, onClose, mode, parentId, folder, folders, installedAgents, globalDefaultAgent, availableTags, availableTagsFailed, onRetryTags, onSubmit,
+  open, onClose, mode, parentId, folder, folders, installedAgents, globalDefaultAgent, availableTags, availableTagsFailed, onRetryTags, onSubmit, destinationCrews,
 }: Props) {
   const [draft, setDraft] = useState<FolderConfigDraft>(EMPTY)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -188,6 +194,7 @@ export default function FolderConfigModal({
         regenerateIcon: false,
         projectDir: f.project_dir ?? '',
         defaultAgent: f.default_agent ?? '',
+        defaultDestinationCrew: f.default_destination_crew ?? '',
         tags: Array.isArray(f.tags) ? (known ? f.tags.filter(t => vocab.has(t)) : [...f.tags]) : [],
         steeringDirs: Array.isArray(f.steering_dirs) ? [...f.steering_dirs] : [],
         touched: [],
@@ -278,6 +285,23 @@ export default function FolderConfigModal({
     ...installedAgents.map(a => ({ value: a.name, label: a.name })),
   ]
 
+  // Hidden with *Send a copy to*: no registered crew means nothing to send to.
+  // A stored id naming no registered crew stays selectable so a save that does
+  // not touch this field never drops it.
+  const crews = destinationCrews ?? []
+  const destinationOptions: SearchableSelectOption[] | null = crews.length === 0
+    ? null
+    : [
+      { value: '', label: i18nT('components.folderConfigModal.default_destination_global') },
+      ...(draft.defaultDestinationCrew && !crews.some(c => c.id === draft.defaultDestinationCrew)
+        ? [{
+          value: draft.defaultDestinationCrew,
+          label: i18nT('components.folderConfigModal.default_destination_not_registered', { id: draft.defaultDestinationCrew }),
+        }]
+        : []),
+      ...crews.map(c => ({ value: c.id, label: c.name })),
+    ]
+
   const submit = useCallback(async () => {
     if (!canSubmit || saving) return
     const seeded = seedRef.current
@@ -299,6 +323,7 @@ export default function FolderConfigModal({
     if (draft.icon !== seeded.icon || draft.regenerateIcon) edited.push('icon')
     if (draft.projectDir !== seeded.projectDir) edited.push('projectDir')
     if (draft.defaultAgent !== seeded.defaultAgent) edited.push('defaultAgent')
+    if (draft.defaultDestinationCrew !== seeded.defaultDestinationCrew) edited.push('defaultDestinationCrew')
     if (tagsEdited) edited.push('tags')
     if (!sameDirs(draft.steeringDirs, seeded.steeringDirs)) edited.push('steeringDirs')
     setSaving(true); setSaveErr(''); setIconErr(false)
@@ -333,6 +358,7 @@ export default function FolderConfigModal({
   if (draft.icon !== seed.icon || draft.regenerateIcon) touched.push('icon')
   if (draft.projectDir !== seed.projectDir) touched.push('projectDir')
   if (draft.defaultAgent !== seed.defaultAgent) touched.push('defaultAgent')
+  if (draft.defaultDestinationCrew !== seed.defaultDestinationCrew) touched.push('defaultDestinationCrew')
   if (!sameTags(draft.tags, seed.tags)) touched.push('tags')
   if (!sameDirs(draft.steeringDirs, seed.steeringDirs)) touched.push('steeringDirs')
   const isDirty = touched.length > 0
@@ -712,6 +738,20 @@ export default function FolderConfigModal({
               <span className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.default_agent_hint')}</span>
             )}
           </div>
+          {destinationOptions && (
+            <div className="flex flex-col gap-1.5">
+              <span className="flex items-center gap-1.5 text-[11.5px] font-semibold text-muted">
+                <Send size={12} className="shrink-0" /> {i18nT('components.folderConfigModal.default_destination_crew')}
+              </span>
+              <SearchableSelect
+                aria-label={i18nT('components.folderConfigModal.default_destination_crew')}
+                options={destinationOptions}
+                value={draft.defaultDestinationCrew}
+                onChange={v => setDraft(d => ({ ...d, defaultDestinationCrew: v }))}
+              />
+              <span className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.default_destination_crew_hint')}</span>
+            </div>
+          )}
         </div>
       </Modal>
 

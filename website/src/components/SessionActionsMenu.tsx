@@ -400,7 +400,12 @@ export default function SessionActionsMenu({
       // rather than the tab-modifier group above because it changes nothing
       // about this tab — the peer gets its own copy under its own key.
       // Self-hiding when no instances are configured.
-      <SendToInstanceSubmenu key="send-instance" slotKey={slotKey} variant={variant} />,
+      <SendToInstanceSubmenu
+        key="send-instance"
+        slotKey={slotKey}
+        variant={variant}
+        folderDefault={folders.find(f => f.id === currentFolderId)?.default_destination_crew}
+      />,
       // The same act with the live hop removed: a tunnel needs both machines up
       // and reachable at once, a file does not. Adjacent to the submenu above
       // so the two read as one choice about where the copy goes.
