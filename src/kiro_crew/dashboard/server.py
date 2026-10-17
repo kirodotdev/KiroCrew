@@ -327,10 +327,15 @@ from kiro_crew.dashboard.server_runtime.skill_learning import (  # noqa: F401
 )
 from kiro_crew.dashboard.server_runtime.static_assets import (  # noqa: F401
     _dist_file_handler,
+    _DistFileResponse,
+    _finish_open_probe,
+    _first_open_error,
     _is_anchored,
+    _log_unopenable,
     _register_dist_static_routes,
     _resolve_dist_file,
     _serve_dist_file,
+    _start_open_probe,
     _window_entry_handler,
     discover_app_window_entries,
 )
@@ -435,6 +440,15 @@ logger = logging.getLogger(__name__)
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 _DIST_DIR = _STATIC_DIR / "dist"
+
+# When the build routes last logged a build file they could not open, per errno
+# (monotonic seconds). A process that cannot open any file fails every asset of a
+# page load with the same errno, so one line per errno per interval names the
+# first path and the error without repeating it for each chunk.
+_UNOPENABLE_DIST_LAST_LOGGED: dict[int | None, float] = {}
+_UNOPENABLE_DIST_LOG_INTERVAL_S = 600.0
+# The unreadable-build-file probes still running, held so none is collected early.
+_UNOPENABLE_DIST_PROBES: set[asyncio.Future[Any]] = set()
 
 # How often the prevent-sleep poll re-evaluates whether the host should be kept
 # awake. It only needs to beat OS idle-sleep timers (minutes), so a coarse

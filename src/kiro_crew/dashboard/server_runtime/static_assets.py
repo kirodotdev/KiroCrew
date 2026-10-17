@@ -7,15 +7,22 @@ prefixes, and the app window entries.
 from __future__ import annotations
 
 import asyncio
+import os
+import stat
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING
 
 from aiohttp import web
+from aiohttp.abc import AbstractStreamWriter
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
         _APP_WINDOWS_SUBDIR,
+        _UNOPENABLE_DIST_LAST_LOGGED,
+        _UNOPENABLE_DIST_LOG_INTERVAL_S,
+        _UNOPENABLE_DIST_PROBES,
         APP_WINDOW_URL_PREFIX,
         _vendor_preflight_handler,
         logger,
@@ -166,7 +173,9 @@ async def _serve_dist_file(dist_dir: Path, subdir: str, tail: str) -> web.Stream
     """Resolve ``tail`` off the event loop and serve it, or a no-store 404.
 
     ``web.FileResponse`` still picks a precompressed ``.br``/``.gz`` sibling and
-    answers ranges and conditional requests.
+    answers ranges and conditional requests. A file it cannot read answers an
+    error status (404, or 403 for a permission error) and logs nothing;
+    :class:`_DistFileResponse` adds the log line.
     """
     path = await asyncio.get_running_loop().run_in_executor(
         None, _resolve_dist_file, dist_dir, subdir, tail
@@ -175,7 +184,110 @@ async def _serve_dist_file(dist_dir: Path, subdir: str, tail: str) -> web.Stream
         # Returned, not raised, so the header middleware still marks it
         # no-store: a cached 404 for a hashed chunk outlives the gap.
         return web.Response(status=404, text="404: Not Found")
-    return web.FileResponse(path)
+    return _DistFileResponse(path)
+
+
+def _first_open_error(path: Path, accept_encoding: str) -> tuple[Path, OSError] | None:
+    """The file ``FileResponse`` tried for ``path`` and the error reading it, or ``None``.
+
+    The file is picked as ``FileResponse`` picks it: the first ``.br``/``.gz``
+    sibling the request accepts that ``lstat`` shows is a regular file, else
+    ``path``. A file that is gone is not an error, so a build swept after it
+    was resolved stays a quiet 404. The open does not wait on a pipe.
+    """
+    candidate = path
+    for suffix, encoding in ((".br", "br"), (".gz", "gzip")):
+        if encoding not in accept_encoding:
+            continue
+        sibling = path.with_suffix(path.suffix + suffix)
+        try:
+            if stat.S_ISREG(sibling.lstat().st_mode):
+                candidate = sibling
+                break
+        except OSError:
+            continue
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    if candidate is not path:
+        # ``FileResponse`` took the sibling only as a regular file, not a link.
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        # Only a regular file is opened: ``FileResponse`` refuses anything else
+        # before it opens, so that refusal is not a read error.
+        if candidate is path and not stat.S_ISREG(path.stat().st_mode):
+            return None
+        os.close(os.open(candidate, flags))
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as exc:
+        return candidate, exc
+    return None
+
+
+class _DistFileResponse(web.FileResponse):
+    """A ``FileResponse`` that logs a build file it cannot read.
+
+    After ``FileResponse`` answers 403 or 404, the file it tried is probed in
+    the executor (:func:`_first_open_error`) without holding up the response.
+    A read error logs one warning with the path and the OS error, at most once
+    per errno per ``_UNOPENABLE_DIST_LOG_INTERVAL_S``. The response is the one
+    ``FileResponse`` gave, and a served file costs no extra filesystem call.
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self._dist_path = path
+
+    async def prepare(self, request: web.BaseRequest) -> AbstractStreamWriter | None:
+        writer = await super().prepare(request)
+        if self.status in (403, 404):
+            accept_encoding = request.headers.get("Accept-Encoding", "").lower()
+            _start_open_probe(self._dist_path, accept_encoding)
+        return writer
+
+
+def _start_open_probe(path: Path, accept_encoding: str) -> None:
+    """Probe ``path`` in the executor and log what it finds; never raises.
+
+    The future is held in ``_UNOPENABLE_DIST_PROBES`` until it settles, so it
+    is not collected mid-probe.
+    """
+    try:
+        probe = asyncio.get_running_loop().run_in_executor(
+            None, _first_open_error, path, accept_encoding
+        )
+    except RuntimeError:
+        # The executor is shut down: the gateway is stopping.
+        return
+    _UNOPENABLE_DIST_PROBES.add(probe)
+    probe.add_done_callback(_finish_open_probe)
+
+
+def _finish_open_probe(probe: asyncio.Future[tuple[Path, OSError] | None]) -> None:
+    _UNOPENABLE_DIST_PROBES.discard(probe)
+    if probe.cancelled():
+        return
+    try:
+        found = probe.result()
+    except Exception:
+        logger.debug("Probe of an unreadable build file failed", exc_info=True)
+        return
+    if found is not None:
+        _log_unopenable(*found)
+
+
+def _log_unopenable(path: Path, error: OSError) -> None:
+    now = time.monotonic()
+    last = _UNOPENABLE_DIST_LAST_LOGGED.get(error.errno)
+    if last is not None and now - last < _UNOPENABLE_DIST_LOG_INTERVAL_S:
+        return
+    _UNOPENABLE_DIST_LAST_LOGGED[error.errno] = now
+    logger.warning(
+        "Build file %r cannot be read: %s. Requests for it answer 404 (403 for a "
+        "permission error). Logged once per error every %d seconds.",
+        str(path),
+        error,
+        int(_UNOPENABLE_DIST_LOG_INTERVAL_S),
+    )
 
 
 def _register_dist_static_routes(app: web.Application, dist_dir: Path) -> None:

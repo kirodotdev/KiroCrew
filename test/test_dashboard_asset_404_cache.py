@@ -21,6 +21,9 @@ These tests drive the real dist routes through the real middleware and a real
 
 from __future__ import annotations
 
+import errno
+import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -28,6 +31,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard import server as srv
+from kiro_crew.testing.wait import async_wait_until
 
 
 def _dist(tmp_path: Path) -> Path:
@@ -180,3 +184,118 @@ async def test_without_finalizer_the_404_is_immutable(
         resp = await client.get("/assets/check-BiXj6uGO.js")
         assert resp.status == 404
         assert "immutable" in resp.headers["Cache-Control"]
+
+
+def _fail_open_for(monkeypatch: pytest.MonkeyPatch, target: Path, err: int) -> None:
+    """Make every open of ``target`` fail with ``err`` -- ``FileResponse``'s
+    ``Path.open`` and the probe's ``os.open`` -- as a process denied file opens sees."""
+    real_path_open = Path.open
+    real_os_open = os.open
+
+    def _raise(name: object) -> None:
+        if err in (errno.EACCES, errno.EPERM):
+            raise PermissionError(err, os.strerror(err), str(name))
+        raise OSError(err, os.strerror(err), str(name))
+
+    def _path_open(self: Path, *args: object, **kwargs: object) -> object:
+        if self == target:
+            _raise(self)
+        return real_path_open(self, *args, **kwargs)  # type: ignore[call-overload]
+
+    def _os_open(name: str | os.PathLike[str], *args: object, **kwargs: object) -> int:
+        if Path(name) == target:
+            _raise(name)
+        return real_os_open(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "open", _path_open)
+    monkeypatch.setattr(os, "open", _os_open)
+
+
+def _unopenable_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        r
+        for r in caplog.records
+        if r.name == srv.logger.name
+        and r.levelno == logging.WARNING
+        and "cannot be read" in r.getMessage()
+    ]
+
+
+async def _settled_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """The read warnings once every probe the requests started has finished.
+
+    The route probes after the response is on the wire, so the client can see
+    the response before the probe has run.
+    """
+    await async_wait_until(
+        lambda: not srv._UNOPENABLE_DIST_PROBES,
+        describe=lambda: f"{len(srv._UNOPENABLE_DIST_PROBES)} probe(s) still running",
+    )
+    return _unopenable_warnings(caplog)
+
+
+@pytest.fixture
+def _fresh_open_log(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.setattr(srv, "_UNOPENABLE_DIST_LAST_LOGGED", {}, raising=False)
+    monkeypatch.setattr(srv, "_UNOPENABLE_DIST_PROBES", set(), raising=False)
+    caplog.set_level(logging.WARNING, logger=srv.logger.name)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fresh_open_log")
+@pytest.mark.parametrize(("err", "status"), [(errno.ENOSYS, 404), (errno.EACCES, 403)])
+async def test_an_asset_that_cannot_be_opened_logs_once_and_keeps_its_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    err: int,
+    status: int,
+) -> None:
+    dist = _dist(tmp_path)
+    target = (dist / "assets" / "main-krfrL6rl.js").resolve()
+    _fail_open_for(monkeypatch, target, err)
+    async with TestClient(TestServer(_make_app(dist))) as client:
+        first = await client.get("/assets/main-krfrL6rl.js")
+        second = await client.get("/assets/main-krfrL6rl.js")
+        assert first.status == second.status == status
+        assert "no-store" in first.headers["Cache-Control"]
+        warnings = await _settled_warnings(caplog)
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    message = warnings[0].getMessage()
+    assert repr(str(target)) in message
+    assert f"[Errno {err}]" in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fresh_open_log")
+async def test_an_unopenable_precompressed_sibling_is_the_path_logged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    dist = _dist(tmp_path)
+    sibling = (dist / "assets" / "main-krfrL6rl.js.gz").resolve()
+    sibling.write_bytes(b"gz")
+    _fail_open_for(monkeypatch, sibling, errno.ENOSYS)
+    async with TestClient(TestServer(_make_app(dist))) as client:
+        resp = await client.get("/assets/main-krfrL6rl.js", headers={"Accept-Encoding": "gzip"})
+        assert resp.status == 404
+        warnings = await _settled_warnings(caplog)
+    assert len(warnings) == 1
+    assert repr(str(sibling)) in warnings[0].getMessage()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fresh_open_log")
+async def test_a_served_or_missing_asset_logs_no_open_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    dist = _dist(tmp_path)
+    async with TestClient(TestServer(_make_app(dist))) as client:
+        served = await client.get("/assets/main-krfrL6rl.js")
+        never_built = await client.get("/fonts/absent.woff2")
+        assert served.status == 200
+        assert never_built.status == 404
+    monkeypatch.setattr(srv, "_resolve_dist_file", lambda *_a: tmp_path / "swept.js")
+    async with TestClient(TestServer(_make_app(dist))) as client:
+        swept = await client.get("/assets/check-BiXj6uGO.js")
+        assert swept.status == 404
+        assert await _settled_warnings(caplog) == []
