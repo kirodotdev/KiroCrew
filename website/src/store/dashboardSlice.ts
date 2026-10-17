@@ -1401,8 +1401,22 @@ const dashboardSlice = createSlice({
       // lagging window (reconnect gap) cannot prove it saw the message a
       // sibling watermarked, so the shared badge survives for siblings and
       // reboots instead of being silently erased.
-      const _readTs = state.slots?.find(sl => sl.key === action.payload)?.last_ts // row-read: reads a watermark, writes only unread state
-      clearSharedUnreadIfCovered(action.payload, _readTs)
+      const _slot = state.slots?.find(sl => sl.key === action.payload) // row-read: last_ts + running flag; writes only unread state
+      const _readTs = _slot?.last_ts // row-read: reads a watermark, writes only unread state
+      const _survivor = clearSharedUnreadIfCovered(action.payload, _readTs)
+      // An uncovered survivor on an IDLE slot is an ORPHAN: the watermark
+      // names a row newer than anything the gateway shows this session, so
+      // no read — this one or any future one — can ever cover it. That is
+      // what a build before #15014 left behind (it watermarked a turn's
+      // `done` row that a gateway restart then dropped), and keeping it
+      // strands the badge forever: every relayed read re-lights it and every
+      // reload restores it. With nothing in flight the slot's last_ts is the
+      // newest row that exists, so the read is authoritative — retire the
+      // record. A running (or unknown) slot keeps the survivor: mid-turn its
+      // last_ts legitimately trails rows it has not been pushed yet.
+      if (_survivor !== undefined && _slot !== undefined && !_slot.running) {
+        persistSharedUnread({}, [action.payload])
+      }
       _relayUnreadToParent(JSON.stringify(state.unreadSlots))
     },
     /** A read relayed from ANOTHER window: honors the watermark. Clears only
