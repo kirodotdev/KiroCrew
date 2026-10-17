@@ -13,6 +13,7 @@ request shapes, per-turn metadata/credit capture, and notification classificatio
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import hashlib
 import json
@@ -31,6 +32,11 @@ from kiro_crew.acp.harness_tool_names import (
     GOOSE_READ_ONLY_BUILTINS,
     MAX_HARNESS_TOOL_NAME_LEN,
     qualified_harness_tool_id,
+)
+from kiro_crew.acp.locator_attestation import (
+    attest_tool_result,
+    attested_sharepoint_digests,
+    sharepoint_attestation_policy,
 )
 from kiro_crew.acp.types import (
     EVENT_PERMISSION_REQUEST,
@@ -762,7 +768,9 @@ def _redact(text: str) -> str:
     if not text:
         return text
     text, _ = redact_exfiltration_urls(text)
-    text, _ = redact_credentials(text)
+    text, _ = redact_credentials(
+        text, attested_sharepoint_digests=attested_sharepoint_digests(text)
+    )
     return text
 
 
@@ -2662,12 +2670,11 @@ def build_permission_event(
         tool_name=_tool_name,
         mcp_identity_trusted=_mcp_identity_trusted,
         mcp_identity_unreadable=_mcp_identity_unreadable,
-        # The unreadable-identity store is handed to this parser only for a
-        # member of ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` (KAS; the
-        # handle's ``_identity_unreadable_cache_for_wire`` and the client gate
-        # it on that set), so it is also the one signal that a bare built-in
-        # ``tool_name`` here is a KAS id the gate may read under its kiro-cli
-        # policy name. Every other harness is handed ``None`` and gets no fold.
+        # Permission callers hand this cache only for a member of
+        # ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` (KAS), so its presence
+        # remains the signal that bare built-in ids use the KAS policy names.
+        # Shared-runtime tool-call parsing records readability for every harness,
+        # but non-KAS permission builders receive the separate None view.
         kas_builtin_ids=identity_unreadable_cache is not None,
         diff_path=_diff_path,
         spawn_target=_spawn_target,
@@ -2866,17 +2873,11 @@ def _build_tool_call_event(
     if tool_call_id and harness_tool_name_cache is not None:
         harness_tool_name_cache[_ck] = harness_tool_name(update)
     # A frame that PRESENTED an identity half the bound refused is recorded as
-    # such (a bool, never the half), so the permission request that follows is
-    # refused rather than judged under the empty name the caches above hold.
-    # Sparse: a row exists only for a frame that presented an unreadable half,
-    # and a tool_call frame OVERWRITES the verdict under its id the way the
-    # identity caches beside it are overwritten, so a mark never outlives the
-    # frame that earned it. Keyed like its siblings, evicted/released with them.
+    # a bool, never the half. An explicit False proves that this frame's identity
+    # was readable. Absence proves nothing and therefore cannot mint a locator
+    # attestation. KAS permission handling still reads only truthy marks.
     if tool_call_id and identity_unreadable_cache is not None:
-        if identity.identity_unreadable:
-            identity_unreadable_cache[_ck] = True
-        else:
-            identity_unreadable_cache.pop(_ck, None)
+        identity_unreadable_cache[_ck] = identity.identity_unreadable
     # Cache the content block's path for the permission event (see
     # build_permission_event). Written only when a diff block NAMED a path, so
     # a later frame without one cannot clobber a real target with "". The path
@@ -3264,7 +3265,10 @@ def _measure_tool_output(redacted: str) -> tuple[str, int]:
     return hashlib.sha256(raw).hexdigest(), len(raw)
 
 
-def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> AcpEvent | None:
+def _build_tool_result_event(
+    update: dict[str, Any],
+    cache_scope: str = "",
+) -> AcpEvent | None:
     """Build an ``EVENT_TOOL_RESULT`` from output or a terminal tool status.
 
     Three output shapes: ``content[].content.text`` blocks (stream mid-turn),
@@ -3656,6 +3660,61 @@ def _todo_payload(raw_output: Any) -> dict[str, Any] | None:
     return None
 
 
+async def attest_session_update(
+    update: dict[str, Any],
+    *,
+    raw_params_cache: dict[str, dict] | None = None,
+    mcp_server_name_cache: dict[str, str] | None = None,
+    tool_name_cache: dict[str, str] | None = None,
+    cache_scope: str = "",
+    identity_unreadable_cache: dict[str, bool] | None = None,
+) -> None:
+    """Prove provenance cheaply, then persist off the gateway event loop."""
+    if (
+        update.get("sessionUpdate") != UPDATE_TOOL_CALL_UPDATE
+        or update.get("status") != "completed"
+    ):
+        return
+    tool_use_id = update.get("toolCallId")
+    if not isinstance(tool_use_id, str) or not tool_use_id:
+        return
+    cache_key = scoped_tool_cache_key(cache_scope, tool_use_id)
+    if (
+        raw_params_cache is None
+        or mcp_server_name_cache is None
+        or tool_name_cache is None
+        or identity_unreadable_cache is None
+        or cache_key not in raw_params_cache
+        or cache_key not in mcp_server_name_cache
+        or cache_key not in tool_name_cache
+        or cache_key not in identity_unreadable_cache
+        or identity_unreadable_cache[cache_key] is not False
+    ):
+        return
+    raw_input = raw_params_cache[cache_key]
+    server = mcp_server_name_cache[cache_key]
+    tool = tool_name_cache[cache_key]
+    if (
+        not isinstance(raw_input, dict)
+        or not raw_input
+        or not isinstance(server, str)
+        or not server
+        or not isinstance(tool, str)
+        or not tool
+    ):
+        return
+    fields, hosts = sharepoint_attestation_policy(server, tool)
+    if not fields or not hosts:
+        return
+    await asyncio.to_thread(
+        attest_tool_result,
+        update=update,
+        raw_input=raw_input,
+        declared_fields=fields,
+        trusted_hosts=hosts,
+    )
+
+
 def parse_todo_snapshot(
     update: dict[str, Any],
     tool_name_cache: dict[str, str] | None = None,
@@ -3923,7 +3982,9 @@ def parse_session_update(
     ``None`` -- every harness outside ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``,
     through ``AcpSessionHandle._tool_call_cache_overflow_for_wire`` -- retains as
     it always did; the bound is the KAS projection's, not a change to the
-    first-class harness's construction (H13).
+    first-class harness's construction (H13). ``identity_unreadable_cache`` is
+    separate: every shared-runtime harness records an explicit readability verdict
+    so locator admission never infers readable identity from cache availability.
     """
     if not isinstance(update, dict):
         return []

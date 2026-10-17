@@ -299,6 +299,8 @@ _FACADE_DEFS = (
     "_register_browser_install_cleanup",
     "_register_browser_view_cleanup",
     "_register_instances_hooks",
+    "_preload_locator_attestations",
+    "_dispatch_locator_attestation_preload",
     "_dispatch_healthy_boot_marker",
     "_kick_pinned_order_load",
     "start_dashboard",
@@ -618,7 +620,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     assert defined == set(_FACADE_DEFS)
-    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 103
+    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 105
 
 
 def test_the_owners_log_as_the_facade() -> None:
@@ -1483,7 +1485,8 @@ _API_HOOKS = {
 #: entrypoints now delegate to are names the base did not have, so only the calls
 #: they make count. A boot step added on purpose updates these with it.
 _DASHBOARD_BOOT = tuple("""
-    consume_managed_service_launch_environment set_pending_staged_hook
+    consume_managed_service_launch_environment
+    set_pending_staged_hook
     set_pending_consumed_hook set_global_hook_store register_skill_read_observer
     wire_session_subagent_probe _wire_tunnel_shutdown _wire_status_delta_sink
     register_status_delta_sink _precompute_telemetry current_context
@@ -1529,15 +1532,16 @@ _DASHBOARD_BOOT = tuple("""
     load_loop_stall_exit_after
     _arm_prevent_sleep_poll register_pre_exec_stop safety_override safety_override
     safety_override
-    await_crewmate_prune_settled current_context record_boot_to_ready
-    _dispatch_healthy_boot_marker
+    await_crewmate_prune_settled current_context _dispatch_locator_attestation_preload
+    record_boot_to_ready _dispatch_healthy_boot_marker
     """.split())
 _DASHBOARD_TEARDOWN = tuple("""
     current_context unregister_status_delta_sink stop_hook_reconciler
     on_gateway_shutdown async_safe_context_call current_context _release_sleep_block
     """.split())
 _DASHBOARD_ELSEWHERE = tuple("""
-    S:_initialize_workflow_service S:_prune_browser_snapshots_loop S:_stt_idle_sweep
+    S:_initialize_workflow_service S:_preload_locator_attestations
+    S:_prune_browser_snapshots_loop S:_stt_idle_sweep
     S:_stt_startup_prewarm T:_apply_startup_yolo T:_claimed_dashboard_slots
     T:_live_sibling_port T:_register_deploy_skills T:_take_prior_dropped_grant
     T:_write_instance_credentials T:_write_secret_file T:_write_secret_file
@@ -1551,7 +1555,8 @@ _DASHBOARD_ELSEWHERE = tuple("""
     T:tighten_data_home T:warm_own_host_names
     """.split())
 _API_BOOT = tuple("""
-    set_global_hook_store register_skill_read_observer wire_session_subagent_probe
+    set_global_hook_store register_skill_read_observer
+    wire_session_subagent_probe
     _precompute_telemetry current_context tailnet_effective_allowed_logins
     tailnet_identity_unknown degraded_config_files build_allowed_origins
     _make_host_validation_middleware _make_csrf_middleware _make_deny_audit_middleware
@@ -1582,11 +1587,13 @@ _API_BOOT = tuple("""
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
     _kick_local_decision_model _kick_owner_only_sweep _kick_display_verdicts
     _arm_prevent_sleep_poll
-    register_pre_exec_stop record_boot_to_ready _dispatch_healthy_boot_marker
+    register_pre_exec_stop _dispatch_locator_attestation_preload record_boot_to_ready
+    _dispatch_healthy_boot_marker
     """.split())
 _API_TEARDOWN: tuple[str, ...] = ("_release_sleep_block",)
 _API_ELSEWHERE = tuple("""
-    S:_initialize_workflow_service S:_stt_idle_sweep S:_stt_startup_prewarm
+    S:_initialize_workflow_service S:_preload_locator_attestations S:_stt_idle_sweep
+    S:_stt_startup_prewarm
     T:_live_sibling_port T:_write_instance_credentials T:_write_secret_file
     T:_write_secret_file T:_write_secret_file T:record_healthy_boot T:tighten_data_home
     T:warm_own_host_names

@@ -193,6 +193,13 @@ class DefaultCredentialPolicy:
         # host set (empty = MORE redaction, the safe direction).
         return frozenset()
 
+    def provider_generated_sharepoint_fields(
+        self,
+    ) -> "Dict[tuple[str, str], FrozenSet[str]]":
+        # No provider field is trusted in the public edition. URL text alone can
+        # never relax markerless credential redaction.
+        return {}
+
     def token_param_exempt_url_prefixes(self) -> "frozenset[str]":
         # No exemptions: pass 4 redacts every `token=` value, as before.
         return frozenset()

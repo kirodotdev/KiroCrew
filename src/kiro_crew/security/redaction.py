@@ -1294,6 +1294,20 @@ _DOCUMENT_LINK_RE = re.compile(
     r"(?P<diagram>" + _PLANTUML_DIAGRAM + r")"
     r")/?(?![A-Za-z0-9+/_-])"
 )
+_SHAREPOINT_LOCATOR_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])https://"
+    r"(?P<host>[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.sharepoint\.com))"
+    r"(?P<path>/:[A-Za-z]:/s/[A-Za-z0-9._~%-]{1,128}/(?P<item>[EI][A-Za-z0-9_-]{45}))"
+    r"(?=$|[?&#\s<>|)\]}'\".,;:!?])",
+    re.IGNORECASE,
+)
+
+
+def _sharepoint_locator_digest(match: re.Match[str]) -> str:
+    canonical = match.group("host").lower() + match.group("path")
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 _PLANTUML_ALPHABET = {
     c: i for i, c in enumerate("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_")
 }
@@ -1351,9 +1365,15 @@ def _plantuml_verdict(encoded: str, limit: int) -> tuple[bool, int]:
         _IN_DIAGRAM_SCAN.set(previous)
 
 
-def _document_link_spans(text: str) -> list[tuple[int, int]]:
-    """Return the spans of the :data:`_DOCUMENT_LINK_RE` matches that hold no key."""
-    spans = []
+def _document_link_spans(
+    text: str, attested_sharepoint_digests: frozenset[str] = frozenset()
+) -> list[tuple[int, int]]:
+    """Return fixed public-link and boundary-attested SharePoint locator spans."""
+    spans = [
+        match.span()
+        for match in _SHAREPOINT_LOCATOR_RE.finditer(text)
+        if _sharepoint_locator_digest(match) in attested_sharepoint_digests
+    ]
     budget = 0 if _IN_DIAGRAM_SCAN.get() else _PLANTUML_SOURCE_CAP
     for m in _DOCUMENT_LINK_RE.finditer(text):
         if m["diagram"]:
@@ -2068,7 +2088,12 @@ def _splice(text: str, spans: list[_RedactionSpan]) -> str:
     return "".join(parts)
 
 
-def redact_credentials(text: str, *, defer_token_param: bool = False) -> tuple[str, list[str]]:
+def redact_credentials(
+    text: str,
+    *,
+    defer_token_param: bool = False,
+    attested_sharepoint_digests: frozenset[str] = frozenset(),
+) -> tuple[str, list[str]]:
     """Redact raw credential patterns from text, including base64-encoded.
 
     Returns (cleaned_text, list_of_warnings).
@@ -2081,8 +2106,16 @@ def redact_credentials(text: str, *, defer_token_param: bool = False) -> tuple[s
     a value an earlier pass already partly claimed is still redacted here, and
     every other pass still runs. With the empty default prefix set the output is
     byte-identical to a plain call.
+
+    ``attested_sharepoint_digests`` is a pure, immutable snapshot supplied by a
+    gateway boundary. The empty default keeps non-gateway and cold-load callers
+    fail closed under ordinary markerless credential redaction.
     """
-    spans, warnings, _rules = _credential_redaction_plan(text, defer_token_param=defer_token_param)
+    spans, warnings, _rules = _credential_redaction_plan(
+        text,
+        defer_token_param=defer_token_param,
+        attested_sharepoint_digests=attested_sharepoint_digests,
+    )
     if not spans:
         return text, warnings
     return _splice(text, spans), warnings
@@ -2157,7 +2190,9 @@ class CredentialMatch(NamedTuple):
     value: str
 
 
-def redact_credentials_with_records(text: str) -> tuple[str, list[str], list[CredentialMatch]]:
+def redact_credentials_with_records(
+    text: str,
+) -> tuple[str, list[str], list[CredentialMatch]]:
     """:func:`redact_credentials`, plus one :class:`CredentialMatch` per tag written.
 
     The cleaned text and warnings are byte-identical to ``redact_credentials``;
@@ -2183,6 +2218,7 @@ def _credential_redaction_plan(
     text: str,
     *,
     defer_token_param: bool = False,
+    attested_sharepoint_digests: frozenset[str] = frozenset(),
 ) -> tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]]:
     """Every span :func:`redact_credentials` rewrites, with its warnings and rules.
 
@@ -2339,7 +2375,7 @@ def _credential_redaction_plan(
         # not a key (see `_DOCUMENT_LINK_RE`). Scanned only after a run fires,
         # so text with no key-shaped run never pays for it.
         if link_spans is None:
-            link_spans = _document_link_spans(text)
+            link_spans = _document_link_spans(text, attested_sharepoint_digests)
         if any(start <= m.start() and run_end <= end for start, end in link_spans):
             continue
         for piece_start, piece_end in pieces:

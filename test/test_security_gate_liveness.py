@@ -372,7 +372,11 @@ def _url_payload_command(n: int) -> str:
 #: stall still refuses everywhere it did; only the words a refused agent reads moved.
 #: The prefix is named only while its cooldown is open, since most stall raises never
 #: charge it.
-_PACKAGE_LINE_BUDGET = 29_607
+#:
+#: Raised again, from 29,607, for provider-attested SharePoint locator validation
+#: and its fail-closed credential-redaction boundary. No deny rule or threshold
+#: moved.
+_PACKAGE_LINE_BUDGET = 29_643
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

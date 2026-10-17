@@ -33,6 +33,7 @@ from kiro_crew.acp._dispatch import (
     MAX_ACTIVE_TOOL_CALLS,
     TOOL_CALL_CACHE_MAX_ENTRIES,
     TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS,
+    attest_session_update,
     build_permission_event,
     classify_notification,
     error_is_refusal_terminal,
@@ -1449,13 +1450,11 @@ class AcpSessionHandle:
         # toolCallId -> the tool's own name its tool_call frame stated, for the
         # permission event's harness_tool_id (see _dispatch.harness_tool_name).
         self._tool_call_harness_tool_name: dict[str, str] = {}
-        # Per scoped toolCallId, True when the tool_call frame PRESENTED an MCP
-        # identity half the name bound refused (``mcp_identity_unreadable``):
-        # the call names a tool Crew cannot retain, and its permission request
-        # is refused (``_refuse_unreadable_mcp_identity``) rather than judged
-        # under the empty name the identity caches hold. Sparse (written only
-        # when True), a sibling of the caches above under the same admission,
-        # cleared, evicted and released with them.
+        # Per scoped toolCallId, whether the tool_call frame PRESENTED an MCP
+        # identity half the name bound refused. Every shared-runtime ACP harness
+        # records True or False. Locator admission requires the readable verdict
+        # to exist, while KAS permission handling still refuses only a True verdict.
+        # Cleared, evicted and released with the sibling identity caches.
         self._tool_call_identity_unreadable: dict[str, bool] = {}
         # Parent-scoped cache keys populated by tagged native-child tool calls.
         # Cleared per turn beside the sibling per-call caches below.
@@ -5781,6 +5780,22 @@ class AcpSessionHandle:
                         msg.id, JSONRPC_METHOD_NOT_FOUND, "Method not found"
                     )
                 elif action == "update":
+                    params = msg.params or {}
+                    update = params.get("update") or {}
+                    if isinstance(update, dict):
+                        frame_sid = str(params.get("sessionId") or "")
+                        await attest_session_update(
+                            update,
+                            raw_params_cache=self._tool_call_raw_params,
+                            mcp_server_name_cache=self._tool_call_mcp_server,
+                            tool_name_cache=self._tool_call_tool_name,
+                            cache_scope=(
+                                frame_sid
+                                if frame_sid and frame_sid != self._session_id
+                                else self._session_id
+                            ),
+                            identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
+                        )
                     for ev in self._handle_update(msg):
                         # Before the yield, so the observation is recorded even for a
                         # consumer that stops pulling: the call already ran, and this
@@ -5998,6 +6013,14 @@ class AcpSessionHandle:
                         # test_dispatch_subagent_activity_* tests. The
                         # security caches are the shared, parser-derived
                         # part; the coarse crew-monitor display is not.
+                        await attest_session_update(
+                            upd,
+                            raw_params_cache=self._tool_call_raw_params,
+                            mcp_server_name_cache=self._tool_call_mcp_server,
+                            tool_name_cache=self._tool_call_tool_name,
+                            cache_scope=ssid,
+                            identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
+                        )
                         parse_session_update(
                             upd,
                             tool_input_cache=self._tool_call_inputs,
@@ -7103,7 +7126,7 @@ class AcpSessionHandle:
             mcp_server_name_cache=self._tool_call_mcp_server,
             tool_name_cache=self._tool_call_tool_name,
             harness_tool_name_cache=self._tool_call_harness_tool_name,
-            identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
+            identity_unreadable_cache=self._identity_unreadable_cache_for_permission(),
             # ORIGIN-BOUND provenance: cache entries are keyed by the
             # emitting frame's sessionId, so a child cannot replay a consumed
             # parent toolCallId to inherit trusted params for a different
@@ -7474,17 +7497,17 @@ class AcpSessionHandle:
             return self._tool_call_kind
         return None
 
-    def _identity_unreadable_cache_for_wire(self) -> dict[str, bool] | None:
-        """The ``identity_unreadable_cache`` the wire parsers may write, or ``None``.
+    def _identity_unreadable_cache_for_wire(self) -> dict[str, bool]:
+        """The readability-verdict cache every shared-runtime harness records.
 
-        Handed only for members of ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``
-        (KAS), the same membership and per-frame shape as the kind cache and the
-        overflow record: the unreadable mark exists for the KAS identity channel
-        (the one whose halves are bounded at retention) and earns a refusal
-        (``_refuse_unreadable_mcp_identity``) that is a KAS refusal mode. Every
-        other harness is handed ``None``, so its frames are never marked and the
-        refusal never fires on a first-class path (H13).
+        Locator attestation accepts only an explicit False written by the same
+        origin-scoped tool-call frame. Recording the verdict for every harness
+        keeps that proof independent of KAS-only permission classification.
         """
+        return self._tool_call_identity_unreadable
+
+    def _identity_unreadable_cache_for_permission(self) -> dict[str, bool] | None:
+        """Return the KAS-only permission-refusal view of the shared cache."""
         backend = getattr(self._runtime, "acp_backend", None)
         if backend in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL:
             return self._tool_call_identity_unreadable

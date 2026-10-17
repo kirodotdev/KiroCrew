@@ -270,9 +270,9 @@ class TestRedactForDisplay:
             calls["exfiltration"] += 1
             return real_exfiltration(value)
 
-        def counted_credentials(value):
+        def counted_credentials(value, **kwargs):
             calls["credentials"] += 1
-            return real_credentials(value)
+            return real_credentials(value, **kwargs)
 
         monkeypatch.setattr(chat_utils, "redact_exfiltration_urls", counted_exfiltration)
         monkeypatch.setattr(chat_utils, "redact_credentials", counted_credentials)
@@ -359,9 +359,9 @@ class TestRedactForDisplay:
             calls["exfiltration"] += 1
             return real_exfiltration(value)
 
-        def counted_credentials(value):
+        def counted_credentials(value, **kwargs):
             calls["credentials"] += 1
-            return real_credentials(value)
+            return real_credentials(value, **kwargs)
 
         monkeypatch.setattr(chat_utils, "redact_exfiltration_urls", counted_exfiltration)
         monkeypatch.setattr(chat_utils, "redact_credentials", counted_credentials)
@@ -418,9 +418,9 @@ class TestRedactForDisplay:
             calls["n"] += 1
             return real_exfiltration(value)
 
-        def counted_credentials(value):
+        def counted_credentials(value, **kwargs):
             calls["n"] += 1
-            return real_credentials(value)
+            return real_credentials(value, **kwargs)
 
         monkeypatch.setattr(chat_utils, "redact_exfiltration_urls", counted_exfiltration)
         monkeypatch.setattr(chat_utils, "redact_credentials", counted_credentials)
@@ -465,9 +465,9 @@ class TestRedactForDisplay:
         calls = {"n": 0}
         real = chat_utils.redact_credentials
 
-        def counted(value):
+        def counted(value, **kwargs):
             calls["n"] += 1
-            return real(value)
+            return real(value, **kwargs)
 
         monkeypatch.setattr(chat_utils, "redact_credentials", counted)
         monkeypatch.setattr(display_battery, "redact_credentials", counted)
@@ -505,8 +505,8 @@ class TestRedactForDisplay:
         The digested text is the credential-bearing input the battery redacts, so a
         bare content hash retained in memory is checkable offline against a guessed
         plaintext. Under the MAC the same text and host set digest differently under
-        a different key, and the key stays fixed-size with the host set still inside
-        the MAC input.
+        a different key, and the key stays fixed-size with the host set and locator
+        registry generation still inside the MAC input.
         """
         hosts = frozenset({"docs.contoso.sharepoint.com"})
         monkeypatch.setattr(chat_utils, "_exempt_exact_hosts", lambda: hosts)
@@ -515,12 +515,12 @@ class TestRedactForDisplay:
         hosts_bytes = "\0".join(sorted(hosts)).encode("utf-8")
         (digest, length), input_bytes = chat_utils._display_redaction_cache_key(text)
         assert len(digest) == 32 and length == len(raw) == input_bytes
-        assert digest != hashlib.sha256(raw + b"\0" + hosts_bytes).digest()
+        generation = str(chat_utils.locator_attestations.snapshot()[0]).encode("ascii")
+        mac_input = raw + b"\0" + hosts_bytes + b"\x02" + generation
+        assert digest != hashlib.sha256(mac_input).digest()
         assert (
             digest
-            == hmac.new(
-                chat_utils._DISPLAY_REDACTION_SALT, raw + b"\0" + hosts_bytes, hashlib.sha256
-            ).digest()
+            == hmac.new(chat_utils._DISPLAY_REDACTION_SALT, mac_input, hashlib.sha256).digest()
         )
         assert isinstance(chat_utils._DISPLAY_REDACTION_SALT, bytes)
         assert len(chat_utils._DISPLAY_REDACTION_SALT) == 32

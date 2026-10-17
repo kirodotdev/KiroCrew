@@ -1642,6 +1642,20 @@ def _dispatch_healthy_boot_marker(state: DashboardState) -> None:
     task.add_done_callback(state._background_tasks.discard)
 
 
+async def _preload_locator_attestations() -> None:
+    """Warm durable locator authority without filesystem I/O on the serving loop."""
+    from kiro_crew import locator_attestations
+
+    await asyncio.to_thread(locator_attestations.preload)
+
+
+def _dispatch_locator_attestation_preload(state: DashboardState) -> None:
+    """Load locator authority after readiness without delaying the listener."""
+    task = asyncio.create_task(_preload_locator_attestations(), name="locator-attestation-preload")
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
 async def start_dashboard(
     sessions: SessionManager,
     crons: CronService,
@@ -2426,6 +2440,7 @@ async def start_dashboard(
     if schedule_memory_preparation is not None:
         state.memory_startup_task = schedule_memory_preparation()
     state.ready = True
+    _dispatch_locator_attestation_preload(state)
     record_boot_to_ready((time.time() - state.start_time) * 1000.0, server="dashboard")
     # Tells the NEXT boot that this instance got the whole startup battery
     # away, so a stall from here on does not implicate the battery.
@@ -2801,6 +2816,7 @@ async def start_api_server(
     if schedule_memory_preparation is not None:
         state.memory_startup_task = schedule_memory_preparation()
     state.ready = True
+    _dispatch_locator_attestation_preload(state)
     record_boot_to_ready((time.time() - state.start_time) * 1000.0, server="api")
     # Tells the NEXT boot that this instance got the whole startup battery
     # away, so a stall from here on does not implicate the battery.

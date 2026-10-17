@@ -262,6 +262,21 @@ class CredentialPolicy(Protocol):
         """
         ...
 
+    def provider_generated_sharepoint_fields(
+        self,
+    ) -> "Dict[Tuple[str, str], FrozenSet[str]]":
+        """Trusted MCP result fields that may mint SharePoint locator attestations.
+
+        Keys are exact ``(server, tool)`` identities resolved by the ACP gateway;
+        values are exact dotted JSON paths to scalar strings the provider generated.
+        Paths traverse provider-result object fields and envelope lists only. The gateway
+        additionally requires HTTPS, a valid SharePoint sharing route and item id, exact
+        membership in :meth:`exempt_exact_hosts`, and a complete scan proving absence
+        from the same call's input. Public default is empty. A pre-method or failing companion
+        also earns no attestation.
+        """
+        ...
+
     def token_param_exempt_url_prefixes(self) -> "frozenset[str]":
         """``https://host/path`` prefixes whose ``?token=`` value pass 4 leaves alone.
 
