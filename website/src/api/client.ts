@@ -255,6 +255,8 @@ export type {
   WebexConfigSave,
   IMessageConfigData,
   IMessageConfigSave,
+  SignalConfigData,
+  SignalConfigSave,
   TeamsConfigData,
   WeixinConfigData,
   TeamsConfigSave,

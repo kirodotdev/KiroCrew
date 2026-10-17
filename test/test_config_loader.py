@@ -21,6 +21,7 @@ import pytest
 from config_loader_helpers import _load_from_dict
 
 import kiro_crew.config.loader as loader_module
+import kiro_crew.config.sections as sections_module
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import (
     KiroCrewConfig,
@@ -436,7 +437,15 @@ class TestMigrationBackupContainment:
 # only the soft nudge (their hard backstop is the backend autocompactor).
 # A future transport that forgets _threshold_pct / _normalize_threshold_pair
 # fails these tests rather than shipping an unclamped read.
-_THRESHOLD_PAIR_TRANSPORTS = ["weixin", "webex", "teams", "wecom", "whatsapp", "imessage"]
+_THRESHOLD_PAIR_TRANSPORTS = [
+    "weixin",
+    "webex",
+    "teams",
+    "wecom",
+    "whatsapp",
+    "imessage",
+    "signal",
+]
 _THRESHOLD_SOFT_ONLY_TRANSPORTS = ["telegram", "discord"]
 
 
@@ -515,6 +524,7 @@ class TestTransportThresholdConsistency:
             "wecom": loader_module.WeComConfig,
             "whatsapp": loader_module.WhatsAppConfig,
             "imessage": loader_module.IMessageConfig,
+            "signal": sections_module.SignalConfig,
         }[transport]
         if transport in _THRESHOLD_PAIR_TRANSPORTS:
             obj = cls(soft_threshold_pct=150, hard_threshold_pct=-3)

@@ -218,7 +218,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 if _is_list_key(key):
                     parsed = _parse_list_value(key, value)
                 else:
-                    parsed = _parse_value(value)
+                    parsed = _parse_value_for(key, value)
             except ValueError as list_error:
                 print(f"❌ {key}: {list_error}", file=sys.stderr)
                 sys.exit(1)
@@ -898,6 +898,27 @@ def _list_hint(key: str) -> str:
             f"     Windows PowerShell 5.1: {prefix} '{escaped}'",
         ]
     )
+
+
+def _parse_value_for(key: str, raw: str) -> object:
+    """Parse *raw* for *key*: the text verbatim when *key* is declared ``string``.
+
+    The generic parser tries ``int()`` first, and ``int("+447700900001")``
+    succeeds, so a phone number written to ``signal.account`` was stored as a
+    JSON integer without its ``+`` (and ``0044...`` lost its leading zeros). The
+    loader then reads a wrong-typed value as absent and loads the default, so the
+    setting silently became empty. The declared-type check cannot catch it: that
+    runs only on a key's first write, and a declared string key is usually in the
+    document already. For a string key every parse is a guess the declaration
+    already rules out, so the text is kept as typed; ``null`` still clears a
+    nullable one. Any other key keeps the generic parse.
+    """
+    entry = _declared_entry(key)
+    if entry is not None and entry.type == "string":
+        if raw == "null" and entry.nullable:
+            return None
+        return raw
+    return _parse_value(raw)
 
 
 def _parse_value(raw: str) -> object:

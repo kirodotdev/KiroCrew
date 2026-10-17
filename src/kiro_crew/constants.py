@@ -1599,6 +1599,7 @@ CHANNEL_SESSION_NAMESPACES: tuple[str, ...] = (
     "teams",
     "weixin",
     "imessage",
+    "signal",
     "feishu",
     "unified",
 )
@@ -1642,7 +1643,7 @@ CHANNEL_SEND_NAMESPACES: tuple[str, ...] = tuple(
 #: its ``allowlist`` branch), and ``resolve_configured_target`` accepts the learned
 #: set too. So private agent output would reach an arbitrary peer, not the operator.
 #:
-#: The other seven transports draw ``configured_targets()`` from configured state
+#: The other eight transports draw ``configured_targets()`` from configured state
 #: alone; ``test_no_owner_dm_channel_advertises_learned_identities`` is the ratchet
 #: that keeps this subtraction honest rather than hand-kept, so a transport that
 #: starts mixing learned identities in fails the gate instead of silently becoming

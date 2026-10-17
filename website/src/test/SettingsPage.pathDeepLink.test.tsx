@@ -49,6 +49,7 @@ vi.mock('../pages/settings/WeComPanel', () => ({ WeComPanel: () => <div data-tes
 vi.mock('../pages/settings/TeamsPanel', () => ({ TeamsPanel: () => <div data-testid="teams-panel" /> }))
 vi.mock('../pages/settings/WeixinPanel', () => ({ WeixinPanel: () => <div data-testid="weixin-panel" /> }))
 vi.mock('../pages/settings/IMessagePanel', () => ({ IMessagePanel: () => <div data-testid="imessage-panel" /> }))
+vi.mock('../pages/settings/SignalPanel', () => ({ SignalPanel: () => <div data-testid="signal-panel" /> }))
 vi.mock('../pages/settings/WhatsAppPanel', () => ({ WhatsAppPanel: () => <div data-testid="whatsapp-panel" /> }))
 
 // ChannelsPanel status queries: deterministic configs so no real fetch fires,
@@ -63,10 +64,11 @@ vi.mock('../api/client', () => ({
     getTeamsConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getWeixinConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getIMessageConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
+    getSignalConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getWhatsAppConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getGovernanceChannels: vi.fn().mockResolvedValue({
       slack: true, discord: true, telegram: true, webex: true, wecom: true,
-      teams: true, weixin: true, imessage: true, whatsapp: true,
+      teams: true, weixin: true, imessage: true, signal: true, whatsapp: true,
     }),
   },
 }))

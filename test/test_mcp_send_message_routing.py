@@ -185,7 +185,9 @@ def test_no_owner_dm_channel_advertises_learned_identities() -> None:
     offenders = {}
     for channel in CHANNEL_OWNER_DM_NAMESPACES:
         try:
-            module = importlib.import_module(f"kiro_crew.{channel}.transport")
+            # Signal's package is ``signal_cli``: ``signal`` would shadow the stdlib.
+            package = {"signal": "signal_cli"}.get(channel, channel)
+            module = importlib.import_module(f"kiro_crew.{package}.transport")
         except ModuleNotFoundError:
             continue  # a rostered namespace with no transport package in this fork
         transport_cls = next(
@@ -300,6 +302,7 @@ def test_the_roster_move_did_not_change_the_roster() -> None:
         "teams",
         "weixin",
         "imessage",
+        "signal",
         "feishu",
         "unified",
     )

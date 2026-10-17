@@ -460,6 +460,7 @@ _UNCREDENTIALED_PROBE_EXEMPTIONS = {
     # diagnostics live in the channel implementation, not in credential env.
     "whatsapp": "config-only enablement; pairing state is not a credential operand",
     "imessage": "config-only enablement through the signed-in Messages.app",
+    "signal": "config-only enablement; signal-cli keeps its own key store",
 }
 
 

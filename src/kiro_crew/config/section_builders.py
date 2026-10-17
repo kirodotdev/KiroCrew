@@ -74,6 +74,7 @@ from kiro_crew.config.sections import (
     FeishuConfig,
     IMessageConfig,
     SectionReader,
+    SignalConfig,
     SlackConfig,
     SttConfig,
     TeamsConfig,
@@ -689,6 +690,39 @@ def _build_imessage_config(imessage_data: dict) -> IMessageConfig:
             h for h in _safe_list(section.get("allowed_handles")) if isinstance(h, str) and h
         ],
         service=str(section.get("service") or section.default("service")),
+        soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
+        hard_threshold_pct=section.read("hard_threshold_pct", _threshold_pct),
+    )
+
+
+def _coerce_signal_identifier(value: object) -> str:
+    """A Signal number/ACI from config.json, as a string.
+
+    An unquoted ``447700900001`` parses as a JSON integer and can only have
+    meant ``+447700900001``; ``str()`` would drop the ``+`` and the entry
+    would never match. Anything that is neither a string nor a positive
+    integer (a bool, a float, null) reads as empty. The full shape check
+    (``+E.164`` or an ACI UUID) and its warning live with the channel, in
+    ``signal_cli.transport.warn_unusable_entries``.
+    """
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int) and value > 0:
+        return f"+{value}"
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _build_signal_config(signal_data: dict) -> SignalConfig:
+    section = SectionReader(SignalConfig, signal_data)
+    return SignalConfig(
+        session_folder=_coerce_session_folder(section.get("session_folder")),
+        enabled=section.read("enabled", _safe_bool),
+        account=_coerce_signal_identifier(section.get("account")),
+        allowed_numbers=[
+            n
+            for n in map(_coerce_signal_identifier, _safe_list(section.get("allowed_numbers")))
+            if n
+        ],
         soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
         hard_threshold_pct=section.read("hard_threshold_pct", _threshold_pct),
     )

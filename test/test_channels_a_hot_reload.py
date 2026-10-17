@@ -1,6 +1,6 @@
 """Config hot-reload across every channel, plus the Telegram / Discord / Webex specifics.
 
-Nine channels are asked the same questions with a different transport class, a
+Ten channels are asked the same questions with a different transport class, a
 different roster field name and different identity strings, so the channel is
 DATA: the shared suite here parametrizes over ``_hot_reload_helpers``'
 :class:`~_hot_reload_helpers.ChannelCase` table and each question is asked once.

@@ -265,6 +265,6 @@ to `config.json`.
 
 ## Related docs
 
-- [Channel capabilities](channel-capabilities.md): the ten-channel matrix — streaming, buttons, uploads, reply length, approval timeout
+- [Channel capabilities](channel-capabilities.md): the eleven-channel matrix — streaming, buttons, uploads, reply length, approval timeout
 - [Getting Started](getting-started.md): install, first run, connecting a channel
 - [Configuration](configuration.md): the config file and environment variables

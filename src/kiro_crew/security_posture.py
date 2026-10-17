@@ -1232,6 +1232,20 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "modules are listed as non-egress and this one is not.",
     ),
     (
+        "Signal delivery",
+        "signal_cli/renderer.py",
+        "The Signal DELIVERY boundary. Like iMessage, this channel collapses "
+        "markdown itself -- `to_plaintext` in `delivery_text` -- because Signal "
+        "renders no markup, so the driver's literal-byte scan of the provider "
+        "stream runs BEFORE the transformation that can reassemble a credential "
+        "it could not match. `delivery_text` therefore re-scans the flattened "
+        "form through redact_for_display (messaging/display_safety.py) with the "
+        "same redactor pair TurnDriver streams through, which is the only form "
+        "that actually ships. Elsewhere in the package `redact_identifier` "
+        "appears solely in log lines and SEL caller fields, which is why the "
+        "sibling modules are listed as non-egress and this one is not.",
+    ),
+    (
         "WeCom reasoning blocks",
         "wecom/renderer.py",
         "The reasoning WeCom renders inside its native `<think></think>` block. "
@@ -2112,6 +2126,18 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "imessage/client.py",
         "imessage/transport.py",
         "imessage/transport_dispatch.py",
+        # The same gate-side log hygiene for Signal, whose identity is a phone
+        # number or an ACI: ``redact_identifier`` shortens it before a gateway
+        # log line or a SEL ``caller`` field. ``signal_cli/renderer.py`` is the
+        # channel's real egress sink and is registered above, as iMessage's is.
+        "signal_cli/client.py",
+        "signal_cli/gateway.py",
+        "signal_cli/transport.py",
+        "signal_cli/transport_dispatch.py",
+        # ``kirocrew doctor``'s Signal section prints to the operator's own
+        # terminal, not to a channel; ``redact_identifier`` there only keeps the
+        # operator's phone numbers out of a report they may paste elsewhere.
+        "doctor_checks/channels.py",
         # The WhatsApp turn lifecycle. What the scan matches here is the
         # post-answer redaction NOTICE pair -- ``count_redaction_tags`` over the
         # delivered chunks and ``redaction_notice`` to build the follow-up
@@ -3064,6 +3090,7 @@ _AUDIT_SURFACE_DETAIL: dict[str, str] = {
     "webex": "Webex messages, approvals, and owner-authorization decisions",
     "teams": "Microsoft Teams messages, approvals, and owner-authorization decisions",
     "imessage": "iMessage messages, approvals, and owner-authorization decisions",
+    "signal": "Signal messages, approvals, and owner-authorization decisions",
     "host": "In-process governance checks not driven by a user-facing surface",
     "unknown": "Events that carry no surface signal (classified rather than misattributed)",
 }

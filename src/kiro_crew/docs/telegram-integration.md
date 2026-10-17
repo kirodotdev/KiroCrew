@@ -261,7 +261,7 @@ Transport capabilities: streaming, edits, reactions, inbound and outbound files,
 
 ## Related docs
 
-- [Channel capabilities](channel-capabilities.md): the ten-channel matrix — streaming, buttons, uploads, reply length, approval timeout
+- [Channel capabilities](channel-capabilities.md): the eleven-channel matrix — streaming, buttons, uploads, reply length, approval timeout
 - [Slack Integration](slack-integration.md)
 - [WeCom Integration](wecom-integration.md)
 - [Getting Started](getting-started.md)
