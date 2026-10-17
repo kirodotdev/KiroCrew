@@ -17,9 +17,11 @@ export const BUILTIN_PROVISIONER_ID = 'aws_ec2'
 
 /** Transports that reach the crew through an SSM port-forward and therefore
  *  address it by `ssm_target` + AWS profile/region rather than `ssh_host`.
- *  Mirrors SSM_TRANSPORT_METHODS in src/kiro_crew/instances/registry.py. */
+ *  Mirrors SSM_TRANSPORT_METHODS in src/kiro_crew/instances/registry.py.
+ *  Derived from the presentation table below rather than spelled a second time,
+ *  so the address choice and this predicate cannot disagree. */
 export const usesSsmTransport = (inst: { connection_method?: string }): boolean =>
-  inst.connection_method === 'ssm' || inst.connection_method === 'fargate'
+  transportPresentation(inst).addressField === 'ssm_target'
 
 /** Whether a crew has a dashboard to embed. A fargate crew exposes a turn
  *  API on its forwarded port and nothing else: no dashboard, no token. So it
@@ -27,6 +29,102 @@ export const usesSsmTransport = (inst: { connection_method?: string }): boolean 
  *  turn URL instead. */
 export const hasDashboardPane = (inst: { connection_method?: string }): boolean =>
   inst.connection_method !== 'fargate'
+
+/** The method a record with no explicit `connection_method` means. Mirrors the
+ *  gateway, which reads `(inst.connection_method or "ssh").strip().lower()` in
+ *  `_resolve_transport` (src/kiro_crew/instances/ssh_tunnel_manager.py). An
+ *  ABSENT method legitimately means ssh; an UNRECOGNISED one does not, and
+ *  conflating the two is the defect `transportPresentation` exists to close. */
+export const DEFAULT_CONNECTION_METHOD = 'ssh'
+
+/** Normalise a record's method the way the gateway does, so the dashboard and
+ *  the gateway never disagree about which transport a record names. */
+export function normalizeConnectionMethod(method?: string): string {
+  return (method ?? '').trim().toLowerCase() || DEFAULT_CONNECTION_METHOD
+}
+
+/**
+ * How one connection method presents itself on every Remote Crew surface.
+ *
+ * One table, read by the badge, the badge's hover hint, the card's address
+ * line and both diagnostics handoffs. It replaces four independent chains of
+ * conditionals whose last arm was `ssh`, which made every method they did not
+ * name render as SSH — silently, and inconsistently between surfaces: the same
+ * fargate failure reported `ssm` from the settings panel and `ssh` from the
+ * viewport.
+ *
+ * It deliberately carries no i18n key. The key-reference gate
+ * (`website/scripts/check-i18n-keys.mjs`) can only check a key it resolves
+ * statically, and its dynamic-site baseline is ratchet-DOWN only, so
+ * `i18nT(presentation.labelKey)` would have to raise a count the gate says to
+ * never raise. The copy therefore stays at the call site as literal keys, and a
+ * test pins that call site's method set against `PRESENTED_CONNECTION_METHODS`
+ * so copy cannot silently go missing for a new transport.
+ */
+export interface TransportPresentation {
+  /** The normalised method this presentation describes. */
+  readonly method: string
+  /** Which `Instance` field addresses this crew, `null` when none does. An
+   *  unmapped method prints no address rather than an empty `ssh_host`. */
+  readonly addressField: 'ssh_host' | 'ssm_target' | null
+  /** False when the method is absent from the table below. Every connect path
+   *  (switcher, keyboard chord, auto-connect, the pane's Retry and Settings)
+   *  refuses an unmapped crew on this flag, because the gateway would dial any
+   *  method it does not recognise over SSH. Enabling a disabled crew needs no
+   *  guard: the gateway's PATCH validation refuses such a record with a 400. */
+  readonly mapped: boolean
+}
+
+/** The presentation table. Adding a method to the gateway's
+ *  `CONNECTION_METHODS` without adding a row here is what the exhaustiveness
+ *  test in `remoteCrewTransportPresentation.test.ts` fails on. */
+const TRANSPORT_PRESENTATIONS = {
+  ssh: { addressField: 'ssh_host' },
+  ssm: { addressField: 'ssm_target' },
+  fargate: { addressField: 'ssm_target' },
+} as const
+
+/** The methods this mapping covers. Pinned by a test against the gateway's
+ *  registered set, so a fourth transport cannot ship unmapped. */
+export const PRESENTED_CONNECTION_METHODS: readonly string[] = Object.keys(TRANSPORT_PRESENTATIONS)
+
+/** The presented methods as a type, so a table keyed by it (the badge copy in
+ *  `pages/settings/transportCopy.ts`) fails to COMPILE when a transport is added
+ *  here without its copy. */
+export type PresentedConnectionMethod = keyof typeof TRANSPORT_PRESENTATIONS
+
+/** Total: every method resolves, including one this build has never heard of. */
+export function transportPresentation(inst: { connection_method?: string }): TransportPresentation {
+  const method = normalizeConnectionMethod(inst.connection_method)
+  // Own keys only: a persisted method spelled like an Object.prototype member
+  // (`constructor`, `__proto__`) must read as unmapped, not resolve to an
+  // inherited value that is not a row.
+  const row: { readonly addressField: 'ssh_host' | 'ssm_target' } | undefined = Object.hasOwn(
+    TRANSPORT_PRESENTATIONS,
+    method,
+  )
+    ? (TRANSPORT_PRESENTATIONS as Record<string, { readonly addressField: 'ssh_host' | 'ssm_target' }>)[method]
+    : undefined
+  if (row === undefined) {
+    // Visibly unmapped, never a sibling's identity: no address field, and the
+    // failure report keys its repair steps by `method`, the name it actually is.
+    return { method, addressField: null, mapped: false }
+  }
+  return { method, addressField: row.addressField, mapped: true }
+}
+
+/** The address a crew's card should print, through the mapping's own field
+ *  choice. Empty for a method with no address field, rather than an empty
+ *  `ssh_host` that reads as a configured-but-blank SSH crew. */
+export function transportTarget(inst: {
+  connection_method?: string
+  ssh_host?: string
+  ssm_target?: string
+}): string {
+  const { addressField } = transportPresentation(inst)
+  if (addressField === null) return ''
+  return (addressField === 'ssm_target' ? inst.ssm_target : inst.ssh_host) ?? ''
+}
 
 /** An ECS target as the crew list should print it. The full form is
  *  `ecs:<cluster>_<task id>_<runtime id>`, two 32-hex ids after the cluster,

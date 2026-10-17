@@ -14,6 +14,10 @@
  *    the error panel — selecting the (red) tab would do nothing visible.
  *  - A failed connect never removes the tab; the in-pane error panel shows
  *    (see InstancesViewport).
+ *  - Never connect a crew whose method this build does not map. The gateway
+ *    dials any method it does not recognise over SSH, so a connect from here
+ *    would reach the crew by the transport Settings refuses to use. The pane
+ *    still activates, and its panel explains why (see InstancesViewport).
  *
  * Takes the caller's `instances` list (both consumers already subscribe to the
  * shared ['instances'] React Query cache) rather than running its own query.
@@ -24,6 +28,7 @@ import { type InstanceView } from '../api/client'
 import { useAppDispatch, useAppSelector } from '../store'
 import { setActiveId, type WarmConn } from '../store/instancesSlice'
 import { connectInstanceInto } from '../lib/connectInstance'
+import { transportPresentation } from '../utils/remoteCrew'
 
 /** Stable empty fallback for partial (test) stores — see the guarded read below. */
 const EMPTY_WARM: Record<string, WarmConn> = {}
@@ -50,6 +55,7 @@ export function useSelectInstance(instances: InstanceView[]) {
       dispatch(setActiveId(id))
       if (id === null) return
       const inst = instances.find(i => i.id === id)
+      if (inst && !transportPresentation(inst).mapped) return
       const live = !inst || inst.status?.state === 'connected'
       if (!warm[id] || !live) connectMutation.mutate(id)
     },

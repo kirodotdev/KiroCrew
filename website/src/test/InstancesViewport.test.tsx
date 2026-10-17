@@ -225,6 +225,38 @@ describe('InstancesViewport', () => {
     expect(document.querySelector('iframe')).toBeNull()
   })
 
+  it('explains an unmapped method in the pane and offers no Retry that would dial it over SSH', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({
+      instances: [
+        {
+          id: 'edge',
+          name: 'Edge Crew',
+          ssh_host: 'leaked-host',
+          remote_port: 7777,
+          local_port: 0,
+          ttl: '20h',
+          remote_bin: '',
+          connection_method: 'outbound',
+          was_connected: true,
+          status: { instance_id: 'edge', state: 'disconnected', remote_port: 7777 },
+        },
+      ],
+      warm_set_cap: 5,
+    })
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'edge', mru: ['edge'], unread: {} },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+
+    const hint = await screen.findByTestId('instances-viewport-unmapped')
+    expect(hint.textContent).toMatch(/outbound/)
+    // No Retry at all (a disabled accent button still reads as clickable), and the
+    // hint stands in for the status word rather than contradicting it.
+    expect(screen.queryByRole('button', { name: /Retry/i })).toBeNull()
+    expect(screen.queryByText('Disconnected')).toBeNull()
+    expect(api.connectInstance).not.toHaveBeenCalled()
+  })
+
   it('offers an agent hand-off carrying the diagnosis ladder, not just Retry', async () => {
     // Retry is right for a momentary drop, and useless for the failures a first
     // connect actually hits — SSH config, a remote gateway that is not running, a

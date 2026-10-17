@@ -43,8 +43,13 @@ import {
   readChainedCrewNotice,
 } from '../lib/chainAnnounce'
 import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
-import { WARM_SET_CAP_AUTO_CEILING } from '../utils/remoteCrew'
+import {
+  DEFAULT_CONNECTION_METHOD,
+  WARM_SET_CAP_AUTO_CEILING,
+  transportPresentation,
+} from '../utils/remoteCrew'
 import { SettingsLink } from './SettingsLink'
+import { unmappedTransportHint } from '../pages/settings/transportCopy'
 import { useAppDispatch, useAppSelector, useAppStore } from '../store'
 import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
 import InstanceTabBar, { visibleInstanceTabs, chainRows, useCrewPins, toggleCrewPin, useCrewSwitcherStableOrder, setStableOrder } from './InstanceTabBar'
@@ -1311,7 +1316,11 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     setPanelReport(reportInstanceFailure({
       id: activeId,
       name: inst?.name || activeId,
-      transport: inst?.connection_method === 'ssm' ? 'ssm' : 'ssh',
+      // Through the shared mapping, not an inline comparison: this line used to
+      // read `=== 'ssm' ? 'ssm' : 'ssh'`, which reported a fargate crew's
+      // failure as `transport: ssh` — and disagreed with the settings panel,
+      // which reported the same failure as `ssm`.
+      transport: inst ? transportPresentation(inst).method : DEFAULT_CONNECTION_METHOD,
       // With the panel down the pane is healthy, so pass no status: the recorder's
       // no-failure path is what clears its de-dup signature, and gating this call
       // on `showPanel` would make that branch unreachable — leaving the signature
@@ -1332,6 +1341,9 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     instancesQuery.data?.instances.find(i => i.id === id)?.name || id
 
   const panelState = activeInst?.status?.state
+  // A method this build does not map is never dialled (the gateway would use
+  // SSH for it), so the panel explains that instead of offering a Retry.
+  const panelUnmapped = activeInst ? !transportPresentation(activeInst).mapped : false
   const panelConnecting =
     (connectMutation.isPending && connectMutation.variables?.id === activeId) ||
     panelState === 'connecting'
@@ -1549,15 +1561,24 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
                 <AlertTriangle size={28} className="text-[var(--danger)]" />
               )}
               <div className="text-sm font-medium text-text">{nameFor(activeId)}</div>
-              <div className="text-xs text-muted">
-                {panelConnecting
-                  ? i18nT('components.instancesViewport.connecting')
-                  : activeTimedOut
-                    ? i18nT('components.instancesViewport.pane_failed_to_load')
-                    : panelState === 'error'
-                      ? i18nT('components.instancesViewport.connection_error')
-                      : i18nT('components.instancesViewport.disconnected')}
-              </div>
+              {/* An unmapped crew's pane says ONE thing: the hint replaces the
+               *  status word, so it cannot read "Disconnected" while the switcher
+               *  says "not supported" for the same crew. */}
+              {panelUnmapped && activeInst ? (
+                <div className="text-xs text-text" data-testid="instances-viewport-unmapped">
+                  {unmappedTransportHint(transportPresentation(activeInst).method)}
+                </div>
+              ) : (
+                <div className="text-xs text-muted">
+                  {panelConnecting
+                    ? i18nT('components.instancesViewport.connecting')
+                    : activeTimedOut
+                      ? i18nT('components.instancesViewport.pane_failed_to_load')
+                      : panelState === 'error'
+                        ? i18nT('components.instancesViewport.connection_error')
+                        : i18nT('components.instancesViewport.disconnected')}
+                </div>
+              )}
               {!panelConnecting && activeTimedOut && !panelError && (
                 // The watchdog case has no backend error string: the tunnel
                 // claims connected while the pane never loaded. Still a
@@ -1585,14 +1606,18 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
                   testId="instances-viewport-panel-error"
                 />
               )}
-              <button
-                type="button"
-                disabled={panelConnecting}
-                onClick={() => retry(activeId)}
-                className="mt-1 inline-flex items-center gap-1.5 text-xs py-1.5 px-3.5 rounded-md bg-accent text-accent-fg disabled:opacity-60"
-              >
-                <RefreshCw size={13} className={panelConnecting ? 'animate-spin' : ''} /> {i18nT('components.instancesViewport.retry')}
-              </button>
+              {/* No Retry for an unmapped crew: it can never work on this build,
+               *  and a disabled accent button still reads as clickable. */}
+              {!panelUnmapped && (
+                <button
+                  type="button"
+                  disabled={panelConnecting}
+                  onClick={() => retry(activeId)}
+                  className="mt-1 inline-flex items-center gap-1.5 text-xs py-1.5 px-3.5 rounded-md bg-accent text-accent-fg disabled:opacity-60"
+                >
+                  <RefreshCw size={13} className={panelConnecting ? 'animate-spin' : ''} /> {i18nT('components.instancesViewport.retry')}
+                </button>
+              )}
               {/* Retry stays primary — a momentary drop is worth one press. The
                   agent hand-off (inside the ErrorNotice above) is the other half:
                   a first connect fails on SSH config, a remote gateway that is

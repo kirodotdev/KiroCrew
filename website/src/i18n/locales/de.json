@@ -7159,7 +7159,8 @@
       "keep_tab_order_fixed": "Tab-Reihenfolge beibehalten",
       "instances_load_failed": "Die Remote-Crews konnten nicht geladen werden.",
       "unreachable": "nicht erreichbar",
-      "unreachable_via": "nicht erreichbar — {{via}} ist aus"
+      "unreachable_via": "nicht erreichbar — {{via}} ist aus",
+      "not_supported": "nicht unterstützt"
     },
     "instancesViewport": {
       "connecting": "Wird verbunden…",
@@ -17997,6 +17998,7 @@
         "transport_hint_fargate": "Erreicht einen AWS Fargate-Task über Session Manager. Er stellt eine Chat-API bereit, kein Dashboard.",
         "transport_hint_ssh": "Verbindet sich über SSH.",
         "transport_hint_ssm": "Verbindet sich über AWS Systems Manager Session Manager.",
+        "transport_hint_unmapped": "Diese Version von {{productName}} unterstützt die Verbindungsmethode {{method}} nicht und kann sich daher nicht mit dieser Crew verbinden. {{productName}} aktualisieren und dann erneut verbinden.",
         "transport_locked_note": "{{productName}} ordnet diese Crew ihren AWS-Ressourcen über ihre Verbindungsidentität zu; Verbindungsmethode und Ziel sind hier daher nicht änderbar.",
         "ttl_must_be_hours_or_minutes": "Gib eine Laufzeit wie 20h oder 30m an.",
         "turn_api": "Chat-API",

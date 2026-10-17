@@ -38,7 +38,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type InstanceView } from '../api/client'
-import { WARM_SET_CAP_AUTO_CEILING, hasDashboardPane } from '../utils/remoteCrew'
+import { WARM_SET_CAP_AUTO_CEILING, hasDashboardPane, transportPresentation } from '../utils/remoteCrew'
 import { useAppDispatch, useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
@@ -87,6 +87,8 @@ export function selectAutoConnectTargets(
     // No pane to warm: a fargate crew's connect is a real SSM session that
     // would only be spent on a card nobody asked to open.
     if (!hasDashboardPane(inst)) continue
+    // A method this build does not map: the gateway would dial it over SSH.
+    if (!transportPresentation(inst).mapped) continue
     if (isLive(inst)) continue
     out.push(inst.id)
   }

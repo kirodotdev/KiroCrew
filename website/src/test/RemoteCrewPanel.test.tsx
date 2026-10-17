@@ -282,6 +282,61 @@ describe('RemoteCrewPanel', () => {
     expect(screen.getByText(/dev-box-1 .*port 5476/i)).toBeInTheDocument()
   })
 
+  it('explains an unmapped connection method on its badge instead of leaving it bare', async () => {
+    // A row whose method this build has no copy for shows the raw method name and
+    // no address. Without a hint nothing on the row says why; the hint names the
+    // method and says this build cannot connect over it. The mapped SSH row beside
+    // it keeps its own hint, so the fallback never replaces real copy.
+    const unmapped = { ...MANUAL_INSTANCE, id: 'u1', name: 'future-crew', connection_method: 'outbound' }
+    vi.mocked(api.listInstances).mockResolvedValue({
+      active: true,
+      warm_set_cap: 5,
+      instances: [MANUAL_INSTANCE, unmapped as unknown as typeof MANUAL_INSTANCE],
+    })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    renderWithProviders(<RemoteCrewPanel />)
+
+    const row = (await screen.findByText('future-crew')).closest('[data-crew-id]') as HTMLElement
+    const badge = within(row).getByText('outbound')
+    expect(badge).toHaveAttribute('title', expect.stringMatching(/doesn't support the outbound connection method/))
+    expect(badge).toHaveAttribute('aria-label', badge.getAttribute('title'))
+
+    const sshRow = screen.getByText('dev-box-1', { selector: '.font-medium' }).closest('[data-crew-id]') as HTMLElement
+    expect(within(sshRow).getByText('SSH')).toHaveAttribute('title', 'Connects over SSH.')
+  })
+
+  it('disables Connect on an unmapped method and says why in visible text', async () => {
+    // Connect would fail every time on a method this build cannot dial, and a
+    // hover-only reason never reaches touch or keyboard users: the button is
+    // disabled, described by the same hint shown inline, and the address line
+    // does not start with an orphaned separator when there is no target.
+    const unmapped = { ...MANUAL_INSTANCE, id: 'u1', name: 'future-crew', connection_method: 'outbound' }
+    vi.mocked(api.listInstances).mockResolvedValue({
+      active: true,
+      warm_set_cap: 5,
+      instances: [MANUAL_INSTANCE, unmapped as unknown as typeof MANUAL_INSTANCE],
+    })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    renderWithProviders(<RemoteCrewPanel />)
+
+    const row = (await screen.findByText('future-crew')).closest('[data-crew-id]') as HTMLElement
+    const connect = within(row).getByRole('button', { name: /connect/i })
+    expect(connect).toBeDisabled()
+    const hint = document.getElementById(connect.getAttribute('aria-describedby') ?? '')
+    expect(hint).not.toBeNull()
+    expect(hint).toBeVisible()
+    expect(hint).toHaveTextContent(/doesn't support the outbound connection method/)
+    // The hint names the way out, not only the problem.
+    expect(hint).toHaveTextContent(/Update .+, then connect again\./)
+    expect(row.textContent).not.toMatch(/outbound\s*·/)
+    expect(within(row).getByText(/remote port 5476/)).toBeInTheDocument()
+
+    const sshRow = screen.getByText('dev-box-1', { selector: '.font-medium' }).closest('[data-crew-id]') as HTMLElement
+    const sshConnect = within(sshRow).getByRole('button', { name: /connect/i })
+    expect(sshConnect).toBeEnabled()
+    expect(sshConnect).not.toHaveAttribute('aria-describedby')
+  })
+
   it('treats an EC2-stamped SSH crew with no launch job as possibly cloud', async () => {
     // The EC2 stamp (`provisioner_id`) survives in the instance record even when
     // this gateway's store has no launch job for it — a carried-over config dir,

@@ -36,6 +36,12 @@ describe('selectAutoConnectTargets', () => {
     expect(selectAutoConnectTargets(list, {}, 5)).toEqual(['a', 'b', 'c'])
   })
 
+  it('skips a crew whose method this build does not map', () => {
+    // The gateway would dial it over SSH, the transport Settings refuses to use.
+    const list = [inst('a'), { ...inst('edge'), connection_method: 'outbound' }]
+    expect(selectAutoConnectTargets(list, {}, 5)).toEqual(['a'])
+  })
+
   it('skips a crew that is warm AND polled connected (live)', () => {
     const list = [inst('a', 'connected'), inst('b', 'disconnected')]
     expect(selectAutoConnectTargets(list, warmOf('a'), 5)).toEqual(['b'])

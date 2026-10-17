@@ -32,7 +32,7 @@ import { useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
 import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
-import { hasDashboardPane } from '../utils/remoteCrew'
+import { hasDashboardPane, transportPresentation, transportTarget } from '../utils/remoteCrew'
 import { useSelectInstance } from '../hooks/useSelectInstance'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
@@ -118,7 +118,12 @@ export function rowStateLabel(entry: {
   state?: string
   reachable?: boolean
   brokenAt?: string
+  unsupported?: boolean
 }): string {
+  // A crew whose connection method this build has no transport for is not
+  // merely offline: picking it never connects. "disconnected" would read as
+  // any other crew that is simply down, so the row states the reason instead.
+  if (entry.unsupported) return i18nT('components.instanceTabBar.not_supported')
   if (entry.reachable !== false) return stateLabel(entry.state)
   // `brokenAt`, never the immediate parent: at depth 2 that parent is itself only
   // unreachable, so naming it would say it is down when it is not -- the same false
@@ -459,6 +464,9 @@ export interface SwitcherEntry {
   /** The nearest ancestor actually down, so an unreachable row names the true
    *  cause rather than its own immediate hop. */
   brokenAt?: string
+  /** The crew's connection method has no transport in this build, so its row
+   *  reads "not supported" rather than an ordinary state. */
+  unsupported?: boolean
   /** A chained crew's label for the flat surfaces — `parent \u203a child`. The tab
    *  chip is not indented, so without the path a child chip reads as just another
    *  top-level crew; the switcher's rows carry the indent instead and keep the
@@ -1292,8 +1300,14 @@ export default function InstanceTabBar({
       ...chainRows(tabInstances).map(({ inst, depth, parentName, reachable, brokenAt }) => {
         const st = inst.status?.state
         // An SSM crew has no ssh_host: it is reached through its managed-instance
-        // target, so that is what names the machine on its row.
-        const target = inst.connection_method === 'ssm' ? inst.ssm_target : inst.ssh_host
+        // target, so that is what names the machine on its row. An unmapped
+        // method has no address field at all -- transportTarget returns ''
+        // rather than falling back to a blank ssh_host that would read as a
+        // configured-but-empty SSH crew. Its subtitle names the method instead,
+        // so the row is not mistaken for an ordinary disconnected crew; picking
+        // it does not connect (useSelectInstance), and the pane says why.
+        const presentation = transportPresentation(inst)
+        const target = presentation.mapped ? transportTarget(inst) : presentation.method
         // A chained crew's subtitle names the crew it goes through as well as the
         // machine, because the host alone does not say how this dashboard gets
         // there — and that is the one thing a chained row has to explain. Built
@@ -1311,8 +1325,9 @@ export default function InstanceTabBar({
           // the row then reads "unreachable" on screen; a title built from the raw state
           // would say "connected" for that same row -- and since `title` is what a
           // screen reader falls back to, the two audiences would be told opposite things.
-          title: `${inst.name} (${detail}) — ${rowStateLabel({ state: st, reachable, brokenAt })}`,
+          title: `${inst.name} (${detail}) — ${rowStateLabel({ state: st, reachable, brokenAt, unsupported: !presentation.mapped })}`,
           state: st,
+          unsupported: !presentation.mapped,
           connecting:
             (connectMutation.isPending && connectMutation.variables === inst.id) ||
             st === 'connecting',

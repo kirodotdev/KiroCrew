@@ -56,8 +56,11 @@ import {
   BUILTIN_PROVISIONER_ID,
   WARM_SET_CAP_AUTO_CEILING,
   hasDashboardPane,
+  DEFAULT_CONNECTION_METHOD,
   launchIsInFlight,
   shortenEcsTarget,
+  transportPresentation,
+  transportTarget,
   usesSsmTransport,
 } from '../../utils/remoteCrew'
 import { Card, Btn, Badge, IconButton, Toggle } from '../../components/ui'
@@ -96,6 +99,7 @@ import { removeWarm, setCrewEditForm } from '../../store/instancesSlice'
 import { setCrewEnabled } from '../../lib/crewEnabled'
 import { i18nT } from '../../i18n/t'
 import { guideCaution } from '../../guide/trustRoot'
+import { transportCopy, unmappedTransportHint } from './transportCopy'
 import { AddInstanceForm, StatusBadge } from './InstancesPanel'
 import CrewVersionStatus, { CrewVersionsReadError } from './CrewVersionStatus'
 import { credentialHelperMissingSentence, pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
@@ -111,21 +115,32 @@ import {
  *  cloud panel and this one classify a launch the same way. */
 const isInProgress = (j: LaunchJob) => launchIsInFlight(j.status)
 
-const connectionTypeLabel = (inst: InstanceView): string =>
-  inst.connection_method === 'fargate'
-    ? i18nT('pages.settings.remoteCrewPanel.type_fargate')
-    : inst.connection_method === 'ssm'
-      ? i18nT('pages.settings.remoteCrewPanel.type_ssm')
-      : i18nT('pages.settings.remoteCrewPanel.type_ssh')
+// An unmapped method renders as its own name with a "not supported by this
+// build" hint, rather than inheriting SSH's label and SSH's explanation the way
+// the previous `? :` chains did. The copy itself lives in `transportCopy.ts`,
+// type-bound to the mapping so a new transport without copy fails the typecheck.
+const connectionTypeLabel = (inst: InstanceView): string => {
+  const { method } = transportPresentation(inst)
+  // Unmapped: the raw method name. Not translated, because it is a machine
+  // identifier this build has no copy for — same as printing a host.
+  return transportCopy(method)?.label() ?? method
+}
 
-// The badges compress to acronyms (EC2 / SSM / SSH) a first-time reader may
-// not know; the hover title spells out what each one means.
-const connectionTypeHint = (inst: InstanceView): string =>
-  inst.connection_method === 'fargate'
-    ? i18nT('pages.settings.remoteCrewPanel.transport_hint_fargate')
-    : inst.connection_method === 'ssm'
-      ? i18nT('pages.settings.remoteCrewPanel.transport_hint_ssm')
-      : i18nT('pages.settings.remoteCrewPanel.transport_hint_ssh')
+// Always a non-empty hint: a mapped method explains itself, and an unmapped one
+// says this build cannot connect over it, so the raw name and blank address on
+// that row are never left unexplained.
+const connectionTypeHint = (inst: InstanceView): string => {
+  const { method } = transportPresentation(inst)
+  return transportCopy(method)?.hint() ?? unmappedTransportHint(method)
+}
+
+// A method absent from the presentation table is one this build cannot dial:
+// Connect would fail every time, so the row disables it and says why in visible text.
+const isUnmappedTransport = (inst: InstanceView): boolean => !transportPresentation(inst).mapped
+
+// The port segment carries its own leading separator ("· remote port"), which
+// reads as a stray dot when no target precedes it.
+const withoutLeadingSeparator = (text: string): string => text.replace(/^(\[?)·\s*/, '$1')
 
 /**
  * What a connected fargate crew offers instead of a dashboard: the loopback
@@ -935,7 +950,9 @@ function CrewRow({
   // States that occupy the row's second control slot with an inline button.
   const transient =
     deleting || lifecycleBusy || (isCloud && confirmDelete) || (!isCloud && confirmRemove)
-  const target = usesSsmTransport(inst) ? inst.ssm_target : inst.ssh_host
+  const target = transportTarget(inst)
+  const unmapped = isUnmappedTransport(inst)
+  const unmappedHintId = `crew-${inst.id}-unmapped-hint`
   // A CHAINED row's host is a RECORD, not a target. It arrives in the announcing
   // pane's payload and this gateway never dials it: `_resolve_transport` returns the
   // PARENT's host for any row carrying `via_instance_id`, so the row's own `ssh_host`
@@ -969,7 +986,7 @@ function CrewRow({
                 {i18nT('pages.settings.remoteCrewPanel.source_ec2')}
               </Badge>
             )}
-            <Badge variant="muted" className="mr-1" title={connectionTypeHint(inst)} aria-label={connectionTypeHint(inst)}>
+            <Badge variant="muted" className="mr-1" title={connectionTypeHint(inst) || undefined} aria-label={connectionTypeHint(inst) || undefined}>
               {connectionTypeLabel(inst)}
             </Badge>
             {inst.connection_method === 'fargate'
@@ -986,7 +1003,9 @@ function CrewRow({
                 : target}
             {reportedOnly
               ? ''
-              : `${usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''} ${i18nT('pages.settings.instancesPanel.port_2')} ${inst.remote_port}`}
+              : target
+                ? `${usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''} ${i18nT('pages.settings.instancesPanel.port_2')} ${inst.remote_port}`
+                : ` ${withoutLeadingSeparator(i18nT('pages.settings.instancesPanel.port_2'))} ${inst.remote_port}`}
           </div>
           <div className="mt-1 flex items-center gap-1.5 flex-wrap">
             {!inst.disabled && <StatusBadge status={inst.status} />}
@@ -998,6 +1017,13 @@ function CrewRow({
                 ? i18nT('pages.settings.remoteCrewPanel.crew_disabled')
                 : i18nT('pages.settings.remoteCrewPanel.crew_enabled')}
             </span>
+            {unmapped && (
+              // Foreground, not muted: this line is the only explanation for the
+              // disabled Connect button, so it is copy the user acts on.
+              <span id={unmappedHintId} className="text-[11px] text-text">
+                {connectionTypeHint(inst)}
+              </span>
+            )}
             {awaitingSignin && (
               <Badge variant="warn" title={i18nT('pages.settings.remoteCrewPanel.needs_sign_in_hint')}>
                 <KeyRound className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.needs_sign_in')}
@@ -1034,7 +1060,12 @@ function CrewRow({
             <Unplug className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.disconnect')}
           </Btn>
         ) : inst.disabled ? null : (
-          <Btn primary onClick={() => onConnect(inst.id)} disabled={!!busy || deleting}>
+          <Btn
+            primary
+            onClick={() => onConnect(inst.id)}
+            disabled={!!busy || deleting || unmapped}
+            aria-describedby={unmapped ? unmappedHintId : undefined}
+          >
             <Plug className="lucide-inline" /> {busy === `connect:${inst.id}` ? i18nT('pages.settings.instancesPanel.connecting') : i18nT('pages.settings.instancesPanel.connect')}
           </Btn>
         )}
@@ -2001,7 +2032,7 @@ export function RemoteCrewPanel() {
       setDiagReport(reportInstanceFailure({
         id,
         name: inst?.name || id,
-        transport: inst && usesSsmTransport(inst) ? 'ssm' : 'ssh',
+        transport: inst ? transportPresentation(inst).method : DEFAULT_CONNECTION_METHOD,
         status: benign ? withoutDiagnosis : st,
         stage: 'connect',
         fallbackMessage: kind === 'warn' ? reason || '' : '',

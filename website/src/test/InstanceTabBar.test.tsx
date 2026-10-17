@@ -134,6 +134,33 @@ describe('InstanceTabBar', () => {
     await waitFor(() => expect(store.getState().instances.warm['cd-1']).toEqual({ port: 7778, token: 'fresh' }))
   })
 
+  it('names an unmapped method on its switcher row and does not connect it on click', async () => {
+    // The gateway dials any method it does not recognise over SSH, so a connect
+    // from the switcher would reach the crew by the transport Settings refuses.
+    const edge = conn({
+      id: 'edge',
+      name: 'Edge Crew',
+      ssh_host: 'leaked-host',
+      connection_method: 'outbound',
+      was_connected: true,
+      status: { instance_id: 'edge', state: 'disconnected', remote_port: 7777 },
+    })
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([edge]))
+    const u = userEvent.setup()
+    const { store } = renderWithProviders(<InstanceTabBar />)
+
+    const row = await openSwitcher(u, /Edge Crew/i)
+    expect(row.textContent).toMatch(/outbound/)
+    expect(row.textContent).not.toMatch(/leaked-host/)
+    // The reason, not an ordinary state: picking this row never connects.
+    expect(row.textContent).toMatch(/not supported/)
+    expect(row.textContent).not.toMatch(/disconnected/)
+    await u.click(row)
+    expect(store.getState().instances.activeId).toBe('edge')
+    await new Promise(r => setTimeout(r, 0))
+    expect(api.connectInstance).not.toHaveBeenCalled()
+  })
+
   it('does NOT reconnect a warm + connected tab on click (no needless re-mint)', async () => {
     // The healthy path: a live, warm tab just switches — clicking it must not
     // re-mint/reload an in-use pane.
