@@ -280,7 +280,7 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "dashboard/session_transfer.py": 1,
     "dashboard/state_parts/slot_turns.py": 1,
     "knowledge/agent_fetch.py": 1,
-    "mcp_cron.py": 1,
+    "mcp_cron_vet.py": 1,
     # The pooled-backend daemon never composes a companion context. Its
     # declared-temp warnings therefore use the baseline pass deliberately.
     "mcp_gateway/backend.py": 3,

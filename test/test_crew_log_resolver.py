@@ -452,11 +452,17 @@ def test_both_background_helpers_pin_the_owner_before_their_first_await():
     that moves the resolve back down would restore the bug silently.
     """
     import ast
+    import importlib
     import inspect
 
     from kiro_crew import llm_helpers
 
-    tree = ast.parse(inspect.getsource(llm_helpers))
+    # The facade and every owner module it is composed from, parsed as one tree.
+    modules = [llm_helpers, *map(importlib.import_module, llm_helpers._OWNERS)]
+    tree = ast.Module(
+        body=[node for mod in modules for node in ast.parse(inspect.getsource(mod)).body],
+        type_ignores=[],
+    )
     checked = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):

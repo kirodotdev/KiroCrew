@@ -1144,7 +1144,7 @@ def test_the_oneliner_does_not_cancel_the_shared_runtimes_own_start():
     """``run_bg_oneliner``'s ``timeout`` bounds the DRIVE only. Cancelling the
     acquisition would kill the shared ``_bg`` (re)spawn every later caller reuses,
     and leak a backend session whose ``session/new`` had already gone out."""
-    tree = ast.parse((_SRC / "llm_helpers.py").read_text(encoding="utf-8"))
+    tree = ast.parse((_SRC / "llm_helpers_parts/background_turns.py").read_text(encoding="utf-8"))
     fn = next(
         n
         for n in ast.walk(tree)

@@ -36,7 +36,7 @@ anything that survived a gateway crash. No single mechanism is a single point of
 | Bounded restart shutdown | `dashboard/handlers/sessions.py` | Dashboard Apply & Restart | 10s (`_SHUTDOWN_TIMEOUT_SECS`) | No | `asyncio.wait_for` on `provider.shutdown()`; `_sync_kill_provider` fallback on timeout |
 | Subagent injection outer cap | `subagent_parts/run_surface.py` `_run()` | Per-subagent completion | 1200s (`_ON_DONE_TIMEOUT`) | No | Covers semaphore wait plus injection; on timeout kills the stuck kiro-cli via `sessions.reset()` and queues a failure event for the parent to drain |
 | Subagent injection inner cap | `slack/gateway_runtime/subagent_injection.py` | Per `stream_and_collect` | 900s (`INJECTION_TIMEOUT`, from `_DEFAULT_INJECTION_TIMEOUT`; override with `KIROCREW_INJECTION_TIMEOUT`, clamped down to `_ON_DONE_TIMEOUT`) | No | `_inject_with_retry` up to 3 attempts with backoff, bounded by the outer 1200s cap |
-| Prompt-busy recovery | `llm_helpers.py` | Per `stream_and_collect` | 2 retries plus backoff | No | Cancels the orphaned prompt; kills the provider on exhaustion |
+| Prompt-busy recovery | `llm_helpers_parts/turn_stream.py` | Per `stream_and_collect` | 2 retries plus backoff | No | Cancels the orphaned prompt; kills the provider on exhaustion |
 | Message queue | `session_parts/claims.py` plus `slack/events.py` | Per Slack thread | Unbounded FIFO | No | Queues when busy; `message_deleted` cancels; `!stop` clears |
 | Orphaned dashboard reaping | `session_parts/sweeps.py` | Dashboard sessions | Immediate | Yes | `set_active_dashboard_slots()` reaps sessions whose slot is gone |
 | Empty dir cleanup | `session.py` | `sessions/` subdirs | Startup | No | Removes empty dirs left by timed-out subagents |

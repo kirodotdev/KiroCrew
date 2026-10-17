@@ -53,7 +53,6 @@
 1 src/kiro_crew/eval/judge.py
 2 src/kiro_crew/eval/runner.py
 1 src/kiro_crew/knowledge/llm_pool.py
-5 src/kiro_crew/llm_helpers.py
 1 src/kiro_crew/messaging/auto_title.py
 1 src/kiro_crew/messaging/dispatch.py
 1 src/kiro_crew/messaging/driver.py

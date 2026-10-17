@@ -3480,7 +3480,7 @@ Caller sites:
   `permission_pre_tool_block` through the ladder's `SpecHooks` floor
 - `task_executor.py`: passes `parent_session_key` and `agent_role` (no
   `subagent_id`), with the same gated/ungated split
-- `chat_runner.py` / `llm_helpers.py`: unchanged (parent context, defaults to None)
+- `chat_runner.py` / `llm_helpers_parts/turn_stream.py`: unchanged (parent context, defaults to None)
 
 ## Prompt and CLI integration
 

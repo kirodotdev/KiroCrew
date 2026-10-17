@@ -806,7 +806,7 @@ _IDENTITY_GATED_APPROVAL_CALLERS = Counter(
         ("dashboard/chat_runner.py", "_run_chat"): 7,
         ("dashboard/handlers/hooks.py", "_run_hook_inner"): 1,
         ("eval/runner.py", "_run_turn"): 2,
-        ("llm_helpers.py", "_resolve_permission"): 2,
+        ("llm_helpers_parts/tool_approval.py", "_resolve_permission"): 2,
         ("messaging/driver.py", "run"): 3,
         ("slack/handler.py", "handle_interaction"): 1,
         ("slack/handler.py", "handle_message"): 4,

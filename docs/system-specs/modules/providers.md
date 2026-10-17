@@ -615,6 +615,33 @@ Subagents inherit the global `approval_mode=auto` config as a final fallback whe
 
 If the parent session is alive but returned no policy, deny-by-default applies — the session is intentionally non-auto. This ensures subagents spawned from dashboard sessions still get auto-approval even if the parent session is GC'd before the subagent executes.
 
+## Turn helpers: `llm_helpers.py`
+
+`kiro_crew.llm_helpers` runs one prompt to its answer on any `LLMProvider`: the
+unattended surfaces (cron, heartbeat, the task runner, sub-agents, workflows, one-shot
+background prompts) call `stream_and_collect` or `run_bg_oneliner` through it, and the
+interactive `chat_runner` loop reuses its error classifiers and backoff curves. The
+module is a mirror facade (`kiro_crew._facade_mirror`) over the owners in
+`llm_helpers_parts/`, so every name still imports and patches as
+`kiro_crew.llm_helpers.<name>`, and no owner imports the facade. New code goes to the
+owner of its responsibility:
+
+| Owner | Owns |
+|---|---|
+| `backend_errors` | which backend failures a turn retries and how long it waits: the prompt-busy and transient budgets and their backoff, the transient, session-not-found, connection and context-overflow classifiers, the network-drop recovery window |
+| `turn_usage` | what a turn cost and which backend served it: the billing-stats walk, the turn's summed `TurnUsage`, the usage row's backend label, the `interaction` telemetry event |
+| `model_fallback` | the `agent.fallback_model` chain and its story, the restore probe, the substitute `set_model` seam, the route-baseline latch and the per-session model-switch lock |
+| `tool_input_denials` | the deny checks a tool call's title and input run through before anything approves it |
+| `tool_approval` | `ToolApprovalPolicy`, `_resolve_permission`, and refusing a call by steering the host first |
+| `turn_results` | parsing JSON out of model text, and saving a turn to history off the event loop |
+| `turn_stream` | `stream_and_collect` and `stream_and_collect_json` |
+| `background_turns` | `run_bg_oneliner` and `background_turn` |
+
+The owners read the ACP layer's names (the `EVENT_*` kinds, `LLMEvent`, `LLMProvider`,
+`AcpError`, `TurnUsage` and the rest) from `agent_sdk/drivers/acp_turn_vocab.py`, so no
+owner imports `kiro_crew.acp` or `kiro_crew.providers` itself
+(`scripts/check_agent_sdk_boundary.py`).
+
 ## Automatic recovery
 
 Provider-level recovery mechanisms that fire automatically without user intervention:
