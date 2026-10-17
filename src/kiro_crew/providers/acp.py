@@ -685,6 +685,10 @@ class AcpProvider(LLMProvider):
         """
         return self._client.mcp_session_report()
 
+    async def wait_for_declared_mcp(self, timeout: float) -> tuple[str, ...]:
+        """Hold the first prompt until the spec's servers report (see the client)."""
+        return await self._client.wait_for_declared_mcp(timeout)
+
     def get_valid_effort_levels(self) -> list[str]:
         """Effort levels the backend reported for the CURRENT model, in ACP order.
 

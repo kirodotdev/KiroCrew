@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         _CRON_TRANSIENT_RETRIES,
         SESSION_NOT_FOUND_GIVE_UP_TEXT,
         SESSION_NOT_FOUND_NOT_REPLAYED_TEXT,
+        UNATTENDED_MCP_WAIT_SECS,
         AcpError,
         AcpProcessDied,
         Any,
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
         consume_reinjection,
         context_meter_reading,
         dataclass,
+        declared_mcp_not_ready_note,
         logger,
         persist_token_record_async,
         provider_fallback_active,
@@ -67,6 +69,7 @@ if TYPE_CHECKING:
         stop_reason_landed,
         transient_retry_delay,
         turn_stats_meta,
+        wait_for_declared_mcp,
     )
 
 
@@ -155,6 +158,9 @@ async def _cron_run_sequence(
             return None
 
     result_text = "_No response._"
+    # Each step's missing-server note, kept apart from result_text because the
+    # next step's reply replaces it; the stored result carries all of them.
+    _seq_mcp_notes: list[str] = []
     _seq_downgraded = False
     # Run-scoped: a sequence where one agent got a tool through has
     # done work, even if a later agent was blocked outright.
@@ -221,6 +227,10 @@ async def _cron_run_sequence(
                 # empty parent ("notification only (parent=)") unless an
                 # unrelated surface happened to be mid-turn.
                 await publish_turn_identity(self.sessions, agent_session_key)
+                if is_new:
+                    # Unattended: hold the first prompt (bounded) for the
+                    # agent spec's MCP servers, which nobody can reconnect.
+                    await wait_for_declared_mcp(client, UNATTENDED_MCP_WAIT_SECS)
                 # A compaction drops session-start context. Read-and-clear
                 # the one-shot flag so this turn re-injects it exactly
                 # once; the finally re-arms it if the turn never lands.
@@ -270,6 +280,9 @@ async def _cron_run_sequence(
                 if not result_text:
                     result_text = _gate.empty_reply_placeholder()
                 result_text = _annotate_model_fallback(result_text, client)
+                _seq_missing = declared_mcp_not_ready_note(client)
+                if _seq_missing:
+                    _seq_mcp_notes.append(f"⚠ {agent}: {_seq_missing}.")
                 logger.info("Cron '%s': agent '%s' completed", job.name, agent)
 
                 # ── Per-turn usage row: background spend. ──
@@ -400,6 +413,8 @@ async def _cron_run_sequence(
                 )
                 raise AcpError(f"{SESSION_NOT_FOUND_GIVE_UP_TEXT} {_seq_snf_err}")
             await self.sessions.reset(agent_session_key)
+    if _seq_mcp_notes:
+        result_text = "\n".join(_seq_mcp_notes) + "\n\n" + result_text
     if _seq_downgraded:
         result_text = _annotate_model_downgrade(job, result_text)
     result_text = _annotate_partial_block(result_text, _gate)
@@ -576,6 +591,10 @@ async def _cron_run_single(
         # single-agent cron turn must publish its pidfile mapping or
         # spawn_run's parent resolution has no source to walk to.
         await publish_turn_identity(self.sessions, session_key)
+        if is_new:
+            # Unattended: hold the first prompt (bounded) for the agent spec's
+            # MCP servers, which nobody can reconnect by hand in this run.
+            await wait_for_declared_mcp(client, UNATTENDED_MCP_WAIT_SECS)
         if job.acked_items:
             msg += (
                 "\n\n[User has seen and acknowledged ALL of the following — "
@@ -642,6 +661,9 @@ async def _cron_run_single(
         if _model_downgraded:
             result_text = _annotate_model_downgrade(job, result_text)
         result_text = _annotate_model_fallback(result_text, client)
+        _missing = declared_mcp_not_ready_note(client)
+        if _missing:
+            result_text = f"⚠ {_missing}.\n\n{result_text}"
         # Before set_run_result and the dedup hash below, so the stored
         # result, the slot, the bell and every transport carry the
         # refusal, and a run that lost a call never hashes equal to

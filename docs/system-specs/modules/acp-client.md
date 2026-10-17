@@ -1737,6 +1737,30 @@ an empty `mcpServers` map — opts out via
 `AcpRuntime(expect_mcp_reports=False)`, which passes a zero ceiling and keeps
 the idle shortcut active from the start (the pre-ceiling behavior).
 
+**An unattended run waits longer, for named servers.** The drain above gives a
+server about a second after the first report, which a slow `node` server can
+miss; the session then prompts without its tools. Chat lives with that, because
+a person sees it. A webhook or cron run has nobody, so before the first prompt
+of a NEW session it calls `wait_for_declared_mcp(UNATTENDED_MCP_WAIT_SECS)`
+(30 s, `agent_sdk/mcp_problems.py`) on the provider. Both transports implement
+it (`AcpSessionHandle.wait_for_declared_mcp`, and `AcpClient` through
+`_drain_notifications(until_declared=True)`): it keeps draining init frames,
+handled exactly as the drain handles them, until every enabled `mcpServers`
+name of the agent spec has reported initialized, failed or awaiting
+authorization, or the bound passes. The names come from the spec snapshot the
+unresolved-ref guard already reads (`McpSessionReport.record_declared`, which
+skips a muted entry by the launch's own `mcp_entry_is_muted` rule), and only on
+kiro-cli (and, on the runtime, with `expect_mcp_reports`): kiro-cli launches
+the spec's own servers via `--agent` and reports each one. On another host a
+spec server may be held back or never report, and every run would pay the
+whole bound. `declared_not_ready()` decides the outcome: a webhook run records
+`degraded` instead of `completed`. `declared_never_reported()` is what its
+notice names, because `problem_summary()` already names a failed or
+awaiting-authorization server with its reason. A cron run, which prints no
+problem summary, names every not-ready declared server at the top of its
+result. The other headless callers (sub-agents, workflow agent steps, task-runner
+steps, heartbeat turns) do not wait yet.
+
 **`problem_summary()` renders the report's bad news, and nothing else.** The
 report answers two different questions, so it has two renderers: `payload()` is
 the whole picture a dashboard draws (including `ready` and `configured`), and

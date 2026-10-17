@@ -134,10 +134,14 @@ OUTCOME_ERROR = "error"
 OUTCOME_REJECTED_CAPACITY = "rejected_capacity"
 OUTCOME_UNAUTHORIZED = "unauthorized"
 OUTCOME_DISABLED = "disabled"
+#: The turn finished, but without an MCP server the agent spec declares (it
+#: failed, waits for authorization, or never reported). The detail names it.
+OUTCOME_DEGRADED = "degraded"
 
 VALID_OUTCOMES = frozenset(
     {
         OUTCOME_COMPLETED,
+        OUTCOME_DEGRADED,
         OUTCOME_TIMEOUT,
         OUTCOME_ERROR,
         OUTCOME_REJECTED_CAPACITY,

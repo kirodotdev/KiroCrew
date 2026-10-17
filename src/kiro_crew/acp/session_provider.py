@@ -1420,6 +1420,10 @@ class AcpSessionProvider(LLMProvider):
         """This session's MCP registration report."""
         return self._handle.mcp_session_report()
 
+    async def wait_for_declared_mcp(self, timeout: float) -> tuple[str, ...]:
+        """Hold the first prompt until the spec's servers report (see the handle)."""
+        return await self._handle.wait_for_declared_mcp(timeout)
+
     def get_valid_effort_levels(self) -> list[str]:
         """Valid effort levels from config options."""
         return self._handle.get_valid_effort_levels()

@@ -293,6 +293,42 @@ describe('Activity detail', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Review Bot' }))
     expect(screen.getByRole('tab', { name: /Webhooks/ }).getAttribute('aria-selected')).toBe('true')
   })
+
+  it('shows a run that lacked a declared MCP server as a warning that names it', async () => {
+    mount({
+      ...POPULATED,
+      runs: [{
+        ...POPULATED.runs[0], id: 'run_degraded', outcome: 'degraded',
+        detail: 'Declared MCP servers that never reported: azure-devops | Delivered to notifications',
+      }],
+    })
+    await openActivity()
+    fireEvent.click(screen.getByTestId('webhook-row-run-run_degraded'))
+    const detail = screen.getByTestId('webhook-detail')
+    expect(detail.textContent).toContain('Missing MCP server')
+    expect(detail.textContent).toContain('Missing servers')
+    expect(screen.getByTestId('webhook-run-failure').textContent).toContain('azure-devops')
+    // Delivered to keeps only the delivery; the server is named once, in the notice.
+    expect(detail.textContent?.split('azure-devops').length).toBe(2)
+    expect(detail.textContent).toContain('Delivered to notifications')
+    expect(screen.getByTestId('webhook-run-failure').textContent).not.toContain('Delivered to')
+  })
+
+  it('still names the missing server on a degraded run that delivered nothing', async () => {
+    mount({
+      ...POPULATED,
+      runs: [{
+        ...POPULATED.runs[0], id: 'run_degraded_quiet', outcome: 'degraded', delivered: false,
+        detail: 'Declared MCP servers that never reported: azure-devops | No result to deliver',
+      }],
+    })
+    await openActivity()
+    fireEvent.click(screen.getByTestId('webhook-row-run-run_degraded_quiet'))
+    const detail = screen.getByTestId('webhook-detail')
+    expect(detail.textContent).toContain('not delivered')
+    expect(detail.textContent).toContain('Missing servers')
+    expect(screen.getByTestId('webhook-run-failure').textContent).toContain('azure-devops')
+  })
 })
 
 describe('credential lifecycle safeguards', () => {

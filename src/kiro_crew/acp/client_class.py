@@ -736,6 +736,7 @@ class AcpClient:
     _start_mount_check = _client_mcp_array._start_mount_check
     _prune_unstartable_mcp = _client_mcp_array._prune_unstartable_mcp
     mcp_session_report = _client_mcp_array.mcp_session_report
+    wait_for_declared_mcp = _client_mcp_array.wait_for_declared_mcp
     _placed_mcp_server_names = _client_mcp_array._placed_mcp_server_names
     _harness_mcp_server_names = _client_mcp_array._harness_mcp_server_names
 

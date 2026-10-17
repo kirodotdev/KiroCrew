@@ -557,8 +557,14 @@ async def _drain_notifications(
     self: AcpClient,
     duration: float = _DRAIN_DURATION,
     idle_exit: float = _DRAIN_IDLE_EXIT,
+    *,
+    until_declared: bool = False,
 ) -> None:
     """Drain init notifications (buffered + live) and log MCP servers.
+
+    ``until_declared`` is the unattended-run wait (see
+    ``wait_for_declared_mcp``): quiet does not end the drain, it ends as soon as
+    every server the agent spec declares has reported, or at ``duration``.
 
     Captures `_kiro.dev/mcp/oauth_request` into `_pending_oauth_requests` so
     callers can surface an Authorize prompt after `ensure_ready()` returns.
@@ -649,11 +655,18 @@ async def _drain_notifications(
         remaining = deadline - now
         if remaining <= 0:
             break
-        # Early-exit once servers have been quiet for the idle window. Poll in
-        # idle-sized slices (capped by remaining) so we notice quiet promptly.
-        idle_remaining = idle_exit - (now - last_activity)
-        if idle_remaining <= 0:
-            break
+        if until_declared:
+            if not self._mcp_report.declared_unreported():
+                break
+            # No idle exit: a slow server is quiet while it boots.
+            idle_remaining = remaining
+        else:
+            # Early-exit once servers have been quiet for the idle window. Poll
+            # in idle-sized slices (capped by remaining) so we notice quiet
+            # promptly.
+            idle_remaining = idle_exit - (now - last_activity)
+            if idle_remaining <= 0:
+                break
         try:
             read_msg = await self._read_message(timeout=min(remaining, idle_remaining, 2.0))
             if not read_msg:
