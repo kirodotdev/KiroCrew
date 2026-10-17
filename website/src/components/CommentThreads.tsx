@@ -146,12 +146,14 @@ function ThreadComment(
  *  submit would throw away what the user typed the moment the provider refused,
  *  and leave the error with nowhere to appear. */
 function ReplyBox({
-  onSubmit, pending, error, label = 'Reply',
+  onSubmit, pending, error, label = 'Reply', submitPaused = false,
 }: {
   onSubmit: (body: string) => Promise<unknown>
   pending: boolean
   error: string | null
   label?: string
+  /** The draft stays editable, but nothing is sent while this is true. */
+  submitPaused?: boolean
 }) {
   const ime = useImeGuard()
   const [open, setOpen] = useState(false)
@@ -172,7 +174,7 @@ function ReplyBox({
   }
 
   const send = async () => {
-    if (!trimmed || pending) return
+    if (!trimmed || pending || submitPaused) return
     try {
       await onSubmit(trimmed)
     } catch {
@@ -210,10 +212,13 @@ function ReplyBox({
         <button
           type="button"
           onClick={() => { void send() }}
-          disabled={!trimmed || pending}
+          disabled={!trimmed || pending || submitPaused}
+          // While paused, Send shows the same spinner as a send in flight and
+          // reports busy, so the disabled button reads as waiting.
+          aria-busy={submitPaused || undefined}
           className="inline-flex items-center gap-1.5 rounded-md border border-accent bg-accent-subtle px-2.5 py-1 text-[12.5px] font-medium text-accent disabled:opacity-50 cursor-pointer disabled:cursor-default"
         >
-          {pending && (
+          {(pending || submitPaused) && (
             <Loader2 size={12} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
           )}
           {label}
@@ -237,8 +242,15 @@ function ReplyBox({
 }
 
 export default function CommentThreads(
-  { src, onAddToChat }:
-  { src: PullRequestSource; onAddToChat?: (c: PullRequestComment) => void },
+  { src, onAddToChat, writesPaused = false }:
+  {
+    src: PullRequestSource
+    onAddToChat?: (c: PullRequestComment) => void
+    /** True while `src` is a stand-in for a payload still loading: every write
+     *  here targets `src.url`, so replies, comments and resolve wait for the
+     *  real payload. Open drafts stay mounted with their text. */
+    writesPaused?: boolean
+  },
 ) {
   const qc = useQueryClient()
   const threads = useMemo(() => groupThreads(src.comments), [src.comments])
@@ -355,8 +367,9 @@ export default function CommentThreads(
                   onClick={() => setResolved.mutate({
                     threadId: t.threadId, resolved: !t.resolved,
                   })}
-                  disabled={setResolved.isPending
-                    && setResolved.variables?.threadId === t.threadId}
+                  disabled={writesPaused || (setResolved.isPending
+                    && setResolved.variables?.threadId === t.threadId)}
+                  aria-busy={writesPaused || undefined}
                   className="ml-auto inline-flex items-center gap-1 rounded-md bg-transparent px-1.5 py-0.5 text-[11.5px] text-muted hover:text-accent disabled:opacity-50 cursor-pointer disabled:cursor-default"
                 >
                   {t.resolved
@@ -394,6 +407,7 @@ export default function CommentThreads(
               {canResolve && t.threadId && (
                 <ReplyBox
                   onSubmit={(body) => reply.mutateAsync({ threadId: t.threadId, body })}
+                  submitPaused={writesPaused}
                   pending={reply.isPending
                     && reply.variables?.threadId === t.threadId}
                   // `|| null` collapses an empty derived message to null on
@@ -417,6 +431,7 @@ export default function CommentThreads(
               ? i18nT('components.commentThreads.comment_on_this_pull_request')
               : i18nT('components.commentThreads.comment_on_this_merge_request')}
             onSubmit={(body) => comment.mutateAsync(body)}
+            submitPaused={writesPaused}
             pending={comment.isPending}
             error={comment.isError ? pullRequestErrorDetails(comment.error).message || null : null}
           />

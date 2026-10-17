@@ -449,6 +449,85 @@ def test_sidebar_source_links_include_the_plugin_chip(plugin) -> None:
     ]
 
 
+def _parse_with_revision_pin(raw_url: str) -> source.SourceRef | None:
+    """A grammar that keeps an optional ``/revisions/N`` pin in the canonical URL."""
+    prefix = "https://review.acme.example/cr/"
+    if not raw_url.startswith(prefix):
+        return None
+    tail = raw_url[len(prefix) :].rstrip("/")
+    number, _, pin = tail.partition("/")
+    if not number.isdigit():
+        return None
+    if pin and not (pin.startswith("revisions/") and pin[len("revisions/") :].isdigit()):
+        return None
+    canonical = f"{prefix}{number}/{pin}" if pin else f"{prefix}{number}"
+    return source.SourceRef(
+        "acme",
+        canonical,
+        "review.acme.example",
+        "",
+        "acme",
+        int(number),
+        kind="change",
+    )
+
+
+def _revision_slot(*contents: str) -> Any:
+    from kiro_crew.dashboard import state as state_mod
+
+    slot = object.__new__(state_mod._ChatSlot)
+    slot.messages = [{"role": "assistant", "content": text} for text in contents]
+    slot._source_links_revision = 1
+    slot._source_links_cache = None
+    slot._dismissed_source_links = set()
+    slot._dismissed_txn_pending = set()
+    slot._projection = SlotProjection()
+    return slot
+
+
+@pytest.fixture
+def per_revision_status(plugin, monkeypatch):
+    """Chip status as a per-revision provider reports it: rev 1 OPEN, rev 2 SHIPPED."""
+    from kiro_crew.dashboard import state as state_mod
+
+    plugin.parse = _parse_with_revision_pin  # type: ignore[attr-defined]
+    statuses = {
+        f"{CR_URL}/revisions/1": {"state": "open", "ci": "passed"},
+        f"{CR_URL}/revisions/2": {"state": "merged", "ci": "passed"},
+    }
+    # Patched through the facade, which routes the name to every module that binds it.
+    monkeypatch.setattr(state_mod, "_cached_check_status", statuses.get)
+    return statuses
+
+
+def test_chip_status_comes_from_the_latest_revision(per_revision_status) -> None:
+    """A review whose revision 2 shipped reads merged, not revision 1's open."""
+    from kiro_crew.dashboard import state as state_mod
+
+    slot = _revision_slot(
+        f"Published {CR_URL}/revisions/1 for review.",
+        f"Published {CR_URL}/revisions/2; it shipped.",
+    )
+    payload = state_mod._ChatSlot.source_links_payload(slot, include_check_status=True)
+
+    assert payload["total"] == 1
+    [link] = payload["links"]
+    assert link["url"] == f"{CR_URL}/revisions/2"
+    assert link["state"] == "merged"
+
+
+def test_a_review_mentioned_at_one_revision_keeps_that_status(per_revision_status) -> None:
+    """Older single-revision transcripts are read exactly as before."""
+    from kiro_crew.dashboard import state as state_mod
+
+    slot = _revision_slot(f"Published {CR_URL}/revisions/1 for review.")
+    payload = state_mod._ChatSlot.source_links_payload(slot, include_check_status=True)
+
+    [link] = payload["links"]
+    assert link["url"] == f"{CR_URL}/revisions/1"
+    assert link["state"] == "open"
+
+
 def test_sidebar_dedups_on_ref_identity_not_canonical_url(plugin) -> None:
     """One change mentioned under two URL shapes renders ONE chip, newest pin wins.
 
@@ -460,29 +539,7 @@ def test_sidebar_dedups_on_ref_identity_not_canonical_url(plugin) -> None:
     """
     from kiro_crew.dashboard import state as state_mod
 
-    prefix = "https://review.acme.example/cr/"
-
-    def parse_with_revision_pin(raw_url: str) -> source.SourceRef | None:
-        if not raw_url.startswith(prefix):
-            return None
-        tail = raw_url[len(prefix) :].rstrip("/")
-        number, _, pin = tail.partition("/")
-        if not number.isdigit():
-            return None
-        if pin and not (pin.startswith("revisions/") and pin[len("revisions/") :].isdigit()):
-            return None
-        canonical = f"{prefix}{number}/{pin}" if pin else f"{prefix}{number}"
-        return source.SourceRef(
-            "acme",
-            canonical,
-            "review.acme.example",
-            "",
-            "acme",
-            int(number),
-            kind="change",
-        )
-
-    plugin.parse = parse_with_revision_pin  # type: ignore[attr-defined]
+    plugin.parse = _parse_with_revision_pin  # type: ignore[attr-defined]
 
     slot = object.__new__(state_mod._ChatSlot)
     slot.messages = [

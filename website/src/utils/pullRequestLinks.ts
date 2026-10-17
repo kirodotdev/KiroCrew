@@ -52,6 +52,45 @@ export function partitionSourceLinks(
 }
 
 /**
+ * The key two mentions of ONE change share, so the panels list it once.
+ *
+ * A built-in parser emits exactly one canonical url per object, so its url is
+ * the key. A registered provider may keep a revision pin in its canonical url
+ * (`.../cr/123` and `.../cr/123/revisions/2` are one review), so its links key
+ * on the object's own fields instead, the way the backend's `SourceRef.identity`
+ * leaves the url out. The host stays in, because a number is only unique per
+ * instance.
+ */
+export function sourceLinkKey(link: PullRequestLink): string {
+  if (!sourceProviderDescriptor(link.provider)) return link.url
+  let host = ''
+  try {
+    host = new URL(link.url).host
+  } catch {
+    return link.url
+  }
+  return JSON.stringify([link.provider, link.kind, host, link.repo, link.number])
+}
+
+/**
+ * The listed source a remembered url names: the exact url, or else the same
+ * change at another url. A tab remembered at an older revision of a review is
+ * still that review, so the panel stays on it after a newer revision appears
+ * instead of jumping to the first tab.
+ */
+export function findSourceForUrl<T extends PullRequestLink>(
+  sources: readonly T[],
+  url: string,
+): T | undefined {
+  const exact = sources.find(source => source.url === url)
+  if (exact || !url) return exact
+  const remembered = parseSourceLinkUrl(url)
+  if (!remembered) return undefined
+  const key = sourceLinkKey(remembered)
+  return sources.find(source => sourceLinkKey(source) === key)
+}
+
+/**
  * The pull-request URLs a slot's sidebar chips name — the set a turn-boundary
  * invalidation is scoped to. Issue links are skipped (their panel has no
  * turn-boundary refresh), an unknown slot yields nothing, and the list is the
@@ -249,7 +288,9 @@ function parseRegisteredCandidate(url: URL): PullRequestLink | null {
  * in Resources, not Changes); 'agent' means the assistant / a tool / thinking
  * output surfaced or created it (a real Change). Because the dedup map keeps the
  * first occurrence of each URL, an agent later echoing a user-referenced PR
- * cannot reclassify it — the user's earlier mention stands.
+ * cannot reclassify it — the user's earlier mention stands. "Each URL" means
+ * each `sourceLinkKey`, so a newer revision of a user-pasted review stays a
+ * Resource too.
  */
 type MentionRole = 'agent' | 'user'
 interface AttributedLink extends PullRequestLink {
@@ -618,8 +659,14 @@ function linksInMessage(
     const link = parseCandidate(
       match[0], gitlabHosts, false, jiraHosts, false, githubHosts, false, bitbucketServerHosts,
     )
-    if (!link || found.has(link.url)) continue
-    found.set(link.url, { ...link, mentionedBy })
+    if (!link) continue
+    // A later mention of the same change replaces the url in place: text is read
+    // front to back, so the last url written is the most recent mention. That is
+    // the newest revision whenever the transcript cites revisions in order.
+    const key = sourceLinkKey(link)
+    const repeat = found.has(key)
+    found.set(key, { ...link, mentionedBy })
+    if (repeat) continue
     if (found.size >= limit) break
   }
   return [...found.values()]
@@ -743,7 +790,17 @@ function addLinks(
   links: AttributedLink[],
 ): void {
   for (const link of links) {
-    if (found.has(link.url)) continue
+    const key = sourceLinkKey(link)
+    const earlier = found.get(key)
+    if (earlier) {
+      // The same change mentioned again, e.g. at a newer revision. The first
+      // mention keeps its place and its attribution; the url follows the most
+      // recent mention, the same rule the backend sidebar chip uses. Core does
+      // not compare revision numbers, so citing an older revision later moves
+      // the card back to it.
+      if (earlier.url !== link.url) found.set(key, { ...link, mentionedBy: earlier.mentionedBy })
+      continue
+    }
     // Cap each role INDEPENDENTLY. The emitted Change sources are the agent
     // links, so counting user-referenced links against a single shared limit
     // let a flood of pasted PRs exhaust the budget and starve every later
@@ -751,7 +808,7 @@ function addLinks(
     // retained (bounded) so a later agent echo of a user-first PR stays
     // classified as a Resource — hence a per-role cap rather than dropping them.
     if (roleCount(found, link.mentionedBy) >= MAX_PULL_REQUEST_SOURCES) continue
-    found.set(link.url, link)
+    found.set(key, link)
   }
 }
 

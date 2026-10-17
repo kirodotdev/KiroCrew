@@ -37,10 +37,13 @@ import {
   loadRevealedSources,
   loadSeenPullRequestLinks,
   loadSourceSelections,
+  findSourceForUrl,
   partitionSourceLinks,
   persistSeenPullRequestLinks,
   PullRequestLinkIndex,
   recordNewPullRequestLinks,
+  type PullRequestLink,
+  sourceLinkKey,
   sourceSelection,
   type RevealedSources,
   type SourceLinkKind,
@@ -258,11 +261,17 @@ export function useChatPageResourcesController({
   const revealedForSlot = activeSlot ? revealedSources[activeSlot] : undefined
   const revealedChange = revealedForSlot?.change ?? null
   const revealedIssue = revealedForSlot?.issue ?? null
-  const panelSources = useMemo(() => (
-    revealedChange && !sourceLinks.some(link => link.url === revealedChange.url)
-      ? [revealedChange, ...sourceLinks]
-      : sourceLinks
-  ), [sourceLinks, revealedChange])
+  // Compared by `sourceLinkKey`, not url: a link revealed (and persisted) at an
+  // older revision is the same review the scan now lists at its newest one, and
+  // injecting it would show that review twice. The scan's url wins, since it
+  // follows the transcript as new revisions are mentioned.
+  const panelSources = useMemo(() => {
+    if (!revealedChange) return sourceLinks
+    const revealedKey = sourceLinkKey(revealedChange)
+    return sourceLinks.some(link => sourceLinkKey(link) === revealedKey)
+      ? sourceLinks
+      : [revealedChange, ...sourceLinks]
+  }, [sourceLinks, revealedChange])
   const panelIssues = useMemo(() => (
     revealedIssue && !issueLinks.some(link => link.url === revealedIssue.url)
       ? [revealedIssue, ...issueLinks]
@@ -352,10 +361,12 @@ export function useChatPageResourcesController({
   // transcript is append-only within a slot, so growth is the only way a
   // previously-absent url can appear, and gating on it keeps this off the
   // per-render (and per-streaming-chunk) path. Membership in `links` is the
-  // "the fetch proved it still exists" condition.
+  // "the fetch proved it still exists" condition. A stored url names its review
+  // even when `links` now carries that review at a newer revision, so the
+  // restore lands on the listed url for the same review.
   const restoreFromStorage = useCallback((
     kind: SourceLinkKind,
-    links: readonly { url: string }[],
+    links: readonly PullRequestLink[],
   ): boolean => {
     const slot = activeSlotRef.current
     if (!slot) return false
@@ -363,11 +374,12 @@ export function useChatPageResourcesController({
     if (seen === undefined || links.length <= seen) return false
 
     const stored = sourceSelection(loadSourceSelections(), slot, kind)
-    if (stored && links.some(link => link.url === stored)) {
+    const listed = stored ? findSourceForUrl(links, stored) : undefined
+    if (listed) {
       const provisional = { ...provisionalFallbackRef.current[slot] }
       delete provisional[kind]
       provisionalFallbackRef.current = { ...provisionalFallbackRef.current, [slot]: provisional }
-      setSourceSelections(previous => withSourceSelection(previous, slot, kind, stored))
+      setSourceSelections(previous => withSourceSelection(previous, slot, kind, listed.url))
       return true
     }
     // Not there yet — wait for further growth rather than re-reading every render.
@@ -469,7 +481,12 @@ export function useChatPageResourcesController({
       // earlier PROVISIONAL transcript but present now that the fetch landed.
       // Look there once before falling back, gated on the url being in THIS
       // transcript (that gate IS the "the fetch proved it exists" condition).
-      reconcileSelection('change', panelSources[0].url, panelSources.length)
+      //
+      // A remembered url can also be an older revision of a review the list now
+      // carries at its newest url. That is still the user's tab, so stay on the
+      // same review rather than jumping to the first one.
+      const sameChange = findSourceForUrl(panelSources, selectedSourceUrl)
+      reconcileSelection('change', (sameChange ?? panelSources[0]).url, panelSources.length)
     }
     // reconcileSourceUrl reads the active slot through a ref, so it is stable and
     // this effect reacts only to sources, selection, and hydration state.
