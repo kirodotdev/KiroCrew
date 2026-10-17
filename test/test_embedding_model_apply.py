@@ -131,9 +131,12 @@ class TestGatedCandidateLifecycle:
         cand = emb.LlamaCppEmbedder(
             model_path=_write_model(tmp_path / "m.gguf"), dim=0, serving=False
         )
-        cand._load_model()
-        assert cand.dim == 768
-        assert cand.is_ready() is True
+        try:
+            cand._load_model()
+            assert cand.dim == 768
+            assert cand.is_ready() is True
+        finally:
+            cand.close()  # the published model's idle evictor ends with the test
 
     def test_boot_mismatch_refusal_is_unchanged_by_adopt_mode(
         self, tmp_path, monkeypatch

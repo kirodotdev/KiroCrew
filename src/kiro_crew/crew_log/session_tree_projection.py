@@ -1723,11 +1723,16 @@ class SessionTreeProjection:
             # elapsed -- by which time the data home can be a different one (a pod, a
             # relocated home, a test that repointed it). Pinning it at arm time is what
             # makes the write land in the store this state was folded from, or nowhere.
+            # The payload's ``root`` is pinned here for the same reason: a worker that
+            # resolved it when it woke would read whatever home the process had THEN,
+            # and under a per-test home that is another test's -- or, with the override
+            # gone, the operator's real one.
             target = _checkpoint_path()
+            root = self._root or _current_root()
         try:
             from kiro_crew.executors import maintenance_executor
 
-            maintenance_executor().submit(self._debounced_write, target, epoch)
+            maintenance_executor().submit(self._debounced_write, target, epoch, root)
         except Exception:
             # Including a pool shut down during teardown, which is ordinary at exit.
             with self._lock:
@@ -1812,15 +1817,19 @@ class SessionTreeProjection:
             # discarded projection should not keep a thread for its cooldown.
             timer.cancel()
 
-    def _debounced_write(self, target: "Path | None" = None, epoch: int = -1) -> None:
+    def _debounced_write(
+        self, target: "Path | None" = None, epoch: int = -1, root: "str | None" = None
+    ) -> None:
         """Wait out the debounce, then write once. Runs on the maintenance pool.
 
         It writes the checkpoint; it does not scan. That distinction is the whole
         reason a background task is acceptable here at all.
 
-        ``target`` is the path resolved when this was armed and ``epoch`` the
-        cancellation generation then current; a mismatch against the live epoch means
-        the write was abandoned while this waited, so it returns having written nothing.
+        ``target`` is the path resolved when this was armed, ``root`` the store it
+        described then, and ``epoch`` the cancellation generation then current; a
+        mismatch against the live epoch means the write was abandoned while this
+        waited, so it returns having written nothing. Nothing here resolves the data
+        home: every path this worker touches was decided by the caller that armed it.
         """
         try:
             time.sleep(CHECKPOINT_DEBOUNCE_SECS)
@@ -1837,8 +1846,10 @@ class SessionTreeProjection:
                 "written_at": int(time.time() * 1000),
                 # The store these records describe, written INTO the file so a reader
                 # can prove it rather than assume it. The target alone cannot: it is
-                # pinned when the write is armed, and the payload is built here.
-                "root": self._root or _current_root(),
+                # pinned when the write is armed, and the payload is built here. The
+                # root was pinned beside it, so a home that moved during the debounce
+                # is not read here (the epoch check above already abandoned that write).
+                "root": self._root or root or "",
                 "records": [_record_to_json(r) for r in self._records.values()],
                 "edges": [_edge_to_json(e) for e in self._edges.values()],
                 # The unit identities at which a complete read found NO decision, so the
@@ -2055,9 +2066,9 @@ def reset_for_tests() -> None:
     must not inherit the previous home's fold.
 
     Cancels the pending checkpoint of EVERY projection alive in this process, not just
-    the one being dropped. A debounced write outlives the object that armed it, and it
-    resolves its target directory when it WAKES -- so a test whose home is already torn
-    down is exactly when such a write lands somewhere it was never meant to. A test that
+    the one being dropped. A debounced write outlives the object that armed it, and its
+    target was pinned when it was ARMED -- so a test whose home is already torn down is
+    exactly when such a write would recreate a directory the test has removed. A test that
     constructs a projection directly arms writes on an instance this function never held
     a reference to, which is why the weak registry is consulted rather than the
     singleton alone.

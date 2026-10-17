@@ -1959,6 +1959,27 @@ def _retire_crew_log_eager_fold() -> "BaseException | None":
     return retire()
 
 
+def _cancel_session_tree_checkpoints() -> None:
+    """Abandon every debounced session-tree checkpoint write this test armed.
+
+    The emitter's append path arms one on the gateway's ``mc-maint`` pool
+    (``SessionTreeProjection._schedule_checkpoint``), and the worker sleeps a debounce
+    before it writes -- so with ordinary tests shorter than the debounce, the write fires
+    during a LATER test. Its paths are pinned when it is armed (the caller-resolves rule),
+    so what it wrote landed in the arming test's home; but a projection that is never
+    cancelled keeps re-arming, and the test that armed it is the one that owes the
+    cancel. ``reset_for_tests`` bumps the cancellation epoch of every live projection, so
+    a sleeping worker wakes, sees it, and returns without touching a path, and drops the
+    process-wide projection, which is bound to a store this test's home is about to take
+    with it. Looked up, never imported: a run that never reaches the crew log pays nothing.
+    """
+    mod = sys.modules.get("kiro_crew.crew_log.session_tree_projection")
+    reset = getattr(mod, "reset_for_tests", None)
+    if reset is not None:
+        with contextlib.suppress(Exception):
+            reset()
+
+
 #: How long the executor join waits before giving up on a wedged job. Long enough for
 #: a config read on a loaded host; short enough that a job blocked forever surfaces as
 #: a slow teardown rather than a hung worker (pytest-timeout is not armed here).
@@ -2207,6 +2228,9 @@ def pytest_runtest_teardown(item, nextitem):
     # fresh daemon nothing holds a handle to. Stopping the worker once its producers are
     # quiescent is what makes the stop final.
     wedged_eager_fold = _retire_crew_log_eager_fold()
+    # After the fold worker is stopped: it is the fold that arms these, so a write armed
+    # by its last entries is cancelled here rather than re-armed after the cancel.
+    _cancel_session_tree_checkpoints()
     # After every step above: a cancelled task's ``finally`` or a drained writer can
     # itself call ``get_recorder()`` and schedule a consent re-read, and a worker
     # scheduled by teardown must still be joined under this test's pins.
@@ -2346,6 +2370,53 @@ def _no_leaked_telemetry_exporter():
         "real (reset_for_testing()), and a test that stubs `shutdown` must delegate "
         "to it -- see "
         "conftest._no_leaked_telemetry_exporter."
+    )
+
+
+#: Thread name of the embedding backend's idle evictor (``embeddings._start_evictor``).
+_EMBED_EVICTOR_THREAD = "kc-embed-evict"
+
+
+def _live_embed_evictors() -> set:
+    """The idle-evictor threads alive right now, as OBJECTS (see ``_live_exporter_threads``)."""
+    return {t for t in threading.enumerate() if t.name == _EMBED_EVICTOR_THREAD and t.is_alive()}
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_embed_evictor():
+    """Fail the test that leaves an embedding model's idle evictor running, then stop it.
+
+    ``LlamaCppEmbedder`` starts a daemon ``kc-embed-evict`` thread the moment a model
+    is published, and that thread re-reads the memory config on EVERY tick --
+    ``embedding_idle_evict_secs`` -> ``config_path`` -> ``config_dir()`` -- for as long
+    as the model stays loaded. A test that loads a (fake) model and never closes the
+    backend therefore leaves a resolver polling the data home from under every later
+    test on the worker. When a tick lands inside a test that has no ``KIROCREW_HOME``
+    (one that cleared ``os.environ``), the resolution falls through to the operator's
+    real ``~/.kiro/crew`` and the home guard blames THAT test, not the one that loaded
+    the model. The class-4 entry in ``testing-conventions.md`` carries the measurement.
+
+    Attributed by difference, like ``_no_leaked_telemetry_exporter``: only a thread that
+    appeared during this test is this test's. Stopped through its owner (the thread's
+    target is the backend's bound ``_evict_loop``, so ``close()`` sets the wake event
+    and joins it), so one leak cannot redden the tests that follow.
+    """
+    before = _live_embed_evictors()
+    yield
+    leaked = _live_embed_evictors() - before
+    if not leaked:
+        return
+    for thread in leaked:
+        owner = getattr(getattr(thread, "_target", None), "__self__", None)
+        if owner is not None:
+            with contextlib.suppress(Exception):
+                owner.close()
+    raise AssertionError(
+        "this test loaded an embedding model and left its idle evictor running: "
+        f"{sorted(t.name for t in leaked)}. The evictor re-reads the data home on every "
+        "tick, from under every later test on this worker. close() the LlamaCppEmbedder "
+        "the test built (a try/finally, or a fixture that owns it); see "
+        "conftest._no_leaked_embed_evictor."
     )
 
 

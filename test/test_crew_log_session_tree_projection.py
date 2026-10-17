@@ -490,6 +490,42 @@ def test_a_root_change_abandons_a_write_armed_for_the_previous_store(tmp_path, m
     assert wrote == [], "a write armed for the previous store still fired after the home moved"
 
 
+def test_a_debounced_write_resolves_no_path_when_it_wakes(tmp_path, monkeypatch):
+    """The root the payload names is decided when the write is ARMED, not when it fires.
+
+    The worker wakes a debounce later, on the maintenance pool, under whatever data home
+    the process has by then. Resolving ``_current_root()`` there would read the next
+    test's home, or with the ``KIROCREW_HOME`` override gone the operator's real one, and
+    the teardown guard would blame whichever test is running at that moment. So an
+    unseeded projection pins the root beside the target, and the worker reads neither
+    afresh.
+    """
+    armed: list[tuple] = []
+    monkeypatch.setattr(
+        "kiro_crew.executors.maintenance_executor",
+        lambda: type("_Pool", (), {"submit": staticmethod(lambda fn, *a: armed.append(a))}),
+    )
+    proj = SessionTreeProjection()  # never seeded: ``_root`` stays None
+    proj.apply(_rec("s-one", "slot-a"))
+    assert len(armed) == 1, "the dirty projection armed no write"
+    target, epoch, root = armed[0]
+    assert root == stp._current_root() and root, "the root was not pinned when armed"
+
+    wrote: list[tuple[dict, object]] = []
+    monkeypatch.setattr(
+        stp, "_save_checkpoint", lambda payload, path=None: wrote.append((payload, path)) or True
+    )
+    monkeypatch.setattr(stp, "CHECKPOINT_DEBOUNCE_SECS", 0)
+
+    def _resolves_late() -> str:
+        raise AssertionError("the worker resolved the data home when it woke")
+
+    monkeypatch.setattr(stp, "_current_root", _resolves_late)
+    proj._debounced_write(target, epoch, root)
+
+    assert [(payload["root"], path) for payload, path in wrote] == [(root, target)]
+
+
 def test_a_checkpoint_naming_another_store_is_discarded_not_trusted():
     """The file says which store it describes, and a mismatch is rebuilt from the log.
 

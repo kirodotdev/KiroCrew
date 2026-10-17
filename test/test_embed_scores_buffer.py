@@ -87,8 +87,13 @@ def _load_embedder(tmp_path: pathlib.Path, monkeypatch):
     monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
     model = _write_model_file(tmp_path / "model.gguf")
     emb = LlamaCppEmbedder(model_path=model)
-    assert emb.wait_ready(timeout=5), "fake model failed to load"
-    assert fake_cls.instances, "Llama constructor was never called"
+    try:
+        assert emb.wait_ready(timeout=5), "fake model failed to load"
+        assert fake_cls.instances, "Llama constructor was never called"
+    finally:
+        # Only the constructor's kwargs are read, so the loaded model (and the idle
+        # evictor a published model starts) ends here rather than with the worker.
+        emb.close()
     return fake_cls.instances[0].kwargs
 
 
