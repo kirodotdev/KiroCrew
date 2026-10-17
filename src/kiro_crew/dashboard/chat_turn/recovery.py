@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         DashboardState,
         KiroCrewConfig,
         PoisonedConversationEscalation,
+        RecoveryProvenance,
         RefusalInfo,
         ResetCause,
         _ChatSlot,
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
         append_and_surface,
         build_recovery_requeue,
         effective_session_key,
+        has_recovery_provenance,
         is_synthetic_payload_item,
         logger,
         model_is_unusable,
@@ -623,19 +625,34 @@ async def _purge_superseded_continuations(state: DashboardState, slot: _ChatSlot
     # rebind signal.
     revocation = replays.revalidate(ReplayFamily.CONTINUATION, live)
     if _should_suppress_requeue(slot) or revocation.revoked:
-        # Both auto-continuations carry the same hazard and the same fix: the
-        # post-compaction resume would re-drive a request the user has since
-        # stopped or replaced. Purge either one, and reset whichever one-shot
-        # budget was spent (both resets are idempotent, so no need to tell them
-        # apart per item).
+        # Every head-inserted auto-continuation carries the same hazard and the
+        # same fix: the resume would re-drive a request the user has since
+        # stopped or replaced. Purge whichever one is queued, and reset whichever
+        # one-shot budget was spent (the resets are idempotent, so no need to
+        # tell them apart per item). The provider-budget banner recovery shares
+        # its text with the post-token transient retry, so it is identified by
+        # its host-minted provenance tag, never by content.
         _purgeable = (_PROMISE_ONLY_CONTINUE_MSG, _COMPACTION_CONTINUE_MSG)
         superseded = [
             q
             for q in slot._queue
             if q.get("kind") == FALSE_TOOL_BLOCKER_REPLAY_KIND
-            or (is_synthetic_payload_item(q) and q.get("content") in _purgeable)
+            or (
+                is_synthetic_payload_item(q)
+                and (
+                    q.get("content") in _purgeable
+                    or has_recovery_provenance(q, RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT)
+                )
+            )
         ]
         if superseded:
+            if any(
+                has_recovery_provenance(q, RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT)
+                for q in superseded
+            ):
+                # The banner recovery spent the post-token one-shot at enqueue; a
+                # later unrelated turn must not inherit the spent allowance.
+                slot._posttoken_retry_used = False
             for q in superseded:
                 _drop_queued_replay(state, slot, q["id"])
             # The one-shot budget was spent at enqueue but never dispatched — the
@@ -686,6 +703,7 @@ async def _requeue_auth_retry(
     _turn_actor: str,
     _consumed_reported: bool,
     _current_message: dict | None,
+    _provenance: RecoveryProvenance | None,
     _queue_recovery: Callable[..., str],
 ) -> None:
     """Put a runner-authored input that hit a signed-out CLI back at the queue head.
@@ -720,6 +738,7 @@ async def _requeue_auth_retry(
             message,
             kind=_auth_retry_kind,
             extra_meta=_current_meta,
+            provenance=_provenance,
         )
 
 
@@ -730,6 +749,7 @@ async def _requeue_after_prompt_busy(
     _prompt_depth: int,
     _turn_emitted: bool,
     _is_synthetic: bool,
+    _provenance: RecoveryProvenance | None,
     _queue_recovery: Callable[..., str],
     _stop_pressed: Callable[[], bool],
 ) -> None:
@@ -762,6 +782,7 @@ async def _requeue_after_prompt_busy(
             _requeue_text,
             kind=SYNTHETIC_RECOVERY_KIND,
             payload=_requeue_payload,
+            provenance=_provenance if not _turn_emitted else None,
         )
     elif slot._prompt_busy_retries > 3:
         slot.append("error", "Session stuck — please start a new chat.", "msg msg-err")

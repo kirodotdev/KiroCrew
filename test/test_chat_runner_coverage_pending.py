@@ -836,6 +836,20 @@ class TestSteerLifecycle:
 
         assert slot._steer_possibly_delivered == set()
 
+    def test_a_settled_steer_releases_both_origin_records(self):
+        """The two origin maps are held past the ack and released together at the
+        settle; an unsettled sibling keeps both, for the requeue to read as a pair."""
+        slot = _slot()
+        slot._pending_steers = ["a", "b"]
+        slot._steer_user_origin = {"a": True, "b": True}
+        slot._steer_channel_origin = {"a": True, "b": True}
+
+        with patch.object(chat_runner, "settle_consumed_steers", return_value=["b"]):
+            chat_runner._settle_consumed_steers(slot, "a")
+
+        assert slot._steer_user_origin == {"b": True}
+        assert slot._steer_channel_origin == {"b": True}
+
     def test_a_steer_requeued_with_its_rpc_in_flight_is_possibly_delivered(self, tmp_path):
         """The turn ended while the steer's RPC was still writing: its frame may
         already be in the pipe and the RPC's own verdict lands after the entry
