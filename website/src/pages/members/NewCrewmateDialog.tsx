@@ -9,7 +9,9 @@
  * One card, top to bottom: the look as its hero (a centred tile whose pencil
  * opens the avatar editor), the name under its label, Create, and a centred
  * "Advanced settings" toggle under it, so the primary action follows the name
- * directly. The way out is the modal's header X. Create builds the crewmate from the built-in `kirocrew` agent
+ * directly. The way out is the modal's header X. Create builds the crewmate from the mate conductor
+ * (`kirocrew-mate-conductor`, the source-defined dispatch-only default — see
+ * `DEFAULT_CREWMATE_TEMPLATE`)
  * unless told otherwise, and the template is not named until the user asks
  * for more. The "Advanced settings" toggle unfolds the rest of the form
  * inline, in the same card, directly under that line, and the unfolded
@@ -26,9 +28,11 @@
  * "Built from" lists the installed kiro agents (the templates a crew can
  * boot), never the configured default CREW: a crew named `default` is an
  * alias, and storing its name as `kiro_agent` would make the new crewmate run
- * a fallback instead of that crew's template. The built-in `kirocrew` agent
- * leads the list and is labelled as the default, and is offered even when the
- * installed read failed.
+ * a fallback instead of that crew's template. The mate conductor
+ * (`kirocrew-mate-conductor`) leads the list and is labelled as the default; it
+ * is the one entry prepended rather than drawn from the catalog, because the
+ * catalog withholds it as a selectable template (`agent_catalog`'s
+ * background-only set), so it appears once, at the top, as the default.
  *
  * "What it looks after" is stored as the crew record's `description`: the
  * one free-text field the record already carries for a human-readable
@@ -95,9 +99,13 @@ import {
 } from '../KiroCrewAgentsPage'
 
 /** The template a new crewmate is built from unless Advanced settings picks
- *  another: the built-in kiro agent every install ships, which leads the
- *  "Built from" list. The folded card never names it. */
-export const DEFAULT_CREWMATE_TEMPLATE = 'kirocrew'
+ *  another: the source-defined, dispatch-only mate conductor
+ *  (`kirocrew-mate-conductor`), which leads the "Built from" list and is its
+ *  default label. One of the three creation defaults rfc-mate-owned-agent-config.md
+ *  §6 step 1 moves onto the conductor, so every crewmate created through this
+ *  dialog runs the conductor rather than the full-surface `kirocrew` template.
+ *  The folded card never names it. */
+export const DEFAULT_CREWMATE_TEMPLATE = 'kirocrew-mate-conductor'
 /** The id the Advanced settings row's `aria-controls` points at. */
 const ADVANCED_ID = 'crewmate-create-advanced'
 
@@ -449,9 +457,10 @@ export default function NewCrewmateDialog({
 
   // Installed kiro agents only (see the header comment). Private fork copies
   // (one crew's own definition) are not offered — a copy named after crew A
-  // means nothing in crew B's list. The built-in agent leads, labelled as the
-  // default; it is offered even when the installed read failed, because it
-  // ships with every install.
+  // means nothing in crew B's list. The mate conductor leads, labelled as the
+  // default; it is prepended (not drawn from the catalog, which withholds it as
+  // a selectable template) so it is offered even when the installed read
+  // failed, because it ships with every install.
   const installed = Array.isArray(catalog?.agents)
     ? catalog.agents
       .filter((row) => row.selection_kind === 'template' && Boolean(row.name))

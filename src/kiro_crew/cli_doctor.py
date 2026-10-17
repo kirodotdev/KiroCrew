@@ -89,6 +89,7 @@ from kiro_crew.agent_discovery import (
     project_agent_files,
     project_agent_name,
 )
+from kiro_crew.agent_files import is_kirocrew_default_agent
 from kiro_crew.agent_sdk import kas_engine_gap
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.agent_spec_format import (  # noqa: F401
@@ -436,7 +437,7 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
     bound_spec: Path | None = None
     bound_spec_missing = False
     bound_spec_ambiguous = False
-    if bound != "kirocrew":
+    if not is_kirocrew_default_agent(bound):
         # Display only, through the same resolver the writers use, so the path
         # shown is the file that holds the agent -- whichever form (``.json``
         # or ``.md``) and whichever filename declares the name -- rather than a
@@ -461,7 +462,7 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
     # Labelled in resolve_effective_model's own order. Tier 2 is present only
     # when it applies, so the list never shows a tier the resolver skipped.
     tiers: list[tuple[str, str]] = [("agent override", override)]
-    if bound != "kirocrew":
+    if not is_kirocrew_default_agent(bound):
         tiers.append((f"bound agent pin ({render._safe_display(bound)})", bound_model))
     tiers.append(("global agent.model", normalize_agent_model(cfg.agent.model)))
     tiers.append(("default spec pin", default_model))
@@ -595,14 +596,17 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
             issues.append("project-local agent spec shadows the user-level one")
 
     if pinned_value:
-        # pinned_agent is either the literal "kirocrew" or a configured kiro
-        # agent name; the flag form is only emitted for a name that matched a
-        # spec file on disk, so it is a real agent rather than free text.
+        # pinned_agent is either a Crew default agent (kirocrew or the mate
+        # conductor) or a configured kiro agent name; the flag form is only
+        # emitted for a name that matched a spec file on disk, so it is a real
+        # agent rather than free text.
         # The name is escaped like every other value read out of config: a
         # control-bearing kiro_agent would otherwise reach the terminal on the
         # one line the user is most likely to copy and run.
         flag = (
-            "" if pinned_agent == "kirocrew" else f" --agent {render._safe_display(pinned_agent)}"
+            ""
+            if is_kirocrew_default_agent(pinned_agent)
+            else f" --agent {render._safe_display(pinned_agent)}"
         )
         global_shown = render._safe_display(cfg.agent.model) if cfg.agent.model else "unset"
         print(f"  ⚠️  the spec pin decides because the global is {global_shown}")

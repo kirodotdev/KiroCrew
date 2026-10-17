@@ -401,8 +401,16 @@ def _session_model(
         agent = crew.kiro_agent or agent
 
     per_agent_model = ""
-    if agent and agent != "kirocrew":
-        per_agent_model = cfg._resolve_named_agent_model(agent)
+    if agent:
+        # Function-local import: a module-level ``_``-aliased global would be
+        # collected by the session facade mirror as a served name (the mirror
+        # serves this module's ``_``-prefixed globals), adding an export the
+        # surface manifests would have to list. Kept local so the surface is
+        # unchanged by this call.
+        from kiro_crew.agent_files import is_kirocrew_default_agent
+
+        if not is_kirocrew_default_agent(agent):
+            per_agent_model = cfg._resolve_named_agent_model(agent)
     return _model_fallback(per_agent_model, cfg.agent.model)
 
 

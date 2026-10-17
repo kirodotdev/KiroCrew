@@ -223,6 +223,32 @@ class TestEffectiveModelSection:
         assert "custom-agent.json" not in out
         assert issues == []
 
+    def test_the_mate_conductor_is_treated_as_a_default_agent_not_custom(self, capsys) -> None:
+        """When the default template is the mate conductor (RFC step 1's rename),
+        the Model section must read it exactly as the built-in ``kirocrew``: NO
+        extra ``bound agent pin`` tier and NO ``--agent`` in the reset hint. It
+        is a Crew default agent, not a user's custom one, so ``kirocrew doctor``
+        output stays byte-for-byte what a ``kirocrew``-bound crewmate shows.
+        Contrast ``test_a_bound_custom_agent_is_attributed_to_its_own_spec``."""
+        # Install the mate conductor spec with a pin so, WERE it read as a custom
+        # agent, a 'bound agent pin' tier and an --agent reset hint would appear.
+        self._install_spec("claude-opus-4.8")  # the kirocrew.json default pin
+        (self._agents_dir() / "kirocrew-mate-conductor.json").write_text(
+            json.dumps({"name": "kirocrew-mate-conductor", "model": "claude-opus-4.8"}),
+            encoding="utf-8",
+        )
+        cfg = self._bind_custom_agent(self._cfg("auto"), "kirocrew-mate-conductor")
+        issues: list[str] = []
+
+        cli_doctor._doctor_effective_model(cfg, "", issues)
+
+        out = capsys.readouterr().out
+        # Routed through is_kirocrew_default_agent: no custom-agent treatment.
+        assert "bound agent pin ('kirocrew-mate-conductor')" not in out
+        assert "--agent 'kirocrew-mate-conductor'" not in out
+        assert "--agent kirocrew-mate-conductor" not in out
+        assert "out of date" not in out, "report must agree with the resolver"
+
     def test_markdown_specs_shadowed_by_a_json_twin_are_listed(self, capsys) -> None:
         """A ``<stem>.md`` beside ``<stem>.json`` is never read; the roster says
         so only in the gateway log, so doctor lists every such file, one line

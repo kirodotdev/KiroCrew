@@ -23,6 +23,7 @@ from kiro_crew.agent_files import (
     DASHBOARD_MANAGER_AGENT_FILENAME,
     GUEST_AGENT_FILENAME,
     LITE_AGENT_FILENAME,
+    MATE_CONDUCTOR_AGENT_FILENAME,
 )
 from kiro_crew.config.loader import (
     KiroCrewConfig,
@@ -59,8 +60,20 @@ logger = logging.getLogger(__name__)
 # product being broken rather than as a narrow agent doing its job. It is reached
 # by a crewmate handing it page work, which is what the member base prompt's item
 # 7 routes.
+#
+# The mate conductor is here because it is not a deliberate pick either: it is
+# the default template under its own filename (rfc-mate-owned-agent-config.md,
+# migration step 1), reached only through a crewmate's own ``kiro_agent``
+# binding. Offering it as a "Built from" choice would read as a second,
+# unexplained default beside the primary ``kirocrew`` spec it is byte-identical
+# to today.
 _BACKGROUND_ONLY_FILES = frozenset(
-    {LITE_AGENT_FILENAME, GUEST_AGENT_FILENAME, DASHBOARD_MANAGER_AGENT_FILENAME}
+    {
+        LITE_AGENT_FILENAME,
+        GUEST_AGENT_FILENAME,
+        DASHBOARD_MANAGER_AGENT_FILENAME,
+        MATE_CONDUCTOR_AGENT_FILENAME,
+    }
 )
 
 

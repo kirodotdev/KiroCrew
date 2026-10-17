@@ -52,7 +52,9 @@ from kiro_crew.platform import safe_context_call
 #: it inverts the parity claim: a default that allows ``execute_bash`` in
 #: ``allowedTools`` and then excludes it would hand the worker the grant alone.
 #: "Superset of what the default GRANTS" must not become "superset of what the default
-#: PERMITS". ``permissions`` stays absent -- it is derived from the final grant list.
+#: PERMITS". ``permissions`` is not mirrored as a key: its ALLOWS are derived from the
+#: final grant list, and its DENY/ASK rules are carried from the installed default at
+#: the write (``inherit_narrowing``) so an operator restriction binds the worker too.
 _WORKER_MIRRORED_SHAPES: dict[str, type | tuple[type, ...]] = {
     "tools": list,
     "allowedTools": list,
@@ -114,7 +116,10 @@ def _mirrored_surface(spec: dict[str, Any], agent: str) -> dict[str, Any]:
     """The part of the default *spec* that *agent*'s derived spec is a function of.
 
     The fingerprint covers exactly this, so an edit to a part of the default the derived
-    spec does not copy does not force a re-derive.
+    spec does not copy does not force a re-derive. For the worker this is the mirrored
+    grant keys PLUS ``permissions``: the worker does not copy ``permissions`` as a
+    mirrored key (its allows derive from the grant list), but it inherits the default's
+    deny/ask rules at install, so a change to them must re-derive it.
     """
     if agent == _HEARTBEAT_AGENT:
         servers = spec.get("mcpServers")
@@ -126,7 +131,19 @@ def _mirrored_surface(spec: dict[str, Any], agent: str) -> dict[str, Any]:
             if isinstance(servers.get(name), dict)
         }
         return {"mcpServers": copied}
-    return {key: spec[key] for key in _WORKER_MIRRORED_SHAPES if key in spec}
+    surface = {key: spec[key] for key in _WORKER_MIRRORED_SHAPES if key in spec}
+    # The worker is NOT a mirrored key for ``permissions`` (its allows derive from
+    # the grant list), but it now carries the default's deny/ask rules via
+    # ``inherit_narrowing`` at install. So the worker's permissions ARE a function
+    # of the default's ``permissions`` block, and the fingerprint must cover it —
+    # otherwise an operator who ADDS a deny to the default after install moves no
+    # fingerprinted key, the freshness check passes, and the cached worker keeps
+    # its pre-deny permissions (a stale worker authorized for a now-denied call).
+    # Fingerprint-only: ``permissions`` stays out of ``_WORKER_MIRRORED_SHAPES`` and
+    # the mirror copy loop; this only makes a deny-edit re-derive the worker.
+    if "permissions" in spec:
+        surface["permissions"] = spec["permissions"]
+    return surface
 
 
 def _canonical_grant_pattern(ref: str) -> str | None:
@@ -825,7 +842,27 @@ def _write_worker_spec(config: dict, path: Path, *, template_grants: list[str]) 
     # off, which an operator override in ``agent.json`` would otherwise carry
     # through; and derives the KAS policy from the FILTERED list, so the cron
     # subtraction reaches the KAS backend rather than stopping at ``allowedTools``.
-    auto_approve.write_governed_spec(path, config, source="_install_worker_agent")
+    # Carry the operator's KAS deny/ask rules from the installed default spec onto
+    # the worker, then narrow: the allows still derive from the worker's own
+    # (superset) grant list, but a restriction the operator hand-wrote survives.
+    # A dispatched worker does the ACTUAL work the conductor delegates, so an
+    # operator deny (a ``web_fetch`` deny, say) that binds the conductor must bind
+    # the worker too — otherwise an unnamed ``spawn_run`` that routes to the
+    # worker performs the denied call despite the deny the conductor preserves.
+    # The default ``"derive"`` rebuilds ``permissions`` from ``allowedTools`` and
+    # drops the operator's deny/ask; ``"inherit_narrowing"`` keeps it. This is the
+    # ``permissions`` analogue of the ``excludedTools`` restriction the mirror
+    # already carries: "superset of what the default GRANTS" must not become
+    # "superset of what the default PERMITS".
+    if isinstance(installed_default, dict):
+        installed_perms = installed_default.get("permissions")
+        if isinstance(installed_perms, dict):
+            merged = dict(config.get("permissions") or {})
+            merged.update(installed_perms)
+            config["permissions"] = merged
+    auto_approve.write_governed_spec(
+        path, config, source="_install_worker_agent", kas_policy="inherit_narrowing"
+    )
     # Recorded INSIDE the critical section, against the same default-spec read this
     # derivation used: stamping it after the locks release would record a generation
     # other than the one the spec on disk mirrors.

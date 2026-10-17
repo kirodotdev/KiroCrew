@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from kiro_crew.agent_files import is_kirocrew_default_agent as _is_kirocrew_default_agent
 from kiro_crew.agent_spec_format import iter_agent_spec_files, parse_agent_spec_text
 from kiro_crew.config import sections as _sections
 from kiro_crew.config.loader_document import (
@@ -552,7 +553,7 @@ def _dangling_template(kiro_agent: object, names: frozenset[str]) -> str | None:
     """
     bound = kiro_agent if isinstance(kiro_agent, str) else ""
     template = dispatch_kiro_agent(bound) or "kirocrew"
-    if template == "kirocrew" or template in names:
+    if _is_kirocrew_default_agent(template) or template in names:
         return None
     return template
 

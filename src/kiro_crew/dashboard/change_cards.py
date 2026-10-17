@@ -282,13 +282,34 @@ def rebuild_record(rec: dict[str, Any]) -> dict[str, Any] | None:
     status = rec["status"]
     apply_plan = preview["apply"]
     if not _same(apply_plan, plan.get("apply")):
-        # A crewmate.create card stored before goal records: the same card with
-        # the goal in description. Still unrun, it runs the current plan; once
-        # applied, its steps and evidence keep the shape they ran with.
-        if kind != catalog.KIND_CREWMATE_CREATE or not any(
-            _same(catalog.legacy_create_apply(params, first_greeting=g), plan.get("apply"))
-            for g in (True, False)
-        ):
+        # A crewmate.create card stored by an EARLIER build: the plan it saved
+        # may differ from the one build_preview rebuilds now in two orthogonal
+        # ways, and either (or both) must still verify or the card is dropped
+        # with its history and Undo:
+        #   * SHAPE — a card from before goal records put the goal in the
+        #     agent's ``description`` with the schedule at step 1
+        #     (``legacy_create_apply``), vs the current two-step goal-record
+        #     plan.
+        #   * TEMPLATE — a card from before RFC §6 step 1 moved the creation
+        #     default names ``LEGACY_CREWMATE_TEMPLATE`` in its template slots,
+        #     vs the current ``DEFAULT_CREWMATE_TEMPLATE``.
+        # So accept the stored plan if it matches any (shape, template) the card
+        # could legitimately have been stored with. Matching only — a verified
+        # card still runs ``apply_plan`` (the current default).
+        stored_apply = plan.get("apply")
+        templates = (catalog.DEFAULT_CREWMATE_TEMPLATE, catalog.LEGACY_CREWMATE_TEMPLATE)
+        matched = kind == catalog.KIND_CREWMATE_CREATE and (
+            any(
+                _same(catalog.legacy_create_apply(params, first_greeting=g, template=t), stored_apply)
+                for g in (True, False)
+                for t in templates
+            )
+            or any(
+                _same(catalog.current_create_apply(params, t), stored_apply)
+                for t in templates
+            )
+        )
+        if not matched:
             return None
         if status == STATUS_APPLYING or status not in _PRE_APPLY_STATUSES:
             apply_plan = plan["apply"]

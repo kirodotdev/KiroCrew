@@ -17,6 +17,7 @@ from kiro_crew.agent_files import (
 from kiro_crew.agent_files import GUEST_AGENT_FILENAME as _GUEST_AGENT_FILENAME
 from kiro_crew.agent_files import KNOWLEDGE_AGENT_FILENAME as _KNOWLEDGE_AGENT_FILENAME
 from kiro_crew.agent_files import LITE_AGENT_FILENAME as _LITE_AGENT_FILENAME
+from kiro_crew.agent_files import MATE_CONDUCTOR_AGENT_FILENAME as _MATE_CONDUCTOR_AGENT_FILENAME
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
 from kiro_crew.agent_files import TEAM_LEAD_AGENT_FILENAME as _TEAM_LEAD_AGENT_FILENAME
 from kiro_crew.agent_materialization import auto_approve, managed_mcp, skill_resources
@@ -50,6 +51,152 @@ def _install_guest_agent() -> None:
     auto_approve.write_governed_spec(
         guest_path, guest_config, source="_install_guest_agent", kas_policy="none"
     )
+
+
+def _install_mate_conductor_agent() -> None:
+    """Generate and install the ``kirocrew-mate-conductor`` agent config.
+
+    The agent a crewmate's own chat runs on: a **dispatch-only conductor**. It
+    is derived from the default template (``build_agent_config()`` — for the
+    resolved MCP invocations, the security hooks and the operator's ``agent.json``
+    governance block), and then NARROWED to the shape
+    ``rfc-mate-owned-agent-config.md`` §5.0 / migration step 1 describes:
+
+    * Its ``prompt`` is the source charter ``_MATE_CONDUCTOR_SYSTEM_PROMPT`` —
+      plan, dispatch and report; never run a work item inline.
+    * Its ``tools`` are the fixed ``_MATE_CONDUCTOR_TOOLS`` set, NOT the default
+      template's surface. Every file-writing tool (``fs_write``, ``code``) and
+      the shell (``execute_bash``) are dropped, so the "never does the work
+      itself" charter is true against the tool list and not just the prose. A
+      read-only ``fs_read`` stays so the conductor can size a request before it
+      dispatches (noted in the description).
+    * Its ``mcpServers`` are narrowed to the member platform (``kirocrew-guide``,
+      ``kirocrew-mate`` — a crewmate IS what those serve), ``kirocrew-core``,
+      and the conductor's ``kirocrew-dashboard`` + ``kirocrew-work`` additions.
+      **No user-configured MCP server is mounted**, and ``kirocrew-cron`` /
+      ``kirocrew-computer`` are dropped — the conductor dispatches rather than
+      runs, so it carries neither a user server nor a shell-class server.
+
+    Steps 2 and 3 (the source-defined worker and the per-mate JSON file) are
+    separate follow-ups; this step does not read or write
+    ``~/.kiro/mates/agents/``. The worker a mate-conductor-bound member
+    dispatches to is ``kirocrew-worker`` — mapped at the two inheritance sites
+    in ``subagent_parts/agent_policy`` and ``subagent_manager/run`` so an unnamed
+    ``spawn_run`` does NOT re-run this write-less, shell-less conductor as its own
+    worker.
+
+    The operator's own ``permissions`` block is carried over from the installed
+    ``kirocrew.json`` (``_carry_installed_permissions``). ``build_agent_config()``
+    reads only the shipped defaults and ``agent.json``, never the installed
+    default spec, so a KAS deny an operator hand-wrote into ``kirocrew.json`` (a
+    ``web_fetch`` deny, say) would otherwise never reach the conductor and KAS
+    would silently auto-approve it for every crewmate chat. A
+    crewmate's chat must be bound by at least the same restrictions the default
+    it replaced carried.
+    """
+    config = agent_mod.build_agent_config()
+    _carry_installed_permissions(config)
+    config["name"] = "kirocrew-mate-conductor"
+    config["description"] = (
+        "The agent a crewmate's own chat runs on. A dispatch-only conductor: it "
+        "plans, dispatches work to a worker, and reports back, and never does a "
+        "work item's work itself. It has read-only file access (no fs_write, no "
+        "code), no shell, and no user-configured MCP server."
+    )
+    config["prompt"] = agent_mod._MATE_CONDUCTOR_SYSTEM_PROMPT
+    # The two skills the charter leans on are reachable from a custom template
+    # only when mapped: ``dashboard`` (how it changes the page it shows the
+    # person) and ``goal-conductor`` (the dispatch/ledger operating procedure).
+    skill_resources.map_prompt_skills(config, "goal-conductor", "dashboard")
+    config["tools"] = list(agent_mod._MATE_CONDUCTOR_TOOLS)
+    config["mcpServers"] = _mate_conductor_mcp_servers(config)
+    # ``allowedTools`` = the conductor's own core verbs (spawn/dispatch + the
+    # read/create-only rest) plus the member platform grants a crewmate already
+    # carries (guide + mate + the member dashboard/work verbs). Filtered through
+    # the governance ceiling by ``write_governed_spec`` -> the usual
+    # ``_apply_allowed_tools_ceiling`` path, so a grant above the operator's
+    # ceiling is dropped, not shipped.
+    config["allowedTools"] = [
+        "tool_search",
+        *agent_mod._MATE_CONDUCTOR_CORE_GRANTS,
+        *agent_mod._GUIDE_AUTO_GRANTS,
+        *agent_mod._MATE_AUTO_GRANTS,
+        *agent_mod._MEMBER_DASHBOARD_GRANTS,
+        *agent_mod._LEDGER_CONDUCTOR_WORK_GRANTS,
+    ]
+    agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
+    path = agent_mod.kiro_agents_dir_path() / _MATE_CONDUCTOR_AGENT_FILENAME
+    # ``build_agent_config`` carries the operator's ``agent.json`` block -- the same
+    # one a crewmate on ``kirocrew.json`` runs under today -- so keep its ``deny``/``ask``
+    # rules and derive the allows from the (now narrowed) ``allowedTools``. The
+    # default ``"derive"`` would replace the operator's KAS deny/ask with allows
+    # derived from ``allowedTools``, silently loosening the crewmate's own ceiling.
+    auto_approve.write_governed_spec(
+        path, config, source="_install_mate_conductor_agent", kas_policy="inherit_narrowing"
+    )
+    agent_mod.logger.info("Installed mate conductor agent config: %s", path)
+
+
+def _mate_conductor_mcp_servers(config: dict) -> dict:
+    """The narrowed ``mcpServers`` map the mate conductor carries.
+
+    Keeps the member platform (``kirocrew-guide``, ``kirocrew-mate``) and
+    ``kirocrew-core`` from the derived default, drops every other server — most
+    importantly every user-configured one and the shell-class ``kirocrew-computer``
+    / scheduler ``kirocrew-cron`` — then adds the conductor's own
+    ``kirocrew-dashboard`` (widgets + session control) and ``kirocrew-work``
+    (the ledger) the same way ``conductor_agents._conductor_mcp_servers`` does.
+    A dispatch-only conductor carries no user server by design (§5.0): the user's
+    servers belong to the WORKER it spawns, never to it.
+    """
+    src = config.get("mcpServers", {}) or {}
+    keep = (agent_mod._GUIDE_SERVER, agent_mod._MATE_SERVER, "kirocrew-core")
+    narrowed: dict = {k: src[k] for k in keep if k in src}
+    dash_cmd, dash_args = agent_mod._kirocrew_mcp_invocation("mcp-dashboard")
+    dash_entry: dict = {"command": dash_cmd, "args": dash_args}
+    if managed_mcp._mcp_registry_mode():
+        dash_entry["type"] = managed_mcp._MCP_REGISTRY_TYPE
+    dash_env = managed_mcp._managed_mcp_env()
+    if dash_env:
+        dash_entry["env"] = dash_env
+    narrowed["kirocrew-dashboard"] = dash_entry
+    narrowed["kirocrew-work"] = managed_mcp._managed_opt_in_entry("mcp-work")
+    return narrowed
+
+
+def _carry_installed_permissions(config: dict) -> None:
+    """Carry the operator's ``permissions`` block from the installed
+    ``kirocrew.json`` into *config*, in place.
+
+    ``build_agent_config()`` reads only the shipped defaults and ``agent.json``;
+    it never reads the installed ``~/.kiro/agents/kirocrew.json``, where an
+    operator may have hand-written a ``permissions`` block (e.g. a KAS
+    ``web_fetch`` deny). A crewmate's chat replacing that default must be bound by
+    at least the same restrictions, or KAS would silently auto-approve calls the
+    operator denied. ``write_governed_spec``'s ``inherit_narrowing``
+    can only keep a deny already present in the config it is handed, so the block
+    must be merged in BEFORE the governed write.
+
+    The installed default's block takes precedence over the shipped one when both
+    name a key: the operator's edit is the stricter, intended rule. Read is
+    best-effort -- on a fresh install (no file yet) or an unreadable spec, the
+    shipped ``agent.json``-derived block build_agent_config already carries stands.
+    This runs AFTER ``write_default_spec`` in ``rebuild_agent_config``, so on a
+    normal boot the file is present and freshly assembled.
+    """
+    path = agent_mod.kiro_agents_dir_path() / agent_mod.AGENT_FILENAME
+    try:
+        installed = agent_mod.loads_user_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(installed, dict):
+        return
+    installed_perms = installed.get("permissions")
+    if not isinstance(installed_perms, dict):
+        return
+    merged = dict(config.get("permissions") or {})
+    merged.update(installed_perms)
+    config["permissions"] = merged
 
 
 def _install_lite_agent_fallback() -> None:

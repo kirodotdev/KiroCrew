@@ -456,6 +456,22 @@ class _GateMixin(ManagerComponent):
         # only when the parent's spec declares the key -- omitted is "allow
         # all", the unchanged case. An intersection with the governance gate
         # above: both must admit.
+        #
+        # The effective template is the WORKER route when the inherited template
+        # is the dispatch-only mate conductor: an unnamed spawn by a
+        # conductor-bound member runs ``kirocrew-worker``, not the conductor
+        # (``worker_route_for_template``; applied for real at dispatch in
+        # ``run.py``). The allowlist must vet the agent that actually launches,
+        # or an operator allowlist admitting the conductor but excluding the
+        # worker would be silently bypassed. Only the inheritance path is routed
+        # (``not agent``), exactly as the dispatch site does.
+        from kiro_crew.agent_files import worker_route_for_template
+
+        _effective_template = execution.template_id
+        if not agent:
+            _routed_template = worker_route_for_template(execution.template_id)
+            if _routed_template:
+                _effective_template = _routed_template
         # ``_parent_spawn_policy`` is the event-loop callers' OFF-loop read
         # (``spawn_async``, ``/api/spawn`` and the durable pump resolve it
         # through ``to_thread``). The inline fallback serves the synchronous
@@ -465,7 +481,7 @@ class _GateMixin(ManagerComponent):
         if _gate and _parent_spawn_policy is None:
             _parent_spawn_policy = parent_spawn_policy(parent_session_key)
         allowlist_err = (
-            _vet_parent_available_agents(_parent_spawn_policy, execution.template_id, app=app)
+            _vet_parent_available_agents(_parent_spawn_policy, _effective_template, app=app)
             if _gate and _parent_spawn_policy is not None
             else None
         )
@@ -481,7 +497,7 @@ class _GateMixin(ManagerComponent):
                 outcome="denied",
                 error=allowlist_err if _persistent_diagnostics else "spawn denied by agent spec",
                 metadata=(
-                    {"agent": execution.template_id, **_task_audit}
+                    {"agent": _effective_template, **_task_audit}
                     if _persistent_diagnostics
                     else _task_audit
                 ),

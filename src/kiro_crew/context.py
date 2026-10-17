@@ -1082,14 +1082,18 @@ _INCLUDE_CREW_CONTEXT_CACHE: dict[str, bool] = {}
 def _agent_includes_crew_context(agent: str | None) -> bool:
     """Whether to inject the Crew's dashboard-contract context for *agent*.
 
-    Opt-out, defaulting to inject. The built-in ``kirocrew`` agent and an empty
-    agent always return ``True`` (never a custom agent, so nothing to opt out of).
-    A CUSTOM agent injects unless its materialized JSON explicitly sets
-    ``includeCrewContext: false`` — so a plain custom agent with no flag still gets
-    the critical rules, exactly as it did before the opt-out existed. Memoized by
-    agent name to keep the per-turn ``build_message`` read off the JSON scan path.
+    Opt-out, defaulting to inject. A built-in default agent
+    (:func:`~kiro_crew.agent_files.is_kirocrew_default_agent` -- ``kirocrew`` or the
+    mate conductor) and an empty agent always return ``True`` (never a custom
+    agent, so nothing to opt out of). A CUSTOM agent injects unless its
+    materialized JSON explicitly sets ``includeCrewContext: false`` -- so a plain
+    custom agent with no flag still gets the critical rules, exactly as it did
+    before the opt-out existed. Memoized by agent name to keep the per-turn
+    ``build_message`` read off the JSON scan path.
     """
-    if not agent or agent == "kirocrew":
+    from kiro_crew.agent_files import is_kirocrew_default_agent
+
+    if not agent or is_kirocrew_default_agent(agent):
         return True
     cached = _INCLUDE_CREW_CONTEXT_CACHE.get(agent)
     if cached is None:
@@ -1268,11 +1272,13 @@ def _skills_injection_plan(
     hand-copied second gate is exactly what let the re-injection path ship
     without scoping, handing a mapped agent the catalog its mapping excludes.
     """
+    from kiro_crew.agent_files import is_kirocrew_default_agent
+
     inherit = provider_type == PROVIDER_ACP
     globs = (
         agent_skill_globs(agent, project_dir=project_dir, inherit_defaults=inherit) if agent else []
     )
-    is_custom = bool(agent) and agent != "kirocrew"
+    is_custom = bool(agent) and not is_kirocrew_default_agent(agent)
     return (bool(globs) or not is_custom), globs
 
 

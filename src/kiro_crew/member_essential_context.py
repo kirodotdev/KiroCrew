@@ -868,7 +868,9 @@ def documents_for_member(
 
     spec_path = resolve_template_path(template, project)
     if spec_path is None:
-        if template != "kirocrew":
+        from kiro_crew.agent_files import is_kirocrew_default_agent
+
+        if not is_kirocrew_default_agent(template):
             raise MemberEssentialContextError(f"Essential template {template!r}: not found")
         return _finish()
     spec = _read_agent_spec(spec_path, operation="member_essentials", source="context")
