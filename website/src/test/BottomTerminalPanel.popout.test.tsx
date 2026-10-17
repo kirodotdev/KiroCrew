@@ -20,7 +20,7 @@ import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import { TerminalTabsView, TerminalDetachedBar } from '../components/BottomTerminalPanel'
 import {
-  __resetBottomTerminal, openBottomTerminal, addTab, useBottomTerminal,
+  __resetBottomTerminal, openBottomTerminal, closeBottomTerminal, addTab, isBottomTerminalOpen, useBottomTerminal,
 } from '../hooks/useBottomTerminal'
 import { disposeTerminalConnection } from '../utils/terminalRegistry'
 import { openPopout, isPopoutOpen, focusPopout, bringBack, returnSelfToMain } from '../utils/terminalPopout'
@@ -134,6 +134,18 @@ describe('TerminalDetachedBar (main window while popped out)', () => {
     // ...and re-dock only on the explicit Return action.
     await userEvent.click(screen.getByRole('button', { name: 'Return to dock' }))
     expect(bringBack).toHaveBeenCalledTimes(1)
+  })
+
+  it('Return opens the panel in THIS window even when its own flag was off', async () => {
+    // A second dashboard tab opened after the pop-out: it shares the tab list
+    // but its per-window `open` flag is false. "Return" means re-dock here.
+    openBottomTerminal()
+    closeBottomTerminal()
+    expect(isBottomTerminalOpen()).toBe(false)
+    renderWithProviders(<TerminalDetachedBar />)
+    await userEvent.click(screen.getByRole('button', { name: 'Return to dock' }))
+    expect(bringBack).toHaveBeenCalledTimes(1)
+    expect(isBottomTerminalOpen()).toBe(true)
   })
 })
 
