@@ -26,7 +26,7 @@ Status: draft. Acceptance requested from a maintainer; the status flips to `acce
 | 2 | Who owns memory when work runs on a crew | A the crew owns its own; B crew-authoritative with a hub cache; C explicit per-task brief | **A now. C only if asked for. B is not proposed here** |
 | 3 | What happens when the crew is unreachable | A refuse; B refuse, with an explicit per-call local retry; C silent fallback | **A now, B only for a placement that never started. Never C** |
 
-Decision 2 gates the rest: a routing or fallback rule is only safe to write once it is known whose memory the routed work reads and writes. Decide 2 first.
+Decision 2 gates the rest: a routing or fallback rule (1 B, 3 B) is only safe to write once it is known whose memory the routed work reads and writes. Decide 2 first. Explicit placement (1 A) does not wait for that ruling: it extends Decision 2 A, the status quo for crew sessions, to remote spawns, so accepting #12821 accepts Decision 2 A for spawns (section 6, Phase 1).
 
 ## 2. What exists, so none of it is redesigned
 
@@ -37,7 +37,7 @@ Decision 2 gates the rest: a routing or fallback rule is only safe to write once
 | One Sessions list across crews, grouped per machine | On main, same preview | `useRemoteCrewChat` in `website/src/hooks/usePreviewFlag.ts`, called from `sessionSources.ts`; `read_peer_slots` in `src/kiro_crew/dashboard/handlers_instances.py` |
 | Send a copy of a session to a crew | On main | `api_instances_send_session` in `handlers_instances.py`, route in `dashboard/routes/connections.py`; `docs/system-specs/modules/instances.md` §14 |
 | The older turn relay and "bound local slot" model | Gone: `rfc-remote-crew-sidebar` wave 4 ([#17642](https://github.com/kirodotdev/KiroCrew/pull/17642), [#17662](https://github.com/kirodotdev/KiroCrew/pull/17662)). `remote_already_bound` and `remote_not_connected` have no hit under `src/` | `git grep` at the sha above. The 2026-09-25 triage cites both codes at an earlier sha; they no longer apply |
-| Remote subagent executor: `spawn_run(executor="remote")` | **Open**, [#12821](https://github.com/kirodotdev/KiroCrew/pull/12821). Not on main: `instances.remote_subagents`, `remote_spawn` and `spawn_enforces` have no hit; `src/kiro_crew/dashboard/remote_subagents.py` does not exist. Reviewer `cruisercohen` re-reviewed head `026161ec5` on 2026-10-16 and found every point from his previous review met. A `CHANGES_REQUESTED` review of 2026-09-25 by `bolichen97` is still recorded, and the PR carries a merge conflict | `gh pr view 12821` on 2026-10-17 |
+| Remote subagent executor: `spawn_run(executor="remote")` | **Open**, [#12821](https://github.com/kirodotdev/KiroCrew/pull/12821). Not on main: `instances.remote_subagents`, `remote_spawn` and `spawn_enforces` have no hit; `src/kiro_crew/dashboard/remote_subagents.py` does not exist. Its review state lives on the PR | `git grep` at the sha above |
 | Fetch a crew's session back to the hub | **Open**, [#19440](https://github.com/kirodotdev/KiroCrew/pull/19440). `fetch-session` has no hit on main | `gh pr view` |
 | Send a folder's sessions to a crew | **Open**, [#19859](https://github.com/kirodotdev/KiroCrew/pull/19859). `SendFolderToInstanceSubmenu` has no hit on main | `gh pr view` |
 | File hand-off to and from a crew | **Open RFC**, [#19460](https://github.com/kirodotdev/KiroCrew/pull/19460), `rfc-remote-crew-file-handoff` | `gh pr view` |
@@ -89,7 +89,7 @@ Each phase is independently shippable and abandonable. Phase 1 is an existing PR
 
 | Phase | What | Depends on | Exit criteria |
 |---|---|---|---|
-| 1 | [#12821](https://github.com/kirodotdev/KiroCrew/pull/12821) as it stands: explicit remote placement, refuse when no crew is connected | Nothing in this RFC. It implements Decision 1 A, Decision 2 A and Decision 3 A as written | Merged; `spawn_run` default stays `executor="local"` and every local call behaves as before |
+| 1 | [#12821](https://github.com/kirodotdev/KiroCrew/pull/12821) as it stands: explicit remote placement, refuse when no crew is connected | No ruling in this RFC. It implements Decision 1 A and Decision 3 A, and extends Decision 2 A, the status quo for crew sessions, to remote spawns: accepting #12821 accepts Decision 2 A for spawns | Merged; `spawn_run` default stays `executor="local"` and every local call behaves as before |
 | 2 | Documentation of Decision 2 A: `instances.md` §14.3 and the user guide state that remote work uses the crew's memory and that `memory_mode` is sent | Decision 2 accepted | A reader of `remote-crew.md` can say which memory a crew session and a remote subagent use |
 | 3 | Optional: Decision 1 B (overflow policy) and Decision 3 B (explicit local retry for never-started placements) | Phase 1 merged; Decisions 1 and 3 accepted | An opt-in switch, default off; a run's receipt names where it ran; a started remote run is never re-run locally (test) |
 | — | Not scheduled: Decision 2 B (authoritative memory) | A separate RFC | — |
