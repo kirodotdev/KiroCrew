@@ -54,7 +54,7 @@ Verified on origin/main at the commit named in `audited-at`.
 - A template id must match `TEMPLATE_ID_RE` (lowercase letters, digits and dashes, 1-64 characters, starting and ending with a letter or digit; consecutive dashes are allowed; no dots). `template_for_crew` gives a crew the template whose id equals its slugified name, else `default`. `available_templates` lists both roots and backs the `panel_templates` MCP tool (`api_agent_panel_templates` in `dashboard/handlers/agent_panel.py`).
 - The module docstring states the trust split: the template is "HTML a human wrote and reviewed", and only the data comes from the crew. `panel-templates` is sealed read-only for a sandboxed shell (`sandbox._CREW_READONLY_LEAVES`), write-protected for agent file tools (`security/paths.py`, the `panel-templates` entry), and refused when it is a symlink (`_real_dir_under_data_home`, `sandbox._CREW_NO_ALIAS_LEAVES`).
 - Composition happens on READ: `render_record` calls `resolve_template` for the stored id on every drawer open, and `compose` fills `DATA_MARKER` with an inert `application/json` island (`kirocrew-panel-data`). A stored id that does not resolve raises `PanelError("unknown_template")`, which `_read_and_compose` turns into a 503 `panel_render_failed` from `api_member_panel`.
-- App Kit has no template contribution. `Contributes` in `apps/manifest.py` holds `commands`, `sessionControls`, `panelTabs` (chat side-panel tabs, unrelated to the Crew Webview) and `fileMenuItems`.
+- App Kit has no template contribution. `Contributes` in `apps/manifest_contributes.py` holds `commands`, `sessionControls`, `panelTabs` (chat side-panel tabs, unrelated to the Crew Webview) and `fileMenuItems`.
 
 ### 2.2 Frame updates
 

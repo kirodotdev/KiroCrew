@@ -126,9 +126,9 @@ the new gateway's reconciliation marks its runs `INTERRUPTED`, recording that th
 gateway restarted while the run was executing and that no runner is registered for
 its kind — a backend-process runner has no registration path, so the resolved
 record's `interrupt_cause` is `runner_unregistered` (`job_sdk.py`,
-`JobSDK.reconcile` and `CAUSE_RUNNER_UNREGISTERED`).
+`JobSDK.reconcile`; `job_sdk_records.py`, `CAUSE_RUNNER_UNREGISTERED`).
 `INTERRUPTED` is a member of `TERMINAL_STATES`, so that record is neither
-reconciled again nor resumed (`job_sdk.py`, `TERMINAL_STATES`).
+reconciled again nor resumed (`job_sdk_records.py`, `TERMINAL_STATES`).
 
 This scope is load-bearing: an app whose run registry is process memory reports
 nothing after a restart, and reporting nothing is accurate, while a durable record

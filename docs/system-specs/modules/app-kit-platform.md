@@ -2144,7 +2144,7 @@ authorization bypass). The carve-out is the primary boundary and binds even an
 app already published under one of these names; the `/apps/<name>` reverse-proxy
 branch is a distinct namespace whose literal-page reservations live in
 `RESERVED_ROUTE_APP_NAMES` and is intentionally left unchanged. As
-defense-in-depth for NEW apps, `apps/manifest.py` mirrors the same set as
+defense-in-depth for NEW apps, `apps/manifest_names.py` mirrors the same set as
 `RESERVED_APP_PATH_SEGMENTS` and rejects those names at validation
 (`app_name_error`, `is_reserved_app_name`); reserving a name is a one-way door, so
 that backstop only refuses names not yet admitted while the carve-out covers any
@@ -2157,8 +2157,8 @@ resolution), `dashboard/state.py` (`_send_ws_all`, `_ws_client_allowed`,
 `_serialize_for_client`), `dashboard/state_parts/slot_directory.py` (`SlotOrigin`),
 `dashboard/token_auth_app_scope.py`
 (`_APP_TOKEN_IMPLICIT_ALLOW`, `app_token_path_allowed`, `_app_owns_path`,
-`RESERVED_APP_PATH_SEGMENTS`), `apps/manifest.py`
-(`_granted_list`, `RESERVED_APP_PATH_SEGMENTS`), `dashboard/slot_ownership.py`
+`RESERVED_APP_PATH_SEGMENTS`), `apps/manifest_sections.py`
+(`_granted_list`), `apps/manifest_names.py` (`RESERVED_APP_PATH_SEGMENTS`), `dashboard/slot_ownership.py`
 (`slot_ownership_middleware`, `SLOT_ROUTE_POLICIES`, `deny_app_slot_access`,
 `app_reserved_key_reason`, `transcript_acquisition_reason`, `app_holds_gateway_key`),
 `dashboard/chat_api/app_admission.py` (`_app_slot_acquisition_denial`,
@@ -3420,8 +3420,8 @@ load their own ESM runtime from a CDN through an import map and are confined by
 the response CSP. §13 covers their token scoping;
 `src/kiro_crew/docs/mcp-apps.md` covers the iframe contract itself.
 
-Writers: `website/src/components/AppHost.tsx`, `apps/manifest.py` (the manifest
-`entry` field), `apps/routes.py` (static UI serving),
+Writers: `website/src/components/AppHost.tsx`, `apps/manifest_sections.py` (the
+manifest `entry` field), `apps/routes.py` (static UI serving),
 `dashboard/server.py` (the CSP allowances the CDN import map needs).
 
 ## 19. Spec Builder's backend is composed by lifecycle owner
@@ -3784,7 +3784,7 @@ that stays the backend's own check.
 The flag is part of the manifest's `backend` dict, so an admission signature
 covers it. Only the JSON boolean `true` turns it on.
 
-Writers: `apps/routes.py`, `apps/proxy_auth.py`, `apps/manifest.py`. Tests:
+Writers: `apps/routes.py`, `apps/proxy_auth.py`, `apps/manifest_sections.py`. Tests:
 `test/test_app_proxy_auth.py`, `test/test_app_manifest.py`,
 `test/test_gateway_appkit_endpoints.py`.
 
@@ -3814,9 +3814,64 @@ as well: `supports_platform` happens to match a raw `sys.platform` value, but th
 manifest may use are the three keys. `platform.arch` has no reader, so it has no
 vocabulary to enforce.
 
-Writers: `apps/manifest.py` (`PlatformConfig.validate`, `AppManifest.validate`). Tests:
+Writers: `apps/manifest_sections.py` (`PlatformConfig.validate`), `apps/manifest.py`
+(`AppManifest.validate`). Tests:
 `test/test_app_manifest_platform_vocabulary.py`,
 `test/test_builtin_app_platform_declarations.py`.
+
+## 26. The app manifest and the Job SDK are composed by owner
+
+The manifest parser and validator (`apps/manifest.py`) and the Job SDK
+(`apps/job_sdk.py`) are each one import path over sibling owner modules. Their
+behaviour is specified in §5.1, §13, §18, §24 and §25 above, in the
+[manifest reference](../../app-kit/manifest-reference.md) and in the
+[durable-jobs RFC](../../request-for-change/rfc-app-sdk-durable-jobs-and-view-state.md).
+This section records which module owns which part, so a change lands in its owner.
+
+| Module under `src/kiro_crew/apps/` | Owns |
+|---|---|
+| `manifest.py` | The facade: the only import path and patch surface, plus `AppManifest` (parse, validate, serialize, `signing_payload`), the cron grant rule (`cron_permission_error`), the endpoint allowlist every app-declared URL is checked against (`app_endpoint_allowed`, `CORE_APP_ROUTE_SEGMENTS`), and the provisioning predicates `runtime_provisions_requirements` composes |
+| `manifest_names.py` | The app-name contract (`app_name_error`, `is_reserved_app_name`, the reserved sets, `KEBAB_RE`) and the version grammar (`SEMVER_RE`) |
+| `manifest_containment.py` | App-root containment of declared resource paths through the shared path screen (`_app_path_refusal`, `screen_app_path`, the `Containment` answers) and of the agents a contributed command selects (`_declared_agent_names`, `contain_command_agents`) |
+| `manifest_sections.py` | The typed `app.json` blocks other than `contributes`: `CronEntry`, `UIConfig` with its pages, overlays and sidebar, `BackendConfig` with `HooksConfig`, `Permissions`, `SetupConfig`, `Dependencies`, `PlatformConfig`, `PublishProviderConfig` and `NotificationsConfig` |
+| `manifest_contributes.py` | The `contributes` block: session controls, Command Bar commands and their argument, side-panel tabs, file-menu rows, `Contributes`, and the caps and grammars the dashboard mirrors for them |
+| `job_sdk.py` | The facade, plus `JobSDK`, the per-app `JobStore`, the process-wide SDK registry, the interruption message `reconcile` composes (`_interrupt_error`), the process identity (`_ORIGIN`) and the tunables only they read |
+| `job_sdk_records.py` | The run record (`JobRun`), its lifecycle states and interruption causes, the params bounds and the ingest redaction (`_validated_params`, `_redact`), the `JobHandle` a runner holds, and the Job SDK exceptions |
+| `job_sdk_returns.py` | What a runner hands back: `_undriven_result`, `_stop_returned_work`, `_close_quietly`, and the registration-time `_lazy_call_shape` |
+
+Imports only point down. `manifest_sections` imports `KEBAB_RE` from `manifest_names`;
+`manifest_containment`, `manifest_contributes`, `job_sdk_records` and `job_sdk_returns`
+import no owner, and no owner imports its facade, even for type checking. Each facade
+imports every name its owners define
+at its own import, private names included, so every `from kiro_crew.apps.manifest
+import ...` and every `kiro_crew.apps.job_sdk.<name>` read keeps one path and the same
+object.
+
+The re-exports are plain bindings, so a write to `manifest.<name>` or `job_sdk.<name>`
+reaches the facade's own readers only. That is the reach the patched names need: tests
+patch `job_sdk.read_bytes_with_retry`, `job_sdk.sel` and `job_sdk._CLEANUP_JOIN_SECS`,
+which only `JobStore` and `JobSDK` read, and `manifest.sys.platform`, which is the
+shared `sys` module `PlatformConfig` reads. `test_manifest_facade.py` and
+`test_job_sdk_facade.py` pin that no owner reads or binds a name the test trees patch
+through its facade, and the layering above. The Job SDK owners log through the
+`kiro_crew.apps.job_sdk` logger; the Job SDK's three exceptions and the manifest's
+`Containment` enum keep the facade as their `__module__`, so a traceback, a repr or a
+pickle names the path callers import.
+
+The placements are constraints rather than style. `CORE_APP_ROUTE_SEGMENTS` stays in
+`manifest.py` because `website/src/test/fileMenuContributions.test.tsx` reads its
+literal there. `JobSDK._execute` stays beside `_write_terminal` in `job_sdk.py` because
+`test_job_sdk.py` reads the text between them there; its two one-site counts (the
+interruption fields' assignments, the message table's spellings) read the facade joined
+with its owners, so a second site in any of them fails. `test_setup_hooks_contract.py`
+excludes `manifest_sections.py`, where every `setup` hook is declared and serialized,
+from its runtime scan; `test_agent_spec_hardened_reads.py` keys the hardened agent-spec
+read under `manifest_containment.py`; and `NON_EGRESS_REDACTION_MODULES` names
+`apps/job_sdk_records.py`, whose `_redact` is the ingest scrub.
+
+Writers: `apps/manifest.py`, `apps/manifest_names.py`, `apps/manifest_containment.py`,
+`apps/manifest_sections.py`, `apps/manifest_contributes.py`, `apps/job_sdk.py`,
+`apps/job_sdk_records.py`, `apps/job_sdk_returns.py`.
 
 ## Windows stale-backend cleanup capacity
 

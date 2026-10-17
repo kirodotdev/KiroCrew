@@ -155,7 +155,7 @@ eviction.
 ## The overlay seam
 
 `ui.overlays` is a manifest array of `{id, replaces}`; both fields are required and
-kebab-validated (`_OVERLAY_SLUG_RE` in `apps/manifest.py`). `replaces` names a HOST SLOT, and
+kebab-validated (`_OVERLAY_SLUG_RE` in `apps/manifest_sections.py`). `replaces` names a HOST SLOT, and
 the only slot that exists is `quick-search` (`HOST_OVERLAY_SLOTS` in
 `website/src/apps/overlayRegistry.ts`).
 

@@ -43,7 +43,7 @@ The Crewmates page does not change. The crewmate shows as an ordinary crewmate. 
 | Work ledger board | `require_owner_dashboard_request` | `src/kiro_crew/dashboard/handlers/work_ledger_board.py` | An app cannot read goals |
 | App-shipped agents | Manifest `agents` installed as `<app>--<agent>.json` | `src/kiro_crew/apps/bridges.py` `_register_agents` | The owner can create a crewmate on one; nothing links the two for reads |
 | App backend context | `cron`, `events`, `storage`, `spawn`, `job`, `audit`, … — no crewmate handle | `src/kiro_crew/apps/context.py` `AppContext` | No read handle |
-| `permissions.sessionApproval` | Lets an app act on the user's own sessions after a consent re-prompt | `src/kiro_crew/apps/manifest.py` `Permissions`, `apps/manager.py` | Must not reach this tree; narrowed in § 4.5 |
+| `permissions.sessionApproval` | Lets an app act on the user's own sessions after a consent re-prompt | `src/kiro_crew/apps/manifest_sections.py` `Permissions`, `apps/manager.py` | Must not reach this tree; narrowed in § 4.5 |
 
 Built-in apps reach the crew log by importing `kiro_crew` in the gateway process. An external app cannot, and core code written for one app is what [rfc-everything-is-an-app.md](rfc-everything-is-an-app.md) rules out.
 
@@ -102,7 +102,7 @@ Each implementation PR updates `docs/app-kit/manifest-reference.md` and `docs/ap
 
 ### 4.5 Narrowing `permissions.sessionApproval`
 
-This is the one existing gate the RFC changes, so it is called out as a behaviour change rather than left implicit. Today `permissions.sessionApproval` lets an app act on the user's own sessions after a consent re-prompt (`apps/manifest.py` `Permissions`, `apps/manager.py`), with no concept of a crewmate tree to exclude. Once the tree exists, an app must not reach a session inside a linked crewmate's tree through that permission — otherwise an app could read-only-link a crewmate and then act on its sessions by the side door, defeating § 7.
+This is the one existing gate the RFC changes, so it is called out as a behaviour change rather than left implicit. Today `permissions.sessionApproval` lets an app act on the user's own sessions after a consent re-prompt (`apps/manifest_sections.py` `Permissions`, `apps/manager.py`), with no concept of a crewmate tree to exclude. Once the tree exists, an app must not reach a session inside a linked crewmate's tree through that permission — otherwise an app could read-only-link a crewmate and then act on its sessions by the side door, defeating § 7.
 
 So `sessionApproval` is narrowed: a session that is a member of any linked crewmate's tree is removed from the set `sessionApproval` can act on. This is a reduction of an existing capability, carries its own phase (Phase 0 below), and must land **before** Phase 2 exposes the tree — if the tree became readable while `sessionApproval` still reached its sessions, the leak would be open for the gap between the phases.
 

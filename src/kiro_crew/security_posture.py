@@ -2041,6 +2041,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # apps/job_routes.py, the registered sink for this surface. The on-disk
         # file is not the egress boundary the panel counts.
         "apps/job_sdk.py",
+        # The run-record owner the ``apps/job_sdk.py`` facade serves: it hosts ``_redact``,
+        # the record's ingest scrub, under the facade's classification.
+        "apps/job_sdk_records.py",
         # Same shape: hosts _redact_memory_field, the shared recursive scrubber
         # for memory fields. It owns no output of its own — the handler modules
         # that call it (memory.py, cron.py) are the covered surfaces.

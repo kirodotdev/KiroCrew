@@ -724,7 +724,7 @@ App manifests (`app.json`) may declare crons with `"enabled": false` — a cron
 the app ships disabled-by-design (e.g. a nightly job that needs user
 configuration before it is useful). The contract, end to end:
 
-- **Parse**: `CronEntry.enabled` (`apps/manifest.py`, default `true`). The value
+- **Parse**: `CronEntry.enabled` (`apps/manifest_sections.py`, default `true`). The value
   must be a JSON boolean — a non-boolean (e.g. the string `"false"`, truthy
   under coercion) is rejected by `AppManifest.validate()` with a clear error;
   coercion remains only on the self-written `app-crons.json` read path.

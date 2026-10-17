@@ -1168,7 +1168,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     ],
     # A manifest's `commands[].agent` is checked against the names its own source
     # specs declare; those live in the app root, which the app can rewrite.
-    "kiro_crew/apps/manifest.py": [("app_manifest_agent_names", "unknown")],
+    "kiro_crew/apps/manifest_containment.py": [("app_manifest_agent_names", "unknown")],
 }
 
 

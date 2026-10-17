@@ -10,7 +10,7 @@ gated anything here.
 
 Pinned because the failure it guarded against was silent even though the
 mechanism was misdiagnosed. ``platform.os`` defaults to ``["macos", "linux"]``
-(``kiro_crew/apps/manifest.py``), and this app is default-ON and ``replaces``
+(``kiro_crew/apps/manifest_sections.py``), and this app is default-ON and ``replaces``
 quick-search rather than adding a surface of its own. Declaring the omitted
 default on a Windows host would have misreported the app as unsupported on the
 App Store detail page, while this same manifest's ``configuration`` copy

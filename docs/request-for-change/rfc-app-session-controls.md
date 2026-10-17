@@ -63,7 +63,7 @@ Verified on main `1d705a03f` (2026-09-01):
   now"*, and no amount of calling it will.
 
 - **The manifest's UI surfaces are all session-blind.** `UIConfig`
-  (`UIConfig` in `src/kiro_crew/apps/manifest.py`) declares `entry`, `pages`, `overlays`
+  (`UIConfig` in `src/kiro_crew/apps/manifest_sections.py`) declares `entry`, `pages`, `overlays`
   and `sidebar`. A `UIPage` is routed and full-surface; a `UIOverlay`
   (`UIOverlay`) is explicitly *"not routed: it floats above whatever the
   user is looking at"*, and its required `replaces` field names a host slot the
@@ -123,7 +123,7 @@ commands #7423 established there:
 
 Validation, enforced at install:
 
-- `MAX_SESSION_CONTROLS_PER_APP = 2` (`manifest.py`). A cap rather than an
+- `MAX_SESSION_CONTROLS_PER_APP = 2` (`manifest_contributes.py`). A cap rather than an
   unbounded list, because the composer is a fixed-width surface shared with the
   host's own chips. This bounds one manifest; §4.2 bounds the bar.
 - `id` must match `^[a-z0-9]+(?:-[a-z0-9]+)*$`.
@@ -249,7 +249,7 @@ simply carry no state until opened.
 The change is additive in both directions.
 
 - **An app that declares nothing is unaffected.** `Contributes.from_dict` reads
-  `data.get("sessionControls", [])` (`manifest.py`), so a manifest without
+  `data.get("sessionControls", [])` (`manifest_contributes.py`), so a manifest without
   the key parses to an empty list and behaves exactly as before — no chip, no
   request, no DOM change.
 - **No existing manifest changes on disk.** `to_dict` emits the key only when

@@ -552,7 +552,7 @@ The following modules are removed in Phase 1, replaced by the federated loading 
 | Module | Purpose | Replacement |
 |--------|---------|-------------|
 | `apps/backend.py` | Spawn local HTTP servers for apps | Removed — apps don't host backends |
-| `apps/manifest.py` `BackendConfig` | Backend config in manifest | Removed from schema |
+| `apps/manifest_sections.py` `BackendConfig` | Backend config in manifest | Removed from schema |
 | `frontend/src/components/AppLoader.tsx` | iframe embedding | `AppHost.tsx` with dynamic import |
 | `frontend/src/pages/AppPage.tsx` | iframe + backend status UI | `AppHost.tsx` handles all app rendering |
 
