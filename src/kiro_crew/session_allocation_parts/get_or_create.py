@@ -416,6 +416,11 @@ async def _get_or_create_impl(
     owner = self._owner
     constants = self._deps.constants
     key = owner._fold_key(key)
+    # The app that owns this session (a dashboard app slot), an input to the
+    # session's own model resolution only. Taken out of the factory kwargs so
+    # no provider factory is handed a key it does not know; each retry below
+    # hands it back.
+    app_name = str(extra_factory_kwargs.pop("app_name", "") or "")
     from kiro_crew.execution_context import read_session_execution
 
     execution = await asyncio.to_thread(read_session_execution, key)
@@ -545,6 +550,7 @@ async def _get_or_create_impl(
             wait_if_busy=wait_if_busy,
             _won_race_retries=_won_race_retries + 1,
             start_priority=start_priority,
+            app_name=app_name,
             **extra_factory_kwargs,
         )
 
@@ -613,7 +619,14 @@ async def _get_or_create_impl(
         def resolve_model() -> str | None:
             cfg = self._deps.load_config() if preparation.revision else owner._cfg
             selected = preparation.member or agent
-            return self._deps.session_model(cfg, selected, claim_crew)
+            return self._deps.session_model(
+                cfg,
+                selected,
+                claim_crew,
+                app_name=app_name,
+                session_key=key,
+                backend_override=extra_factory_kwargs.get("backend_override"),
+            )
 
         model = await asyncio.to_thread(resolve_model)
 
@@ -1211,6 +1224,7 @@ async def _get_or_create_impl(
             wait_if_busy=wait_if_busy,
             _won_race_retries=_won_race_retries + 1,
             start_priority=start_priority,
+            app_name=app_name,
             **extra_factory_kwargs,
         )
 

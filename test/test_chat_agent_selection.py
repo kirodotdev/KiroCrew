@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from dataclasses import replace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -1083,6 +1083,11 @@ async def test_default_model_ignores_new_same_name_member_pin(tmp_path, monkeypa
     cfg = KiroCrewConfig.load()
     cfg.agents[TEMPLATE].model = "member-model-pin"
     monkeypatch.setattr(cfg, "_resolve_named_agent_model", lambda *a: "template-model-pin")
-    assert await asyncio.to_thread(chat_runner._default_session_model, cfg, slot, "") == (
-        "template-model-pin"
+    sessions = MagicMock()
+    sessions._cfg = cfg
+    # A template selection allocates with no crew claim, so the inherited default
+    # is the template's pin, never the same-named member's.
+    inherited = await chat_runner._inherited_default_model(
+        sessions, slot, slot.key, agent=TEMPLATE, crew_agent=""
     )
+    assert inherited == "template-model-pin"

@@ -442,7 +442,9 @@ class SessionManager:
             session_provider_type=lambda: _load_acp_session_provider_type(),
             unlink_session_queue=lambda session: _unlink_session_queue(session),
             unlink_queued_temp_paths=lambda kwargs: unlink_queued_temp_paths(kwargs),
-            session_model=lambda cfg, agent, crew: _session_model(cfg, agent, crew_agent=crew),
+            session_model=lambda cfg, agent, crew, **kw: _session_model(
+                cfg, agent, crew_agent=crew, **kw
+            ),
             load_config=lambda: KiroCrewConfig.load(),
             resolve_crew_identity=lambda cfg, agent, crew: _resolve_allocation_crew_identity(
                 cfg, agent, crew
@@ -1156,7 +1158,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _GEN_SUFFIX_RE,
         _MAX_ORIGIN_LINKS,
         _PERSISTENT_KEYS,
-        _SENTINEL_MODELS,
         _SIDE_PREFIX,
         _STUCK_TURN_REPORT_SECS,
         _THREAD_PREFIX,
@@ -1164,7 +1165,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _WORKFLOW_POOL_PREFIX,
         CONSOLIDATE_KEY,
         _CompactCallback,
-        _model_fallback,
         _opt_out_key,
         _RecycleCallback,
         _resolve_compact_wait_secs,

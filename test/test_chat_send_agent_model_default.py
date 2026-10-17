@@ -1,19 +1,18 @@
-"""Auto-created chat slots start their session on the global ``agent.model``.
+"""Auto-created chat slots start their session on the model the chip shows.
 
 Regression: a slot created implicitly by sending a message (``api_chat`` ->
-``get_or_create_slot`` with no model) carries ``slot.model == ""``. ``_run_chat``
-then passed ``model=slot.model or agent_model or None`` to ``get_or_create``,
-where ``agent_model`` is only the crew's own pin, so a slot on a crew that pins
-nothing handed ``None`` down and left the default to the session manager's
-config snapshot — not to :func:`resolve_effective_model`, the documented
-precedence chain the dashboard's model chip displays. The chip and the session
-could disagree.
+``get_or_create_slot`` with no model) carries ``slot.model == ""``. The chip reads
+:func:`resolve_effective_model`, the documented precedence chain, so the session
+such a slot starts must run that chain's answer too.
 
-These tests drive the REAL ``_run_chat`` and ``_eager_spawn`` bodies with a
-mocked session boundary and assert on the ``model`` kwarg ``get_or_create``
-receives, so they fail if the runner stops resolving the default. They also pin
-the persist-vs-not decision: the resolved default is passed to the session and
-is NOT written into ``slot.model``, whose empty value keeps meaning "inherit".
+The session layer owns that ladder: a slot that pins nothing (no slot pin, no
+crew pin) asks ``get_or_create`` for no model, and the allocation resolves it
+through ``session._session_model`` from the session manager's own config. These
+tests drive the REAL ``_run_chat`` and ``_eager_spawn`` bodies against a mocked
+session boundary that resolves and stamps exactly as ``SessionManager`` does (see
+:func:`_allocation_resolves`), and assert on the model the session starts on. They
+also pin the persist-vs-not decision: the resolved default is NOT written into
+``slot.model``, whose empty value keeps meaning "inherit".
 """
 
 from __future__ import annotations
@@ -34,6 +33,7 @@ from kiro_crew.dashboard.chat_runner import _eager_spawn
 from kiro_crew.member_memory_auth import bind_private_session_store
 from kiro_crew.memory_stores import provision_member_memory
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.session import _session_model as _owner_session_model
 
 #: The eager-spawn tests need a pre-warm allowance, which is zero while the
 #: host's memory posture is critical (see ``ample_host_free_memory``).
@@ -92,6 +92,43 @@ def _pin_sync_accessors(client) -> None:
     client.client.pop_pending_oauth_requests = unittest.mock.MagicMock(return_value=[])
 
 
+def _resolve_like_the_allocation(cfg: KiroCrewConfig, key: str, kwargs: dict) -> str | None:
+    """The model ``get_or_create`` starts *key* on for these kwargs.
+
+    The caller's own model when it passed one, else the session layer's own
+    ladder over the session manager's config: the call the real allocation makes.
+    """
+    return kwargs.get("model") or _owner_session_model(
+        cfg,
+        kwargs.get("agent"),
+        crew_agent=kwargs.get("crew_agent"),
+        app_name=kwargs.get("app_name", ""),
+        session_key=key,
+    )
+
+
+def _allocation_resolves(state, cfg: KiroCrewConfig) -> None:
+    """Make the mocked session boundary resolve and stamp as ``SessionManager`` does.
+
+    The session manager holds *cfg* (the watcher-refreshed config), a model-less
+    allocation resolves the ladder from it, and ``allocation_requested_model``
+    answers the stamp that allocation left.
+    """
+    state.sessions._cfg = cfg
+    stamps: dict[str, str] = {}
+    state.sessions.allocated_models = stamps
+    answer = state.sessions.get_or_create.return_value
+
+    async def _allocate(key, **kwargs):
+        stamps[key] = _resolve_like_the_allocation(cfg, key, kwargs) or ""
+        return answer
+
+    state.sessions.get_or_create.side_effect = _allocate
+    state.sessions.allocation_requested_model = unittest.mock.MagicMock(
+        side_effect=lambda key: stamps.get(key, "")
+    )
+
+
 def _turn_state(tmp_path: Path):
     builder = unittest.mock.MagicMock()
     builder.ensure_store = unittest.mock.AsyncMock(return_value=object())
@@ -99,11 +136,20 @@ def _turn_state(tmp_path: Path):
     state, client = _runner_state(tmp_path, context_builder=builder)
     _pin_sync_accessors(client)
     _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi"), _complete()])
+    _allocation_resolves(state, chat_runner.KiroCrewConfig.load())
     return state, client
 
 
 def _session_model(state) -> str | None:
+    """The model the session this turn allocated starts on, resolved at allocation."""
     state.sessions.get_or_create.assert_awaited_once()
+    return (
+        state.sessions.allocated_models.get(state.sessions.get_or_create.await_args.args[0]) or None
+    )
+
+
+def _requested(state) -> str | None:
+    """The ``model`` kwarg the turn itself handed ``get_or_create``."""
     return state.sessions.get_or_create.await_args.kwargs["model"]
 
 
@@ -134,7 +180,10 @@ def _runner_config(tmp_path, monkeypatch):
 class TestRunChatDefaultModel:
     @pytest.mark.asyncio
     async def test_fresh_slot_starts_on_the_global_default(self, tmp_path, _runner_config):
-        """slot.model == "" and no crew pin -> the session gets ``agent.model``."""
+        """slot.model == "" and no crew pin -> the session gets ``agent.model``.
+
+        The turn asks for no model: the allocation resolves the ladder itself.
+        """
         _runner_config(_config(tmp_path))
         state, _client = _turn_state(tmp_path)
         slot = _slot()
@@ -142,6 +191,7 @@ class TestRunChatDefaultModel:
 
         await _drive(state, slot)
 
+        assert _requested(state) is None
         assert _session_model(state) == GLOBAL_DEFAULT
 
     @pytest.mark.asyncio
@@ -173,6 +223,7 @@ class TestRunChatDefaultModel:
 
         await _drive(state, slot)
 
+        assert _requested(state) == CREW_PIN
         assert _session_model(state) == CREW_PIN
         assert slot.model == ""
 
@@ -214,37 +265,43 @@ class TestRunChatDefaultModel:
 
     @pytest.mark.asyncio
     async def test_resolver_failure_falls_back_to_the_old_shape(self, tmp_path, _runner_config):
-        """A resolver error must not kill the turn; the session gets ``None``."""
-        _runner_config(_config(tmp_path))
-        state, _client = _turn_state(tmp_path)
-        slot = _slot()
+        """A resolver error must not kill the turn; the session gets ``None``.
 
-        with unittest.mock.patch.object(
-            chat_runner, "resolve_effective_model", side_effect=RuntimeError("boom")
-        ):
-            await _drive(state, slot)
-
-        assert _session_model(state) is None
-        assert slot.model == ""
-
-    @pytest.mark.asyncio
-    async def test_resolver_stop_iteration_does_not_kill_the_turn(self, tmp_path, _runner_config):
-        """``StopIteration`` from the resolver is converted INSIDE the worker.
-
-        The resolve now runs through ``asyncio.to_thread``, and a
-        ``StopIteration`` cannot be delivered through a Future
-        (``set_exception`` rejects it with ``TypeError``). ``resolve_agent_bindings``
-        can raise exactly that on a malformed config, so the helper must turn
-        it into ``""`` before it reaches the thread boundary — otherwise the
-        turn dies with a ``TypeError`` that names neither the config nor the
-        resolver. The turn must complete and hand ``None`` to the session.
+        ``None`` hands the choice to the provider factory's own fallback.
         """
         _runner_config(_config(tmp_path))
         state, client = _turn_state(tmp_path)
         slot = _slot()
 
-        with unittest.mock.patch.object(
-            chat_runner, "resolve_effective_model", side_effect=StopIteration("malformed")
+        with unittest.mock.patch(
+            "kiro_crew.config.loader.resolve_effective_model", side_effect=RuntimeError("boom")
+        ):
+            await _drive(state, slot)
+
+        assert _requested(state) is None
+        assert _session_model(state) is None
+        assert slot.model == ""
+        client.stream.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_resolver_stop_iteration_does_not_kill_the_turn(self, tmp_path, _runner_config):
+        """``StopIteration`` from the resolver is converted INSIDE the worker.
+
+        The turn's inherited-default read runs through ``asyncio.to_thread``, and
+        a ``StopIteration`` cannot be delivered through a Future (``set_exception``
+        rejects it with ``TypeError``). ``resolve_agent_bindings`` can raise
+        exactly that on a malformed config, so the session resolver must turn it
+        into ``None`` before it reaches the thread boundary — otherwise the turn
+        dies with a ``TypeError`` that names neither the config nor the resolver.
+        The turn must complete and its session start on ``None``.
+        """
+        _runner_config(_config(tmp_path))
+        state, client = _turn_state(tmp_path)
+        slot = _slot()
+
+        with unittest.mock.patch(
+            "kiro_crew.config.loader.resolve_effective_model",
+            side_effect=StopIteration("malformed"),
         ):
             await _drive(state, slot)
 
@@ -255,33 +312,36 @@ class TestRunChatDefaultModel:
 
     @pytest.mark.asyncio
     async def test_default_resolve_runs_off_the_event_loop(self, tmp_path, _runner_config):
-        """The resolver globs and reads agent JSON; it must not run on the loop.
+        """The resolver globs and reads agent JSON; the turn must not run it on the loop.
 
-        Pins the ``asyncio.to_thread`` hop by observing the thread the resolver
-        actually runs on: a worker thread has no running loop, and it is not the
-        thread that drives the turn. A future inline call fails both checks.
+        Pins the ``asyncio.to_thread`` hop of the turn's inherited-default read by
+        observing the thread the resolver actually runs on: a worker thread has no
+        running loop, and it is not the thread that drives the turn. A future
+        inline call fails both checks. Only the turn's own call is observed: the
+        mocked allocation resolves inline, as a test double may.
         """
         _runner_config(_config(tmp_path))
         state, _client = _turn_state(tmp_path)
         slot = _slot()
-        seen: dict[str, object] = {}
+        seen: list[tuple[int, bool]] = []
 
-        def _resolver(cfg, agent):
-            seen["thread"] = threading.get_ident()
+        def _resolver(cfg, agent, **_kwargs):
             try:
                 asyncio.get_running_loop()
             except RuntimeError:
-                seen["loop_on_thread"] = False
+                loop_on_thread = False
             else:
-                seen["loop_on_thread"] = True
+                loop_on_thread = True
+            seen.append((threading.get_ident(), loop_on_thread))
             return GLOBAL_DEFAULT
 
-        with unittest.mock.patch.object(chat_runner, "resolve_effective_model", _resolver):
+        with unittest.mock.patch("kiro_crew.config.loader.resolve_effective_model", _resolver):
             await _drive(state, slot)
 
         assert _session_model(state) == GLOBAL_DEFAULT
-        assert seen["thread"] != threading.get_ident()
-        assert seen["loop_on_thread"] is False
+        turn_thread, turn_loop = seen[0]
+        assert turn_thread != threading.get_ident()
+        assert turn_loop is False
 
 
 class TestLiveSessionFollowsDefaultChange:
@@ -446,7 +506,9 @@ class TestLiveSessionFollowsDefaultChange:
         client.client._model = SLOT_PIN
         slot = _slot()
 
-        with unittest.mock.patch.object(chat_runner, "resolve_effective_model", return_value=""):
+        with unittest.mock.patch(
+            "kiro_crew.config.loader.resolve_effective_model", return_value=""
+        ):
             await _drive(state, slot)
 
         assert slot.model == SLOT_PIN
@@ -463,8 +525,8 @@ class TestLiveSessionFollowsDefaultChange:
         client.client._model = self.OLD_DEFAULT
         slot = _slot()
 
-        with unittest.mock.patch.object(
-            chat_runner, "resolve_effective_model", return_value=self.OLD_DEFAULT
+        with unittest.mock.patch(
+            "kiro_crew.config.loader.resolve_effective_model", return_value=self.OLD_DEFAULT
         ):
             await _drive(state, slot)
 
@@ -500,8 +562,8 @@ class TestLiveSessionFollowsDefaultChange:
         assert "dashboard:chat-cov-1" not in self._reset_keys(state)
 
 
-class TestDefaultSessionModelThreadBoundary:
-    """The helper's ``except`` is what makes ``asyncio.to_thread`` safe to use."""
+class TestInheritedDefaultThreadBoundary:
+    """The session resolver's ``except`` is what makes the turn's hop safe."""
 
     @pytest.mark.asyncio
     async def test_stop_iteration_is_converted_before_the_future(self, tmp_path):
@@ -513,20 +575,32 @@ class TestDefaultSessionModelThreadBoundary:
         own message is lost; before 3.12 ``set_exception`` raised inside the
         loop callback and the destination future stayed PENDING, so an await
         on the hop hung until the test timeout. Either way the failure would
-        name asyncio, not the malformed config. The helper's ``except
-        Exception`` clause is what converts it inside the worker; narrowing
-        that clause (say to ``RuntimeError``) turns this test red. No live
-        negative control here on purpose: an unconverted ``StopIteration``
-        through ``to_thread`` is exactly the hang described above on the
-        older interpreters this repo still targets.
+        name asyncio, not the malformed config. ``session._session_model``'s
+        ``except Exception`` clause converts it inside the worker; narrowing
+        that clause (say to ``RuntimeError``) turns this test red.
         """
         cfg = _config(tmp_path)
-        slot = _slot()
+        sessions = unittest.mock.MagicMock()
+        sessions._cfg = cfg
 
-        with unittest.mock.patch.object(
-            chat_runner, "resolve_effective_model", side_effect=StopIteration("malformed")
+        with unittest.mock.patch(
+            "kiro_crew.config.loader.resolve_effective_model",
+            side_effect=StopIteration("malformed"),
         ):
-            result = await asyncio.to_thread(chat_runner._default_session_model, cfg, slot, "")
+            result = await chat_runner._inherited_default_model(
+                sessions, _slot(), "dashboard:chat-cov-1", agent="kirocrew", crew_agent=""
+            )
+
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_a_manager_without_a_config_reads_nothing(self):
+        """No config to resolve from means no inherited default, never a guess."""
+        sessions = unittest.mock.MagicMock()
+
+        result = await chat_runner._inherited_default_model(
+            sessions, _slot(), "dashboard:chat-cov-1", agent="kirocrew", crew_agent=""
+        )
 
         assert result == ""
 
@@ -540,9 +614,12 @@ class TestEagerSpawnDefaultModel:
 
     @pytest.mark.asyncio
     async def test_eager_session_starts_on_the_global_default(self, tmp_path, _runner_config):
-        _runner_config(_config(tmp_path))
+        """The pre-warm asks for no model; the allocation resolves the ladder."""
+        cfg = _config(tmp_path)
+        _runner_config(cfg)
         state, _client = _runner_state(tmp_path)
         _pin_sync_accessors(_client)
+        _allocation_resolves(state, cfg)
         slot = _slot()
         state._slots[slot.key] = slot
         state.sessions.release = unittest.mock.MagicMock()
@@ -550,39 +627,9 @@ class TestEagerSpawnDefaultModel:
 
         await _eager_spawn(state, slot)
 
+        assert _requested(state) is None
         assert _session_model(state) == GLOBAL_DEFAULT
         assert slot.model == ""
-
-    @pytest.mark.asyncio
-    async def test_eager_resolve_runs_off_the_loop_and_survives_stop_iteration(
-        self, tmp_path, _runner_config
-    ):
-        """Same two guarantees as the real turn, on the pre-warm path.
-
-        The eager spawn is best-effort, so a resolver ``StopIteration`` must
-        neither stall the loop (the resolve is off-loop) nor abort the spawn
-        (converted to ``""`` in the worker, so the session is still created —
-        on ``None``, as before the resolve existed).
-        """
-        _runner_config(_config(tmp_path))
-        state, _client = _runner_state(tmp_path)
-        _pin_sync_accessors(_client)
-        slot = _slot()
-        state._slots[slot.key] = slot
-        state.sessions.release = unittest.mock.MagicMock()
-        state.sessions.remove_if_unclaimed = unittest.mock.AsyncMock(return_value=True)
-        seen: dict[str, object] = {}
-
-        def _resolver(cfg, agent):
-            seen["thread"] = threading.get_ident()
-            raise StopIteration("malformed")
-
-        with unittest.mock.patch.object(chat_runner, "resolve_effective_model", _resolver):
-            await _eager_spawn(state, slot)
-
-        assert _session_model(state) is None
-        assert slot.model == ""
-        assert seen["thread"] != threading.get_ident()
 
 
 class TestSessionOpenedRecordsTheAllocationsSelection:
@@ -766,16 +813,17 @@ class TestSessionOpenedCoversTheTierBelowTheCaller:
     ):
         """A registration site that resolves no model stamps ``""``.
 
-        The fallback is what keeps the top three tiers recorded for such a session
-        rather than regressing them to absent.
+        The fallback is what keeps the turn's own selection (a slot or crew pin)
+        recorded for such a session rather than regressing it to absent.
         """
         _runner_config(_config(tmp_path))
         state, _client = _turn_state(tmp_path)
+        state.sessions.allocation_requested_model = unittest.mock.MagicMock(return_value="")
         slot = _slot()
+        slot.model = SLOT_PIN
 
         with self._capture() as opened:
             await _drive(state, slot)
 
-        assert state.sessions.allocation_requested_model.return_value == ""
-        assert slot._session_requested_model == GLOBAL_DEFAULT
-        assert opened.call_args.kwargs["model_requested"] == GLOBAL_DEFAULT
+        assert slot._session_requested_model == SLOT_PIN
+        assert opened.call_args.kwargs["model_requested"] == SLOT_PIN

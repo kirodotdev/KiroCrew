@@ -42,7 +42,6 @@ def eager(monkeypatch):
     monkeypatch.setattr(chat_runner.KiroCrewConfig, "load", lambda: cfg)
     monkeypatch.setattr(chat_runner, "resolve_session_agent_bindings", lambda *args, **kw: bindings)
     monkeypatch.setattr(chat_runner, "_require_session_memory_assignment", lambda *args: None)
-    monkeypatch.setattr(chat_runner, "_default_session_model", lambda *args: "")
     monkeypatch.setattr(chat_runner, "record_agent_selection", lambda *args, **kwargs: None)
     monkeypatch.setattr(chat_runner, "_prewarm_allowance", lambda: 1)
     monkeypatch.setattr(chat_runner, "_pressure_hold_blocks_prewarm", lambda state: False)

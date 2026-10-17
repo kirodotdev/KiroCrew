@@ -29,73 +29,63 @@ if TYPE_CHECKING:
         provider_active_model,
         provider_advertised_ids,
         provider_raw_model,
-        resolve_effective_model,
         resolve_pin_spelling,
         resolve_substitute_set_model,
-        session_agent_selection_kind,
         slot_switch_session_lock,
     )
 
 
-def _default_session_model(
-    cfg: "KiroCrewConfig | None", slot: "_ChatSlot", agent_model: str
-) -> str:
-    """The model a slot that pins nothing STARTS a session on, or ``""``.
+def _app_allocation_kwargs(slot: "_ChatSlot") -> dict[str, str]:
+    """``{"app_name": <app>}`` for a slot an app owns, else ``{}``.
 
-    Resolved through :func:`resolve_effective_model` — the one resolver the
-    dashboard's model chip already reads (``/api/agents/resolved-model``) — so
-    the model an auto-created slot runs on is the model the chip says it will.
-    Before this the chat-send path only consulted the crew's own pin
-    (``bindings.model``) and left everything below it to ``get_or_create``,
-    which resolves from the session manager's config SNAPSHOT — refreshed only
-    by the settings handlers that call ``refresh_defaults`` — while this turn and
-    the chip both read a fresh load. A global ``agent.model`` written any other
-    way (``kirocrew config set``, a hand edit) was therefore shown by the chip
-    but not run by the first turn of a fresh slot until the gateway restarted.
-
-    The value is deliberately a LOCAL for the ``get_or_create`` call and is
-    NEVER written to ``slot.model``. That field is persisted slot state and is
-    re-sent as a ``set_model`` override on every resume, so an empty value means
-    "inherit": the slot follows a later change to ``agent.model`` or to the
-    agent's pin, the chip renders the inherited value live, and the explicit
-    slot-create endpoint stores ``""`` when nothing is picked. Persisting the
-    resolved default here would silently turn every inheriting slot into a
-    permanent pin on its first message, and would route an inherited default
-    the account cannot run through the "isn't offered right now" pin flow.
-
-    Returns ``""`` when the slot or crew already pins a model (nothing to
-    resolve), when the config could not be loaded, or when every tier defers
-    to the backend — ``get_or_create`` then resolves on its own.
-
-    Blocking: ``resolve_effective_model`` reaches ``_resolve_named_agent_model``
-    (a glob + per-file read of the installed agent JSON) and
-    ``_resolve_agent_model`` (another file read), so callers run this through
-    ``asyncio.to_thread`` and never inline on the event loop. That makes the
-    ``except`` below load-bearing beyond logging: ``resolve_agent_bindings``
-    inside the resolver can raise ``StopIteration`` on a malformed config, and a
-    ``StopIteration`` cannot be delivered through a Future (3.12+ substitutes a
-    ``RuntimeError``; older interpreters leave the future PENDING and the await
-    hangs), so awaiting the thread would fail with the wrong error, or not
-    return at all, instead of surfacing the resolver's. ``StopIteration`` is an
-    ``Exception`` subclass, so it is converted to ``""`` HERE, in the worker,
-    before it can reach the Future boundary. Keep the clause at ``Exception``
-    or wider; narrowing it re-opens that hole.
+    Handed to ``get_or_create`` so the session's own model resolution reads the
+    app's ``apps.<name>.model`` when the agent pins none. Empty for every other
+    slot, so their allocation call is unchanged.
     """
-    if slot.model or agent_model or cfg is None:
-        return ""
-    # A slot an app owns starts on that app's own model setting when the agent
-    # pins none (``resolve_effective_model`` tier 3). Any other slot resolves
-    # through the same call it always has.
     app_name = getattr(slot, "_app", "")
-    app_kw = {"app_name": app_name} if isinstance(app_name, str) and app_name else {}
-    try:
-        kind = session_agent_selection_kind(effective_session_key(slot), slot.agent)
-        if kind == "template":
-            return resolve_effective_model(cfg, slot.agent or None, selection_kind=kind, **app_kw)
-        return resolve_effective_model(cfg, slot.agent or None, **app_kw)
-    except Exception:  # noqa: BLE001 — includes StopIteration; see docstring
-        logger.warning("Failed to resolve the default model for slot %s", slot.key, exc_info=True)
+    return {"app_name": app_name} if isinstance(app_name, str) and app_name else {}
+
+
+async def _inherited_default_model(
+    sessions: Any,
+    slot: "_ChatSlot",
+    session_key: str,
+    *,
+    agent: str | None,
+    crew_agent: str,
+) -> str:
+    """The model the session layer would start a new session for *slot* on, or ``""``.
+
+    Read for a slot that pins nothing (no slot pin, no crew pin): it says which
+    default the slot inherits right now, so the turn can tell whether its live
+    session still runs that default. It is NOT the model the turn requests: an
+    inheriting slot asks ``get_or_create`` for no model, and the allocation
+    resolves the ladder itself. The answer comes from that same resolver,
+    ``session._session_model``, over the session manager's own config (kept
+    current by the config watcher), with the inputs the allocation is given, so
+    the two cannot disagree.
+
+    ``""`` when every tier defers to the backend, when the session manager holds
+    no config, or when the resolver fails (it logs and answers ``None``; it
+    never raises, so nothing un-deliverable reaches the thread's Future).
+    Off the loop: the resolver globs and reads installed agent JSON.
+    """
+    # circular import: the session module imports dashboard modules at load.
+    from kiro_crew.session import _session_model
+
+    cfg = getattr(sessions, "_cfg", None)
+    if not isinstance(cfg, KiroCrewConfig):
         return ""
+    app_name = getattr(slot, "_app", "")
+    resolved = await asyncio.to_thread(
+        _session_model,
+        cfg,
+        agent,
+        crew_agent=crew_agent,
+        app_name=app_name if isinstance(app_name, str) else "",
+        session_key=session_key,
+    )
+    return resolved or ""
 
 
 def _agent_fallback_chain() -> tuple[str, ...]:
@@ -673,7 +663,7 @@ async def _settle_session_model(
     gives and the model it serves. True when the session withheld the slot's pin.
 
     ``inherited_model`` is the default an unpinned slot inherits this turn
-    (``_default_session_model``); while it is set, nothing is backfilled.
+    (``_inherited_default_model``); while it is set, nothing is backfilled.
     """
     # ── Refusal-fallback restore (agent.refusal_fallback_model) ──
     # A refusal retry swapped the live session for ONE message; at the
