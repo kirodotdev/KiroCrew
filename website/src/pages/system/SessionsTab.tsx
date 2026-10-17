@@ -162,8 +162,21 @@ export default function SessionsTab({ planeStateRef }: Props) {
     const named = r.parent.key != null && r.parent.ancestor !== true
       ? nameOf.get(r.parent.key)
       : undefined
-    return named ?? nameOf.get(r.parent.slot) ?? r.parent.slot
+    // Only a readable NAME, never the raw slot id. `nameOf` is built from the live
+    // rows in this payload, so a creator that has CLOSED resolves to nothing here --
+    // the id it leaves is one no reader recognises, which explains the nesting no
+    // better than silence. The caller renders a graceful "a closed session" label
+    // for that case instead (see the `created_by*_unnamed` strings below).
+    return named ?? nameOf.get(r.parent.slot) ?? null
   }
+
+  // Whether this row hangs from a creator at all -- the gate for the explanatory
+  // line, kept separate from `creatorOf` because the line is needed EXACTLY when
+  // the creator has closed and no name resolves: that is the re-parented row whose
+  // nesting the line exists to explain. Gating the line on a resolved name instead
+  // would hide it on the one row that needs it most.
+  const citesCreator = (r: SessionRow): boolean =>
+    r.kind === 'session' && r.parent != null && typeof r.parent.slot === 'string' && r.parent.slot !== ''
 
   const columns = useMemo(
     () => [
@@ -711,11 +724,26 @@ export default function SessionsTab({ planeStateRef }: Props) {
                                 open ancestor, so the expander above it names a
                                 session that did not open it, and without this
                                 line nothing on screen says the creator closed. */}
-                            {!grouped && creatorOf(r) != null && (!r.nested || r.parent?.ancestor === true) && (
+                            {!grouped && citesCreator(r) && (!r.nested || r.parent?.ancestor === true) && (
                               <span className="block whitespace-normal break-words leading-tight text-[10.5px] text-muted cursor-default">
-                                {r.parent?.ancestor === true
-                                  ? i18nT('pages.sessionsTab.created_by_closed', { name: creatorOf(r) })
-                                  : i18nT('pages.sessionsTab.created_by', { name: creatorOf(r) })}
+                                {(() => {
+                                  // Never the raw slot id: a resolved name reads
+                                  // `created_by*`, and a closed creator with no
+                                  // name in this payload reads the graceful
+                                  // `created_by_closed_unnamed` label instead of an
+                                  // id nobody knows. The orphan and ancestor rows
+                                  // share that label: the user-facing fact is the
+                                  // same ("the creator has closed"), and where the
+                                  // row sits is already visible in the tree.
+                                  const name = creatorOf(r)
+                                  const ancestor = r.parent?.ancestor === true
+                                  if (name == null) {
+                                    return i18nT('pages.sessionsTab.created_by_closed_unnamed')
+                                  }
+                                  return ancestor
+                                    ? i18nT('pages.sessionsTab.created_by_closed', { name })
+                                    : i18nT('pages.sessionsTab.created_by', { name })
+                                })()}
                               </span>
                             )}
                           </span>

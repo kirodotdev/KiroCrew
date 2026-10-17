@@ -481,7 +481,11 @@ describe('the citation glyph says whose session opened this one', () => {
     const glyph = container.querySelector('[data-orphan-of]')
     expect(glyph).not.toBeNull()
     expect(glyph?.getAttribute('role')).toBe('img')
-    expect(glyph?.getAttribute('aria-label')).toContain('k-absent')
+    // Graceful label, never the raw slot id of the closed creator (#18153); the id
+    // survives on the data attribute alone.
+    expect(glyph?.getAttribute('aria-label')).toBe('Opened by a closed session')
+    expect(glyph?.getAttribute('aria-label')).not.toContain('k-absent')
+    expect(glyph?.getAttribute('data-orphan-of')).toBe('k-absent')
     expect(glyph?.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true')
   })
 })
