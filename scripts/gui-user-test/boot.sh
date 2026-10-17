@@ -155,6 +155,61 @@ if [ -n "${GITHUB_ACTIONS:-}" ]; then
 fi
 echo "gateway ready at $GUI_BASE_URL"
 
+# ---- 3b. session cookie for the harness's title reset ----------------------
+# The harness restores seeded session titles between scenarios through the
+# gateway, and that call must authenticate. The one-time ``?token=`` link token
+# is validated against a 5-minute window (LINK_WINDOW_SECS), so a reset run late
+# in a multi-hour run would start failing 401 and silently stop. Exchange the
+# link token NOW, while it is valid, for the long-lived session cookie
+# (``mc_token_<port>``, pinned to 127.0.0.1 like the harness, good for the
+# 20-hour session): one GET of ``/?token=`` returns it as a Set-Cookie. Append
+# the full ``name=value`` pair to the 0600 target.env as GUI_DASHBOARD_COOKIE;
+# it never enters $GITHUB_ENV or a command line, and the harness reads it from
+# the file. Best-effort: a failure here leaves the reset a no-op, not a boot
+# failure.
+umask 077
+cookie_line="$(GUI_BASE_URL="$GUI_BASE_URL" GUI_DASHBOARD_TOKEN="$GUI_DASHBOARD_TOKEN" python3 - <<'PYEOF'
+import os, urllib.error, urllib.request
+base = os.environ["GUI_BASE_URL"]
+token = os.environ["GUI_DASHBOARD_TOKEN"]
+# Only the HTTP handler: no file/ftp handler, and no redirect handler, so the
+# token response's Set-Cookie is read as-is (a 3xx raises HTTPError, which still
+# carries the headers) and nothing can be bounced off this loopback origin.
+opener = urllib.request.OpenerDirector()
+opener.add_handler(urllib.request.HTTPHandler())
+
+
+def _cookie_from(headers):
+    for key, value in headers:
+        if key.lower() == "set-cookie" and value.startswith("mc_token_"):
+            # "mc_token_<port>=<value>; Path=/; ..." -- keep the name=value pair.
+            return value.split(";", 1)[0].strip()
+    return None
+
+
+try:
+    try:
+        with opener.open(f"{base}/?token={token}", timeout=20) as resp:
+            cookie = _cookie_from(resp.getheaders())
+    except urllib.error.HTTPError as exc:
+        cookie = _cookie_from(exc.headers.items())
+    if cookie:
+        print("GUI_DASHBOARD_COOKIE=" + cookie)
+except Exception:
+    pass
+PYEOF
+)"
+umask 022
+if [ -n "$cookie_line" ]; then
+  printf '%s\n' "$cookie_line" >> "$GUI_OUT/target.env"
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "::add-mask::${cookie_line#GUI_DASHBOARD_COOKIE=}"
+  fi
+  echo "captured gateway session cookie for the title reset"
+else
+  echo "::warning::could not capture the gateway session cookie; the GUI title reset will no-op" >&2
+fi
+
 # ---- 4. browser ------------------------------------------------------------
 CHROME="${GUI_CHROME:-}"
 if [ -z "$CHROME" ]; then

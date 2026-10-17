@@ -856,3 +856,217 @@ class TestScenarioResultCarriesTheCatalogFields:
         assert (res.name, res.tier, res.status) == ("members-dm-hello", "nightly", "SKIPPED")
         assert res.feature == "members" and res.user_story == sc.user_story
         assert res.attempts == []
+
+
+class TestSeededTitleReset:
+    """A scenario may rename a shared seeded session (``chat-session-title``
+    renames the pinned seeded welcome starter), and every scenario and
+    retry runs against ONE un-reseeded gateway, so a scenario that aborts
+    mid-flow can leak the rename into the next scenario's start state. The
+    harness restores the seeded titles before each attempt. These tests drive
+    the real ``urllib`` round-trip against a fake loopback gateway, so they fail
+    on a tree that has no reset and pass once it does.
+    """
+
+    #: The title the ``rich`` fixture seeds for the pinned starter session.
+    _FIXTURE_WELCOME_TITLE = "Welcome to KiroCrew"  # brand-ok: verbatim fixture title
+
+    #: The session cookie the harness sends. The link-token window does not
+    #: matter to it; a cookie that validates is all the reset needs.
+    _COOKIE = "mc_token_7788=sess.cookie.value"
+
+    @staticmethod
+    def _fake_gateway(slots: list[dict], cookie: str, *, reject_link_token: bool = False):
+        """A loopback HTTP server answering GET /api/chat/slots and
+        PATCH /api/chat/slots/{slot}/title, authenticating on the session
+        ``Cookie`` header, recording every applied rename.
+
+        ``reject_link_token=True`` additionally 401s any request carrying a
+        ``?token=`` query param, modelling the gateway AFTER the 5-minute link
+        window: this is what proves a reset keyed on the link token would fail
+        but one keyed on the session cookie still works.
+
+        Returns ``(base_url, patches, stop)``.
+        """
+        import socketserver
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from urllib.parse import parse_qs, urlsplit
+
+        state = {s["key"]: dict(s) for s in slots}
+        patches: list[tuple[str, str]] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a):  # silence
+                return
+
+            def _auth_ok(self, parsed) -> bool:
+                if reject_link_token and parse_qs(parsed.query).get("token"):
+                    return False
+                return self.headers.get("Cookie", "") == cookie
+
+            def do_GET(self):  # noqa: N802
+                parsed = urlsplit(self.path)
+                if not self._auth_ok(parsed):
+                    self.send_response(401)
+                    self.end_headers()
+                    return
+                if parsed.path == "/api/chat/slots":
+                    body = json.dumps(list(state.values())).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                self.send_response(404)
+                self.end_headers()
+
+            def do_PATCH(self):  # noqa: N802
+                parsed = urlsplit(self.path)
+                if not self._auth_ok(parsed):
+                    self.send_response(401)
+                    self.end_headers()
+                    return
+                prefix, _, suffix = parsed.path.partition("/api/chat/slots/")
+                if prefix or not suffix.endswith("/title"):
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                key = suffix[: -len("/title")]
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                title = str(payload.get("title", ""))
+                if key not in state:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                state[key]["title"] = title
+                patches.append((key, title))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": True, "title": title}).encode())
+
+        # Subclass with a server_bind that skips the socket.getfqdn lookup
+        # http.server does between bind() and listen() (testing-conventions.md;
+        # it can stall on macOS). Loopback-only and reached by URL, never a name.
+        class _LoopbackServer(ThreadingHTTPServer):
+            def server_bind(self) -> None:
+                socketserver.TCPServer.server_bind(self)
+                host, port = self.server_address[:2]
+                self.server_name = str(host)
+                self.server_port = int(port)
+
+        srv = _LoopbackServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        base_url = f"http://127.0.0.1:{srv.server_address[1]}"
+        return base_url, patches, srv.shutdown
+
+    def _runner(self, base_url: str, cookie: str) -> "harness.Runner":
+        # The reset path touches neither the model client nor the display, so
+        # bare objects stand in for them.
+        return harness.Runner(
+            object(),
+            object(),
+            base_url=base_url,
+            tool_mode="custom",
+            price_in=0.0,
+            price_out=0.0,
+            budget_usd=0.0,
+            out=Path("."),
+            dashboard_cookie=cookie,
+        )
+
+    def test_the_fixture_title_is_the_one_the_reset_restores(self) -> None:
+        # The reset target must match the title the rich fixture seeds, or it
+        # would "restore" the wrong name. Hold them equal here. The harness
+        # keys the map on the SLOT NAME the gateway lists, which startup restore
+        # derives from the ``dashboard_starter`` transcript stem by stripping
+        # ``dashboard_``; assert both the key and the title against that real
+        # mapping so neither can drift away from the gateway silently.
+        from kiro_crew.dashboard.slot_persistence.restore_inputs import (
+            _recent_session_slot_name,
+        )
+        from kiro_crew.history import ConversationLog
+        from kiro_crew.testing.fixtures import seeded_home
+
+        slot_name = _recent_session_slot_name("dashboard_starter")
+        assert slot_name == "starter"
+        assert slot_name in harness.SEEDED_SLOT_TITLES
+        with seeded_home("rich") as home:
+            meta = ConversationLog(base_dir=home / "sessions").get_metadata("dashboard_starter")
+        assert harness.SEEDED_SLOT_TITLES[slot_name] == meta["title"]
+
+    def test_renamed_seeded_title_is_restored_before_the_next_attempt(self) -> None:
+        # A prior scenario left the pinned starter renamed; a clean session is
+        # left untouched.
+        base_url, patches, stop = self._fake_gateway(
+            [
+                {"key": "starter", "title": "Welcome renamed by gui test"},
+                {"key": "research-notes", "title": "Research: MCP transport trade-offs"},
+            ],
+            self._COOKIE,
+        )
+        try:
+            self._runner(base_url, self._COOKIE).reset_seeded_titles()
+        finally:
+            stop()
+        # Exactly the drifted seeded title is restored; nothing else is touched.
+        assert patches == [("starter", self._FIXTURE_WELCOME_TITLE)]
+
+    def test_reset_works_after_the_link_token_window_has_closed(self) -> None:
+        # The whole point of authenticating with the session cookie rather than
+        # the boot link token: late in a run the 5-minute link window has
+        # closed, but the reset must still restore the title. The gateway here
+        # 401s any ?token= request yet honours the cookie.
+        base_url, patches, stop = self._fake_gateway(
+            [{"key": "starter", "title": "Welcome renamed by gui test"}],
+            self._COOKIE,
+            reject_link_token=True,
+        )
+        try:
+            self._runner(base_url, self._COOKIE).reset_seeded_titles()
+        finally:
+            stop()
+        assert patches == [("starter", self._FIXTURE_WELCOME_TITLE)]
+
+    def test_a_title_already_at_the_fixture_value_is_not_rewritten(self) -> None:
+        base_url, patches, stop = self._fake_gateway(
+            [{"key": "starter", "title": self._FIXTURE_WELCOME_TITLE}], self._COOKIE
+        )
+        try:
+            self._runner(base_url, self._COOKIE).reset_seeded_titles()
+        finally:
+            stop()
+        assert patches == []
+
+    def test_no_cookie_no_ops(self) -> None:
+        # Local reproduction without the cookie file: the reset must do nothing
+        # rather than raise, so a scenario still runs.
+        base_url, patches, stop = self._fake_gateway(
+            [{"key": "starter", "title": "Welcome renamed by gui test"}], self._COOKIE
+        )
+        try:
+            self._runner(base_url, "").reset_seeded_titles()
+        finally:
+            stop()
+        assert patches == []
+
+    def test_read_dashboard_cookie_parses_target_env(self, tmp_path: Path) -> None:
+        env = tmp_path / "target.env"
+        env.write_text(
+            "GUI_BASE_URL=http://127.0.0.1:7788\n"
+            "GUI_DASHBOARD_TOKEN=abc.def\n"
+            "GUI_DASHBOARD_COOKIE=mc_token_7788=sess.cookie\n",
+            encoding="utf-8",
+        )
+        assert harness.read_dashboard_cookie(env) == "mc_token_7788=sess.cookie"
+        assert harness.read_dashboard_cookie(None) == ""
+        assert harness.read_dashboard_cookie(tmp_path / "missing.env") == ""
+
+    def test_a_non_http_base_url_is_refused_not_opened(self) -> None:
+        # Defence in depth behind the scheme-restricted opener: a base URL that
+        # is not http(s) must never reach a handler that could read a file.
+        runner = self._runner("file:///etc", self._COOKIE)
+        with pytest.raises(ValueError, match="non-HTTP"):
+            runner._api_url("/api/chat/slots")

@@ -36,6 +36,8 @@ import os
 import re
 import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -71,6 +73,58 @@ OMNIBOX_FOCUS_SECONDS = 1.0
 NAVIGATE_LOAD_SECONDS = 3.0
 
 VERDICT_RE = re.compile(r"^\s*VERDICT:\s*(PASS|FAIL)\b", re.IGNORECASE | re.MULTILINE)
+
+#: Seeded sessions a scenario renames, mapped to the title the ``rich`` fixture
+#: ships (``scripts/gui-user-test/seed_home.py`` + the fixture transcripts).
+#: ``chat-session-title`` renames the pinned starter session and renames it back
+#: at the end, but every scenario and every retry shares ONE un-reseeded gateway,
+#: so a scenario that aborts mid-flow (TIMEOUT / MAX_STEPS / ERROR) can leave the
+#: title renamed, and the next scenario -- or that scenario's own retry -- then
+#: opens a row whose title does not match the fixture. The harness restores these
+#: titles before every attempt so each one starts from the fixture state
+#: regardless of what a prior attempt left behind.
+#:
+#: The key is the SLOT NAME the gateway lists at ``GET /api/chat/slots``, not the
+#: transcript stem. Startup restore maps the ``dashboard_<name>`` transcript stem
+#: to the slot name by stripping the ``dashboard_`` prefix
+#: (``_recent_session_slot_name`` in ``dashboard/slot_persistence/restore_inputs.py``),
+#: so the ``dashboard_starter.jsonl`` fixture is served as slot ``starter``. The
+#: reset keys and PATCHes on that slot name; keying on the stem would miss on
+#: every attempt.
+SEEDED_SLOT_TITLES: dict[str, str] = {
+    "starter": "Welcome to KiroCrew",  # brand-ok: verbatim seeded fixture title
+}
+
+
+def read_dashboard_cookie(cookie_file: Optional[Path]) -> str:
+    """Read ``GUI_DASHBOARD_COOKIE`` from ``boot.sh``'s ``target.env`` (0600).
+
+    This is the gateway's SESSION cookie (``mc_token_<port>``), which ``boot.sh``
+    exchanges the one-time boot link token for while that link is still valid.
+    The reset must use the session cookie, not the link token: a link token is
+    validated against its 5-minute window (``LINK_WINDOW_SECS``), so a reset run
+    more than five minutes after boot -- which the later scenarios and retries
+    are -- would start failing 401 and silently stop restoring the title. The
+    session cookie is validated against the 20-hour session expiry instead, so
+    it outlives the whole run.
+
+    The CI run keeps the credential out of ``$GITHUB_ENV`` and off every command
+    line so the model-driven browser can never reach it; the trusted harness
+    process reads it from the 0600 file. Returns ``""`` when no file is given or
+    the cookie is absent -- the reset then no-ops rather than failing the run.
+    """
+    if cookie_file is None:
+        return ""
+    try:
+        text = Path(cookie_file).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("GUI_DASHBOARD_COOKIE="):
+            return stripped[len("GUI_DASHBOARD_COOKIE=") :].strip()
+    return ""
+
 
 SYSTEM_PROMPT = """You are a careful, non-technical person testing a web application for the first time. You are sitting at a Linux desktop with ONE browser window open. You can only see the screen through screenshots and can only act with the mouse and keyboard tools you are given -- there is no DOM, no developer console, no shell, and you cannot read files.
 
@@ -426,6 +480,7 @@ class Runner:
         price_out: float,
         budget_usd: float,
         out: Path,
+        dashboard_cookie: str = "",
     ) -> None:
         self.client = client
         self.display = display
@@ -435,12 +490,89 @@ class Runner:
         self.price_out = price_out
         self.budget_usd = budget_usd
         self.out = out
+        self.dashboard_cookie = dashboard_cookie
+        # An opener wired with ONLY the HTTP(S) handlers: it has no FileHandler,
+        # FTPHandler or redirect handler, so a path that is not an http(s) URL to
+        # the loopback gateway cannot be turned into a local-file read -- the
+        # exact concern the SAST audit raises about dynamic URLs. Redirects are
+        # dropped too, so the loopback gateway cannot bounce a reset off-host.
+        self._opener = urllib.request.OpenerDirector()
+        self._opener.add_handler(urllib.request.HTTPHandler())
+        self._opener.add_handler(urllib.request.HTTPSHandler())
         self.usage = Usage()
 
     # -- helpers -----------------------------------------------------------
 
     def spent(self) -> float:
         return self.usage.usd(self.price_in, self.price_out)
+
+    def reset_seeded_titles(self, log: "StepLog | None" = None) -> None:
+        """Restore every renamed seeded session title to its fixture value.
+
+        Called before each attempt so a scenario (and every retry) starts from
+        the seeded state no matter what a prior attempt left behind. Reads the
+        live slots and PATCHes only the ones whose title has drifted from
+        ``SEEDED_SLOT_TITLES``, through the same ``PATCH
+        /api/chat/slots/{slot}/title`` route the dashboard rename uses, so the
+        gateway's in-memory slot (not just the on-disk transcript) is corrected.
+
+        Best-effort: without the session cookie (local reproduction, or the file
+        withheld) it no-ops, and any transport error is logged and swallowed -- a
+        reset failure must never turn a passing scenario into a boot failure.
+        """
+        if not self.dashboard_cookie:
+            return
+        try:
+            slots = self._get_json("/api/chat/slots")
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            if log is not None:
+                log.write("title_reset_skipped", reason=str(exc)[:200])
+            return
+        rows = slots if isinstance(slots, list) else slots.get("slots", [])
+        by_key = {str(r.get("key")): r for r in rows if isinstance(r, dict)}
+        for key, want in SEEDED_SLOT_TITLES.items():
+            row = by_key.get(key)
+            if row is None or str(row.get("title") or "") == want:
+                continue
+            try:
+                self._patch_json(f"/api/chat/slots/{key}/title", {"title": want})
+                if log is not None:
+                    log.write(
+                        "title_reset", slot=key, was=str(row.get("title") or "")[:200], to=want
+                    )
+            except (urllib.error.URLError, OSError, ValueError) as exc:
+                if log is not None:
+                    log.write("title_reset_failed", slot=key, reason=str(exc)[:200])
+
+    def _get_json(self, path: str) -> Any:
+        req = urllib.request.Request(self._api_url(path), headers=self._auth_headers())
+        with self._opener.open(req, timeout=20) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def _patch_json(self, path: str, body: dict[str, Any]) -> Any:
+        req = urllib.request.Request(
+            self._api_url(path),
+            data=json.dumps(body).encode("utf-8"),
+            headers={**self._auth_headers(), "Content-Type": "application/json"},
+            method="PATCH",
+        )
+        with self._opener.open(req, timeout=20) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def _auth_headers(self) -> dict[str, str]:
+        # The gateway's session cookie (``mc_token_<port>``), captured by boot.sh
+        # within the link window and valid for the 20-hour session, so a reset
+        # late in the run still authenticates.
+        return {"Cookie": self.dashboard_cookie}
+
+    def _api_url(self, path: str) -> str:
+        # The base URL is the loopback gateway origin boot.sh produced; refuse
+        # anything that is not an http(s) URL so a malformed base can never
+        # become a non-HTTP fetch (the opener has no non-HTTP handler either).
+        url = f"{self.base_url}{path}"
+        if not url.startswith(("http://", "https://")):
+            raise ValueError(f"refusing non-HTTP reset URL: {url[:60]}")
+        return url
 
     def _tools(self, scenario: Scenario) -> list[dict[str, Any]]:
         tools = native_tools(self.display.geo) if self.tool_mode == "native" else custom_tools()
@@ -482,6 +614,11 @@ class Runner:
         last_shot = ""
 
         try:
+            # Restore any seeded session title a prior scenario or retry renamed
+            # and did not restore, so this attempt's start state matches the
+            # fixture. Best-effort and before the first screenshot, so a leaked
+            # rename never reaches the model.
+            self.reset_seeded_titles(log)
             self.navigate(scenario.start_url, log)
             png, path = self.display.screenshot("start")
             last_shot = f"{rel_shots}/{path.name}"
@@ -721,6 +858,18 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     p.add_argument("--retries", type=int, default=1, help="retries per failed scenario")
     p.add_argument(
+        "--dashboard-cookie-file",
+        type=Path,
+        default=None,
+        help=(
+            "file holding GUI_DASHBOARD_COOKIE (boot.sh's target.env): the gateway "
+            "session cookie boot.sh exchanges the boot link token for. Read so the "
+            "harness can restore seeded session titles between scenarios via the "
+            "loopback gateway; the credential stays off the command line and out "
+            "of $GITHUB_ENV. Omit for a local run with no reset."
+        ),
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="no model calls: navigate + one screenshot per scenario",
@@ -785,6 +934,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             price_out=args.price_out,
             budget_usd=args.budget_usd,
             out=args.out,
+            dashboard_cookie=read_dashboard_cookie(args.dashboard_cookie_file),
         )
         results = runner.run(scenarios, retries=max(0, args.retries))
         mode = runner.tool_mode

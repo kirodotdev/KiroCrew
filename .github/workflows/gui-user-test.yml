@@ -186,8 +186,12 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/gui-user-test/boot.sh
-          # Only the origin goes to later steps; the one-time token stays in
-          # target.env (0600) for boot.sh's browser launch and is masked.
+          # Only the origin goes to $GITHUB_ENV (later steps). The one-time
+          # token and the session cookie boot.sh exchanges it for stay in
+          # target.env (0600) and are masked: boot.sh's browser launch reads the
+          # token, and the trusted harness step reads the cookie from the file to
+          # reset seeded session titles between scenarios. Neither reaches
+          # $GITHUB_ENV, a command line, or the model-driven browser's page.
           grep '^GUI_BASE_URL=' "$GUI_OUT/target.env" >> "$GITHUB_ENV"
 
       # Credentials are assumed AFTER the target is up: the gateway and the
@@ -216,6 +220,7 @@ jobs:
           python test/gui_user/harness.py \
             --out "$GUI_OUT/results" \
             --base-url "$GUI_BASE_URL" \
+            --dashboard-cookie-file "$GUI_OUT/target.env" \
             --model "$MODEL" \
             --region us-west-2 \
             --tier "$TIER" \
@@ -241,6 +246,15 @@ jobs:
             if [ -n "$token" ]; then
               for f in "$GUI_OUT"/*.log "$GUI_OUT"/*.err; do
                 [ -f "$f" ] && perl -pi -e "s/\Q$token\E/[REDACTED-TOKEN]/g" "$f"
+              done
+            fi
+            # The session cookie boot.sh captured is a credential too; its value
+            # is the part after the "mc_token_<port>=" name. Redact it the same
+            # way before the logs are uploaded.
+            cookie="$(sed -n 's/^GUI_DASHBOARD_COOKIE=//p' "$GUI_OUT/target.env" | sed 's/^[^=]*=//')"
+            if [ -n "$cookie" ]; then
+              for f in "$GUI_OUT"/*.log "$GUI_OUT"/*.err; do
+                [ -f "$f" ] && perl -pi -e "s/\Q$cookie\E/[REDACTED-COOKIE]/g" "$f"
               done
             fi
           fi
