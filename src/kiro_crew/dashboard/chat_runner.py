@@ -507,6 +507,8 @@ from kiro_crew.dashboard.state import (  # noqa: F401
 )
 from kiro_crew.dashboard.steer_settle import settle_consumed_steers
 from kiro_crew.dashboard.turn_dispatch import (
+    APPROVAL_EXPIRED_NOTE_TITLE,
+    format_approval_expired_note,
     format_approval_no_budget_card,
     format_approval_timeout_card,
     spawn_guarded_turn,
@@ -13457,6 +13459,22 @@ async def _run_chat(
                             _autonudge.notify_approval_stalled(slot.key)
                     except Exception:
                         logger.debug("autonudge.notify_approval_stalled failed", exc_info=True)
+                    # The card above reaches only someone looking at this session.
+                    # The bell note reaches the rest of the dashboard. It carries no
+                    # publisher session, so muting this session does not hide it:
+                    # it is a gateway report about the session, not the session's
+                    # own note.
+                    try:
+                        state.notify(
+                            "agent",
+                            APPROVAL_EXPIRED_NOTE_TITLE,
+                            format_approval_expired_note(
+                                event.tool_name or "", slot.display_title, _approval_window
+                            ),
+                            meta={"slot": slot.key, "request_id": str(event.request_id)},
+                        )
+                    except Exception:
+                        logger.warning("approval-expiry notification failed", exc_info=True)
                 except asyncio.CancelledError:
                     # The task itself was cancelled (slot deletion, shutdown) while
                     # the prompt was still open. The decision is host-driven, not a
