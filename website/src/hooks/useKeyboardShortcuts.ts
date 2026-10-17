@@ -1010,8 +1010,8 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         'new-chat': () => onNewChat(),
         // ⌘W / Ctrl+W (alias Option/Alt+Shift+W): close the current session —
         // same semantics as the header-menu / sidebar close (gated by
-        // confirmCloseSession, dispatches deleteSlot, and a session that is not
-        // idle always confirms — `sessionIsBusyForClose`). ⌘W/Ctrl+W is the most
+        // confirmCloseSession, dispatches deleteSlot, and a session with live work
+        // always confirms — `sessionIsBusyForClose`). ⌘W/Ctrl+W is the most
         // habitual chord there is (it closed the WINDOW in the previous desktop
         // release on Windows/Linux). The ⌥⇧W alias keeps its shipped behaviour:
         // only the user's confirm setting gates it.
