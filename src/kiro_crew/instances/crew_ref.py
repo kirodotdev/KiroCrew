@@ -2,7 +2,8 @@
 
 Used by ``instances.default_destination`` and a chat folder's
 ``default_destination_crew``: both name the crew that *Send a copy to* lists
-first. ``""`` means no default. The value is stored verbatim and resolved
+first. A chat folder's ``default_crew``, the crew its new chats start on, is
+normalised here too. ``""`` means no default (for ``default_crew``: Local). The value is stored verbatim and resolved
 against the registry only when the menu renders, so a crew removed since leaves
 a value that simply names no crew and changes nothing.
 

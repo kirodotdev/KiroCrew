@@ -12,6 +12,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.dashboard.body_numbers import body_int
+from kiro_crew.dashboard.chat_folder_default_crew import refuse_principal_default_crew
 from kiro_crew.dashboard.chat_folders_icons import (
     _CHAT_FOLDER_ICON_EPOCHS,
     _CHAT_FOLDER_PENDING_ICON_TASKS,
@@ -220,6 +221,18 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     )
     if refused is not None:
         return refused
+    # Only the dashboard owner picks the machine a folder's chats run on (see
+    # refuse_principal_default_crew).
+    default_crew = clean_crew_ref(body.get("default_crew"))
+    refused = refuse_principal_default_crew(
+        request,
+        request_app,
+        default_crew,
+        operation="chat.folder_create",
+        folder_id="",
+    )
+    if refused is not None:
+        return refused
     parent_id = str(body.get("parent_id") or "")
     project_dir = str(body.get("project_dir") or "")
     if refuses_write_into(state._folders, parent_id, request_app):
@@ -245,6 +258,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             project_dir=project_dir,
             default_agent=str(body.get("default_agent") or "").strip(),
             default_destination_crew=clean_crew_ref(body.get("default_destination_crew")),
+            default_crew=default_crew,
             color=str(body.get("color") or ""),
             icon=icon_val,
             request_app=request_app,
@@ -380,6 +394,18 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         changes["default_agent"] = str(val).strip() if val is not None else ""
     if "default_destination_crew" in body:
         changes["default_destination_crew"] = clean_crew_ref(body["default_destination_crew"])
+    if "default_crew" in body:
+        default_crew = clean_crew_ref(body["default_crew"])
+        refused = refuse_principal_default_crew(
+            request,
+            request_app,
+            default_crew,
+            operation="chat.folder_default_crew",
+            folder_id=fid,
+        )
+        if refused is not None:
+            return refused
+        changes["default_crew"] = default_crew
     reparenting = "parent_id" in body
     new_parent = ""
     if reparenting:
