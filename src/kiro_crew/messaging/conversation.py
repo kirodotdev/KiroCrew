@@ -115,6 +115,10 @@ class ConversationState(Generic[K]):
     def current_gen(self, key: K) -> int:
         return self._get(key).gen
 
+    def last_active(self, key: K) -> float:
+        """The activity timestamp :meth:`maybe_rotate` last recorded, ``0.0`` if none."""
+        return self._get(key).last_active
+
     def reseed(self, key: K) -> int:
         """Re-read *key*'s generation from ``seed_fn`` and return it.
 
