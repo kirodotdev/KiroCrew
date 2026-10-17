@@ -20,6 +20,7 @@ const {
   SECRET_FILE_MODE,
   MAX_REDACT_BYTES,
   REDACT_CHUNK_BYTES,
+  NATIVE_LOG_OFF_REASONS,
 } = require("../native-logging");
 
 // Reference grammar for the byte matcher, kept in the test as an oracle: the
@@ -318,6 +319,7 @@ describe("rotateNativeLog", () => {
       blocked: true,
       previousPath: null,
       redacted: true,
+      reason: "rotate-failed",
     });
     assert.equal(fs.files.has(LIVE), true, "the live log must survive a failed rotate");
     assert.equal(lines.length, 1);
@@ -1251,6 +1253,101 @@ describe("initNativeLogging verdict line", () => {
     assert.match(verdictOf(fs), /kept=none/);
   });
 });
+});
+
+// The reason a boot kept the file sink off is the one fact the crash notice hands
+// to the renderer, so every blocked path has to name its cause, and every cause
+// has to be inside the closed vocabulary the notice filters on.
+describe("why the native file sink is off", () => {
+  const readDenied = () => {
+    const fs = fakeFs({
+      present: [LIVE],
+      contents: { [LIVE]: TOKENED_LINE },
+    });
+    const realOpen = fs.openSync.bind(fs);
+    fs.openSync = (p, flag, mode) => {
+      if (p === LIVE && String(flag) === "r") {
+        const err = new Error("EACCES: permission denied");
+        err.code = "EACCES";
+        throw err;
+      }
+      return realOpen(p, flag, mode);
+    };
+    return fs;
+  };
+  const undeletableLink = () => {
+    const fs = fakeFs({ present: ["/logs/victim"], links: { [LIVE]: "/logs/victim" } });
+    fs.unlinkSync = () => {
+      throw new Error("EISDIR");
+    };
+    return fs;
+  };
+  const noWriteApi = () => {
+    const fs = fakeFs({ present: [LIVE], contents: { [LIVE]: TOKENED_LINE } });
+    fs.writeFileSync = undefined;
+    return fs;
+  };
+
+  // One entry per blocked exit of rotateNativeLog: the code it must carry.
+  const BLOCKED_EXITS = [
+    ["a rename that fails", "rotate-failed", () => fakeFs({ present: [LIVE], throwOn: "EPERM" })],
+    [
+      "a redaction rewrite that fails",
+      "replace-failed",
+      () =>
+        fakeFs({
+          present: [LIVE],
+          contents: { [LIVE]: TOKENED_LINE },
+          throwWriteOn: `${LIVE}.redact.tmp`,
+        }),
+    ],
+    ["a log this process cannot open", "unreadable", readDenied],
+    ["a redaction that throws outright", "error", () =>
+      fakeFs({ present: [LIVE], contents: { [LIVE]: TOKENED_LINE }, throwReadOn: LIVE })],
+    ["a non-regular entry that cannot be removed", "not-a-regular-file", undeletableLink],
+    ["an fs that cannot rewrite", "unsupported-fs", noWriteApi],
+  ];
+
+  for (const [label, reason, make] of BLOCKED_EXITS) {
+    it(`rotateNativeLog reports ${reason} for ${label}`, () => {
+      const out = rotateNativeLog(LIVE, { fs: make() });
+      assert.equal(out.blocked, true);
+      assert.equal(out.reason, reason);
+    });
+
+    it(`initNativeLogging carries ${reason} as offReason and keeps it in the vocabulary`, () => {
+      const result = initNativeLogging({
+        logsDir: "/logs",
+        appendSwitch: () => {},
+        fs: make(),
+      });
+      assert.equal(result.blocked, true);
+      assert.equal(result.offReason, reason);
+      assert.ok(
+        NATIVE_LOG_OFF_REASONS.includes(result.offReason),
+        `${result.offReason} must be in NATIVE_LOG_OFF_REASONS`
+      );
+    });
+  }
+
+  it("has no offReason when the sink is armed, or when no fs was supplied", () => {
+    const armed = initNativeLogging({
+      logsDir: "/logs",
+      appendSwitch: () => {},
+      fs: fakeFs({ present: [LIVE], contents: { [LIVE]: "no credential here\n" } }),
+    });
+    assert.equal(armed.blocked, false);
+    assert.equal(armed.offReason, null);
+    const bare = initNativeLogging({ logsDir: "/logs", appendSwitch: () => {} });
+    assert.equal(bare.offReason, null);
+  });
+
+  it("keeps the vocabulary closed: strings only, no path-shaped value", () => {
+    assert.ok(Object.isFrozen(NATIVE_LOG_OFF_REASONS));
+    for (const reason of NATIVE_LOG_OFF_REASONS) {
+      assert.match(reason, /^[a-z]+(?:-[a-z]+)*$/, `${reason} must be a plain lowercase code`);
+    }
+  });
 });
 
 // main.js is not loadable under the unit runner (it requires `electron`), so the

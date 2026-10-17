@@ -62,7 +62,7 @@ const browser = await chromium.launch()
  * per-session by design, so the dismissed frame has to come from a page that was
  * never reset, while each banner frame must start undismissed.
  */
-async function openScene({ theme, newCount, viewport = { width: 1280, height: 900 }, revealOk = true }) {
+async function openScene({ theme, newCount, viewport = { width: 1280, height: 900 }, revealOk = true, nativeLogOff = null }) {
   const ctx = await browser.newContext({
     viewport,
     deviceScaleFactor: 2,
@@ -93,21 +93,22 @@ async function openScene({ theme, newCount, viewport = { width: 1280, height: 90
   // resolves without opening a file manager: the harness has no desktop, and the
   // frame is identical either way — the component discards the result.
   //
-  // `get()` resolves the count and NOTHING else, matching the real summary: the
-  // main process stopped sending `lastCrashAt` and `hasLog` once nothing read
-  // them, and a stub that still offered them would quietly re-legitimise fields
-  // the boundary no longer carries.
+  // `get()` resolves the count, plus `nativeLogOff` ONLY for the scenes that show
+  // the file sink being off, matching the real summary: the key is absent while
+  // the sink is armed. The main process stopped sending `lastCrashAt` and
+  // `hasLog` once nothing read them, and a stub that still offered them would
+  // quietly re-legitimise fields the boundary no longer carries.
   //
   // `reveal` resolves `{ ok: revealOk }`: `true` for the frames where the result
   // is discarded and the frame is identical either way, `false` for the failure
   // scene, where the component surfaces the fallback through ErrorNotice and
   // that IS the delta the frame exists to show.
-  await page.addInitScript(({ count, revealOk }) => {
+  await page.addInitScript(({ count, revealOk, nativeLogOff }) => {
     window.crashReportsAPI = {
-      get: () => Promise.resolve({ newCount: count }),
+      get: () => Promise.resolve(nativeLogOff ? { newCount: count, nativeLogOff } : { newCount: count }),
       reveal: () => Promise.resolve({ ok: revealOk }),
     }
-  }, { count: newCount, revealOk })
+  }, { count: newCount, revealOk, nativeLogOff })
 
   await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' })
   return { ctx, page }
@@ -213,6 +214,54 @@ for (const width of [390, 320]) {
   await ctx.close()
 }
 
+// Scenes 8 to 11 — the native file log was kept off for this launch. Same banner
+// with one extra line, rendered through ErrorNotice with the agent hand-off: what
+// is not being recorded, what to say when reporting, and the cause as a plain sentence.
+// Dark and light prove its danger tokens read on both canvases;
+// 390 and 320 prove the longer sentence wraps instead of crushing the actions,
+// which is the width range the banner's `narrow-viewport-required` contract names.
+{
+  const { ctx, page } = await openScene({ theme: 'dark', newCount: 2, nativeLogOff: 'unreadable' })
+  await shootBanner(page, 'crash-notice-native-log-off-dark.png')
+  await ctx.close()
+}
+{
+  const { ctx, page } = await openScene({ theme: 'light', newCount: 1, nativeLogOff: 'replace-failed' })
+  await shootBanner(page, 'crash-notice-native-log-off-light.png')
+  await ctx.close()
+}
+for (const width of [390, 320]) {
+  const { ctx, page } = await openScene({
+    theme: 'dark',
+    newCount: 2,
+    nativeLogOff: 'not-a-regular-file',
+    viewport: { width, height: 720 },
+  })
+  await shootBanner(page, `crash-notice-native-log-off-narrow-${width}.png`)
+  await ctx.close()
+}
+
+// Scene 12 — "Report issue" while the file log is off: the dialog opens with
+// the native-log fact and its cause already in the "What happened?" note
+// (`reportNote`), the one place a maintainer reads it. The frame is the dialog
+// with the note's box grown to its content, so the whole note reads in one
+// frame; in the app the box shows its first lines and scrolls, and this frame
+// changes only that box's height.
+{
+  const { ctx, page } = await openScene({ theme: 'dark', newCount: 2, nativeLogOff: 'unreadable' })
+  const el = banner(page)
+  await el.waitFor({ state: 'visible', timeout: 20_000 })
+  await page.waitForTimeout(800)
+  await el.getByRole('button', { name: /report issue/i }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.waitFor({ state: 'visible', timeout: 20_000 })
+  await page.waitForTimeout(400)
+  await dialog.locator('textarea').first().evaluate(t => { t.style.height = `${t.scrollHeight + 4}px` })
+  await page.waitForTimeout(200)
+  await dialog.screenshot({ path: `${OUT}/crash-notice-native-log-off-report-note.png` })
+  await ctx.close()
+}
+
 await browser.close()
 srv.close()
-console.log(`wrote 8 frames to ${OUT}`)
+console.log(`wrote 13 frames to ${OUT}`)

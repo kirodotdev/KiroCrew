@@ -5860,8 +5860,17 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "Neue auf diesem Gerät gespeicherte Absturzberichte: {{n}}. Fügen Sie sie Ihrer Fehlermeldung bei.",
       "dismiss": "Schließen",
+      "native_log_off": "Das Log vom letzten Mal konnte nicht beiseitegelegt werden, deshalb wurde kein neues Log gestartet. Deine Absturzberichte sind davon nicht betroffen. Wenn du das Problem meldest, wird dieser Hinweis deinem Bericht hinzugefügt.",
+      "native_log_off_cause_error": "Technische Details: Beim Verarbeiten des vorherigen Logs ist etwas schiefgelaufen.",
+      "native_log_off_cause_not_regular_file": "Technische Details: Das vorherige Log ist keine gewöhnliche Datei und konnte nicht entfernt werden.",
+      "native_log_off_cause_replace_failed": "Technische Details: Das vorherige Log konnte nicht ersetzt werden.",
+      "native_log_off_cause_rotate_failed": "Technische Details: Das vorherige Log konnte nicht verschoben werden, um Platz für ein neues zu schaffen.",
+      "native_log_off_cause_unknown": "Technische Details: Die Ursache wurde nicht aufgezeichnet.",
+      "native_log_off_cause_unreadable": "Technische Details: Das vorherige Log konnte nicht gelesen werden.",
+      "native_log_off_cause_unsupported_fs": "Technische Details: Dieses System konnte das vorherige Log nicht verarbeiten.",
       "report_issue": "Problem melden",
       "report_note": "Die App wurde unerwartet beendet. Neue auf diesem Gerät gespeicherte Absturzberichte: {{n}}.",
+      "report_note_native_log_off": "Das detaillierte App-Log konnte in der Sitzung, aus der dieser Bericht stammt, nicht gestartet werden und enthält daher nichts aus dieser Sitzung. Eine von einer früheren Sitzung hinterlassene Logdatei kann den Absturz womöglich noch abdecken. Prüfe daher ihre letzten Zeitstempel, bevor du sie außer Acht lässt.",
       "reveal_failed": "Ordner konnte nicht geöffnet werden – suchen Sie im Log-Verzeichnis der App nach crashes.log.",
       "show_diagnostics": "Diagnose anzeigen",
       "the_app_closed_unexpectedly": "Die App wurde unerwartet beendet"

@@ -20,7 +20,8 @@
  * in-memory: main.js scans once per app session, so a new launch with no new
  * crash produces `newCount: 0` and nothing renders anyway.
  *
- * The renderer is told a COUNT and nothing else — not even a timestamp. Paths,
+ * The renderer is told a COUNT and, only while Chromium's file log is off for
+ * this launch, one cause code from a fixed set. Never a timestamp. Paths,
  * filenames and exception codes stay in the main process (see `crashNoticeSummary` in
  * electron/crash-collector.js) — the reveal action is a main-process gesture
  * that names no path, so this component never holds one.
@@ -40,8 +41,31 @@ import { i18nT } from '../i18n/t'
  */
 const crashReportsAPI = (): CrashReportsAPI | undefined => window.crashReportsAPI
 
+/**
+ * The cause behind a kept-off file log, as one plain sentence.
+ *
+ * The codes are the closed set `NATIVE_LOG_OFF_REASONS` in
+ * electron/native-logging.js, and none of them reaches the screen: a reporter
+ * cannot act on `replace-failed`, but can pass on "could not be replaced". Each
+ * case spells its catalog key in full so the key-reference gate can see it
+ * (a built key would look dead). Anything outside the set reads as the
+ * not-recorded sentence, the same fallback the main process applies.
+ */
+function nativeLogOffCause(reason: string): string {
+  switch (reason) {
+    case 'unsupported-fs': return i18nT('components.crashNotice.native_log_off_cause_unsupported_fs')
+    case 'not-a-regular-file': return i18nT('components.crashNotice.native_log_off_cause_not_regular_file')
+    case 'unreadable': return i18nT('components.crashNotice.native_log_off_cause_unreadable')
+    case 'replace-failed': return i18nT('components.crashNotice.native_log_off_cause_replace_failed')
+    case 'error': return i18nT('components.crashNotice.native_log_off_cause_error')
+    case 'rotate-failed': return i18nT('components.crashNotice.native_log_off_cause_rotate_failed')
+    default: return i18nT('components.crashNotice.native_log_off_cause_unknown')
+  }
+}
+
 export default function CrashReportNotice() {
   const [count, setCount] = useState(0)
+  const [nativeLogOff, setNativeLogOff] = useState<string | null>(null)
   const [dismissed, setDismissed] = useState(false)
   const [revealError, setRevealError] = useState<string | null>(null)
   const [reportOpen, setReportOpen] = useState(false)
@@ -76,12 +100,33 @@ export default function CrashReportNotice() {
     // gateway shares this preload), and that is a correct outcome, not an error
     // worth putting on screen.
     void api.get()
-      .then(summary => { if (alive) setCount(summary.newCount) })
+      .then(summary => {
+        if (!alive) return
+        // The log-off state first: the report dialog below is mounted once the
+        // banner renders (`count` >= 1) and reads its starting note only then, so
+        // the fact has to be in place before the count makes the banner appear.
+        setNativeLogOff(summary.nativeLogOff ?? null)
+        setCount(summary.newCount)
+      })
       .catch(() => {})
     return () => { alive = false }
   }, [])
 
   if (dismissed || count < 1) return null
+
+  // What the report starts from: the count, and while the file sink is off the
+  // fact and its cause as plain sentences, so the reporter does not retype what
+  // the app already knows and a maintainer reads it in the report rather than in
+  // a paraphrase. The fact is scoped to the session the report is made from, and
+  // says a log file left by an earlier session may still cover the crash: the
+  // rotation that failed leaves that file where it was, and this component cannot
+  // tell whether the crashed launch had the sink on. No code or filename here.
+  const reportNote = [
+    i18nT('components.crashNotice.report_note', { n: count }),
+    ...(nativeLogOff
+      ? [i18nT('components.crashNotice.report_note_native_log_off'), nativeLogOffCause(nativeLogOff)]
+      : []),
+  ].join('\n')
 
   // Two rows, so each holds at most two controls (the two-buttons-per-row
   // cap counts the icon-only dismiss too). Row one is the message: icon, text,
@@ -109,6 +154,32 @@ export default function CrashReportNotice() {
                 which only exist for keys registered in i18n/pluralKeys.json. */}
             {i18nT('components.crashNotice.diagnostics_were_saved_locally', { n: count })}
           </div>
+          {/* The previous log could not be redacted or rotated, so the file sink
+              stays off for this launch: a failed outcome, shown as an error.
+              The text is the reporter's words, not the code's: the log from
+              last time could not be moved out of the way, so no new one was
+              started; the crash records are a different thing and unaffected;
+              Report issue adds the fact to the report (`reportNote`, so nobody
+              retypes it); then a "Technical
+              detail" line carrying the cause as a plain sentence. It claims only
+              what the main process knows,
+              that the sink is off for THIS launch: the crash counted above
+              happened in an earlier one, so nothing is said about whether the
+              file on disk covers it. The raw code and the log's filename stay
+              out of it, and the line goes to the agent with the hand-off.
+              `askAgent` is on: this banner holds no unsaved input for the
+              hand-off to lose, and the agent can look into the cause. `below`
+              keeps the hand-off out of a side column, so the sentence keeps the
+              banner's width at 320px. */}
+          {nativeLogOff && (
+            <ErrorNotice
+              message={`${i18nT('components.crashNotice.native_log_off')}\n${nativeLogOffCause(nativeLogOff)}`}
+              askAgent
+              actionPlacement="below"
+              className="mt-2"
+              testId="crash-notice-native-log-off"
+            />
+          )}
         </div>
         <button
           type="button"
@@ -127,9 +198,10 @@ export default function CrashReportNotice() {
           <FolderOpen size={14} /> {i18nT('components.crashNotice.show_diagnostics')}
         </Btn>
         {/* The shared Report a Problem flow (bundle + pre-filled GitHub issue),
-            started with the one crash fact this banner holds — the count — in
-            the note. The renderer is never told more (see the header), so the
-            note names no path, filename or exception code. That bundle is the
+            started with what this banner holds: the count and, while the file
+            sink is off, that fact and its cause (`reportNote`). The renderer is
+            never told more (see the header), so the note names no path, filename
+            or exception code. That bundle is the
             gateway's: it does not carry the desktop crash ledger, which is why
             the banner still asks the user to attach what "Show diagnostics"
             reveals, and why neither action is styled as the primary one. */}
@@ -156,7 +228,7 @@ export default function CrashReportNotice() {
       <ReportProblemModal
         open={reportOpen}
         onClose={() => setReportOpen(false)}
-        initialNote={i18nT('components.crashNotice.report_note', { n: count })}
+        initialNote={reportNote}
       />
     </div>
   )

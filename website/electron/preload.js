@@ -208,7 +208,8 @@ contextBridge.exposeInMainWorld("localGatewayAPI", {
 // a main-process crash reaches us as "it closed by itself" with the evidence
 // still unread on the reporter's disk. This bridge is what closes that loop.
 //
-// `get` resolves { newCount } and NOTHING else: no paths, no filenames, no
+// `get` resolves { newCount } and, only while Chromium's file log is off for this
+// launch, a `nativeLogOff` cause code from a fixed set. No paths, no filenames, no
 // exception codes, not even a timestamp. `reveal` takes no argument — main.js knows
 // where the log is from the scan it performed, so this cannot be turned into a
 // request to open an arbitrary file. Absent in plain browsers and in the PWA,

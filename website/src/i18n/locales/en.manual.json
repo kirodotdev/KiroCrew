@@ -1855,8 +1855,17 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "New crash records saved on this machine: {{n}}. Attach them when you report the problem.",
       "dismiss": "Dismiss",
+      "native_log_off": "The log from last time couldn't be moved out of the way, so a new log wasn't started. Your crash records are unaffected. Report issue adds this to your report.",
+      "native_log_off_cause_error": "Technical detail: something went wrong while the previous log was being processed.",
+      "native_log_off_cause_not_regular_file": "Technical detail: the previous log is not an ordinary file, and it could not be removed.",
+      "native_log_off_cause_replace_failed": "Technical detail: the previous log could not be replaced.",
+      "native_log_off_cause_rotate_failed": "Technical detail: the previous log could not be moved to make room for a new one.",
+      "native_log_off_cause_unknown": "Technical detail: the cause was not recorded.",
+      "native_log_off_cause_unreadable": "Technical detail: the previous log could not be read.",
+      "native_log_off_cause_unsupported_fs": "Technical detail: this system could not process the previous log.",
       "report_issue": "Report issue",
       "report_note": "The app closed unexpectedly. New crash records saved on this machine: {{n}}.",
+      "report_note_native_log_off": "The detailed app log couldn't be started in the session this report is from, so nothing from that session is in it. A log file left by an earlier session may still cover the crash, so check its last timestamps before setting it aside.",
       "reveal_failed": "Couldn't open the folder — look for crashes.log in the app's log directory.",
       "show_diagnostics": "Show diagnostics",
       "the_app_closed_unexpectedly": "The app closed unexpectedly"

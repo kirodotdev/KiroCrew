@@ -8,6 +8,7 @@ const path = require("node:path");
 const Module = require("node:module");
 
 const ROOT = path.join(__dirname, "..");
+const { NATIVE_LOG_OFF_REASONS } = require(path.join(ROOT, "native-logging.js"));
 const MODULE_PATH = path.join(ROOT, "ipc-registrar.js");
 const SOURCE = fs.readFileSync(MODULE_PATH, "utf8");
 const MAIN_SOURCE = fs.readFileSync(path.join(ROOT, "main.js"), "utf8");
@@ -183,6 +184,9 @@ function harness({
   wslGatewayLocal = true,
   primaryPortOwner = "kirocrew",
   crashScan,
+  // What the shell reports about native logging for this launch; absent means
+  // the shell was assembled without it.
+  nativeLogStatus,
   revealThrows = false,
   openPathResult = "",
   openPathThrows = false,
@@ -205,6 +209,7 @@ function harness({
   const shellCalls = [];
   const crashScans = [];
   const secretReads = [];
+  const nativeLogStatuses = [];
   const windowCalls = [];
   const gatewayCalls = [];
   const appCalls = [];
@@ -376,6 +381,10 @@ function harness({
       crashScans.push(true);
       return typeof crashScan === "function" ? crashScan() : crashScan;
     },
+    nativeLogStatus: nativeLogStatus === undefined ? undefined : () => {
+      nativeLogStatuses.push(true);
+      return typeof nativeLogStatus === "function" ? nativeLogStatus() : nativeLogStatus;
+    },
     glog: (line) => logs.push(line),
     ...(externalTerminal ? { externalTerminal } : {}),
     // Like main.js's readInternalSecret: the secret belongs to one gateway
@@ -405,6 +414,7 @@ function harness({
     shellCalls,
     crashScans,
     secretReads,
+    nativeLogStatuses,
     dialogCalls,
     logs,
   };
@@ -760,6 +770,46 @@ test("crash-reports:get reports nothing when no collector was injected", async (
   h.registrar.registerShell();
 
   assert.deepEqual(await h.handlers.get("crash-reports:get")(wslEvent()), { newCount: 0 });
+});
+
+test("crash-reports:get adds why native file logging is off, as a vocabulary code", async () => {
+  const h = harness({
+    crashScan: crashScanResult,
+    nativeLogStatus: () => ({ offReason: "replace-failed", logPath: "/logs/chromium.log" }),
+  });
+  h.registrar.registerShell();
+
+  const summary = await h.handlers.get("crash-reports:get")(wslEvent());
+
+  assert.deepEqual(summary, { newCount: 2, nativeLogOff: "replace-failed" });
+  assert.ok(NATIVE_LOG_OFF_REASONS.includes(summary.nativeLogOff));
+  // The status object carries a path; only the code may reach the renderer.
+  assert.equal(JSON.stringify(summary).includes("/logs"), false);
+  assert.equal(h.nativeLogStatuses.length, 1, "the status must come from the injected getter");
+});
+
+test("crash-reports:get stays a bare count while native file logging is armed", async () => {
+  for (const nativeLogStatus of [null, () => null, () => ({ offReason: null })]) {
+    const h = harness({ crashScan: crashScanResult, nativeLogStatus });
+    h.registrar.registerShell();
+
+    assert.deepEqual(await h.handlers.get("crash-reports:get")(wslEvent()), { newCount: 2 });
+  }
+});
+
+// Whether native logging is off is machine state, like whether the app crashed:
+// a sender that may not be told the answer must not cause it to be computed.
+test("crash-reports:get never reads the native logging status for a refused sender", async () => {
+  const h = harness({
+    primaryPortOwner: "foreign",
+    crashScan: crashScanResult,
+    nativeLogStatus: () => ({ offReason: "unreadable" }),
+  });
+  h.registrar.registerShell();
+
+  await assert.rejects(() => h.handlers.get("crash-reports:get")(wslEvent()));
+  assert.equal(h.nativeLogStatuses.length, 0, "a refused sender must not reach the status read");
+  assert.equal(h.crashScans.length, 0);
 });
 
 test("crash-reports:reveal selects the ledger the main process resolved itself", async () => {

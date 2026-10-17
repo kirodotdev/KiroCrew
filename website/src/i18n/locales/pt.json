@@ -5961,8 +5961,17 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "Novos registros de falha salvos neste computador: {{n}}. Anexe-os ao relatar o problema.",
       "dismiss": "Dispensar",
+      "native_log_off": "Não foi possível guardar à parte o registro da última vez, então um novo não foi iniciado. Seus registros de falha não são afetados. Se você relatar o problema, essa informação é adicionada ao seu relatório.",
+      "native_log_off_cause_error": "Detalhe técnico: algo deu errado ao processar o registro anterior.",
+      "native_log_off_cause_not_regular_file": "Detalhe técnico: o registro anterior não é um arquivo comum e não pôde ser removido.",
+      "native_log_off_cause_replace_failed": "Detalhe técnico: não foi possível substituir o registro anterior.",
+      "native_log_off_cause_rotate_failed": "Detalhe técnico: não foi possível mover o registro anterior para abrir espaço para um novo.",
+      "native_log_off_cause_unknown": "Detalhe técnico: a causa não foi registrada.",
+      "native_log_off_cause_unreadable": "Detalhe técnico: não foi possível ler o registro anterior.",
+      "native_log_off_cause_unsupported_fs": "Detalhe técnico: este sistema não conseguiu processar o registro anterior.",
       "report_issue": "Relatar problema",
       "report_note": "O aplicativo fechou inesperadamente. Novos registros de falha salvos nesta máquina: {{n}}.",
+      "report_note_native_log_off": "Não foi possível iniciar o registro detalhado do aplicativo na sessão em que este relatório foi gerado, então ele não contém nada dessa sessão. Um arquivo de registro deixado por uma sessão anterior ainda pode cobrir a falha; confira os últimos carimbos de data e hora dele antes de descartá-lo.",
       "reveal_failed": "Não foi possível abrir a pasta — procure crashes.log no diretório de logs do aplicativo.",
       "show_diagnostics": "Mostrar diagnósticos",
       "the_app_closed_unexpectedly": "O aplicativo foi encerrado inesperadamente"

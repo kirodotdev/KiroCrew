@@ -5961,8 +5961,17 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "Nouveaux enregistrements de plantage enregistrés sur cet appareil : {{n}}. Joignez-les à votre signalement.",
       "dismiss": "Ignorer",
+      "native_log_off": "Le journal de la dernière fois n’a pas pu être mis de côté, donc aucun nouveau journal n’a été démarré. Tes rapports de plantage ne sont pas affectés. Si tu signales le problème, cette information est ajoutée à ton signalement.",
+      "native_log_off_cause_error": "Détail technique : un problème est survenu lors du traitement du journal précédent.",
+      "native_log_off_cause_not_regular_file": "Détail technique : le journal précédent n’est pas un fichier ordinaire et n’a pas pu être supprimé.",
+      "native_log_off_cause_replace_failed": "Détail technique : le journal précédent n’a pas pu être remplacé.",
+      "native_log_off_cause_rotate_failed": "Détail technique : le journal précédent n’a pas pu être déplacé pour laisser la place à un nouveau.",
+      "native_log_off_cause_unknown": "Détail technique : la cause n’a pas été enregistrée.",
+      "native_log_off_cause_unreadable": "Détail technique : le journal précédent n’a pas pu être lu.",
+      "native_log_off_cause_unsupported_fs": "Détail technique : ce système n’a pas pu traiter le journal précédent.",
       "report_issue": "Signaler un problème",
       "report_note": "L'application s'est fermée de manière inattendue. Nouveaux rapports de plantage enregistrés sur cet appareil : {{n}}.",
+      "report_note_native_log_off": "Le journal détaillé de l’application n’a pas pu être démarré pendant la session dont provient ce signalement ; il ne contient donc rien de cette session. Un fichier journal laissé par une session précédente peut encore couvrir le plantage ; vérifie ses derniers horodatages avant de l’écarter.",
       "reveal_failed": "Impossible d’ouvrir le dossier – recherchez crashes.log dans le répertoire des journaux de l’application.",
       "show_diagnostics": "Afficher les diagnostics",
       "the_app_closed_unexpectedly": "L’application s’est fermée de manière inattendue"
