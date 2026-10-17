@@ -303,7 +303,7 @@
  1 test_session_map_mirror.py
  1 test_session_more_coverage.py
  1 test_session_not_found_surfaces.py
-13 test_session_pool.py
+10 test_session_pool.py
  1 test_session_pulse_counter.py
  1 test_session_scope_reap.py
  4 test_session_sharing.py
