@@ -1296,7 +1296,6 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
           duplicate against before any request. */}
       <NewCrewmateDialog
         open={createOpen}
-        startExpanded
         onClose={() => setCreateOpen(false)}
         onCreated={handleCapCreated}
         existingNames={agents.flatMap(a => (a.display_name ? [a.name, a.display_name] : [a.name]))}

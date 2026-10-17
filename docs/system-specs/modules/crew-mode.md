@@ -1408,9 +1408,9 @@ is born an icon rather than wearing the name's ghost. The **Advanced settings** 
 the avatar, in the same card: Built from, What it looks after, and the crew
 editor fields (workspace, model, triggers, session colour), ending with a second
 Create. It is folded by default; `startExpanded` opens it unfolded, which is what
-the hero's Advanced link and the crew manager's door pass. Folding unmounts those
-fields but keeps their values, and every create sends them. The "+" menu holds no
-Advanced row of its own.
+the hero's Advanced link passes. Folding unmounts those fields but keeps their
+values, and every create sends them. The "+" menu holds no Advanced row of its
+own.
 
 The card is the page's one creation surface. A drafted proposal (a crewmate's
 create link `/members?create=1&name=…&goal=…`, clicked in its chat or reached by
@@ -1438,8 +1438,9 @@ dashed roster card (`pages.kiroCrewAgentsPage.add_crew_member` in
 `website/src/pages/KiroCrewAgentsPageRoster.tsx`, the Crewmates tab of Customize), which
 has no separate create sheet. Both doors use the
 existing owner-gated `POST /api/agents`; editing an existing member still uses
-the crew manager. The crew manager's door opens with Advanced settings unfolded
-and `kirocrew` as the default **Built from** (labelled as the default), and shows
+the crew manager. The crew manager's door opens with Advanced settings folded,
+matching the Crewmates page's quick door; its Built from stays `kirocrew`
+(labelled as the default) once unfolded, and it shows
 no first-greeting hint, since it asks for none. What happens after a create
 depends on the door. On the Crewmates page the card sends `first_greeting`, the
 page re-reads the roster and opens the new crewmate's verified thread (a failed

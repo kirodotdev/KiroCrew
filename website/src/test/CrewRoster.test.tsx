@@ -569,13 +569,13 @@ describe('crew editor — opening', () => {
     await renderRoster()
     const sheet = await openCreate()
     // The create door opens the Crewmates page's own dialog, not the full
-    // editor sheet. This door asks for every setting up front, so its
-    // Advanced settings are already unfolded in the same card.
+    // editor sheet. It opens folded, matching the Crewmates page quick door:
+    // Name is shown, the expert fields sit behind the Advanced toggle.
     expect(within(sheet).getByPlaceholderText('e.g. Radar or Dr. Eggbot')).toBeInTheDocument()
-    // Unfolded, the card ends its Advanced settings with a second Create too.
-    expect(within(sheet).getAllByRole('button', { name: 'Create crewmate' })).toHaveLength(2)
-    expect(within(sheet).getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
-    expect(within(sheet).getByRole('combobox', { name: 'Built from' })).toBeInTheDocument()
+    // Folded, there is one Create and the Advanced-only "Built from" is hidden.
+    expect(within(sheet).getAllByRole('button', { name: 'Create crewmate' })).toHaveLength(1)
+    expect(within(sheet).getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'false')
+    expect(within(sheet).queryByRole('combobox', { name: 'Built from' })).toBeNull()
   })
 })
 
