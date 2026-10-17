@@ -44,7 +44,7 @@ Framework **pushes** activities to a messaging endpoint you host. Kiro Crew:
   environment that runs the gateway:
 
   ```bash
-  pip install "PyJWT[crypto]==2.13.0"
+  pip install "PyJWT[crypto]==2.15.0"
   ```
 
   This is the whole of the `teams` extra. Installing the dependency directly is

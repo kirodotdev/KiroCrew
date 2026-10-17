@@ -96,7 +96,7 @@ gateway starts — so they never sit in the long-lived gateway process's
 compose `.env` and restarting updates the stored copy.
 
 Four channels are unavailable in the stock image. **Microsoft Teams** needs
-`PyJWT[crypto]==2.13.0` (the `teams` extra), **Feishu** needs
+`PyJWT[crypto]==2.15.0` (the `teams` extra), **Feishu** needs
 `lark-oapi>=1.4,<2` (the `feishu` extra), and **WhatsApp** needs
 `neonize==0.4.3.post0` (the `whatsapp` extra). The Dockerfile installs the bare
 wheel, so use a custom image that installs the required distribution before

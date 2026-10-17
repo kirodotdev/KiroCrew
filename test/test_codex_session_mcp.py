@@ -1009,7 +1009,7 @@ def test_the_installed_adapter_still_builds_the_frames_the_refusal_reads():
     """The frame VOCABULARY the deny channel keys on, pinned against the adapter.
 
     Three things identify a codex MCP call to Crew: the ``tool_call`` frame's
-    ``rawInput = {server, tool, arguments}`` (``createMcpRawInput``), its
+    ``rawInput = {server, tool, arguments}`` (``mcpInput``), its
     ``_meta.is_mcp_tool_call`` marker, and the approval request's
     ``_meta.is_mcp_tool_approval`` marker with ``cancel`` as its reject option
     (``buildMcpPermissionRequest`` / ``McpApprovalOptionId``). All three come from
@@ -1025,7 +1025,7 @@ def test_the_installed_adapter_still_builds_the_frames_the_refusal_reads():
     assert _ENTRY is not None
     source = _ENTRY.read_text(encoding="utf-8", errors="replace")
     for needle in (
-        "function createMcpRawInput(server, tool, argumentsValue)",
+        "return { server: item.server, tool: item.tool, arguments: item.arguments };",
         "is_mcp_tool_call: true",
         "is_mcp_tool_approval: true",
         'Cancel: "cancel"',
