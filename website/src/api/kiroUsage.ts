@@ -20,10 +20,26 @@ const MAX_KIRO_BONUS_DAYS_LEFT = 3_650
  */
 export type KiroUsageState =
   | KiroCreditUsage
+  | KiroAccountOnly
   | 'none'
   | 'api-key'
   | 'signin-required'
   | null
+
+/**
+ * A sign-in with no balance (`reason: account_unproven`): the whoami names
+ * the provider and no user, so only the account type is known. The gateway
+ * publishes this state only when email and start URL are absent, so the type
+ * is the one field it carries.
+ */
+export interface KiroAccountOnly {
+  accountOnly: true
+  accountType?: string
+}
+
+/** True for the signed-in-account-without-a-balance state. */
+export const isAccountOnly = (state: unknown): state is KiroAccountOnly =>
+  typeof state === 'object' && state !== null && (state as { accountOnly?: unknown }).accountOnly === true
 
 export function parseKiroUsagePayload(d: { usage?: KiroUsagePayload } | undefined): KiroUsageState {
   const u: KiroUsagePayload = d?.usage || {}
@@ -103,6 +119,10 @@ export function parseKiroUsagePayload(d: { usage?: KiroUsagePayload } | undefine
   if (u.available === false) {
     if (u.reason === 'api_key_auth') return 'api-key' as const
     if (u.reason === 'signin_required') return 'signin-required' as const
+    if (u.reason === 'account_unproven') {
+      const type = u.account_type
+      return { accountOnly: true, accountType: typeof type === 'string' && type ? type : undefined }
+    }
     return 'none' as const
   }
   return null
