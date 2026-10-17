@@ -6848,7 +6848,14 @@
       "tags_loading_hint": "正在加载标签…",
       "tags_error_hint": "无法加载标签。",
       "tags_retry": "重试",
-      "top_level": "顶层"
+      "top_level": "顶层",
+      "default_destination_crew": "默认目标 crew",
+      "default_destination_crew_hint": "此文件夹中的会话在“发送副本到”中优先列出此 crew。点击之前不会发送任何内容。",
+      "default_destination_global": "使用全局默认值（{{crew}}）",
+      "default_destination_global_unset": "使用全局默认值（无）",
+      "default_destination_not_registered": "{{id}}（未注册）",
+      "default_destination_load_failed": "无法加载 crew。",
+      "default_destination_retry": "重试"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "文件夹建议",
@@ -8268,7 +8275,8 @@
       "sent": "已发送",
       "sent_transcript_only": "已发送（仅对话记录）",
       "transcript_only_hint": "该 Crew 无法恢复完整的对话上下文，因此此副本仅从对话记录继续。",
-      "unknown_error": "未知错误"
+      "unknown_error": "未知错误",
+      "default_badge": "默认"
     },
     "sessionActionsMenu": {
       "bring_back_to_main": "移回主窗口",
@@ -16604,7 +16612,12 @@
         "up_to": "最多",
         "update_setting_failed": "更新设置失败：{{error}}",
         "use_an_absolute_path_no": "）。\n            请使用绝对路径（不含",
-        "enable_via_setting": "或者，设置 <settingRef/>，然后运行 <restartCmd/>。"
+        "enable_via_setting": "或者，设置 <settingRef/>，然后运行 <restartCmd/>。",
+        "default_destination": "默认目标 crew",
+        "default_destination_hint": "“发送副本到”会优先列出此 crew，并标记为默认。文件夹可以选择自己的 crew。",
+        "default_destination_none": "无默认值",
+        "default_destination_not_registered": "{{id}}（未注册）",
+        "default_destination_save_failed": "无法保存默认目标 crew。"
       },
       "notificationsPanel": {
         "desktop_alerts": "桌面通知",

@@ -7090,7 +7090,14 @@
       "tags_loading_hint": "Carregando tags…",
       "tags_error_hint": "Não foi possível carregar as tags.",
       "tags_retry": "Tentar novamente",
-      "top_level": "Nível superior"
+      "top_level": "Nível superior",
+      "default_destination_crew": "Crew de destino padrão",
+      "default_destination_crew_hint": "\"Enviar uma cópia para\" mostra primeiro esta crew para as sessões desta pasta. Nada é enviado até você clicar.",
+      "default_destination_global": "Usar o padrão global ({{crew}})",
+      "default_destination_global_unset": "Usar o padrão global (nenhum)",
+      "default_destination_not_registered": "{{id}} (não registrada)",
+      "default_destination_load_failed": "Não foi possível carregar as crews.",
+      "default_destination_retry": "Tentar de novo"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Sugestão de pasta",
@@ -8538,7 +8545,8 @@
       "sent": "Enviado",
       "sent_transcript_only": "Enviado (apenas transcrição)",
       "transcript_only_hint": "Essa crew não conseguiu restaurar o contexto completo da conversa, então esta cópia retoma apenas a partir da transcrição.",
-      "unknown_error": "Erro desconhecido"
+      "unknown_error": "Erro desconhecido",
+      "default_badge": "padrão"
     },
     "sessionActionsMenu": {
       "bring_back_to_main": "Trazer de volta para a janela principal",
@@ -17146,7 +17154,12 @@
         "up_to": "Até",
         "update_setting_failed": "Falha ao atualizar a configuração: {{error}}",
         "use_an_absolute_path_no": ").\n            Use um caminho absoluto (sem",
-        "enable_via_setting": "Alternativamente, defina <settingRef/> e depois execute <restartCmd/>."
+        "enable_via_setting": "Alternativamente, defina <settingRef/> e depois execute <restartCmd/>.",
+        "default_destination": "Crew de destino padrão",
+        "default_destination_hint": "\"Enviar uma cópia para\" mostra primeiro esta crew, marcada como padrão. Uma pasta pode escolher a sua.",
+        "default_destination_none": "Sem padrão",
+        "default_destination_not_registered": "{{id}} (não registrada)",
+        "default_destination_save_failed": "Não foi possível salvar a crew de destino padrão."
       },
       "notificationsPanel": {
         "desktop_alerts": "Alertas da área de trabalho",
