@@ -58,6 +58,7 @@ from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
 from kiro_crew.dashboard.token_auth import effective_request_app as _effective_request_app
 from kiro_crew.dashboard.token_auth import folder_principal
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.instances.crew_ref import clean_crew_ref
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.dashboard.chat_folders")
@@ -210,6 +211,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             parent_id=parent_id,
             project_dir=str(body.get("project_dir") or ""),
             default_agent=str(body.get("default_agent") or "").strip(),
+            default_destination_crew=clean_crew_ref(body.get("default_destination_crew")),
             color=str(body.get("color") or ""),
             icon=icon_val,
             request_app=request_app,
@@ -328,6 +330,8 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     if "default_agent" in body:
         val = body["default_agent"]
         changes["default_agent"] = str(val).strip() if val is not None else ""
+    if "default_destination_crew" in body:
+        changes["default_destination_crew"] = clean_crew_ref(body["default_destination_crew"])
     reparenting = "parent_id" in body
     new_parent = ""
     if reparenting:

@@ -4668,6 +4668,7 @@
       "defaultValue": {
         "enabled": false,
         "warm_set_cap": 0,
+        "default_destination": "",
         "tunnel_base_port": 7778,
         "ssh_compression": true,
         "connect_timeout_secs": null,
@@ -4705,6 +4706,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
+    },
+    {
+      "path": "instances.default_destination",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Default Destination Crew",
+      "help": "Instance id of the crew that Send a copy to lists first, marked as the default. Empty (the default) keeps every crew in registry order with no default. A folder's own default destination crew overrides this for sessions in that folder. Nothing is sent without a click: this only orders and marks the menu, and an id that names no registered crew is ignored.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "instances.tunnel_base_port",

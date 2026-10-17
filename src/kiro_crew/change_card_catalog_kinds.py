@@ -208,6 +208,9 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "decisions.model_route.simple",
         "decisions.nudge_wake.llm_model",
         "decisions.nudge_wake.provider",
+        # Only orders *Send a copy to* (the crew it lists first); nothing is
+        # sent until the person clicks a row, and no agent path reads it.
+        "instances.default_destination",
         "knowledge.auto_ingest_artifacts",
         "knowledge.dedup_every_n_sweeps",
         "knowledge.embed_rate_limit",
