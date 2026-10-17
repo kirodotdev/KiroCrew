@@ -8,6 +8,7 @@ import type { useChatPageResourcesController } from '../useChatPageResourcesCont
 import type { useComposerChips } from './composerChips'
 import type { MemoryMode } from '../../../components/MemoryModeChip'
 import { anchorForSlot, sessionSlots, loadLayout } from '../../../hooks/splitLayoutStore'
+import type { SplitDir } from '../../../hooks/useSessionGrid'
 import { CHAT_PANE_MIN_W, sidePanelFillWidth } from '../SidePanel'
 import { useSidePanelDock } from '../../../hooks/useSidePanelDock'
 import { parseStoredSidebarWidth, SIDEBAR_MAX } from '../sidebarWidth'
@@ -99,6 +100,9 @@ export function usePaneLayoutState({
   // Leaving abandons the draft. The pin alone closes the editor but keeps it, so a
   // return would revive stale text and a blur could overwrite a newer title.
   useEffect(() => { setEditingTitleSlot(null) }, [activeSlot])
+  // Which side of the anchor the next split view seeds its new pane on. Every
+  // enterSplit sets it, so one entry never carries into the next.
+  const [splitSeedDir, setSplitSeedDir] = useState<SplitDir>('right')
   // Native session grid "split mode": an in-place tiling of the chat surface (NOT an
   // overlay). The flag is EPHEMERAL per mount — nav/refresh lands on single chat —
   // but the LAYOUT persists per anchor slot (splitLayoutStore). So a split is
@@ -106,9 +110,14 @@ export function usePaneLayoutState({
   // chat plus an "in split" badge that re-enters it (β model). `splitAnchor` is the
   // slot whose split we're showing (the one ⌘D'd from, or the badge's target).
   // enterSplit opens Split View for `anchor`: SessionGridView restores anchor's saved
-  // layout if one exists, else seeds [anchor | placeholder]. Closing back down to a
+  // layout if one exists, else seeds [anchor | placeholder] with the placeholder
+  // beside `anchor` ('right', the default) or below it ('down'). Closing back down to a
   // single session dissolves the layout and collapses to native chat (onCollapse).
-  const enterSplit = useCallback((anchor: string | null) => { setSplitAnchor(anchor); setSplitMode(true) }, [setSplitAnchor, setSplitMode])
+  const enterSplit = useCallback((anchor: string | null, dir: SplitDir = 'right') => {
+    setSplitAnchor(anchor)
+    setSplitSeedDir(dir)
+    setSplitMode(true)
+  }, [setSplitAnchor, setSplitMode])
   // Anchor of the persisted split the active session belongs to (>= 2 live sessions),
   // or null — drives the "in split" badge in single chat. Validated against live
   // slots so a stale layout (a member was deleted) never shows a dead badge.
@@ -148,7 +157,7 @@ export function usePaneLayoutState({
   }, [embedMode, splitMode, enterSplit, splitFeatureEnabled, activeSlot])
   return {
     sidebarPinned, setSidebarPinned, sidebarPinnedRef, sidebarAutoHidden, sidePanelDock, sidePanelDockAnim, sidebarWidth, setSidebarWidth, sidebarDragging, setSidebarDragging, setEditingTitleSlot,
-    editingTitle, enterSplit, splitAnchorForActive, activeIsSplitAnchor,
+    editingTitle, enterSplit, splitAnchorForActive, activeIsSplitAnchor, splitSeedDir,
   }
 }
 

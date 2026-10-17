@@ -1,8 +1,9 @@
 import { Suspense, lazy, type ComponentProps, type Dispatch, type MutableRefObject, type ReactNode, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
-import { Columns2, ExternalLink, EyeOff, MoreHorizontal, Pin, VenetianMask } from 'lucide-react'
+import { Columns2, ExternalLink, EyeOff, MoreHorizontal, Pin, Rows2, VenetianMask } from 'lucide-react'
 
 import { generateSlotTitle } from '../../../hooks/slotTitleGeneration'
+import type { SplitDir } from '../../../hooks/useSessionGrid'
 import { ConcurrencyCutDot, ConcurrencyCutLiveRegion, ConcurrencyCutMenuItem } from '../../../components/ConcurrencyCutChip'
 import ErrorBoundary from '../../../components/ErrorBoundary'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../../../components/ErrorNotice'
@@ -48,7 +49,7 @@ interface MobileTopBarProps {
   toggleAct: () => void
   splitAnchorForActive: string | null
   activeIsSplitAnchor: boolean
-  enterSplit: (anchor: string | null) => void
+  enterSplit: (anchor: string | null, dir?: SplitDir) => void
   /** The session menu's "New chat here" item (ChatPage builds it from the current folder). */
   mobileNewSessionItem: ComponentProps<typeof ChatHeaderMenu>['newSessionHere']
   dispatch: AppDispatch
@@ -239,9 +240,15 @@ export default function MobileTopBar({
               <span className="flex items-center gap-2"><Columns2 size={14} className="shrink-0 text-muted" /><span>{i18nT('pages.chatPage.return_to_split_view')}</span></span>
             </DropdownMenuItem>
           ) : (
+            <>
+            {/* The pair names its two directions with the pane controls' own labels. */}
             <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={() => enterSplit(activeSlot)}>
-              <span className="flex items-center gap-2"><Columns2 size={14} className="shrink-0 text-muted" /><span>{i18nT('pages.chatPage.enter_split_view')}</span></span>
+              <span className="flex items-center gap-2"><Columns2 size={14} className="shrink-0 text-muted" /><span>{i18nT('components.chatPane.split_right')}</span></span>
             </DropdownMenuItem>
+            <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={() => enterSplit(activeSlot, 'down')}>
+              <span className="flex items-center gap-2"><Rows2 size={14} className="shrink-0 text-muted" /><span>{i18nT('components.chatPane.split_down')}</span></span>
+            </DropdownMenuItem>
+            </>
           ))}
         </DropdownMenuContent>
       </DropdownMenu>
