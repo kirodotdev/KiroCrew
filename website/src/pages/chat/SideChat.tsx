@@ -994,6 +994,7 @@ export default function SideChat({ slot }: { slot: string }) {
             typedCommandMenus={false}
             slotApprovalChrome={false}
             promptOptimizer={false}
+            promptStash={false}
             connected={connected}
           />
           {postureError ? (

@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest'
 import { screen } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { SlotProvider } from '../providers/SlotContext'
+import { addStashEntry, makeStashEntry } from '../utils/promptStash'
 
 /**
  * `inlineToolbarWhileFits` (#19608): the Crewmates DM composer is ONE row --
@@ -75,6 +77,18 @@ describe('ChatInput inlineToolbarWhileFits: the one-row shape', () => {
       <ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits pendingQuote={{ text: 'quoted', role: 'assistant' }} onRemoveQuote={vi.fn()} />,
     )
     expect(inline()).toBe(false)
+  })
+
+  // The prompt stash's status line (here, a stashed count) is a strip like
+  // the send-held notice: on the single row it would squeeze the text.
+  it('opens to two rows while the prompt stash shows its status line', () => {
+    localStorage.clear()
+    expect(addStashEntry('chat-1', makeStashEntry('saved draft', []))).toBe(true)
+    renderWithProviders(
+      <SlotProvider slotId="chat-1"><ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits /></SlotProvider>,
+    )
+    expect(inline()).toBe(false)
+    localStorage.clear()
   })
 
   it('mounts the fit probe only for an opted-in host, hidden and out of the accessibility tree', () => {

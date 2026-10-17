@@ -141,7 +141,7 @@ export function usePlusMenu({ pickers, value, onChange, composerControl, fileInp
   return { plusOpen, setPlusOpen, sketchOpen, setSketchOpen, plusWrapRef, plusBtnRef, plusMenuRef, plusRect, togglePlus, openTrigger }
 }
 
-export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, directFilePicker, collapsible, fileInputId, openPicker, isMac, isMobile, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect }: {
+export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, directFilePicker, collapsible, fileInputId, openPicker, isMac, isMobile, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect, stashMenuRows, stashTouchHost = false }: {
   plus: ReturnType<typeof usePlusMenu>
   onUploadFiles?: (files: File[]) => void
   uploading: boolean
@@ -159,6 +159,11 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
   collapseMenuRow: ReactNode
   typedCommandMenus: boolean
   onFileSelect: ChatInputProps['onFileSelect']
+  /** The prompt-stash rows the "+" menu hosts (null when the stash is off). */
+  stashMenuRows?: ReactNode
+  /** The stash needs the touch overflow, which then hosts Sketch too, so the
+   *  dedicated touch pencil steps aside (see the facade's overflow). */
+  stashTouchHost?: boolean
 }) {
   const { plusOpen, setPlusOpen, setSketchOpen, plusWrapRef, plusBtnRef, plusMenuRef, plusRect, togglePlus, openTrigger } = plus
   /**
@@ -349,6 +354,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
                   </div>
                 </button>}
               </div>
+              {stashMenuRows}
             </div>,
             document.body
           )}
@@ -371,7 +377,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
           Sketch alone keeps its dedicated pencil, so a surface that never
           opted into the collapse (a split pane, the side chat) is
           untouched by this. */}
-      {onUploadFiles && directFilePicker && !collapsible && (
+      {onUploadFiles && directFilePicker && !collapsible && !stashTouchHost && (
         <button
           className="w-8 h-8 rounded-lg flex items-center justify-center cursor-pointer transition-all disabled:opacity-30 bg-transparent border-none text-muted hover:text-text hover:bg-bg-hover shrink-0"
           onClick={() => setSketchOpen(true)}

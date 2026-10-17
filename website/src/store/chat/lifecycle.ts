@@ -9,11 +9,13 @@ import { api } from '../../api/client'
 import { resolveDefaultMemoryMode } from '../../api/queryClient'
 import { addSlotOptimistic, updateSlot } from '../dashboardSlice'
 import { resolveDefaultColor } from '../../utils/sessionColors'
-import { isChatPageSurface } from '../../utils/channelOrigin'
+import { isChatPageSurface, slotChannelNamespace } from '../../utils/channelOrigin'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import { findReport, parseErrorCode } from '../../utils/errorReport'
 import { errMessage } from '../../utils/thunkError'
 import type { HistoryDeleteRefusal } from '../../utils/historyDeleteRefusal'
+import { removePromptStashKeys, snapshotPromptStash } from '../../utils/promptStash'
+import { stripDashboardSessionPrefixes } from '../../monitoring/automation'
 import type { ChatState } from './state'
 import { filterMessages, safeKey } from './wire'
 import { enterActiveSlot, pushHistory } from './runState'
@@ -221,6 +223,20 @@ export const forkSlot = createAsyncThunk(
   },
 )
 
+/** The slot whose prompt stash a history delete of `key` owns, or null when
+ *  ownership cannot be read from the name. Two shapes are refused: a stacked
+ *  alias (`dashboard_dashboard_<slot>`), and a dashboard row whose stem is a
+ *  channel slot (`dashboard_slack_<ts>`). The gateway deletes that dashboard
+ *  transcript while the channel session `slack_<ts>` survives, so the stash
+ *  under that key is the channel's and must stay. */
+function stashOwnerSlot(key: string): string | null {
+  let slot = key
+  if (slot.startsWith('dashboard:')) slot = slot.slice('dashboard:'.length)
+  else if (slot.startsWith('dashboard_')) slot = slot.slice('dashboard_'.length)
+  if (!slot || stripDashboardSessionPrefixes(slot) !== slot) return null
+  return slotChannelNamespace(slot) ? null : slot
+}
+
 /** Delete a history row. A refusal REJECTS WITH A VALUE rather than throwing:
  *  `api.deleteSession` throws an `ApiError` on any non-2xx, and the thunk
  *  boundary's `miniSerializeError` keeps string fields only, so a rethrow
@@ -236,8 +252,17 @@ export const deleteHistorySession = createAsyncThunk<
 >(
   'chat/deleteHistorySession',
   async (key, { getState, rejectWithValue }) => {
+    // Only a key that names one slot unambiguously owns its stash. A stacked
+    // alias (`dashboard_dashboard_<slot>`) is a separate transcript the gateway
+    // can delete while the canonical one and its slot survive, so its stash is
+    // kept; "Clear other sessions" can still reclaim it.
+    const slot = stashOwnerSlot(key)
+    // Listed before the DELETE: only the deleted session's own entries are
+    // cleared, never one stashed while the request was in flight.
+    const stashKeys = slot ? await snapshotPromptStash(slot) : []
     try {
-      await api.deleteSession(key)
+      const response = await api.deleteSession(key) as { ok?: unknown }
+      if (response?.ok === true) await removePromptStashKeys(stashKeys)
       return key
     } catch (e) {
       // Duck-typed on `body`, not `instanceof ApiError`, so a mocked transport

@@ -282,5 +282,14 @@
   "commandCenter.crewMain.approvals_open",
   "components.fileRenderers.json_string_show_all",
   "pages.chatPage.closed_sessions_not_deleted",
-  "pages.chatPage.older_sessions_deleted_count"
+  "pages.chatPage.older_sessions_deleted_count",
+  "components.promptStash.badge",
+  "components.promptStash.stashed",
+  "components.promptStash.stashed_touch",
+  "components.promptStash.restored",
+  "components.promptStash.menu_restore_desc",
+  "components.promptStash.menu_restore_desc_touch",
+  "components.promptStash.clear_others",
+  "components.promptStash.clear_others_confirm",
+  "components.promptStash.cleared_others"
 ]

@@ -302,6 +302,16 @@ export const CHUNK_BUDGETS = {
 
   // The SPA entry chunk: router, providers, and the eager page skeleton.
   main: 594 * KB, // measured 566 KB
+
+  // The chat transcript chunk, which also carries the composer (ChatInput and
+  // its chat-input owners). It measured 496 KB on main in October 2026, 4 KB
+  // under the default, so any composer feature lands over it. The prompt
+  // stash added 11 KB here: its hook and storage run on every composer mount
+  // to show the stashed-draft count, so an import() boundary would only defer
+  // that count, and a codeSplitting group for those four modules pulls their
+  // shared dependencies (i18n, safe storage, menu primitives) with them, which
+  // pushed `main` to 2.6 MB in an analyze build.
+  ChatMessageList: 530 * KB, // measured 505 KB on the merge ref of #14767
 }
 
 const REPORT_PATH = path.resolve('dist', 'bundle-report.json')

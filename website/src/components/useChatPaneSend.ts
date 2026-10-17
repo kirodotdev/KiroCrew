@@ -284,7 +284,14 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // `response-late` proves no refusal either; restoring either one here could
     // invite a retry that duplicates a turn already in flight, side effects
     // included, so the optimistic composer row stays pending.
-    void sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: true } : {}) }).then((receipt) => {
+    //
+    // The returned verdict is what ChatInput's prompt stash reads: only
+    // `dispatched` / `queued` prove the server holds the message, so only
+    // they let a restored draft's stash entry go. This pane's recovery lives
+    // in component state, so a refusal or an unconfirmed send must leave that
+    // entry stored for a reload to find.
+    return sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: true } : {}) }).then((receipt) => {
+      const delivered = receipt.status === 'dispatched' || receipt.status === 'queued'
       // Receipt policy, owned once in chat-core (issue #9457). This is the
       // PARTIAL copy: doSend is a full send, not only a steer, so the rulings
       // applySteerReceipt owns (echo short-circuit, refused/response-late/
@@ -372,8 +379,9 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       // Blocking ask resolution, owned by doSend and run on every accepted
       // receipt. Guarded independently of the rulings above so a `steered` or
       // `queued` receipt still settles the ask correctly.
-      if (!askAtSend) return
+      if (!askAtSend) return delivered
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch, slotKey)
+      return delivered
     })
   }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, crewmate, slotKey, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
 
@@ -407,7 +415,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // showed only when the server echoed it. A stale flag
     // is safe: the server finds no turn, dispatches one, and the receipt's
     // `turn` ruling demotes the steer bubble to a plain row.
-    if (!running && !paneSlot?.running) { doSend(undefined, true); return }
+    if (!running && !paneSlot?.running) return doSend(undefined, true)
     // A command typed mid-turn is still a command, never steered in as text
     // (ChatPage's steer gates on the same matcher).
     if (interceptPaneSlash()) return
@@ -455,7 +463,8 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // (`decisions/points/message_steer.py`); the receipt policy below is unchanged,
     // because a decided send still comes back as a steer's `dispatched` or a
     // queue's `queued`.
-    void sendTurn({ message: txt, slot: slotKey, steer: opts?.auto === true ? 'auto' : true, meta: steerMeta }).then((receipt) => {
+    // The verdict is the prompt stash's delivery signal, as in doSend.
+    return sendTurn({ message: txt, slot: slotKey, steer: opts?.auto === true ? 'auto' : true, meta: steerMeta }).then((receipt) => {
       // Receipt policy, owned once in chat-core (issue #9457) -- the same
       // rulings as ChatPage's steerMutation. applySteerReceipt decides WHICH
       // ruling; the adapter below is this pane's HOW.
@@ -488,6 +497,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       if (askAtSteer && (receipt.status === 'dispatched' || receipt.status === 'queued')) {
         void resolveAskAfterSend(receipt.body, askAtSteer, dispatch, slotKey)
       }
+      return receipt.status === 'dispatched' || receipt.status === 'queued'
     })
   }, [running, paneSlot?.running, doSend, input, pendingFiles, pasteBlocks, setPasteBlocks, slotKey, dispatch, reportSendFailure, restoreIntoComposer, consumeQuote, recoverQuoteInto, interceptPaneSlash, crewmate, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
 
