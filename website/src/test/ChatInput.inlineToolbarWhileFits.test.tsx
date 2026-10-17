@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { screen } from '@testing-library/react'
+import { fireEvent, screen } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 
@@ -49,6 +49,20 @@ describe('ChatInput inlineToolbarWhileFits: the one-row shape', () => {
     expect(inline()).toBe(false)
     expect(wrapper().className).toContain('rounded-2xl')
     expect(screen.getByTestId('composer-bottom-row').className).toContain('justify-between')
+  })
+
+  it('opens to two rows while the list-indent hint shows, and goes back to one row on blur', () => {
+    renderWithProviders(<ChatInput value="- item" onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits />)
+    // Unfocused, the hint is screen-reader only, so the one-row shape holds.
+    expect(inline()).toBe(true)
+    expect(screen.getByTestId('list-indent-hint').className).toBe('sr-only')
+    const ta = screen.getByRole('textbox')
+    fireEvent.focus(ta)
+    // Focused, the hint is a visible row: it goes under the text, never beside it.
+    expect(screen.getByTestId('list-indent-hint').className).toContain('text-[12px]')
+    expect(inline()).toBe(false)
+    fireEvent.blur(ta)
+    expect(inline()).toBe(true)
   })
 
   it('opens to two rows while a file is staged: the file strip has no place on one line', () => {

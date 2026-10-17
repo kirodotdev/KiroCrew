@@ -53,6 +53,20 @@ interface ListMarker {
 const MARKER_RE = /^([ \t]*)(?:([-*+])|(\d+)([.)]))([ \t]+)/
 const TASK_RE = /^\[[ xX]\](?=[ \t]|$)([ \t]*)/
 
+/** True when `line` starts with a list marker the composer continues and indents. */
+export function isListLine(line: string): boolean {
+  return MARKER_RE.test(line)
+}
+
+/**
+ * Where a list line's text starts: its indent plus marker plus gap (`1. ` is 3,
+ * `- ` is 2). A nested item must start at least here to nest under CommonMark.
+ */
+export function listContentColumn(line: string): number | null {
+  const match = MARKER_RE.exec(line)
+  return match ? match[0].length : null
+}
+
 function parseMarker(line: string): ListMarker | null {
   const match = MARKER_RE.exec(line)
   if (!match) return null
