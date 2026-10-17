@@ -15,7 +15,7 @@ superseded-by: []
 # RFC: Arrival provenance filing — file every arriving session under Imported / from &lt;sender&gt;
 
 - Status: implemented in `src/kiro_crew/dashboard/arrival_folders.py` and
-  `src/kiro_crew/dashboard/session_transfer.py`. This remains the decision
+  `src/kiro_crew/dashboard/session_transfer_install.py`. This remains the decision
   record for the **changed default** on an existing route; every historical
   "exists today" claim below was checked at `f31f25a8a2` (main, 2026-09-19),
   and citations name symbols rather than line numbers.

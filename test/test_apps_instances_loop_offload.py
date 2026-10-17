@@ -40,6 +40,8 @@ import kiro_crew.apps.bridges as bridges_mod
 import kiro_crew.apps.hooks_integration as hooks_mod
 import kiro_crew.apps.routes as routes_mod
 import kiro_crew.dashboard.handlers_instances as handlers_instances_mod
+import kiro_crew.dashboard.handlers_instances_gate as handlers_instances_gate_mod
+import kiro_crew.dashboard.handlers_instances_peer as handlers_instances_peer_mod
 import kiro_crew.instances.ssh_tunnel_manager as ssh_tunnel_manager_mod
 from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelStatus
 
@@ -465,7 +467,11 @@ def test_no_direct_registry_call_in_instances_handler_async_frames() -> None:
         "remove",
     }
     offenders: list[str] = []
-    for owner, call in _calls_in_async_frames(_module_tree(handlers_instances_mod)):
+    for owner, call in [
+        *_calls_in_async_frames(_module_tree(handlers_instances_mod)),
+        *_calls_in_async_frames(_module_tree(handlers_instances_gate_mod)),
+        *_calls_in_async_frames(_module_tree(handlers_instances_peer_mod)),
+    ]:
         func = call.func
         if not (isinstance(func, ast.Attribute) and func.attr in registry_methods):
             continue

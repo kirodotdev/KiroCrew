@@ -49,7 +49,7 @@ recency list; origin is a property of a row, rendered as a badge.
 assembles local slots, peer rows and the federated Older Sessions search into
 that one list. Peer rows come from the hub route
 `GET /api/instances/{id}/chat-slots` (`read_peer_slots` in
-`src/kiro_crew/dashboard/handlers_instances.py`), behind the
+`src/kiro_crew/dashboard/handlers_instances_peer.py`), behind the
 `PREVIEW_INSTANCE_SESSIONS` flag (`website/src/utils/previewFlags.ts`).
 
 **Ownership.** "New chat on crew" (`create_peer_slot`) and adopt
@@ -72,8 +72,8 @@ slots, disagree:
 | No resume-attach — [#14585](https://github.com/kirodotdev/KiroCrew/issues/14585) | A hub restart drops the relay reader; the peer keeps running. `selectTurnInterrupted` reads the local transcript's shape, so a live peer turn shows *Turn interrupted*. Deferred in `remote_relay.py`'s *What is deliberately NOT here*. |
 | Continue / regenerate / rewind / todo refused with 409 | `remote_bound_refusal` (`remote_relay.py`), called from `chat_handlers.py`, `chat_regenerate.py`, `chat_rewind.py`, `chat_todo.py`. Each would otherwise run the turn locally and fork the transcripts. |
 | Executor lost on restore — [#10826](https://github.com/kirodotdev/KiroCrew/issues/10826) | `_apply_recent_session` (`src/kiro_crew/dashboard/chat_persistence.py`) never restores `executor` / `instance_id` / `remote_slot`; only the full rehydrate path does (`_read_executor` in `src/kiro_crew/dashboard/slot_persistence/metadata_codec.py`, which the `RECENT` purpose skips). The next send runs locally. |
-| Peer-dispatched workers need hub-side parent rewriting — [#14907](https://github.com/kirodotdev/KiroCrew/pull/14907) nested federated workers under their remote conductor, and [#15653](https://github.com/kirodotdev/KiroCrew/pull/15653) (both merged) added the rewrite | A worker the peer opened cites the peer's slot key, but the hub shows the LOCAL relay slot, so `_clean_peer_parent` (`handlers_instances.py`) must map peer keys to hub keys (`hub_key`). |
-| Older peer sessions not browsable — [#7445](https://github.com/kirodotdev/KiroCrew/issues/7445) | They live under the peer's `/api/sessions`, outside `_PROXY_ALLOWED_PREFIXES` (`api/chat`, `api/stream`) in `handlers_instances.py`. |
+| Peer-dispatched workers need hub-side parent rewriting — [#14907](https://github.com/kirodotdev/KiroCrew/pull/14907) nested federated workers under their remote conductor, and [#15653](https://github.com/kirodotdev/KiroCrew/pull/15653) (both merged) added the rewrite | A worker the peer opened cites the peer's slot key, but the hub shows the LOCAL relay slot, so `_clean_peer_parent` (`handlers_instances_peer.py`) must map peer keys to hub keys (`hub_key`). |
+| Older peer sessions not browsable — [#7445](https://github.com/kirodotdev/KiroCrew/issues/7445) | They live under the peer's `/api/sessions`, outside `_PROXY_ALLOWED_PREFIXES` (`api/chat`, `api/stream`) in `handlers_instances_peer.py`. |
 | Duplicate rows | `read_peer_slots` must filter peer slots the hub drives, because the peer lists its half of every relayed pair. Only the gateway can correlate them. |
 
 Six of the seven exist only because a local slot stands in for a peer
@@ -218,7 +218,7 @@ adds the one new peer read and must stay GET-only.
    browser of THIS machine's directories. `api_chat_slot_workspace`
    (`dashboard/chat_api/session_relaunch.py`) leaves `slot.project` local for a remote slot on
    purpose and forwards the workspace name to the peer (`_apply_remote_pick`).
-   The peer's `capabilities.workspaces` is parsed in `handlers_instances.py`
+   The peer's `capabilities.workspaces` is parsed in `handlers_instances_peer.py`
    but read by no frontend code. Proposed under (b): the peer decides, and the
    window shows the peer's project and workspace read-only, with no local
    directory picker.
