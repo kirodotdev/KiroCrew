@@ -1,10 +1,10 @@
 ---
 title: Question card submits on the pick that finishes it
-status: draft
+status: accepted
 author: Pearcekieser
 created: 2026-10-07
-last-audited: 2026-10-07
-audited-at: 781294256f
+last-audited: 2026-10-13
+audited-at: b6a7b33fbf
 doc-pr: 17584
 implementation-prs: [17542]
 tracking-issues: [17522]
@@ -14,9 +14,8 @@ superseded-by: []
 
 # RFC: Question Card Submits on the Pick That Finishes It
 
-> **Status:** `draft`. Acceptance is requested from a maintainer; the status
-> flips to `accepted` when one records it in §6 with the date. Nothing is on
-> main. Verified at `781294256f`: in `website/src/components/QuestionCard.tsx`
+> **Status:** `accepted`. The decision, recorded in §6, not yet the code.
+> Nothing is on main. Verified at `781294256f` and re-read at `b6a7b33fbf`: in `website/src/components/QuestionCard.tsx`
 > the card's answers leave only through `handleSubmit`, which the Submit button
 > and `Enter` on the last page call, so a single-select pick that answers the
 > last open question lights up and waits for Submit. The implementation is
@@ -102,6 +101,11 @@ than clicking Submit.
 
 ## 6. Acceptance
 
-Proposed 2026-10-07 by Pearcekieser. Not yet accepted. A maintainer accepting
-this document is recorded here with their name and the date, and the status
-above moves to `accepted` in the same change.
+Proposed 2026-10-07 by Pearcekieser and merged as `draft` in
+[#17584](https://github.com/kirodotdev/KiroCrew/pull/17584). Acceptance was
+asked of buluoray, who accepted `rfc-question-card-pager`, the document whose
+§3.2 this one amends. The acceptance is the maintainer's approving review on
+the pull request that sets the status above to `accepted`, and its date is the
+acceptance date. Accepted 2026-10-14 by maintainer mbriones98, approving
+[#19831](https://github.com/kirodotdev/KiroCrew/pull/19831). This change merges
+only with that approval, so the status cannot read `accepted` on main without it.
