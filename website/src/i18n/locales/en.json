@@ -9986,6 +9986,8 @@
       "cap_ceiling": "Your limit: {{max}}",
       "cap_at_limit": "Your full limit",
       "cap_below_limit": "Up to {{effective}} at once, lowered from your {{max}}",
+      "cap_below_start": "Up to {{effective}} at once, lowered from its starting {{start}}",
+      "cap_rises_to_limit": "Starts at {{start}} and can rise to your {{max}}",
       "lane_running": "{{count}} running now",
       "lane_subagents": "Subagent runs",
       "lane_spawn_gate": "Backend starts",

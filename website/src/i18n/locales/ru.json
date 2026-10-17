@@ -19387,6 +19387,8 @@
       "cap_ceiling": "Твой предел: {{max}}",
       "cap_at_limit": "Ровно твой предел",
       "cap_below_limit": "До {{effective}} одновременно, снижено с твоего предела {{max}}",
+      "cap_below_start": "До {{effective}} одновременно, снижено с начального значения {{start}}",
+      "cap_rises_to_limit": "Начинается с {{start}} и может вырасти до твоего предела {{max}}",
       "lane_running": "{{count}} выполняется сейчас",
       "lane_subagents": "Запуски субагентов",
       "lane_spawn_gate": "Запуски бэкенда",

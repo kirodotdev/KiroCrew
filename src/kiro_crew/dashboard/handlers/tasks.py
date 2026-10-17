@@ -72,6 +72,7 @@ from aiohttp import web
 
 from kiro_crew import resource_status
 from kiro_crew.dashboard import session_health
+from kiro_crew.dashboard.handlers import spawn_resume
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.recovery.ladder import default_ladder
 from kiro_crew.security import redact_and_truncate
@@ -653,13 +654,21 @@ def _refused_code(action: str, state: str) -> str:
 # ── summary ──────────────────────────────────────────────────────────────────
 
 
-def _lane_caps(health: dict[str, Any], adaptive: dict[str, Any] | None) -> dict[str, Any]:
+def _lane_caps(
+    health: dict[str, Any], adaptive: dict[str, Any] | None, *, gate_start: int | None = None
+) -> dict[str, Any]:
     """Effective cap vs the user's ceiling per lane.
 
     ``session_health`` publishes whatever cap sources registered (the subagent
     manager's live cap, the controller's when wired); the controller's own
     state carries the ceiling and the spawn-gate capacity. Merged by lane name
     so the panel renders one row per lane whatever the wiring on this build.
+
+    ``gate_start`` is the value a fresh process starts the spawn gate at
+    (``spawn_concurrency_initial``), published as the gate lane's ``start``. The
+    gate starts below its ceiling and grows, so the card counts it as lowered
+    only below ``start`` -- the same rule ``spawn_resume.throttle_view`` gives
+    the chat header's chip, read from the same live policy.
     """
     caps: dict[str, dict[str, Any]] = {}
     for lane, entry in (health.get("effective_caps") or {}).items():
@@ -677,6 +686,8 @@ def _lane_caps(health: dict[str, Any], adaptive: dict[str, Any] | None) -> dict[
                 "effective": adaptive.get("spawn_gate_capacity"),
                 "user_max": adaptive.get("gate_ceiling"),
             }
+    if gate_start is not None and "spawn_gate" in caps:
+        caps["spawn_gate"]["start"] = gate_start
     return caps
 
 
@@ -764,7 +775,7 @@ def _summary_sync(store: Any, snapshot: Any, monitor: Any) -> dict[str, Any]:
             "total": sum(by_state.values()),
         },
         "oldest_wait_secs": oldest,
-        "lanes": _lane_caps(health, adaptive),
+        "lanes": _lane_caps(health, adaptive, gate_start=spawn_resume._start_caps()[1]),
         "degrade_reason": _degrade_reason(health, adaptive),
         "adaptive": adaptive,
         "slots": slots,

@@ -3366,7 +3366,12 @@ your 14"), plus the degrade reason itself when that reason is one of the mapped
 `adaptive_*` tokens. A bare cap stacked over a line that calls the ceiling "your
 limit" states two limits, and a reader asks which of them is in force; one line
 makes the second number the ORIGIN of the first, and the cause beneath it
-continues the same verb. `cap_ceiling` ("Your limit: N") is left for the wire
+continues the same verb. A lane that starts below its ceiling and grows (the
+spawn gate, whose lane carries `start`, its `spawn_concurrency_initial`) is
+lowered only below that start value, the rule the chat header's cut chip uses,
+and its lowered line names the start value ("lowered from its starting 4");
+between its start and its ceiling it is not lowered, and its second line says why
+the two numbers differ ("Starts at 4 and can rise to your 8"). `cap_ceiling` ("Your limit: N") is left for the wire
 contradiction alone, a cap ABOVE the configured ceiling, where neither of those
 statements is true. The ceiling is glued to the word before it with U+00A0 in
 every locale that can break there: a wrapped line leaving a bare "14" under

@@ -73,6 +73,14 @@ export interface TaskDetailResponse {
 export interface LaneCap {
   effective?: number | null
   user_max?: number | null
+  /**
+   * The value a fresh process starts this cap at, when it starts below
+   * `user_max` and grows: the spawn gate's `spawn_concurrency_initial`
+   * (`handlers/tasks.py::_lane_caps`). A cap is lowered only below this value,
+   * the rule the chat header's chip reads off `ThrottleView`. Absent for a
+   * lane that starts at its ceiling.
+   */
+  start?: number | null
   running?: number | null
   window_queued?: number | null
 }

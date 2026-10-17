@@ -18538,6 +18538,8 @@
       "cap_ceiling": "你的上限：{{max}}",
       "cap_at_limit": "已是你的上限",
       "cap_below_limit": "最多同时 {{effective}} 个，已从你的上限 {{max}} 下调",
+      "cap_below_start": "最多同时 {{effective}} 个，已从起始值 {{start}} 下调",
+      "cap_rises_to_limit": "从 {{start}} 开始，最多可升至你的上限 {{max}}",
       "lane_running": "当前 {{count}} 个正在运行",
       "lane_subagents": "子代理运行",
       "lane_spawn_gate": "后端启动",

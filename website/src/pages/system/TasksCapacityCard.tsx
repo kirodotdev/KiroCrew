@@ -261,7 +261,7 @@ export function fmtAge(seconds: number | null | undefined): string {
 }
 
 /**
- * "Up to N at once" for a lane whose cap is NOT under the user's ceiling — the
+ * "Up to N at once" for a lane whose cap is NOT lowered (`loweredFrom`) — the
  * runs it may hold right now. Not "N of M slots": beside a "0 running now" line
  * that reads as "N of M in use" and contradicts it. Short enough not to wrap in a
  * third of the card, so it is the one unbreakable line; the ceiling and the live
@@ -274,12 +274,34 @@ function fmtCap(cap: LaneCap): string {
 }
 
 /**
- * The cap in force sits BELOW the ceiling the user configured for this lane. A
- * predicate rather than a bare boolean, so the one line that prints BOTH numbers
- * reads them off the same test that decided they exist.
+ * The value a lane's cap starts at when that is BELOW the user's ceiling: the
+ * spawn gate starts at its initial capacity and grows toward its ceiling, so a
+ * gate between the two is where it is meant to be, not cut. Null when the wire
+ * names no start, or the start is the ceiling itself.
  */
-function isLowered(cap: LaneCap): cap is LaneCap & { effective: number; user_max: number } {
-  return cap.user_max != null && cap.effective != null && cap.effective < cap.user_max
+function startBelowLimit(cap: LaneCap): number | null {
+  const { start, user_max: max } = cap
+  return start != null && (max == null || start < max) ? start : null
+}
+
+/**
+ * What the cap in force is lowered FROM, or null when it is not lowered: the
+ * lane's start value when it starts below the ceiling (`startBelowLimit`), else
+ * the ceiling the user configured. The chat header's chip counts a cut against
+ * the same start value (`ThrottleView`), so the two agree on every gate between
+ * its start value and its ceiling. The one line that prints both numbers reads
+ * them off this same reading, so it cannot name a number the test did not use.
+ */
+function loweredFrom(cap: LaneCap): { effective: number; from: number; isStart: boolean } | null {
+  const start = startBelowLimit(cap)
+  const from = start ?? cap.user_max
+  const eff = cap.effective
+  if (from == null || eff == null || eff >= from) return null
+  return { effective: eff, from, isStart: start != null }
+}
+
+function isLowered(cap: LaneCap): boolean {
+  return loweredFrom(cap) != null
 }
 
 /** One line of a lane's capacity column, top to bottom. */
@@ -306,7 +328,11 @@ interface CapLine {
  * reconcile); a LOWERED cap puts both numbers in ONE line joined by the verb that
  * relates them ("Up to 4 at once, lowered from your 14"), because a bare cap
  * stacked over a line calling the ceiling "your limit" states two limits and the
- * reader asks which one is in force. `cap_ceiling` is left for the wire
+ * reader asks which one is in force. A lane that starts below its ceiling and
+ * grows (the spawn gate) is lowered only below its start value, and says so
+ * from that value ("lowered from its starting 4"); between its start and its
+ * ceiling it is not cut, and its second line says why the two numbers differ
+ * ("Starts at 4 and can rise to your 8"). `cap_ceiling` is left for the wire
  * contradiction alone — a cap ABOVE the user's ceiling, where neither "full"
  * nor "lowered" is true and the bare ceiling is the only honest line.
  *
@@ -318,12 +344,19 @@ interface CapLine {
 function capLines(cap: LaneCap, degradeText: string | null): CapLine[] {
   const lines: CapLine[] = []
   const { effective: eff, user_max: max, running } = cap
-  if (isLowered(cap)) {
+  const lowered = loweredFrom(cap)
+  const start = startBelowLimit(cap)
+  if (lowered) {
     lines.push({
-      text: i18nT('pages.tasksCapacityCard.cap_below_limit', {
-        effective: fmtNumber(cap.effective),
-        max: fmtNumber(cap.user_max),
-      }),
+      text: lowered.isStart
+        ? i18nT('pages.tasksCapacityCard.cap_below_start', {
+          effective: fmtNumber(lowered.effective),
+          start: fmtNumber(lowered.from),
+        })
+        : i18nT('pages.tasksCapacityCard.cap_below_limit', {
+          effective: fmtNumber(lowered.effective),
+          max: fmtNumber(lowered.from),
+        }),
       lead: true,
     })
     // `degradeText` is non-null only for the lane the caller made the cause's one
@@ -339,6 +372,13 @@ function capLines(cap: LaneCap, degradeText: string | null): CapLine[] {
       // No ceiling on the wire: there is nothing for the cap to stand against.
     } else if (eff === max) {
       lines.push({ text: i18nT('pages.tasksCapacityCard.cap_at_limit') })
+    } else if (start != null && eff != null && eff < max) {
+      lines.push({
+        text: i18nT('pages.tasksCapacityCard.cap_rises_to_limit', {
+          start: fmtNumber(start),
+          max: fmtNumber(max),
+        }),
+      })
     } else {
       lines.push({ text: i18nT('pages.tasksCapacityCard.cap_ceiling', { max: fmtNumber(max) }) })
     }

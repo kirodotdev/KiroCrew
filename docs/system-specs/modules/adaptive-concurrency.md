@@ -449,9 +449,10 @@ execution slot. A cut is a cap below the value a fresh process starts it at --
 the execution cap below the policy's `exec_start` (the user's ceiling), the gate
 paused or below `gate_start` (`spawn_concurrency_initial`). A gate below its
 ceiling is not a cut, because the gate starts at its initial capacity and grows
-from there. The Tasks & capacity card's "lowered" mark compares the gate with
-its ceiling instead, so a gate between its start value and its ceiling is
-lowered on the card and not cut in the chat header. A disabled controller and
+from there. The Tasks & capacity card's "lowered" mark reads the same start
+value: `/api/tasks/summary` publishes it as the gate lane's `start`
+(`handlers/tasks.py::_lane_caps`, through the same `_start_caps` read), so a
+gate between its start value and its ceiling is cut on neither surface. A disabled controller and
 `fixed` mode answer `{"cut": false}`. The
 dashboard's chat header (`components/ConcurrencyCutChip.tsx`) polls it every
 15 s and, while `cut` holds, shows one chip naming the reduced cap and the queue,

@@ -18821,6 +18821,8 @@
       "cap_ceiling": "Dein Limit: {{max}}",
       "cap_at_limit": "Genau dein Limit",
       "cap_below_limit": "Bis zu {{effective}} gleichzeitig, gesenkt von deinem Limit von {{max}}",
+      "cap_below_start": "Bis zu {{effective}} gleichzeitig, gesenkt vom Startwert {{start}}",
+      "cap_rises_to_limit": "Startet bei {{start}} und kann bis zu deinem Limit von {{max}} steigen",
       "lane_running": "{{count}} laufen gerade",
       "lane_subagents": "Subagent-Läufe",
       "lane_spawn_gate": "Backend-Starts",

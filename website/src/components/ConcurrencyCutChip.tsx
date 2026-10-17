@@ -25,10 +25,10 @@ import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
  *
  * The gateway decides what counts as a cut (`throttle_view`): a cap below the
  * value a fresh process starts it at. The chip renders that verdict and nothing
- * of its own. The Tasks & capacity card marks a spawn gate below its ceiling as
- * lowered; the chip does not, because the gate starts below its ceiling and
- * grows, so a gate between its start value and its ceiling shows on the card
- * and not in the chip.
+ * of its own. The Tasks & capacity card counts a spawn gate as lowered by the
+ * same start value (the gate lane's `start`), because the gate starts below its
+ * ceiling and grows, so a gate between its start value and its ceiling is cut
+ * on neither surface.
  *
  * Beside it, {@link SessionQueuedMarker} marks THIS session when its own
  * subagent starts are among the queued work, so the open tab says whether the

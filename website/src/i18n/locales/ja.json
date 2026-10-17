@@ -18538,6 +18538,8 @@
       "cap_ceiling": "設定した上限: {{max}}",
       "cap_at_limit": "設定した上限どおり",
       "cap_below_limit": "設定した上限 {{max}} から引き下げて、同時に最大 {{effective}} 件",
+      "cap_below_start": "開始時の {{start}} から引き下げて、同時に最大 {{effective}} 件",
+      "cap_rises_to_limit": "開始時は {{start}}、設定した上限 {{max}} まで増えることがあります",
       "lane_running": "現在 {{count}} 件実行中",
       "lane_subagents": "サブエージェント実行",
       "lane_spawn_gate": "バックエンドの起動",

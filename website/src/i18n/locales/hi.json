@@ -18821,6 +18821,8 @@
       "cap_ceiling": "तुम्हारी सीमा: {{max}}",
       "cap_at_limit": "तुम्हारी पूरी सीमा",
       "cap_below_limit": "एक साथ अधिकतम {{effective}}, तुम्हारी सीमा {{max}} से घटाकर",
+      "cap_below_start": "एक साथ अधिकतम {{effective}}, शुरुआती मान {{start}} से घटाकर",
+      "cap_rises_to_limit": "{{start}} से शुरू होता है और तुम्हारी सीमा {{max}} तक बढ़ सकता है",
       "lane_running": "अभी {{count}} चल रहे हैं",
       "lane_subagents": "सब-एजेंट रन",
       "lane_spawn_gate": "बैकएंड शुरुआत",

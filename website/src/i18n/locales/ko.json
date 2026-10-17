@@ -18538,6 +18538,8 @@
       "cap_ceiling": "설정한 상한: {{max}}",
       "cap_at_limit": "설정한 상한 그대로",
       "cap_below_limit": "설정한 상한 {{max}}에서 낮춰 한 번에 최대 {{effective}}개",
+      "cap_below_start": "시작 값 {{start}}에서 낮춰 한 번에 최대 {{effective}}개",
+      "cap_rises_to_limit": "{{start}}에서 시작해 설정한 상한 {{max}}까지 늘어날 수 있음",
       "lane_running": "현재 {{count}}개 실행 중",
       "lane_subagents": "서브에이전트 실행",
       "lane_spawn_gate": "백엔드 시작",

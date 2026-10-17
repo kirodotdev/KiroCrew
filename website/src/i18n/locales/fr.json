@@ -19104,6 +19104,8 @@
       "cap_ceiling": "Ta limite : {{max}}",
       "cap_at_limit": "Exactement ta limite",
       "cap_below_limit": "Jusqu’à {{effective}} à la fois, abaissé depuis ton maximum de {{max}}",
+      "cap_below_start": "Jusqu’à {{effective}} à la fois, abaissé depuis sa valeur de départ de {{start}}",
+      "cap_rises_to_limit": "Commence à {{start}} et peut monter jusqu’à ton maximum de {{max}}",
       "lane_running": "{{count}} en cours maintenant",
       "lane_subagents": "Exécutions de sous-agents",
       "lane_spawn_gate": "Démarrages du backend",
