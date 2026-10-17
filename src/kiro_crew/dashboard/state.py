@@ -1545,7 +1545,7 @@ class DashboardState:
 
     # ── FIX 2: bounded concurrency for unattended, app-owned turns ──────────
     # Nothing capped chat slots or concurrent turns. The nearest analogue caps
-    # at 12 (dashboard/handlers/terminal.py::_MAX_SESSIONS, 429 on excess) and
+    # at 12 (dashboard/handlers/terminal_session.py::_MAX_SESSIONS, 429 on excess) and
     # the only real ceiling was asyncio.Semaphore(4) on agent cold starts plus
     # host memory — so an app that arms N worker slots could put N turns on the
     # runtime at once and exhaust it. Shape copied from
