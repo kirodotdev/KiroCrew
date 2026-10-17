@@ -377,7 +377,19 @@ def _read_enumerated_skill_bytes(
         #
         # A direct read also keeps the failure policy intact for free: an
         # unreadable file raises OSError here, which writers must hear.
-        return path.read_bytes()
+        if max_bytes is None:
+            return path.read_bytes()
+        # A bounded caller gets the cap on the read itself: a size taken
+        # earlier (a stat) says nothing about the file this open reaches, so
+        # at most one byte past the cap is ever read.
+        with path.open("rb") as handle:
+            bounded = handle.read(max_bytes + 1)
+        if len(bounded) > max_bytes:
+            if refusal_reasons is not None:
+                refusal_reasons.append("size_cap")
+            logger.warning("Skipping oversized skill file: %s", path)
+            return None
+        return bounded
     try:
         confined_max = (
             hooks_module.MAX_FILE_BYTES
