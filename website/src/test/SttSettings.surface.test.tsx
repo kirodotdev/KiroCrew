@@ -453,12 +453,14 @@ describe('Voice panel keeps only the necessary decisions on its surface', () => 
 
   it('shows the six decisions and nothing else', async () => {
     mountPanel()
-    await waitFor(() => expect(screen.getByRole('combobox', { name: /model/i })).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('table', { name: /model/i })).toBeTruthy())
 
     // On the surface: what a user came here to decide.
-    for (const name of [/microphone/i, /provider/i, /model/i, /language/i]) {
+    for (const name of [/microphone/i, /provider/i, /language/i]) {
       expect(screen.getByRole('combobox', { name })).toBeTruthy()
     }
+    // The model is chosen from a table of the catalog, not a dropdown.
+    expect(screen.getByRole('table', { name: /model/i })).toBeTruthy()
     expect(screen.getByText('Enabled')).toBeTruthy()
     expect(screen.getByText('Tidy up transcripts with AI')).toBeTruthy()
 

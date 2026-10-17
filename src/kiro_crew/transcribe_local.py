@@ -11,6 +11,7 @@ lane, which owns its own conversion in :mod:`kiro_crew.apple_speech`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
@@ -20,6 +21,7 @@ import wave
 from typing import TYPE_CHECKING
 
 from kiro_crew import stt
+from kiro_crew.stt import models as stt_models
 from kiro_crew.transcribe_ffmpeg import (
     _close_ffmpeg_for_execution,
     _create_ffmpeg_subprocess,
@@ -32,6 +34,8 @@ from kiro_crew.transcribe_ffmpeg import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     import numpy as np
 
 # Logs under the facade's name, which operators and tests filter on.
@@ -245,13 +249,45 @@ async def _pcm_via_ffmpeg(audio_path: str, timeout_secs: int) -> np.ndarray | No
             await asyncio.shield(rm)
 
 
+@contextlib.contextmanager
+def local_model_claim(stt_config) -> Iterator[None]:  # type: ignore[no-untyped-def]
+    """Claim *stt_config*'s local model for the body of the ``with`` block.
+
+    For a caller that snapshots the config and then awaits something of its own,
+    such as a duration probe, before :func:`transcribe_audio`. Enter it in the same
+    synchronous step that produced the snapshot, so ``DELETE /api/stt/models/{name}``
+    cannot remove the model between that read and the decode's own claim. Only the
+    ``local`` provider reads a model file, so every other provider takes no claim,
+    and so does a config-shaped object with no ``provider`` field.
+    """
+    local = getattr(stt_config, "provider", None) == "local"
+    held = stt_models.claim(stt_config.model) if local else None
+    try:
+        yield
+    finally:
+        stt_models.release(held)
+
+
 async def _transcribe_local(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
     """Transcribe with the resident whisper.cpp recogniser.
 
     Everything expensive is shared with every other voice surface: one loaded
     model per process, so a Slack voice memo decodes on the weights a dashboard
     dictation just warmed rather than loading its own copy.
+
+    The configured model is claimed from here to the end of the decode, across the
+    transcode awaits, so ``DELETE /api/stt/models/{name}`` cannot remove it from
+    under this recording.
     """
+    held = stt_models.claim(stt_config.model)
+    try:
+        return await _transcribe_local_claimed(audio_path, stt_config)
+    finally:
+        stt_models.release(held)
+
+
+async def _transcribe_local_claimed(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
+    """The body of :func:`_transcribe_local`, under its model claim."""
     # Off the loop: the first probe links the recogniser's native extension, and
     # this coroutine is awaited from the Slack path and the transcribe endpoint.
     available = await asyncio.to_thread(stt.availability)

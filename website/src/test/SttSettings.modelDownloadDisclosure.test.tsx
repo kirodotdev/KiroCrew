@@ -9,7 +9,7 @@
  * download control with the size on it.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
@@ -68,7 +68,8 @@ function mount(status: Record<string, unknown> = {}) {
   )
 }
 
-const modelSelect = () => screen.getByRole('combobox', { name: /model/i })
+const modelTable = () => screen.getByRole('table')
+const row = (name: string) => within(screen.getByTestId(`stt-model-${name}`))
 
 describe('SttSettings model download disclosure', () => {
   beforeEach(async () => {
@@ -83,7 +84,7 @@ describe('SttSettings model download disclosure', () => {
 
   it('says model download is the only desktop setup action', async () => {
     mount()
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    await waitFor(() => expect(modelTable()).toBeTruthy())
     // Read off the tip's `title`, not the row: this sentence explains what the
     // Model row IS rather than deciding which model to pick, so it moved behind a
     // "?" when the panel stopped spending permanent space on prose. `InfoTip`
@@ -93,24 +94,22 @@ describe('SttSettings model download disclosure', () => {
     expect(desc.title).toMatch(/every other runtime dependency/i)
   })
 
-  it('states each model size in its own option, from the served catalog', async () => {
+  it('states each model size on its own row, from the served catalog', async () => {
     // The size is what makes the choice informed, and it has to be visible in the
     // list rather than after the commit. Sizes are formatted for the active locale
     // (SI, so 148 MB rather than a 1024-based mislabel).
     mount()
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
-    fireEvent.click(modelSelect())
-    await waitFor(() => expect(screen.getByRole('option', { name: /^base/ })).toBeTruthy())
-    expect(screen.getByRole('option', { name: /base \(148MB\)/ })).toBeTruthy()
-    expect(screen.getByRole('option', { name: /large-v3-turbo \(1\.6GB\)/ })).toBeTruthy()
+    await waitFor(() => expect(modelTable()).toBeTruthy())
+    expect(row('base').getAllByText('148MB').length).toBeGreaterThan(0)
+    expect(row('large-v3-turbo').getAllByText('1.6GB').length).toBeGreaterThan(0)
   })
 
   it('offers a download control naming the one-time cost, and calls prepare', async () => {
     mount()
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    await waitFor(() => expect(modelTable()).toBeTruthy())
     // The cost, before the press.
     expect(screen.getByText(/one-time 148MB download/i)).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /download now/i }))
+    fireEvent.click(row('base').getByRole('button', { name: /download base/i }))
     // The SELECTED model, explicitly: sending no id would race the config write.
     await waitFor(() => expect(mockApi.sttPrepare).toHaveBeenCalledWith('base'))
   })
@@ -129,13 +128,14 @@ describe('SttSettings model download disclosure', () => {
     // Percent AND absolute bytes: percent alone hides how much is left.
     expect(screen.getByText(/50%/)).toBeTruthy()
     expect(screen.getByText(/74MB of 148MB/)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /download now/i })).toBeNull()
+    expect(row('base').queryByRole('button', { name: /download/i })).toBeNull()
   })
 
-  it('does not attribute another model transfer to the selected one', async () => {
+  it('shows another model\'s transfer on that model\'s row, not the selected one', async () => {
     // The gateway runs one transfer at a time, so a switch mid-download leaves the
-    // store reporting the PREVIOUS model. Claiming that progress here would show a
-    // download the selected model never started.
+    // store reporting the PREVIOUS model. Claiming that progress for the selected
+    // model would show a download it never started; the table puts it on the row
+    // it belongs to, and holds every other Download until it finishes.
     mount({
       download: {
         step: 'downloading',
@@ -145,21 +145,23 @@ describe('SttSettings model download disclosure', () => {
         error: '',
       },
     })
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
-    expect(screen.queryByText(/downloading the speech model/i)).toBeNull()
-    expect(screen.getByRole('button', { name: /download now/i })).toBeTruthy()
+    await waitFor(() => expect(modelTable()).toBeTruthy())
+    expect(row('base').queryByText(/downloading the speech model/i)).toBeNull()
+    expect(row('large-v3-turbo').getByText(/downloading the speech model/i)).toBeTruthy()
+    expect((row('base').getByRole('button', { name: /download base/i }) as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('reports a model already on disk instead of offering it again', async () => {
     mount({
       models: [{ name: 'base', size_bytes: BASE_BYTES, present: true }],
     })
-    // The contract is that a present model is not offered AGAIN. Asserted as the
-    // ABSENCE of the download prompt rather than the presence of a reassuring line:
-    // the missing prompt already says it, and a row reassuring the user about the
-    // ordinary case crowds out the warnings worth reading.
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
-    expect(screen.queryByRole('button', { name: /download now/i })).toBeNull()
+    // The contract is that a present model is not offered AGAIN: no Download on
+    // its row and no download prompt under the table. The row's state cell says
+    // Installed, because a table of every model has to give each row a state;
+    // what stays absent is a separate reassurance LINE for the ordinary case.
+    await waitFor(() => expect(modelTable()).toBeTruthy())
+    expect(row('base').getByText(/installed/i)).toBeTruthy()
+    expect(row('base').queryByRole('button', { name: /download/i })).toBeNull()
     expect(screen.queryByText(/download .* now to avoid/i)).toBeNull()
   })
 })

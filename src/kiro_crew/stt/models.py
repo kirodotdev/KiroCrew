@@ -62,6 +62,7 @@ import os
 import tempfile
 import time
 import urllib.request
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -590,6 +591,68 @@ class ModelDownloadError(RuntimeError):
     """A download did not produce a verified model file."""
 
 
+#: Refusal codes for :meth:`ModelStore.remove` and the ``DELETE`` route over it.
+MODEL_REMOVE_DOWNLOADING = "stt_model_downloading"
+MODEL_REMOVE_IN_USE = "stt_model_in_use"
+
+
+class ModelRemovalRefused(RuntimeError):
+    """A model file was not removed, because it is downloading or claimed.
+
+    ``code`` is the refusal code the route answers with.
+    """
+
+    def __init__(self, message: str, code: str = MODEL_REMOVE_DOWNLOADING) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class ModelClaim:
+    """A promise that something will still read one model's file.
+
+    Taken by whatever fixes a model before it awaits: a streaming session for its
+    whole life, a batch transcription from reading the config to its decode.
+    :meth:`ModelStore.remove` refuses a claimed model, so a removal cannot pull a
+    file out from under work that will re-download it or, offline, fail and lose
+    the recording. Held in a weak set, so a claim whose holder is dropped without
+    :func:`release` ends with it.
+    """
+
+    __slots__ = ("name", "__weakref__")
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+_CLAIMS: weakref.WeakSet[ModelClaim] = weakref.WeakSet()
+
+
+def claim(model_name: str) -> ModelClaim:
+    """Claim the catalog model *model_name* resolves to; :func:`release` ends it."""
+    held = ModelClaim(resolve(model_name).name)
+    _CLAIMS.add(held)
+    return held
+
+
+def release(held: ModelClaim | None) -> None:
+    """End a claim. Idempotent, and ``None`` is accepted for an unclaimed path."""
+    if held is not None:
+        _CLAIMS.discard(held)
+
+
+def is_claimed(name: str) -> bool:
+    """Whether any live claim names catalog model *name*."""
+    return any(c.name == name for c in list(_CLAIMS))
+
+
+def _unlink_model_file(path: Path) -> bool:
+    """Remove the file or link at *path*. ``True`` if one was there. Blocking."""
+    if not os.path.lexists(path):
+        return False
+    path.unlink()
+    return True
+
+
 def _sha256_file(path: Path) -> str:
     """Digest a file on disk. Blocking; callers run it off the loop.
 
@@ -864,6 +927,13 @@ class ModelStore:
         #: can be collected mid-await, and the set is per-store so a test with its
         #: own store cannot be handed another one's pending work.
         self._decoder_tasks: set[asyncio.Task[None]] = set()
+        #: Removals in flight, by model name. Set on the loop before the unlink is
+        #: handed to a worker thread and cleared when that thread finishes, so
+        #: `_accept_existing` can wait them out instead of reading a file mid-delete.
+        self._removals: dict[str, asyncio.Event] = {}
+        #: How many `_accept_existing` calls are checking each model's file. A
+        #: removal refuses while any are, since they may be hashing that file.
+        self._accepting: dict[str, int] = {}
         self.status: dict[str, object] = {
             "step": "idle",
             "model": "",
@@ -1052,7 +1122,27 @@ class ModelStore:
         is a symlink or junction (``sandbox.require_real_model_path``), asked before
         anything reads or writes through the path, so the link refuses this model's load
         and the download that would otherwise land through it, and nothing else.
+
+        A removal of *model* in flight is waited out first, so the check reads the
+        directory as it is after the delete and never a file being unlinked. While the
+        check runs it is counted in ``_accepting``, which :meth:`remove` refuses on.
         """
+        while (pending := self._removals.get(model.name)) is not None:
+            await pending.wait()
+        # No await between the wait above and this count, so no removal can start in
+        # between and slip past `remove`'s refusal.
+        self._accepting[model.name] = self._accepting.get(model.name, 0) + 1
+        try:
+            return await self._accept_existing_counted(model)
+        finally:
+            left = self._accepting[model.name] - 1
+            if left:
+                self._accepting[model.name] = left
+            else:
+                del self._accepting[model.name]
+
+    async def _accept_existing_counted(self, model: WhisperModel) -> Path | None:
+        """The body of :meth:`_accept_existing`, counted in ``_accepting``."""
         # Imported here, not at module scope: this keeps the sandbox module out of the
         # stt import graph, mirroring the lazy direction sandbox itself uses for stt.
         from kiro_crew import sandbox
@@ -1142,6 +1232,65 @@ class ModelStore:
             logger.warning("Could not remove the unverified model at %s", path, exc_info=True)
             return False
         return False
+
+    async def remove(self, model: WhisperModel) -> bool:
+        """Delete *model*'s file from the managed directory. ``True`` if one was there.
+
+        The refusals and the reservation run on the event loop with no await between
+        them; only the filesystem calls go to a worker thread, so a slow disk cannot
+        stall the gateway. `ensure` only marks a transfer ``downloading`` from the
+        loop, so a running transfer of *model* is refused rather than raced, and so
+        is an ``_accept_existing`` check that may be hashing the file. Once reserved,
+        every later `ensure` of *model* waits in ``_accept_existing`` until the unlink
+        has finished and then finds the file gone, so a load, download, claim or
+        selection that arrives during the delete sees exactly what it would have seen
+        just after a synchronous one. A transfer of a DIFFERENT model is no obstacle;
+        it writes only its own path.
+
+        The reservation is released by the worker's completion, not by this
+        coroutine, so a cancelled request cannot reopen the file while the unlink is
+        still running.
+
+        Only the catalog filename under :func:`models_dir` is ever touched. The
+        path is ``models_dir() / model.filename``, both from code rather than the
+        caller, and every catalog filename is a single plain component, so the
+        delete cannot name another directory. A symlink at the path is removed as a
+        link; its target is left alone.
+
+        Staging files of an interrupted transfer are not this method's business:
+        `_download_blocking` cleans its own, and a leftover is never loaded.
+        """
+        if self.status.get("step") == "downloading" and self.status.get("model") == model.name:
+            raise ModelRemovalRefused(f"{model.name} is downloading")
+        if self._accepting.get(model.name):
+            raise ModelRemovalRefused(f"{model.name} is being verified")
+        if is_claimed(model.name):
+            raise ModelRemovalRefused(f"{model.name} is in use", code=MODEL_REMOVE_IN_USE)
+        pending = self._removals.get(model.name)
+        if pending is not None:
+            # A second request for the same file: the first one deletes it.
+            await pending.wait()
+            return False
+        done = asyncio.Event()
+        self._removals[model.name] = done
+
+        def _settle(_fut: asyncio.Future[bool]) -> None:
+            if self._removals.get(model.name) is done:
+                del self._removals[model.name]
+            done.set()
+
+        path = model_path(model)
+        unlink = asyncio.ensure_future(asyncio.to_thread(_unlink_model_file, path))
+        unlink.add_done_callback(_settle)
+        removed = await asyncio.shield(unlink)
+        if not removed:
+            return False
+        logger.info("Removed whisper model %s from %s", model.name, path)
+        if self.status.get("model") == model.name and self.status.get("step") != "downloading":
+            # A stale "ready" for a file that is gone would tell the panel the
+            # model is usable.
+            self._set(step="idle", model="")
+        return True
 
     def _set(
         self,
