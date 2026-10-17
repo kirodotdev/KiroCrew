@@ -229,6 +229,8 @@ class _Slot:
         # at every turn start.
         self.credential_evidence = CredentialEvidence()
         self.segment_raw_text: str | None = ""
+        self.segment_shown_sha = hashlib.sha256()
+        self.segment_removed: dict[str, str] = {}
         self.linked_session_key = ""
         # Mirrors _ChatSlot.project: the per-slot local project @mention/​/prompts
         # resolve against. "" means no project (global prompts only), matching

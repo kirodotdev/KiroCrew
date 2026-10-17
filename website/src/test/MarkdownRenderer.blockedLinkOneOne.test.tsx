@@ -5,8 +5,9 @@ import fixture from './fixtures/blockedLinkOneOne.json'
 import { expectCardListsHostRecords } from './blockedLinkCardAsserts'
 import { i18nT } from '../i18n/t'
 
-// Backend output of TestBlockedLinkCardRecords._one_presigned_one_key_split_flush
-// (test/test_chat_runner_coverage.py), byte for byte: ONE presigned S3 link
+// A row saved by a build that stored each streamed delta's own redaction (the
+// save now redacts the whole reply, but rows like this stay in history): ONE
+// presigned S3 link
 // split at &X-Amz-Date (a placeholder with no record of its own) beside ONE
 // same-host URL whose key a delta redacted (a record the text shows no
 // placeholder for). One placeholder and one record, of different addresses.

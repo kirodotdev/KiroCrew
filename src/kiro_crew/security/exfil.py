@@ -1433,8 +1433,12 @@ def redact_exfiltration_urls_with_records(
     text: str,
     *,
     extra_exempt_hosts: frozenset[str] = frozenset(),
+    removed_out: list[tuple[str, str]] | None = None,
 ) -> tuple[str, list[str], list[dict]]:
     """Redact suspicious URLs and, in the SAME pass, describe each one.
+
+    ``removed_out``, when given, receives ``(address, placeholder)`` for every
+    address the pass replaced (memory only: never store, log or send it).
 
     ``extra_exempt_hosts`` joins the platform's exact-host exemption for this
     call: the hosts a reader allowed for one workspace from the dashboard
@@ -1474,6 +1478,7 @@ def redact_exfiltration_urls_with_records(
     result = text
     records: list[dict] = []
     seen: set[str] = set()
+    blocked: dict[str, str] = {}
     overflow = 0
     for match in _URL_RE.finditer(text):
         domain = match.group(1)
@@ -1493,9 +1498,12 @@ def redact_exfiltration_urls_with_records(
             continue
         warnings.append(warning)
         matched = match.group(0)
-        # replace() rewrites every occurrence of this exact URL, and the loop can
-        # revisit it, so the record set is keyed by the matched string.
-        result = result.replace(matched, f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]")
+        placeholder = f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]"
+        if removed_out is not None:
+            removed_out.append((matched, placeholder))
+        # Every occurrence of this exact URL is rewritten after the loop, and the
+        # loop can revisit it, so the record set is keyed by the matched string.
+        blocked[matched] = placeholder
         if matched in seen:
             continue
         qmark = path_and_query.find("?")
@@ -1535,6 +1543,12 @@ def redact_exfiltration_urls_with_records(
                 "url_withheld": url_withheld,
             }
         )
+    # Longest first: a blocked URL that is a prefix of a longer blocked one (a base
+    # link, then the same link with a session token appended) would otherwise
+    # rewrite the longer one's head, so the longer one's own replace finds nothing
+    # and its token-bearing tail stays in the text.
+    for matched in sorted(blocked, key=len, reverse=True):
+        result = result.replace(matched, blocked[matched])
     if overflow:
         logger.info(
             "blocked-link records capped at %d for this message; %d further blocked "
