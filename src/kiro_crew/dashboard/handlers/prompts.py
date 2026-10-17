@@ -51,7 +51,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.prompts_authoring import (  # noqa: F401
         _invalidate_prompt_cache,
     )
-    from kiro_crew.dashboard.handlers.prompts_caller_gates import _CODE_SLOT_NOT_FOUND  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_caller_gates import _audit_unread  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_caller_gates import _named_slot  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_caller_gates import _prompt_audit  # noqa: F401
@@ -151,6 +150,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
         is_owner_dashboard_request,
     )
+    from kiro_crew.dashboard.slot_ownership import slot_not_found  # noqa: F401
     from kiro_crew.dashboard.state import DashboardState  # noqa: F401
     from kiro_crew.executors import discovery_executor  # noqa: F401
     from kiro_crew.frontmatter import SKILL_LOADER  # noqa: F401

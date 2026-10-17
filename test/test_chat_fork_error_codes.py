@@ -76,12 +76,13 @@ def test_the_ratchet_can_actually_fail() -> None:
     outside the allowlist. The two app-isolation refusals answer through
     `slot_ownership.deny_app_slot_access`, the shared per-slot decision, which
     returns ``slot_not_found`` by construction, so the scan finds those two
-    sites in that module rather than here. The over-capacity corpus refusal
-    (``fork_corpus_too_large``) adds one site, and so does the read-only
-    remote-crew refusal (``relay_archive_read_only``).
+    sites in that module rather than here. The no-such-slot 404 answers through
+    `slot_ownership.slot_not_found`, the same response, so it is counted there
+    too. The over-capacity corpus refusal (``fork_corpus_too_large``) adds one
+    site, and so does the read-only remote-crew refusal (``relay_archive_read_only``).
     """
     coded = [f for f in _findings() if f.bucket == "compliant"]
-    assert len(coded) == 27, f"scanner reached {len(coded)} coded sites, expected 27"
+    assert len(coded) == 26, f"scanner reached {len(coded)} coded sites, expected 26"
     assert all(f.code_value for f in coded)
 
 
