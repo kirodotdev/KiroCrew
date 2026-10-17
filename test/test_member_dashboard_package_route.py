@@ -822,11 +822,12 @@ class TestTheRenderPathServesAnAppliedVersion:
         )
 
     @pytest.mark.asyncio
-    async def test_a_bound_draft_keeps_the_template_page(self, live: Any) -> None:
+    async def test_a_bound_draft_keeps_the_page_the_tab_had(self, live: Any) -> None:
         """The upgrade case at the route: a crewmate with no pinned record whose bound
         package has only agent versions -- a `dashboard_save` with no apply yet. The
-        binding names it, and the tab still draws the template page it had rather than
-        a blank frame, because no version of it was ever put in force."""
+        binding names it, and the tab still draws what it had rather than a blank frame,
+        because no version of it was ever put in force. This crewmate never adopted a
+        page and none is named for it, so what it had is the suggestions page."""
         self._agent_writes(live, "draft")
         # The control: the binding really resolves to the draft.
         assert md._bound_package_slug(CREW) == live.slug
@@ -834,7 +835,7 @@ class TestTheRenderPathServesAnAppliedVersion:
         assert status == 200, body
         assert body.get("dashboard", "") != live.slug, "the draft was served as the page"
         assert "draft" not in (body.get("rendered_html") or "")
-        assert body.get("template", {}).get("id"), "the tab drew a blank frame, not its template"
+        assert body.get("suggestions") is True, "the tab drew a blank frame, not its page"
 
     def test_the_store_really_tags_the_actor_on_the_event(self, live: Any) -> None:
         """The control for the whole class. If the store stopped recording `by`, every

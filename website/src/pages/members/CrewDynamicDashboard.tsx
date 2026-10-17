@@ -452,8 +452,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   // preview link can start from a cached `no_preview` while its own read is in
   // flight, and handing over on that would skip the page staged since.
   const previewGone = staged && isError && !isFetching && apiErrorCode(error) === 'no_preview'
-  // A crewmate with no ADOPTED page gets the suggestions page, not the generic
-  // default the read still carries. The GATEWAY decides (`suggestions`), by the same
+  // A crewmate with no ADOPTED page, and none named for it, gets the suggestions
+  // page. The GATEWAY decides (`suggestions`), by the same
   // function that tells the crewmate what its tab shows, so the two cannot drift.
   // Only the live member read: a staged preview is a page the crewmate offered, and
   // a session's page has no crewmate to ask.
@@ -544,9 +544,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     // FAIL CLOSED ON EVERY READ THAT ESTABLISHES NO PAGE, in one place, with no case
     // exempted for being merely stale.
     //
-    // The suggestions page stands in for an unadopted crewmate; the default the
-    // gateway composed into that read never becomes the held page, and nothing held
-    // from before stays mounted behind it.
+    // The suggestions page stands in for an unadopted crewmate; a page that read
+    // carried never becomes the held page, and nothing held from before stays
+    // mounted behind it.
     if (suggestions) {
       setCandidate(null)
       setGood(null)

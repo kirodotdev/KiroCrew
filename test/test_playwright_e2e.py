@@ -317,9 +317,8 @@ def _resolve_website_dir() -> Path | None:
 #: refused with `missing_member`, which is the defect the spec guards against.
 DASHBOARD_PREVIEW_MEMBER = "Preview Probe"
 
-#: A template the default page is NOT. A crewmate that adopted nothing renders
-#: `instance.DEFAULT_TEMPLATE_ID` on the live tab, so staging the default would let a
-#: tab showing the live page pass for one showing the staged page.
+#: A template the live tab never shows. A crewmate that adopted nothing shows no page
+#: on the live tab, so a tab that draws this page is drawing the staged one.
 DASHBOARD_PREVIEW_TEMPLATE = "standup"
 
 

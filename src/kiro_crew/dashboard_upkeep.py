@@ -29,10 +29,10 @@ render (``instance.RENDERABLE_SOURCES``), so every page in force has a shipped e
 **When.** :func:`sync` writes only what differs from disk, removes a script the page
 does not name, and puts back a hand edit. Two callers: ``instance._commit`` (adopt,
 apply, rollback and edit all commit through it) and ``dashboard_agentic.turn_block`` (a
-crewmate on the default page never commits, and a gateway upgrade can change a shipped
-helper's bytes). A root session's own dashboard (``instance.is_session_key``) has no
-crewmate, no shell and no skills directory of its own, so it gets no scripts and no
-helper path. Every function here is TOTAL: an upkeep write that fails costs the
+crewmate on the page named for it never commits, and a gateway upgrade can change a
+shipped helper's bytes). A root session's own dashboard (``instance.is_session_key``)
+has no crewmate, no shell and no skills directory of its own, so it gets no scripts and
+no helper path. Every function here is TOTAL: an upkeep write that fails costs the
 pointer line, never the turn or the commit.
 """
 
@@ -190,13 +190,11 @@ def view(slug: str) -> dict[str, Any] | None:
             return None
         manifest = page[1]
         rows = upkeep_rows(manifest, slug)
-        # The suggestions page on the tab means [DASHBOARD] offers no fields and no
-        # pointer, so the profile must not claim one either.
-        suggestions = dashboard_agentic.tab_shows_suggestions(slug)
         return {
             # The pointer only when [DASHBOARD] carries it: a page with nothing to
-            # write gets none there, so the profile must not claim one.
-            "pointer": POINTER if rows and not suggestions else "",
+            # write gets none there, so the profile must not claim one. The
+            # suggestions page has no page in force, so it never reaches here.
+            "pointer": POINTER if rows else "",
             "fields": [{"field": name, **row} for name, row in rows.items()],
             "scripts": sorted(render_scripts(manifest)),
         }

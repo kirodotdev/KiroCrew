@@ -3497,8 +3497,12 @@ SHAPED_MANIFEST: dict[str, Any] = {
 
 
 def _shaped_dashboard(monkeypatch, read: Any = None) -> None:
-    """The shaped manifest through ``read_instance``, and *read* as the page's values."""
-    from kiro_crew import dashboard_agentic
+    """The shaped manifest as the page in force, and *read* as the page's values.
+
+    Both seams carry it: ``read_instance`` for the field list, and the package read
+    the write route checks a value against, as the template page it falls through to.
+    """
+    from kiro_crew import dashboard_agentic, dashboard_package
     from kiro_crew.dashboard.handlers import member_dashboard
     from kiro_crew.dashboard_templates.manifest import parse_manifest
 
@@ -3506,6 +3510,8 @@ def _shaped_dashboard(monkeypatch, read: Any = None) -> None:
         manifest=parse_manifest(dict(SHAPED_MANIFEST)), instance_version=5
     )
     monkeypatch.setattr(routes, "read_instance", lambda _slug, _crew: inst)
+    page = dashboard_package.PackageRead(inst, dashboard_package.STATE_LIVE, "stubbed")
+    monkeypatch.setattr(dashboard_package, "read_package_model", lambda *_a: page)
     if read is not None:
         monkeypatch.setattr(member_dashboard, "read_fields", lambda *_a: read)
 

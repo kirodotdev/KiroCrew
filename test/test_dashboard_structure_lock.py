@@ -313,7 +313,10 @@ class TestTheCrewmateIsToldOnEveryTurn:
         from kiro_crew import dashboard_agentic
 
         instance.set_structure_lock(SLUG, True)
-        assert dashboard_agentic.turn_block(SLUG) == f"[DASHBOARD]\n{instance.LOCKED_REFUSAL}"
+        # No page in force: the tab shows the suggestions page, and the lock still rides.
+        assert dashboard_agentic.turn_block(SLUG) == (
+            f"[DASHBOARD]\n{dashboard_agentic.SUGGESTIONS_LINE}\n{instance.LOCKED_REFUSAL}"
+        )
 
     def test_the_line_forbids_every_page_change_and_points_at_the_person(self) -> None:
         for word in ("apply", "roll back", "propose", "unlock", "still preview"):
@@ -458,8 +461,8 @@ async def test_the_person_locks_and_the_read_says_so() -> None:
 
 @pytest.mark.asyncio
 async def test_the_default_page_read_carries_the_lock(_floor_monkeypatch) -> None:
-    """An unadopted crewmate is served the default page; the lock must ride along."""
-    _floor_monkeypatch.setattr(instance, "DEFAULT_TEMPLATE_ID", "fixture-board")
+    """An unadopted crewmate is served the page named for it; the lock must ride along."""
+    _floor_monkeypatch.setattr(instance, "default_template_id", lambda _slug, _ids: "fixture-board")
     instance.set_structure_lock(SLUG, True)
     async with _client() as client:
         read = await (await client.get(READ_URL)).json()
