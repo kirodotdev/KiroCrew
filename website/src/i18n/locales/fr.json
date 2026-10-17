@@ -12574,7 +12574,7 @@
       "could_not_send_to_side_chat": "Impossible d’envoyer au chat annexe",
       "fork_too_large_error_head": "Cette conversation est trop volumineuse pour être bifurquée. Survole un message antérieur ou places-y le focus, puis choisis «{{control}}» pour copier moins de messages.",
       "fork_too_large_error_tail": "Cette conversation est trop volumineuse pour être bifurquée. Survole un message ultérieur ou places-y le focus, puis choisis «{{control}}» pour copier moins de messages.",
-      "fork_too_large_offsite_unknown": "«{{title}}» est trop volumineuse pour être bifurquée en entier. Survole un message plus proche de l’extrémité à conserver ou places-y le focus, et choisis «{{control}}».",
+      "fork_too_large_offsite_unknown": "«{{title}}» est trop volumineuse pour être bifurquée en entier. Ouvre-la, puis survole un message plus proche de l’extrémité à conserver ou places-y le focus, et choisis «{{control}}».",
       "fork_too_large_offsite_compact": "«{{title}}» est trop volumineuse pour être dupliquée en entier. Ouvre-la, puis survole un message plus proche de l’extrémité à conserver ou places-y le focus, et choisis «{{control}}».",
       "could_not_switch_agent": "Impossible de changer d’agent",
       "agent_command_not_run": "La commande /agent n’a pas été exécutée. Ton message est toujours dans le champ de saisie.",

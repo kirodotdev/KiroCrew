@@ -12204,7 +12204,7 @@
       "could_not_send_to_side_chat": "サイドチャットに送信できませんでした",
       "fork_too_large_error_head": "この会話は分岐するには大きすぎます。前のメッセージにカーソルを合わせるかフォーカスして「{{control}}」を選ぶと、コピーするメッセージを減らせます。",
       "fork_too_large_error_tail": "この会話は分岐するには大きすぎます。後のメッセージにカーソルを合わせるかフォーカスして「{{control}}」を選ぶと、コピーするメッセージを減らせます。",
-      "fork_too_large_offsite_unknown": "「{{title}}」は全体を分岐するには大きすぎます。残したい端に近いメッセージにカーソルを合わせるかフォーカスして「{{control}}」を選んでください。",
+      "fork_too_large_offsite_unknown": "「{{title}}」は全体を分岐するには大きすぎます。開いてから、残したい端に近いメッセージにカーソルを合わせるかフォーカスして「{{control}}」を選んでください。",
       "fork_too_large_offsite_compact": "「{{title}}」は全体を複製するには大きすぎます。開いてから、残したい端に近いメッセージにカーソルを合わせるかフォーカスして「{{control}}」を選んでください。",
       "could_not_switch_agent": "エージェントを切り替えられませんでした",
       "agent_command_not_run": "/agent コマンドは実行されませんでした。メッセージは入力欄に残っています。",

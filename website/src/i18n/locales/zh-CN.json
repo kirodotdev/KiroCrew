@@ -12204,7 +12204,7 @@
       "could_not_send_to_side_chat": "无法发送到随手问",
       "fork_too_large_error_head": "此对话过大，无法分叉。将指针悬停在较早的消息上或聚焦该消息，然后选择“{{control}}”，以复制更少的消息。",
       "fork_too_large_error_tail": "此对话过大，无法分叉。将指针悬停在较晚的消息上或聚焦该消息，然后选择“{{control}}”，以复制更少的消息。",
-      "fork_too_large_offsite_unknown": "“{{title}}”过大，无法整体分叉。将指针悬停在更靠近你想保留的一端的消息上或聚焦该消息，并选择“{{control}}”。",
+      "fork_too_large_offsite_unknown": "“{{title}}”过大，无法整体分叉。请打开它，然后将指针悬停在更靠近你想保留的一端的消息上或聚焦该消息，并选择“{{control}}”。",
       "fork_too_large_offsite_compact": "“{{title}}”过大，无法整体复制。请打开它，然后将指针悬停在更靠近你想保留的一端的消息上或聚焦该消息，并选择“{{control}}”。",
       "could_not_switch_agent": "无法切换代理",
       "agent_command_not_run": "/agent 命令未执行。你的消息仍保留在输入框中。",

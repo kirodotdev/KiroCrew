@@ -12574,7 +12574,7 @@
       "could_not_send_to_side_chat": "No se pudo enviar al chat lateral",
       "fork_too_large_error_head": "Esta conversación es demasiado grande para bifurcarla. Coloca el cursor sobre un mensaje anterior o enfócalo y elige “{{control}}” para copiar menos mensajes.",
       "fork_too_large_error_tail": "Esta conversación es demasiado grande para bifurcarla. Coloca el cursor sobre un mensaje posterior o enfócalo y elige “{{control}}” para copiar menos mensajes.",
-      "fork_too_large_offsite_unknown": "“{{title}}” es demasiado grande para bifurcarla completa. Coloca el cursor sobre un mensaje más cercano al extremo que quieres conservar o enfócalo, y elige “{{control}}”.",
+      "fork_too_large_offsite_unknown": "“{{title}}” es demasiado grande para bifurcarla completa. Ábrela, luego coloca el cursor sobre un mensaje más cercano al extremo que quieres conservar o enfócalo, y elige “{{control}}”.",
       "fork_too_large_offsite_compact": "“{{title}}” es demasiado grande para duplicarla completa. Ábrela, luego coloca el cursor sobre un mensaje más cercano al extremo que quieres conservar o enfócalo, y elige “{{control}}”.",
       "could_not_switch_agent": "No se pudo cambiar de agente",
       "agent_command_not_run": "El comando /agent no se ejecutó. Tu mensaje sigue en el editor.",

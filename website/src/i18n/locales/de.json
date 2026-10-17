@@ -12389,7 +12389,7 @@
       "could_not_send_to_side_chat": "Senden an den Seitenchat fehlgeschlagen",
       "fork_too_large_error_head": "Diese Unterhaltung ist zu groß, um sie zu verzweigen. Bewege den Zeiger auf eine frühere Nachricht oder fokussiere sie und wähle „{{control}}“, um weniger Nachrichten zu kopieren.",
       "fork_too_large_error_tail": "Diese Unterhaltung ist zu groß, um sie zu verzweigen. Bewege den Zeiger auf eine spätere Nachricht oder fokussiere sie und wähle „{{control}}“, um weniger Nachrichten zu kopieren.",
-      "fork_too_large_offsite_unknown": "„{{title}}“ ist zu groß, um es vollständig zu verzweigen. Bewege den Zeiger auf eine Nachricht näher an dem Ende, das du behalten willst, oder fokussiere sie, und wähle „{{control}}“.",
+      "fork_too_large_offsite_unknown": "„{{title}}“ ist zu groß, um es vollständig zu verzweigen. Öffne es, bewege dann den Zeiger auf eine Nachricht näher an dem Ende, das du behalten willst, oder fokussiere sie, und wähle „{{control}}“.",
       "fork_too_large_offsite_compact": "„{{title}}“ ist zu groß, um es vollständig zu duplizieren. Öffne es, bewege dann den Zeiger auf eine Nachricht näher an dem Ende, das du behalten willst, oder fokussiere sie, und wähle „{{control}}“.",
       "could_not_switch_agent": "Agent konnte nicht gewechselt werden",
       "agent_command_not_run": "Der Befehl /agent wurde nicht ausgeführt. Deine Nachricht ist noch im Eingabefeld.",
