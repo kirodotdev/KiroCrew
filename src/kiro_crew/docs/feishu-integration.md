@@ -14,6 +14,16 @@ hostname, or open port to manage.
 > it directly into the environment that runs the gateway:
 > `pip install 'lark-oapi>=1.4,<2'`. Without it the gateway logs a line and skips
 > the channel — nothing else is affected.
+>
+> **Desktop-app upgrade note.** The desktop app ships its own embedded Python
+> inside `backend-dist`. When you upgrade Kiro Crew, the entire `backend-dist`
+> bundle is replaced, which removes any packages you installed into it —
+> including `lark-oapi`. There is currently no way to persist the SDK across
+> desktop-app upgrades without bundling it (see #14618). If you rely on the
+> Feishu channel on the desktop app, run the gateway from a **source checkout**
+> instead (see [Getting Started](getting-started.md)), where upgrades do not
+> touch your installed packages. The Settings badge shows **Not connected** with
+> an install hint when the SDK is missing.
 
 ## Quick start
 
@@ -183,6 +193,7 @@ Known gaps, all follow-up work rather than defects:
 - **The panel configures the channel; it does not install it.** `lark-oapi` is an
   optional extra, and running `pip` from a dashboard action would be a new way to
   execute code in the gateway's own environment. When the SDK is missing, Settings reports whether installation is supported for this gateway interpreter and shows its exact install command only when it is; you run that command yourself.
+- **Desktop-app upgrades wipe the SDK.** The desktop app replaces the entire `backend-dist` bundle on each upgrade, removing `lark-oapi`. There is no persistent fix until the SDK is bundled (see #14618); use a non-bundled gateway install to avoid reinstalling after every upgrade.
 - **Credentials are not verified on save.** A REST tenant-token probe would have
   to pick a domain (`open.feishu.cn` or `open.larksuite.com`) and would report a
   false failure for whichever tenant it guessed wrong, so the panel stores what
