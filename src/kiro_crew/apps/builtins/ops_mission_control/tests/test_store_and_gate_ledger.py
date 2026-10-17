@@ -845,3 +845,52 @@ class TestContradictionDetection(_HomeIsolated):
         from kiro_crew.apps.builtins.ops_mission_control.backend import ledger
 
         self.assertEqual(ledger.find_contradictions(), [])
+
+
+class TestConfidenceRank(_HomeIsolated):
+    """Every ranking in ``ledger.py`` that compares ``confidence`` orders it on one scale.
+
+    ``_reconcile``, ``upsert``, ``match`` and the hygiene prune all rank through
+    ``ledger._confidence_rank``. The first two are pinned by the merge and relearning tests
+    above; these pin the other two, plus the rank of a value off the scale, which
+    ``LedgerEntry.from_dict`` reads from a raw line without clamping.
+    """
+
+    def test_rank_orders_the_scale_and_puts_an_unknown_value_last(self):
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger, models
+
+        scale = (models.CONFIDENCE_HIGH, models.CONFIDENCE_MEDIUM, models.CONFIDENCE_LOW)
+        ranks = [ledger._confidence_rank(value) for value in (*scale, "unrecognised")]
+        self.assertEqual(ranks, [0, 1, 2, 3])
+
+    def test_match_breaks_a_trust_tie_on_confidence(self):
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger, models
+
+        low = models.LedgerEntry.create(
+            pattern="p-low", fix="f", fingerprints=["fp"], confidence=models.CONFIDENCE_LOW
+        )
+        high = models.LedgerEntry.create(
+            pattern="p-high", fix="f", fingerprints=["fp"], confidence=models.CONFIDENCE_HIGH
+        )
+        # Written weaker-first, so file order alone would rank `low` first.
+        ledger._write_all([low, high])
+        self.assertEqual([e.entry_id for e in ledger.match("fp")], [high.entry_id, low.entry_id])
+
+    def test_hygiene_prunes_the_weaker_confidence_on_a_tie(self):
+        from unittest import mock
+
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger, models
+
+        low = models.LedgerEntry.create(pattern="p-low", fix="f", confidence=models.CONFIDENCE_LOW)
+        high = models.LedgerEntry.create(
+            pattern="p-high", fix="f", confidence=models.CONFIDENCE_HIGH
+        )
+        for entry in (low, high):
+            entry.last_used = "2026-01-01T00:00:00Z"
+        # Weaker-first again, with use, miss and trust all equal, so only confidence can
+        # decide which of the two the cap keeps.
+        ledger._write_all([low, high])
+        with mock.patch.object(ledger, "MAX_LEDGER_ENTRIES", 1):
+            summary = ledger.hygiene(now=datetime(2026, 1, 2, tzinfo=timezone.utc))
+        self.assertEqual(summary["pruned"], 1)
+        self.assertEqual([e.entry_id for e in ledger.read_entries()], [high.entry_id])
