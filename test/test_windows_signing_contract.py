@@ -516,6 +516,19 @@ def test_credential_step_skips_without_the_secret() -> None:
     assert "HAS_WINDOWS_SIGNING" in _step("Configure AWS credentials")["if"]
 
 
+def test_oidc_credentials_survive_the_windows_cli_role_chain() -> None:
+    """A random temporary secret must not break the later AWS CLI profile.
+
+    The OIDC action can authenticate successfully and still return a secret
+    whose special characters the Windows CLI/profile path does not preserve.
+    AWS then rejects the chained AssumeRole signature. The action's documented
+    workaround must stay bounded: an AWS outage cannot consume the whole job.
+    """
+    options = _step("Configure AWS credentials")["with"]
+    assert options["special-characters-workaround"] is True
+    assert options["action-timeout-s"] == 180
+
+
 def test_signing_gate_is_hoisted_into_job_env() -> None:
     # `secrets.*` is not available in a step-level `if`, so the gate has to be a
     # job-level env flag. Same pattern as sign-and-notarize.yml.
