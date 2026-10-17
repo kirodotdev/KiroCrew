@@ -284,7 +284,7 @@ class TestCronAddThreadInheritAcrossGateway:
     """The thread inherit must survive the gateway hop.
 
     The HTTP boundary rebuilds the ``CallerContext`` WITHOUT ``channel_id``
-    (dashboard/handlers/cron.py), so ``_caller_channel_id()`` is empty on the
+    (dashboard/handlers/cron_jobs.py), so ``_caller_channel_id()`` is empty on the
     gateway side and a same-channel comparison made there would always fail.
     The inherit is therefore resolved on the RUNTIME side in ``_call_tool``
     (where the caller channel is reliable) and forwarded to the gateway as an

@@ -1130,7 +1130,9 @@ def _read_decide_write_callers() -> tuple[tuple[str, str, int, bool], ...]:
         # -- reporting every exempt caller as unprobed and every exemption as stale at
         # once. POSIX is the portable spelling and the one the table is keyed in.
         posix = path.as_posix()
-        if path.name == "cron.py" or "__pycache__" in posix:
+        # cron_secret_grants.py: its two grant handlers read, decide and write without the
+        # probe, and this skip is what keeps them out of the offenders below.
+        if path.name in ("cron.py", "cron_secret_grants.py") or "__pycache__" in posix:
             continue
         if "/tests/" in posix or path.name.startswith("test_"):
             continue

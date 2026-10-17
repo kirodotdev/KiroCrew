@@ -3630,7 +3630,7 @@ def _session_has_persisted_history(slot_name: str) -> bool:
     :func:`_persisted_session_memory_mode` as well — file existence alone is
     not evidence that writes are permitted.
 
-    Used by ``api_lessons_create`` (in ``handlers/cron.py``) to distinguish
+    Used by ``api_lessons_create`` (in ``handlers/cron_lessons.py``) to distinguish
     between:
 
     * A legitimate MCP subprocess whose in-memory slot was evicted by the

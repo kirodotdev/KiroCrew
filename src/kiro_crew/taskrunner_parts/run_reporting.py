@@ -149,7 +149,7 @@ async def _extract_lesson(self: TaskRunner, task: Task, run: Project | None = No
         elif self._consolidator and self._consolidator._vector_store:
             # write_lesson embeds via blocking urllib (Ollama); offload to
             # keep the gateway event loop responsive (same pattern as
-            # dashboard/handlers/cron.py api_lessons_create).
+            # dashboard/handlers/cron_lessons.py api_lessons_create).
             write_result = await run_in_embed_pool(
                 self._consolidator._vector_store.write_lesson,
                 rule,

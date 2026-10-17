@@ -1544,7 +1544,7 @@ async def _run_uninstall(
                 # READ, not because the app owns nothing, so continuing would
                 # delete the app and leave its still-ENABLED jobs to resume.
                 # Reported NON-retryable, matching the contract in
-                # dashboard/handlers/cron.py: an unreadable file does not heal
+                # dashboard/handlers/cron_shared.py: an unreadable file does not heal
                 # on its own, so a client that retries on busy must not retry
                 # here. The exception already names the one action that fixes
                 # it, so its message is surfaced verbatim.

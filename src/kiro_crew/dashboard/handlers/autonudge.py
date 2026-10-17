@@ -1293,7 +1293,7 @@ async def api_autonudge_fire(request: web.Request) -> web.Response:
       ``asyncio.to_thread`` because a synchronous flush on the loop would freeze
       every session's turn (``no-blocking-call-on-event-loop``). This is the same
       shape this subsystem's own ``autonudge_authz`` uses for ``monitor_update``
-      and ``monitor_stop``, and the 503 mirrors ``handlers/cron.py``'s
+      and ``monitor_stop``, and the 503 mirrors ``handlers/cron_shared.py``'s
       ``audit_unavailable`` refusal for a grant it could not record.
     * The **refusals** stay best-effort, but they are audited BEFORE
       ``fire_now`` returns: a guard below that denied a request and left no SEL

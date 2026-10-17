@@ -526,8 +526,8 @@ class TestLessonsGate:
     async def test_learn_add_allowed_for_persistent_session(self, tmp_path, monkeypatch):
         """POST /api/lessons succeeds for persistent sessions."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        # ``api_lessons_create`` lives in handlers/cron.py, which did
-        # ``from ._shared import _get_memory``, so the name it calls is cron.py's
+        # ``api_lessons_create`` lives in handlers/cron_lessons.py, which did
+        # ``from ._shared import _get_memory``, so the name it calls is cron_lessons.py's
         # OWN global. Patching the handlers package re-export (or _shared) leaves
         # that global untouched: the route then builds a real ``MemoryStore`` and
         # runs ``init()``, and reaches the JSONL branch only by the accident that
@@ -1972,7 +1972,7 @@ class TestLessonsDeleteGate:
     def _deletable_state(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        # Route reads the vector store through cron.py's own binding.
+        # Route reads the vector store through cron_lessons.py's own binding.
         monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.cron._get_memory",
             MagicMock(return_value=MagicMock(vector_store=None)),

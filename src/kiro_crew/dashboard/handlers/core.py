@@ -4054,7 +4054,7 @@ def _invalid_session_path_id(session_id: str, agent_id: str | None = None) -> we
     The predicate is imported rather than restated: this must refuse exactly the
     set the path join refuses, no wider (a narrower guard would break the ``:``
     in a real key like ``dashboard:slot-3``) and no narrower (a wider one puts
-    the 500 back). Shape follows ``cron.py``'s ``_invalid_path_id_response`` --
+    the 500 back). Shape follows ``cron_shared.py``'s ``_invalid_path_id_response`` --
     400 with an ``invalid_<name>`` ``code`` -- the contract
     docs/system-specs/common/code-style.md requires of a backend-owned error body.
 
