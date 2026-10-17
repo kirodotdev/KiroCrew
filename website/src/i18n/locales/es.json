@@ -7179,7 +7179,19 @@
       "tags_loading_hint": "Cargando etiquetas…",
       "tags_error_hint": "No se pudieron cargar las etiquetas.",
       "tags_retry": "Reintentar",
-      "top_level": "Nivel superior"
+      "top_level": "Nivel superior",
+      "project_notes": "Notas del proyecto",
+      "project_notes_hint": "Aprendizajes que los agentes registraron sobre este proyecto. Una sesión posterior los encuentra primero al buscar. Promueve uno para convertirlo en una instrucción permanente.",
+      "notes_loading": "Cargando notas…",
+      "no_project_notes": "Aún no hay notas del proyecto.",
+      "notes_load_failed": "No se pudieron cargar las notas del proyecto.",
+      "notes_delete_failed": "No se pudo eliminar la nota.",
+      "notes_promote_failed": "No se pudo promover la nota.",
+      "notes_delete": "Eliminar nota",
+      "notes_promote": "Promover",
+      "notes_promote_target": "Directorio de guía",
+      "notes_promote_needs_steering": "Agrega un directorio de guía arriba para promover una nota en él.",
+      "notes_retry": "Reintentar"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Sugerencia de carpeta",

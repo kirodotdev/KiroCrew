@@ -5,6 +5,7 @@ import ErrorNotice from './ErrorNotice'
 import { Input, Btn } from './ui'
 import FolderGlyph from './FolderGlyph'
 import ProjectPicker from './ProjectPicker'
+import ProjectNotesSection from './ProjectNotesSection'
 import SearchableSelect, { SearchableSelectOption } from './SearchableSelect'
 import { FOLDER_COLOR_PALETTE } from './folderColorCatalog'
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -712,6 +713,15 @@ export default function FolderConfigModal({
               <span className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.default_agent_hint')}</span>
             )}
           </div>
+
+          {/* Learned project notes: person-only. Only in edit mode, where the
+           *  folder has an id to resolve its project from; a folder being
+           *  CREATED has no notes and no id yet. The promote picker offers this
+           *  folder's OWN declared steering dirs (draft.steeringDirs), matching
+           *  what the promote route accepts. */}
+          {mode === 'edit' && folder?.id && (
+            <ProjectNotesSection folderId={folder.id} steeringDirs={draft.steeringDirs} />
+          )}
         </div>
       </Modal>
 

@@ -7058,7 +7058,19 @@
       "tags_loading_hint": "टैग लोड हो रहे हैं…",
       "tags_error_hint": "टैग लोड नहीं हो सके।",
       "tags_retry": "पुनः प्रयास करें",
-      "top_level": "सर्वोच्च स्तर"
+      "top_level": "सर्वोच्च स्तर",
+      "project_notes": "प्रोजेक्ट नोट्स",
+      "project_notes_hint": "इस प्रोजेक्ट के बारे में एजेंट द्वारा दर्ज सीख। बाद का सत्र खोजते समय इन्हें पहले पाता है। किसी को स्थायी निर्देश बनाने के लिए प्रमोट करें।",
+      "notes_loading": "नोट्स लोड हो रहे हैं…",
+      "no_project_notes": "अभी तक कोई प्रोजेक्ट नोट नहीं।",
+      "notes_load_failed": "प्रोजेक्ट नोट्स लोड नहीं हो सके।",
+      "notes_delete_failed": "नोट हटाया नहीं जा सका।",
+      "notes_promote_failed": "नोट प्रमोट नहीं किया जा सका।",
+      "notes_delete": "नोट हटाएँ",
+      "notes_promote": "प्रमोट करें",
+      "notes_promote_target": "स्टीयरिंग निर्देशिका",
+      "notes_promote_needs_steering": "किसी नोट को प्रमोट करने के लिए ऊपर एक स्टीयरिंग निर्देशिका जोड़ें।",
+      "notes_retry": "पुनः प्रयास करें"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "फ़ोल्डर सुझाव",

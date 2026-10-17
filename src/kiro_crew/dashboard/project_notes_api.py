@@ -1,15 +1,22 @@
 """The dashboard API for learned project notes.
 
-Four routes, split by WHO may call them and in which direction:
+Three routes. Listing and DELETING a note reuse the existing generic item routes
+(``GET /api/knowledge/items?namespace=…&type=project_note`` and
+``DELETE /api/knowledge/items/{id}``) -- a note IS a Knowledge Library item, so a
+second pair of routes here would duplicate them. What those generic routes cannot
+do is turn a FOLDER into its project namespace, or cross a note from data into an
+instruction; those two are what this module owns:
 
 * ``POST /api/knowledge/project-notes/record`` -- the agent write path, reached
   only by the ``project_note_add`` MCP tool over the internal secret. The project
   is resolved SERVER-SIDE from the verified ``X-Session-Key`` (the same resolver
   item B uses), never from the body, so a session can only write its OWN project.
-* ``GET /api/knowledge/project-notes`` -- a read-only list, for the person's own
-  dashboard and for the team-projects app (an app token confined to its declared
-  paths). Read-only for every principal: it lists, it never writes or promotes.
-* ``DELETE /api/knowledge/project-notes/{note_id}`` -- person only.
+* ``GET /api/knowledge/project-notes?folder_id=<id>`` -- the general, read-only
+  "notes for a folder" read. It is the one thing the generic item routes cannot
+  do: resolve a folder id to its project namespace and return that project's
+  notes (newest first), plus the namespace the caller then scopes an item delete
+  to. App-grantable and documented in ``docs/app-kit/api-reference.md``; read-only
+  for every principal.
 * ``POST /api/knowledge/project-notes/{note_id}/promote`` -- person only, and an
   agent/app/crew-member principal is refused exactly like a ``steering_dirs``
   write (``chat_folders._refuse_principal_steering_dirs``), because promoting a
@@ -20,8 +27,8 @@ Four routes, split by WHO may call them and in which direction:
 The project a ``folder_id`` belongs to is its root folder's project namespace
 (``folder_ownership.project_root_folder_id`` ->
 ``knowledge/project_scope.project_namespace``), identical to the record path's
-session-key derivation, so a list/delete/promote names the same project a note
-was written under.
+session-key derivation, so a list/promote names the same project a note was
+written under.
 """
 
 from __future__ import annotations
@@ -143,12 +150,17 @@ async def record_project_note_route(request: web.Request) -> web.Response:
 
 
 async def list_project_notes_route(request: web.Request) -> web.Response:
-    """GET /api/knowledge/project-notes?folder_id=<id> -- a project's notes, newest first.
+    """GET /api/knowledge/project-notes?folder_id=<id> -- a folder's project notes.
 
-    Read-only, for the person's dashboard and for the team-projects app (an app
-    token is confined to its manifest paths and never reaches the write routes).
-    An empty or non-project folder answers an empty list, never an error, so the
-    caller renders "no notes" rather than handling a failure.
+    The general "notes for a folder" read: it resolves *folder_id* to its project
+    namespace and returns that project's notes, newest first, plus the namespace
+    itself so a caller can scope a generic item delete
+    (``DELETE /api/knowledge/items/{id}``) or a project-first search to it. This
+    is the one read the generic ``/api/knowledge/items`` routes cannot serve,
+    because they take a namespace, not a folder — nothing else here maps a folder
+    to its project. Read-only and app-grantable (documented in
+    ``docs/app-kit/api-reference.md``); an empty or non-project folder answers an
+    empty list, never an error.
     """
     state: DashboardState = request.app["state"]
     folder_id = request.query.get("folder_id", "").strip()
@@ -156,36 +168,6 @@ async def list_project_notes_route(request: web.Request) -> web.Response:
     store = _store(request)
     notes = await _run(store, lambda: project_notes.list_notes(store, namespace))
     return web.json_response({"notes": notes, "namespace": namespace})
-
-
-async def delete_project_note_route(request: web.Request) -> web.Response:
-    """DELETE /api/knowledge/project-notes/{note_id}?folder_id=<id> -- person only.
-
-    Deleting a note is a person's housekeeping over their own project reference
-    data, so it is behind the owner gate. The note is scoped to the folder's
-    project, so a person cannot delete a note from a project a mistyped folder id
-    does not belong to.
-    """
-    denied = await require_owner_dashboard_request(request, "knowledge.project_note_delete")
-    if denied is not None:
-        return denied
-    state: DashboardState = request.app["state"]
-    note_id = request.match_info.get("note_id", "").strip()
-    folder_id = request.query.get("folder_id", "").strip()
-    namespace = _namespace_for_folder(state, folder_id)
-    store = _store(request)
-    removed = await _run(store, lambda: project_notes.delete_note(store, namespace, note_id))
-    if not removed:
-        return web.json_response({"error": "note not found", "code": "not_found"}, status=404)
-    sel().log_tool_invocation(
-        session_key="dashboard",
-        source="dashboard",
-        agent="project-notes",
-        tool_name="knowledge.project_note_delete",
-        outcome="deleted",
-        metadata={"namespace": namespace, "note_id": note_id},
-    )
-    return web.json_response({"deleted": note_id})
 
 
 async def promote_project_note_route(request: web.Request) -> web.Response:
@@ -375,10 +357,16 @@ async def _run(store, fn):
 
 
 def setup_project_notes_routes(app: web.Application) -> None:
-    """Register the four project-notes routes on *app*."""
+    """Register the three project-notes routes on *app*.
+
+    List and delete of a note itself are NOT here: a note is a Knowledge Library
+    item, reached through the generic ``GET /api/knowledge/items`` (scoped with
+    ``namespace`` + ``type=project_note``) and ``DELETE /api/knowledge/items/{id}``
+    routes. These three own only what those cannot: the agent write, the
+    folder->project read, and the person-only promote.
+    """
     app.router.add_post("/api/knowledge/project-notes/record", record_project_note_route)
     app.router.add_get("/api/knowledge/project-notes", list_project_notes_route)
-    app.router.add_delete("/api/knowledge/project-notes/{note_id}", delete_project_note_route)
     app.router.add_post(
         "/api/knowledge/project-notes/{note_id}/promote", promote_project_note_route
     )

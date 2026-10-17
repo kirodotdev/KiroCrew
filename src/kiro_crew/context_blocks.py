@@ -61,6 +61,7 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("system_notice", r"\[System: "),
     ("theme_persona", r"\[THEME PERSONA\]"),
     ("working_folder", r"\[PROJECT\]"),
+    ("project_notes", r"\[PROJECT NOTES\]"),
     ("folder_path", r"\[FOLDER\]"),
     ("resource_advisory", r"\[RESOURCES\]"),
     ("user_display", r"\[CURRENT USER\]"),

@@ -6937,7 +6937,19 @@
       "tags_loading_hint": "正在加载标签…",
       "tags_error_hint": "无法加载标签。",
       "tags_retry": "重试",
-      "top_level": "顶层"
+      "top_level": "顶层",
+      "project_notes": "项目笔记",
+      "project_notes_hint": "智能体记录的关于此项目的经验。后续会话搜索时会优先找到它们。将某条提升为常驻指令。",
+      "notes_loading": "正在加载笔记…",
+      "no_project_notes": "暂无项目笔记。",
+      "notes_load_failed": "无法加载项目笔记。",
+      "notes_delete_failed": "无法删除该笔记。",
+      "notes_promote_failed": "无法提升该笔记。",
+      "notes_delete": "删除笔记",
+      "notes_promote": "提升",
+      "notes_promote_target": "引导目录",
+      "notes_promote_needs_steering": "请在上方添加引导目录，以便将笔记提升到其中。",
+      "notes_retry": "重试"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "文件夹建议",

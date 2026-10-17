@@ -1289,6 +1289,33 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 | GET | `/api/memory/episodic/search` | Search memory |
 | POST | `/api/chat/slots/{slot}/context` | Inject silent context |
 
+### Knowledge: project notes (read-only)
+
+A **learned project note** is a short learning an agent recorded about a project
+(see the Knowledge module spec). It is one Knowledge Library item filed in the
+project's namespace, so a later session searching that project finds it first.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/knowledge/project-notes?folder_id={id}` | A folder's project notes, newest first, plus the project `namespace`. Read-only; app-grantable |
+| GET | `/api/knowledge/items?namespace={ns}&type=project_note` | List the note items directly, once you have the `namespace` from the call above |
+| DELETE | `/api/knowledge/items/{id}` | Delete one note (it is an ordinary item) — owner only |
+
+`GET /api/knowledge/project-notes` is the one note read the generic item routes
+cannot serve on their own: it maps a **folder id** to its project `namespace`
+(the root folder's project), which an app then uses to scope the generic item
+list or an item delete. It is read-only for every caller — it never writes,
+deletes, or promotes a note — so an app may be granted it to SURFACE a project's
+notes without being able to change them.
+
+**An app cannot promote a note.** Turning a note into a standing instruction is a
+host-file write reserved to the person (`POST
+/api/knowledge/project-notes/{id}/promote` answers 403 `steering_dirs_forbidden`
+to any app token), exactly as an app cannot declare a folder's `steering_dirs`.
+Recording a note is likewise not an app surface: it is written by the
+`project_note_add` MCP tool over the internal secret, with the project resolved
+from the caller's own session.
+
 ### App Management
 
 | Method | Path | Description |

@@ -2545,7 +2545,19 @@
       "tags_loading_hint": "Loading tags…",
       "tags_error_hint": "Tags couldn't load.",
       "tags_retry": "Retry",
-      "top_level": "Top level"
+      "top_level": "Top level",
+      "project_notes": "Project notes",
+      "project_notes_hint": "Learnings agents recorded about this project. A later session finds them first when it searches. Promote one to make it a standing instruction.",
+      "notes_loading": "Loading notes…",
+      "no_project_notes": "No project notes yet.",
+      "notes_load_failed": "Could not load project notes.",
+      "notes_delete_failed": "Could not delete the note.",
+      "notes_promote_failed": "Could not promote the note.",
+      "notes_delete": "Delete note",
+      "notes_promote": "Promote",
+      "notes_promote_target": "Steering directory",
+      "notes_promote_needs_steering": "Add a steering directory above to promote a note into it.",
+      "notes_retry": "Retry"
     },
     "folderColorNames": {
       "amber": "Amber",

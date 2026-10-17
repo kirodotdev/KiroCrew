@@ -6937,7 +6937,19 @@
       "tags_loading_hint": "タグを読み込んでいます…",
       "tags_error_hint": "タグを読み込めませんでした。",
       "tags_retry": "再試行",
-      "top_level": "トップレベル"
+      "top_level": "トップレベル",
+      "project_notes": "プロジェクトノート",
+      "project_notes_hint": "エージェントがこのプロジェクトについて記録した学び。後のセッションは検索時にこれらを最初に見つけます。常設の指示にするには昇格してください。",
+      "notes_loading": "ノートを読み込み中…",
+      "no_project_notes": "プロジェクトノートはまだありません。",
+      "notes_load_failed": "プロジェクトノートを読み込めませんでした。",
+      "notes_delete_failed": "ノートを削除できませんでした。",
+      "notes_promote_failed": "ノートを昇格できませんでした。",
+      "notes_delete": "ノートを削除",
+      "notes_promote": "昇格",
+      "notes_promote_target": "ステアリングディレクトリ",
+      "notes_promote_needs_steering": "ノートを昇格するには、上にステアリングディレクトリを追加してください。",
+      "notes_retry": "再試行"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "フォルダーの提案",

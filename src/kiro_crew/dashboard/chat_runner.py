@@ -1764,6 +1764,33 @@ async def _eager_spawn(
         logger.warning("Eager spawn failed for slot %s", slot.key, exc_info=True)
 
 
+def _resolve_project_notes_block(state: "DashboardState", folder_id: str) -> str:
+    """The DATA-labelled project-notes pointer for *folder_id*'s project, or ``""``.
+
+    Roots the folder to its project (``project_root_folder_id`` ->
+    ``project_namespace``) and asks the notes store to render a pointer. Returns
+    ``""`` -- so the caller appends nothing and context is byte-for-byte
+    unchanged -- when the folder is in no project, the project has no notes, or
+    the knowledge store is unavailable. Blocking: it opens the knowledge
+    connection, so the caller runs it off the event loop. Never raises; a lookup
+    failure is a missing pointer, not a failed turn.
+    """
+    from kiro_crew.dashboard.folder_ownership import project_root_folder_id
+    from kiro_crew.knowledge import project_notes
+    from kiro_crew.knowledge.project_scope import project_namespace
+
+    store = getattr(state, "knowledge_store", None)
+    if store is None:
+        return ""
+    folders = getattr(state, "_folders", None)
+    if not isinstance(folders, list):
+        folders = []
+    namespace = project_namespace(project_root_folder_id(folders, folder_id))
+    if not namespace:
+        return ""
+    return project_notes.render_pointer_block(store, namespace)
+
+
 def _turn_start_priority(
     *, user_origin: bool, crew_log_actor: str, provenance_restored: bool
 ) -> StartPriority:
@@ -7541,6 +7568,25 @@ async def _run_chat(
                     )
                 else:
                     _folder_steering_dirs = tuple(_resolved_dirs)
+            # The learned-project-notes pointer: one short DATA-labelled line
+            # telling this session its project has notes to pull with
+            # local_knowledge_search. Resolved here, like steering, because this
+            # is where the slot's folder and the knowledge store are both in
+            # reach. It is EMPTY unless the slot is filed in a project that has at
+            # least one note, so a session outside a project, or in a project with
+            # no notes, passes "" and the assembled context is byte-for-byte what
+            # it was before this feature. Off-loop: it opens the knowledge
+            # connection. A failure degrades to "" and never fails the turn.
+            _project_notes_block = ""
+            if slot.folder_id and not slot.blocks_reads:
+                try:
+                    _project_notes_block = await asyncio.to_thread(
+                        _resolve_project_notes_block, state, slot.folder_id
+                    )
+                except Exception:  # noqa: BLE001 — a pointer must never fail a turn
+                    logger.debug(
+                        "project-notes pointer unavailable for slot %s", slot.key, exc_info=True
+                    )
             # Stand up this crew's OWN vector store before the offloaded build.
             # It has to happen here, on the loop, because init() is blocking file
             # IO (sqlite connect, migrations, a FAISS load) that build_message's
@@ -7600,6 +7646,7 @@ async def _run_chat(
                     user_span_out=_user_span,
                     needs_reinjection=_needs_reinjection,
                     steering_dirs=_folder_steering_dirs,
+                    project_notes_block=_project_notes_block,
                     context_provider=client,
                 )
             slot_ctx_omitted = dict(_ctx_omitted)

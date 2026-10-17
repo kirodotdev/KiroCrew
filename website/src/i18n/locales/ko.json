@@ -6937,7 +6937,19 @@
       "tags_loading_hint": "태그를 불러오는 중…",
       "tags_error_hint": "태그를 불러오지 못했습니다.",
       "tags_retry": "다시 시도",
-      "top_level": "최상위"
+      "top_level": "최상위",
+      "project_notes": "프로젝트 노트",
+      "project_notes_hint": "에이전트가 이 프로젝트에 대해 기록한 학습 내용입니다. 이후 세션이 검색할 때 이를 먼저 찾습니다. 상시 지침으로 만들려면 승격하세요.",
+      "notes_loading": "노트 로드 중…",
+      "no_project_notes": "아직 프로젝트 노트가 없습니다.",
+      "notes_load_failed": "프로젝트 노트를 불러오지 못했습니다.",
+      "notes_delete_failed": "노트를 삭제하지 못했습니다.",
+      "notes_promote_failed": "노트를 승격하지 못했습니다.",
+      "notes_delete": "노트 삭제",
+      "notes_promote": "승격",
+      "notes_promote_target": "스티어링 디렉터리",
+      "notes_promote_needs_steering": "노트를 승격하려면 위에 스티어링 디렉터리를 추가하세요.",
+      "notes_retry": "다시 시도"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "폴더 제안",

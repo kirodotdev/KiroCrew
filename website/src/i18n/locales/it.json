@@ -7179,7 +7179,19 @@
       "tags_loading_hint": "Caricamento dei tag…",
       "tags_error_hint": "Impossibile caricare i tag.",
       "tags_retry": "Riprova",
-      "top_level": "Livello principale"
+      "top_level": "Livello principale",
+      "project_notes": "Note del progetto",
+      "project_notes_hint": "Apprendimenti che gli agenti hanno registrato su questo progetto. Una sessione successiva li trova per primi durante la ricerca. Promuovine uno per renderlo un'istruzione permanente.",
+      "notes_loading": "Caricamento note…",
+      "no_project_notes": "Nessuna nota del progetto ancora.",
+      "notes_load_failed": "Impossibile caricare le note del progetto.",
+      "notes_delete_failed": "Impossibile eliminare la nota.",
+      "notes_promote_failed": "Impossibile promuovere la nota.",
+      "notes_delete": "Elimina nota",
+      "notes_promote": "Promuovi",
+      "notes_promote_target": "Directory di guida",
+      "notes_promote_needs_steering": "Aggiungi una directory di guida sopra per promuovervi una nota.",
+      "notes_retry": "Riprova"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Suggerimento cartella",

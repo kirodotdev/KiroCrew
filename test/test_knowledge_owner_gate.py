@@ -43,9 +43,10 @@ MUTATING_ROUTES = [
     ("DELETE", "/api/knowledge/items/{id}", kh.delete_item),
     ("POST", "/api/knowledge/embedding/generate", kh.batch_embed_items),
     # Learned project notes. The record route owner-gates (app-aware, like
-    # agent-document); delete and promote are person-only (direct owner gate).
+    # agent-document); promote is person-only. A note's own list/delete reuse the
+    # generic /api/knowledge/items routes, so there are no project-notes routes
+    # for them.
     ("POST", "/api/knowledge/project-notes/record", pna.record_project_note_route),
-    ("DELETE", "/api/knowledge/project-notes/{note_id}", pna.delete_project_note_route),
     ("POST", "/api/knowledge/project-notes/{note_id}/promote", pna.promote_project_note_route),
 ]
 

@@ -395,16 +395,7 @@ def render_pointer_block(store: KnowledgeStore, namespace: str) -> str:
     )
 
 
-def delete_note(store: KnowledgeStore, namespace: str, note_id: str) -> bool:
-    """Delete one note by id, scoped to its project. ``True`` when one was removed.
-
-    Scoped like :func:`get_note`: a delete names a note only in its own project,
-    so no caller can delete another project's note by id. The item is destroyed
-    outright (a note is held by exactly one source), FTS row included, via the
-    store's own cascade.
-    """
-    existing = get_note(store, namespace, note_id)
-    if existing is None:
-        return False
-    store.delete_item(note_id)
-    return True
+# Deleting a note is NOT a function here: a note is a Knowledge Library item, so
+# the dashboard deletes one through the generic ``DELETE /api/knowledge/items/{id}``
+# route (``store.delete_item``), scoped to the project namespace this module's
+# list read returns. A second delete helper would duplicate that path.

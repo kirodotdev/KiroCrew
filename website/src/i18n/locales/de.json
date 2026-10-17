@@ -7058,7 +7058,19 @@
       "tags_loading_hint": "Tags werden geladen…",
       "tags_error_hint": "Tags konnten nicht geladen werden.",
       "tags_retry": "Erneut versuchen",
-      "top_level": "Oberste Ebene"
+      "top_level": "Oberste Ebene",
+      "project_notes": "Projektnotizen",
+      "project_notes_hint": "Erkenntnisse, die Agenten über dieses Projekt festgehalten haben. Eine spätere Sitzung findet sie bei der Suche zuerst. Stufe eine hoch, um sie zu einer dauerhaften Anweisung zu machen.",
+      "notes_loading": "Notizen werden geladen…",
+      "no_project_notes": "Noch keine Projektnotizen.",
+      "notes_load_failed": "Projektnotizen konnten nicht geladen werden.",
+      "notes_delete_failed": "Die Notiz konnte nicht gelöscht werden.",
+      "notes_promote_failed": "Die Notiz konnte nicht hochgestuft werden.",
+      "notes_delete": "Notiz löschen",
+      "notes_promote": "Hochstufen",
+      "notes_promote_target": "Steuerungsverzeichnis",
+      "notes_promote_needs_steering": "Fügen Sie oben ein Steuerungsverzeichnis hinzu, um eine Notiz dorthin hochzustufen.",
+      "notes_retry": "Erneut versuchen"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Ordnervorschlag",

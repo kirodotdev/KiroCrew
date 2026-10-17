@@ -277,3 +277,39 @@ async def test_promote_appends_to_a_declared_steering_dir(store, tmp_path, monke
 async def _none():
     """An awaitable returning None, for monkeypatching the async owner gate."""
     return None
+
+
+# ── the session-context pointer wiring (chat_runner._resolve_project_notes_block) ──
+
+
+def test_pointer_wiring_is_empty_without_project_or_notes(store):
+    from kiro_crew.dashboard import chat_runner
+
+    state = SimpleNamespace(knowledge_store=store, _folders=[{"id": "proj"}])
+    # A folder in no project (unknown id roots to itself -> a namespace, but no
+    # notes) and the real "proj" folder with no notes both yield "".
+    assert chat_runner._resolve_project_notes_block(state, "") == ""
+    assert chat_runner._resolve_project_notes_block(state, "proj") == ""
+
+
+def test_pointer_wiring_returns_a_data_labelled_block_when_notes_exist(store):
+    from kiro_crew.dashboard import chat_runner
+
+    state = SimpleNamespace(
+        knowledge_store=store,
+        _folders=[{"id": "proj"}, {"id": "worker", "parent_id": "proj"}],
+    )
+    project_notes.add_note(store, namespace=project_namespace("proj"), text="a learning")
+    # A nested worker folder resolves to its project root and sees the pointer.
+    block = chat_runner._resolve_project_notes_block(state, "worker")
+    assert block.startswith("[PROJECT NOTES]")
+    assert "local_knowledge_search" in block
+    assert "DATA" in block
+    assert "a learning" not in block  # points, never inlines
+
+
+def test_pointer_wiring_survives_a_missing_store(store):
+    from kiro_crew.dashboard import chat_runner
+
+    state = SimpleNamespace(knowledge_store=None, _folders=[{"id": "proj"}])
+    assert chat_runner._resolve_project_notes_block(state, "proj") == ""

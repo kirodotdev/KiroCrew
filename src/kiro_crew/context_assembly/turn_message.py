@@ -75,6 +75,7 @@ def build_message(
     execution_context: Any = None,
     context_provider: "ContextPromptProvider | None" = None,
     steering_dirs: tuple[str, ...] = (),
+    project_notes_block: str = "",
     skill_bodies_session: str | None = None,
 ) -> tuple[str, HookResult]:
     """Build the full message with context and hook processing.
@@ -430,6 +431,24 @@ def build_message(
             )
             if _folder_ctx:
                 parts.append(_folder_ctx + "\n\n")
+        # The learned-project-notes pointer, minted here for the same reason as
+        # folder steering: it is trusted, server-rendered text whose
+        # ``[PROJECT NOTES]`` marker is in the scrub set, so placing it inside the
+        # scrubbed session context would erase it. It is already EMPTY unless the
+        # session is in a project that has notes (the caller resolved it from the
+        # slot's folder and the notes store), so a session outside a project, or
+        # in one with no notes, appends nothing and the assembled message is
+        # byte-for-byte what it was before this feature. Gated like folder
+        # steering -- not for a member's essentials turn, not a minimal/slim run,
+        # and only in the project context group -- so the pointer tracks the same
+        # project surface the rest of this block already governs.
+        if (
+            project_notes_block
+            and not _essentials
+            and not (minimal_context or slim_resume)
+            and ctx._group_included(context_groups, ctx.CONTEXT_GROUP_PROJECT)
+        ):
+            parts.append(project_notes_block + "\n")
         # Mint trusted reply-style framing only after the session-context
         # payload has been scrubbed. Its own markers are intentionally in the
         # scrub set, so placing it inside ``session_ctx`` would erase it.

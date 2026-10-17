@@ -7058,7 +7058,19 @@
       "tags_loading_hint": "ট্যাগ লোড হচ্ছে…",
       "tags_error_hint": "ট্যাগ লোড করা যায়নি।",
       "tags_retry": "আবার চেষ্টা করুন",
-      "top_level": "সর্বোচ্চ স্তর"
+      "top_level": "সর্বোচ্চ স্তর",
+      "project_notes": "প্রকল্পের নোট",
+      "project_notes_hint": "এই প্রকল্প সম্পর্কে এজেন্টদের রেকর্ড করা শিক্ষা। পরবর্তী সেশন অনুসন্ধানের সময় এগুলো আগে খুঁজে পায়। স্থায়ী নির্দেশ করতে একটি প্রচার করুন।",
+      "notes_loading": "নোট লোড হচ্ছে…",
+      "no_project_notes": "এখনও কোনো প্রকল্পের নোট নেই।",
+      "notes_load_failed": "প্রকল্পের নোট লোড করা যায়নি।",
+      "notes_delete_failed": "নোটটি মুছে ফেলা যায়নি।",
+      "notes_promote_failed": "নোটটি প্রচার করা যায়নি।",
+      "notes_delete": "নোট মুছুন",
+      "notes_promote": "প্রচার করুন",
+      "notes_promote_target": "স্টিয়ারিং ডিরেক্টরি",
+      "notes_promote_needs_steering": "একটি নোট প্রচার করতে উপরে একটি স্টিয়ারিং ডিরেক্টরি যোগ করুন।",
+      "notes_retry": "আবার চেষ্টা করুন"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "ফোল্ডার প্রস্তাব",

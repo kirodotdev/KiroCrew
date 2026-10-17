@@ -120,17 +120,18 @@ def test_list_returns_newest_first_and_is_empty_for_no_project(store):
     assert [n["id"] for n in listed] == [second["id"], first["id"]]
 
 
-def test_get_and_delete_are_scoped_to_their_project(store):
+def test_get_is_scoped_to_its_project(store):
     note_x = project_notes.add_note(store, namespace=NS_X, text="x learning")
     project_notes.add_note(store, namespace=NS_Y, text="y learning")
-    # The X note is not reachable, nor deletable, by naming its id under Y.
+    # The X note is not reachable by naming its id under Y -- this is what scopes
+    # the promote route so it cannot cross a note from another project.
     assert project_notes.get_note(store, NS_Y, note_x["id"]) is None
-    assert project_notes.delete_note(store, NS_Y, note_x["id"]) is False
     assert project_notes.get_note(store, NS_X, note_x["id"]) is not None
-    # Deleting it under its own project works and removes the item + its FTS row.
-    assert project_notes.delete_note(store, NS_X, note_x["id"]) is True
+    # A note is deleted through the generic item route (store.delete_item), which
+    # removes the item and its FTS row; the note then lists empty.
+    store.delete_item(note_x["id"])
     assert project_notes.get_note(store, NS_X, note_x["id"]) is None
-    assert store.get_item(note_x["id"]) is None
+    assert all(n["id"] != note_x["id"] for n in project_notes.list_notes(store, NS_X))
 
 
 # ── per-project count cap: FIFO eviction ──

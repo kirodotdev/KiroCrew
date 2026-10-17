@@ -7179,7 +7179,19 @@
       "tags_loading_hint": "Chargement des étiquettes…",
       "tags_error_hint": "Impossible de charger les étiquettes.",
       "tags_retry": "Réessayer",
-      "top_level": "Niveau supérieur"
+      "top_level": "Niveau supérieur",
+      "project_notes": "Notes du projet",
+      "project_notes_hint": "Enseignements que les agents ont consignés sur ce projet. Une session ultérieure les trouve en premier lors d'une recherche. Promouvez-en un pour en faire une instruction permanente.",
+      "notes_loading": "Chargement des notes…",
+      "no_project_notes": "Aucune note de projet pour l'instant.",
+      "notes_load_failed": "Impossible de charger les notes du projet.",
+      "notes_delete_failed": "Impossible de supprimer la note.",
+      "notes_promote_failed": "Impossible de promouvoir la note.",
+      "notes_delete": "Supprimer la note",
+      "notes_promote": "Promouvoir",
+      "notes_promote_target": "Répertoire d'orientation",
+      "notes_promote_needs_steering": "Ajoutez un répertoire d'orientation ci-dessus pour y promouvoir une note.",
+      "notes_retry": "Réessayer"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Suggestion de dossier",
