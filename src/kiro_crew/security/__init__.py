@@ -1332,7 +1332,13 @@ def is_denied(
     # complete bypass of the sole enforcement pushes have; gating once at the end
     # keeps the per-rule opt-out semantics exactly as written -- a rule an operator
     # disabled stays disabled at whatever depth it fires.
-    publish_sources = [source for source in payload_sources if _argv._is_git_publish(source)]
+    # A source whose every push line lies inside a literal gh text value is not
+    # a publish (the floor returns no tags for it), so it records no
+    # ``push_allowed`` audit either.
+    _spaced = _submodule("shell_normalizer")._gh_data_newlines_as_spaces
+    publish_sources = [
+        source for source in payload_sources if _argv._is_git_publish(_spaced(source))
+    ]
     if publish_sources:
         floor_tags: frozenset[str] = frozenset()
         for publish_source in publish_sources:
