@@ -19,7 +19,6 @@
 2524 src/kiro_crew/acp/liveness.py
 9026 src/kiro_crew/acp/runtime.py
 8098 src/kiro_crew/acp/session_handle.py
-3357 src/kiro_crew/acp/skill_projection.py
 6697 src/kiro_crew/agent.py
 2265 src/kiro_crew/agent_discovery.py
 4276 src/kiro_crew/apps/bridges.py

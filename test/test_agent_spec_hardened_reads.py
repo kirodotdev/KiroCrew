@@ -1023,7 +1023,7 @@ class TestProjectFilesDenialAttribution:
 _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # One read: the launch loop reads each authored spec to project it. Alias
     # reclaim is keyed on lease liveness and reads no authored source.
-    "kiro_crew/acp/skill_projection.py": [
+    "kiro_crew/acp/skill_projection_parts/preparation.py": [
         ("native_skill_projection", "acp"),
     ],
     # Three reads, deliberately labelled apart: the session-MCP translation resolves
