@@ -429,6 +429,7 @@ cannot drift.
 |-----|---------|---------|
 | `instances.enabled` | `false` | Primary opt-in, read at gateway startup. Also gates the CSP `frame-src` `*.localhost` extension. |
 | `instances.warm_set_cap` | `0` (automatic) | Max instances kept warm at once (bounds memory/sockets; each warm instance is a full dashboard SPA). `0` tracks how many crews are registered, so up to the internal ceiling no configured crew is evicted; an explicit value is honoured exactly, including one below the registered count. Negative values fall back to automatic. |
+| `instances.default_destination` | `""` | Instance id that **Send a copy to** lists first and marks as the default (§14). Served with `GET /api/instances`; resolved against the registry only when the menu renders, so an id naming no registered crew marks nothing. A folder's `default_destination_crew` overrides it. |
 | `instances.tunnel_base_port` | `7778` | First local loopback port the allocator hands out. Out-of-range values fall back to the default. |
 | `instances.ssh_compression` | `true` | Add `-C` to the tunnel argv. See §5.2. |
 | `instances.connect_timeout_secs` | unset (SSH `15.0`, SSM `25.0`) | How long (secs) to wait for the local forward port to accept connections before declaring a connect attempt failed. Hosts behind a ProxyCommand or jump host need longer (the proxy handshake runs before ssh begins the forward). An explicit value applies to both transports, including a value equal to either transport's default. Values below 1 fall back to the transport defaults; values above 120 are clamped to 120. |
@@ -1826,6 +1827,15 @@ transcript read, under its `TRANSFER` rules),
 `SshTunnelManager.send_session_bundle` (delivery),
 `handlers_instances.api_instances_send_session` (control plane), and the frontend
 `SendToInstanceSubmenu` mounted inside the shared `SessionActionsMenu`.
+
+The submenu lists the **default destination crew** first, marked as the
+default: the session's folder's `default_destination_crew` when it names a
+registered crew, else `instances.default_destination` (§5). It only orders and
+marks the menu; an offline default is disabled like any other offline crew, and
+nothing is sent without the click. The override is per folder: a subfolder does
+not inherit its parent's value and falls back to the global default. In Folder
+settings the empty choice names the crew that global default resolves to, or
+"(none)" when it names no registered crew.
 
 ### 14.1 Why it needs no new transport
 

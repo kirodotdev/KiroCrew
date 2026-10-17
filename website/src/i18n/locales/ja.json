@@ -6865,7 +6865,14 @@
       "tags_loading_hint": "タグを読み込んでいます…",
       "tags_error_hint": "タグを読み込めませんでした。",
       "tags_retry": "再試行",
-      "top_level": "トップレベル"
+      "top_level": "トップレベル",
+      "default_destination_crew": "既定の送信先 crew",
+      "default_destination_crew_hint": "このフォルダー内のセッションでは「コピーを送信」にこの crew が最初に表示されます。クリックするまで何も送信されません。",
+      "default_destination_global": "グローバル設定を使用（{{crew}}）",
+      "default_destination_global_unset": "グローバル設定を使用（なし）",
+      "default_destination_not_registered": "{{id}}（未登録）",
+      "default_destination_load_failed": "crew を読み込めませんでした。",
+      "default_destination_retry": "再試行"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "フォルダーの提案",
@@ -8291,7 +8298,8 @@
       "sent": "送信しました",
       "sent_transcript_only": "送信しました（記録のみ）",
       "transcript_only_hint": "そのクルーが会話コンテキスト全体を復元できなかったため、このコピーは記録のみから再開します。",
-      "unknown_error": "不明なエラー"
+      "unknown_error": "不明なエラー",
+      "default_badge": "既定"
     },
     "sessionActionsMenu": {
       "bring_back_to_main": "メインに戻す",
@@ -16710,7 +16718,12 @@
         "up_to": "最大",
         "update_setting_failed": "設定の更新に失敗しました: {{error}}",
         "use_an_absolute_path_no": ")。\n            絶対パスを使用してください (相対パスではなく",
-        "enable_via_setting": "または、<settingRef/> を設定してから、<restartCmd/> を実行してください。"
+        "enable_via_setting": "または、<settingRef/> を設定してから、<restartCmd/> を実行してください。",
+        "default_destination": "既定の送信先 crew",
+        "default_destination_hint": "「コピーを送信」にこの crew が既定として最初に表示されます。フォルダーごとに別の crew を選べます。",
+        "default_destination_none": "既定なし",
+        "default_destination_not_registered": "{{id}}（未登録）",
+        "default_destination_save_failed": "既定の送信先 crew を保存できませんでした。"
       },
       "notificationsPanel": {
         "desktop_alerts": "デスクトップ通知",

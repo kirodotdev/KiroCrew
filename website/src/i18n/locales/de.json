@@ -6987,7 +6987,14 @@
       "tags_loading_hint": "Tags werden geladen…",
       "tags_error_hint": "Tags konnten nicht geladen werden.",
       "tags_retry": "Erneut versuchen",
-      "top_level": "Oberste Ebene"
+      "top_level": "Oberste Ebene",
+      "default_destination_crew": "Standard-Zielcrew",
+      "default_destination_crew_hint": "„Kopie senden an“ zeigt diese Crew für Sitzungen in diesem Ordner zuerst. Gesendet wird erst, wenn du darauf klickst.",
+      "default_destination_global": "Globale Vorgabe verwenden ({{crew}})",
+      "default_destination_global_unset": "Globale Vorgabe verwenden (keine)",
+      "default_destination_not_registered": "{{id}} (nicht registriert)",
+      "default_destination_load_failed": "Crews konnten nicht geladen werden.",
+      "default_destination_retry": "Erneut versuchen"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Ordnervorschlag",
@@ -8427,7 +8434,8 @@
       "sent": "Gesendet",
       "sent_transcript_only": "Gesendet (nur Transkript)",
       "transcript_only_hint": "Diese Crew konnte den vollständigen Gesprächskontext nicht wiederherstellen; diese Kopie setzt nur auf dem Transkript fort.",
-      "unknown_error": "Unbekannter Fehler"
+      "unknown_error": "Unbekannter Fehler",
+      "default_badge": "Standard"
     },
     "sessionActionsMenu": {
       "bring_back_to_main": "Zurück ins Hauptfenster holen",
@@ -16983,7 +16991,12 @@
         "up_to": "Bis zu",
         "update_setting_failed": "Aktualisieren der Einstellung fehlgeschlagen: {{error}}",
         "use_an_absolute_path_no": ").\n            Verwenden Sie einen absoluten Pfad (kein",
-        "enable_via_setting": "Alternativ setzen Sie <settingRef/> und führen Sie dann <restartCmd/> aus."
+        "enable_via_setting": "Alternativ setzen Sie <settingRef/> und führen Sie dann <restartCmd/> aus.",
+        "default_destination": "Standard-Zielcrew",
+        "default_destination_hint": "„Kopie senden an“ zeigt diese Crew zuerst, als Standard markiert. Ein Ordner kann eine eigene wählen.",
+        "default_destination_none": "Keine Vorgabe",
+        "default_destination_not_registered": "{{id}} (nicht registriert)",
+        "default_destination_save_failed": "Die Standard-Zielcrew konnte nicht gespeichert werden."
       },
       "notificationsPanel": {
         "desktop_alerts": "Desktop-Benachrichtigungen",

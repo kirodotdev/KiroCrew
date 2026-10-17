@@ -6987,7 +6987,14 @@
       "tags_loading_hint": "टैग लोड हो रहे हैं…",
       "tags_error_hint": "टैग लोड नहीं हो सके।",
       "tags_retry": "पुनः प्रयास करें",
-      "top_level": "सर्वोच्च स्तर"
+      "top_level": "सर्वोच्च स्तर",
+      "default_destination_crew": "डिफ़ॉल्ट गंतव्य crew",
+      "default_destination_crew_hint": "इस फ़ोल्डर के सत्रों के लिए \"कॉपी भेजें\" में यह crew सबसे पहले दिखती है। क्लिक करने तक कुछ नहीं भेजा जाता।",
+      "default_destination_global": "वैश्विक डिफ़ॉल्ट का उपयोग करो ({{crew}})",
+      "default_destination_global_unset": "वैश्विक डिफ़ॉल्ट का उपयोग करो (कोई नहीं)",
+      "default_destination_not_registered": "{{id}} (पंजीकृत नहीं)",
+      "default_destination_load_failed": "crew लोड नहीं हो सकीं।",
+      "default_destination_retry": "फिर से कोशिश करो"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "फ़ोल्डर सुझाव",
@@ -8427,7 +8434,8 @@
       "sent": "भेजा गया",
       "sent_transcript_only": "भेजा गया (केवल ट्रांसक्रिप्ट)",
       "transcript_only_hint": "वह क्रू पूरा संवाद संदर्भ पुनर्स्थापित नहीं कर सका, इसलिए यह प्रतिलिपि केवल ट्रांसक्रिप्ट से जारी रहती है।",
-      "unknown_error": "अज्ञात त्रुटि"
+      "unknown_error": "अज्ञात त्रुटि",
+      "default_badge": "डिफ़ॉल्ट"
     },
     "sessionActionsMenu": {
       "bring_back_to_main": "मुख्य विंडो में वापस लाएँ",
@@ -16983,7 +16991,12 @@
         "up_to": "अधिकतम",
         "update_setting_failed": "सेटिंग अपडेट करने में विफल: {{error}}",
         "use_an_absolute_path_no": ")।\n            पूर्ण पथ उपयोग करें (बिना",
-        "enable_via_setting": "वैकल्पिक रूप से, <settingRef/> सेट करें, फिर <restartCmd/> चलाएँ।"
+        "enable_via_setting": "वैकल्पिक रूप से, <settingRef/> सेट करें, फिर <restartCmd/> चलाएँ।",
+        "default_destination": "डिफ़ॉल्ट गंतव्य crew",
+        "default_destination_hint": "\"कॉपी भेजें\" में यह crew डिफ़ॉल्ट के रूप में सबसे पहले दिखती है। कोई फ़ोल्डर अपनी crew चुन सकता है।",
+        "default_destination_none": "कोई डिफ़ॉल्ट नहीं",
+        "default_destination_not_registered": "{{id}} (पंजीकृत नहीं)",
+        "default_destination_save_failed": "डिफ़ॉल्ट गंतव्य crew सहेजी नहीं जा सकी।"
       },
       "notificationsPanel": {
         "desktop_alerts": "डेस्कटॉप सूचनाएँ",

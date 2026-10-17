@@ -23,6 +23,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import DefaultDestinationCrewPicker from '../../components/DefaultDestinationCrewPicker'
 import {
   Server,
   Rocket,
@@ -1066,6 +1067,7 @@ export function RemoteCrewPanel() {
                   <SettingUpRow key={job.id} job={job} cancelling={cancelMutation.isPending && cancelMutation.variables === job.id} onCancel={id => cancelMutation.mutate(id)} />
                 ))}
                 <CrewVersionsReadError anyConnected={instances.some(i => !i.disabled && i.status.state === 'connected')} />
+                <DefaultDestinationCrewPicker instances={instances} value={instancesQuery.data?.default_destination ?? ''} />
                 {instances.map(inst => (
                   <CrewRow
                     key={inst.id}

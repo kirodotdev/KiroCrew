@@ -7109,7 +7109,14 @@
       "tags_loading_hint": "Cargando etiquetas…",
       "tags_error_hint": "No se pudieron cargar las etiquetas.",
       "tags_retry": "Reintentar",
-      "top_level": "Nivel superior"
+      "top_level": "Nivel superior",
+      "default_destination_crew": "Crew de destino predeterminada",
+      "default_destination_crew_hint": "«Enviar una copia a» muestra primero esta crew para las sesiones de esta carpeta. No se envía nada hasta que haces clic.",
+      "default_destination_global": "Usar el valor global ({{crew}})",
+      "default_destination_global_unset": "Usar el valor global (ninguno)",
+      "default_destination_not_registered": "{{id}} (no registrada)",
+      "default_destination_load_failed": "No se pudieron cargar las crews.",
+      "default_destination_retry": "Reintentar"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Sugerencia de carpeta",
@@ -8563,7 +8570,8 @@
       "sent": "Enviado",
       "sent_transcript_only": "Enviado (solo transcripción)",
       "transcript_only_hint": "Ese crew no pudo restaurar el contexto completo de la conversación, así que esta copia se reanuda solo desde la transcripción.",
-      "unknown_error": "Error desconocido"
+      "unknown_error": "Error desconocido",
+      "default_badge": "predeterminada"
     },
     "sessionActionsMenu": {
       "bring_back_to_main": "Devolver a la ventana principal",
@@ -17256,7 +17264,12 @@
         "up_to": "Hasta",
         "update_setting_failed": "No se pudo actualizar el ajuste: {{error}}",
         "use_an_absolute_path_no": ").\n            Usa una ruta absoluta (sin",
-        "enable_via_setting": "Alternativamente, configura <settingRef/> y luego ejecuta <restartCmd/>."
+        "enable_via_setting": "Alternativamente, configura <settingRef/> y luego ejecuta <restartCmd/>.",
+        "default_destination": "Crew de destino predeterminada",
+        "default_destination_hint": "«Enviar una copia a» muestra primero esta crew, marcada como predeterminada. Una carpeta puede elegir la suya.",
+        "default_destination_none": "Sin valor predeterminado",
+        "default_destination_not_registered": "{{id}} (no registrada)",
+        "default_destination_save_failed": "No se pudo guardar la crew de destino predeterminada."
       },
       "notificationsPanel": {
         "desktop_alerts": "Alertas de escritorio",

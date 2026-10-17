@@ -7231,7 +7231,14 @@
       "tags_loading_hint": "Загрузка тегов…",
       "tags_error_hint": "Не удалось загрузить теги.",
       "tags_retry": "Повторить",
-      "top_level": "Верхний уровень"
+      "top_level": "Верхний уровень",
+      "default_destination_crew": "Crew назначения по умолчанию",
+      "default_destination_crew_hint": "«Отправить копию» показывает эту crew первой для сессий в этой папке. Ничего не отправляется, пока ты не нажмёшь.",
+      "default_destination_global": "Использовать глобальное значение ({{crew}})",
+      "default_destination_global_unset": "Использовать глобальное значение (нет)",
+      "default_destination_not_registered": "{{id}} (не зарегистрирована)",
+      "default_destination_load_failed": "Не удалось загрузить crew.",
+      "default_destination_retry": "Повторить"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Предложение папки",
@@ -8699,7 +8706,8 @@
       "sent": "Отправлено",
       "sent_transcript_only": "Отправлено (только расшифровка)",
       "transcript_only_hint": "Эта команда не смогла восстановить полный контекст беседы, поэтому эта копия продолжается только по расшифровке.",
-      "unknown_error": "Неизвестная ошибка"
+      "unknown_error": "Неизвестная ошибка",
+      "default_badge": "по умолчанию"
     },
     "sessionActionsMenu": {
       "bring_back_to_main": "Вернуть в главное окно",
@@ -17529,7 +17537,12 @@
         "up_to": "Не более",
         "update_setting_failed": "Не удалось обновить настройку: {{error}}",
         "use_an_absolute_path_no": ").\n            Используйте абсолютный путь (без",
-        "enable_via_setting": "Или задайте <settingRef/>, затем выполните <restartCmd/>."
+        "enable_via_setting": "Или задайте <settingRef/>, затем выполните <restartCmd/>.",
+        "default_destination": "Crew назначения по умолчанию",
+        "default_destination_hint": "«Отправить копию» показывает эту crew первой с пометкой «по умолчанию». Папка может выбрать свою.",
+        "default_destination_none": "Без значения по умолчанию",
+        "default_destination_not_registered": "{{id}} (не зарегистрирована)",
+        "default_destination_save_failed": "Не удалось сохранить crew назначения по умолчанию."
       },
       "notificationsPanel": {
         "desktop_alerts": "Уведомления на рабочем столе",
