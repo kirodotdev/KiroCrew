@@ -53,6 +53,7 @@ FACADE_LOGGER = "kiro_crew.skills"
 #: composition, so the set is spelled out rather than globbed.
 RUNTIME_MODULES = frozenset(
     {
+        "audit",
         "authoring",
         "auto_skills",
         "catalog",
@@ -134,7 +135,7 @@ _LOADER_MEMBERS = {
         _trusted_project_key _usage_fields _user_first _validate_and_redact_candidate
         _versions_root _vet_unconfined_path
         approve_pending_as_read approve_pending_skill_checked
-        approve_pending_update_checked archive_auto_skill catalog_project_skills
+        approve_pending_update_checked archive_auto_skill audit catalog_project_skills
         catalog_status close confined_triggered create_auto_skill create_skill credit_skill_reads
         delete_skill dismiss_all_pending dismiss_pending_skill dismiss_pending_slugs
         find_similar get_always_skills get_auto_skill_version get_context
@@ -215,7 +216,7 @@ _LOADER_SIGNATURES = {
     "_read_exact_key": "(self, key: 'str', *, only: 'list[str] | None', project_dir: 'str | Path | None', max_bytes: 'int') -> '_ExactRead'",
     "_read_global_skill_text": "(self, path: 'Path', max_bytes: 'int | None', *, canonical_root: 'str | None' = None, refusal_reasons: 'list[str] | None' = None) -> 'str | None'",
     "_readable_frontmatter": "(self, path: 'Path', *, within: 'str | None', mtime: 'float | None' = None, canonical_root: 'str | None' = None) -> 'dict[str, str] | None'",
-    "_read_pending_meta": "(self, slug: 'str', pdir: 'Path | None' = None) -> 'dict'",
+    "_read_pending_meta": "(self, slug: 'str', pdir: 'Path | None' = None, *, max_bytes: 'int | None' = None) -> 'dict'",
     "_recency_boost": "(self, path_str: 'str', fingerprint: 'str' = '') -> 'float'",
     "_record_use": "(self, key: 'str') -> 'None'",
     "_redact_deep": "(self, obj: 'object') -> 'object'",
@@ -245,6 +246,7 @@ _LOADER_SIGNATURES = {
     "approve_pending_as_read": "(self, slug: 'str', content_sha256: 'str') -> 'str'",
     "approve_pending_skill_checked": "(self, slug: 'str', *, src: 'Path | None' = None) -> 'str'",
     "approve_pending_update_checked": "(self, slug: 'str', *, src: 'Path | None' = None) -> 'str'",
+    "audit": "(self) -> 'dict[str, object]'",
     "archive_auto_skill": "(self, name: 'str') -> 'bool'",
     "catalog_project_skills": "(self, project_dir: 'str | Path') -> 'list[dict]'",
     "catalog_status": "(self, project_dir: 'str | Path | None' = None) -> 'str'",

@@ -309,5 +309,8 @@
   "pages.mcpManagement.reload_confirm_title",
   "pages.mcpManagement.approval_title",
   "pages.mcpManagement.confirm_will_share",
-  "apps.issueRadar.components.threads.show_earlier"
+  "apps.issueRadar.components.threads.show_earlier",
+  "pages.overview.skillsTab.audit_more_items",
+  "pages.overview.skillsTab.audit_more_skills",
+  "pages.overview.skillsTab.audit_more_relations"
 ]
