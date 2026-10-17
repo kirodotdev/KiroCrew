@@ -628,6 +628,14 @@ def main() -> None:
     # which call config_dir(). Skipped for the seed path above, which set up its
     # own $KIROCREW_HOME (an override → migration is a no-op there anyway).
     ensure_data_home()
+    # Registry discovery reads installed app files and distribution metadata.
+    # Prime ordinary CLI commands before their first config load. Gateway startup
+    # keeps this growing work off its socket-readiness path and refreshes apps on
+    # the dashboard executor plus plugins from companion admission.
+    if args.command != "gateway":
+        from kiro_crew.config.validation import prime_extension_config_keys
+
+        prime_extension_config_keys()
     # Console + gateway.log logging. Extracted to a helper because the
     # detach-spawned gateway needs double-write protection (stderr IS
     # gateway.log in that mode) — see _setup_cli_logging.

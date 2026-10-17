@@ -98,6 +98,11 @@ def _checksum_path() -> Path:
 # The manifest a plugin ships (read import-free from its distribution files).
 _MANIFEST_FILENAME = "kirocrew_plugin.json"
 
+# Match the generic foreign-manifest container and key bounds in
+# ``apps.plugin_import`` without importing that app-layer module here.
+_MAX_CONFIG_KEYS = 200
+_MAX_CONFIG_KEY_CHARS = 200
+
 # Policy modes.
 MODE_OPEN = "open"  # admit unless explicitly banned (public default)
 MODE_ENFORCE = "enforce"  # admit only what passes every active check
@@ -245,9 +250,22 @@ class PluginManifest:
     capabilities: Dict[str, List[str]] = field(default_factory=dict)
     # Detached signature over the canonical manifest (sans this field).
     signature: str = ""
+    # Top-level config.json keys owned by the installed companion.
+    config_keys: List[str] = field(default_factory=list)
 
     @staticmethod
     def from_dict(d: dict) -> "PluginManifest":
+        config_keys_raw = d.get("config_keys", [])
+        config_keys = (
+            list(config_keys_raw)
+            if isinstance(config_keys_raw, list)
+            and len(config_keys_raw) <= _MAX_CONFIG_KEYS
+            and all(
+                isinstance(key, str) and key and len(key) <= _MAX_CONFIG_KEY_CHARS
+                for key in config_keys_raw
+            )
+            else []
+        )
         return PluginManifest(
             name=str(d.get("name", "")),
             publisher=str(d.get("publisher", "")),
@@ -256,6 +274,7 @@ class PluginManifest:
                 str(k): _coerce_str_list(v) for k, v in (d.get("capabilities") or {}).items()
             },
             signature=str(d.get("signature", "")),
+            config_keys=config_keys,
         )
 
     def signing_payload(self) -> bytes:
@@ -266,6 +285,8 @@ class PluginManifest:
             "version": self.version,
             "capabilities": {k: sorted(v) for k, v in sorted(self.capabilities.items())},
         }
+        if self.config_keys:
+            body["config_keys"] = sorted(self.config_keys)
         return canonical_signing_bytes(body)
 
 
@@ -433,8 +454,7 @@ class AdmissionPolicy:
             approved=(_coerce_str_list(approved) if approved is not None else None),
             banned=_coerce_str_list(d.get("banned", [])),
             capability_ceiling={
-                str(k): _coerce_str_list(v)
-                for k, v in (d.get("capability_ceiling") or {}).items()
+                str(k): _coerce_str_list(v) for k, v in (d.get("capability_ceiling") or {}).items()
             },
         )
 

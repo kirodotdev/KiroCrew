@@ -69,6 +69,8 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
 
     if manifest.mcpServers:
         d["mcpServers"] = manifest.mcpServers
+    if manifest.config_keys:
+        d["config_keys"] = list(manifest.config_keys)
 
     if manifest.crons:
         d["crons"] = [c.to_dict() for c in manifest.crons]

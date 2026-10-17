@@ -190,7 +190,9 @@ def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
     ctx = build_default_context(cfg, profile=profile)
 
     if profile != PROFILE_STANDALONE:
-        companion = discover_companion_context(profile, cfg)  # may raise (fail-closed)
+        companion = discover_companion_context(
+            profile, cfg, entry_points=eps
+        )  # may raise (fail-closed)
         if companion is None:
             # Defense in depth: discovery is expected to raise rather than return
             # None for a non-standalone profile.  If it ever returns None (e.g. a

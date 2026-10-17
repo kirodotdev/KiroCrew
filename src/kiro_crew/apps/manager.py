@@ -356,9 +356,7 @@ def _read_approved_grants(name: str) -> dict[str, list[str]] | None:
         return {family: [] for family in STAGED_GRANT_FAMILIES}
 
 
-def _effective_approved_grants(
-    name: str, meta: InstalledApp | None
-) -> dict[str, list[str]] | None:
+def _effective_approved_grants(name: str, meta: InstalledApp | None) -> dict[str, list[str]] | None:
     """*name*'s approved set as *meta* (its install record) qualifies it.
 
     A missing file approves what the manifest declares (``None``) only for a
@@ -948,9 +946,7 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
         # prefix: an app-owned name that merely shares the prefix (e.g.
         # ".kirocrew-deps-staging-assets") is the app's data and must copy.
         skip = {
-            n
-            for n in names
-            if n in _COPY_IGNORE or _DEPS_STAGING_SWEEP_RE.fullmatch(n) is not None
+            n for n in names if n in _COPY_IGNORE or _DEPS_STAGING_SWEEP_RE.fullmatch(n) is not None
         }
         for n in names:
             if n in skip:
@@ -971,9 +967,7 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
                     # (Windows) or mixed abs/rel — treat as escaping.
                     escapes = True
                 if escapes:
-                    logger.warning(
-                        "Omitting symlink escaping app source root: %s", p
-                    )
+                    logger.warning("Omitting symlink escaping app source root: %s", p)
                     skip.add(n)
         return skip
 
@@ -999,9 +993,7 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
                 continue
             rel_to_src = os.path.relpath(os.path.realpath(p), src_root)
             os.remove(p)
-            os.symlink(
-                os.path.relpath(os.path.join(dest, rel_to_src), os.path.dirname(p)), p
-            )
+            os.symlink(os.path.relpath(os.path.join(dest, rel_to_src), os.path.dirname(p)), p)
 
 
 def preserved_data_awaits(name: str) -> bool:
@@ -1171,8 +1163,7 @@ def install_app(
     name = manifest.name
     if expected_name is not None and name != expected_name:
         detail = (
-            f"app identity changed during install: expected {expected_name!r}, "
-            f"found {name!r}"
+            f"app identity changed during install: expected {expected_name!r}, " f"found {name!r}"
         )
         sel().log_api_access(
             caller="app_install",
@@ -1437,14 +1428,13 @@ def install_app(
         resources=f"name={name!r} version={manifest.version}",
     )
 
+    refresh_app_config_keys()
     logger.info("Installed app %s v%s from %s", name, manifest.version, source)
     return AppResult(
         ok=True,
         name=name,
         message=f"installed {name} v{manifest.version}",
-        notice=(
-            "session_approval_reconsent" if manifest.permissions.sessionApproval else ""
-        ),
+        notice=("session_approval_reconsent" if manifest.permissions.sessionApproval else ""),
     )
 
 
@@ -1709,6 +1699,7 @@ def update_app(
 
     # Ensure data directory exists
     app_data_dir(name)
+    refresh_app_config_keys()
 
     logger.info(
         "Updated app %s: v%s -> v%s from %s",
@@ -1905,13 +1896,17 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
                 # the provisioner's own open.
                 _lflags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
                 _lock_name = (
-                    ".kirocrew-deps.lock" if _data_pin.fd is not None
+                    ".kirocrew-deps.lock"
+                    if _data_pin.fd is not None
                     else str(data / ".kirocrew-deps.lock")
                 )
                 # Same creator election as the provisioner: uninstall can race
                 # its first open before either caller holds the dependency lock.
                 _lfd = platform_compat.open_create_or_existing(
-                    _lock_name, _lflags, 0o600, dir_fd=_data_pin.fd,
+                    _lock_name,
+                    _lflags,
+                    0o600,
+                    dir_fd=_data_pin.fd,
                 )
                 _deps_lock = contextlib.ExitStack()
                 _lf = _deps_lock.enter_context(os.fdopen(_lfd, "r+"))
@@ -2060,8 +2055,7 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
                     shutil.move(str(_tmp_restore), str(_data_restore))
             except OSError as restore_exc:
                 logger.warning(
-                    "Could not restore preserved data for app %s after a "
-                    "failed uninstall: %s",
+                    "Could not restore preserved data for app %s after a " "failed uninstall: %s",
                     name,
                     restore_exc,
                 )
@@ -2120,10 +2114,9 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
                 f"({restore_exc}). Review the current installed app, then re-grant "
                 f"it in Settings only if you still trust that occupant."
             )
-        return AppResult(
-            ok=False, name=name, error=f"failed to remove app: {exc}{restore_note}"
-        )
+        return AppResult(ok=False, name=name, error=f"failed to remove app: {exc}{restore_note}")
 
+    refresh_app_config_keys()
     logger.info("Uninstalled app %s (keep_data=%s)", name, keep_data)
 
     # Withdraw the grant a SECOND time, now that the files are actually gone.
@@ -2328,6 +2321,7 @@ def _drop_trust_grant(name: str) -> None:
         if isinstance(local_locked, list):
             agent_locked["apps_trusted_local"] = [a for a in local_locked if a != name]
         return raw_locked
+
     # Concurrency: this is the repo's standard config read-modify-write, and it
     # inherits that model exactly — no cross-process lock, atomic (tmp+rename) on
     # the way out so no reader can see a torn file. `read_config_for_update`'s own
@@ -2512,8 +2506,7 @@ def _restore_trust_grant(
                 "in Settings before installing or running this name"
             ) from rollback_exc
         raise RuntimeError(
-            "the installed app changed while its grant was restored; the grant "
-            "was withdrawn"
+            "the installed app changed while its grant was restored; the grant " "was withdrawn"
         )
     logger.info("Restored %s's trust grant after a failed uninstall", name)
     try:
@@ -2565,9 +2558,13 @@ def _app_activation_denied(name: str, *, fail_closed: bool = False) -> str | Non
                 from kiro_crew.sel import sel
 
                 sel().log_governance_decision(
-                    session_key=HOST_SESSION_KEY, tool_name=f"enable_app:{name}", scope="apps",
-                    item=name, outcome="denied",
-                    rule=getattr(decision, "rule", ""), layer=getattr(decision, "layer", ""),
+                    session_key=HOST_SESSION_KEY,
+                    tool_name=f"enable_app:{name}",
+                    scope="apps",
+                    item=name,
+                    outcome="denied",
+                    rule=getattr(decision, "rule", ""),
+                    layer=getattr(decision, "layer", ""),
                     reason=getattr(decision, "reason", ""),
                 )
             except Exception:
@@ -2637,9 +2634,7 @@ def enable_app(
                 resources=f"name={name!r}",
                 error=denied,
             )
-            return AppResult(
-                ok=False, name=name, error=f"blocked by admission policy: {denied}"
-            )
+            return AppResult(ok=False, name=name, error=f"blocked by admission policy: {denied}")
 
     # Deny before enabled metadata or any route-level registration, dependency,
     # lifecycle-script, hook, or backend side effect can occur.
@@ -2665,9 +2660,7 @@ def enable_app(
             error_code="session_approval_consent_required",
         )
 
-    current_grants = (
-        _effective_approved_grants(name, meta) if grants_consent is not None else None
-    )
+    current_grants = _effective_approved_grants(name, meta) if grants_consent is not None else None
     approve_grants = grants_consent is not None and current_grants is not None
     if meta.enabled and not approve_grants:
         return AppResult(ok=True, name=name, message=f"{name} is already enabled")
@@ -2871,7 +2864,7 @@ def app_command_agent_refusal(owner: str, agent: str, *projects: str | None) -> 
     if agent.startswith(NATIVE_SKILL_ALIAS_PREFIX):
         return (
             f"{app} can't run: it has a setup problem its author needs to fix "
-            f"(its agent \"{agent}\" uses a name Kiro Crew reserves). "
+            f'(its agent "{agent}" uses a name Kiro Crew reserves). '
             f"Ask {app}'s author to rename that agent."
         )
     from kiro_crew.apps import bridges  # bridges imports this module
@@ -2895,22 +2888,22 @@ def app_command_agent_refusal(owner: str, agent: str, *projects: str | None) -> 
             return f"{app} can't run here: {claim.detail}"
         if project == projects[0]:
             return (
-                f"{app} can't run here: this project has its own agent named \"{agent}\". "
+                f'{app} can\'t run here: this project has its own agent named "{agent}". '
                 f"Run the command again from the command palette in another project, "
-                f"or rename \"{agent}\" in this project's .kiro/agents folder."
+                f'or rename "{agent}" in this project\'s .kiro/agents folder.'
             )
         return (
             f"{app} can't run here: this session's folder {project} has its own agent "
-            f"named \"{agent}\". Start the command again from the command palette in a "
-            f"project session, or rename \"{agent}\" in that folder's .kiro/agents."
+            f'named "{agent}". Start the command again from the command palette in a '
+            f'project session, or rename "{agent}" in that folder\'s .kiro/agents.'
         )
     registration, others = _app_agent_registration(owner, agent)
     if registration == "unverifiable":
         return f"{app} can't run: {others[0]}"
     if registration == "ambiguous":
-        where = ", ".join(others) if others else f"the other agent named \"{agent}\""
+        where = ", ".join(others) if others else f'the other agent named "{agent}"'
         return (
-            f"{app} can't run: another agent in ~/.kiro/agents is also named \"{agent}\", "
+            f'{app} can\'t run: another agent in ~/.kiro/agents is also named "{agent}", '
             f"so {app}'s agent can't be told apart from it. Rename or remove {where} "
             "in ~/.kiro/agents, then run the command again from the command palette."
         )
@@ -3135,6 +3128,57 @@ def get_app(name: str) -> dict[str, Any] | None:
     return {**meta.to_dict(), **_approved_grants_row(name), "manifest": manifest_data}
 
 
+# Scan and central publication are one ordered operation. Lifecycle changes for
+# different apps can finish concurrently; without this lock an older scan can
+# publish after a newer scan and resurrect stale keys.
+_config_keys_refresh_lock = threading.Lock()
+
+
+def _scan_installed_app_config_keys(root: Path) -> frozenset[str]:
+    if not root.is_dir():
+        return frozenset()
+    keys: set[str] = set()
+    for entry in root.iterdir():
+        if not entry.is_dir():
+            continue
+        try:
+            installed = _read_installed(entry.name)
+        except Exception:
+            # InstalledApp.from_dict performs real coercion and can raise for a
+            # malformed field. One damaged record must not freeze every other
+            # app's last published declarations.
+            logger.warning(
+                "Skipping malformed installed-app record for %s", entry.name, exc_info=True
+            )
+            continue
+        if installed is None:
+            continue
+        manifest = get_app_manifest(entry.name)
+        if manifest is not None and not manifest.config_keys_error:
+            keys.update(manifest.config_keys)
+    return frozenset(keys)
+
+
+def refresh_app_config_keys() -> frozenset[str]:
+    """Scan installed apps and atomically publish their config declarations.
+
+    Startup and lifecycle callers perform this synchronous filesystem work;
+    config validation only reads the published in-memory snapshot.
+    """
+    from kiro_crew.config.validation import (
+        extension_config_keys,
+        replace_extension_config_keys,
+    )
+
+    with _config_keys_refresh_lock:
+        try:
+            keys = _scan_installed_app_config_keys(apps_dir())
+        except Exception:
+            logger.debug("app config-key discovery failed", exc_info=True)
+            return extension_config_keys("apps")
+        return replace_extension_config_keys("apps", keys)
+
+
 def get_app_manifest(name: str) -> AppManifest | None:
     """Return the parsed manifest for an installed app, or None."""
     manifest_path = app_dir(name) / APP_MANIFEST_FILENAME
@@ -3241,8 +3285,7 @@ def app_enabled_state(name: str) -> bool | None:
             # platform, so it cannot decide the verdict on its own.
             if not _absence_is_genuine(meta_path):
                 logger.warning(
-                    "Metadata path %s cannot exist: a component of it is not a "
-                    "directory",
+                    "Metadata path %s cannot exist: a component of it is not a " "directory",
                     meta_path,
                 )
                 return None
@@ -3427,9 +3470,7 @@ def register_external_app(
     admission_manifest = None
     if manifest_data:
         admission_manifest = AppManifest.from_dict(manifest_data)
-    denied = app_admission_denied(
-        name, manifest=admission_manifest, action="register_external"
-    )
+    denied = app_admission_denied(name, manifest=admission_manifest, action="register_external")
     if denied:
         sel().log_api_access(
             caller="app_register_external",
@@ -3522,9 +3563,7 @@ def register_external_app(
                 resources=f"name={name!r}",
                 error=cron_grant_error,
             )
-            return AppResult(
-                ok=False, name=name, error=f"invalid manifest: {cron_grant_error}"
-            )
+            return AppResult(ok=False, name=name, error=f"invalid manifest: {cron_grant_error}")
 
     # Self-registration is routine (self-managed apps re-register on every
     # launch) and the app authors its own manifest, so this path can widen the
@@ -3545,9 +3584,7 @@ def register_external_app(
     # Same holding back as ``update_app`` for added api/events entries. A first
     # registration approves what it declares: there is no earlier approval to
     # widen, as with an install.
-    new_permissions = (
-        manifest_data.get("permissions") if isinstance(manifest_data, dict) else None
-    )
+    new_permissions = manifest_data.get("permissions") if isinstance(manifest_data, dict) else None
     prior_grants = _effective_approved_grants(name, existing) if existing else None
     prior_grants_present = _approved_grants_path(name).is_file() if existing else False
     approved_grants: dict[str, list[str]] | None
@@ -4228,9 +4265,7 @@ def register_builtin_apps() -> int:
         # link target and delete data OUTSIDE the apps tree. Also require the
         # resolved path to stay contained under apps_dir().
         if esc_dir.is_symlink():
-            logger.warning(
-                "Skipping escalation cleanup for %r: app dir is a symlink", esc_name
-            )
+            logger.warning("Skipping escalation cleanup for %r: app dir is a symlink", esc_name)
             continue
         if not esc_dir.is_dir():
             continue
@@ -4262,7 +4297,8 @@ def register_builtin_apps() -> int:
             logger.info(
                 "Skipping escalation cleanup for %r: platform lacks dir_fd "
                 "primitives to pin validation to deletion — remove the "
-                "directory manually if no longer needed", esc_name,
+                "directory manually if no longer needed",
+                esc_name,
             )
             continue
         parent_fd = -1
@@ -4331,7 +4367,8 @@ def register_builtin_apps() -> int:
                 # Symlinked data/ (ELOOP) or unreadable — fail closed: keep.
                 logger.warning(
                     "Skipping escalation cleanup for %r: cannot inspect data/: %s",
-                    esc_name, exc,
+                    esc_name,
+                    exc,
                 )
                 continue
             if has_data:
@@ -4339,7 +4376,8 @@ def register_builtin_apps() -> int:
                 # the operator.
                 logger.info(
                     "Keeping escalated builtin %r: data/ is non-empty — remove "
-                    "the directory manually if no longer needed", esc_name,
+                    "the directory manually if no longer needed",
+                    esc_name,
                 )
                 continue
 
@@ -4360,7 +4398,8 @@ def register_builtin_apps() -> int:
                 else:
                     logger.warning(
                         "Escalation cleanup for %r: directory entry changed "
-                        "after pin — leaving the new entry in place", esc_name,
+                        "after pin — leaving the new entry in place",
+                        esc_name,
                     )
             except FileNotFoundError:
                 pass
@@ -4422,7 +4461,10 @@ def register_builtin_apps() -> int:
                 "Not registering builtin %r: a user-installed app already occupies "
                 "%s (source=%r, origin=%r). Leaving its manifest and metadata "
                 "untouched; the builtin is not registered on this host.",
-                name, app_dir(name), existing.source, existing.origin,
+                name,
+                app_dir(name),
+                existing.source,
+                existing.origin,
             )
             continue
 
@@ -4518,7 +4560,8 @@ def register_builtin_apps() -> int:
     if count:
         logger.info("Registered %d built-in app(s)", count)
 
-    # Warm the orphan cache after registration
+    # Publish declarations and warm the orphan cache after registration.
+    refresh_app_config_keys()
     detect_orphaned_builtins(force_refresh=True)
 
     return count
@@ -4665,7 +4708,8 @@ def cleanup_migrated_builtin(name: str) -> AppResult:
             error_code="io_error",
         )
 
-    # Invalidate orphan cache since we removed an orphaned entry
+    # Refresh declarations and orphan state after removing installed metadata.
+    refresh_app_config_keys()
     invalidate_orphan_cache()
 
     logger.info("Cleaned up migrated builtin %s (data preserved)", name)
