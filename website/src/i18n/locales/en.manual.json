@@ -289,6 +289,11 @@
     "client": {
       "accepted_body_unreadable": "The server accepted the request, but its reply could not be read.",
       "paste_token_url_or_raw_token": "Paste sign-in URL…",
+      "scan_qr_code": "Scan QR code",
+      "scan_qr_cancel": "Cancel scanning",
+      "scan_qr_point_camera": "Point the camera at the sign-in QR code shown on the desktop.",
+      "camera_permission_denied": "Camera access was denied, so the QR code could not be scanned. Allow the camera for this site, or paste the sign-in URL below.",
+      "camera_unavailable": "The camera could not be opened, so the QR code could not be scanned. Paste the sign-in URL below instead.",
       "proxy_challenge_reload": "Reload this browser tab — if a sign-in page appears, your access proxy’s session expired. If not, a proxy or firewall in front of this dashboard refused the request; check the proxy’s logs, or retry later.",
       "proxy_challenge_framed": "Open {{origin}} in a new tab — if a sign-in page appears, your access proxy’s session expired. Signing in inside this panel won’t work. Sign in there, then reload this page.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Rate limited by the tunnel edge (HTTP 429) — too many requests in a burst. The dashboard retries automatically; if this persists, wait a few seconds and reload.",

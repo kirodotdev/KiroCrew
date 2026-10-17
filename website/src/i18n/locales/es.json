@@ -299,6 +299,11 @@
     "client": {
       "accepted_body_unreadable": "El servidor aceptó la solicitud, pero no se pudo leer la respuesta.",
       "paste_token_url_or_raw_token": "Pega la URL de inicio de sesión…",
+      "scan_qr_code": "Escanear código QR",
+      "scan_qr_cancel": "Cancelar el escaneo",
+      "scan_qr_point_camera": "Apunta la cámara al código QR de inicio de sesión que se muestra en el ordenador.",
+      "camera_permission_denied": "Se denegó el acceso a la cámara, así que no se pudo escanear el código QR. Permite la cámara para este sitio o pega la URL de inicio de sesión abajo.",
+      "camera_unavailable": "No se pudo abrir la cámara, así que no se pudo escanear el código QR. Pega la URL de inicio de sesión abajo en su lugar.",
       "proxy_challenge_reload": "Vuelve a cargar esta pestaña del navegador: si aparece una página de inicio de sesión, la sesión de tu proxy de acceso expiró. Si no, un proxy o firewall delante de este panel rechazó la solicitud; revisa los registros del proxy o vuelve a intentarlo más tarde.",
       "proxy_challenge_framed": "Abre {{origin}} en una pestaña nueva: si aparece una página de inicio de sesión, la sesión de tu proxy de acceso expiró. Dentro de este panel no funciona. Inicia sesión allí y luego vuelve a cargar esta página.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitación de peticiones en el borde del túnel (HTTP 429) — demasiadas solicitudes en una ráfaga. El panel lo reintenta automáticamente; si esto continúa, espera unos segundos y recarga la página.",
