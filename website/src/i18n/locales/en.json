@@ -1438,6 +1438,10 @@
           "repository_settings": "Repository settings",
           "gitlab_groups": "GitLab groups"
         },
+        "timelineComposer": {
+          "clear": "Clear",
+          "timeline_comment_title": "Add a timeline comment"
+        },
         "depsSection": {
           "title": "Dependencies",
           "blocked_by": "Blocked by",

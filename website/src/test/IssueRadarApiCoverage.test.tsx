@@ -74,6 +74,7 @@ const ENDPOINTS: Array<{
   { name: 'setPrState', path: '/api/apps/issue-radar/pull/state', method: 'POST', run: () => issueRadarApi.setPrState(REF, 12, 'closed') },
   { name: 'submitPrReview', path: '/api/apps/issue-radar/pull/review', method: 'POST', run: () => issueRadarApi.submitPrReview(REF, 12, 'approve') },
   { name: 'addPrComment', path: '/api/apps/issue-radar/pull/comment', method: 'POST', run: () => issueRadarApi.addPrComment(REF, 12, 'looks good') },
+  { name: 'addIssueComment', path: '/api/apps/issue-radar/issue/comment', method: 'POST', run: () => issueRadarApi.addIssueComment(REF, 12, 'looks good') },
   { name: 'mergePr', path: '/api/apps/issue-radar/pull/merge', method: 'POST', run: () => issueRadarApi.mergePr(REF, 12, 'abc123') },
   { name: 'setPrAutoMerge', path: '/api/apps/issue-radar/pull/auto-merge', method: 'POST', run: () => issueRadarApi.setPrAutoMerge(REF, 12, true) },
   { name: 'pullRuns', path: '/api/apps/issue-radar/pull/runs', run: () => issueRadarApi.pullRuns(REF, 12, 'abc123') },

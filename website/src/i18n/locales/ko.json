@@ -2521,6 +2521,10 @@
           "repository_settings": "저장소 설정",
           "gitlab_groups": "GitLab 그룹"
         },
+        "timelineComposer": {
+          "clear": "지우기",
+          "timeline_comment_title": "타임라인 댓글 추가"
+        },
         "depsSection": {
           "title": "의존성",
           "blocked_by": "차단 요인",

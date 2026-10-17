@@ -32,6 +32,7 @@ import MemberBadge from './MemberBadge'
 import AiSummaryCard from './AiSummaryCard'
 import ReviewButton from './ReviewButton'
 import PrActionsBar from './PrActionsBar'
+import TimelineComposer from './TimelineComposer'
 import PrRunActions from './PrRunActions'
 import DetailHeader from './DetailHeader'
 import DetailOverflowMenu from './DetailOverflowMenu'
@@ -627,6 +628,13 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
     detailQuery.refetch().finally(() => setRefreshing(false))
   }
 
+  // Post to THIS pull request, then re-read it so the comment is the top node of the
+  // timeline rather than a poll away.
+  const postComment = async (body: string) => {
+    await issueRadarApi.addPrComment(active, pull.number, body)
+    await queryClient.invalidateQueries({ queryKey: detailKey })
+  }
+
   // Push the freshly-read check state onto this PR's row in whichever cached
   // list holds it (plain list and search results both). Without this the card
   // keeps whatever the last LIST refresh computed, so a check that turns red in
@@ -925,6 +933,10 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               <CircleDot size={12} /> {i18nT('apps.issueRadar.components.prDetail.timeline')}
               <span className="text-muted normal-case tracking-normal opacity-70">{i18nT('apps.issueRadar.components.prDetail.newest_first')}</span>
             </div>
+
+            {canWrite && !awaitingFirstPaint && (
+              <TimelineComposer itemKey={`${scopeKey}#${pull.number}`} post={postComment} />
+            )}
 
             {activityDesc.map((ev, i) => {
               const isOldest = i === activityDesc.length - 1

@@ -2521,6 +2521,10 @@
           "repository_settings": "リポジトリ設定",
           "gitlab_groups": "GitLab グループ"
         },
+        "timelineComposer": {
+          "clear": "クリア",
+          "timeline_comment_title": "タイムラインにコメントを追加"
+        },
         "depsSection": {
           "title": "依存関係",
           "blocked_by": "ブロック元",
