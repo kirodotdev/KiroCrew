@@ -261,26 +261,38 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     reason: 'backup-restore form: the export\'s include-chat-history, include-agent-templates and memory-only boxes, the export zip file picker, the import\'s memory-only box, the import preview\'s per-template install box (one control rendered once per bundled template) and the merge/replace mode for that one import — per-export and per-import arguments, not persistent settings',
   },
   'RemoteCrewPanel.tsx': {
-    counts: { input: 7, Toggle: 1 },
+    counts: { input: 7 },
     reason:
       'setup-wizard AWS profile/region convenience fields (localStorage) behind a ' +
       'non-URL sub-tab a deep link cannot mount; plus the launch form\'s identity ' +
       'choice (2 radios), Identity Center start-URL/region and subnet ID fields — per-launch ' +
-      'arguments sent with the launch request, not persistent settings; the Toggle is the ' +
-      'per-crew on/off switch rendered once per runtime-fetched crew row, a field of that ' +
+      'arguments sent with the launch request, not persistent settings',
+  },
+  'RemoteCrewPanelCrewRow.tsx': {
+    counts: { Toggle: 1 },
+    reason:
+      'the per-crew on/off switch rendered once per runtime-fetched crew row, a field of that ' +
       'crew\'s record, not a global setting',
   },
   'SecretsPanel.tsx': {
     counts: { Input: 2 },
     reason: 'add-secret name/value form — transient CRUD, not persistent knobs',
   },
-  'SecurityPanel.tsx': {
-    counts: { Toggle: 5, Checkbox: 2, Input: 3 },
+  'SecurityPanelDeniedCommands.tsx': {
+    counts: { Toggle: 4, Checkbox: 1, Input: 3 },
     reason:
       'disable-all + per-rule + custom-rule Toggles are data-driven table rows ' +
-      '(manual: security.denied-commands); Checkboxes are confirm-modal acks; ' +
+      '(manual: security.denied-commands); the Checkbox is a confirm-modal ack; ' +
       'Inputs are the rule search filter and the add-custom-deny form ' +
       '(manual: security.your-custom-denies)',
+  },
+  'SecurityPanelTailnet.tsx': {
+    counts: { Toggle: 1 },
+    reason: 'the tailnet-name trust switch (manual: security.trust-this-machine-s-tailnet-name)',
+  },
+  'SecurityPanelTrust.tsx': {
+    counts: { Checkbox: 1 },
+    reason: 'a confirm-modal ack (blanket third-party app trust)',
   },
   'SettingsSearch.tsx': {
     counts: { input: 1 },

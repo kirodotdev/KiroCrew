@@ -1,7 +1,8 @@
 """The dashboard's size cards must agree with ``cloud/sizes.py``.
 
 ``RemoteCrewPanel.tsx`` renders the size picker from its own literal ``SIZE_TIERS`` /
-``X86_TIERS`` tables while the gateway actually launches from ``cloud/sizes.py``. That
+``X86_TIERS`` tables (defined in ``remoteCrewPanelModel.ts``) while the gateway
+actually launches from ``cloud/sizes.py``. That
 is two sources of truth for the same facts, and the re-ladder that introduced these
 tiers is itself proof they move: a shape edited on one side only would show the user
 "32 GB · 8 vCPU" while provisioning something else entirely, with no test failing.
@@ -30,7 +31,7 @@ PANEL = (
     / "src"
     / "pages"
     / "settings"
-    / "RemoteCrewPanel.tsx"
+    / "remoteCrewPanelModel.ts"
 )
 
 # One object literal per tier, e.g.

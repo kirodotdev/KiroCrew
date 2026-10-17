@@ -74,7 +74,7 @@ const CHECK = process.argv.includes('--check')
  * ceiling with a line explaining the growth is inherited, or convert the added
  * site. A measured count, not a target: 7 template-literal sites remain after
  * the current main-branch conversions, plus the 3 whole-word-ternary sites
- * this detector widening makes visible (PastedChip.tsx, SecurityPanel.tsx,
+ * this detector widening makes visible (PastedChip.tsx, SecurityPanelGovernance.tsx,
  * AgentImportFlow.tsx). The other two widened spellings (JSX-text glue,
  * string concatenation) have zero live sites, so a new site in them fails the
  * check for as long as the aggregate count sits at the ceiling — the ceiling
