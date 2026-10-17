@@ -657,7 +657,9 @@ class TestStreamRedactor:
 
         redactor = StreamRedactor()
         bearer = "Authorization: Bearer " + "B" * (_STREAM_HOLDBACK_JWT_MAX + 500)
-        assert redactor.feed(bearer) == REDACTED_CREDENTIAL_TAG
+        # The non-secret prefix is kept and only the token is tagged, so the
+        # ceiling discard matches the batch pass's `bearer_prefix` behaviour.
+        assert redactor.feed(bearer) == "Authorization: Bearer " + REDACTED_CREDENTIAL_TAG
         assert redactor._discarding
         assert redactor.feed("!Important") + redactor.flush() == "!Important"
 

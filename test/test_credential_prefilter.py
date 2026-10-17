@@ -111,8 +111,13 @@ def _reference_redact_credentials(text: str) -> tuple[str, list[str]]:
 
     # 1. plaintext credential patterns — ungated full scan, JSON-header-validated JWT hits
     for m in _credential_matches(text):
-        warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
-        taken.append((m.start(), m.end(), _REDACTED_CREDENTIAL_TAG))
+        # The HTTP/JSON bearer branch keeps its non-secret `bearer_prefix`
+        # group (header + separator + quote + scheme) and redacts only the token
+        # after it; every other branch is redacted whole.
+        prefix_end = m.end("bearer_prefix")
+        start = prefix_end if prefix_end != -1 else m.start()
+        warnings.append(f"Redacted credential pattern ({m.end() - start} chars)")
+        taken.append((start, m.end(), _REDACTED_CREDENTIAL_TAG))
 
     # 2. base64-encoded credentials — own scan, decode via the generic helper
     pass2: list[tuple[int, int, str]] = []
@@ -542,8 +547,24 @@ LEGACY_DIVERGENT_SHAPES: tuple[tuple[str, str], ...] = (
     ("see ?token&#x000000003D;Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
 )
 
-LEGACY_EQUIVALENT_CORPUS = _corpus()
-CORPUS = LEGACY_EQUIVALENT_CORPUS + [text for text, _ in LEGACY_DIVERGENT_SHAPES]
+_FULL_CORPUS = _corpus()
+
+
+# The HTTP/JSON bearer branch keeps its non-secret prefix (header name,
+# separator, quote, `Bearer` scheme) and redacts only the token, so it diverges
+# from the by-VALUE legacy oracle, which replaces the whole match. These texts
+# are held out of the legacy-equivalent set and pinned on their own below: the
+# token is gone, and the prefix the legacy oracle drops survives. Every other
+# shape agrees with legacy.
+def _is_bearer_bearing(text: str) -> bool:
+    return _CREDENTIAL_PATTERNS.search(text) is not None and any(
+        m.end("bearer_prefix") != -1 for m in _credential_matches(text)
+    )
+
+
+BEARER_KEY_PRESERVING_CORPUS = [t for t in _FULL_CORPUS if _is_bearer_bearing(t)]
+LEGACY_EQUIVALENT_CORPUS = [t for t in _FULL_CORPUS if not _is_bearer_bearing(t)]
+CORPUS = _FULL_CORPUS + [text for text, _ in LEGACY_DIVERGENT_SHAPES]
 
 
 # ── The by-value redactor this change retires, kept verbatim as a second oracle ──
@@ -617,6 +638,29 @@ def test_reference_token_entity_case_matches_whatwg_decoding() -> None:
 def test_by_span_agrees_with_legacy_wherever_legacy_landed_right(text: str) -> None:
     """Outside the leak shapes, the rewrite changes nothing: text nor warning order."""
     assert redact_credentials(text) == _legacy_redact_credentials(text)
+
+
+@pytest.mark.parametrize(
+    "text", BEARER_KEY_PRESERVING_CORPUS, ids=range(len(BEARER_KEY_PRESERVING_CORPUS))
+)
+def test_bearer_keeps_the_prefix_the_legacy_oracle_dropped(text: str) -> None:
+    """The bearer branch keeps its non-secret prefix; the token is gone.
+
+    The legacy by-VALUE oracle replaces the whole match (key, separator, quote
+    and scheme with the token), so a JSON/header document does not parse. The
+    by-span redactor keeps that prefix and redacts only the token, so it
+    DIVERGES from legacy here -- in the key-preserving direction -- while
+    removing every secret byte of the token.
+    """
+    legacy_text, _ = _legacy_redact_credentials(text)
+    live_text, _ = redact_credentials(text)
+    assert live_text != legacy_text, "corpus assumption: this shape exercises the bearer branch"
+    # Legacy reduces the whole match to a bare tag; the live output carries the
+    # `Bearer` scheme word ahead of the tag.
+    assert "Bearer" in live_text or "bearer" in live_text
+    assert "[REDACTED: credential]" in live_text
+    # No token bytes survive: re-redacting the live output is a fixed point.
+    assert redact_credentials(live_text)[0] == live_text
 
 
 @pytest.mark.parametrize(
