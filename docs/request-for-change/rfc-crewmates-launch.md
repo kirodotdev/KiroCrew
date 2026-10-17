@@ -127,7 +127,9 @@ Decided:
   label; Create. The modal's header Close (X) is the way out. Everything else (Built from, the default agent unless
   another is picked; What it looks after; the workspace, model, triggers and
   session colour) sits behind **Advanced settings**, folded, in the same card.
-  The empty state's Advanced link and the crew manager's door open it unfolded.
+  Only the empty state's Advanced link opens it unfolded; both quick create
+  doors, the Crewmates page's and the crew manager's, open it folded, so the
+  two entry points to the same card behave the same way.
 - After create, the new crewmate's chat opens and the crewmate speaks first: it
   says hello with its name and asks, in everyday words, what its goal is, or
   confirms the job written under Advanced settings. There is no separate

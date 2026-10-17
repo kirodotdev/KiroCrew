@@ -92,6 +92,18 @@ async function openCreateDialog() {
 }
 
 describe('NewCrewmateDialog opened from KiroCrewAgentsPage', () => {
+  it('opens with Advanced settings folded, matching the Mates-page quick door', async () => {
+    // Regression: this page used to pass `startExpanded`, so its create dialog
+    // opened with every expert field unfolded while the Mates page's quick
+    // door opened folded. The two doors render the same dialog and must agree on
+    // the resting fold. Folded, the Advanced-only Goal field is absent and the
+    // toggle that would reveal it reads collapsed.
+    await openCreateDialog()
+    expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('crewmate-create-advanced')).toBeNull()
+    expect(screen.queryByRole('textbox', { name: 'Goal' })).toBeNull()
+  })
+
   it('refreshes this page\'s roster when a dropped create is reconciled as taken', async () => {
     const { queryClient } = await openCreateDialog()
     // The Crewmates page's own roster leaf, seeded so this test can see whether

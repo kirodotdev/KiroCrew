@@ -118,8 +118,11 @@ beforeEach(() => {
 async function openCrewSheet(): Promise<HTMLElement> {
   fireEvent.click(screen.getByTestId('new-crew'))
   const dlg = await screen.findByRole('dialog', { name: 'New mate' })
-  // The crew manager's door opens with Advanced settings already unfolded.
-  expect(within(dlg).getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
+  // The crew manager's door opens with Advanced settings folded; the workspace
+  // picker lives inside them, so unfold them first.
+  const toggle = within(dlg).getByTestId('crewmate-create-advanced-toggle')
+  expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  fireEvent.click(toggle)
   await within(dlg).findByRole('combobox', { name: 'Workspace' })
   return dlg
 }

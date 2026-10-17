@@ -18,10 +18,11 @@
  * and everything the crew manager's form also asks (workspace, model, routing
  * triggers, session colour), rendered by the SAME `Field` frame and field
  * components the editor mounts, so the two forms cannot drift. The disclosure
- * starts folded (`startExpanded` opens it, for the doors that ask for every
- * setting up front: the "+" menu's Advanced row and the crew manager), and
- * folding it hides those fields without clearing them: what was typed or
- * picked there is still sent.
+ * starts folded (`startExpanded` opens it, which only the empty-roster hero's
+ * Advanced link passes; a proposal carrying a goal unfolds it too, through
+ * `initialDraft`), and folding it hides those fields without clearing them:
+ * what was typed or picked there is still sent. The Mates page's quick
+ * create and the crew manager's create door both leave it folded.
  *
  * "Goal" is stored as the crew record's `description`: the
  * one free-text field the record already carries for a human-readable
@@ -287,8 +288,9 @@ export default function NewCrewmateDialog({
   /** A create that failed, in the words the card shows: lets a page that
    *  hid the card mid-create still tell the user nothing was made. */
   onFailed?: (message: string) => void
-  /** Every open starts with Advanced settings unfolded: the doors that ask
-   *  for every setting up front. Folded otherwise. */
+  /** Open with Advanced settings already unfolded. Only the empty-roster
+   *  hero's Advanced link passes it; the quick-create and crew-manager doors
+   *  leave it folded. (A goal-carrying `initialDraft` also unfolds the card.) */
   startExpanded?: boolean
   /** Ask the server to open the new crewmate's first chat with its goal
    *  question (see the header comment). */

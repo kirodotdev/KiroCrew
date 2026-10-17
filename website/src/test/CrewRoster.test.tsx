@@ -569,14 +569,15 @@ describe('crew editor — opening', () => {
   it('opens the simple New mate dialog from "New mate"', async () => {
     await renderRoster()
     const sheet = await openCreate()
-    // The create door opens the Crewmates page's own dialog, not the full
-    // editor sheet. This door asks for every setting up front, so its
-    // Advanced settings are already unfolded in the same card.
+    // The create door opens the Mates page's own dialog, not the full
+    // editor sheet. It opens folded, matching the Mates page quick door:
+    // Name is shown, the expert fields sit behind the Advanced toggle.
     expect(within(sheet).getByPlaceholderText('e.g. Radar or Dr. Eggbot')).toBeInTheDocument()
-    // Unfolded, the card still has one Create: the sticky footer's (#26894).
+    // The card has one Create: the sticky footer's (#26894).
     expect(within(sheet).getAllByRole('button', { name: 'Create mate' })).toHaveLength(1)
-    expect(within(sheet).getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
-    expect(within(sheet).getByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
+    // Folded, the Advanced-only Goal field is not mounted.
+    expect(within(sheet).getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'false')
+    expect(within(sheet).queryByRole('textbox', { name: 'Goal' })).toBeNull()
     expect(within(sheet).queryByRole('combobox', { name: 'Built from' })).toBeNull()
   })
 })
