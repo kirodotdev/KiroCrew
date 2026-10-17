@@ -17,6 +17,12 @@
  * browser for an external link, so the missing capability was the clipboard,
  * not a second spelling of the hand-off.
  *
+ * The SELECTION block offers Open Link when the selected text is itself an
+ * `http:`/`https:` URL. Some URLs render as plain text on purpose (a shell
+ * tool's Output card), so there is no anchor to left-click and `linkURL` is
+ * empty. The hand-off goes through `openExternalSafely`, the same one
+ * `setWindowOpenHandler` uses for a clicked external link.
+ *
  * And the IMAGE block. Right-clicking an image with nothing selected produced an
  * empty template, so no menu appeared at all and the only way to get an image
  * into another app was to download it. `webContents.copyImageAt` writes through
@@ -33,6 +39,8 @@
  *     `context-menu` listener and pops the built menu on the owning
  *     BrowserWindow.
  */
+
+const { openExternalSafely } = require("./external-scheme");
 
 /** A `C:\…` / `C:/…` drive-absolute path, mirroring the renderer's own rule
  * (`WINDOWS_ABS_PATH_RE` in src/utils/urlTransform.ts). */
@@ -147,6 +155,47 @@ function buildLinkItems(params, deps) {
   return items;
 }
 
+/** Longest selection read as a URL. A selection past this is prose that
+ * happens to start with a scheme, not a link worth offering. */
+const MAX_SELECTED_URL_LENGTH = 2048;
+
+/**
+ * The `http:`/`https:` URL the selected text names, or null.
+ *
+ * The selection is trimmed first, because a drag selection often picks up a
+ * trailing space or newline. Whitespace left INSIDE it means the selection
+ * spans more than one word (`https://x/a and more` parses as one URL with the
+ * rest folded into its path), so that is not a link.
+ *
+ * Returns the parsed `href`, so the value handed to the OS is the canonical
+ * spelling of the URL that was checked.
+ *
+ * @param {string} selectionText the raw `params.selectionText`
+ * @returns {string|null}
+ */
+function selectedWebURL(selectionText) {
+  if (!selectionText || typeof selectionText !== "string") return null;
+  const text = selectionText.trim();
+  if (!text || text.length > MAX_SELECTED_URL_LENGTH || /\s/.test(text)) return null;
+  // The scheme must be the selection's own first characters: WHATWG parsing
+  // would otherwise accept a leading control character it strips.
+  if (!/^https?:\/\//i.test(text)) return null;
+  let url;
+  try {
+    url = new URL(text);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  return url.href;
+}
+
+/** Hand a selected URL to the default browser. */
+function openSelectedURL(url, deps) {
+  const openExternal = deps.openExternal || ((u) => require("electron").shell.openExternal(u));
+  openExternalSafely(openExternal, url, deps.log || ((msg) => console.warn(`[context-menu] ${msg}`)));
+}
+
 /** Items for the image block, or an empty array when the click missed an image.
  * `hasImageContents` is false for an image that failed to load, where there is
  * nothing to copy. */
@@ -210,6 +259,12 @@ function buildMenuTemplate(params, platform, webContents, deps = {}) {
   } else if (params.selectionText) {
     // ── Selection block (non-editable) ──
     items.push({ role: "copy" });
+    // A link under the cursor has its own block and a left-click, so Open Link
+    // is only for a URL that is plain text.
+    const selectedURL = params.linkURL ? null : selectedWebURL(params.selectionText);
+    if (selectedURL) {
+      items.push({ label: "Open Link", click: () => openSelectedURL(selectedURL, deps) });
+    }
     if (platform === "darwin") {
       // Collapse all whitespace (newlines, tabs, runs of spaces) so the menu
       // label stays single-line and readable before truncation.
@@ -263,4 +318,4 @@ function attachContextMenu(webContents, options = {}) {
   });
 }
 
-module.exports = { buildMenuTemplate, attachContextMenu, localPathForLink };
+module.exports = { buildMenuTemplate, attachContextMenu, localPathForLink, selectedWebURL };
