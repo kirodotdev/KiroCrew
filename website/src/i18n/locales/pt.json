@@ -10314,6 +10314,18 @@
         "tool_search_label": "Busca de ferramentas",
         "tool_search_description": "Carregar sob demanda especificações de ferramentas MCP adiadas."
       }
+    },
+    "sendFolderToInstanceSubmenu": {
+      "nothing_to_send": "Nenhuma sessão para enviar",
+      "progress": "{{done}} de {{total}}",
+      "resend_all": "Clique para enviar outra cópia das {{total}}",
+      "retry_failed": "Clique para reenviar as {{count}} que falharam",
+      "sent_all": "Enviado: {{count}}",
+      "sent_some": "{{sent}} de {{total}} enviadas",
+      "sent_transcript_only": "Enviado: {{sent}} ({{count}} apenas transcrição)",
+      "skipped_private_many": "{{count}} sessões anônimas ou temporárias não são enviadas",
+      "skipped_private_one": "{{count}} sessão anônima ou temporária não é enviada",
+      "skipped_private_other": "{{count}} sessões anônimas ou temporárias não são enviadas"
     }
   },
   "hooks": {

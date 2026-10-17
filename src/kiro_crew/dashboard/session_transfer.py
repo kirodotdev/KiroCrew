@@ -113,6 +113,7 @@ from kiro_crew.dashboard.arrival_folders import (
     arrival_folder_id,
     discard_arrival_folders,
     mark_arrival_folder_shared,
+    store_folder_name,
 )
 from kiro_crew.dashboard.chat_persistence import (
     _build_message_entry_uncached,
@@ -1013,6 +1014,7 @@ async def build_transfer_bundle_async(
     origin: str = "",
     with_source: bool = False,
     include_layer_b: bool = True,
+    with_folder: bool = False,
 ) -> TransferBundle:
     """Serialise *slot*'s visible conversation into a portable bundle, with the
     disk read off the event loop.
@@ -1030,6 +1032,13 @@ async def build_transfer_bundle_async(
     has no business changing what it puts on the wire. The file export turns it
     on, because a file outlives the tab it came from and a reader of one has
     nothing else to tell them what the session ran under.
+
+    *with_folder* adds the optional ``folder`` field: the NAME of the folder the
+    session is filed in here, so the receiver files it under a folder of that name
+    (``Imported`` / ``from <origin>`` / ``<folder>``). Off by default for the same
+    reason as *with_source*: a single-session send keeps putting exactly today's
+    bundle on the wire, and only a caller that sends a folder asks for it. Only
+    the name travels, never the id -- an id is a reference into THIS tree.
 
     *include_layer_b* is the gate on the model's context window; it defaults to
     carrying Layer B. The tunnel send uses that default, so a copy pushed between
@@ -1156,6 +1165,10 @@ async def build_transfer_bundle_async(
         # the flush await pair this transcript with another session's approval
         # policy.
         source = _snapshot_source_record(state, slot, sm_key) if with_source else None
+        # The folder the slot is filed in is captured here with the rest; its NAME
+        # is resolved below, after the last synchronous capture, through the
+        # folder store's committed view.
+        folder_id = str(getattr(slot, "folder_id", "") or "") if with_folder else ""
         # Layer B eligibility is decided per attempt too. Layer A records the user's
         # prompt as soon as it is submitted, but kiro-cli only writes Layer B when
         # the turn persists -- so a mid-turn bundle pairs a transcript that SHOWS
@@ -1201,6 +1214,9 @@ async def build_transfer_bundle_async(
             # thread receives only an immutable string.
             layer_b_sid = _resolve_layer_b_sid(getattr(state, "sessions", None), sm_key)
             layer_b_withheld = False
+        # Committed state only: a rename whose folders.json write is still in
+        # flight (or about to roll back) must not travel as the folder's name.
+        folder = await _committed_folder_name(state, folder_id)
         # Read AND assemble off the loop. Assembly redacts every assistant turn,
         # and the transcript can run to the bundle cap, so those regex scans are
         # far too much CPU to hold the loop with — the same starvation that
@@ -1217,6 +1233,7 @@ async def build_transfer_bundle_async(
             layer_b_sid,
             layer_b_withheld,
             source,
+            folder,
         )
 
     # A bundle the snapshot does not return carries a Layer B snapshot nothing else
@@ -1225,6 +1242,25 @@ async def build_transfer_bundle_async(
         state, slot, TRANSFER, _read, persist=_flush, discard=release_bundle_files
     )
     return snapshot.result
+
+
+async def _committed_folder_name(state: DashboardState, folder_id: str) -> str:
+    """The committed name of folder *folder_id*, or ``""`` when unfiled or gone.
+
+    Read through ``state.read_folders``, which waits out a folder transaction: the
+    live list holds a rename's provisional name while its write is in flight, and
+    rolls it back if that write fails.
+    """
+    if not folder_id:
+        return ""
+
+    def _name(folders: list[dict]) -> str:
+        for folder in folders or []:
+            if str(folder.get("id", "")) == folder_id:
+                return str(folder.get("name", "") or "")
+        return ""
+
+    return await state.read_folders(_name)
 
 
 def _read_and_assemble(
@@ -1237,6 +1273,7 @@ def _read_and_assemble(
     layer_b_sid: str = "",
     layer_b_skipped: bool = False,
     source: dict[str, Any] | None = None,
+    folder: str = "",
 ) -> TransferBundle:
     """Read the transcript + Layer B and assemble the bundle. **Runs in a thread.**
 
@@ -1256,7 +1293,9 @@ def _read_and_assemble(
         # which means there was never a context to carry.
         layer_b_skipped = True
     try:
-        payload = _assemble_bundle(history, title, agent, origin, layer_b, layer_b_skipped, source)
+        payload = _assemble_bundle(
+            history, title, agent, origin, layer_b, layer_b_skipped, source, folder
+        )
         return TransferBundle(payload, publication_keys=publication_keys)
     except BaseException:
         release_bundle_files({"layer_b": layer_b})
@@ -1271,6 +1310,7 @@ def _assemble_bundle(
     layer_b: dict[str, Any] | None = None,
     layer_b_skipped: bool = False,
     source: dict[str, Any] | None = None,
+    folder: str = "",
 ) -> dict[str, Any]:
     """Turn a merged transcript into the wire bundle. Pure — thread-safe.
 
@@ -1318,6 +1358,12 @@ def _assemble_bundle(
     title, _ = redact_exfiltration_urls(title)
     title, _ = redact_credentials(title)
     title, _ = redact_local_paths(title)
+    # The folder name is egress for the same reason the title is: a person typed
+    # it, and a project folder is often named after a checkout path.
+    folder, _ = redact_exfiltration_urls(folder)
+    folder, _ = redact_credentials(folder)
+    folder, _ = redact_local_paths(folder)
+    folder = store_folder_name(folder)
     bundle: dict[str, Any] = {
         "bundle_version": BUNDLE_VERSION,
         "origin": origin,
@@ -1326,6 +1372,9 @@ def _assemble_bundle(
         "agent": agent,
         "messages": messages,
     }
+    # Omitted when empty, so a bundle built without *folder* stays byte-identical.
+    if folder:
+        bundle["folder"] = folder
     # Layer B rides along only when the session has one. Its events were already
     # egress-redacted in :func:`_read_layer_b`; the envelope carries no secret
     # (its paths and title are neutralised on import).
@@ -2216,6 +2265,12 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
     agent = body.get("agent", "")
     if not isinstance(agent, str):
         return {}, _reject("agent must be a string", "transfer_bad_agent")
+    # A filing hint, not content: a malformed one is dropped rather than refusing
+    # a transcript that is otherwise valid -- the same stance the importer takes
+    # on an ``agent`` this instance does not have.
+    folder = body.get("folder", "")
+    if not isinstance(folder, str):
+        folder = ""
 
     validated: dict[str, Any] = {
         # The sender's explicit "I had context but withheld it" signal, coerced
@@ -2227,6 +2282,7 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
         "title": title[:_MAX_TITLE_CHARS],
         "origin": origin[:_MAX_TITLE_CHARS],
         "agent": agent,
+        "folder": store_folder_name(folder),
         "messages": messages,
     }
 
@@ -2424,6 +2480,11 @@ async def _install_arrived_bundle(
     origin = bundle["origin"]
     origin, _ = redact_exfiltration_urls(origin)
     origin, _ = redact_credentials(origin)
+    # Redacted on the way IN too, like origin: the sender is not trusted to have
+    # scrubbed it. A bundle validated before this field existed has no key.
+    arrival_folder_name = bundle.get("folder", "") or ""
+    arrival_folder_name, _ = redact_exfiltration_urls(arrival_folder_name)
+    arrival_folder_name, _ = redact_credentials(arrival_folder_name)
     suffix = f" (from {origin})" if origin else ""
 
     # Normalise the bundle turns to the row shape the materialiser hydrates from.
@@ -2607,7 +2668,9 @@ async def _install_arrived_bundle(
         # refusal (app-scoped caller, ceiling reached, store write failure) and
         # the session then lands unfiled, exactly as it did before this shipped.
         # The transcript is the payload; the grouping is convenience.
-        filing = await arrival_folder_id(state, origin=origin, request_app=folder_app)
+        filing = await arrival_folder_id(
+            state, origin=origin, request_app=folder_app, folder=arrival_folder_name
+        )
         arrival_folder = filing.folder_id
         # Rows this filing CREATED, for the failure paths below. Held in the
         # handler's own scope rather than re-derived: after a failure the store no

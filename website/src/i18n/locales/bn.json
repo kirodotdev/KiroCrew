@@ -10171,6 +10171,17 @@
         "tool_search_label": "সরঞ্জাম অনুসন্ধান",
         "tool_search_description": "চাহিদা অনুযায়ী বিলম্বিত MCP সরঞ্জাম স্পেসিফিকেশন লোড করো।"
       }
+    },
+    "sendFolderToInstanceSubmenu": {
+      "nothing_to_send": "পাঠানোর মতো কোনো সেশন নেই",
+      "progress": "{{total}}-এর মধ্যে {{done}}",
+      "resend_all": "সবগুলো {{total}}টির আরেকটি কপি পাঠাতে ক্লিক করো",
+      "retry_failed": "ব্যর্থ {{count}}টি আবার পাঠাতে ক্লিক করো",
+      "sent_all": "পাঠানো হয়েছে: {{count}}",
+      "sent_some": "{{total}}-এর মধ্যে {{sent}}টি পাঠানো হয়েছে",
+      "sent_transcript_only": "পাঠানো হয়েছে: {{sent}} ({{count}}টি শুধু ট্রান্সক্রিপ্ট)",
+      "skipped_private_one": "{{count}}টি ইনকগনিটো বা অস্থায়ী সেশন পাঠানো হয় না",
+      "skipped_private_other": "{{count}}টি ইনকগনিটো বা অস্থায়ী সেশন পাঠানো হয় না"
     }
   },
   "hooks": {

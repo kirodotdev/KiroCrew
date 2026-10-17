@@ -1801,6 +1801,15 @@ The legacy `ssm_proxy_ssh_host` helper is kept for reference only.
 Copies one dashboard session from this instance to a connected peer. The user
 picks it from any session menu: **Send a copy to ▸ `<instance>`**.
 
+A FOLDER's menu has the same entry. It sends a copy of every persistent session
+filed directly in that folder, one `send-session` call each with
+`with_folder: true`, so the peer files them together under a folder of the same
+name: `Imported` / `from <this instance>` / `<folder>`
+(rfc-arrival-provenance-filing.md §4, amendment). Only the folder's NAME travels;
+its id, colour, project directory and sub-folders do not. Incognito and temporary
+sessions in the folder are skipped and counted, the same refusal a single send
+gives them. The row reports progress and the outcome in place (`3 of 5 sent`).
+
 Code: `src/kiro_crew/dashboard/session_transfer.py` (bundle + importer),
 `src/kiro_crew/dashboard/transcript_snapshot.py` (the bundle's consistent
 transcript read, under its `TRANSFER` rules),
@@ -1899,7 +1908,7 @@ versions is what lets a v2 instance still receive a copy from a v1 one.
 
 | Method and path | Purpose |
 |---|---|
-| `POST /api/instances/{id}/send-session` | Sending side. Body `{"slot": "<local slot key>"}`. Bundles the local session and delivers it over that instance's open tunnel. |
+| `POST /api/instances/{id}/send-session` | Sending side. Body `{"slot": "<local slot key>", "with_folder": true}` (`with_folder` optional, strictly `true`: the bundle then carries the session's folder NAME). Bundles the local session and delivers it over that instance's open tunnel. |
 | `GET /api/chat/slots/{slot}/export` | Sending side, file hop. Streams the SAME bundle as a gzipped download instead of over a tunnel — see §14.7. `?format=md` streams it as a human-readable Markdown transcript instead; see §14.7a. |
 | `POST /api/chat/slots/import` | Receiving side, for BOTH arrival routes. Accepts a bundle — gzipped or plain JSON, sniffed from its own bytes — and materialises a new slot. See §14.5a. |
 
