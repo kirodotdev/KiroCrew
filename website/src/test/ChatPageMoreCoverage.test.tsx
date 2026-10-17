@@ -72,13 +72,16 @@ import type { ChatMessage } from '../types'
 interface AssistantProps {
   content: string
   timestamp?: string
-  onFork?: (visibleIndex: number) => void | Promise<void>
+  onFork?: (visibleIndex: number, messageId?: string, direction?: 'head') => void | Promise<void>
   onQuote?: (text: string, rect: DOMRect) => void
   onAsk?: (text: string) => void
   onSpeak?: (content: string) => void
   onRegenerate?: () => void
   onApplyPlan?: (steps: never[]) => Promise<boolean>
   forkIndex?: number
+  forkDirectionChoice?: boolean
+  forkNothingAfter?: boolean
+  shareEnabled?: boolean
 }
 let assistantProps: AssistantProps | null = null
 
@@ -482,6 +485,61 @@ describe('ChatPage row callbacks — fork', () => {
     expect(said).toContain('network down')
     expect(said).not.toContain('[object Object]')
     expect(alertSpy).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true] as const)('forks with history when the menu entry names head whatever Tail-only Fork says (setting %s)', async (setting) => {
+    apiSpy('dashboardConfig').mockResolvedValue({ tail_fork_enabled: setting })
+    apiSpy('forkChatSlot').mockResolvedValue({ ok: true, key: 'chat-2', title: 'fork' })
+    await renderTurn()
+    await act(async () => { await assistantProps!.onFork!(1, 'row-1', 'head') })
+    expect(apiMocks.forkChatSlot).toHaveBeenCalledWith('chat-1', 1, undefined, undefined, 'head', 'row-1')
+  })
+
+  it.each([[false, 'head'], [true, 'tail']] as const)('still lets the setting pick the direction for the plain entry (setting %s)', async (setting, direction) => {
+    apiSpy('dashboardConfig').mockResolvedValue({ tail_fork_enabled: setting })
+    apiSpy('forkChatSlot').mockResolvedValue({ ok: true, key: 'chat-2', title: 'fork' })
+    await renderTurn()
+    await act(async () => { await assistantProps!.onFork!(2, 'row-9') })
+    expect(apiMocks.forkChatSlot).toHaveBeenCalledWith('chat-1', 2, undefined, undefined, direction, 'row-9')
+  })
+
+  it('offers the fork-direction choice while Tail-only Fork is on', async () => {
+    apiSpy('dashboardConfig').mockResolvedValue({ tail_fork_enabled: true })
+    await renderTurn()
+    await waitFor(() => expect(assistantProps!.forkDirectionChoice).toBe(true))
+  })
+
+  it('withholds the fork-direction choice while Tail-only Fork is off, because the server would answer a tail request with a history fork', async () => {
+    // `shareEnabled` and `forkDirectionChoice` are both read from the one ['dashboardConfig']
+    // query, so `shareEnabled` going true proves the payload landed with the setting off.
+    apiSpy('dashboardConfig').mockResolvedValue({ tail_fork_enabled: false, social_share_enabled: true })
+    await renderTurn()
+    await waitFor(() => expect(assistantProps!.shareEnabled).toBe(true))
+    expect(assistantProps!.forkDirectionChoice).toBe(false)
+  })
+
+  it('withholds the fork-direction choice while the config does not name the setting', async () => {
+    apiSpy('dashboardConfig').mockResolvedValue({ social_share_enabled: true })
+    await renderTurn()
+    await waitFor(() => expect(assistantProps!.shareEnabled).toBe(true))
+    expect(assistantProps!.forkDirectionChoice).toBe(false)
+  })
+
+  it('tells the newest reply that no message follows it', async () => {
+    await renderTurn()
+    expect(assistantProps!.forkIndex).toBe(1)
+    expect(assistantProps!.forkNothingAfter).toBe(true)
+  })
+
+  it('tells a reply with a later message that one follows it', async () => {
+    renderChatPage([
+      msg('user', 'what changed?', { ts: '2026-08-12T07:00:00Z' }),
+      msg('assistant', 'two files changed', { ts: '2026-08-12T07:00:05Z' }),
+      msg('user', 'which ones?', { ts: '2026-08-12T07:00:09Z' }),
+    ])
+    await waitFor(() => expect(assistantProps).not.toBeNull())
+    expect(assistantProps!.forkIndex).toBe(1)
+    expect(assistantProps!.forkNothingAfter).toBe(false)
   })
 })
 

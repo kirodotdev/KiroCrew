@@ -11038,6 +11038,11 @@
         "needs_active_chat": "이 채팅이 완전히 열리면 사용할 수 있습니다",
         "needs_earlier_history_count_other": "선택하면 이전 기록을 불러옵니다 — 이전 메시지 {{count}}개가 남아 있습니다",
         "share_message": "이미지로 공유",
+        "fork_with_history": "이전 메시지와 함께 분기",
+        "fork_later_messages_only": "이후 메시지만으로 분기",
+        "fork_with_history_hint": "이 메시지와 이전 메시지로 새 대화를 시작합니다. 현재 대화는 바뀌지 않습니다.",
+        "fork_later_messages_only_hint": "이 메시지 이후의 메시지만으로 새 대화를 시작합니다. 이 메시지는 포함되지 않습니다. 현재 대화는 바뀌지 않습니다.",
+        "fork_no_later_messages": "이 메시지 이후의 메시지가 아직 없습니다.",
         "copy_failed": "복사 실패",
         "quote_message": "메시지 인용"
       },
