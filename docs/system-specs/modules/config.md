@@ -1475,7 +1475,10 @@ keys`. Three exclusions from that warning are named in code:
 
 A deprecated field is announced only when it holds something: `null` and an
 empty map, list or string carry nothing to migrate, so `validation` stays
-silent on them (`False` and `0` are chosen values and are still announced). A
+silent on them (`False` and `0` are chosen values and are still announced). For
+each populated field, `validation` warns once per process for each distinct
+`repr(value)`. It stores only a SHA-256 digest of that representation in the
+warning registry, so configured credentials do not stay there as raw text. A
 schema entry that is marked `deprecated=True` therefore accepts that an empty
 value of its type gets no notice; a field for which `""` or `[]` is itself a
 meaningful choice must not rely on the deprecation notice to surface that
