@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
-import { Zap, FolderOpen, ChevronRight, Check, Plus, Send, X } from 'lucide-react'
+import { Zap, FolderOpen, ChevronRight, Check, Plus, Send, X, Server } from 'lucide-react'
 import Modal from './Modal'
 import ErrorNotice from './ErrorNotice'
 import { Input, Btn } from './ui'
@@ -16,7 +16,7 @@ import { folderAgentOptions, type FolderAgentRow } from './folderAgentOptions'
 import { i18nT } from '../i18n/t'
 
 /** The folder fields this modal owns. */
-export type FolderConfigField = 'name' | 'color' | 'icon' | 'projectDir' | 'defaultAgent' | 'defaultDestinationCrew' | 'tags' | 'steeringDirs'
+export type FolderConfigField = 'name' | 'color' | 'icon' | 'projectDir' | 'defaultAgent' | 'defaultDestinationCrew' | 'defaultCrew' | 'tags' | 'steeringDirs'
 
 export interface FolderConfigDraft {
   name: string
@@ -35,6 +35,8 @@ export interface FolderConfigDraft {
   /** Instance id of the crew *Send a copy to* lists first for this folder's
    *  sessions; '' = use the global default destination crew. */
   defaultDestinationCrew: string
+  /** Instance id of the registered crew new chats start on; '' = Local. */
+  defaultCrew: string
   /** Tag ids the folder carries; copied onto new chats filed into it. */
   tags: string[]
   /** Extra steering directories loaded for every chat in this folder's subtree
@@ -64,6 +66,15 @@ interface Props {
   installedAgents: FolderAgentRow[]
   /** Global default agent, shown as what an empty agent choice falls back to. */
   globalDefaultAgent?: string
+  /** The registered crews and whether each is connected. Passed ONLY while the
+   *  Remote crew sessions preview is on: absent hides the Default crew picker,
+   *  and a folder's stored crew then rides every save untouched. */
+  crewChoices?: { id: string; name: string; online: boolean }[]
+  /** False while the crew list is pending or failed to load. `crewChoices` is
+   *  then empty without meaning anything, so a pinned crew is shown by its id
+   *  and never called "not registered" (as `routeFolderCrew` treats an
+   *  unloaded list as unknown). Defaults to true. */
+  crewChoicesLoaded?: boolean
   /** The tag vocabulary, powering the folder-tag picker. Empty/absent hides the
    *  picker entirely — a folder can only carry tags that already exist. */
   availableTags?: ChatTag[]
@@ -105,7 +116,7 @@ function ancestorChain(folders: ChatFolder[], id: string | undefined): ChatFolde
   return out
 }
 
-const EMPTY: FolderConfigDraft = { name: '', color: '', icon: '', regenerateIcon: false, projectDir: '', defaultAgent: '', defaultDestinationCrew: '', tags: [], steeringDirs: [], touched: [] }
+const EMPTY: FolderConfigDraft = { name: '', color: '', icon: '', regenerateIcon: false, projectDir: '', defaultAgent: '', defaultDestinationCrew: '', defaultCrew: '', tags: [], steeringDirs: [], touched: [] }
 
 /** Set-equality on two tag-id lists (order-insensitive): the picker toggles
  *  membership, so "changed?" is about which ids are present, not their order. */
@@ -136,7 +147,7 @@ function sameDirs(a: string[], b: string[]): boolean {
  * spatial cue the inline input got for free from its own indentation.
  */
 export default function FolderConfigModal({
-  open, onClose, mode, parentId, folder, folders, installedAgents, globalDefaultAgent, availableTags, availableTagsFailed, onRetryTags, onSubmit, destinationCrews, globalDestinationCrew,
+  open, onClose, mode, parentId, folder, folders, installedAgents, globalDefaultAgent, crewChoices, crewChoicesLoaded = true, availableTags, availableTagsFailed, onRetryTags, onSubmit, destinationCrews, globalDestinationCrew,
   destinationCrewsFailed, onRetryDestinationCrews,
 }: Props) {
   const [draft, setDraft] = useState<FolderConfigDraft>(EMPTY)
@@ -208,6 +219,7 @@ export default function FolderConfigModal({
         projectDir: f.project_dir ?? '',
         defaultAgent: f.default_agent ?? '',
         defaultDestinationCrew: f.default_destination_crew ?? '',
+        defaultCrew: f.default_crew ?? '',
         tags: Array.isArray(f.tags) ? (known ? f.tags.filter(t => vocab.has(t)) : [...f.tags]) : [],
         steeringDirs: Array.isArray(f.steering_dirs) ? [...f.steering_dirs] : [],
         touched: [],
@@ -320,6 +332,31 @@ export default function FolderConfigModal({
         : []),
       ...crews.map(c => ({ value: c.id, label: c.name })),
     ]
+  // Default crew: Local first ('' is the real default, not an inherit row), then
+  // a pinned crew that is no longer registered so it round-trips like the
+  // orphan agent above, then every registered crew with its online state.
+  // Only a LOADED list can say a pin is gone: while it is pending or failed the
+  // pin is listed by its bare id, with no registered or online claim either way.
+  const pinnedCrew = draft.defaultCrew && crewChoices && !crewChoices.some(c => c.id === draft.defaultCrew)
+    ? draft.defaultCrew
+    : ''
+  const orphanCrew = crewChoicesLoaded ? pinnedCrew : ''
+  const unverifiedCrew = crewChoicesLoaded ? '' : pinnedCrew
+  const selectedCrew = crewChoices?.find(c => c.id === draft.defaultCrew)
+  const crewOptions: SearchableSelectOption[] = [
+    { value: '', label: i18nT('components.folderConfigModal.crew_local') },
+    ...(orphanCrew
+      ? [{ value: orphanCrew, label: i18nT('components.folderConfigModal.crew_not_registered', { id: orphanCrew }) }]
+      : []),
+    ...(unverifiedCrew ? [{ value: unverifiedCrew, label: unverifiedCrew }] : []),
+    ...(crewChoices ?? []).map(c => ({
+      value: c.id,
+      label: i18nT(c.online ? 'components.folderConfigModal.crew_online' : 'components.folderConfigModal.crew_offline', { name: c.name }),
+    })),
+  ]
+  // The state the person should know before saving: a pinned crew that is not
+  // connected right now makes every New chat in this folder stop and ask.
+  const crewNotReady = !!draft.defaultCrew && (orphanCrew !== '' || (selectedCrew !== undefined && !selectedCrew.online))
 
   const submit = useCallback(async () => {
     if (!canSubmit || saving) return
@@ -343,6 +380,7 @@ export default function FolderConfigModal({
     if (draft.projectDir !== seeded.projectDir) edited.push('projectDir')
     if (draft.defaultAgent !== seeded.defaultAgent) edited.push('defaultAgent')
     if (draft.defaultDestinationCrew !== seeded.defaultDestinationCrew) edited.push('defaultDestinationCrew')
+    if (draft.defaultCrew !== seeded.defaultCrew) edited.push('defaultCrew')
     if (tagsEdited) edited.push('tags')
     if (!sameDirs(draft.steeringDirs, seeded.steeringDirs)) edited.push('steeringDirs')
     setSaving(true); setSaveErr(''); setIconErr(false)
@@ -378,6 +416,7 @@ export default function FolderConfigModal({
   if (draft.projectDir !== seed.projectDir) touched.push('projectDir')
   if (draft.defaultAgent !== seed.defaultAgent) touched.push('defaultAgent')
   if (draft.defaultDestinationCrew !== seed.defaultDestinationCrew) touched.push('defaultDestinationCrew')
+  if (draft.defaultCrew !== seed.defaultCrew) touched.push('defaultCrew')
   if (!sameTags(draft.tags, seed.tags)) touched.push('tags')
   if (!sameDirs(draft.steeringDirs, seed.steeringDirs)) touched.push('steeringDirs')
   const isDirty = touched.length > 0
@@ -754,9 +793,42 @@ export default function FolderConfigModal({
                 {i18nT('components.folderConfigModal.agent_not_installed_notice')}
               </span>
             ) : (
-              <span className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.default_agent_hint')}</span>
+              // With a default crew set, the folder's agent applies only to
+              // chats started on Local: a crew applies its own default agent,
+              // because this machine's agent names its own roster.
+              <span className="text-[11px] text-muted-strong" data-testid="folder-config-agent-hint">
+                {i18nT(crewChoices && draft.defaultCrew ? 'components.folderConfigModal.default_agent_hint_with_crew' : 'components.folderConfigModal.default_agent_hint')}
+              </span>
             )}
           </div>
+
+          {/* Default crew: only while the Remote crew sessions preview is on
+           *  (`crewChoices` is withheld otherwise). Same SearchableSelect and
+           *  aria-label-as-heading contract as the agent picker above. */}
+          {crewChoices && (
+            <div className="flex flex-col gap-1.5">
+              <span className="flex items-center gap-1.5 text-[11.5px] font-semibold text-muted">
+                <Server size={12} className="shrink-0" /> {i18nT('components.folderConfigModal.default_crew')}
+              </span>
+              <SearchableSelect
+                aria-label={i18nT('components.folderConfigModal.default_crew')}
+                aria-describedby="folder-config-crew-hint"
+                options={crewOptions}
+                searchPlaceholder={i18nT('components.agentSelector.type_to_filter')}
+                value={draft.defaultCrew}
+                onChange={v => setDraft(d => ({ ...d, defaultCrew: v }))}
+              />
+              <span
+                id="folder-config-crew-hint"
+                data-testid="folder-config-crew-hint"
+                className={crewNotReady ? 'text-[11px] text-warn' : 'text-[11px] text-muted-strong'}
+              >
+                {i18nT(orphanCrew
+                  ? 'components.folderConfigModal.default_crew_not_registered_notice'
+                  : crewNotReady ? 'components.folderConfigModal.default_crew_offline_notice' : 'components.folderConfigModal.default_crew_hint')}
+              </span>
+            </div>
+          )}
           {(destinationOptions || destinationCrewsFailed) && (
             <div className="flex flex-col gap-1.5">
               <span className="flex items-center gap-1.5 text-[11.5px] font-semibold text-muted">
