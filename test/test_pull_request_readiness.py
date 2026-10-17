@@ -262,7 +262,7 @@ def test_common_facts_reject_unknown_provider_and_unbounded_check_states() -> No
         _facts(checks=(PullRequestCheck("build", "provider-native-running"),))
 
 
-def test_check_bucket_overflow_is_bounded_without_changing_provider_completeness() -> None:
+def test_excess_passing_checks_are_bounded_without_marking_the_board_incomplete() -> None:
     long_check = PullRequestCheck("x" * 500, "passed")
     checks = tuple(PullRequestCheck(f"check-{index:03d}", "passed") for index in range(101))
 
@@ -270,7 +270,8 @@ def test_check_bucket_overflow_is_bounded_without_changing_provider_completeness
 
     assert len(long_check.identity) <= 200
     assert len(result.canonical["checks"]["passed"]) == 100
-    assert result.canonical["checks"]["unknown"] == ["checks:incomplete"]
+    assert result.canonical["checks"]["unknown"] == []
+    assert result.canonical["checks_complete"] is True
     assert result.observation.status is MonitorObservationStatus.SUCCESS
     assert result.observation.reason_code == "review_ready"
 

@@ -258,9 +258,9 @@ def _decide_effect(
     """Select the effect alone.
 
     Budget checks lead because a spent bound must never buy one additional
-    unattended turn. Provider failures are classified without a model. An
-    actionable change passes through the coalescing window before it may wake
-    the owning session.
+    unattended turn. Provider failures are classified without a model. Actionable
+    changes and explicitly named pending/success activity signals pass through the
+    same coalescing window before they may wake the owning session.
     """
     if state.version != MONITOR_STATE_VERSION:
         return MonitorDecision.STOP_BLOCKED
@@ -285,6 +285,19 @@ def _decide_effect(
         _reset_revision_memory(state)
     if observation.status is MonitorObservationStatus.ACTIONABLE:
         return _coalesce_actionable(state, observation, now=now)
+    if observation.status is MonitorObservationStatus.PENDING and observation.conditions:
+        # A pending PR can still carry a newly completed green-check board or
+        # human activity. These named signals wake once, while the pending status
+        # itself remains unsettled and therefore never advances the stall count.
+        return _coalesce_actionable(state, observation, now=now)
+    if observation.status is MonitorObservationStatus.SUCCESS and observation.conditions:
+        # A review can turn a review-only PENDING PR directly into success. Give
+        # its activity condition one wake before the terminal success is recorded;
+        # on the next identical probe the condition is masked and normal success
+        # handling stops the watch.
+        conditioned = _coalesce_actionable(state, observation, now=now)
+        if conditioned is not MonitorDecision.NO_CHANGE:
+            return conditioned
     # Any non-actionable outcome settles the subject, so no window stays open.
     _close_window(state, now=now)
     if observation.supplemental_provider_error is not None:

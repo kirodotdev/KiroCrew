@@ -25,6 +25,7 @@ from kiro_crew.monitoring.github_pull_request import (
     GitHubPullRequestTarget,
     parse_github_pull_request_target,
 )
+from kiro_crew.monitoring.github_pull_request_pages import _pr_comment_page
 from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_CADENCE_SECS,
     DEFAULT_MONITOR_PROVIDER_ERRORS,
@@ -85,6 +86,7 @@ def _primary(**changes: object) -> dict[str, object]:
         "mergeable": "MERGEABLE",
         "mergeStateStatus": "CLEAN",
         "reviewDecision": "APPROVED",
+        "author": {"login": "pull-author"},
         "statusCheckRollup": [
             _check_run(),
             {"__typename": "StatusContext", "context": "lint", "state": "SUCCESS"},
@@ -252,7 +254,8 @@ def _comment_node(
         "comments": {
             "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
             "nodes": nodes,
-        }
+        },
+        "reviews": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []},
     }
 
 
@@ -534,7 +537,7 @@ def test_clean_pull_request_has_allowlisted_canonical_observation_and_fingerprin
     assert primary_argv[4] == (
         "query=query($o0:String!,$r0:String!,$n0:Int!)"
         "{s0:repository(owner:$o0,name:$r0){pullRequest(number:$n0){"
-        "number state isDraft headRefOid mergeable mergeStateStatus reviewDecision}}}"
+        "number state isDraft headRefOid mergeable mergeStateStatus reviewDecision author{login}}}}"
     )
     # Owner, repository and number reach GitHub as bound variables, so no part of a
     # subject is ever interpolated into the document above.
@@ -2903,6 +2906,50 @@ def test_repeated_review_thread_cursor_is_incomplete_instead_of_looping() -> Non
     assert len(runner.calls) == 5
 
 
+def test_comment_and_review_activity_pages_use_independent_bound_cursors() -> None:
+    member = github_pull_request._BatchSubject(
+        "https://github.com/owner/repo/pull/123",
+        parse_github_pull_request_target("https://github.com/owner/repo/pull/123"),
+    )
+
+    document, argv = github_pull_request._batch_document(
+        [member],
+        github_pull_request._PR_COMMENTS_SELECTION,
+        cursors={member.raw: "comments-next"},
+        review_cursors={member.raw: "reviews-next"},
+    )
+
+    assert "comments(first:100,after:$c0)" in document
+    assert "reviews(first:100,after:$v0)" in document
+    assert "author{login __typename}" in document
+    assert "c0=comments-next" in argv
+    assert "v0=reviews-next" in argv
+
+
+def test_more_than_one_hundred_passing_checks_still_yields_a_complete_board() -> None:
+    rows = [
+        {"__typename": "StatusContext", "context": f"ci-{index}", "state": "SUCCESS"}
+        for index in range(112)
+    ]
+    core, rollup = _core_and_rollup(
+        statusCheckRollup=rows,
+        reviewDecision="REVIEW_REQUIRED",
+    )
+    runner = _CompletedRunner(
+        [_completed(core), _completed(rollup), _completed(_threads()), _completed(_comments())]
+    )
+    provider = GitHubPullRequestProvider(resolver=lambda: "/trusted/bin/gh", runner=runner)
+
+    result = _probe_one(provider)
+
+    assert len(result.canonical["checks"]["passed"]) == 100
+    assert result.canonical["checks"]["unknown"] == []
+    assert result.canonical["checks_complete"] is True
+    assert result.observation.status is MonitorObservationStatus.PENDING
+    assert result.observation.reason_code == "review_required"
+    assert [condition.key for condition in result.observation.conditions] == ["checks_complete"]
+
+
 def test_check_identity_and_bucket_sizes_are_bounded_before_persistence() -> None:
     core, rollup = _core_and_rollup(
         statusCheckRollup=[
@@ -4310,7 +4357,7 @@ class TestPullRequestCommentDigest:
 
     def test_every_comment_is_digested_not_bot_authored_only(self) -> None:
         """A human editing a comment in place is as invisible to a count and as
-        load-bearing as a bot; the digest filters by no author."""
+        load-bearing as a bot; the legacy digest filters by no author."""
         before, _ = _provider(self._failing(), _threads(), pr_comments=_comments(["please rebase"]))
         after, _ = _provider(
             self._failing(), _threads(), pr_comments=_comments(["please rebase and squash"])
@@ -4318,6 +4365,35 @@ class TestPullRequestCommentDigest:
         result_before = _probe_one(before)
         result_after = _probe_one(after)
         assert _comment_condition_key(result_before) != _comment_condition_key(result_after)
+
+    def test_a_bot_edit_still_changes_the_legacy_comment_digest(self) -> None:
+        def result_for(body: str) -> object:
+            page = _envelope(
+                {
+                    "comments": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "body": body,
+                                "author": {"login": "review-bot[bot]", "__typename": "Bot"},
+                            }
+                        ],
+                    },
+                    "reviews": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [],
+                    },
+                }
+            )
+            provider, _ = _provider(self._failing(), _threads(), pr_comments=page)
+            return _probe_one(provider)
+
+        before = result_for("no blocking findings")
+        after = result_for("blocking: found an issue")
+
+        assert _comment_condition_key(before) != _comment_condition_key(after)
+        assert "pr_human_comment_digest" not in before.canonical
+        assert "pr_human_comment_digest" not in after.canonical
 
     def test_the_digest_is_independent_of_comment_page_order(self) -> None:
         """Sorting the bodies before hashing makes the page order irrelevant."""
@@ -4341,6 +4417,81 @@ class TestPullRequestCommentDigest:
         result_second = _probe_one(second)
         assert _comment_condition_key(result_first) is not None
         assert _comment_condition_key(result_first) == _comment_condition_key(result_second)
+
+    def test_human_comment_and_review_activity_is_kept_separately(self) -> None:
+        waiting = _primary(
+            reviewDecision="REVIEW_REQUIRED",
+            statusCheckRollup=[_check_run(status="IN_PROGRESS", conclusion="")],
+        )
+        activity = _envelope(
+            {
+                "comments": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [
+                        {
+                            "body": "please update the description",
+                            "author": {"login": "reviewer", "__typename": "User"},
+                        }
+                    ],
+                },
+                "reviews": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [
+                        {
+                            "body": "looks good",
+                            "state": "COMMENTED",
+                            "author": {"login": "reviewer", "__typename": "User"},
+                        }
+                    ],
+                },
+            }
+        )
+        provider, _ = _provider(waiting, _threads(), pr_comments=activity)
+
+        result = _probe_one(provider)
+
+        assert result.observation.status is MonitorObservationStatus.PENDING
+        assert result.canonical["pr_comment_body_digest"]
+        assert result.canonical["pr_human_comment_digest"]
+        assert result.canonical["pr_human_review_digest"]
+        keys = {condition.key for condition in result.observation.conditions}
+        assert any(key.startswith("human_comment_activity:") for key in keys)
+        assert any(key.startswith("human_review_activity:") for key in keys)
+
+    @pytest.mark.parametrize(
+        "author",
+        [
+            {"login": "pull-author", "__typename": "User"},
+            {"login": "review-bot[bot]", "__typename": "Bot"},
+        ],
+    )
+    def test_author_and_bot_comments_do_not_become_human_activity(
+        self, author: dict[str, str]
+    ) -> None:
+        waiting = _primary(
+            reviewDecision="REVIEW_REQUIRED",
+            statusCheckRollup=[_check_run(status="IN_PROGRESS", conclusion="")],
+        )
+        activity = _envelope(
+            {
+                "comments": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [{"body": "still waiting", "author": author}],
+                },
+                "reviews": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []},
+            }
+        )
+        provider, _ = _provider(waiting, _threads(), pr_comments=activity)
+
+        result = _probe_one(provider)
+
+        assert result.observation.status is MonitorObservationStatus.PENDING
+        assert result.canonical["pr_comment_body_digest"]
+        assert "pr_human_comment_digest" not in result.canonical
+        assert not any(
+            condition.key.startswith("human_comment_activity:")
+            for condition in result.observation.conditions
+        )
 
     def test_no_comments_emits_no_comment_condition(self) -> None:
         provider, _ = _provider(self._failing(), _threads(), pr_comments=_comments())
@@ -4386,7 +4537,7 @@ class TestRetentionIsBounded:
                 "nodes": [{"body": "a"}, {"body": self.HUGE}],
             }
         }
-        kept, complete, has_next, _cursor = github_pull_request._pr_comment_page(node)
+        kept, complete, has_next, _cursor = _pr_comment_page(node)
         assert complete is True
         assert has_next is False
         assert len(kept) == 2
@@ -4404,7 +4555,7 @@ class TestRetentionIsBounded:
                 "nodes": [{"body": body}],
             }
         }
-        kept, _complete, _has_next, _cursor = github_pull_request._pr_comment_page(node)
+        kept, _complete, _has_next, _cursor = _pr_comment_page(node)
         assert all(self.MARKER not in entry for entry in kept)
         digest = github_pull_request._pr_comment_body_digest(kept)
         assert self.MARKER not in digest
@@ -4426,7 +4577,7 @@ class TestRetentionIsBounded:
                     "nodes": [{"body": body}],
                 }
             }
-            kept, _c, _h, _cur = github_pull_request._pr_comment_page(node)
+            kept, _c, _h, _cur = _pr_comment_page(node)
             return kept
 
         one = page("no blocking findings")
