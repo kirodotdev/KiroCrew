@@ -12023,6 +12023,7 @@
         "placeholder": "给 {{name}} 上的代理发消息…",
         "version_mismatch": "此团队运行 {{productName}} {{peer}}，而本机运行 {{local}}。请更新其中一方使版本一致。",
         "create_unnamed": "团队已打开会话，但没有为其命名。",
+        "untitled": "未命名会话",
         "close_hint": "关闭不会停止 {{name}} 上的代理。",
         "feed_lost": "与 {{name}} 的实时更新已断开。",
         "feed_lost_hint": "更新已停止。重试以同步最新内容。",

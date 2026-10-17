@@ -12387,6 +12387,7 @@
         "placeholder": "Message à l’agent sur {{name}}…",
         "version_mismatch": "Cet équipage exécute {{productName}} {{peer}}, mais cette machine exécute {{local}}. Mets-en un à jour pour qu’ils correspondent.",
         "create_unnamed": "L’équipage a ouvert une session sans lui donner de nom.",
+        "untitled": "Session sans titre",
         "close_hint": "Fermer n’arrête pas l’agent sur {{name}}.",
         "feed_lost": "Mises à jour en direct de {{name}} perdues.",
         "feed_lost_hint": "Les mises à jour se sont arrêtées. Réessaie pour te remettre à jour.",

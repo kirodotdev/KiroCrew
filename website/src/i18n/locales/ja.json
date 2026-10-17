@@ -12023,6 +12023,7 @@
         "placeholder": "{{name}} のエージェントにメッセージ…",
         "version_mismatch": "このクルーは {{productName}} {{peer}} を実行していますが、このマシンは {{local}} です。どちらかを更新してそろえてください。",
         "create_unnamed": "クルーはセッションを開きましたが、名前を付けませんでした。",
+        "untitled": "無題のセッション",
         "close_hint": "閉じても {{name}} のエージェントは止まりません。",
         "feed_lost": "{{name}} からのライブ更新が途切れました。",
         "feed_lost_hint": "更新が止まりました。再試行して最新にしてください。",

@@ -5701,6 +5701,7 @@
         "placeholder": "Message the agent on {{name}}…",
         "version_mismatch": "This crew runs {{productName}} {{peer}} but this machine runs {{local}}. Update one so they match.",
         "create_unnamed": "The crew opened a session but did not name it.",
+        "untitled": "Untitled session",
         "close_hint": "Closing does not stop the agent on {{name}}.",
         "feed_lost": "Lost live updates from {{name}}.",
         "feed_lost_hint": "Updates stopped. Retry to catch up.",

@@ -12387,6 +12387,7 @@
         "placeholder": "Mensaje para el agente en {{name}}…",
         "version_mismatch": "Esta tripulación ejecuta {{productName}} {{peer}}, pero esta máquina ejecuta {{local}}. Actualiza una para que coincidan.",
         "create_unnamed": "La tripulación abrió una sesión, pero no le puso nombre.",
+        "untitled": "Sesión sin título",
         "close_hint": "Cerrar no detiene al agente en {{name}}.",
         "feed_lost": "Se perdieron las actualizaciones en vivo de {{name}}.",
         "feed_lost_hint": "Las actualizaciones se detuvieron. Reintenta para ponerte al día.",
