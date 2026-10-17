@@ -89,6 +89,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/tasks", handlers.api_tasks_list)
     app.router.add_get("/api/tasks/summary", handlers.api_tasks_summary)
     app.router.add_get("/api/tasks/{task_id}", handlers.api_task_detail)
+    app.router.add_get("/api/tasks/{task_id}/timeline", handlers.api_task_timeline)
     app.router.add_post("/api/tasks/{task_id}", handlers.api_task_action)
     app.router.add_post("/api/tasks/{task_id}/cancel", handlers.api_task_cancel)
     app.router.add_get("/api/usage/kiro", handlers.api_kiro_usage)

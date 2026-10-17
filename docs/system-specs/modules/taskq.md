@@ -1211,6 +1211,97 @@ two are complementary rather than overlapping: the adopter also picks up the
 row this table just requeued from `admitted`, which for such a kind would
 otherwise sit claimable with nothing to claim it.
 
+## Task timeline (`timeline.py`)
+
+One task's history is recorded in three places that share only an id: its
+`task_events` rows, the `subagent/*` entries of the crew log of the session that
+dispatched it, and the run events of the workflow a workflow-agent row belongs
+to. `timeline.render_timeline(task_id, *, store, scrub, events_limit, sources)`
+reads each through its owner's existing surface, merges them into one list in
+time order and renders markdown. It is a read-only view: no table, no file, no
+write into any stream, and no mirroring of queue transitions into the crew log
+(there is no `task/*` entry type). It returns `None` for an id the store does
+not hold.
+
+**Streams.**
+
+| Stream | Applies to | Read through | Bound |
+|---|---|---|---|
+| `task_events` | every row | `TaskStore.events(task_id, limit=events_limit)` | the caller's tail; the route passes the detail route's `_EVENTS_TAIL` |
+| `crew_log` | `subagent` rows (the row id is the child's run id, the row's `session_key` the parent's) | `crew_log.resolve.unit_holding_child` over the parent's slot, the `subagents` fold row's `seq_spawned`, then ONE `crew_log.read.read_page` from that seq, filtered to `subagent/*` with `data.agent_id == task_id` | `CREW_SCAN_MAX` entries read, `CREW_ENTRIES_MAX` kept (newest) |
+| `workflow` | `workflow_agent` rows (`workflow:<run>:agent<N>`) | the run registry's handle for `<run>` (live, or restored from the persisted run JSON), its `events` read in place | `WORKFLOW_EVENTS_MAX` kept (newest) |
+
+**Every bound is applied before anything is copied or rendered.** The queue tail
+is bounded by the store read itself (`events(limit + 1)`: one probe row past the
+bound tells a full tail from one exactly the bound long, and only the tail is
+rendered). The crew-log and workflow streams each make one pass over their
+entries parsing only the time, into a buffer of their bound (`_newest`, a
+`deque(maxlen=...)`): an entry that falls off the front and an entry whose time
+does not read are counted and never kept, and only the kept entries have their
+data copied, scrubbed and rendered. `events_from_registry` hands the run's event
+objects over as they are, so a run with thousands of events costs the view
+`WORKFLOW_EVENTS_MAX` conversions, not the run's length. The stream reads an
+event's `ts`, `seq`, `type` and `data` from the object or from its JSON form
+alike, and labels the event with its `type` as the other two streams label
+theirs, whatever the store holds (scrubbed).
+
+The fold row alone cannot serve the crew-log side: it keeps one summary per child
+and does not read `subagent/steered`. Nothing about a child precedes its dispatch,
+so the page starts at `seq_spawned`.
+
+**The workflow side is the run's events, not one call's.** The row id's call
+number is a 1-based counter in the agent pool; an event's `call_index` is a
+0-based counter in the runner. They count different things, so no event is
+attributed to one row. Every `agent_*` event of the run is shown with its own
+`agent_id` (a required data key of `agent_started`, `agent_progress` and
+`agent_finished`); the run-level events (`log`, `phase_started`, `budget_update`,
+`approval_requested`, `run_*`) carry no agent id. A sibling call's events appear
+beside this call's.
+
+**Order.** Each stream's time is normalised to epoch seconds (`task_events.ts`
+is seconds, a crew-log entry's `time` is milliseconds, a workflow event's `ts` is
+an ISO 8601 string read as UTC when naive). Items sort by `(time, stream order,
+the stream's own sequence)` with the stream order `task_events`, `crew_log`,
+`workflow`, so a tie is deterministic. An entry whose time cannot be read is not
+placed; it is counted in the stream's `dropped`.
+
+**Reporting.** Every stream has a `StreamReport {stream, status, count, reason,
+dropped}` on the result and one line in the markdown's `## Streams` table; the
+route serves the table, not the reports.
+Status is `ok`, `absent` (nothing recorded, or the stream does not apply:
+reasons `no_record`, `not_applicable`), `truncated` (reasons `tail_limit`,
+`scan_limit`, `kept_limit`) or `unavailable` (reasons `read_failed`, `no_source`).
+A stream that fails does not fail the others, and an unreadable stream is never
+rendered as an empty one. The store read of the row itself is the one error that
+propagates.
+
+**Scrubbing.** `scrub` is a required argument with no default and the module
+defines and imports no scrubber; the route passes `tasks._scrub_value`, the helper
+every other task payload goes through. Before anything is encoded, each event's
+data is copied with every leaf and every mapping key, at any depth, scrubbed as
+the text it holds: a string as it is, bytes decoded as UTF-8, any other object
+through `str`; numbers, booleans and `None` are kept. Every encoding step (`str`
+or `repr` of bytes, JSON of a string) escapes a newline, so a multiline
+credential scrubbed after encoding would no longer match its pattern. The copy
+holds only string keys and JSON scalars, so its JSON encoding cannot fail. The
+encoded text of every value, every `key=value` key and every label is scrubbed
+again before it is cut at `VALUE_MAX_CHARS`, so the cut never keeps the prefix
+of a credential, and every rendered line is scrubbed, so a damaged store's
+`kind`, `type` or row fields are scrubbed too.
+
+**Route.** `GET /api/tasks/{task_id}/timeline` (`dashboard/handlers/tasks.py`
+`api_task_timeline`). It passes the dashboard's token middleware and then the
+shared owner gate (`require_owner_dashboard_request`, operation `task_timeline`)
+FIRST, so an app token, a non-owner user or a request with no claims is refused
+(403 `owner_only`, or 401 for a stale pre-owner subject) before the row is read.
+The view reaches further than the detail route (the spawning session's log and a
+workflow run), which is why it is stricter than that route's middleware-only
+gate. It adds no internal-path or MCP entry and no agent tool. Responses:
+`200 {task_id, markdown, entries}`; 404 `not_found` for an unknown id;
+404 `unavailable` when this gateway has no task store; 503 `unavailable` when the
+store read fails. Every read runs in `asyncio.to_thread`. The route table gains
+exactly this one GET; the five existing task routes are unchanged.
+
 ## Waits (`waits.py`)
 
 Every pause is a wait with a reason (SPEC-ADDENDUM §1-3, RFC §14.1-14.3).
@@ -1885,6 +1976,7 @@ startup), so later edits require restart. Fairness settings (`lane_weights`,
 - `test_store_taskq_owner_paths.py`: the failure arms of the moved writes and of the deferral beside them, on a real store: an `append_event`, `defer`, `expedite`, `update_wait` or `wake_wait` whose `COMMIT` fails raises `TaskStoreUnavailable` and leaves the row and its events as they were; an event whose `data_json` is not JSON reads back as an empty dict, and a deferral whose `until` is unreadable counts no parked time.
 - `test_taskq_claim_fencing.py`: two real threads on separate connections, 40 rows → each row won exactly once; stale generation `finish` is a no-op with a `stale_result` event; terminal never regresses; duplicate completion no-op; cancel before/after claim and during run all end `cancelled`.
 - `test_taskq_reconcile.py`: crash at queued / admitted / running / result-written-not-acked → nothing lost, terminals kept, `admitted→queued`, class-driven recovery, cancelled never revives, idempotent; legacy import fields and idempotency.
+- `test_taskq_timeline.py`: the merge orders by time, then stream, then each stream's own order, and a concatenation of the streams fails it; the queue-only markdown has one fixed shape; a stream that is unreadable (a failing crew-log or workflow reader, no workflow service), past a bound (`tail_limit`, `scan_limit`, `kept_limit`) or without a readable time is reported on the result and in the markdown and never dropped, while the other streams still render; a run with 1,000 events is bounded before any event is converted or rendered (no `to_json` call, at most `WORKFLOW_EVENTS_MAX` data reads), the crew-log and workflow streams hand the renderer at most their bound, and an unreadable time inside or outside the kept window is counted as dropped; a credential planted in each of the three streams (a value, a nested value, a key block, a label, a value the line bound would cut, and a key block held as bytes in a value, a mapping, a list or a key) and in the row's own fields never reaches the output, and the renderer has no default scrubber; on a real crew log the reader returns only the child's `subagent/*` entries in order, finds a child dispatched before a reset in the older unit, reports an absent child as absent and a failing unit search as unavailable; the route refuses an app token, a non-owner user and a claimless request before reading the row, takes the configured owner, answers 404 `not_found` / `unavailable` and 503 `unavailable` with a `code`, scrubs a credential the store holds, and changes no row or event; the five existing task routes answer byte for byte as the base tree did for one fixed store and the route table gains exactly one GET; tree scans pin `timeline.py` as a leaf with no scrubber and no mutating call, reaching the crew log only through `fold_session`, `read_page` and `unit_holding_child`, with one `render_timeline` caller.
 - `test_taskq_admission_integration.py` + `test_subagent_scale.py::TestDurableQueueScale`: real admission + fake worker; 2000 submissions → 2000 rows before any id returned, window ≤ 64 throughout, 2000 unique `done`, depth 0; FIFO across the window boundary; store-only cancel never starts; a queued row the drain CLAIMED and started inside `taskq_cancel_queued`'s own read is not cancelled under the spawn (the caller falls through to the live reap); a `queued` or `retry_wait` row a concurrent claim moved to a new generation inside that read is still cancelled, with no `stale_result` refusal (`test_a_stop_whose_generation_moved_under_an_unstarted_row_still_cancels`); restart with a fresh manager re-dispatches queued rows; `task_queue_enabled=false` leaves no `tasks/` directory.
 - `test_overload_integration_glue.py` (the route's own cancel pins, real store + real `RunnerAdmission` + the real handler): `cancel_wait` over every state in `STATES` — each `PARKED` one cancels, each `EXECUTING` one is 409 `not_waiting`, each terminal one is 409 `terminal`, and the three sets are asserted to partition `STATES`; and the RACE — the handler's row read held open while a real `admit` claims that row and takes it `running`, after which the cancel is refused (409 `not_waiting`, row `running`) and the live worker's own `done` still commits with no `stale_result` event.
 - `test_fairness_lanes.py`: `lane_key_for` mapping; smooth WRR is round-robin at equal weights, spreads a weight-3 lane, ties go to the oldest head, FIFO inside a lane; accept derives root / `system` / inherited lanes and never guesses an orphan's; `fetch_dispatchable_fair` interleaves lanes (and is FIFO with one lane), `children_only` and `pending_lanes`; on the real manager: 200 rows from one session, one row from another and one cron root at cap 1 → the small lane and `system` each start within three grants while the big lane stays FIFO; `lane_weights` 3:1 gives 6:2 of eight grants; `lane_weights["system"]=2` gives 4:2 of six; the child reserve on a three-level tree at cap 2 (children and resumes take the last slot, roots wait, roots fill the cap again once nothing nested is pending); a waiting parent whose child runs reserves nothing; `child_reserve=0` disables the rule; an adaptive cap of 1 is lifted to 2 for the child while a parent waits, roots still see 1, and the lift ends with the wait; no lift for a non-adaptive cap; the lift never exceeds `max_subagents`; settings clamp; no checkpoint-pause flag exists (RFC Q3); `wait_resume_granted` is immediate for a run holding its slot, times out for a yielded one, and is released by the grant event (one event per wait); `GET /api/spawn/{id}/resume` reports, holds and releases on the grant; the MCP hold re-asks after each held request, releases on `granted`, on `known=False`, on an error payload and for a chat-turn parent, and names `resume_pending` only after it observed an ungranted slot at the deadline; `spawn_sub_agents` holds until the second answer says granted and still returns the children's results.
