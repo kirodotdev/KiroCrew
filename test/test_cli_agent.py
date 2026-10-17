@@ -664,3 +664,190 @@ class TestAgentResetModel:
             main()
 
         assert "KIRO_AGENT" in capsys.readouterr().out
+
+
+def _wrong_flavour_spelling() -> tuple[str, str]:
+    """A registry spelling kiro-cli does not serve, and the id it maps to."""
+    from kiro_crew import model_registry
+
+    for entry in model_registry._REGISTRY.values():
+        for alias in entry.get("aliases", []):
+            correction = model_registry.acp_id_correction(alias)
+            if correction:
+                return alias, correction
+    raise AssertionError("the registry carries no wrong-flavour spelling to test with")
+
+
+class TestAgentModel:
+    """``--model`` on ``agent create`` / ``agent update``, and the list column."""
+
+    def test_create_stores_the_model_on_the_agent(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _base_config())
+
+        _run_agent_cli(cfg_path, "create", "--name", "oncall", "--model", "test-model-1")
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agents"]["oncall"]["model"] == "test-model-1"
+        assert "Model: test-model-1" in capsys.readouterr().out
+
+    def test_create_without_a_model_inherits(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _base_config())
+
+        _run_agent_cli(cfg_path, "create", "--name", "oncall")
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agents"]["oncall"]["model"] == ""
+        assert "Model:" not in capsys.readouterr().out
+
+    def test_create_stores_auto_as_no_pin(self, tmp_path: Path) -> None:
+        cfg_path = _write_config(tmp_path, _base_config())
+
+        _run_agent_cli(cfg_path, "create", "--name", "oncall", "--model", "auto")
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agents"]["oncall"]["model"] == ""
+
+    def test_update_changes_only_the_model(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _labelled_config())
+        before = json.loads(cfg_path.read_text(encoding="utf-8"))["agents"]["research"]
+
+        _run_agent_cli(cfg_path, "update", "research", "--model", "test-model-1")
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))["agents"]["research"]
+        assert saved == {**before, "model": "test-model-1"}
+        out = capsys.readouterr().out
+        assert "Updated agent: research" in out
+        assert "Model: test-model-1" in out
+
+    def test_update_without_the_flag_keeps_the_model(self, tmp_path: Path) -> None:
+        data = _labelled_config()
+        data["agents"]["research"]["model"] = "test-model-1"
+        cfg_path = _write_config(tmp_path, data)
+
+        _run_agent_cli(cfg_path, "update", "research", "--workspace", "default")
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agents"]["research"]["model"] == "test-model-1"
+
+    def test_an_empty_model_clears_the_pin(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data = _labelled_config()
+        data["agents"]["research"]["model"] = "test-model-1"
+        cfg_path = _write_config(tmp_path, data)
+
+        _run_agent_cli(cfg_path, "update", "research", "--model", "")
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agents"]["research"]["model"] == ""
+        assert "Model: (inherit)" in capsys.readouterr().out
+
+    def test_a_model_update_keeps_a_concurrent_workspace_edit(self, tmp_path: Path) -> None:
+        from kiro_crew.config.loader import update_config_locked
+        from kiro_crew.memory_stores import persist_member_config
+
+        cfg_path = _write_config(tmp_path, _labelled_config())
+
+        def publish_after_concurrent_edit(*args, **kwargs):
+            assert kwargs["changed_fields"] == {"model"}
+
+            def mutate(doc):
+                doc["agents"]["research"]["workspace"] = "elsewhere"
+                return doc
+
+            update_config_locked(mutate=mutate)
+            return persist_member_config(*args, **kwargs)
+
+        with unittest.mock.patch(
+            "kiro_crew.cli_commands.persist_member_config",
+            side_effect=publish_after_concurrent_edit,
+        ):
+            _run_agent_cli(cfg_path, "update", "research", "--model", "test-model-1")
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))["agents"]["research"]
+        assert saved["model"] == "test-model-1"
+        assert saved["workspace"] == "elsewhere"
+
+    def test_list_shows_the_pin_or_inherit(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data = _labelled_config()
+        data["agents"]["research"]["model"] = "test-model-1"
+        cfg_path = _write_config(tmp_path, data)
+
+        _run_agent_cli(cfg_path, "list")
+
+        lines = capsys.readouterr().out.splitlines()
+        column = lines[0].split().index("MODEL")
+        rows = {line.split()[0]: line.split() for line in lines[1:]}
+        assert rows["research"][column] == "test-model-1"
+        # The default row's " *" marker is one extra token before MODEL.
+        assert rows["default"][column + 1] == "(inherit)"
+
+    @pytest.mark.parametrize("bad", ["-rf", "a b", "x" * 501, "../model"])
+    def test_a_malformed_model_is_refused_without_echoing_it(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], bad: str
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _labelled_config())
+        before = cfg_path.read_text(encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "update", "research", f"--model={bad}")
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "invalid model format" in err
+        assert bad not in err
+        assert cfg_path.read_text(encoding="utf-8") == before
+
+    def test_create_refuses_a_malformed_model_before_writing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _base_config())
+        before = cfg_path.read_text(encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "create", "--name", "oncall", "--model", "a b")
+
+        assert exc_info.value.code == 1
+        assert "invalid model format" in capsys.readouterr().err
+        assert cfg_path.read_text(encoding="utf-8") == before
+
+    def test_a_wrong_flavour_spelling_is_refused_with_the_served_id(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        wrong, served = _wrong_flavour_spelling()
+        cfg_path = _write_config(tmp_path, _labelled_config())
+        before = cfg_path.read_text(encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "update", "research", "--model", wrong)
+
+        assert exc_info.value.code == 1
+        assert repr(served) in capsys.readouterr().err
+        assert cfg_path.read_text(encoding="utf-8") == before
+
+    def test_a_display_only_canonical_key_is_refused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch
+    ) -> None:
+        from kiro_crew import model_registry
+
+        # Every registered key also has a wrong-flavour mapping today, which is
+        # checked first; take it away to reach the display-only refusal.
+        key = next(k for k in model_registry._REGISTRY if k != "auto")
+        monkeypatch.setattr(model_registry, "acp_id_correction", lambda _model: None)
+        cfg_path = _write_config(tmp_path, _base_config())
+        before = cfg_path.read_text(encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "create", "--name", "oncall", "--model", key)
+
+        assert exc_info.value.code == 1
+        assert "display-only" in capsys.readouterr().err
+        assert cfg_path.read_text(encoding="utf-8") == before

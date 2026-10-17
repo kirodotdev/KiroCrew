@@ -41,6 +41,7 @@ from kiro_crew import (
 )
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent import reset_agent_model
+from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.apps.backend import recorded_backend_port
 from kiro_crew.apps.bridges import (
     SessionPointerCleanup,
@@ -86,6 +87,7 @@ from kiro_crew.config.loader import (
     read_local_secret,
     update_config_locked,
 )
+from kiro_crew.config.sections import normalize_agent_model
 from kiro_crew.cron import (
     _JOB_TIMEOUT_SECS,
     _SUBPROC_CLEANUP_ALLOWANCE_SECS,
@@ -1533,6 +1535,50 @@ def _agent_list_label(label: str) -> str:
     return safe_terminal_line(label)
 
 
+def _agent_model_or_exit(raw: str, provider: str) -> str:
+    """The ``--model`` value to store on an agent, or exit with the reason.
+
+    ``""`` and ``auto`` both mean "no pin", stored as ``""`` the way the crew
+    editor stores them. A CLI call is judged on shape (the same pattern
+    ``cron add --model`` checks), then on the two registry spellings the crew
+    editor refuses before it reaches entitlement: a wrong-flavour id kiro-cli
+    does not serve, and a display-only canonical key. Entitlement itself needs
+    a live session's advertised list, which this offline command does not have,
+    so an unknown id is accepted, as the crew editor accepts it with no live
+    session.
+    """
+    model = normalize_agent_model(raw)
+    if not model:
+        return ""
+    if len(model) > MAX_SHORT_STRING or not _MODEL_NAME_RE.match(model):
+        print("Error: invalid model format", file=sys.stderr)
+        sys.exit(1)
+    if is_claude_code(provider):
+        return model
+    correction = model_registry.acp_id_correction(model)
+    if correction:
+        print(
+            f"Error: {model!r} is not a model kiro-cli serves; the registry maps that "
+            f"spelling to {correction!r}. Confirm that is the model you want, or use 'auto'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if model_registry.is_canonical_key(model):
+        print(
+            f"Error: {model!r} is a display-only model identifier the "
+            f"{provider or 'active'} provider does not accept; use a served model id "
+            "or 'auto'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return model
+
+
+def _agent_list_model(model: str) -> str:
+    """*model* as one ``kirocrew agent list`` cell; an unpinned agent inherits."""
+    return _agent_list_label(normalize_agent_model(model)) or "(inherit)"
+
+
 def _handle_agent(args: argparse.Namespace) -> None:
     """Dispatch agent subcommands: list, create, update, delete."""
 
@@ -1543,7 +1589,7 @@ def _handle_agent(args: argparse.Namespace) -> None:
         default = cfg.default_agent
         print(
             f"{'NAME':<20} {'KIRO_AGENT':<20} {'WORKSPACE':<15} "
-            f"{'MEMORY_STORE':<15} {'SOURCE':<12} DISPLAY_NAME"
+            f"{'MEMORY_STORE':<15} {'MODEL':<20} {'SOURCE':<12} DISPLAY_NAME"
         )
         for name, agent in cfg.agents.items():
             marker = " *" if name == default else ""
@@ -1556,6 +1602,7 @@ def _handle_agent(args: argparse.Namespace) -> None:
             print(
                 f"{name + marker:<20} {agent.kiro_agent:<20} "
                 f"{agent.workspace:<15} {memory_store:<15} "
+                f"{_agent_list_model(agent.model):<20} "
                 f"{getattr(agent, 'source', 'kirocrew'):<12} "
                 f"{_agent_list_label(agent.display_name)}".rstrip()
             )
@@ -1587,6 +1634,7 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        model = _agent_model_or_exit(getattr(args, "model", None) or "", cfg.agent.provider)
         # A crew that carried this name before may still be listed on a team
         # (every removal path drops it best-effort). persist_member_config
         # purges that INSIDE the registry's locked mutation, right before the
@@ -1597,6 +1645,7 @@ def _handle_agent(args: argparse.Namespace) -> None:
             workspace=args.workspace,
             memory_store=memory_store,
             display_name=display_name,
+            model=model,
         )
         previous_store = cfg.agents[args.name].memory_store
         previous_member_id = cfg.agents[args.name].member_id
@@ -1639,6 +1688,8 @@ def _handle_agent(args: argparse.Namespace) -> None:
         else:
             print(f"Created agent: {args.name}")
         print(f"Workspace: {created.workspace}")
+        if created.model:
+            print(f"Model: {created.model}")
         from kiro_crew.member_mate_tools import GRANTED, grant_mate_tools_to_new_member
 
         if grant_mate_tools_to_new_member(args.name) == GRANTED:
@@ -1660,6 +1711,9 @@ def _handle_agent(args: argparse.Namespace) -> None:
             agent.kiro_agent = args.kiro_agent
         if args.workspace is not None:
             agent.workspace = args.workspace
+        new_model = getattr(args, "model", None)
+        if new_model is not None:
+            agent.model = _agent_model_or_exit(new_model, cfg.agent.provider)
         new_label = getattr(args, "display_name", None)
         if new_label is not None:
             try:
@@ -1670,7 +1724,7 @@ def _handle_agent(args: argparse.Namespace) -> None:
         try:
             changed_fields = {
                 field
-                for field in ("kiro_agent", "workspace", "display_name")
+                for field in ("kiro_agent", "workspace", "display_name", "model")
                 if getattr(args, field, None) is not None
             }
             if agent.memory_store != prior_memory_store:
@@ -1691,6 +1745,8 @@ def _handle_agent(args: argparse.Namespace) -> None:
             print(f"Updated agent: {args.name} (display name: {shown})")
         else:
             print(f"Updated agent: {args.name}")
+        if new_model is not None:
+            print(f"Model: {agent.model or '(inherit)'}")
 
     elif action == "delete":
         if args.name not in cfg.agents:
