@@ -6898,6 +6898,12 @@
       "copy": "Copiar {{label}} {{branch}}",
       "copy_2": "Copiar {{label}}"
     },
+    "secretNameCopy": {
+      "label": "Salve o token com este nome em Configurações > Segredos",
+      "copy": "Copiar nome",
+      "copied": "Copiado",
+      "copy_failed": "Falha ao copiar. Selecione o nome acima e copie você mesmo."
+    },
     "detailPanel": {
       "close_panel": "Fechar painel",
       "resize_panel": "Redimensionar painel"

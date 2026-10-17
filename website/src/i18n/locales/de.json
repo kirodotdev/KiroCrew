@@ -6784,6 +6784,12 @@
       "copy": "{{label}} {{branch}} kopieren",
       "copy_2": "{{label}} kopieren"
     },
+    "secretNameCopy": {
+      "label": "Speichere das Token unter diesem Namen in Einstellungen > Secrets",
+      "copy": "Namen kopieren",
+      "copied": "Kopiert",
+      "copy_failed": "Kopieren fehlgeschlagen. Markiere den Namen oben und kopiere ihn selbst."
+    },
     "detailPanel": {
       "close_panel": "Panel schließen",
       "resize_panel": "Größe des Panels ändern"

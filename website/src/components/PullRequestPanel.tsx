@@ -37,6 +37,7 @@ import {
 } from '../utils/pullRequestLinks'
 import { sourceProviderMeta, sourceTabQualifier } from '../utils/sourceProviderMeta'
 import CopyBranchButton from './CopyBranchButton'
+import SecretNameCopy from './SecretNameCopy'
 import { PierrePatch } from '../pierre'
 import GithubLogo from './icons/GithubLogo'
 import GitlabLogo from './icons/GitlabLogo'
@@ -1201,14 +1202,21 @@ export default function PullRequestPanel({
               />
             ) : (
               <ErrorNotice
-                className="w-full max-h-64 leading-relaxed"
+                // A notice carrying a secret name is two short sentences and the
+                // name block: it is shown whole, because the height cap would
+                // turn the sentence into a scroll area the block squeezes, and
+                // its last line says why the shorter shared name stopped working.
+                className={queryError.secretName ? 'w-full leading-relaxed' : 'w-full max-h-64 leading-relaxed'}
                 messageClassName="font-mono whitespace-pre-wrap break-words"
                 title={i18nT('components.pullRequestPanel.could_not_load_this_pull_request')}
                 message={queryError.message}
                 messagePlacement="below"
                 actionPlacement="below"
-                scrollMessage
+                scrollMessage={!queryError.secretName}
                 askAgent
+                // A provider read over its own REST API names the token's vault
+                // entry; the name rides beside the sentence so it is copied whole.
+                footer={queryError.secretName ? <SecretNameCopy name={queryError.secretName} /> : undefined}
                 testId="pull-request-panel-load-error"
               />
             )}

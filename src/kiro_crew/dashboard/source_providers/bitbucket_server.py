@@ -176,16 +176,25 @@ class _Client:
         try:
             async with self.session.get(url, allow_redirects=False) as resp:
                 if resp.status in {401, 403}:
+                    # Every remedy here names the token's vault entry, so it also
+                    # rides as its own field: with two or more hosts listed the
+                    # per-host name runs past 60 characters, and the panel shows
+                    # it as copyable text rather than inside the wrapped sentence.
+                    secret_name = _token_secret_name(host)
                     if not self.has_token:
-                        raise SourceProviderNotConfigured(_setup_guidance(host))
+                        raise SourceProviderNotConfigured(
+                            _setup_guidance(host), secret_name=secret_name
+                        )
                     if resp.status == 401:
                         raise SourceProviderError(
                             f"Bitbucket Server at {host} rejected the configured token. "
-                            f"{_replace_token_guidance(host)}"
+                            f"{_replace_token_guidance(host)}",
+                            secret_name=secret_name,
                         )
                     raise SourceProviderError(
                         f"The Bitbucket Server token for {host} cannot read this pull request. "
-                        f"{_replace_token_guidance(host)}"
+                        f"{_replace_token_guidance(host)}",
+                        secret_name=secret_name,
                     )
                 if resp.status == 404:
                     raise SourceProviderError(
