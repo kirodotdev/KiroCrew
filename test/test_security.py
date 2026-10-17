@@ -599,6 +599,29 @@ class TestRedactCredentials:
         assert "[REDACTED: credential]" in result
         assert len(warnings) == 1
 
+    def test_bearer_redaction_keeps_the_json_key_and_document_parses(self) -> None:
+        """Redacting a Bearer header keeps the key, quotes and scheme.
+
+        Only the token is replaced, so the document still parses and the pair is
+        intact, while every secret byte of the token is gone.
+        """
+        token = "abc123.def-456_ghi/jkl+mno=="
+        text = json.dumps({"Authorization": f"Bearer {token}", "region": "us-east-1"})
+        result, warnings = redact_credentials(text)
+        assert token not in result
+        loaded = json.loads(result)
+        assert loaded["Authorization"] == "Bearer [REDACTED: credential]"
+        assert loaded["region"] == "us-east-1"
+        assert len(warnings) == 1
+
+    def test_bearer_redaction_keeps_the_header_line_structure(self) -> None:
+        """A raw `Authorization: Bearer <tok>` header keeps its name and scheme."""
+        text = "Authorization: Bearer opaque-token-value-123"
+        result, warnings = redact_credentials(text)
+        assert "opaque-token-value-123" not in result
+        assert result == "Authorization: Bearer [REDACTED: credential]"
+        assert len(warnings) == 1
+
     def test_redacts_authorization_bearer_no_space(self) -> None:
         text = "Authorization:Bearer   opaque-token-value"
         result, _ = redact_credentials(text)
@@ -618,11 +641,16 @@ class TestRedactCredentials:
         assert len(warnings) == 1
 
     def test_redacts_bearer_jwt_single_match(self) -> None:
-        """A Bearer header carrying a JWT redacts as one match, not two."""
+        """A Bearer header carrying a JWT redacts as one match, not two.
+
+        Only the token is replaced; the `Authorization: Bearer ` prefix is the
+        non-secret scheme and survives, so the line reads as a bearer header
+        rather than a bare tag.
+        """
         text = f"Authorization: Bearer {self._JWT}"
         result, warnings = redact_credentials(text)
         assert self._JWT not in result
-        assert "Bearer" not in result
+        assert result == "Authorization: Bearer [REDACTED: credential]"
         assert len(warnings) == 1
 
     def test_jwt_prefix_without_structure_not_redacted(self) -> None:

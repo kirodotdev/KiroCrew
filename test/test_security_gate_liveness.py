@@ -366,7 +366,14 @@ def _url_payload_command(n: int) -> str:
 #: Raised again, from 29,573, for the one ``pinned-order`` entry in
 #: ``paths._CREW_SECRET_LEAVES``: the person's pinned-session order is fenced from
 #: agent file tools like ``tag-grants`` beside it.
-_PACKAGE_LINE_BUDGET = 29_574
+#:
+#: Raised again, from 29,574, for the HTTP/JSON bearer branch keeping its non-secret
+#: prefix: a named ``bearer_prefix`` group captures the header name, separator, quote
+#: and ``Bearer`` scheme so pass 1 redacts only the token after it and a JSON/header
+#: document parses. 11 lines are the group's comment on the branch and 4 the
+#: value-only span in ``_credential_redaction_plan``.
+#: No credential branch, match or pass moved; only the Bearer branch's redacted span.
+_PACKAGE_LINE_BUDGET = 29_589
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
