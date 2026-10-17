@@ -186,7 +186,6 @@
 2478 test/test_dashboard_updates_coverage.py
 11203 test/test_denied_commands_security.py
 2194 test/test_deploy_web_handlers.py
-4648 test/test_dev_fleet_server_coverage.py
 2020 test/test_discord_resumed_busy.py
 2240 test/test_eager_spawn.py
 2861 test/test_embeddings.py
@@ -283,7 +282,6 @@
 5921 test/test_taskrunner.py
 6082 test/test_telegram_parity.py
 8129 test/test_terminal_handler.py
-4674 test/test_token_auth.py
 4193 test/test_transcribe.py
 5831 test/test_vector_memory.py
 2014 test/test_vector_memory_coverage.py
