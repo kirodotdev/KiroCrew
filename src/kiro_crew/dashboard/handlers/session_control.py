@@ -18,6 +18,7 @@ from aiohttp import web
 
 from kiro_crew import conductor_patrol, session_ledger
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.dashboard import session_control_queue as scq
 from kiro_crew.dashboard.handlers._shared import (
     _read_session_key,
     internal_memory_scope,
@@ -811,6 +812,41 @@ async def api_session_control_summary(request: web.Request) -> web.Response:
             state,
             caller_session_key=_read_session_key(request),
             target=target,
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
+async def api_session_control_queue(request: web.Request) -> web.Response:
+    """POST /api/session-control/queue — list, cancel or move a created session's queue."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        action = body.get("action", "list")
+        entry = body.get("entry", "")
+        position = body.get("position")
+        if not isinstance(action, str):
+            raise sc.SessionControlError("action must be a string", code="bad_request")
+        if not isinstance(entry, str) or len(entry) > MAX_SHORT_STRING:
+            raise sc.SessionControlError("entry must be a short string", code="bad_request")
+        if position is not None and (isinstance(position, bool) or not isinstance(position, int)):
+            raise sc.SessionControlError("position must be an integer", code="bad_request")
+        target = _target(body)
+        # After the body read, like `summary`: `queue_target` is synchronous from
+        # its gate to its write, so this is the last suspension before the gate.
+        await sc.prewarm_enabled_check()
+        result = await scq.queue_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=target,
+            action=action,
+            entry=entry.strip(),
+            position=position,
             caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:
