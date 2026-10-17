@@ -19,6 +19,7 @@ import { fetchNotifications, armBootNotificationsFallback } from './store/notifi
 import { useWebSocket } from './hooks/useWebSocket'
 import { useDashboardHealthProbe } from './hooks/useDashboardHealthProbe'
 import { useConfigAutolinkRules } from './hooks/useConfigAutolinkRules'
+import { usePreviewFlagServerSync } from './hooks/usePreviewFlagServerSync'
 import { useTheme } from './hooks/useTheme'
 import { useShellBranding } from './shell/branding'
 import { useRumPageView } from './hooks/useRumPageView'
@@ -1343,6 +1344,9 @@ export default function App() {
   })
 
   const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, kiroCreditSurface, kiroAccountEntry } = useKiroUsageReadout()
+  // Feature previews live on the gateway; this keeps the browser cache of them in
+  // step. Called beside the credit readout, which already reads ['kirocrewConfig'].
+  usePreviewFlagServerSync()
   // Both forms use the side groups' container-query ladders. On desktop the
   // measured ladder (`.topbar.tb-measured`, index.css) adds folds when those
   // rungs still leave a group's contents overflowing; its level classes can

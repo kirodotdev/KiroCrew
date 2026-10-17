@@ -48,6 +48,7 @@ from kiro_crew import guide_catalog
 from kiro_crew import member_goals as _goals
 from kiro_crew.config.sections import (
     DEFAULT_MODEL,
+    FEATURE_PREVIEW_FLAGS,
     MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE,
     MEMBER_APPROVAL_MODES,
     effective_pin_scope,
@@ -181,6 +182,10 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "computer_use.screenshot_max_px",
         "dashboard.crewmate_threads",
         "dashboard.dynamic_dashboard_cards",
+        # A feature preview only decides whether the dashboard OFFERS an
+        # unreleased page or menu entry; the feature's own routes and checks
+        # are the same either way.
+        *(f"dashboard.feature_previews.{_name}" for _name in FEATURE_PREVIEW_FLAGS),
         "dashboard.folder_sort",
         "dashboard.mcp_probe_timeout_secs",
         "dashboard.prevent_sleep",

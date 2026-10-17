@@ -16527,13 +16527,16 @@
         "developer_mode": "Entwicklermodus",
         "developer_tools": "Entwicklerwerkzeuge",
         "feature_previews": "Funktionsvorschauen",
-        "feature_previews_desc": "Nicht veröffentlichte Funktionen und Seiten. Die Seiten erscheinen weder in der Seitenleiste noch in „Überall suchen“, bis du sie hier aktivierst; die Schalter selbst findet die Einstellungssuche aber. Sie sind absichtlich unfertig und gelten nur für dieses Gerät, sofern eine Karte nichts anderes sagt.",
+        "feature_previews_desc": "Nicht veröffentlichte Funktionen und Seiten. Diese Schalter werden für alle gespeichert, die diese {{productName}} nutzen, daher gelten sie in jedem Browser und in der Desktop-App. Die Seiten erscheinen weder in der Seitenleiste noch in „Überall suchen“, bis du sie hier aktivierst; die Schalter selbst findet die Einstellungssuche aber. Sie sind absichtlich unfertig.",
         "gateway": "Gateway",
         "how_to_set_up_an_ssh_tunnel": "So richtest du einen SSH-Tunnel ein",
         "open_developer_page": "Entwicklerseite öffnen",
         "run_a_local_gateway": "Lokales Gateway ausführen",
         "show_developer_page_in_sidebar_with_logs_system": "Entwicklerseite in der Seitenleiste mit Protokollen, Systemmetriken und Erinnerungsinterna anzeigen",
-        "turn_it_off_only_when_a_gateway_already_answers": "Startet ein Gateway auf diesem Rechner. Lass es an, außer der Port dieser App erreicht bereits eine Crew auf einem anderen Rechner – sonst kann die App beim nächsten Öffnen, wenn dies wirksam wird, keine Verbindung herstellen. Dazu muss die Crew für diesen Port mit „Set Remote Host…“ im Menü Connection gespeichert sein, plus ein Tunnel: kreuz dort „Keep an SSH tunnel to this crew open“ an (macOS und Linux) oder lass einen eigenen SSH-Tunnel laufen. Verbindungen unter Einstellungen → Remote-Crew enden, wenn dies aus ist, und zählen daher nicht."
+        "turn_it_off_only_when_a_gateway_already_answers": "Startet ein Gateway auf diesem Rechner. Lass es an, außer der Port dieser App erreicht bereits eine Crew auf einem anderen Rechner – sonst kann die App beim nächsten Öffnen, wenn dies wirksam wird, keine Verbindung herstellen. Dazu muss die Crew für diesen Port mit „Set Remote Host…“ im Menü Connection gespeichert sein, plus ein Tunnel: kreuz dort „Keep an SSH tunnel to this crew open“ an (macOS und Linux) oder lass einen eigenen SSH-Tunnel laufen. Verbindungen unter Einstellungen → Remote-Crew enden, wenn dies aus ist, und zählen daher nicht.",
+        "feature_previews_save_denied": "Nur der Besitzer dieser {{productName}} kann Funktionsvorschauen ändern, daher wurde „{{name}}“ zurückgesetzt.",
+        "feature_previews_save_failed": "„{{name}}“ konnte nicht gespeichert werden und wurde zurückgesetzt. Versuch es noch einmal.",
+        "feature_previews_carry_failed": "„{{name}}“ ist nur in diesem Browser aktiv: Es konnte nicht für alle gespeichert werden, die diese {{productName}} nutzen. Lade die Seite neu, um es noch einmal zu versuchen."
       },
       "discordPanel": {
         "allowed_server_channel_ids": "Erlaubte Server-Kanal-IDs",

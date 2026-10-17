@@ -7620,7 +7620,10 @@
       },
       "developerPanel": {
         "feature_previews": "Feature Previews",
-        "feature_previews_desc": "Unreleased features and pages. The pages stay hidden from the sidebar and from Search Everywhere until you turn them on here; the switches themselves do show up in Settings search. Unpolished on purpose, and per-device unless a card says otherwise."
+        "feature_previews_desc": "Unreleased features and pages. These switches are saved for everyone using this {{productName}}, so they stay set in every browser and in the desktop app. The pages stay hidden from the sidebar and from Search Everywhere until you turn them on here; the switches themselves do show up in Settings search. Unpolished on purpose.",
+        "feature_previews_save_denied": "Only the owner of this {{productName}} can change feature previews, so “{{name}}” was switched back.",
+        "feature_previews_save_failed": "Couldn’t save “{{name}}”, so it was switched back. Try again.",
+        "feature_previews_carry_failed": "“{{name}}” is on in this browser only: it couldn’t be saved for everyone using this {{productName}}. Reload the page to try again."
       },
       "computerUsePanel": {
         "computer_use_lets_the_agent_read_any_app_window": "Computer use lets the agent read any app window and send clicks and keystrokes into it. Most clicks are delivered straight to the app and leave your pointer alone, but the agent can ask to move the real pointer when a target needs it. Password fields are never read; nothing else limits which apps it may drive.",
