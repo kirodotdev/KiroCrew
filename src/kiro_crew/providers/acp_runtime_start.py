@@ -22,6 +22,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -47,6 +49,11 @@ from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import ACP_BACKENDS_HARNESS_OWNED_SESSIONS
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import model_registry_namespace
+from kiro_crew.agent_sdk.tool_gate import (
+    ADAPTER_EXPOSED_CREDENTIAL_LEAVES,
+    adapter_expose_files,
+    label_for,
+)
 from kiro_crew.agent_sdk.tool_search import resume_takes_tool_search_replay
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.messaging.link import telemetry_channel_of
@@ -127,6 +134,54 @@ def _is_transient_resume_lock_error(exc: BaseException) -> bool:
     """True when *exc* from ``session/load`` names a lock race worth retrying."""
     text = str(exc).lower()
     return any(marker in text for marker in _RESUME_TRANSIENT_LOCK_MARKERS)
+
+
+# What codex writes on stderr when the AWS SDK finds no credential it can read. The
+# ACP answer itself is the SDK's generic -32000 ``Authentication required``, which a
+# codex signed out of a non-AWS provider gives too, so it alone names no AWS cause.
+_MASKED_CREDENTIAL_AUTH_RE = re.compile(r"failed to load aws credentials", re.IGNORECASE)
+
+#: Names the mask in a startup auth failure, so the deliberate layout is not taken
+#: for a broken one. Fixed text: it never echoes a path's contents or a secret.
+CREDENTIAL_MASK_AUTH_NOTE = (
+    "Kiro Crew hides ~/.aws/credentials and ~/.aws/sso/cache from {label} on "
+    "purpose; only ~/.aws/config is readable, so Bedrock via {label} needs a "
+    "self-contained credential_process in that file, not SSO or static keys. Keep "
+    "static keys in ~/.aws/credentials, not ~/.aws/config, and do not make "
+    "~/.aws/config a symlink."
+)
+
+
+def _with_credential_mask_note(runtime: object, message: str, cause: BaseException) -> str:
+    """*message*, plus :data:`CREDENTIAL_MASK_AUTH_NOTE` when the mask explains *cause*.
+
+    Added only when all three hold: this spawn ran under a credential mask, that
+    mask re-exposes ``~/.aws/config`` (so ``~/.aws`` itself is hidden), and the
+    failure or the child's stderr says the AWS SDK could not load a credential.
+    Never added twice.
+    """
+    backend = getattr(runtime, "acp_backend", None)
+    hidden = getattr(runtime, "sandbox_hidden_dirs", None)
+    if not isinstance(backend, str) or not isinstance(hidden, tuple) or not hidden:
+        return message
+    config = os.path.join(os.path.expanduser("~"), ".aws", "config")
+    if config not in adapter_expose_files(backend, hidden):
+        return message
+    tail_reader = getattr(runtime, "redacted_stderr_tail", None)
+    tail = tail_reader() if callable(tail_reader) else ""
+    haystack = f"{cause}\n{tail if isinstance(tail, str) else ''}"
+    if not _MASKED_CREDENTIAL_AUTH_RE.search(haystack):
+        return message
+    note = CREDENTIAL_MASK_AUTH_NOTE.format(label=label_for(backend))
+    return message if note in message else f"{message} {note}"
+
+
+def _name_credential_mask(runtime: object, exc: BaseException) -> None:
+    """Append the mask note to *exc*'s own text in place, keeping its type."""
+    text = str(exc)
+    named = _with_credential_mask_note(runtime, text, exc)
+    if named != text:
+        exc.args = (named,)
 
 
 async def _start_kiro_runtime(self: AcpProvider) -> None:
@@ -504,10 +559,13 @@ async def _start_kiro_runtime_impl(
             # (it is the value passed as ``acp_backend`` above) — so the
             # sign-in advice names the harness that actually failed to
             # authenticate rather than assuming kiro-cli.
-            raise AcpAuthRequired(
-                host_auth.signed_out_message(self._client.backend),
-                backend=self._client.backend,
-            ) from exc
+            signed_out = host_auth.signed_out_message(self._client.backend)
+            # One synchronous table read, so the kiro path compares and stops (H13).
+            if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
+                signed_out = _with_credential_mask_note(runtime, signed_out, exc)
+            raise AcpAuthRequired(signed_out, backend=self._client.backend) from exc
+        if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
+            _name_credential_mask(runtime, exc)
         raise
     finally:
         # subprocess launch + ACP `initialize` handshake
@@ -635,10 +693,12 @@ async def _start_kiro_runtime_impl(
                     if sandbox_failure is not None:
                         raise sandbox_failure from exc
                     if runtime.saw_not_logged_in():
-                        raise AcpAuthRequired(
-                            host_auth.signed_out_message(self._client.backend),
-                            backend=self._client.backend,
-                        ) from exc
+                        signed_out = host_auth.signed_out_message(self._client.backend)
+                        if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
+                            signed_out = _with_credential_mask_note(runtime, signed_out, exc)
+                        raise AcpAuthRequired(signed_out, backend=self._client.backend) from exc
+                    if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
+                        _name_credential_mask(runtime, exc)
                     raise
             try:
                 handle = await runtime.create_session(
@@ -657,10 +717,12 @@ async def _start_kiro_runtime_impl(
                 if sandbox_failure is not None:
                     raise sandbox_failure from exc
                 if runtime.saw_not_logged_in():
-                    raise AcpAuthRequired(
-                        host_auth.signed_out_message(self._client.backend),
-                        backend=self._client.backend,
-                    ) from exc
+                    signed_out = host_auth.signed_out_message(self._client.backend)
+                    if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
+                        signed_out = _with_credential_mask_note(runtime, signed_out, exc)
+                    raise AcpAuthRequired(signed_out, backend=self._client.backend) from exc
+                if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
+                    _name_credential_mask(runtime, exc)
                 raise
             finally:
                 # In a finally, mirroring session_load: a start that BLEW its

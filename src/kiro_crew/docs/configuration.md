@@ -136,6 +136,16 @@ provider.
 | `goose` | goose | Uses goose's native ACP server. |
 | `deepseek` | DeepSeek Harness | Runs `dsh --profile acp` with Kiro Crew's gate plugin; provider keys come from `agent.deepseek_env`. |
 
+Codex runs with `~/.aws/credentials` and `~/.aws/sso/cache` hidden on purpose,
+and only `~/.aws/config` readable. Codex on Amazon Bedrock therefore needs a
+self-contained `credential_process` in that file, not SSO or static keys. If a
+Codex session fails to start with an authentication error, the error says this
+too.
+
+- Keep static keys in `~/.aws/credentials`. Do not write them into `~/.aws/config`.
+- Do not make `~/.aws/config` a symlink. On Linux the sandbox copies whatever
+  the link points at, so a link to a credential file would expose it.
+
 The non-default harnesses are offered only when this build registers them. A
 host governance policy can narrow that list further, and the dashboard reports
 missing harness components with their install command. `kirocrew doctor` reports

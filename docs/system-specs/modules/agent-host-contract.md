@@ -230,7 +230,11 @@ the one leaf its own child must still read, its operator-facing sign-in remedy,
 and whether a host logout may retire its live children. It does not declare a
 file to re-expose inside a directory the mask hides: a re-exposure is an edit to the
 mask, and the mask is host-owned, so that table stays in `agent_sdk/tool_gate.py`
-(`ADAPTER_EXPOSED_CREDENTIAL_LEAVES`). It also declares,
+(`ADAPTER_EXPOSED_CREDENTIAL_LEAVES`). When a harness with the `.aws/config`
+re-exposure fails `initialize` or `session/new` and its stderr says the AWS SDK
+could not load a credential under that mask, `providers/acp_runtime_start.py`
+appends `CREDENTIAL_MASK_AUTH_NOTE` to the surfaced error once, so the deliberate layout is not reported as a broken
+control. It also declares,
 structurally, whether it offers an in-product sign-in: `AgentInteractiveLogin` is
 a `runtime_checkable` protocol tested with `isinstance`, never a boolean, so a
 harness that has no flow is a shape the type system can see rather than one that
