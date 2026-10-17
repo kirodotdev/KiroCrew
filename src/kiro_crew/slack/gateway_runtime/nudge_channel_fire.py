@@ -285,6 +285,7 @@ async def _fire_slack_inner_nudge(
                     session_key=key,
                     sessions=self.sessions,
                     wake_loop_id=loop.id,
+                    subagents=getattr(self, "subagent_mgr", None),
                 ),
                 audit_caller="slack_nudge",
             )
@@ -337,6 +338,7 @@ async def _fire_slack_inner_nudge(
                     session_key=key,
                     sessions=self.sessions,
                     wake_loop_id=loop.id,
+                    subagents=getattr(self, "subagent_mgr", None),
                 ),
                 monitor_completion=(
                     (

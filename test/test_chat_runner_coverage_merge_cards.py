@@ -958,8 +958,11 @@ class TestVerbatimReplayMergeCards:
         the completion it is. The turn raised before its card's context was consumed, so the
         completion's replay must not carry the card's frame as well."""
         from kiro_crew.acp.client import AcpError
+        from kiro_crew.subagent import SubagentDelivery
 
         state, client, slot = self._state_with_context_builder(tmp_path)
+        # The slot still owes the completion's delivery (``_replay_owes_delivery``).
+        slot.note_pending_subagent_delivery(self.COMPLETION, [SubagentDelivery("child", 0.0, 0.0)])
         poisoned = AcpError("The model could not process an image", transient=False)
         poisoned.structural_terminal = True
         poisoned.image_format_unsupported = True

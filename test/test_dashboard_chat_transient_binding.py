@@ -238,12 +238,19 @@ class TestRunChatTransientRetryBindingMismatch:
         inserts = self._record_queue_inserts(monkeypatch, slot)
         slot.queue_insert(0, "a newer user message", kind="")
         consumed = MagicMock()
+        from kiro_crew.subagent import SubagentDelivery
+
+        completion = "[Subagent completion event] the child finished"
+        slot.note_pending_subagent_delivery(
+            completion,
+            [SubagentDelivery("child", 0.0, 0.0)],
+        )
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
             await _run_chat(
                 state,
                 slot,
-                "[Subagent completion event] the child finished",
+                completion,
                 _turn_actor="subagent",
                 _on_consumed=consumed,
             )
@@ -262,6 +269,51 @@ class TestRunChatTransientRetryBindingMismatch:
         assert any("a newer user message" in c for c in calls[2:]), calls
         consumed.assert_any_call(True)
         assert not any("recovery cancelled" in m.get("content", "") for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_an_owed_completion_replay_still_carries_the_failure_notices_it_drained(
+        self, tmp_path, monkeypatch
+    ):
+        """The replay queues the raw announce, so a failure notice the failed
+        attempt drained into its prompt must go back on the slot, or the model
+        never reads it."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+        from kiro_crew.subagent import SubagentDelivery
+
+        calls: list[str] = []
+
+        async def _stream(msg):
+            calls.append(msg)
+            if len(calls) == 1:
+                self._binding_failure()
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="answered")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        # The context-bearing arm is the one that drains pending failure notices.
+        state.context_builder = MagicMock()
+        state.context_builder.build_message.side_effect = lambda message, *_a, **_k: (
+            message,
+            None,
+        )
+        self._wire_sessions(state, self._client(_stream))
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        notice = "[Subagent delivery failed] another child timed out"
+        slot._pending_subagent_failures = [notice]
+        completion = "[Subagent completion event] the child finished"
+        slot.note_pending_subagent_delivery(completion, [SubagentDelivery("child", 0.0, 0.0)])
+
+        await asyncio.wait_for(
+            _run_chat(state, slot, completion, _turn_actor="subagent", _on_consumed=MagicMock()),
+            timeout=30,
+        )
+        await self._drain_bg(state)
+
+        assert len(calls) == 2, calls
+        assert all(notice in c and "the child finished" in c for c in calls), calls
+        assert slot._pending_subagent_failures == []
 
     @pytest.mark.asyncio
     async def test_recoverable_binding_mismatch_resets_outage_bookkeeping(
