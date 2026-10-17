@@ -105,6 +105,7 @@ _MEMBERS: dict[str, tuple[str, object, str]] = {
     "_read_exact_key": ("function", False, "skills_body_reads"),
     "_read_global_skill_text": ("function", False, "skills_body_reads"),
     "_read_pending_meta": ("function", False, "skills_review"),
+    "_read_pending_meta_for_listing": ("function", False, "skills_review"),
     "_readable_frontmatter": ("function", False, "skills"),
     "_recency_boost": ("function", False, "skills"),
     "_record_use": ("function", False, "skills"),

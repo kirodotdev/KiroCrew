@@ -652,6 +652,7 @@ class SkillsLoader:
     # ── Operator review of untrusted skill text: ``kiro_crew.skills_review`` ──
     catalog_project_skills = _review.catalog_project_skills
     _read_pending_meta = _review._read_pending_meta
+    _read_pending_meta_for_listing = _review._read_pending_meta_for_listing
     list_pending_skills = _review.list_pending_skills
     _redact_text = staticmethod(_review._redact_text)
     _redact_deep = _review._redact_deep

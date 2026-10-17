@@ -23,6 +23,7 @@ from pathlib import Path
 
 from kiro_crew import pinned_fs, skill_trust
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.platform_compat import pinned_directory
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -33,7 +34,11 @@ from kiro_crew.skills_auto_model import (
     _emit_pending_consumed,
 )
 from kiro_crew.skills_body_reads import PROJECT_SKILL_BODY_CAP, _decode_skill_text
-from kiro_crew.skills_candidate_tree import _PENDING_SCRIPT_MAX_DEPTH, _PENDING_SCRIPT_MAX_ENTRIES
+from kiro_crew.skills_candidate_tree import (
+    _PENDING_SCRIPT_MAX_DEPTH,
+    _PENDING_SCRIPT_MAX_ENTRIES,
+    _pending_candidate_shape,
+)
 from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES, validate_scripts
 
 #: The facade's logger, so a filter or a capture on ``kiro_crew.skills`` sees these records.
@@ -43,6 +48,9 @@ logger = logging.getLogger("kiro_crew.skills")
 _VALIDATION_REPORT_MAX_FINDINGS = 16
 _VALIDATION_REPORT_MAX_STRING_CHARS = 1024
 _VALIDATION_REPORT_TRUNCATION_KEY = "<truncated>"
+#: Largest ``.meta.json`` a LISTING reads. Approval reads the file through
+#: ``_read_pending_meta`` and is unaffected by this bound.
+_PENDING_META_LIST_MAX_BYTES = 64 * 1024
 
 
 class PendingApprovalRefused(Exception):
@@ -140,6 +148,31 @@ def _read_pending_meta(self, slug: str) -> dict:
     return redacted if isinstance(redacted, dict) else {}
 
 
+def _read_pending_meta_for_listing(self, slug: str) -> dict:
+    """Redacted ``.meta.json`` for a pending LIST row; ``{}`` when it cannot be shown.
+
+    A listing is display-only, so a hard link, non-regular file, file over
+    ``_PENDING_META_LIST_MAX_BYTES`` or JSON nested too deeply reads as empty
+    metadata instead of being read whole. ``_read_pending_meta`` is what the
+    approve paths call and is unchanged: a refusal here must never make an
+    update candidate look like a new skill at approval.
+    """
+    mf = self._pending_root() / slug / ".meta.json"
+    if mf.is_symlink():
+        return {}
+    try:
+        raw = safe_read_file_bytes_nolink(
+            str(mf), within_root=str(self._pending_root()), max_bytes=_PENDING_META_LIST_MAX_BYTES
+        )
+        if raw is None:
+            return {}
+        data = json.loads(raw.decode("utf-8"))
+        redacted = self._redact_deep(data) if isinstance(data, dict) else None
+    except (OSError, ValueError, RecursionError, FileTooLargeError):
+        return {}
+    return redacted if isinstance(redacted, dict) else {}
+
+
 def list_pending_skills(self) -> list[dict]:
     """Return ``{slug, name, description, triggers, has_scripts, created_at, path}``
     for every staged candidate."""
@@ -148,7 +181,8 @@ def list_pending_skills(self) -> list[dict]:
     if not root.is_dir():
         return out
     for child in sorted(root.iterdir()):
-        if not child.is_dir() or not (child / "SKILL.md").exists():
+        shape = _pending_candidate_shape(child)
+        if shape is None:
             continue
         # Only surface canonical slugs. A crystallize direct-write could name
         # the pending dir with credential-shaped text; anything that isn't a
@@ -157,7 +191,9 @@ def list_pending_skills(self) -> list[dict]:
         # the slug-keyed handlers, which apply the same guard).
         if not _AUTO_NAME_PATTERN.match(child.name):
             continue
-        meta = self._read_pending_meta(child.name)
+        # A linked candidate directory is listed for its failing verdict, but
+        # its metadata is never read: that read would resolve through the link.
+        meta = {} if shape == "link" else _read_pending_meta_for_listing(self, child.name)
         # Same verdict the approve path will reach, so the card can carry a
         # warning badge WITHOUT the user expanding the row first. The
         # verdict walk is self-defending — descriptor-pinned, budgeted,
@@ -173,7 +209,9 @@ def list_pending_skills(self) -> list[dict]:
             "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{child.name}"),
             "description": meta.get("description", ""),
             "triggers": meta.get("triggers", ""),
-            "has_scripts": bool(meta.get("has_scripts")),
+            # Only a JSON ``true`` counts: the file is agent-written, and
+            # ``bool("false")`` is True.
+            "has_scripts": meta.get("has_scripts") is True,
             "created_at": meta.get("created_at", ""),
             "source": meta.get("source", ""),
             "kind": meta.get("kind", "new"),
@@ -599,9 +637,7 @@ def get_pending_skill(self, slug: str) -> dict | None:
     if not self._is_pending_slug_safe(slug):
         return None
     pdir = self._pending_root() / slug
-    if not (pdir / "SKILL.md").exists():
-        # The ordinary "no such candidate" answer. Not a security check -- the
-        # pinned read below is -- so probing by name here costs nothing.
+    if _pending_candidate_shape(pdir) is None:
         return None
     # ONE descriptor-pinned traversal both validates and reads: the body, the
     # metadata and every script come back from opens that refuse a link AT THE
