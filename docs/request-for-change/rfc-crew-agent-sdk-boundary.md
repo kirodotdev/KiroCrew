@@ -1235,7 +1235,7 @@ package it is supposed to delete. The gate prints the live split on every run â€
 read it there rather than from this paragraph.
 
 One spelling deserves naming because it is easy to miss: `config/loader_config.py`
-constructs `AcpProvider` (through `agent_sdk.acp_provider_class()`), and that construction **is**
+constructs `AcpProvider` (through `agent_sdk.drivers.acp.build_acp_provider()`), and that construction **is**
 `create_provider_factory`. Other files import the name without constructing it,
 so "route it through the factory" is already true â€” what PR 5 has to change is
 which module they import the name *from*, not how they build it.

@@ -91,9 +91,9 @@ it bound before its owners existed, and serves each owner-defined name from the
 owner that defines it. Its own code is the effective-model resolution
 (`resolve_effective_model`, `resolve_app_spawn_model`, `app_model_pin`, the
 kiro-agent reference check) and `build_provider_factory`, the platform seam in
-front of `KiroCrewConfig.create_provider_factory`. That method reaches
-`AcpProvider` through `agent_sdk.acp_provider_class`, so no config module imports
-the ACP layer. The rest lives in one owner per responsibility, lowest layer first:
+front of `KiroCrewConfig.create_provider_factory`. That method builds
+`AcpProvider` through `agent_sdk.drivers.acp.build_acp_provider`, so no config
+module imports the ACP layer. The rest lives in one owner per responsibility, lowest layer first:
 
 | Owner | Owns |
 |---|---|

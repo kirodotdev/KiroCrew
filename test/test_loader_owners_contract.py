@@ -19,7 +19,7 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew import _facade_mirror
-from kiro_crew.agent_sdk.acp_provider_class import acp_provider_class
+from kiro_crew.agent_sdk.drivers.acp import build_acp_provider
 from kiro_crew.config import loader, loader_config, loader_pipeline, loader_snapshots
 
 _OWNERS = tuple(
@@ -112,12 +112,14 @@ class TestTheProviderFactory:
     def test_a_patched_provider_class_reaches_the_factory(self) -> None:
         cfg = loader.KiroCrewConfig()
         with patch("kiro_crew.providers.acp.AcpProvider") as provider:
-            assert acp_provider_class() is provider
+            # The SDK factory reads the class at call time, so a patch of the
+            # providers-layer class reaches it (and config through it).
+            assert build_acp_provider() is provider.return_value
             factory = cfg.create_provider_factory()
             assert factory(session_key="cron:contract", model_override="fixture-model") is (
                 provider.return_value
             )
-        assert provider.call_count == 1
+        assert provider.call_count == 2
 
 
 class _FakeConfigClass:
