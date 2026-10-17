@@ -931,6 +931,32 @@ return. Only the SDK call takes `params`: the HTTP start route
 (`POST /api/apps/{app}/_jobs/{kind}/start`) accepts a `dedupe_key` and no
 parameters.
 
+### Crewmate proposals (`ctx.crewmate`)
+
+> **Preview, switched off.** `ctx.crewmate` is `None` for every app, even one that declares the permission, until the dashboard view that lists an app's cards lands (#21718). The calls below describe the contract that view will switch on (`apps/crewmate_sdk.py::PREVIEW_ENABLED`).
+
+Once switched on, present when the manifest declares `permissions.proposeCrewmate: true`, and `None` otherwise. The app hands core one parsed `.crewmate` bundle ([rfc-crewmate-share.md](../request-for-change/rfc-crewmate-share.md) §5.2). Core checks it and raises one `crewmate.import` change card for the owner. The app creates nothing: only the owner's press creates the crewmate.
+
+```python
+card_id = await ctx.crewmate.propose(bundle)   # raises CrewmateProposalError(code, message)
+state = await ctx.crewmate.status(card_id)     # {"status": "pending"} ... {"status": "applied", "crew": "<key>"}
+```
+
+`bundle` is `{"crewmate": <crewmate.json>, "agent": <agent.json>, "goals"?: {"longTerm", "keyResults"}, "rules"?: {"rules"}, "crons"?: [...], "avatar"?: {"type", "size"}}`. Core refuses it before any card exists when:
+
+| Code | Cause |
+|---|---|
+| `unknown_param` | an unknown key in the bundle, `crewmate`, `agent`, `goals`, `rules`, `sender` or `avatar` (`{"type", "size"}`); crons and key results are only counted |
+| `invalid_bundle` | not `format: "kirocrew.crewmate"`, a bad shape, or a `dashboardTemplate` that is not a `builtin:` or `user:` id |
+| `newer_format` | a `formatVersion` this version does not read |
+| `grant_in_bundle` | `allowedTools`, `autoApprove` or `permissions` in `agent.json` |
+| `needs_mate_config` | any `mcpServers` or `skills` entry, until the mate-owned agent file exists (RFC §5.7) |
+| `rules_unsupported` | non-empty rules, which this version cannot import yet |
+
+The card creates the crewmate from the `kirocrew` template with a fresh member id, its own empty memory and workspace, and `approval_mode: "normal"` in the create. It writes the long-term goal when the bundle has one. It lists the crons, key results, picture or face, model or effort hints and dashboard template a bundle carries under "Not brought over", as codes the dashboard words, and memory, history, credentials and the sender's approval settings under "Stays with the sender". A taken name becomes the first free `<name> 2` to `<name> 9`, and the owner can edit it.
+
+The card is stored under the key `app:<name>` with no conversation, so an app's open cards count against one per-app cap. `status` reads only this app's own cards. The dashboard view where the owner presses an app card is not built yet.
+
 ### Gateway Application (`ctx.http_app`)
 
 The gateway's own aiohttp `Application`, for background work that must be anchored

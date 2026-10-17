@@ -508,6 +508,9 @@ class Permissions:
     #: same reason as ``spawn``: "which apps can start work that outlives the
     #: page that started it" must be answerable from the manifest.
     jobs: bool = False
+    #: May raise a ``crewmate.import`` owner card through ``ctx.crewmate``. The
+    #: card creates nothing until the owner presses it.
+    proposeCrewmate: bool = False  # noqa: N815
     # WS cross-app visibility opt-in: app names (or ["*"]) allowed to use
     # slots:app:<this-app> / subagent:app:<this-app> declarations to observe
     # this app's slots and subagents. Empty list = no cross-app visibility.
@@ -535,6 +538,8 @@ class Permissions:
             d["spawn"] = True
         if self.jobs:
             d["jobs"] = True
+        if self.proposeCrewmate:
+            d["proposeCrewmate"] = True
         if self.exposeToApps:
             d["exposeToApps"] = self.exposeToApps
         return d
@@ -563,6 +568,7 @@ class Permissions:
             sessionApproval=data.get("sessionApproval") is True,  # noqa: N815
             spawn=data.get("spawn") is True,
             jobs=data.get("jobs") is True,
+            proposeCrewmate=data.get("proposeCrewmate") is True,  # noqa: N815
             exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815
         )
 

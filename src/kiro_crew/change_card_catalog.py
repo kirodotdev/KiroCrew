@@ -72,6 +72,21 @@ KIND_SECRET_SAVE = "secret.save"
 KIND_TRUST_APP = "trust.app"
 KIND_DENIED_COMMAND = "denied_command"
 KIND_FOLDER_STEERING = "folder.steering"
+#: An app's proposal of one crewmate from a ``.crewmate`` bundle
+#: (``docs/request-for-change/rfc-crewmate-share.md``). Only an app that
+#: declares ``permissions.proposeCrewmate`` raises it, through ``ctx.crewmate``;
+#: an agent cannot, so :func:`list_kinds` leaves it out.
+KIND_CREWMATE_IMPORT = "crewmate.import"
+#: The kinds whose apply step 0 creates a crewmate, so they share its evidence,
+#: its identity-checked Undo (delete that crewmate) and its state reads.
+CREWMATE_CREATING_KINDS = (KIND_CREWMATE_CREATE, KIND_CREWMATE_IMPORT)
+APP_ONLY_KINDS = frozenset({KIND_CREWMATE_IMPORT})
+#: The ``.crewmate`` ``formatVersion`` values this version reads. Any added
+#: field bumps the version, so a newer file is refused rather than guessed at.
+CREWMATE_FORMAT_VERSIONS = (1,)
+#: The parts a ``crewmate.import`` card names as left out, as codes the
+#: dashboard words: the bundle carried them and this version does not write them.
+NOT_IMPORTED_CODES = ("crons", "keyResults", "avatar", "model", "dashboardTemplate")
 
 #: The steps of a ``crewmate.create`` apply: the crewmate (0), its first goal
 #: in its goal record (1), and its optional work schedule (2).
@@ -101,6 +116,7 @@ _NAME_MAX = 128
 _TEXT_MAX = 4000
 _CREWMATE_NAME_MAX = 24
 _CREWMATE_GOAL_MAX = 200
+_CREWMATE_DESCRIPTION_MAX = 1000
 #: A crewmate's goals and key results: the record's own bounds, so a
 #: validated card never fails on apply and the record accepts nothing a card
 #: could not propose.
@@ -561,12 +577,28 @@ KINDS: dict[str, KindDef] = {
             ),
             ("steering_dirs",),
         ),
+        KindDef(
+            KIND_CREWMATE_IMPORT,
+            "Import one crewmate from a .crewmate bundle (apps only).",
+            _obj(
+                {
+                    "name": {"type": "string", "maxLength": _CREWMATE_NAME_MAX},
+                    "description": _STR,
+                    "goal": _STR,
+                    "sender": _STR,
+                    "format_version": {"type": "integer"},
+                    "not_imported": {"type": "array", "items": _STR},
+                },
+                ["name", "format_version"],
+            ),
+            ("name",),
+        ),
     )
 }
 
 
 def list_kinds() -> list[dict[str, Any]]:
-    """The catalog as the ``list_change_kinds`` tool returns it."""
+    """The catalog as the ``list_change_kinds`` tool returns it, app-only kinds left out."""
     return [
         {
             "id": k.id,
@@ -575,6 +607,7 @@ def list_kinds() -> list[dict[str, Any]]:
             "editable": list(k.editable),
         }
         for k in KINDS.values()
+        if k.id not in APP_ONLY_KINDS
     ]
 
 
@@ -822,6 +855,26 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
             _only(schedule, {"cron_expr", "timezone"}, "schedule")
             expr, tz = _clean_cron(schedule, required=True)
             out["schedule"] = {"cron_expr": expr, **({"timezone": tz} if tz else {})}
+        return out
+    if kind == KIND_CREWMATE_IMPORT:
+        _only(p, set(KINDS[kind].params_schema["properties"]))
+        if p.get("format_version") not in CREWMATE_FORMAT_VERSIONS:
+            raise _fail("invalid_param", "'format_version' is not one this version reads")
+        out = {
+            "name": _member_name(p, "name", max_len=_CREWMATE_NAME_MAX),
+            "format_version": p["format_version"],
+        }
+        for key, max_len in (("description", _CREWMATE_DESCRIPTION_MAX), ("sender", 64)):
+            text = _clean_str(p, key, required=False, max_len=max_len, allow_empty=True)
+            if text:
+                out[key] = text
+        if p.get("goal") is not None:
+            out["goal"] = _goal_text(p, "goal", max_len=_LONG_TERM_GOAL_MAX, multiline=True)
+        left_out = _str_list(p.get("not_imported", []), "not_imported", max_len=32)
+        if not set(left_out) <= set(NOT_IMPORTED_CODES):
+            raise _fail("invalid_param", "'not_imported' names a part this version does not know")
+        if left_out:
+            out["not_imported"] = left_out
         return out
     if kind == KIND_CREWMATE_UPDATE:
         _only(p, {"name", "fields"})
@@ -1504,6 +1557,52 @@ def build_preview(
             )
             apply.append(_create_schedule_step(p))
         out["apply"] = apply
+    elif kind == KIND_CREWMATE_IMPORT:
+        if snapshot.get("exists"):
+            raise _fail("already_exists", f"a crewmate named '{p['name']}' already exists")
+        out["title"] = f"Import crewmate “{p['name']}”"
+        out["changes"] = [
+            {"field": "name", "label": "Name", "after": p["name"]},
+            {"field": "sender", "label": "From", "after": p.get("sender", "")},
+        ]
+        for key in ("description", "goal"):
+            if p.get(key):
+                out["changes"].append({"field": key, "label": key.title(), "after": p[key]})
+        # Trust is the receiver's to grant: the mode rides on the create itself,
+        # because an unset mode opens in MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE.
+        inherited = [s for s in snapshot.get("inherited_auto_approve") or () if isinstance(s, str)]
+        # ``import_approval`` only when a row of inherited grants follows: its
+        # hint says the crewmate asks like the owner's other crewmates do.
+        mode = "import_approval" if inherited else "approval_mode"
+        out["changes"].append({"field": mode, "label": "Approval", "after": "normal"})
+        if inherited:  # granted by the template, so the press widens (as crewmate.create)
+            reach = [r for r in snapshot.get("inherited_reach") or () if isinstance(r, dict)]
+            row = {
+                "field": "template_auto_approve",
+                "label": "Your crewmates use these without asking",
+            }
+            out["changes"].append({**row, "after": reach or ", ".join(inherited)})
+            out["risk"] = RISK_WIDEN
+        out["changes"].append(
+            {"field": "not_included", "label": "Stays with the sender", "after": "private"}
+        )
+        if p.get("not_imported"):
+            out["changes"].append(
+                {"field": "not_imported", "label": "Not brought over", "after": p["not_imported"]}
+            )
+        body = {
+            "name": p["name"],
+            "kiro_agent": DEFAULT_CREWMATE_TEMPLATE,
+            "source": "kirocrew",
+            "description": p.get("description", ""),
+            "approval_mode": "normal",
+        }
+        out["apply"] = [step("POST", "/api/agents", body)]
+        if p.get("goal"):  # crewmate.create's goal step, addressed by step 0's member_id
+            fills = [_step_path_fill("slug", 0, "member_id"), _step_fill("member", 0, "name")]
+            path = f"/api/members/{placeholder(fills[0])}/goals/long-term"
+            body = _with_fills({"long_term": p["goal"], "expected": ""}, fills[1:])
+            out["apply"].append(step("PUT", path, body, fill=fills))
     elif kind == KIND_CREWMATE_UPDATE:
         if not snapshot.get("exists"):
             raise _fail("not_found", f"no crewmate named '{p['name']}'")
@@ -2161,7 +2260,7 @@ def extract_evidence(
         and step_index in (LEGACY_CREWMATE_CREATE_SCHEDULE_STEP, CREWMATE_CREATE_SCHEDULE_STEP)
     ):
         return pick("id")
-    if kind == KIND_CREWMATE_CREATE and step_index == 0:
+    if kind in CREWMATE_CREATING_KINDS and step_index == 0:
         return pick("member_id", "name")
     if kind == KIND_CREWMATE_GOAL and op == OP_APPLY:
         # The goal the write added or changed, so the Undo of an added goal can
@@ -2280,7 +2379,7 @@ def _build_undo(
         if not job_id:
             return None, "identity_unknown"
         return [step("DELETE", f"/api/crons/{_q(str(job_id))}")], None
-    if kind == KIND_CREWMATE_CREATE:
+    if kind in CREWMATE_CREATING_KINDS:
         plan = []
         at = _create_schedule_index(evidence)
         job_id = ev(at).get("id")
@@ -2449,7 +2548,7 @@ def result_summary(
     if status == "applied":
         return f"Done: {title}"
     if status == "partial":
-        if kind == KIND_CREWMATE_CREATE:
+        if kind in CREWMATE_CREATING_KINDS:
             name = params.get("name")
             if failed_step == CREWMATE_CREATE_GOAL_STEP:
                 # A failed step stops the plan, so a schedule after it never ran.

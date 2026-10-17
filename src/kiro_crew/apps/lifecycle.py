@@ -442,6 +442,7 @@ class LifecycleDispatcher:
             # The same shared predicate the enable/boot builder uses, so a
             # shutdown context carries the handle exactly when the startup one did.
             http_app=self._http_app if granted else None,
+            crewmate_host=self._http_app,
         )
 
     async def _invoke(self, app_name: str, hook_path: str, ctx: AppContext, *, phase: str) -> bool:

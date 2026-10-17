@@ -28,6 +28,37 @@ export const FIELD_LABELS: Record<string, () => string> = {
   model: () => i18nT('components.changeCards.field_model'),
   reasoning_effort: () => i18nT('components.changeCards.field_reasoning_effort'),
   approval_mode: () => i18nT('components.changeCards.field_approval_mode'),
+  sender: () => i18nT('components.changeCards.field_sender'),
+  not_included: () => i18nT('components.changeCards.field_not_included'),
+  not_imported: () => i18nT('components.changeCards.field_not_imported'),
+  template_auto_approve: () => i18nT('components.changeCards.field_template_auto_approve'),
+}
+
+/** One inherited MCP server, said as what it reaches: a service's host or a local program. */
+function reachText(r: unknown): string {
+  const o = (r && typeof r === 'object' ? r : {}) as { name?: unknown; host?: unknown; command?: unknown }
+  const name = String(o.name ?? '')
+  if (typeof o.host === 'string' && o.host) return i18nT('components.changeCards.reach_remote', { name, host: o.host })
+  if (typeof o.command === 'string' && o.command) return i18nT('components.changeCards.reach_local', { name, command: o.command })
+  return name
+}
+
+/** The servers a widen row names, for the warning above the rows. */
+export function reachNames(v: unknown): string {
+  if (Array.isArray(v)) return fmtList(v.map(r => String((r as { name?: unknown })?.name ?? r)))
+  return typeof v === 'string' ? v : ''
+}
+
+/** Where the owner changes which servers new crewmates use unasked. */
+export const TEMPLATES_HREF = '/capabilities?tab=templates'
+
+/** The parts an import card says it leaves out, sent as codes. */
+const LEFT_OUT_LABELS: Record<string, () => string> = {
+  crons: () => i18nT('components.changeCards.left_crons'),
+  keyResults: () => i18nT('components.changeCards.left_key_results'),
+  avatar: () => i18nT('components.changeCards.left_avatar'),
+  model: () => i18nT('components.changeCards.left_model'),
+  dashboardTemplate: () => i18nT('components.changeCards.left_dashboard'),
 }
 
 /** The approval modes a crewmate's own chat can be set to, in the picker's words. */
@@ -49,12 +80,14 @@ const APPROVAL_MODE_HINTS: Record<string, () => string> = {
 /** A line under a row's value explaining what the new value means, when the field has one. */
 export function changeHint(c: CardChange): string | null {
   if (c.field === 'approval_mode' && typeof c.after === 'string' && APPROVAL_MODE_HINTS[c.after]) return APPROVAL_MODE_HINTS[c.after]()
+  if (c.field === 'import_approval') return i18nT('components.changeCards.approval_hint_import')
   return null
 }
 
 /** A row's label: the localized field name when known, else the gateway's. */
 export function changeLabel(c: CardChange): string {
   if (c.field === 'goal' && typeof c.number === 'number') return i18nT('pages.membersPage.goals_goal_number', { number: c.number })
+  if (c.field === 'import_approval') return FIELD_LABELS.approval_mode()
   return (c.field && FIELD_LABELS[c.field]?.()) || c.label
 }
 
@@ -67,7 +100,11 @@ function changeValue(c: CardChange, v: unknown): string {
   if (c.field === 'reasoning_effort' && typeof v === 'string') return v === '' ? i18nT('pages.kiroCrewAgentsPage.inherited') : effortLabel(v)
   // An approval mode is a code identifier on the wire; the card shows the word
   // the picker shows for it, so "trust" reads as the same thing in both places.
-  if (c.field === 'approval_mode' && typeof v === 'string' && APPROVAL_MODE_LABELS[v]) return APPROVAL_MODE_LABELS[v]()
+  if ((c.field === 'approval_mode' || c.field === 'import_approval') && typeof v === 'string' && APPROVAL_MODE_LABELS[v]) return APPROVAL_MODE_LABELS[v]()
+  // Codes on the wire, so the words are in the reader's language.
+  if (c.field === 'not_included' && v === 'private') return i18nT('components.changeCards.not_included_private')
+  if (c.field === 'template_auto_approve' && Array.isArray(v)) return v.map(reachText).join('; ')
+  if (c.field === 'not_imported' && Array.isArray(v)) return fmtList(v.map(code => LEFT_OUT_LABELS[String(code)]?.() ?? String(code)))
   return formatCardValue(v)
 }
 
@@ -121,6 +158,9 @@ export function CardChanges({ changes }: { changes: CardChange[] }) {
               </span>
               {changeHint(c) && (
                 <span className="block text-[12px] leading-4 text-muted" data-testid="change-card-hint">{changeHint(c)}</span>
+              )}
+              {c.field === 'template_auto_approve' && (
+                <a className="block text-[12px] leading-4 text-accent underline" href={TEMPLATES_HREF} data-testid="change-card-template-link">{i18nT('components.changeCards.template_link')}</a>
               )}
             </>
           )}

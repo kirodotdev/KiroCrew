@@ -1259,6 +1259,16 @@ surface that constructs an app context MUST pass a real broadcaster.
 
 Writer: `apps/lifecycle.py`; consumer: an app's `publish`/`_broadcast`.
 
+## 8a. `ctx.crewmate` proposes; only the owner's press creates
+
+`build_app_context` builds `ctx.crewmate` (`apps/crewmate_sdk.py::CrewmateSDK`) only when `crewmate_sdk.PREVIEW_ENABLED` is on (off until the owner view below ships), the manifest's `permissions.proposeCrewmate` is literally `true` and the builder passed the gateway's Application as `crewmate_host`. Both builders pass it (`hooks_integration._build_app_context_from_info`, `LifecycleDispatcher._build_context`), whatever the app's `routes` hook says, because the SDK never hands the Application to the app.
+
+`propose(bundle)` runs `crewmate_bundle.crewmate_import_params`, which fails closed on an unknown key in the bundle, `crewmate`, `agent`, `goals`, `rules`, `sender` or `avatar` (crons, key results and `avatarTraits` are only counted), another format, a newer `formatVersion`, a grant, a non-template dashboard id, rules, and any MCP server or skill (rfc-crewmate-share.md §5.7). `handlers/change_cards.py::propose_app_card` then stores one `crewmate.import` card under `slot_key` `app:<name>` with an empty `session_key`, and writes nothing else. `propose_for_caller` refuses that kind and any `app:` key from a chat caller, and `list_kinds` leaves the kind out, so no agent can raise it. The card's plan is `crewmate.create`'s: `POST /api/agents` with `approval_mode: "normal"`, then the long-term goal. It shares that kind's evidence, member-id-checked Undo and state reads through `CREWMATE_CREATING_KINDS`. The app token cannot run a plan step: `change_card_middleware` refuses it on every hooked route.
+
+Not built yet: the owner-facing view that lists `app:` cards (they are stored but no chat slot shows them), cancelling them when the app is disabled, re-consent when an update adds the permission, and a provenance stamp on the crew record.
+
+Writers: `apps/context.py::build_app_context`, `apps/crewmate_sdk.py`, `dashboard/handlers/change_cards.py::propose_app_card`. Pinned by `test/test_change_card_crewmate_import.py`.
+
 ## 9. Desktop-shell (Electron main-process) code is a first-party-only exception
 
 App Kit apps are **renderer + backend** only. Mochi's `website/electron/mochi/`

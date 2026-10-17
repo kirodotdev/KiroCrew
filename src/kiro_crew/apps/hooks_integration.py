@@ -370,6 +370,7 @@ def _build_app_context_from_info(
         spawn_impl=spawn_impl,
         app_config=manifest.get("extra", {}),
         http_app=http_app,
+        crewmate_host=_route_registry.http_app if _route_registry else None,
     )
     # The shared _jobs routes are mounted once for every app and resolve the app
     # from the URL, so they need a name -> SDK lookup. Publishing happens here,

@@ -15,6 +15,7 @@ from typing import Any
 
 from kiro_crew.apps.app_storage import AppStorage
 from kiro_crew.apps.audit_sdk import AuditSDK
+from kiro_crew.apps.crewmate_sdk import CrewmateSDK
 from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.event_bus import EventBus
 from kiro_crew.apps.job_sdk import JobSDK
@@ -68,6 +69,7 @@ class AppContext:
     storage: AppStorage | None = None
     spawn: SpawnSDK | None = None
     job: JobSDK | None = None
+    crewmate: CrewmateSDK | None = None
     health: AppHealthStatus = field(default_factory=AppHealthStatus)
     # NOT `| None`, unlike every SDK above: those grant a capability and stay None
     # until the manifest asks for it, while this one only removes sensitive data
@@ -139,6 +141,7 @@ def build_app_context(
     spawn_impl: Any = None,
     app_config: dict[str, Any] | None = None,
     http_app: Any = None,
+    crewmate_host: Any = None,
 ) -> AppContext:
     """Factory that builds an AppContext based on app permissions.
 
@@ -153,6 +156,8 @@ def build_app_context(
             through, NOT gated on a permission: the caller decides, because the
             decision is whether this app already reaches the object by another
             route (see ``AppContext.http_app``) and only the wiring knows that.
+        crewmate_host: The gateway's Application for ``ctx.crewmate``, built
+            only when the manifest declares ``proposeCrewmate``.
 
     Returns:
         AppContext with services populated based on permissions.
@@ -197,6 +202,16 @@ def build_app_context(
     if perms.get("jobs"):
         job_sdk = JobSDK(app_name, data_dir)
 
+    crewmate_sdk = None
+    from kiro_crew.apps import crewmate_sdk as crewmate_mod
+
+    if (
+        crewmate_mod.PREVIEW_ENABLED
+        and perms.get("proposeCrewmate") is True
+        and crewmate_host is not None
+    ):
+        crewmate_sdk = CrewmateSDK(app_name, crewmate_host)
+
     return AppContext(
         name=app_name,
         data_dir=data_dir,
@@ -207,6 +222,7 @@ def build_app_context(
         storage=app_storage,
         spawn=spawn_sdk,
         job=job_sdk,
+        crewmate=crewmate_sdk,
         # Both unconditional: see the fields' comments on AppContext.
         scrub=ScrubSDK(),
         audit=AuditSDK(app_name),

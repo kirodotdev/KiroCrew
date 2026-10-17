@@ -71,6 +71,21 @@ describe('CardChanges', () => {
     expect(screen.getByTestId('change-card-hint')).toHaveTextContent(L('approval_mode_hint_normal'))
   })
 
+  it("shows an import card's sender and what it leaves out in the reader's language", () => {
+    render(<CardChanges changes={[
+      { field: 'sender', label: 'From', after: 'Ana' },
+      { field: 'not_included', label: 'Not included', after: 'private' },
+      { field: 'not_imported', label: 'Left out', after: ['crons', 'model'] },
+      { field: 'import_approval', label: 'Approval', after: 'normal' },
+      { field: 'template_auto_approve', label: 'x', after: [{ name: 'gh', host: 'api.example' }, { name: 'fs', command: 'uvx' }] },
+    ]} />)
+    expect(screen.getByText(`${L('reach_remote', { name: 'gh', host: 'api.example' })}; ${L('reach_local', { name: 'fs', command: 'uvx' })}`)).toBeTruthy()
+    expect(screen.getByTestId('change-card-template-link').getAttribute('href')).toBe('/capabilities?tab=templates')
+    for (const k of ['field_sender', 'field_not_included', 'not_included_private', 'field_not_imported', 'approval_hint_import']) expect(screen.getByText(L(k))).toBeTruthy()
+    expect(screen.getByText(fmtList([L('left_crons'), L('left_model')]))).toBeTruthy()
+    expect(screen.queryByText('private')).toBeNull()
+  })
+
   it("shows a reasoning effort in the editor's words, and an unset one as inherited", () => {
     render(<CardChanges changes={[{ field: 'reasoning_effort', label: 'reasoning_effort', before: '', after: 'high' }]} />)
     const value = screen.getByTestId('change-card-value').textContent ?? ''

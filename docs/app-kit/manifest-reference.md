@@ -887,6 +887,7 @@ packages at all.
     "sessionApproval": false,
     "spawn": false,
     "jobs": false,
+    "proposeCrewmate": false,
     "exposeToApps": []
   }
 }
@@ -904,6 +905,7 @@ packages at all.
 | `permissions.sessionApproval` | boolean | Controls existing local user sessions: send messages (including generated response-option choices, but not a change to the session's agent binding, persona settings, or a harness slash command), approve or deny pending tool requests, and change approval modes within the limits below |
 | `permissions.spawn` | boolean | May start a background agent through the host's subagent manager (`ctx.spawn`) |
 | `permissions.jobs` | boolean | May run durable background work through `ctx.job` and the app-owned `_jobs/*` routes |
+| `permissions.proposeCrewmate` | boolean | **Preview, switched off**: `ctx.crewmate` stays `None` until the owner view that lists the cards lands (#21718). May propose one crewmate from a `.crewmate` bundle through `ctx.crewmate`. Gates a real capability like `spawn`: `ctx.crewmate` is absent unless the value is literally `true`. Each proposal is an owner change card; only the owner's press creates the crewmate ([api-reference](api-reference.md#crewmate-proposals-ctxcrewmate)) |
 | `permissions.exposeToApps` | string[] | App names (or `"*"`) allowed to request cross-app visibility into this app's slots/subagents |
 
 #### `permissions.spawn` — Background Agents

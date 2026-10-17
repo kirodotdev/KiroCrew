@@ -63,6 +63,7 @@ import os
 import re
 import secrets
 import time
+import urllib.parse
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable
@@ -1907,6 +1908,18 @@ def _mcp_global_entry(name: str) -> tuple[bool, dict[str, Any] | None]:
     return (name in known), None
 
 
+def _server_reach(name: str) -> dict[str, str]:
+    """What MCP server *name* reaches, for a card row: a URL's host or a command's name."""
+    _exists, entry = _mcp_global_entry(name)
+    entry = entry or {}
+    if isinstance(entry.get("url"), str):
+        host = urllib.parse.urlsplit(entry["url"]).hostname or ""
+        return {"name": name, "host": host} if host else {"name": name}
+    if isinstance(entry.get("command"), str) and entry["command"].strip():
+        return {"name": name, "command": os.path.basename(entry["command"].strip())}
+    return {"name": name}
+
+
 def _mcp_exists(name: str) -> bool:
     from kiro_crew.dashboard.handlers.mcp import _find_server_spec_anywhere
 
@@ -2024,7 +2037,7 @@ def after_shows_the_write(
         if not isinstance(fields, dict):
             return False
         return all(same(fields.get(k), v) for k, v in (p.get("fields") or {}).items())
-    if kind == catalog.KIND_CREWMATE_CREATE:
+    if kind in catalog.CREWMATE_CREATING_KINDS:
         # Undo deletes the crewmate this card made. The only safe baseline is the
         # IMMUTABLE member_id the card's own create returned (step 0's evidence):
         # a name is reusable, so an owner who deleted and recreated the same name
@@ -2281,11 +2294,11 @@ def _sync_read_state(
             "label": target["label"],
             "value": read_setting_value(target),
         }
-    if kind in (catalog.KIND_CREWMATE_CREATE, catalog.KIND_CREWMATE_UPDATE):
+    if kind in (*catalog.CREWMATE_CREATING_KINDS, catalog.KIND_CREWMATE_UPDATE):
         from kiro_crew.config.loader import KiroCrewConfig
 
         agents = KiroCrewConfig.load().agents
-        if kind == catalog.KIND_CREWMATE_CREATE:
+        if kind in catalog.CREWMATE_CREATING_KINDS:
             key = ev0.get("name") if isinstance(ev0.get("name"), str) else None
             if key:
                 agent = agents.get(key)
@@ -2298,12 +2311,11 @@ def _sync_read_state(
             taken = taken or any(
                 getattr(a, "display_name", "") == p["name"] for a in agents.values()
             )
-            return {
-                "exists": bool(taken),
-                "inherited_auto_approve": template_auto_approved_servers(
-                    catalog.DEFAULT_CREWMATE_TEMPLATE
-                ),
-            }
+            inherited = template_auto_approved_servers(catalog.DEFAULT_CREWMATE_TEMPLATE)
+            out = {"exists": bool(taken), "inherited_auto_approve": inherited}
+            if kind == catalog.KIND_CREWMATE_IMPORT:
+                out["inherited_reach"] = [_server_reach(name) for name in inherited]
+            return out
         agent = agents.get(p["name"])
         if agent is None:
             return {"exists": False}
@@ -2505,7 +2517,7 @@ async def resumed_undo_is_stale(rec: dict[str, Any], index: int, *, state: Any, 
     only what is still there to remove.
     """
     kind, params, after = rec["kind"], rec["params"], rec.get("after") or {}
-    if kind == catalog.KIND_CREWMATE_CREATE:
+    if kind in catalog.CREWMATE_CREATING_KINDS:
         current = await read_state(kind, params, rec["evidence"][:1], state=state, app=app)
         keys = ("exists", "member_id", "revision")
         return canonical({k: current.get(k) for k in keys}) != canonical(

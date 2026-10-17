@@ -188,6 +188,10 @@ def _slot_is_open(
 
 
 async def _settle(request: web.Request) -> None:
+    await _settle_app(request.app)
+
+
+async def _settle_app(app: web.Application) -> None:
     """Expire / prune, persist, then broadcast what changed. Raises :class:`CardError`.
 
     Persist-before-you-publish, for reads too: when the write fails, every
@@ -197,8 +201,8 @@ async def _settle(request: web.Request) -> None:
     follow from the clock and the open conversations, so the next settlement
     whose write succeeds derives them again and announces them then.
     """
-    state = request.app["state"]
-    store = _store(request)
+    state = app["state"]
+    store = card_store_for(state)
     await store.warm()
     # Retirement cancels a proposal nobody can confirm, so it must fire ONLY on
     # a slot the user actually closed -- never on one merely absent, and never
@@ -501,6 +505,10 @@ async def propose_for_caller(
     preview, same store, same row in the conversation.
     """
     try:
+        # An app's kind and an app's card key are never a chat caller's: see
+        # propose_app_card.
+        if kind in catalog.APP_ONLY_KINDS or slot_key.startswith(APP_SLOT_PREFIX):
+            raise CardError(403, "app_only", "only an app can propose this change")
         params = catalog.validate_params(kind, params)
         params = await cards.resolve_params(kind, params)
         cards.check_param_text(params)
@@ -547,6 +555,69 @@ async def api_cards_agent_status(request: web.Request) -> web.Response:
     except CardError as exc:
         return _refusal(exc)
     return web.json_response(store.public(rec))
+
+
+# ── app half (``ctx.crewmate``, apps/crewmate_sdk.py) ──
+
+#: The card key of an app's cards, ``app:<name>``. No chat slot key carries it
+#: (``propose_for_caller`` refuses one that does), so the store's per-slot cap
+#: counts per app, and no conversation can list, report or retire the card.
+APP_SLOT_PREFIX = "app:"
+_FREE_NAME_TRIES = 9
+
+
+async def propose_app_card(app: web.Application, app_name: str, params: Any) -> dict[str, Any]:
+    """Raise one ``crewmate.import`` card for app *app_name*; returns the stored card.
+
+    Writes nothing but the card. Only the owner's press applies its plan, through
+    owner routes ``change_card_middleware`` refuses to an app token. A taken name
+    becomes the first free ``<name> 2`` .. ``<name> 9``; the owner may edit it.
+    Raises :class:`CardError` or :class:`catalog.CardCatalogError`.
+    """
+    kind = catalog.KIND_CREWMATE_IMPORT
+    params = await cards.resolve_params(kind, catalog.validate_params(kind, params))
+    cards.check_param_text(params)
+    base = params["name"]
+    for n in range(2, _FREE_NAME_TRIES + 2):
+        try:
+            preview, before, context = await cards.build(kind, params, state=app["state"], app=app)
+            break
+        except catalog.CardCatalogError as exc:
+            if exc.code != "already_exists" or n > _FREE_NAME_TRIES:
+                raise
+            suffix = f" {n}"
+            name = base[: catalog._CREWMATE_NAME_MAX - len(suffix)].rstrip() + suffix
+            params = catalog.validate_params(kind, {**params, "name": name})
+    await _settle_app(app)
+    store = card_store_for(app["state"])
+    rec = store.propose(
+        slot_key=APP_SLOT_PREFIX + app_name,
+        session_key="",
+        kind=kind,
+        params=params,
+        reason="",
+        preview=preview,
+        before=before,
+        context=context,
+    )
+    try:
+        await store.flush(strict=True)
+    except CardError as exc:
+        store.discard(rec["id"])
+        raise CardError(exc.status, exc.code, "the change card could not be saved") from None
+    _audit(APP_SLOT_PREFIX + app_name, "cards.propose", "ok")
+    return store.public(rec)
+
+
+async def app_card_status(app: web.Application, app_name: str, card_id: str) -> dict[str, Any]:
+    """``{status, crew?}`` of app *app_name*'s own card; ``crew`` only once applied."""
+    await _settle_app(app)
+    rec = card_store_for(app["state"]).status_for_caller(APP_SLOT_PREFIX + app_name, card_id)
+    out: dict[str, Any] = {"status": rec["status"]}
+    evidence = rec.get("evidence") or []
+    if rec["status"] == "applied" and evidence and isinstance(evidence[0].get("name"), str):
+        out["crew"] = evidence[0]["name"]
+    return out
 
 
 # ── browser half ──
@@ -944,7 +1015,7 @@ def _arm_card_undo_cron_guard(
         request[REQ_CARD_UNDO_CRON_EXPECT] = (
             revision if isinstance(revision, str) and revision else _CRON_FINGERPRINT_MISSING
         )
-    elif path.startswith("/api/agents/") and kind == catalog.KIND_CREWMATE_CREATE:
+    elif path.startswith("/api/agents/") and kind in catalog.CREWMATE_CREATING_KINDS:
         from kiro_crew.dashboard.handlers.undo_identity_guard import (
             REQ_CARD_UNDO_CREWMATE_EXPECT,
         )

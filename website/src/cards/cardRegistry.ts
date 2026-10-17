@@ -43,6 +43,10 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
     icon: UserPlus, label: () => i18nT('components.changeCards.kind_crewmate_create'),
     primary: () => i18nT('components.changeCards.primary_crewmate_create'), Body: ScheduleBody,
   },
+  'crewmate.import': {
+    icon: UserPlus, label: () => i18nT('components.changeCards.kind_crewmate_import'),
+    primary: () => i18nT('components.changeCards.primary_crewmate_import'), Body: NoBody,
+  },
   'crewmate.update': {
     icon: UserCog, label: () => i18nT('components.changeCards.kind_crewmate_update'),
     primary: () => i18nT('components.changeCards.primary_crewmate_update'), Body: OneCrewmateBody,

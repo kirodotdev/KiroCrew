@@ -426,6 +426,13 @@ describe('change card', () => {
     expect((screen.getByTestId('change-card-apply') as HTMLButtonElement).disabled).toBe(false)
   })
 
+  it('names the servers an import card would run without asking in its widen warning', async () => {
+    pending = [card({ kind: 'crewmate.import', risk: 'widen', changes: [{ field: 'template_auto_approve', label: 'Runs without asking', after: [{ name: 'github', host: 'api.github.com' }] }] })]
+    renderCards()
+    await screen.findByTestId('change-card-widen-ack')
+    expect(screen.getByTestId('change-card-risk').textContent).toContain(L('risk_widen_import', { servers: 'github' }))
+  })
+
   it('still gates on the acknowledgement when a code_exec card also carries the widen flag', async () => {
     // A capabilities card that BOTH launches a server and expands auto-approval
     // reads risk: code_exec (the worst label) yet carries widen separately, so

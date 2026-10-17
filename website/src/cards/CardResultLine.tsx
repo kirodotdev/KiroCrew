@@ -56,7 +56,7 @@ function appliedSummary(card: Card, title: string): string {
       return i18nT('components.changeCards.result_schedule_created', { name, schedule: fmtCardCron(card.params.cron_expr) })
     }
   }
-  if (card.kind === 'crewmate.create' && name) return i18nT('components.changeCards.result_crewmate_created', { name })
+  if ((card.kind === 'crewmate.create' || card.kind === 'crewmate.import') && name) return i18nT('components.changeCards.result_crewmate_created', { name })
   if (card.kind === 'setting.change') {
     const row = cardChanges(card)[0]
     const label = row ? changeLabel(row) : ''

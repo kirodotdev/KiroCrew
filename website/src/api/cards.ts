@@ -20,6 +20,7 @@ export const CARD_KINDS = [
   'schedule.create',
   'schedule.update',
   'crewmate.create',
+  'crewmate.import',
   'crewmate.update',
   'crewmate.capabilities',
   'crewmate.goal',
