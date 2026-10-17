@@ -52,6 +52,22 @@ store through a template, display-name change or arbitrary database path. This
 development-stage V2 contract has no old V2 data migration or compatibility mode.
 Global and named V1 memory retain their existing behavior independently.
 
+`--model <id>` on `agent create` and `agent update` writes the member's
+`agents.<name>.model`, the field `_session_model` reads first. Omitted, `update`
+leaves the pin alone; `""` or `auto` stores `""` (inherit), through
+`normalize_agent_model`. An update publishes only the fields it was given
+(`persist_member_config(changed_fields=...)`), so a concurrent edit to another
+field survives. The value is judged on shape (`validation._MODEL_NAME_RE`, as
+the cron job `--model` flag is), then, unless the provider is `claude_code`, refused
+when `model_registry.acp_id_correction` maps it to another served id or when
+`_model_rejected_reason` finds it display-only for the harness
+`_pin_entitlement_backend` picks. These are the two checks the crew editor's
+`_model_pin_rejected` runs before entitlement, so a canonical key the harness
+translates is accepted here as it is there. Entitlement needs a live
+session's advertised list, which the offline CLI does not have, so an unknown
+id is accepted, as `_validate_role_model` accepts with no evidence.
+`agent list` prints a `MODEL` column: the pin, or `(inherit)`.
+
 `kirocrew doctor` reports the configured member, store and integrity failures
 without provisioning, repairing or replacing databases. A missing, corrupt or
 wrong-member database requires explicit recovery; ordinary opening never creates
