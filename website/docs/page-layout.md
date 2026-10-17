@@ -55,6 +55,24 @@ refuses to shrink and the whole page scrolls instead.
 `PageHeader` also takes an `actions` node, rendered right-aligned on the title
 row. Put page-level buttons there rather than in the first `Card`.
 
+### A Settings tab's section list stays in view
+
+Tabs that host `SettingsSubNav` (Chat, Display, Notifications, Channels, Security)
+scroll in SidePanelLayout's content column, and their title and description scroll
+away with the rest. In the two-pane layout (container at least 760px wide) the
+section list is `sticky` in its row, pinned 8px below the top of that scroll area
+while the detail pane scrolls. A list taller than the area is capped and scrolls on
+its own. The cap is the area's measured height less 8px above the list and, below it,
+the larger of 8px and the space between the list's row and the end of the content
+(the pane's bottom padding). A sticky list cannot leave its row, so that space keeps
+the whole list inside the area at the end of the scroll as well. Both are measured off
+the nearest scrolling ancestor rather than computed from the viewport, so the cap also
+holds when Settings is embedded in a split pane. A capped list shows the same
+decorative "More below" cue as SidePanelLayout's tab column (`MoreBelowCue`) while
+rows remain below. The cue is a strip inside the cap, under the scrolling rows, so it
+stays on the list's visible bottom edge as the rows scroll; it hides at the end of the
+list and is absent when the list fits. The narrow single-column layout is unchanged.
+
 ### Read every class here narrow-first
 
 **The unprefixed value is the PHONE's. `md:` adds the desktop.** `px-4 md:px-6` is a

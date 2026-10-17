@@ -1,6 +1,7 @@
 import React from 'react'
 import { useSearchParams, useLocation, useNavigate } from 'react-router-dom'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronRight } from 'lucide-react'
+import { MoreBelowCue } from './MoreBelowCue'
 import { NavBackBar } from './NavBackBar'
 import { useRegisterNavigationLeaveGuard, usePublishNavigationStake } from './NavigationLeaveGuard'
 import { hasSubSelection, deleteSubSelection, COARSE_TOUCH_TARGET, SUBNAV_PUSH_STATE, toPathSegment, parsePathSegments } from './subNavParams'
@@ -623,23 +624,11 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
           ))}
           </div>
           </div>
-          {/* A label, not a control: its own strip under the last row, so it
-            * reads as the list's edge rather than part of any row. The strip
-            * keeps its height for as long as the list overflows at all and
-            * only its text hides at the end, so reaching the last row does not
-            * resize the list and jump it. Decorative: every row it points at is
-            * already in the tab order and the accessibility tree. Accent text
-            * and a hairline because a muted caption over the footer was easy
-            * to miss. */}
+          {/* Its own strip under the last row, so it reads as the list's edge
+            * rather than part of any row. The strip keeps its height for as
+            * long as the list overflows at all. */}
           {(tabListEdges.top || tabListEdges.bottom) && (
-            <div
-              aria-hidden="true"
-              data-testid="side-panel-tab-list-more"
-              className={`shrink-0 flex items-center justify-center gap-1 pt-1.5 pb-1 border-0 border-t border-solid border-border text-[12px] font-medium text-accent select-none ${tabListEdges.bottom ? '' : 'invisible'}`}
-            >
-              {i18nT('components.sidePanelLayout.more_below')}
-              <ChevronDown size={14} />
-            </div>
+            <MoreBelowCue visible={tabListEdges.bottom} testId="side-panel-tab-list-more" />
           )}
           {footer && <div className="shrink-0 pt-3 px-2.5">{footer}</div>}
         </nav>}

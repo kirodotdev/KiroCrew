@@ -57,7 +57,7 @@ _WEBSITE = "website"
 # commit body: a drop means specs stopped running.
 # The offline browser floor adds ten member memory scenarios to the base floor, and
 # one that opens the link `dashboard_preview` hands a crewmate.
-MIN_EXECUTED_SPECS = 242
+MIN_EXECUTED_SPECS = 244
 
 # Skips are silent passes. A spec should seed its preconditions rather than skip
 # when they are absent, so the intended steady state is zero. Specs excluded by

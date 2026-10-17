@@ -1,16 +1,43 @@
-import React, { useEffect } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams, useLocation, useNavigate } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
+import { MoreBelowCue } from './MoreBelowCue'
 import { NavBackBar } from './NavBackBar'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, COARSE_TOUCH_TARGET, SUBNAV_PUSH_STATE, toPathSegment, parsePathSegments } from './subNavParams'
 import { useContainerWidth } from '../hooks/useContainerWidth'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { guideTarget, maybe } from '../uiLocations/targetRegistry'
 
 /** Below this container width the rail and the detail pane stack: the rail
  *  becomes the whole view and choosing an item replaces it (with a back
  *  link). Shared by every SubNav host so the responsive contract is uniform. */
 const TWO_PANE_MIN_WIDTH = 760
+
+/** Gap between the pinned two-pane list and the top of its scroll area. It is
+ *  also the gap left below the list when its height is capped. */
+const RAIL_PIN_INSET_PX = 8
+
+const SCROLLING_OVERFLOW = new Set(['auto', 'scroll', 'hidden', 'overlay'])
+
+/** The nearest ancestor that scrolls or clips, i.e. the box the browser pins a
+ *  sticky element against. */
+function stickyScrollport(el: HTMLElement): HTMLElement | null {
+  for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+    const style = getComputedStyle(parent)
+    if (SCROLLING_OVERFLOW.has(style.overflowX) || SCROLLING_OVERFLOW.has(style.overflowY)) return parent
+  }
+  return null
+}
+
+/** Space between the bottom of `row` and the end of `scrollArea`'s content. A
+ *  sticky element never leaves its row, so at the end of the scroll the row's
+ *  bottom, not the scroll area's, is where the pinned list can reach. */
+function spaceBelow(row: HTMLElement, scrollArea: HTMLElement): number {
+  const rowBottom =
+    row.getBoundingClientRect().bottom - scrollArea.getBoundingClientRect().top - scrollArea.clientTop + scrollArea.scrollTop
+  return scrollArea.scrollHeight - rowBottom
+}
 
 export interface SubNavItem<K extends string = string> {
   key: K
@@ -227,6 +254,45 @@ export function SettingsSubNav<K extends string>({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [width, twoPane, selectedKey, tabSegment])
 
+  // Height cap for the pinned two-pane list. The observer callback owns every
+  // measuring setState; render reads the cap only while two-pane, and tearing
+  // the observer down clears it, so re-entering two-pane starts uncapped until
+  // the fresh measurement lands.
+  const navRef = useRef<HTMLElement>(null)
+  const listboxRef = useRef<HTMLDivElement | null>(null)
+  const [railCapState, setRailCapState] = useState<number | null>(null)
+  const railCap = twoPane ? railCapState : null
+  // The capped list scrolls inside the nav, so the "More below" cue follows the
+  // scroller's edges. Both refs below are attached in two-pane mode only.
+  const [attachScroller, edges, , attachEdgeContent] = useScrollEdgesY<HTMLDivElement>()
+  const attachListbox = useCallback((node: HTMLDivElement | null) => {
+    listboxRef.current = node
+    attachEdgeContent(node)
+  }, [attachEdgeContent])
+  useEffect(() => {
+    if (!twoPane) return
+    const nav = navRef.current
+    const listbox = listboxRef.current
+    const row = nav?.parentElement
+    const scrollArea = nav ? stickyScrollport(nav) : null
+    if (!nav || !row || !listbox || !scrollArea || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => {
+      // The list keeps RAIL_PIN_INSET_PX clear of the area's top, and at the
+      // end of the scroll clear of whatever sits below its row.
+      const room = Math.floor(
+        scrollArea.clientHeight - RAIL_PIN_INSET_PX - Math.max(RAIL_PIN_INSET_PX, spaceBelow(row, scrollArea)),
+      )
+      setRailCapState(room > 0 && listbox.offsetHeight > room ? room : null)
+    })
+    observer.observe(scrollArea)
+    observer.observe(row)
+    observer.observe(listbox)
+    return () => {
+      observer.disconnect()
+      setRailCapState(null)
+    }
+  }, [twoPane])
+
   // Adjacent items sharing a `group` render under one header (order in
   // `items` drives everything; entries of a group must stay adjacent).
   const grouped = items.reduce<{ group: string | undefined; items: SubNavItem<K>[] }[]>((acc, item) => {
@@ -289,9 +355,27 @@ export function SettingsSubNav<K extends string>({
 
   const list = (
     // -ml-2.5 cancels the item px-2.5 so icons sit on the page title's left
-    // edge and the highlight pill bleeds into the gutter.
-    <nav className={twoPane ? 'shrink-0 -ml-2.5' : 'w-full'} style={twoPane ? { width: railWidth } : undefined}>
-      <div className="flex flex-col gap-0.5" role={twoPane ? 'listbox' : 'list'} aria-label={listLabel}>
+    // edge and the highlight pill bleeds into the gutter. The two-pane nav is
+    // sticky inside its items-start row, so it pins RAIL_PIN_INSET_PX below the
+    // top of the scroll area while the detail pane scrolls. A list taller than
+    // that area is capped to the measured room and scrolls on its own; the
+    // height is measured off the real scroll area, not derived from the
+    // viewport, so the cap also holds in an embedded pane. The cap covers the
+    // scroller and the "More below" strip under it, a flex sibling outside the
+    // scrolling box so it stays on the visible bottom edge while the rows
+    // scroll. The scroller is a child of the nav in both layouts so a width
+    // change never remounts the list. Overflow is set only while capped because
+    // it would clip the rows' outset focus ring.
+    <nav
+      ref={twoPane ? navRef : undefined}
+      className={twoPane ? 'shrink-0 -ml-2.5 sticky flex flex-col' : 'w-full'}
+      style={twoPane ? { width: railWidth, top: RAIL_PIN_INSET_PX, ...(railCap != null && { maxHeight: railCap }) } : undefined}
+    >
+      <div
+        ref={twoPane ? attachScroller : undefined}
+        className={twoPane && railCap != null ? 'min-h-0 overflow-y-auto scrollbar-overlay scrollbar-overlay-thin' : undefined}
+      >
+      <div ref={twoPane ? attachListbox : undefined} className="flex flex-col gap-0.5" role={twoPane ? 'listbox' : 'list'} aria-label={listLabel}>
         {grouped.map(({ group, items: groupItems }, gi) =>
           group ? (
             // `group` is a valid owned child of listbox only; inside role=list
@@ -309,6 +393,10 @@ export function SettingsSubNav<K extends string>({
           ),
         )}
       </div>
+      </div>
+      {railCap != null && (edges.top || edges.bottom) && (
+        <MoreBelowCue visible={edges.bottom} testId="settings-subnav-more" />
+      )}
     </nav>
   )
 
