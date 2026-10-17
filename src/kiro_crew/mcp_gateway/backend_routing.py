@@ -513,6 +513,15 @@ async def _settle(
                         # replay's caller — record it so a later
                         # detach can release as the right principal.
                         self._grant_callers[(orphan_uri, pending.replay_stub)] = pending.caller
+                elif pending.release_owed:
+                    # A granted lease nobody wants, with a release left
+                    # to this verdict: due now unless a stub of the
+                    # caller is routed for the URI or another same-caller
+                    # subscribe is in flight (``_hold_identity_release``).
+                    if not self._hold_identity_release(orphan_uri, pending.caller):
+                        await self._release_upstream_subscriptions(
+                            [orphan_uri], caller=pending.caller
+                        )
                 elif orphan_uri not in self._resource_subscriptions:
                     # A granted lease nobody wants: release on the
                     # spot, as the caller that took it (a replay's
@@ -529,8 +538,18 @@ async def _settle(
                 # while keeping such a lease would strand it live
                 # upstream, with every later update charged to the
                 # server as a hazard, so an unsettled verdict with
-                # nobody routed releases the lease on the spot.
-                if (error_obj is None or verdict_unknown) and (
+                # nobody routed releases the lease on the spot. A
+                # release left to this verdict (``release_owed``) is due
+                # on any of these: the earlier holder's grant is still
+                # held — unless a stub of the caller is routed for the
+                # URI or another same-caller subscribe is in flight
+                # (``_hold_identity_release``).
+                if pending.release_owed:
+                    if not self._hold_identity_release(orphan_uri, pending.caller):
+                        await self._release_upstream_subscriptions(
+                            [orphan_uri], caller=pending.caller
+                        )
+                elif (error_obj is None or verdict_unknown) and (
                     orphan_uri not in self._resource_subscriptions
                 ):
                     await self._release_upstream_subscriptions([orphan_uri], caller=pending.caller)

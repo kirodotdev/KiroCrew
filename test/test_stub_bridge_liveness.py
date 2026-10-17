@@ -15,6 +15,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from kiro_crew.mcp_gateway.stub import (
     StubSession,
     run_bridge,
 )
+from kiro_crew.testing.wait import await_until
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -619,3 +621,82 @@ class TestLivenessIsNegotiated:
             "the reconnect must be reached through _reconnect_while_draining so "
             "queued calls are answered rather than held"
         )
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_request_is_no_longer_outstanding() -> None:
+    """kiro-cli's cancel ends its request: the cancelled id must neither keep the
+    liveness monitor pinging nor be answered with an error when the bridge
+    drops. A request it did not cancel stays outstanding."""
+    gw_reader = asyncio.StreamReader()
+    stdin_reader = asyncio.StreamReader()
+    stdin_reader.feed_data(_jsonrpc_request("tools/call", "call-7"))
+    stdin_reader.feed_data(_jsonrpc_request("tools/call", "call-8"))
+    cancel = {
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": {"requestId": "call-7", "reason": "user stopped the turn"},
+    }
+    stdin_reader.feed_data((json.dumps(cancel) + "\n").encode())
+    gw_written: list[bytes] = []
+    cancel_forwarded = asyncio.Event()
+
+    class _FakeWriter:
+        _mc_write_lock = asyncio.Lock()
+
+        def write(self, data: bytes) -> None:
+            gw_written.append(data)
+            if b"notifications/cancelled" in data:
+                cancel_forwarded.set()
+
+        async def drain(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        async def wait_closed(self) -> None:
+            pass
+
+    async def _close_the_gateway_once_the_cancel_is_forwarded() -> None:
+        # EOF only after the gateway has seen the forwarded cancel: a cancel
+        # the stub handled without forwarding must fail here, not close the
+        # bridge and let the outstanding-id check pass anyway.
+        try:
+            await await_until(cancel_forwarded, what="the forwarded cancel")
+        except AssertionError as exc:
+            raise AssertionError(
+                f"the cancel never reached the gateway; it saw {gw_written!r}"
+            ) from exc
+        gw_reader.feed_eof()
+
+    stdout_reader = asyncio.StreamReader()
+    stdout_writer = asyncio.StreamWriter(
+        _FakeTransport(),
+        asyncio.StreamReaderProtocol(stdout_reader),
+        stdout_reader,
+        asyncio.get_running_loop(),
+    )
+    closer = asyncio.create_task(_close_the_gateway_once_the_cancel_is_forwarded())
+    session = StubSession()
+    bridge = asyncio.create_task(
+        run_bridge(
+            gw_reader,
+            _FakeWriter(),  # type: ignore[arg-type]
+            asyncio.Event(),
+            stdin=stdin_reader,
+            stdout_writer=stdout_writer,
+            ping_interval=5.0,
+            ping_max_misses=3,
+            peer_supports_ping=False,
+            session=session,
+        )
+    )
+    try:
+        await closer
+        await await_until(bridge, what="run_bridge to return once the gateway closed")
+    finally:
+        bridge.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await await_until(bridge, what="the cancelled bridge to finish")
+    assert sorted(session.outstanding_ids) == ["call-8"]

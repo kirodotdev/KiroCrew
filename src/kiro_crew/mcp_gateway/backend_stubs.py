@@ -406,6 +406,19 @@ async def forward_from_stub(
                     None,
                 )
                 if cancel_fid is not None:
+                    cancelled = self._pending_requests[cancel_fid]
+                    if cancelled.resource_uri and cancelled.method in (
+                        _RESOURCES_SUBSCRIBE_METHOD,
+                        _RESOURCES_UNSUBSCRIBE_METHOD,
+                    ):
+                        # A subscribe/unsubscribe settles the shared lease
+                        # tables, so its cancel is not forwarded: a server
+                        # that honoured it would never answer, and the
+                        # entry would age a healthy backend into its
+                        # ceiling. The server's verdict settles the lease
+                        # under this stub, exactly as when a server answers
+                        # a request it was asked to cancel.
+                        return
                     msg = dict(msg)
                     new_params = dict(_cparams)
                     new_params["requestId"] = cancel_fid
@@ -415,18 +428,7 @@ async def forward_from_stub(
                     # detector skips a marked entry instead of aging the
                     # shared backend into its ceiling, while notification
                     # attribution and the last-stub recycle still see it.
-                    # A subscribe/unsubscribe is not marked: its verdict
-                    # still settles the shared lease tables.
-                    cancelled = self._pending_requests[cancel_fid]
-                    if not (
-                        cancelled.resource_uri
-                        and cancelled.method
-                        in (
-                            _RESOURCES_SUBSCRIBE_METHOD,
-                            _RESOURCES_UNSUBSCRIBE_METHOD,
-                        )
-                    ):
-                        cancelled.cancelled = True
+                    cancelled.cancelled = True
         # Trust boundary: unconditionally strip any stub-supplied caller
         # identity on EVERY forwarded request regardless of method, then
         # inject the authoritative caller block when known.

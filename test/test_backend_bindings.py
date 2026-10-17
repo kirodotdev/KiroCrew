@@ -74,6 +74,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "_grant_callers": ("annotation", False, "", ""),
     "_handle_initialize": ("function", True, "5c4ede43d497", "backend_handshake"),
     "_handle_resource_subscription": ("function", True, "62a32d39421c", "backend_leases"),
+    "_hold_identity_release": ("function", False, "df0a6af3d640", "backend_leases"),
     "_handle_stdout_line": ("function", True, "3a5d34ab8233", "backend_routing"),
     "_heartbeat_once": ("function", True, "88f7fd52fdeb", "backend_liveness"),
     "_inbox_lock": ("annotation", False, "", ""),
