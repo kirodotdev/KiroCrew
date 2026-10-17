@@ -39,7 +39,20 @@ export function createFakeModel(options: Record<string, unknown>) {
   const expanded = new Set<string>()
   const listeners = new Set<() => void>()
   let focused: string | null = null
-  let visibleRows: VisibleRow[] = []
+  let visibleRows: VisibleRow[] = [...treeMock.initialVisibleRows]
+  // The tree's scroll container: `<file-tree-container>` with an open shadow
+  // root holding the virtualized scroller, as the real `FileTree` builds it.
+  let container: HTMLElement | undefined
+  const scroller = () => {
+    if (!container) {
+      container = document.createElement('div')
+      const shadow = container.attachShadow({ mode: 'open' })
+      const el = document.createElement('div')
+      el.dataset.fileTreeVirtualizedScroll = 'true'
+      shadow.appendChild(el)
+    }
+    return container.shadowRoot!.firstElementChild as HTMLElement
+  }
 
   const calls = {
     resetPaths: [] as string[][],
@@ -51,6 +64,7 @@ export function createFakeModel(options: Record<string, unknown>) {
     select: [] as string[],
     deselect: [] as string[],
     expand: [] as string[],
+    scrollToPath: [] as Array<{ path: string; options?: { focus?: boolean; offset?: string } }>,
     compositionRenders: 0,
     unsubscribes: 0,
   }
@@ -107,7 +121,22 @@ export function createFakeModel(options: Record<string, unknown>) {
     },
     getFocusedItem: () => (focused && known(focused) ? handle(focused) : null),
     getVisibleCount: () => visibleRows.length,
-    getVisibleRows: (start: number, end: number) => visibleRows.slice(start, end),
+    // End-inclusive, like the library's `getVisibleRows(start, end)`.
+    getVisibleRows: (start: number, end: number) => visibleRows.slice(start, end + 1),
+    getItemHeight: () => ITEM_HEIGHT,
+    getFileTreeContainer: () => (scroller(), container),
+    scrollToPath(path: string, options?: { focus?: boolean; offset?: string }) {
+      calls.scrollToPath.push({ path, options })
+    },
+    /** Scroll the tree's scroller to `scrollTop` with a viewport of
+     *  `clientHeight`, as a user would: an input event first when `byUser`. */
+    simulateScroll(scrollTop: number, { byUser = true, clientHeight = 400 }: { byUser?: boolean; clientHeight?: number } = {}) {
+      const el = scroller()
+      Object.defineProperty(el, 'scrollTop', { configurable: true, value: scrollTop })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, value: clientHeight })
+      if (byUser) el.dispatchEvent(new Event('wheel', { bubbles: true, composed: true }))
+      el.dispatchEvent(new Event('scroll'))
+    },
     getSelectedPaths: () => [...selected],
     getItem: (path: string) => (known(path) ? handle(path) : null),
     subscribe(listener: () => void) {
@@ -141,6 +170,9 @@ export function createFakeModel(options: Record<string, unknown>) {
 
 export type FakeModel = ReturnType<typeof createFakeModel>
 
+/** Row height the fake reports through `getItemHeight`. */
+export const ITEM_HEIGHT = 24
+
 /** Mirrors the subset of `@pierre/trees`' context-menu API the wrapper touches:
  *  the row descriptor and the `close()` the menu calls after each action. */
 export type MenuItem = { kind: 'directory' | 'file'; name: string; path: string }
@@ -160,9 +192,13 @@ type FileTreeMockProps = {
 export const treeMock = {
   models: [] as FakeModel[],
   fileTreeProps: [] as FileTreeMockProps[],
+  /** Visible rows a newly created model starts with, so a remount can see a
+   *  restored projection before any test driver runs. */
+  initialVisibleRows: [] as VisibleRow[],
   reset() {
     this.models.length = 0
     this.fileTreeProps.length = 0
+    this.initialVisibleRows = []
   },
   /** Model of the most recently mounted tree. */
   last(): FakeModel {

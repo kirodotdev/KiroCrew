@@ -250,7 +250,7 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
           // No preview pane beside the tree: every open spawns a file tab, so a
           // pane here could only ever hold a "select a file" hint. The tree takes
           // the whole tab instead.
-          <FileBrowserRail projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} onOpenFolder={onOpenFolder} active={active} fill />
+          <FileBrowserRail projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} onOpenFolder={onOpenFolder} active={active} fill rememberScroll />
         ) : (
         <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-2 text-muted px-6 text-center">
           <FileText size={22} className="opacity-40" />
