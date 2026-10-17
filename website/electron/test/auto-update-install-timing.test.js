@@ -25,6 +25,10 @@ function makeDeps({ appVersion = "1.0.0", withNative = true } = {}) {
   const calls = { quitAndInstall: [], notifications: [], states: [], exit: 0 };
   const handlers = {};
   const nativeHandlers = {};
+  // appOnceMap tracks app.once registrations by event name so tests can fire them.
+  // Using a Map instead of a plain object preserves the most-recent handler per event,
+  // which mirrors how EventEmitter.once + removeListener interact.
+  const appOnceMap = new Map();
   const autoUpdater = {
     setFeedURL: () => {},
     checkForUpdates: async () => {},
@@ -36,8 +40,8 @@ function makeDeps({ appVersion = "1.0.0", withNative = true } = {}) {
     app: {
       isPackaged: true,
       getVersion: () => appVersion,
-      once: () => {},
-      removeListener: () => {},
+      once: (ev, fn) => { appOnceMap.set(ev, fn); },
+      removeListener: (ev, fn) => { if (appOnceMap.get(ev) === fn) appOnceMap.delete(ev); },
       exit: () => { calls.exit += 1; },
     },
     autoUpdater,
@@ -60,12 +64,38 @@ function makeDeps({ appVersion = "1.0.0", withNative = true } = {}) {
       }
       : { nativeAutoUpdater: null }),
   };
+  // Fire an app.once handler by event name, then remove it (mirrors once semantics).
+  // Passes a mock event with preventDefault() since deferredInstallOnQuit
+  // calls event.preventDefault() to hold the quit while the gateway stops.
+  const fireAppOnce = (ev) => {
+    const fn = appOnceMap.get(ev);
+    if (fn) {
+      appOnceMap.delete(ev);
+      fn({ preventDefault: () => {} });
+    }
+  };
+  // Mock BaseWindow for session-end (Electron 43: session-end is on BaseWindow, not App).
+  const winOnceMap = new Map();
+  const mockWindow = {
+    once: (ev, fn) => { winOnceMap.set(ev, fn); },
+    removeListener: (ev, fn) => { if (winOnceMap.get(ev) === fn) winOnceMap.delete(ev); },
+    isDestroyed: () => false,
+  };
+  deps.getMainWindow = () => deps.osPlatform === "win32" ? mockWindow : null;
+  const fireWindowOnce = (ev) => {
+    const fn = winOnceMap.get(ev);
+    if (fn) { winOnceMap.delete(ev); fn({ preventDefault: () => {} }); }
+  };
   return {
     deps,
     calls,
     emit: (ev, p) => handlers[ev] && handlers[ev](p),
     fireNative: (ev) => nativeHandlers[ev] && nativeHandlers[ev](),
     hasNativeListener: (ev) => typeof nativeHandlers[ev] === "function",
+    hasAppOnce: (ev) => appOnceMap.has(ev),
+    fireAppOnce,
+    hasWindowOnce: (ev) => winOnceMap.has(ev),
+    fireWindowOnce,
   };
 }
 
@@ -375,4 +405,111 @@ test("a throwing onInstallFailed cannot swallow the error state", async () => {
   await updater.install();
   emit("error", new Error("swap failed"));
   assert.ok(states.includes("error"), "the UI must still hear about the failure");
+});
+
+// --------------------------------------------------------------------------
+// Windows session-end notice: shutdown/restart/logout must notify the user
+// that an update is waiting, because before-quit is never emitted on those paths.
+//
+// WHY a notice, not a quitAndInstall: the NSIS installer extracts files with
+// nsisunz::Unzip directly into $INSTDIR (no backup, no rollback). Windows gives
+// each process a default shutdown window of a few seconds; a ~350 MB bundle copy
+// takes far longer. A mid-install kill leaves $INSTDIR with a mix of old and new
+// files — the app may not launch. A Windows toast notification is safe: it is
+// handled by a system service, persists in Action Center across the session
+// boundary, and the user sees it at next login.
+// --------------------------------------------------------------------------
+
+test("session-end shows a notification on win32 when an update is staged", async () => {
+  const { deps, calls, emit, hasWindowOnce, fireWindowOnce } = makeDeps();
+  deps.osPlatform = "win32";
+  initAutoUpdate(deps);
+  emit("update-downloaded", { version: "2.0.0" });
+
+  assert.ok(hasWindowOnce("session-end"), "session-end handler must be armed after update-downloaded on win32");
+
+  fireWindowOnce("session-end");
+
+  // Shows a notification; does NOT call quitAndInstall (no partial-install risk).
+  assert.strictEqual(calls.quitAndInstall.length, 0, "session-end must NOT call quitAndInstall: partial NSIS install is unsafe");
+  assert.ok(calls.notifications.length >= 1, "a notification must be shown to inform the user");
+  assert.match(
+    calls.notifications[calls.notifications.length - 1].body,
+    /quit.*tray|tray.*quit|quit.*menu|menu.*quit/i,
+    "notification must tell the user to quit from the tray or menu",
+  );
+});
+
+test("session-end handler is NOT armed on darwin", async () => {
+  const { deps, emit, hasWindowOnce } = makeDeps();
+  // deps.osPlatform already "darwin"
+  initAutoUpdate(deps);
+  emit("update-downloaded", { version: "2.0.0" });
+
+  assert.ok(!hasWindowOnce("session-end"), "session-end must NOT be armed on darwin");
+});
+
+test("session-end respects auto-download opt-out: no notification when auto-download is off for auto-staged update", async () => {
+  // sessionEndPendingNotice mirrors deferredInstallOnQuit: when the stage is
+  // automatic AND the user turned off auto-download, the notification must not
+  // fire — deferredInstallOnQuit would skip the install, so "quit from tray"
+  // would send the user on a futile trip.
+  const { deps, calls, emit, fireWindowOnce } = makeDeps();
+  deps.osPlatform = "win32";
+  let autoPref = true;
+  deps.getAutoDownloadPreference = () => autoPref; // live ref so amend after init works
+  initAutoUpdate(deps);
+
+  // Trigger auto-download path (update-available with pref=true sets downloadWasAutomatic).
+  emit("update-available", { version: "2.0.0" });
+  autoPref = false; // user turns off auto-download
+  emit("update-downloaded", { version: "2.0.0" }); // stagedWasAutomatic=true
+
+  fireWindowOnce("session-end");
+  assert.strictEqual(calls.notifications.length, 0, "session-end must not notify when auto-download is off for an auto-staged update");
+});
+
+test("session-end fires when update is staged; no notification when no update", async () => {
+  const { deps, calls, emit, fireWindowOnce } = makeDeps();
+  deps.osPlatform = "win32";
+  initAutoUpdate(deps);
+  // No update-downloaded: updateReady is false.
+  // session-end handler is not even registered (no update-downloaded event);
+  // firing does nothing.
+  fireWindowOnce("session-end");
+  assert.strictEqual(calls.notifications.length, 0, "no notification without a staged update");
+});
+
+test("retraction (update-not-available) disarms the session-end handler on win32", async () => {
+  const { deps, emit, hasWindowOnce } = makeDeps();
+  deps.osPlatform = "win32";
+  initAutoUpdate(deps);
+  emit("update-downloaded", { version: "2.0.0" });
+
+  assert.ok(hasWindowOnce("session-end"), "precondition: session-end armed after download");
+
+  emit("update-not-available");
+
+  assert.ok(!hasWindowOnce("session-end"), "session-end handler must be removed on retraction");
+});
+
+test("session-end notice and deferred before-quit install are independent", async () => {
+  // session-end shows a notice; the user can still quit from tray (before-quit)
+  // and get the full install — both handlers remain active concurrently.
+  const { deps, calls, emit, hasWindowOnce, fireWindowOnce, fireAppOnce } = makeDeps();
+  deps.osPlatform = "win32";
+  initAutoUpdate(deps);
+  emit("update-downloaded", { version: "2.0.0" });
+
+  // Simulate session-end while both handlers are armed.
+  fireWindowOnce("session-end");
+  assert.strictEqual(calls.quitAndInstall.length, 0, "session-end must not install");
+  assert.ok(calls.notifications.length >= 1, "session-end must notify");
+
+  // before-quit is still armed; firing it should install normally.
+  // deferredInstallOnQuit uses an async IIFE that awaits stopGateway before
+  // calling quitAndInstall, so yield the microtask queue after firing.
+  fireAppOnce("before-quit");
+  await Promise.resolve(); // yield to allow the async IIFE to run past stopGateway
+  assert.strictEqual(calls.quitAndInstall.length, 1, "before-quit after session-end must still install");
 });

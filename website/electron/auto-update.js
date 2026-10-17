@@ -942,6 +942,9 @@ function initAutoUpdate(deps) {
     getAutoDownloadPreference = () => false,
     notifyUpdateFound = null,
     stopGateway,
+    // On Windows, BaseWindow emits 'session-end' but App does not. Pass the window
+    // provider so feed-lane can register the pending-update notice on the right object.
+    getMainWindow = () => null,
     // Host hook: an install is now in flight, so a gateway that stops answering
     // is INTENTIONAL. main.js uses it to disarm the liveness watchdog, which
     // otherwise resurrects the gateway mid-swap. Optional (absent in tests).
@@ -1158,6 +1161,7 @@ function initAutoUpdate(deps) {
     linux,
     macDistArch,
     nativeAutoUpdater,
+    getMainWindow,
     feedBase,
     uiDriven,
     log,
