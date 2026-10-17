@@ -777,7 +777,8 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return slot_not_found()
-    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_stop")
+    request_app = request.get("app", "")
+    denied = deny_app_slot_access(request_app, slot, name, "slot_stop")
     if denied is not None:
         return denied
     # Before ANY side effect — the escalation branch inside stop_slot_turn clears
@@ -790,7 +791,21 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     force = request.query.get("force", "").lower() == "true"
-    return web.json_response(await stop_slot_turn(state, slot, force=force, cancel_key=cancel_key))
+    # The audit has to name who asked (#20874): ``stop_slot_turn`` defaults its
+    # ``source`` to ``dashboard`` and logs it as the SEL line's ``via``, so the
+    # default would audit an app's stop — soft, force or the escalated second
+    # press — as the owner's dashboard press. This route is the only layer
+    # holding the request the token rode on; the same value the deny checks
+    # just authorized against is the one recorded.
+    return web.json_response(
+        await stop_slot_turn(
+            state,
+            slot,
+            force=force,
+            cancel_key=cancel_key,
+            source=f"app:{request_app}" if request_app else "dashboard",
+        )
+    )
 
 
 async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
