@@ -66,7 +66,7 @@ class TestIncidentIoCannotBorrowATeammatesShift(_IncidentIoCase):
         incidentio, adapter = self._adapter()
         called: list[dict[str, Any]] = []
 
-        def _fake_request(url, headers=None, params=None):
+        def _fake_request(url, headers=None, params=None, **_kw):
             called.append(dict(params or {}))
             return {
                 "schedule_entries": {
@@ -118,7 +118,7 @@ class TestIncidentIoCannotBorrowATeammatesShift(_IncidentIoCase):
         incidentio, adapter = self._adapter()
         policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
 
-        def _fake_request(url, headers=None, params=None):
+        def _fake_request(url, headers=None, params=None, **_kw):
             return {
                 "schedule_entries": {
                     "scheduled": [{"user": {"id": "UME", "name": "me"}, "end_at": "later"}],
@@ -163,7 +163,7 @@ class TestIncidentIoAuthorizesOnlyTheShiftInForce(_IncidentIoCase):
         incidentio, adapter = self._adapter()
         policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
 
-        def _fake_request(url, headers=None, params=None):
+        def _fake_request(url, headers=None, params=None, **_kw):
             return {"schedule_entries": {"final": [entry]}}
 
         with mock.patch.object(incidentio, "config_list", return_value=["SCHED1"]):
@@ -492,6 +492,466 @@ class TestIncidentIoPollTruncationIsNotRecovery(_IncidentIoCase):
 
         self.assertEqual(signals[0].provider_key, "incidentio:alert/checkout-5xx")
         self.assertEqual(signals[0].labels["incidentio_alert_id"], "A1")
+
+
+class TestIncidentIoRoster(_IncidentIoCase):
+    """The operator's upcoming shifts, in the schedule-file roster's shape.
+
+    Display only: nothing here may change the off-shift vote, so these tests pin what the
+    board is shown and what the read costs, not who is authorized.
+    """
+
+    NOW = datetime(2026, 9, 24, 12, 0, tzinfo=timezone.utc)
+
+    def setUp(self) -> None:
+        super().setUp()
+        incidentio.reset_roster_cache()
+        self.addCleanup(incidentio.reset_roster_cache)
+        for name, value in (
+            ("provider_enabled", True),
+            ("has_secrets", True),
+            ("_headers", {}),
+        ):
+            patcher = mock.patch.object(incidentio, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.schedule_ids = ["SCHED1"]
+        patcher = mock.patch.object(
+            incidentio, "config_list", side_effect=lambda *_a: list(self.schedule_ids)
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _entry(self, uid: str, name: str, start_h: int, end_h: int) -> dict[str, Any]:
+        return {
+            "user": {"id": uid, "name": name},
+            "start_at": incidentio._iso(self.NOW + timedelta(hours=start_h)),
+            "end_at": incidentio._iso(self.NOW + timedelta(hours=end_h)),
+        }
+
+    def test_no_identity_means_no_roster_and_no_request(self) -> None:
+        """Without a fenced identity there is no "you" to build the roster around."""
+        with mock.patch.object(incidentio, "request_json") as request:
+            self.assertEqual(incidentio.roster(self.NOW), {})
+        request.assert_not_called()
+
+    def test_an_identity_without_schedules_is_reported_not_hidden(self) -> None:
+        """The state that votes off shift on every check must be visible on the board."""
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        self.schedule_ids = []
+        with mock.patch.object(incidentio, "request_json") as request:
+            result = incidentio.roster(self.NOW)
+        request.assert_not_called()
+        self.assertEqual(result["source"], "incidentio")
+        self.assertEqual(result["members"], [])
+        # A code the board translates, beside the English kept for logs.
+        self.assertEqual(result["error_code"], incidentio.ROSTER_ERROR_NO_SCHEDULES)
+        self.assertIn("schedule_ids", result["error"])
+
+    def test_the_effective_schedule_builds_the_roster_in_shift_order(self) -> None:
+        """``final`` is read, never ``scheduled``, and members keep first-shift order."""
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        final = [
+            self._entry("UME", "Me", 30, 54),
+            self._entry("UALICE", "Alice", -2, 6),
+            self._entry("UME", "Me", 6, 30),
+        ]
+
+        def _fake_request(url, headers=None, params=None, **_kw):
+            return {
+                "schedule_entries": {
+                    "final": final,
+                    "scheduled": [self._entry("UNOTREAL", "Pre-override", -2, 6)],
+                },
+                "pagination_meta": {},
+            }
+
+        with mock.patch.object(incidentio, "request_json", side_effect=_fake_request):
+            result = incidentio.roster(self.NOW)
+
+        self.assertEqual([m["login"] for m in result["members"]], ["UALICE", "UME"])
+        self.assertEqual([m["name"] for m in result["members"]], ["Alice", "Me"])
+        by_id = {m["login"]: m for m in result["members"]}
+        self.assertTrue(by_id["UALICE"]["on_call_now"])
+        self.assertFalse(by_id["UME"]["on_call_now"])
+        self.assertEqual(by_id["UME"]["shifts"], 2)
+        self.assertEqual(result["me"], "UME")
+        self.assertTrue(result["me_on_roster"])
+        self.assertEqual([w["current"] for w in result["windows"]], [True, False, False])
+        self.assertEqual(result["error"], "")
+
+    def test_not_on_any_shift_is_distinguished_from_off_shift_now(self) -> None:
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        entries = {"schedule_entries": {"final": [self._entry("UALICE", "Alice", -2, 6)]}}
+        with mock.patch.object(incidentio, "request_json", return_value=entries):
+            result = incidentio.roster(self.NOW)
+        self.assertFalse(result["me_on_roster"])
+
+    def test_the_cursor_goes_back_as_the_window_start_with_the_end_unchanged(self) -> None:
+        """The endpoint's documented paging: a partial walk would hide a later shift."""
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        calls: list[dict[str, Any]] = []
+        pages = [
+            {
+                "schedule_entries": {"final": [self._entry("UALICE", "Alice", -2, 6)]},
+                "pagination_meta": {"after": "CURSOR2"},
+            },
+            {"schedule_entries": {"final": [self._entry("UME", "Me", 150, 170)]}},
+        ]
+
+        def _fake_request(url, headers=None, params=None, **_kw):
+            calls.append(dict(params or {}))
+            return pages[len(calls) - 1]
+
+        with mock.patch.object(incidentio, "request_json", side_effect=_fake_request):
+            result = incidentio.roster(self.NOW)
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1]["entry_window_start"], "CURSOR2")
+        self.assertEqual(calls[1]["entry_window_end"], calls[0]["entry_window_end"])
+        self.assertTrue(result["me_on_roster"], "the shift on page two must not be lost")
+
+    def test_the_polled_board_reads_the_api_once_per_ttl(self) -> None:
+        """``/state`` is polled; a schedule walk per poll would spend the rate limit."""
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        entries = {"schedule_entries": {"final": [self._entry("UME", "Me", -1, 1)]}}
+        with mock.patch.object(incidentio, "request_json", return_value=entries) as request:
+            incidentio.roster(self.NOW)
+            incidentio.roster(self.NOW)
+            self.assertEqual(request.call_count, 1)
+            # A changed schedule list is a different question, answered at once.
+            self.schedule_ids = ["SCHED1", "SCHED2"]
+            incidentio.roster(self.NOW)
+            self.assertEqual(request.call_count, 3)
+
+    def test_a_rate_limited_read_waits_as_long_as_incident_io_asked(self) -> None:
+        """A 429's Retry-After outlasts the 60 s error cache; the roster must not re-walk sooner."""
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        clock = [1000.0]
+        with mock.patch.object(incidentio.time, "monotonic", side_effect=lambda: clock[0]):
+            with mock.patch.object(
+                incidentio,
+                "request_json",
+                side_effect=incidentio.HttpError(429, "slow down", retry_after=300),
+            ) as request:
+                incidentio.roster(self.NOW)
+                clock[0] += 120.0
+                incidentio.roster(self.NOW)
+                self.assertEqual(request.call_count, 1, "still inside the Retry-After window")
+                clock[0] += 200.0
+                incidentio.roster(self.NOW)
+                self.assertEqual(request.call_count, 2, "re-asked once the window has passed")
+
+    def test_the_window_is_the_next_two_weeks(self) -> None:
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        calls: list[dict[str, Any]] = []
+
+        def _fake_request(url, headers=None, params=None, **_kw):
+            calls.append(dict(params or {}))
+            return {"schedule_entries": {"final": []}}
+
+        with mock.patch.object(incidentio, "request_json", side_effect=_fake_request):
+            incidentio.roster(self.NOW)
+        self.assertEqual(calls[0]["entry_window_start"], incidentio._iso(self.NOW))
+        self.assertEqual(
+            calls[0]["entry_window_end"], incidentio._iso(self.NOW + timedelta(days=14))
+        )
+
+    def test_a_good_read_is_cached_five_minutes_and_a_failed_one_a_minute(self) -> None:
+        """The two expiries the spec states, measured on the clock the cache reads."""
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        good = {"schedule_entries": {"final": [self._entry("UME", "Me", -1, 1)]}}
+        clock = [1000.0]
+        with mock.patch.object(incidentio.time, "monotonic", side_effect=lambda: clock[0]):
+            with mock.patch.object(incidentio, "request_json", return_value=good) as request:
+                incidentio.roster(self.NOW)
+                clock[0] += 299.0
+                incidentio.roster(self.NOW)
+                self.assertEqual(request.call_count, 1, "still fresh just under 5 minutes")
+                clock[0] += 2.0
+                incidentio.roster(self.NOW)
+                self.assertEqual(request.call_count, 2, "re-read just past 5 minutes")
+
+            incidentio.reset_roster_cache()
+            with mock.patch.object(
+                incidentio, "request_json", side_effect=incidentio.HttpError(503, "down")
+            ) as failing:
+                incidentio.roster(self.NOW)
+                clock[0] += 59.0
+                incidentio.roster(self.NOW)
+                self.assertEqual(failing.call_count, 1, "a failure is not re-asked within a minute")
+                clock[0] += 2.0
+                incidentio.roster(self.NOW)
+                self.assertEqual(failing.call_count, 2, "but is re-asked just past it")
+
+    def test_a_failed_read_degrades_to_an_error_instead_of_raising(self) -> None:
+        """``describe`` backs the board's main poll; a down API must not 500 it."""
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        with mock.patch.object(
+            incidentio, "request_json", side_effect=incidentio.HttpError(503, "unavailable")
+        ):
+            result = incidentio.roster(self.NOW)
+        self.assertEqual(result["members"], [])
+        # The status reaches the card; the vendor's error body stays in the log.
+        self.assertEqual(result["error"], "incident.io did not answer (HTTP 503)")
+        self.assertEqual(result["error_code"], incidentio.ROSTER_ERROR_UNREACHABLE)
+        self.assertEqual(result["error_status"], 503)
+
+    def test_the_roster_is_bounded_while_walking_and_in_every_string(self) -> None:
+        """``schedule_ids`` is agent-writable and the roster is cached on a polled route.
+
+        The walk covers at most ``_MAX_ROSTER_SCHEDULES`` schedules and keeps only the
+        soonest ``_MAX_ROSTER_WINDOWS`` shifts as they stream in; a refused shift leaves no
+        member behind, and ids and names are clamped where they are retained.
+        """
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        self.schedule_ids = ["S1", "S2", "S3"]
+        asked: list[str] = []
+        long_name = "N" * 1000
+        pages = {
+            "S1": [self._entry("ULATE", "Late", 30, 40), self._entry("UME", long_name, 1, 2)],
+            "S2": [self._entry("UALICE", "Alice", 5, 6)],
+            "S3": [self._entry("UNEVER", "Never walked", 0, 1)],
+        }
+
+        def _fake_request(url, headers=None, params=None, **_kw):
+            asked.append(params["schedule_id"])
+            return {"schedule_entries": {"final": pages[params["schedule_id"]]}}
+
+        with mock.patch.object(incidentio, "_MAX_ROSTER_WINDOWS", 2):
+            with mock.patch.object(incidentio, "_MAX_ROSTER_SCHEDULES", 2):
+                with mock.patch.object(incidentio, "request_json", side_effect=_fake_request):
+                    with self.assertLogs(incidentio.logger, level="WARNING") as logs:
+                        result = incidentio.roster(self.NOW)
+
+        self.assertEqual(asked, ["S1", "S2"], "the schedule walk itself is capped")
+        self.assertEqual(len(result["windows"]), 2)
+        self.assertEqual([m["login"] for m in result["members"]], ["UME", "UALICE"])
+        self.assertLessEqual(len(result["members"][0]["name"]), incidentio._MAX_ROSTER_TEXT)
+        self.assertIn("left out 1", logs.output[0], "the overflow is said once per read")
+
+    def test_a_cap_that_evicts_this_operators_shift_does_not_call_them_off_the_roster(
+        self,
+    ) -> None:
+        """A capped roster is partial, not proof this operator is on no schedule."""
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        entries = {
+            "schedule_entries": {
+                "final": [
+                    self._entry("UALICE", "Alice", 1, 2),
+                    self._entry("UBOB", "Bob", 3, 4),
+                    self._entry("UME", "Me", 40, 41),
+                ]
+            }
+        }
+        with mock.patch.object(incidentio, "_MAX_ROSTER_WINDOWS", 2):
+            with mock.patch.object(incidentio, "request_json", return_value=entries):
+                result = incidentio.roster(self.NOW)
+        self.assertNotIn("UME", [m["login"] for m in result["members"]])
+        self.assertTrue(result["me_on_roster"], "seen during the walk, only not kept")
+        self.assertTrue(result["partial"])
+
+    def test_schedules_past_the_cap_make_the_roster_partial(self) -> None:
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        self.schedule_ids = ["S1", "S2"]
+        entries = {"schedule_entries": {"final": [self._entry("UALICE", "Alice", 1, 2)]}}
+        with mock.patch.object(incidentio, "_MAX_ROSTER_SCHEDULES", 1):
+            with mock.patch.object(incidentio, "request_json", return_value=entries):
+                result = incidentio.roster(self.NOW)
+        self.assertTrue(result["partial"])
+        self.assertFalse(result["me_on_roster"])
+
+    def test_a_schedule_added_past_the_cap_is_not_hidden_by_the_cache(self) -> None:
+        """It changes no walked id, but it does make the roster partial, at once."""
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        entries = {"schedule_entries": {"final": [self._entry("UME", "Me", 1, 2)]}}
+        with mock.patch.object(incidentio, "_MAX_ROSTER_SCHEDULES", 1):
+            with mock.patch.object(incidentio, "request_json", return_value=entries):
+                self.assertFalse(incidentio.roster(self.NOW)["partial"])
+                self.schedule_ids = ["SCHED1", "SCHED2"]
+                self.assertTrue(incidentio.roster(self.NOW)["partial"])
+
+    def test_a_cached_roster_moves_the_on_call_badge_at_handover(self) -> None:
+        """The windows may be cached; who is on call right now may not be."""
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        entries = {
+            "schedule_entries": {
+                "final": [self._entry("UALICE", "Alice", -1, 1), self._entry("UBOB", "Bob", 1, 3)]
+            }
+        }
+        with mock.patch.object(incidentio, "request_json", return_value=entries) as request:
+            before = incidentio.roster(self.NOW)
+            after = incidentio.roster(self.NOW + timedelta(hours=2))
+        self.assertEqual(request.call_count, 1, "the second read is a cache hit")
+        on_call = lambda r: {m["login"] for m in r["members"] if m["on_call_now"]}  # noqa: E731
+        self.assertEqual(on_call(before), {"UALICE"})
+        self.assertEqual(on_call(after), {"UBOB"})
+        self.assertEqual([w["current"] for w in after["windows"]], [False, True])
+
+    def test_an_overlong_stored_identity_is_clamped_before_it_is_kept(self) -> None:
+        with mock.patch.object(incidentio.policy_store, "get", return_value="U" * 1000):
+            entries = {"schedule_entries": {"final": [self._entry("UALICE", "Alice", 1, 2)]}}
+            with mock.patch.object(incidentio, "request_json", return_value=entries):
+                result = incidentio.roster(self.NOW)
+        self.assertEqual(len(result["me"]), incidentio._MAX_ROSTER_TEXT)
+
+    def test_concurrent_cache_misses_make_one_walk_and_cannot_cache_a_later_error(self) -> None:
+        """Two polls missing together share one build; the second never walks the vendor."""
+        import threading
+
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        entries = {"schedule_entries": {"final": [self._entry("UME", "Me", 1, 2)]}}
+        release = threading.Event()
+        calls: list[int] = []
+
+        def _slow_then_fail(url, headers=None, params=None, **_kw):
+            calls.append(1)
+            if len(calls) == 1:
+                release.wait(5)
+                return entries
+            raise incidentio.HttpError(503, "down")
+
+        results: list[dict[str, Any]] = []
+        with mock.patch.object(incidentio, "request_json", side_effect=_slow_then_fail):
+            first = threading.Thread(target=lambda: results.append(incidentio.roster(self.NOW)))
+            second = threading.Thread(target=lambda: results.append(incidentio.roster(self.NOW)))
+            first.start()
+            second.start()
+            release.set()
+            first.join(10)
+            second.join(10)
+            cached = incidentio.roster(self.NOW)
+        self.assertEqual(len(calls), 1, "the waiting poll reused the build")
+        self.assertEqual([r["error"] for r in results], ["", ""])
+        self.assertEqual(cached["error"], "", "no later failure overwrote the good roster")
+
+    def test_each_roster_request_carries_the_short_timeout(self) -> None:
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        entries: dict[str, Any] = {"schedule_entries": {"final": []}}
+        with mock.patch.object(incidentio, "request_json", return_value=entries) as request:
+            incidentio.roster(self.NOW)
+        self.assertEqual(
+            request.call_args.kwargs["timeout"], incidentio._ROSTER_REQUEST_TIMEOUT_SECS
+        )
+
+    def test_an_overlong_vendor_id_is_clamped_where_it_is_kept(self) -> None:
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        long_id = "U" * 1000
+        entries = {"schedule_entries": {"final": [self._entry(long_id, "Long", 1, 2)]}}
+        with mock.patch.object(incidentio, "request_json", return_value=entries):
+            result = incidentio.roster(self.NOW)
+        self.assertEqual(len(result["members"][0]["login"]), incidentio._MAX_ROSTER_TEXT)
+        self.assertEqual(len(result["windows"][0]["who"][0]), incidentio._MAX_ROSTER_TEXT)
+
+    def test_a_cursor_that_never_ends_is_bounded_by_the_page_cap(self) -> None:
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        page = {
+            "schedule_entries": {"final": [self._entry("UALICE", "Alice", 1, 2)]},
+            "pagination_meta": {"after": "MORE"},
+        }
+        with mock.patch.object(incidentio, "_MAX_ENTRY_PAGES", 2):
+            with mock.patch.object(incidentio, "request_json", return_value=page) as request:
+                result = incidentio.roster(self.NOW)
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(result["error_code"], incidentio.ROSTER_ERROR_CUT_SHORT)
+
+    def test_a_malformed_key_on_a_roster_read_is_logged_without_the_key(self) -> None:
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        with mock.patch.object(
+            incidentio,
+            "request_json",
+            side_effect=ValueError("Invalid header value 'Bearer SECRET'"),
+        ):
+            with self.assertLogs(incidentio.logger, level="WARNING") as logs:
+                result = incidentio.roster(self.NOW)
+        self.assertEqual(result["error_code"], incidentio.ROSTER_ERROR_UNREACHABLE)
+        self.assertNotIn("SECRET", "\n".join(logs.output))
+
+    def test_a_read_past_its_deadline_ends_as_an_error_not_a_partial_roster(self) -> None:
+        """A slow-but-answering vendor must not hold a cache-miss poll for minutes."""
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        with mock.patch.object(incidentio, "_ROSTER_WALK_DEADLINE_SECS", 0.0):
+            with mock.patch.object(incidentio, "request_json") as request:
+                result = incidentio.roster(self.NOW)
+        request.assert_not_called()
+        self.assertEqual(result["members"], [])
+        self.assertEqual(result["error_code"], incidentio.ROSTER_ERROR_CUT_SHORT)
+
+    def test_the_board_falls_back_to_this_roster_without_a_schedule_file(self) -> None:
+        """The wiring: ``describe``'s roster slot, not just the function."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import rotation
+
+        policy_store.put(policy_store.INCIDENTIO_USER_KEY, "UME")
+        entries = {"schedule_entries": {"final": [self._entry("UME", "Me", -1, 1)]}}
+        with mock.patch.object(incidentio, "request_json", return_value=entries):
+            result = rotation._roster_safely()
+        self.assertEqual(result["source"], "incidentio")
+        self.assertTrue(result["members"])
+
+
+class TestIncidentIoUserExists(_IncidentIoCase):
+    """The save-time identity check: only a definite 404 may refuse."""
+
+    def _configured(self) -> None:
+        for name, value in (("provider_enabled", True), ("has_secrets", True), ("_headers", {})):
+            patcher = mock.patch.object(incidentio, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_without_a_key_the_answer_is_unknown_and_nothing_is_asked(self) -> None:
+        with mock.patch.object(incidentio, "request_json") as request:
+            self.assertIsNone(incidentio.user_exists("01ABC"))
+        request.assert_not_called()
+
+    def test_a_malformed_stored_key_cannot_crash_the_save_or_reach_the_log(self) -> None:
+        """A bad paste fails while building the request; that is "cannot say", not a 500."""
+        self._configured()
+        leak = "sk_live_SECRET\nX"
+        with mock.patch.object(
+            incidentio, "request_json", side_effect=ValueError(f"Invalid header value {leak!r}")
+        ):
+            with self.assertLogs(incidentio.logger, level="WARNING") as logs:
+                self.assertIsNone(incidentio.user_exists("01ABC"))
+        self.assertNotIn("SECRET", "\n".join(logs.output))
+
+    def test_a_disabled_provider_with_a_key_still_checks_the_id(self) -> None:
+        """Saved while switched off, the id is what the rotation reads once switched back on."""
+        for name, value in (("provider_enabled", False), ("has_secrets", True), ("_headers", {})):
+            patcher = mock.patch.object(incidentio, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        with mock.patch.object(
+            incidentio, "request_json", side_effect=incidentio.HttpError(404, "not found")
+        ):
+            self.assertIs(incidentio.user_exists("Sam Example"), False)
+
+    def test_a_404_is_the_only_no_and_any_other_failure_cannot_say(self) -> None:
+        """An outage must not read as "no such user" and lock the operator out."""
+        self._configured()
+        with mock.patch.object(
+            incidentio, "request_json", side_effect=incidentio.HttpError(404, "not found")
+        ):
+            self.assertIs(incidentio.user_exists("Sam Example"), False)
+        for status in (0, 401, 429, 503):
+            with mock.patch.object(
+                incidentio, "request_json", side_effect=incidentio.HttpError(status, "x")
+            ):
+                self.assertIsNone(incidentio.user_exists("01ABC"), status)
+
+    def test_an_id_that_cannot_be_encoded_is_a_no_not_a_crash(self) -> None:
+        """A lone surrogate from a hand-written JSON escape must be refused, not 500 the save."""
+        self._configured()
+        with mock.patch.object(incidentio, "request_json") as request:
+            self.assertIs(incidentio.user_exists("\ud800"), False)
+        request.assert_not_called()
+
+    def test_a_known_user_is_yes_and_the_id_is_path_escaped(self) -> None:
+        self._configured()
+        with mock.patch.object(incidentio, "request_json", return_value={"user": {}}) as request:
+            self.assertIs(incidentio.user_exists("a b/c"), True)
+        self.assertTrue(request.call_args.args[0].endswith("/v2/users/a%20b%2Fc"))
+        # It runs inside the operator's own save, so it must not wait the adapter default.
+        self.assertEqual(request.call_args.kwargs["timeout"], incidentio._USER_CHECK_TIMEOUT_SECS)
 
 
 if __name__ == "__main__":  # pragma: no cover
