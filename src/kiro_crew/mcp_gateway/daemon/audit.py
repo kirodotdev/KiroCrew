@@ -379,3 +379,25 @@ def _audit_disconnect_cancel(stub_uuid: str, remaining: int, cancelled: int) -> 
         )
     except Exception:  # pragma: no cover — audit must never break detach
         logger.debug("SEL audit for disconnect-cancel failed", exc_info=True)
+
+
+def _audit_agent_socket_decision(server_name: str, outcome: str, reason: str = "") -> None:
+    """Emit a SEL audit event when a backend is offered, or refused, the agent socket.
+
+    Handing a backend ``SSH_AUTH_SOCK`` gives it, and anything it runs, USE of the
+    operator's ssh-agent outside every session sandbox, so each change in that
+    decision for a server is recorded beside the spawn decisions. The socket path
+    itself is not logged. Wrapped defensively -- an audit failure must never break
+    a backend launch.
+    """
+    try:
+        facade.SecurityEventLog().log_api_access(
+            caller="gatewayd",
+            operation="mcp-gateway.agent-socket",
+            outcome=outcome,
+            source="gateway",
+            resources=server_name,
+            error=reason,
+        )
+    except Exception:  # pragma: no cover — audit must never break a launch
+        logger.debug("SEL audit for the agent-socket decision failed", exc_info=True)
