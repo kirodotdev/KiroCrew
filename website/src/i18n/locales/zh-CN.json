@@ -6937,7 +6937,14 @@
       "tags_loading_hint": "正在加载标签…",
       "tags_error_hint": "无法加载标签。",
       "tags_retry": "重试",
-      "top_level": "顶层"
+      "top_level": "顶层",
+      "default_crew": "默认 Crew",
+      "default_crew_hint": "从此文件夹开始的新聊天将在该 Crew 上运行。把会话移入文件夹不会把它移到 Crew 上。",
+      "default_crew_offline_notice": "该 Crew 处于离线状态。在此文件夹中新建聊天时会提示这一点，并仅为这一次聊天提供“本地”选项。",
+      "crew_local": "本地",
+      "crew_online": "{{name}}（在线）",
+      "crew_offline": "{{name}}（离线）",
+      "crew_not_registered": "{{id}}（未注册）"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "文件夹建议",
@@ -12620,7 +12627,9 @@
       "broadcast_col_result": "结果",
       "broadcast_open_unknown": "未确认 · 打开",
       "broadcast_delivery_hint": "不会打断正在进行的工作：运行中的会话在当前工具调用结束后读到；空闲的会话开始新一轮。",
-      "broadcast_retry": "重试 {{n}} 个失败的"
+      "broadcast_retry": "重试 {{n}} 个失败的",
+      "folder_crew_offline": "{{name}} 处于离线状态，因此未开始聊天。此文件夹中的新聊天将在该 Crew 上运行。",
+      "folder_crew_offline_use_local": "改为在本地开始此聊天"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

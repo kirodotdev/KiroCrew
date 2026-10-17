@@ -6937,7 +6937,14 @@
       "tags_loading_hint": "タグを読み込んでいます…",
       "tags_error_hint": "タグを読み込めませんでした。",
       "tags_retry": "再試行",
-      "top_level": "トップレベル"
+      "top_level": "トップレベル",
+      "default_crew": "デフォルト Crew",
+      "default_crew_hint": "このフォルダーから開始した新しいチャットは、この Crew で実行されます。セッションをフォルダーに移動しても、Crew には移動しません。",
+      "default_crew_offline_notice": "この Crew はオフラインです。このフォルダーで新しいチャットを開始すると、その旨を表示し、そのチャットだけローカルで開始する選択肢を提示します。",
+      "crew_local": "ローカル",
+      "crew_online": "{{name}}（オンライン）",
+      "crew_offline": "{{name}}（オフライン）",
+      "crew_not_registered": "{{id}}（未登録）"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "フォルダーの提案",
@@ -12620,7 +12627,9 @@
       "broadcast_col_result": "結果",
       "broadcast_open_unknown": "未確認・開く",
       "broadcast_delivery_hint": "実行中の作業は中断されません。実行中のターンは現在のツール呼び出しの後に読み、待機中のセッションは新しいターンを始めます。",
-      "broadcast_retry": "失敗した {{n}} 件を再試行"
+      "broadcast_retry": "失敗した {{n}} 件を再試行",
+      "folder_crew_offline": "{{name}} がオフラインのため、チャットを開始しませんでした。このフォルダーの新しいチャットは、その Crew で実行されます。",
+      "folder_crew_offline_use_local": "このチャットをローカルで開始する"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

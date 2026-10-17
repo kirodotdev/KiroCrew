@@ -7179,7 +7179,14 @@
       "tags_loading_hint": "Caricamento dei tag…",
       "tags_error_hint": "Impossibile caricare i tag.",
       "tags_retry": "Riprova",
-      "top_level": "Livello principale"
+      "top_level": "Livello principale",
+      "default_crew": "Crew predefinito",
+      "default_crew_hint": "Le nuove chat avviate da questa cartella vengono eseguite su questo Crew. Spostare una sessione nella cartella non la sposta sul Crew.",
+      "default_crew_offline_notice": "Questo Crew è offline. Una nuova chat in questa cartella lo segnalerà e offrirà Locale solo per quella chat.",
+      "crew_local": "Locale",
+      "crew_online": "{{name}} (online)",
+      "crew_offline": "{{name}} (offline)",
+      "crew_not_registered": "{{id}} (non registrato)"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Suggerimento cartella",
@@ -13046,7 +13053,9 @@
       "broadcast_col_result": "Esito",
       "broadcast_open_unknown": "Non confermato · apri",
       "broadcast_delivery_hint": "Nessun lavoro in corso viene interrotto: un turno attivo lo legge dopo la chiamata allo strumento in corso; una sessione inattiva avvia un nuovo turno.",
-      "broadcast_retry": "Riprova {{n}} non riusciti"
+      "broadcast_retry": "Riprova {{n}} non riusciti",
+      "folder_crew_offline": "{{name}} è offline, quindi non è stata avviata alcuna chat. Le nuove chat di questa cartella vengono eseguite su quel Crew.",
+      "folder_crew_offline_use_local": "Avvia invece questa chat in locale"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

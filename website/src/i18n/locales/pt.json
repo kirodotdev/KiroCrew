@@ -7179,7 +7179,14 @@
       "tags_loading_hint": "Carregando tags…",
       "tags_error_hint": "Não foi possível carregar as tags.",
       "tags_retry": "Tentar novamente",
-      "top_level": "Nível superior"
+      "top_level": "Nível superior",
+      "default_crew": "Crew padrão",
+      "default_crew_hint": "Os novos chats iniciados a partir desta pasta são executados neste Crew. Mover uma sessão para a pasta não a move para o Crew.",
+      "default_crew_offline_notice": "Este Crew está offline. Um novo chat nesta pasta avisará e oferecerá Local apenas para esse chat.",
+      "crew_local": "Local",
+      "crew_online": "{{name}} (online)",
+      "crew_offline": "{{name}} (offline)",
+      "crew_not_registered": "{{id}} (não registrado)"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Sugestão de pasta",
@@ -13046,7 +13053,9 @@
       "broadcast_col_result": "Resultado",
       "broadcast_open_unknown": "Não confirmado · abrir",
       "broadcast_delivery_hint": "Nenhum trabalho em andamento é interrompido: um turno ativo lê a mensagem após a chamada de ferramenta atual; uma sessão ociosa começa um novo turno.",
-      "broadcast_retry": "Tentar de novo {{n}} com falha"
+      "broadcast_retry": "Tentar de novo {{n}} com falha",
+      "folder_crew_offline": "{{name}} está offline, então nenhum chat foi iniciado. Os novos chats desta pasta são executados nesse Crew.",
+      "folder_crew_offline_use_local": "Iniciar este chat em Local"
     },
     "connectionsPage": {
       "action_failed": "Falha na ação: {{error}}",

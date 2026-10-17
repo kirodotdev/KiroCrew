@@ -150,11 +150,30 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
           title={folderCreateError.title}
           report={folderCreateError.report}
           variant="inline"
-          askAgent
+          // An offline crew is a state, not a failure: there is nothing for an
+          // agent to diagnose, and the notice already carries its own remedy.
+          askAgent={!folderCreateError.localOffer}
           onDismiss={() => setFolderCreateError(null)}
           testId={columnId ? `col-${columnId}-folder-create-error-${folderId}` : `folder-create-error-${folderId}`}
           className="flex-wrap w-full"
         />
+        {/* The folder's crew is offline: start THIS chat on Local, with the
+         *  options the click carried. The folder keeps its crew, so the next New
+         *  chat asks the same question. */}
+        {folderCreateError.localOffer && (
+          <div className="mt-0.5">
+            <button type="button"
+              className="text-[11px] font-medium text-accent hover:text-accent-hover bg-transparent border-none p-0 cursor-pointer underline decoration-accent/30 hover:decoration-accent underline-offset-2"
+              data-testid={`folder-create-error-local-${folderId}`}
+              onClick={() => {
+                const offer = folderCreateError.localOffer
+                setFolderCreateError(null)
+                createChatInFolder(folderId, { ...offer, local: true })
+              }}>
+              {i18nT('pages.chatSidebar.folder_crew_offline_use_local')}
+            </button>
+          </div>
+        )}
         {/* Direct remedy for the stale-directory case: open Folder settings
          *  right here instead of describing a hover-only menu glyph. On its
          *  own line, never as a row peer of the notice's Ask-agent/dismiss

@@ -1,7 +1,7 @@
 /** Creating sessions from the sidebar: the New chat variants (local, crew,
  *  ephemeral) and a new chat inside a folder. */
 import { useState, useRef, useCallback, type Dispatch, type SetStateAction } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { type ErrorReport, findReport } from '../../utils/errorReport'
 import { isStaleProjectDirError, resolveFolderAgent, resolveFolderProjectDir } from '../../utils/folderAgent'
@@ -18,16 +18,20 @@ import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
 import { PREVIEW_CREW } from '../../utils/previewFlags'
 import { settingsPath } from '../../components/settingsPath'
 import { SETTINGS_CREW_MEMBERS_PREVIEW_ID } from '../../hooks/useSettingHighlight'
-import { api } from '../../api/client'
-import { resolveDefaultMemoryMode } from '../../api/queryClient'
-import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
-import { currentCrewWindow, openCrewWindow } from '../chat/crew-window/crewWindowStore'
-import { useStore } from 'react-redux'
-import type { RootState } from '../../store'
+import type { FolderCrewRoute } from './folderCrew'
+
+/** What one New chat in a folder asks for. `local` starts it on this machine
+ *  whatever the folder's default crew says: the one-chat answer to an offline
+ *  crew, never a stored choice. */
+export type FolderChatOpts = { columnId?: string; focus?: boolean; memoryMode?: 'incognito' | 'temporary'; inNewTab?: boolean; local?: boolean }
 
 /** New chat inside a folder, with its inline failure line. */
-export function useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation, onOpenSlotInNewTab, updateFolderMutation, clearBoardCollapse, connected, setFolderOfflineNotice }: {
+export function useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation, onOpenSlotInNewTab, updateFolderMutation, clearBoardCollapse, connected, setFolderOfflineNotice, routeFolderCrew, startCrewChat }: {
   folders: ChatFolder[]
+  /** Where the folder's New chat goes (its default crew, or Local). */
+  routeFolderCrew: (folder: ChatFolder | undefined) => FolderCrewRoute
+  /** Start a chat on a connected crew (see `startChatOnCrew`). */
+  startCrewChat: (instanceId: string, memoryMode?: 'incognito' | 'temporary') => Promise<void>
   connected: boolean
   setFolderOfflineNotice: Dispatch<SetStateAction<string>>
   mode: string | undefined
@@ -48,7 +52,10 @@ export function useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation,
   // scopes the notice to the board column the create was issued from (a root
   // folder renders once per column, and an unscoped notice would mount N
   // identical alerts). Cleared by dismissal or by the next successful create.
-  const [folderCreateError, setFolderCreateError] = useState<{ folderId: string; columnId?: string; message: string; title?: string; report?: ErrorReport; offerSettings?: boolean } | null>(null)
+  // `localOffer` marks the one non-error entry: the folder's crew is offline, so
+  // the notice carries a button that starts THIS chat on Local with the same
+  // options the click had.
+  const [folderCreateError, setFolderCreateError] = useState<{ folderId: string; columnId?: string; message: string; title?: string; report?: ErrorReport; offerSettings?: boolean; localOffer?: FolderChatOpts } | null>(null)
   // Monotonic attempt counter: settle callbacks only act when they belong to
   // the LATEST attempt, so an older create failing after a newer one succeeded
   // cannot resurrect a stale notice (and a stale success cannot clear a newer
@@ -134,19 +141,70 @@ export function useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation,
       setFolderCreateError({ folderId, columnId, message, title, report, offerSettings: isStaleProjectDir })
     },
   })
+  // The folder's New chat when the folder pins a connected crew: the same create
+  // as "New chat on crew". Nothing lands in the folder (the peer owns the
+  // session), so there is no slot to file and no column to drop it in. A failure
+  // reports under the folder like a local one, since the New chat menu's own
+  // error line is not on screen from a folder row.
+  const createCrewChatInFolderMutation = useMutation({
+    mutationFn: ({ instanceId, memoryMode }: { instanceId: string; folderId: string; columnId?: string; attempt: number; memoryMode?: 'incognito' | 'temporary' }) =>
+      startCrewChat(instanceId, memoryMode),
+    onSuccess: (_: void, { folderId, attempt }) => {
+      if (attempt === folderCreateAttemptRef.current) {
+        setFolderCreateError(prev => (prev && prev.folderId === folderId ? null : prev))
+      }
+    },
+    onError: (err: unknown, { folderId, columnId, attempt }) => {
+      // eslint-disable-next-line no-console -- surface chat-creation failures for diagnostics
+      console.error('Failed to create chat on the folder crew:', err)
+      if (attempt !== folderCreateAttemptRef.current) return
+      const raw = errMessage(err)
+      setFolderCreateError({
+        folderId,
+        columnId,
+        message: raw || i18nT('pages.chatSidebar.folder_create_failed'),
+        title: raw ? i18nT('pages.chatSidebar.folder_create_failed') : undefined,
+        report: raw ? findReport(raw) : undefined,
+      })
+    },
+  })
   /** The offline create refusal, in one place: the folder-row `+` buttons reach
    *  it through `createChatInFolder`, and the header split button's primary
    *  segment calls it directly (its create does not route through that sink). */
   const refuseCreateOffline = useCallback(() => {
     setFolderOfflineNotice(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.create_sessions') }))
   }, [setFolderOfflineNotice])
-  const createChatInFolder = useCallback((folderId: string, opts?: { columnId?: string; focus?: boolean; memoryMode?: 'incognito' | 'temporary'; inNewTab?: boolean }) => {
+  const createChatInFolder = useCallback((folderId: string, opts?: FolderChatOpts) => {
     // Refused at the SINK: the menu rows that reach here are gated one by one,
     // but the folder-row quick-create `+` buttons call it too. Gating here covers
     // every caller at once, including the ancestor-expanding PATCH loop below,
     // which would otherwise fire a doomed `collapsed: false` write per ancestor.
     if (!connected) {
       refuseCreateOffline()
+      return
+    }
+    // The folder's default crew decides where this chat starts, unless the click
+    // already answered an offline crew with Local. Decided before the ancestors
+    // expand: a chat that opens on the crew files nothing into the folder, and
+    // an offline notice renders under the folder whatever its collapse state.
+    const route = opts?.local ? ({ kind: 'local' } as const) : routeFolderCrew(folders.find(f => f.id === folderId))
+    if (route.kind === 'offline') {
+      folderCreateAttemptRef.current += 1
+      setFolderCreateError({
+        folderId,
+        columnId: opts?.columnId,
+        message: i18nT('pages.chatSidebar.folder_crew_offline', { name: route.name }),
+        // `{}` for a click that carried no options: the offer is marked by being
+        // present, not by what it holds.
+        localOffer: opts ?? {},
+      })
+      return
+    }
+    if (route.kind === 'crew') {
+      // One crew create at a time: it takes seconds and has no row to show
+      // progress, so a second click would mint a second session.
+      if (createCrewChatInFolderMutation.isPending) return
+      createCrewChatInFolderMutation.mutate({ instanceId: route.id, folderId, columnId: opts?.columnId, attempt: ++folderCreateAttemptRef.current, memoryMode: opts?.memoryMode })
       return
     }
     // A nested folder selected from the create menu may be hidden behind one
@@ -166,14 +224,14 @@ export function useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation,
       currentId = folder.parent_id || undefined
     }
     createChatInFolderMutation.mutate({ folderId, columnId: opts?.columnId, focus: opts?.focus, attempt: ++folderCreateAttemptRef.current, memoryMode: opts?.memoryMode, inNewTab: opts?.inNewTab })
-  }, [createChatInFolderMutation, folders, updateFolderMutation, clearBoardCollapse, connected, refuseCreateOffline])
+  }, [createChatInFolderMutation, createCrewChatInFolderMutation, routeFolderCrew, folders, updateFolderMutation, clearBoardCollapse, connected, refuseCreateOffline])
   return { folderCreateError, setFolderCreateError, createChatInFolder, refuseCreateOffline }
 }
 
 /** The New chat variants and the Crew Members door. */
-export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotInNewTab, setRemoteCrewError, setNewChatMenuOpen, onOpenPeerSession }: {
-  /** Where a crew window opens on a host with no chat pane (see ChatSidebar). */
-  onOpenPeerSession?: (instanceId: string, key: string) => void
+export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotInNewTab, setRemoteCrewError, setNewChatMenuOpen, startCrewChat }: {
+  /** Start a chat on a connected crew (see `useStartCrewChat`). */
+  startCrewChat: (instanceId: string, memoryMode?: 'incognito' | 'temporary') => Promise<void>
   setNewChatError: Dispatch<SetStateAction<string>>
   dispatch: AppDispatch
   mode: string | undefined
@@ -213,8 +271,6 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
   // groups in the sidebar (`sessionSources.ts`), so a chat started here has a
   // group to return to.
   const remoteCrewChatPreview = useRemoteCrewChat()
-  const queryClient = useQueryClient()
-  const store = useStore<RootState>()
 
   // Create default chat session mutation.
   //
@@ -245,39 +301,15 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
     onError: onNewChatError,
   })
 
-  // Mint a session ON a connected crew and open it as a window (CrewChatWindow).
-  // The peer owns it: nothing is created on this machine, so there is no local
-  // row, transcript or history for it, and the crew's group lists it from the
-  // peer's own slot list.
-  //
-  // Deliberately NO `agent`: `defaultAgent` names a crew from THIS machine's
-  // roster, so the peer applies its own default. `memory_mode` always rides the
-  // create, because it is the user's privacy boundary. The version check runs
-  // first because the window talks to the peer's chat API directly, and a peer a
-  // release apart can lack a route or a frame the window reads.
+  // "New chat on crew": mint a session ON a connected crew and open it as a
+  // window (see `startChatOnCrew`, shared with a folder's default crew).
   //
   // Errors surface inline in the submenu (rows use `onSelect preventDefault`, so
   // a failed create keeps the menu open long enough to read the reason).
   const createRemoteChatMutation = useMutation({
     mutationFn: async (instanceId: string) => {
       setRemoteCrewError('')
-      const originSlot = store.getState().chat?.activeSlot ?? null
-      const originWindow = currentCrewWindow()
-      const caps = await api.instancesCapabilities(instanceId)
-      if (!caps.version_match) {
-        throw new Error(i18nT('pages.chat.crewWindow.version_mismatch', { peer: caps.version || '?', local: caps.local_version }))
-      }
-      const memory_mode = await resolveDefaultMemoryMode(fetchDashboardConfig)
-      const created = await api.crewPeerPost(instanceId, 'api/chat/slots', { memory_mode }) as { key?: unknown }
-      if (typeof created?.key !== 'string' || !created.key) throw new Error(i18nT('pages.chat.crewWindow.create_unnamed'))
-      // The crew's group re-reads the peer list so the new row shows at once.
-      void queryClient.invalidateQueries({ queryKey: ['instance-slots', instanceId] })
-      // Same rule as createSlot.fulfilled: a user who moved during the
-      // round-trip is not yanked onto the new session.
-      const moved = (store.getState().chat?.activeSlot ?? null) !== originSlot || currentCrewWindow() !== originWindow
-      if (moved) return
-      if (onOpenPeerSession) onOpenPeerSession(instanceId, created.key)
-      else openCrewWindow({ instanceId, key: created.key })
+      await startCrewChat(instanceId)
     },
     onSuccess: () => {
       // Close the menu explicitly: the crew rows use `onSelect preventDefault`,

@@ -159,6 +159,17 @@ so its prompts, tools and model all run over there, against its agents and
 workspace. Nothing is stored on this machine, and every reply is redacted before
 it renders.
 
+A folder can start its new chats on a crew by itself. Open **Folder settings** on the
+folder (right-click it) and pick a crew under **Default crew**; the picker shows
+whether each crew is online, and **Local** (the default) keeps today's behaviour. The
+picker appears only while the preview above is on. With a crew set, the folder's **New
+chat** buttons, including the phone's **New chat in {folder}**, do what **New chat on
+crew** does for that crew, and the session lives on the crew, not under the folder. If
+that crew is offline the click says so and starts nothing; the notice offers **Start
+this chat on Local instead** for that one chat, and the folder keeps its crew. Moving
+an existing session into the folder never moves it to the crew, and the setting applies
+to that folder only, not to its subfolders.
+
 Two things follow from the split:
 
 - **The remote's roster wins.** The session uses the remote machine's agents,

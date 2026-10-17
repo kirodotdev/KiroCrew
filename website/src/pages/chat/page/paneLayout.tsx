@@ -19,6 +19,7 @@ import { errMessage } from '../../../utils/thunkError'
 import { memorySwitchTimeoutMs } from '../../../utils/memorySwitchTimeout'
 import type { MemorySwitchContext } from '../memoryModeSwitch'
 import { crewWindowShown } from '../crew-window/crewWindowStore'
+import { useFolderCrewRouter, useStartCrewChat } from '../../chat-sidebar/folderCrew'
 import { i18nT } from '../../../i18n/t'
 import { uiLocation } from '../../../uiLocations/uiLocation'
 
@@ -290,6 +291,11 @@ export function usePanelLayout({
   // folder id that no longer names a folder is treated as unfiled, the way the
   // drawer files such a session.
   const mobileNewSessionReady = !mobileNewFolderId || chatFoldersLoaded || !!chatFoldersError
+  // A folder that pins a default crew starts its new chats there (the sidebar's
+  // folder `+` does the same). An offline crew is reported, never replaced by a
+  // silent Local chat.
+  const routeFolderCrew = useFolderCrewRouter()
+  const startCrewChat = useStartCrewChat()
   const mobileNewSessionHere = async () => {
     if (!mobileNewSessionReady || mobileNewSessionInFlightRef.current) return
     // One notice for both failures below. The body stays the raw error text,
@@ -299,6 +305,23 @@ export function usePanelLayout({
       showActionError(errMessage(error) || i18nT('pages.chatPage.unknown_error'), title)
     if (mobileNewFolderId && !chatFoldersLoaded) return fail(chatFoldersError)
     const folderId = mobileNewFolder ? mobileNewFolderId : ''
+    const crewRoute = routeFolderCrew(mobileNewFolder)
+    if (crewRoute.kind === 'offline') {
+      return showActionError(i18nT('pages.chatSidebar.folder_crew_offline', { name: crewRoute.name }))
+    }
+    if (crewRoute.kind === 'crew') {
+      mobileNewSessionInFlightRef.current = true
+      setMobileNewSessionBusy(true)
+      try {
+        await startCrewChat(crewRoute.id)
+      } catch (error) {
+        return fail(error)
+      } finally {
+        mobileNewSessionInFlightRef.current = false
+        setMobileNewSessionBusy(false)
+      }
+      return
+    }
     // Only a folder's own pin names an agent; otherwise the server stamps the
     // default custom agent (a template), never the default crewmate alias.
     const agent = folderId ? resolveFolderAgent(chatFolders, folderId, '') : undefined
