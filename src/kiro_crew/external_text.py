@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 from kiro_crew.platform.context import redact_via_context
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.terminal_safe import normalize_for_scanning, strip_control_characters
 
 _URL_SECRET_PARAM_RE = re.compile(
     r"(?i)\b(access_token|refresh_token|id_token|api[-_]?key|auth|token|"
@@ -48,3 +51,59 @@ def external_text_requires_redaction(text: str) -> bool:
     from kiro_crew.security import refuses
 
     return refuses(text, redact_external_text)
+
+
+# One redaction ORDER for untrusted text leaving through a human-facing surface.
+# The dashboard's JSON scrub (``dashboard.handlers._shared_scrub._scrub_text``) and
+# the ``kirocrew skills`` terminal output both print text an agent or a third party
+# wrote, and the order of the passes is the security property, so both call this.
+def _redact_untrusted(text: str, url_secret_params: bool = False) -> str:
+    text, _ = redact_exfiltration_urls(text)
+    text, _ = redact_credentials(text)
+    return redact_url_secret_params(text) if url_secret_params else text
+
+
+def scrub_untrusted_text(
+    val: str,
+    *,
+    strip: Callable[[str], str] = strip_control_characters,
+    url_secret_params: bool = False,
+) -> str:
+    """Redact ``val``, remove what ``strip`` removes, and redact again.
+
+    Invisible characters split a secret, and both redactors decide by matching a
+    pattern, so a secret split by one matches nothing. The text as stored is
+    redacted first, because removing a character can destroy a boundary a
+    pattern needs. Removing a control character can also JOIN a split secret, so
+    a changed copy is redacted again.
+
+    ``strip`` is the one surface-specific step. The dashboard drops control
+    characters and keeps the text around them; the terminal drops whole escape
+    sequences, whose parameter bytes would otherwise print as residue.
+
+    ``url_secret_params`` adds ``redact_url_secret_params`` to each pass. It
+    matches a bare ``name=value`` with no URL around it, so it is off for the
+    dashboard, where memory text such as ``auth=basic`` must stay as written.
+    The terminal output turns it on.
+
+    Format characters (a soft hyphen, a joiner) are usually content, so a copy
+    with them removed is scanned only as evidence. That copy is returned only
+    when it reveals a credential the output still hides. Deleting them always
+    would rewrite stored text, and a dashboard caller that compares output with
+    input to decide whether a document is editable would refuse every write.
+    """
+
+    def redact(text: str) -> str:
+        return _redact_untrusted(text, url_secret_params)
+
+    out = redact(val)
+    stripped = strip(out)
+    if stripped != out:
+        out = redact(stripped)
+    normalised = normalize_for_scanning(out)
+    if normalised == out:
+        return out
+    scanned = redact(normalised)
+    if scanned == normalised:
+        return out
+    return scanned

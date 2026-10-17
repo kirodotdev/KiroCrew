@@ -276,6 +276,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.token_auth import _b64url_decode  # noqa: F401
     from kiro_crew.dashboard.token_auth import required_peer_key_unverified  # noqa: F401
     from kiro_crew.dashboard.token_auth import token_lineage  # noqa: F401
+    from kiro_crew.external_text import scrub_untrusted_text  # noqa: F401
     from kiro_crew.frontmatter import SKILL_LOADER  # noqa: F401
     from kiro_crew.frontmatter import parse_frontmatter  # noqa: F401
     from kiro_crew.history import TRANSCRIPT_HEADER_MAX_BYTES  # noqa: F401
