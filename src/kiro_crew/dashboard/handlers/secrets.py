@@ -17,6 +17,9 @@ from kiro_crew.config.loader import (
     CRED_MICROSOFT_APP_TENANT_ID,
     CRED_OWNER_ID,
     CRED_WAKATIME_API_KEY,
+    CRED_WAKATIME_OAUTH_ACCESS_TOKEN,
+    CRED_WAKATIME_OAUTH_CLIENT_SECRET,
+    CRED_WAKATIME_OAUTH_REFRESH_TOKEN,
     CRED_WECOM_BOT_ID,
     MANAGED_VAULT_FIXED_CONSUMERS,
     VAULT_CHANNEL_CREDENTIAL_KEYS,
@@ -54,6 +57,11 @@ def _sel():
 _MANAGED_KIND_JIRA_HOST_TOKEN = "jira_host_token"
 # A Connections pre-registered OAuth client secret (``connections/oauth_clients``).
 _MANAGED_KIND_CONNECTIONS_CLIENT_SECRET = "connections_client_secret"
+# WakaTime OAuth read-auth secrets, managed by the WakaTime OAuth flow (the
+# client secret entered on Settings, the access and refresh tokens minted by the
+# flow). Listed only when stored, so a cleanup labels them by owner rather than
+# reading them as stray user secrets.
+_MANAGED_KIND_WAKATIME_OAUTH = "wakatime_oauth"
 
 
 def _connections_client_secret_owned(name: str) -> web.Response | None:
@@ -208,6 +216,15 @@ def _managed_secret_catalog(
                 "kind": MANAGED_VAULT_FIXED_CONSUMERS[CRED_WAKATIME_API_KEY],
             }
         )
+        # The OAuth secrets are flow-managed, not entered here, so label each one
+        # only when it is already stored (the Connections client-secret pattern).
+        for oauth_name in (
+            CRED_WAKATIME_OAUTH_CLIENT_SECRET,
+            CRED_WAKATIME_OAUTH_ACCESS_TOKEN,
+            CRED_WAKATIME_OAUTH_REFRESH_TOKEN,
+        ):
+            if oauth_name in name_set:
+                catalog.append({"name": oauth_name, "kind": _MANAGED_KIND_WAKATIME_OAUTH})
     if jira_global_applicable and jira_hosts:
         per_host_name = jira_host_token_name(jira_hosts[0])
         if per_host_name not in name_set:
