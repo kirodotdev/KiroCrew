@@ -45,6 +45,7 @@ from kiro_crew.dashboard.token_auth import (
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.folder_steering import crosses_memory_silo, memory_silo_fence
 from kiro_crew.hooks import is_unc_shape, unc_probe_allowed, validate_file_path
+from kiro_crew.instances.crew_ref import clean_crew_ref
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import is_channel_session_key
@@ -1196,6 +1197,7 @@ async def create_folder_record(
     parent_id: str = "",
     project_dir: str = "",
     default_agent: str = "",
+    default_destination_crew: str = "",
     color: str = "",
     icon: str = "",
     request_app: str = "",
@@ -1352,6 +1354,7 @@ async def create_folder_record(
         "parent_id": parent_id,
         "project_dir": project_dir,
         "default_agent": default_agent,
+        "default_destination_crew": clean_crew_ref(default_destination_crew),
         # Epoch seconds, a JSON number, so the sidebar and the MCP tree read it
         # with the same rule they read ``order`` by. It is what the sidebar's
         # ``created`` folder sort orders on; a row from before this key existed
@@ -1557,6 +1560,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             parent_id=parent_id,
             project_dir=str(body.get("project_dir") or ""),
             default_agent=str(body.get("default_agent") or "").strip(),
+            default_destination_crew=clean_crew_ref(body.get("default_destination_crew")),
             color=str(body.get("color") or ""),
             icon=icon_val,
             request_app=request_app,
@@ -1720,6 +1724,8 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     if "default_agent" in body:
         val = body["default_agent"]
         changes["default_agent"] = str(val).strip() if val is not None else ""
+    if "default_destination_crew" in body:
+        changes["default_destination_crew"] = clean_crew_ref(body["default_destination_crew"])
     reparenting = "parent_id" in body
     new_parent = ""
     if reparenting:
