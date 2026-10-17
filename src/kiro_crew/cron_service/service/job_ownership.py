@@ -63,8 +63,20 @@ def _adopt_job_locked(self: CronService, job_id: str, session_key: str) -> bool:
         self._sync_for_write()
         for job in self._jobs:
             if job.id == job_id:
+                before = job.session_key
                 job.session_key = session_key
-                self._save()
+                # Roll back a failed save: the mutated object is the one
+                # ``list_jobs`` already handed out, so an owner the store
+                # rejected must not stay in the live cache (every ownership
+                # decision in this process reads it) and be persisted by the
+                # next save that succeeds. The sibling batch release
+                # (:meth:`_release_jobs_owned_by_locked`) restores the same
+                # field the same way.
+                try:
+                    self._save()
+                except BaseException:
+                    job.session_key = before
+                    raise
                 return True
     return False
 

@@ -157,10 +157,24 @@ def _pause_for_loop_stall(
         )
         try:
             self._save()
-        except CronStoreUnreadable as exc:
-            # The in-memory job must match the store it could not reach:
-            # still enabled, still due, so this session schedules it as the
-            # disk says and the next boot retries the pause.
+        except (OSError, CronStoreUnreadable) as exc:
+            # The two faults ``_save`` raises for a store it could not WRITE:
+            # ``CronStoreUnreadable`` (a ``ValueError`` subclass) when the store
+            # went unreadable, and a bare ``OSError`` (ENOSPC/EROFS/EIO out of
+            # ``atomic_write``) when the write itself failed. The original
+            # ``except CronStoreUnreadable`` missed the OSError: the in-memory
+            # pause fields stayed mutated while disk kept the job enabled, and
+            # the breaker went on to claim the dump and sweep the markers, so
+            # the next boot (seeing the claim) would skip the job the pause
+            # never persisted for. Caught as exactly this pair rather than a
+            # bare ``ValueError`` so an unrelated ``ValueError`` (a serialization
+            # bug in ``encode_store``, say) is NOT reported as an unwritable
+            # store, and rather than ``BaseException`` so a
+            # ``KeyboardInterrupt``/``SystemExit``/``CancelledError`` propagates
+            # (the re-raising sibling cores let it through too). The in-memory
+            # job must match the store it could not write: still enabled, still
+            # due, so this session schedules it as the disk says and the next
+            # boot retries the pause (not settled).
             (
                 job.enabled,
                 job.auto_paused,
