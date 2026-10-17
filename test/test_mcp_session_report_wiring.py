@@ -401,10 +401,19 @@ class TestLiveEventOwnershipIsWired:
         # roster global, the clock ignores it, and an active subagent reads
         # as stalled — the exact regression a bulk rename introduced once.
         import inspect
+        import sys
 
         from kiro_crew.acp import session_handle as handle_mod
 
-        src = inspect.getsource(handle_mod)
+        # The facade and every owner its code moved to, as one text, the event loop's
+        # owner first: the roster window pinned here is the loop's, and the KAS sub-agent
+        # frames yield the same kind with the lone-session rule written differently.
+        loop_owner = handle_mod.AcpSessionHandle._dispatch_events.__module__
+        family = (handle_mod.__name__, *handle_mod._SESSION_HANDLE_OWNERS)
+        src = "\n".join(
+            inspect.getsource(sys.modules[name])
+            for name in (loop_owner, *(name for name in family if name != loop_owner))
+        )
         roster_at = src.index("kind=EVENT_SUBAGENT_LIST,")
         roster_window = src[roster_at : roster_at + 300]
         assert "runtime_global=msg.fanout_no_owner" in roster_window, (

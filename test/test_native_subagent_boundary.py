@@ -60,6 +60,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import sys
 import time
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -276,7 +277,11 @@ def test_session_handle_never_reaches_the_scheduler():
     imports neither the task store nor admission, so the native seam has no
     way to mint either. The only scheduler-facing surface is a read
     (``native_child_sessions``) and a report (``report_native_children``)."""
-    src = inspect.getsource(sh_mod)
+    # The facade and every owner its code moved to, as one text.
+    src = "\n".join(
+        inspect.getsource(sys.modules[name])
+        for name in (sh_mod.__name__, *sh_mod._SESSION_HANDLE_OWNERS)
+    )
     for forbidden in ("kiro_crew.taskq", "subagent_manager.admission", "yield_slot("):
         assert forbidden not in src, forbidden
 

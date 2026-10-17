@@ -722,7 +722,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         dependency_wake_spacing_secs=section.read(
             "dependency_wake_spacing_secs", _safe_float, 0.0, 60.0
         ),
-        # Tool-stall watchdog (acp/session_handle.py WatchdogSettings).
+        # Tool-stall watchdog (acp/session_handle_watchdog.py WatchdogSettings).
         interactive_command_policy=(
             "wait"
             if section.get("interactive_command_policy") == "wait"

@@ -218,7 +218,7 @@ class HeartbeatConfig:
 
 @dataclass
 class WatchdogConfig:
-    """ACP per-session watchdog / liveness-oracle tuning (acp/session_handle.py).
+    """ACP per-session watchdog / liveness-oracle tuning (acp/session_handle_watchdog.py).
 
     Wellness (the liveness oracle) is the primary detector; these windows govern
     only the UNKNOWN-verdict backstop class. A WORKING verdict is never acted on

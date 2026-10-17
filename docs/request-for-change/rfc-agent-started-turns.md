@@ -49,7 +49,7 @@ All readers below are `AcpClient` methods: `_prompt_loop` in `src/kiro_crew/acp/
 
 Those five sites are every caller of `_read_message` (`client_transport.py`) on `AcpClient`. `_process_message` classifies any `session/update` as `"update"` with no turn attribution, and nothing on main reads `_meta["_claude/origin"]`.
 
-`AcpSessionHandle` backends (kiro, KAS, codex; `ACP_BACKENDS_ACP_RUNTIME`, `src/kiro_crew/agent_sdk/backends.py`) do not misplace these frames: the pre-turn drain in `AcpSessionHandle.prompt()` (`src/kiro_crew/acp/session_handle.py`) discards them, counted in one warning, never shown. `AcpClient` backends (`ACP_BACKENDS_ACP_CLIENT_SPAWNABLE`, `backends.py`) have no drain.
+`AcpSessionHandle` backends (kiro, KAS, codex; `ACP_BACKENDS_ACP_RUNTIME`, `src/kiro_crew/agent_sdk/backends.py`) do not misplace these frames: the pre-turn drain in `AcpSessionHandle.prompt()` (`src/kiro_crew/acp/session_handle_turn.py`) discards them, counted in one warning, never shown. `AcpClient` backends (`ACP_BACKENDS_ACP_CLIENT_SPAWNABLE`, `backends.py`) have no drain.
 
 ### Why dropping is not enough
 

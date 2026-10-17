@@ -3,8 +3,8 @@
 ## Principles
 
 1. Custom exceptions in `acp/transport_errors.py` (re-exported by `acp/client.py`)
-   for ACP protocol/prompt errors, in `acp/session_handle.py` for runtime/transport
-   errors, and in `acp/runtime.py` for runtime binding and session-start errors
+   for ACP protocol/prompt errors, in `acp/session_handle_runtime_contract.py`
+   (re-exported by `acp/session_handle.py`) for runtime/transport errors, and in `acp/runtime.py` for runtime binding and session-start errors
 2. Error strings at CLI boundaries (never expose tracebacks to users)
 3. Graceful degradation — partial output returned on timeout
 
@@ -51,7 +51,7 @@ AcpError (base, acp/transport_errors.py) — carries `transient`, the retry verd
 ├── AcpModelUnavailable    — requested model not entitled; non-retryable
 └── AcpPromptBusy          — a prompt is already in flight on this session
 
-AcpRuntimeError (base, acp/session_handle.py)
+AcpRuntimeError (base, acp/session_handle_runtime_contract.py)
 ├── AcpRuntimeDead            — the underlying process has died
 ├── AcpRequestTimeout         — a request's response missed its budget
 │   ├── AcpSessionStartTimeout — `session/new` timed out while a collector owns

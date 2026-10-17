@@ -1245,7 +1245,7 @@ async def _send_prompt(self: AcpClient, message: str, *, allow_image: bool = Tru
         METHOD_PROMPT,
         {
             "sessionId": self._session_id,
-            # Offloaded: see the note in session_handle.prompt -- image
+            # Offloaded: see the note in session_handle_turn.prompt -- image
             # reads and base64 encoding must not block the event loop.
             "prompt": await asyncio.to_thread(
                 build_prompt_blocks,
