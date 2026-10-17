@@ -82,6 +82,12 @@ describe('JobSecretsPanel', () => {
     // The banner shows names only — env key and vault name.
     expect(screen.getByText(/MY_SANDBOX_TOKEN/)).toBeInTheDocument()
     expect(screen.getByText('Agent requested secrets')).toBeInTheDocument()
+    // The warn note uses the warn hue meant for a `bg-warn-subtle` wash, not
+    // `text-warn-fg` — that token is black in the dark themes and vanishes over
+    // the 12% tint (dark-on-dark, #21450 / #21335).
+    const pendingNote = screen.getByRole('note')
+    expect(pendingNote).toHaveClass('bg-warn-subtle', 'text-warn-text')
+    expect(pendingNote).not.toHaveClass('text-warn-fg')
     // Approval is gated on the script the request would run being SHOWN:
     // the button stays disabled until the source has rendered.
     expect(screen.getByText('Approve').closest('button')).toBeDisabled()
