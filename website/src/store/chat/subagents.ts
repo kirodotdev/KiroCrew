@@ -532,7 +532,7 @@ export const subagentReducers = {
     current.approvalRetired = true
     current.elapsed = 0
   },
-  sseSubagentSpawn(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; agent: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string }>) {
+  sseSubagentSpawn(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string }>) {
     if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
     const subs = action.payload.slot !== state.activeSlot
       ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).subagents
@@ -554,10 +554,12 @@ export const subagentReducers = {
       // card's task is derived from the approval title, which may be empty
       // or just "spawn_run") — always prefer the spawn payload's task.
       if (action.payload.task) existing.task = action.payload.task
+      if (action.payload.label) existing.label = action.payload.label
       return
     }
     subs[safeKey(action.payload.id)] = {
       id: action.payload.id, task: action.payload.task, agent: action.payload.agent || 'kirocrew',
+      label: action.payload.label || existing?.label || undefined,
       model: action.payload.model || '',
       requestedModel: action.payload.requested_model || existing?.requestedModel || undefined,
       childSession: action.payload.child_session || undefined,
@@ -666,7 +668,7 @@ export const subagentReducers = {
       if (st === 'done' || st === 'error' || st === 'stopped') delete subs[id]
     }
   },
-  sseSubagentDone(state: ChatState, action: PayloadAction<{ slot: string; id: string; elapsed: number; credits?: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; result?: string }>) {
+  sseSubagentDone(state: ChatState, action: PayloadAction<{ slot: string; id: string; elapsed: number; credits?: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; result?: string }>) {
     if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
     const subs = action.payload.slot !== state.activeSlot
       ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).subagents
@@ -707,6 +709,7 @@ export const subagentReducers = {
       // Carry the wave id so a reconnect that rehydrates a completed card keeps
       // its batch chip. Never clobber a known value to ''.
       if (action.payload.batch_id && !a.batchId) a.batchId = action.payload.batch_id
+      if (action.payload.label && !a.label) a.label = action.payload.label
       if (isNative && action.payload.result !== undefined) a.result = action.payload.result
       // A done frame carries authoritative `elapsed`, which reconstructs the
       // real start for an entry whose start was only ASSUMED -- the same
@@ -723,6 +726,7 @@ export const subagentReducers = {
         id: action.payload.id,
         task: action.payload.task || '',
         agent: action.payload.agent || 'kirocrew',
+        label: action.payload.label || undefined,
         model: action.payload.model || '',
         requestedModel: action.payload.requested_model || undefined,
         childSession: action.payload.child_session || undefined,
@@ -738,7 +742,7 @@ export const subagentReducers = {
       }
     }
   },
-  sseSubagentSnapshot(state: ChatState, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean; idle_secs?: number }>) {
+  sseSubagentSnapshot(state: ChatState, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean; idle_secs?: number }>) {
     const d = action.payload
     // A snapshot without an owning slot is an orphan, not evidence that it
     // belongs to whichever chat this browser happens to show. Popout windows
@@ -757,6 +761,7 @@ export const subagentReducers = {
     const stalled = d.stalled ?? false
     subs[safeKey(d.id)] = {
       id: d.id, task: d.task, agent: d.agent || 'kirocrew',
+      label: d.label || existing?.label || undefined,
       // Prefer the snapshot's model; fall back to any id a live frame already
       // set, so a reconnect that omits it does not blank the pill.
       model: d.model || existing?.model || '',

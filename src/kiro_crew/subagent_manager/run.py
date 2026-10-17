@@ -2735,6 +2735,8 @@ class RunEventCoordinator(ManagerComponent):
             {
                 "task": _redact(info.task),
                 "agent": agent or "",
+                # Caller free text like ``task``, so redacted the same way.
+                "label": _redact(info.label),
                 "model": info.resolved_model,
                 # The requested pin is caller-supplied (spawn_run.model), so it
                 # is redacted like every other free-text field on the frame -- an
