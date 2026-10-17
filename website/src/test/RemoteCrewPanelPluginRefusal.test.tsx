@@ -8,7 +8,12 @@ import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
-import { pluginRefusalCopy, pluginRefusalReport } from '../pages/settings/remoteCrewPluginRefusal'
+import {
+  REMOTE_CREW_PREFLIGHT_GUIDE_URL,
+  credentialHelperMissingSentence,
+  pluginRefusalCopy,
+  pluginRefusalReport,
+} from '../pages/settings/remoteCrewPluginRefusal'
 import { __resetErrorJournalForTests } from '../utils/errorReport'
 import type { CloudPreflight } from '../api/client'
 
@@ -171,6 +176,35 @@ describe('RemoteCrewPanel refused plugin row', () => {
     expect(within(row).queryByRole('button', { name: /Copy command/i })).toBeNull()
     expect(within(row).queryByText(/Run it in a terminal/)).toBeNull()
     expect(within(row).queryByRole('link', { name: /install page/ })).toBeNull()
+    // With no command to offer, the row points at the guide's troubleshooting entry.
+    const guide = within(row).getByRole('link', { name: 'Open the troubleshooting steps in the Remote Crew on EC2 guide' })
+    expect(notice.contains(guide)).toBe(false)
+    expect(guide).toHaveAttribute('href', REMOTE_CREW_PREFLIGHT_GUIDE_URL)
+    expect(REMOTE_CREW_PREFLIGHT_GUIDE_URL).toMatch(/docs\/guides\/remote-crew-on-ec2\.md#set-up-pre-flight-credential-helper-not-found-or-plugin-refused$/)
+  })
+
+  it('offers no guide link when it shows the ownership command', async () => {
+    const { row } = await openSetup(refused({
+      session_manager_plugin_command: CHOWN,
+      session_manager_plugin_refused_reason: 'executable is owned by another user (uid 502)',
+      session_manager_plugin_refused_code: 'other_owner',
+      session_manager_plugin_refused_owner_uid: 502,
+    }))
+    expect(within(row).queryByRole('link', { name: /Remote Crew on EC2 guide/ })).toBeNull()
+  })
+})
+
+describe('credentialHelperMissingSentence', () => {
+  it('leads with the edit, names the config file and the setting, and says how to find the path', () => {
+    const s = credentialHelperMissingSentence('sso-cred-helper')
+    // `which` only finds the helper on the gateway's computer, as the gateway's
+    // own account, so the sentence says where to run it.
+    expect(s).toMatch(new RegExp(
+      '^Give sso-cred-helper its full path in the credential_process line of your AWS config file \\(usually ~/\\.aws/config\\), then re-check\\. '
+      + 'The AWS CLI could not find it on the gateway’s PATH\\. To get the full path, run which sso-cred-helper in a terminal '
+      + 'on the computer that runs \\S.*, from the account that runs it\\.$',
+    ))
+    expect(s).not.toMatch(/It is usually the program/)
   })
 })
 

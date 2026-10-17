@@ -169,12 +169,15 @@ world.preflight = HELPER_MISSING
 for (const theme of ['dark', 'light']) {
   const { page, row } = await openRow(theme, 'AWS credentials')
   const text = await row.innerText()
-  if (!/could not find sso-cred-helper on the gateway’s PATH/.test(text)) {
-    fail(`${theme}: the row must name the missing helper: ${JSON.stringify(text)}`)
+  // The edit leads, naming the file and the setting; PATH comes after; then how to
+  // find the full path.
+  if (!/^Give sso-cred-helper its full path in the credential_process line of your AWS config file \(usually ~\/\.aws\/config\), then re-check\./m.test(text)) {
+    fail(`${theme}: the row must lead with the fix, naming the AWS config file: ${JSON.stringify(text)}`)
   }
-  if (!/full path in the credential_process line/.test(text)) {
-    fail(`${theme}: the row must say how to fix it: ${JSON.stringify(text)}`)
+  if (!/could not find it on the gateway’s PATH\. To get the full path, run which sso-cred-helper in a terminal on the computer that runs .+, from the account that runs it\./.test(text)) {
+    fail(`${theme}: the row must say why and how to find the full path: ${JSON.stringify(text)}`)
   }
+  if (/It is usually the program/.test(text)) fail(`${theme}: the hedge sentence must be gone`)
   if (!/No such file or directory: 'sso-cred-helper'/.test(text)) {
     fail(`${theme}: the AWS CLI's own error must stay under the sentence`)
   }
@@ -249,6 +252,12 @@ for (const theme of ['dark', 'light']) {
   if (/Run it in a terminal/.test(text)) fail(`${theme}: no command note without a command`)
   if (await row.getByRole('button', { name: /Copy command/i }).count()) {
     fail(`${theme}: no Copy button with no command to copy`)
+  }
+  // No command to offer: the row points at the guide's troubleshooting entry.
+  const guide = row.getByRole('link', { name: 'Open the troubleshooting steps in the Remote Crew on EC2 guide' })
+  if (!(await guide.isVisible())) fail(`${theme}: a refusal with no command must link the guide's troubleshooting entry`)
+  else if (!/docs\/guides\/remote-crew-on-ec2\.md#set-up-pre-flight-credential-helper-not-found-or-plugin-refused$/.test(await guide.getAttribute('href'))) {
+    fail(`${theme}: the guide link must open the pre-flight troubleshooting entry`)
   }
   await oneTriangle(theme, row)
   await page.screenshot({ path: `${OUT}/03-plugin-refused-no-fix-${theme}.png`, clip: await clipOf(page, row) })
