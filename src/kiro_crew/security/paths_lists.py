@@ -510,6 +510,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     # is ``sandbox._CREW_HIDDEN_LEAVES``. Deliberately NOT under ``trust/``,
     # which stays sandbox read-write for SEL. Only the gateway opens it.
     "panel-dismissals",
+    # Pending deletes of released engine records (``released_sessions``); also masked.
+    "released-sessions",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),

@@ -177,6 +177,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "5e39ccd3f4ad",
         "session_handle_permissions",
     ),
+    "_release_ending": ("function", False, "2b4c95edbd2b", "session_handle_lifecycle"),
+    "_release_for_later_delete": ("function", True, "a93eb1095904", "session_handle_lifecycle"),
     "_release_proven_steers": ("function", False, "dbae1777abcc", "session_handle_steering"),
     "_release_settled_tool_call": ("function", False, "2362e63eea68", "session_handle_updates"),
     "_remote_flat_launches": ("function", False, "b809e9b1faeb", "session_handle_mcp"),

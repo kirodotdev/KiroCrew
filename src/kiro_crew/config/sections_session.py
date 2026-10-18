@@ -179,6 +179,20 @@ class SessionConfig:
             "turn's copies.",
         ),
     )
+    kas_delete_delay_secs: int = field(
+        default=0,
+        metadata=_meta(
+            "KAS Session Record Delete Delay (seconds)",
+            "On the kas backend, seconds a task-runner session's record, and a reused "
+            "workflow worker's previous conversation, stay on disk after the session "
+            "ends before Kiro Crew deletes them. The session leaves the engine's "
+            "memory when it ends either way. 0 (the default) deletes the record when "
+            "the session ends. Incognito and temporary sessions are deleted when "
+            "they end whatever this says. A record that comes due while another "
+            "backend is selected waits until kas is selected again. Other backends "
+            "ignore it.",
+        ),
+    )
     watchdog_rss_max_mb: int = field(
         default=DEFAULT_WATCHDOG_RSS_MAX_MB,
         metadata=_meta(
