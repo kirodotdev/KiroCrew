@@ -11393,6 +11393,8 @@ class TestRecursiveForceRmFloor:
             "RM -rf $HOME/.cache",
             "RM -rf ./build",
             "RM -f /",
+            "RM -r /",
+            "RM -r ~",
             "RM -r /tmp/x",
             "RM -fr $HOME_BACKUP",
             "echo RM -fr /",
