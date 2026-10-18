@@ -1,0 +1,310 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Fetching your cloud config",
+        "tool_call_id": "1",
+        "tool_kind": "other",
+        "wire_title": "Fetching your cloud config"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "1",
+        "tool_final": true,
+        "tool_output": "{\"kind\": \"upToDate\"}",
+        "tool_output_bytes": 20,
+        "tool_output_digest": "58ee84bfe48ca4ea914c7e6a8228e8938bb5054a3f602fa21dfdbfb18b139ccc",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "frame": "response",
+    "id": 4
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "sleep 12 && echo first-done",
+          "description": "Sleep 12 seconds then print",
+          "run_in_background": false,
+          "timeout": 20000
+        },
+        "title": "Sleep 12 seconds then print",
+        "tool_call_id": "run_command_toolu_bdrk_01LH1JDnqH82oM4C63jEawEW",
+        "tool_input": "{\n  \"command\": \"sleep 12 && echo first-done\",\n  \"description\": \"Sleep 12 seconds then print\",\n  \"run_in_background\": false,\n  \"timeout\": 20000\n}",
+        "tool_kind": "execute",
+        "wire_title": "Sleep 12 seconds then print"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "harness_tool_id": "run_command",
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "accept",
+            "label": "Allow"
+          },
+          {
+            "id": "always-accept",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Deny"
+          },
+          {
+            "id": "always-reject",
+            "label": "Always deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "sleep 12 && echo first-done",
+          "description": "Sleep 12 seconds then print",
+          "run_in_background": false,
+          "timeout": 20000
+        },
+        "request_id": 1,
+        "shell_classified": true,
+        "title": "sleep 12 && echo first-done",
+        "tool_call_id": "run_command_toolu_bdrk_01LH1JDnqH82oM4C63jEawEW",
+        "tool_input": "{\n  \"command\": \"sleep 12 && echo first-done\",\n  \"description\": \"Sleep 12 seconds then print\",\n  \"run_in_background\": false,\n  \"timeout\": 20000\n}",
+        "tool_name": "run_command"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always-accept",
+      "once": "accept",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "sleep 12 && echo first-done",
+          "description": "Sleep 12 seconds then print",
+          "run_in_background": false,
+          "timeout": 20000
+        },
+        "title": "Sleep 12 seconds then print",
+        "tool_call_id": "run_command_toolu_bdrk_01LH1JDnqH82oM4C63jEawEW",
+        "tool_input": "{\n  \"command\": \"sleep 12 && echo first-done\",\n  \"description\": \"Sleep 12 seconds then print\",\n  \"run_in_background\": false,\n  \"timeout\": 20000\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "sleep 12 && echo first-done",
+          "description": "Sleep 12 seconds then print",
+          "run_in_background": false,
+          "timeout": 20000
+        },
+        "title": "Sleep 12 seconds then print",
+        "tool_call_id": "run_command_toolu_bdrk_01LH1JDnqH82oM4C63jEawEW",
+        "tool_input": "{\n  \"command\": \"sleep 12 && echo first-done\",\n  \"description\": \"Sleep 12 seconds then print\",\n  \"run_in_background\": false,\n  \"timeout\": 20000\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "run_command_toolu_bdrk_01LH1JDnqH82oM4C63jEawEW",
+        "tool_final": true,
+        "tool_output": "Output:\nfirst-done\n\n\nExit Code: 0",
+        "tool_output_bytes": 33,
+        "tool_output_digest": "b1a0307f8575c7340b56990ca545b96a71f1e7148acfe7787b0259dc38e08787",
+        "tool_status": "completed"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "sleep 12 && echo first-done",
+          "description": "Sleep 12 seconds then print",
+          "run_in_background": false,
+          "timeout": 20000
+        },
+        "title": "Sleep 12 seconds then print",
+        "tool_call_id": "run_command_toolu_bdrk_01LH1JDnqH82oM4C63jEawEW",
+        "tool_input": "{\n  \"command\": \"sleep 12 && echo first-done\",\n  \"description\": \"Sleep 12 seconds then print\",\n  \"run_in_background\": false,\n  \"timeout\": 20000\n}",
+        "wire_title": "Sleep 12 seconds then print"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "The"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "The",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " command"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " command",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " output was"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " output was",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " first"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " first",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "-done."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "-done.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " p"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " p",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "ineapple\n\n["
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ineapple\n\n[",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]

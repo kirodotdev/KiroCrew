@@ -3,7 +3,9 @@
 KAS joins ``ACP_BACKENDS_SIDE_READONLY`` because, bound to the derived
 ``<agent>--readonly`` spec, every tool call it serves raises
 ``session/request_permission``. The frames below are trimmed copies of a live
-capture (kiro-cli 2.29.0, ``--agent-engine v3``) taken under that spec. Each one is
+capture (kiro-cli 2.29.0, ``--agent-engine v3``) taken under that spec; the last
+group replays ``fixtures/acp_frames/kas/side-read-only-live.jsonl`` (KAS 0.66.43)
+verbatim. Each one is
 replayed through the REAL dispatch builders with the caches the KAS transports
 hand them (``kas_consent_meta`` on, plus the KAS-only ``identity_unreadable_cache``
 and ``tool_kind_cache``, whose presence is what marks the event's built-in id as a
@@ -13,7 +15,9 @@ verdict asserted is the one a side turn on KAS would get.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -342,3 +346,55 @@ async def test_kas_normal_turn_still_asks_before_a_write_or_exec(pair):
     assert len(asked) == 1
     assert provider.approved == []
     assert provider.rejected == ["7"]
+
+
+# ── The live capture ─────────────────────────────────────────────────────────
+#
+# ``test/fixtures/acp_frames/kas/side-read-only-live.jsonl``: KAS 0.66.43 under
+# the derived ``probe--readonly`` spec, one tool per turn. Each pair is the
+# call's first ``tool_call`` and the ``session/request_permission`` it raised.
+
+_LIVE_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "acp_frames" / "kas" / "side-read-only-live.jsonl"
+)
+
+
+def _live_kas_pairs() -> dict[str, tuple[dict[str, Any], dict[str, Any]]]:
+    lines = _LIVE_FIXTURE.read_text(encoding="utf-8").splitlines()
+    calls: dict[str, dict[str, Any]] = {}
+    pairs: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    for frame in (json.loads(line) for line in lines[1:]):
+        update = (frame.get("params") or {}).get("update") or {}
+        if update.get("sessionUpdate") == "tool_call":
+            calls.setdefault(update["toolCallId"], update)
+        elif frame.get("method") == "session/request_permission":
+            call = calls[frame["params"]["toolCall"]["toolCallId"]]
+            pairs[frame["params"]["_meta"]["kiro"]["toolId"]] = (call, frame)
+    return pairs
+
+
+_LIVE_KAS = _live_kas_pairs()
+
+
+def test_every_live_kas_side_call_raised_a_permission_request():
+    """The membership premise: under the derived spec nothing ran unasked."""
+    assert sorted(_LIVE_KAS) == ["fs_write", "grep_search", "read_file", "run_command"]
+
+
+@pytest.mark.parametrize(
+    ("tool_id", "approved"),
+    [
+        ("read_file", True),
+        ("grep_search", True),
+        ("run_command", True),
+        ("fs_write", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_live_kas_side_call_gets_the_read_only_verdict(tool_id: str, approved: bool):
+    tool_call, permission = _LIVE_KAS[tool_id]
+    provider = await _side_turn((tool_call, permission))
+
+    request_id = permission["id"]
+    assert provider.approved == ([request_id] if approved else [])
+    assert provider.rejected == ([] if approved else [request_id])

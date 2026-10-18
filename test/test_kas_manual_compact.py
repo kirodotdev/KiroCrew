@@ -10,7 +10,9 @@ reports, and that every other backend keeps the prompt it already answers.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -271,3 +273,43 @@ def test_a_mock_attribute_is_not_a_harness_managed_claim() -> None:
     assert _harness_managed_backend(MagicMock()) is None
     assert _harness_managed_backend(AsyncMock()) is None
     assert _harness_managed_backend(object()) is None
+
+
+# ── The live capture ─────────────────────────────────────────────────────────
+
+_LIVE = Path(__file__).parent / "fixtures" / "acp_frames" / "kas" / "compact-live.jsonl"
+
+
+def _live_frames() -> list[dict[str, Any]]:
+    lines = _LIVE.read_text(encoding="utf-8").splitlines()
+    return [json.loads(line) for line in lines[1:]]
+
+
+def _usage(frame: dict[str, Any]) -> float | None:
+    kiro = (((frame.get("params") or {}).get("update") or {}).get("_meta") or {}).get("kiro") or {}
+    return kiro.get("usagePercentage") if kiro.get("kind") == "context_usage" else None
+
+
+@pytest.mark.asyncio
+async def test_the_live_compact_verb_answer_completes_the_turn() -> None:
+    """``kas/compact-live.jsonl``: the engine lists the verb at ``initialize``, sends
+    ``summarization_completed`` before its ``{success: true}``, and the next turn
+    reads below the pre-compact peak."""
+    frames = _live_frames()
+    init = next(f for f in frames if f.get("id") == 1 and "result" in f)
+    answer_at = next(i for i, f in enumerate(frames) if "success" in (f.get("result") or {}))
+    turn_before = max(
+        i for i, f in enumerate(frames[:answer_at]) if "stopReason" in (f.get("result") or {})
+    )
+    during = [JsonRpcMessage.from_dict(f) for f in frames[turn_before + 1 : answer_at]]
+
+    handle, rt = _make(result=frames[answer_at]["result"], updates=during)
+    rt._agent_capabilities = init["result"]["agentCapabilities"]
+    events = await _prompt(handle, "/compact")
+
+    assert rt.requests == [(METHOD_KAS_SESSION_COMPACT, {"sessionId": "sK"})]
+    assert [status for status, _ in _statuses(events)] == ["completed"]
+    assert events[-1].kind == EVENT_COMPLETE
+    peak = max(u for f in frames[:answer_at] if (u := _usage(f)) is not None)
+    after = [u for f in frames[answer_at:] if (u := _usage(f)) is not None]
+    assert after and after[-1] < peak

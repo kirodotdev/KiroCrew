@@ -8,22 +8,6 @@
     }
   },
   {
-    "action": "compaction",
-    "frame": "_kiro.dev/compaction/status",
-    "params": {
-      "sessionId": "kiro-session-0001",
-      "status": "started"
-    }
-  },
-  {
-    "action": "compaction",
-    "frame": "_kiro.dev/compaction/status",
-    "params": {
-      "sessionId": "kiro-session-0001",
-      "status": "completed"
-    }
-  },
-  {
     "action": "clear",
     "frame": "_kiro.dev/clear/status",
     "params": {

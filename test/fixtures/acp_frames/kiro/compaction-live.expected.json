@@ -1,0 +1,294 @@
+[
+  {
+    "action": "metadata",
+    "frame": "_kiro.dev/metadata",
+    "metadata": {
+      "context_pct": 40.483001708984375,
+      "credits": 0.0
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "ok "
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ok ",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "1"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "1",
+      "thinking": false
+    }
+  },
+  {
+    "action": "metadata",
+    "frame": "_kiro.dev/metadata",
+    "metadata": {
+      "context_pct": 21.99090003967285,
+      "credits": 0.0
+    }
+  },
+  {
+    "action": "metadata",
+    "frame": "_kiro.dev/metadata",
+    "metadata": {
+      "context_pct": 21.99090003967285,
+      "credits": 0.6935579074626866
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "ok "
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ok ",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "2"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "2",
+      "thinking": false
+    }
+  },
+  {
+    "action": "metadata",
+    "frame": "_kiro.dev/metadata",
+    "metadata": {
+      "context_pct": 30.404699325561523,
+      "credits": 0.0
+    }
+  },
+  {
+    "action": "metadata",
+    "frame": "_kiro.dev/metadata",
+    "metadata": {
+      "context_pct": 30.404699325561523,
+      "credits": 0.9586693502487562
+    }
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "ok "
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ok ",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "3"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "3",
+      "thinking": false
+    }
+  },
+  {
+    "action": "metadata",
+    "frame": "_kiro.dev/metadata",
+    "metadata": {
+      "context_pct": 38.81850051879883,
+      "credits": 0.0
+    }
+  },
+  {
+    "action": "metadata",
+    "frame": "_kiro.dev/metadata",
+    "metadata": {
+      "context_pct": 38.81850051879883,
+      "credits": 1.2237807930348261
+    }
+  },
+  {
+    "frame": "response",
+    "id": 5,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Compacting conversation...\n"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Compacting conversation...\n",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 6,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "compaction",
+    "frame": "_kiro.dev/compaction/status",
+    "params": {
+      "sessionId": "kiro-compact-session-1",
+      "status": {
+        "type": "started"
+      },
+      "summary": null
+    }
+  },
+  {
+    "action": "compaction",
+    "frame": "_kiro.dev/compaction/status",
+    "params": {
+      "sessionId": "kiro-compact-session-1",
+      "status": {
+        "type": "completed"
+      },
+      "summary": "## OBJECTIVE\nUnclear. The only substantive user instruction was a test/probe message: remember the word \"cobalt\" and reply with exactly \"ok 1\". No actual development task or end state has been established.\n\n## USER GUIDANCE\n- Remember the word \"cobalt\".\n- Reply with only \"ok 1\".\n- A large block of \"lorem ipsum\" padding text was included and explicitly marked as \"Padding, ignore it\".\n\n## COMPLETED\n- Responded with \"ok 1\" as instructed.\n- Noted the memory token \"cobalt\".\n- No files read, created, or modified. No code work performed.\n\n## TECHNICAL CONTEXT\n- Working directory: /work\n- OS: Linux\n- No project files have been inspected. No build tools, languages, or frameworks identified. The directory contents are unknown.\n\n## TOOLS EXECUTED\nNone.\n\n## NEXT STEPS\n- Await an actual task from the user. The session so far contains no development objective.\n- If continuing, first inspect the working directory (/work) to understand any existing project context before acting.\n\n## TODO LIST\nnone"
+    }
+  },
+  {
+    "action": "metadata",
+    "frame": "_kiro.dev/metadata",
+    "metadata": {
+      "context_pct": 81.03399658203125,
+      "credits": 0.0
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "c"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "c",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "ob"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ob",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "alt, ju"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "alt, ju",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "niper, saffron"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "niper, saffron",
+      "thinking": false
+    }
+  },
+  {
+    "action": "metadata",
+    "frame": "_kiro.dev/metadata",
+    "metadata": {
+      "context_pct": 30.46969985961914,
+      "credits": 0.0
+    }
+  },
+  {
+    "action": "metadata",
+    "frame": "_kiro.dev/metadata",
+    "metadata": {
+      "context_pct": 30.46969985961914,
+      "credits": 0.961576079270315
+    }
+  },
+  {
+    "frame": "response",
+    "id": 7,
+    "stop_reason": "end_turn"
+  }
+]

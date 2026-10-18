@@ -54,10 +54,12 @@ from kiro_crew.agent_sdk.backends import (
 # goose is not a member: its steer is its own request, and it is not shown to
 # carry a deny notice (see ``ACP_BACKENDS_STEERING_REQUEST``).
 #
-# KAS is a member on a SYNTHESIZED fixture, not a capture:
-# ``test/fixtures/acp_frames/kas/steering.jsonl`` (``recorded: synthesized``)
-# carries the ``steering_queued`` / ``steering_consumed`` frames, and no lane drives
-# a real KAS steer.
+# KAS is a member on a LIVE capture against KAS 0.66.43 (kiro-cli 2.32.0):
+# ``test/fixtures/acp_frames/kas/steering-live.jsonl``. A ``_session/steer`` sent
+# while a shell call ran was answered ``{queued: true}``, echoed as
+# ``steering_queued`` then ``steering_injected`` (a ``session_info_update`` with the
+# kind under ``_meta.kiro``), and the model obeyed it before that turn's
+# ``stopReason``. No lane re-runs it, so a later kiro-cli is not re-measured.
 #
 # This set answers the DENY-NOTICE question as well as the user one: a member's
 # steer can carry a refusal reason into the turn that was refused. A backend that
@@ -231,7 +233,7 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # The source agrees: pi-acp intercepts ``/compact`` in ``prompt()``, awaits
 # ``session.proc.compact(...)`` and returns ``{ stopReason: "end_turn" }``.
 #
-# kas is a member on a LIVE drive against kiro-cli 2.29.0's relay (``--agent-engine
+# kas is a member on a LIVE drive, first on kiro-cli 2.29.0's relay (``--agent-engine
 # v3``), and it is the one member that is not handed the ``/compact`` prompt. Sent
 # as prompt text, ``/compact`` makes the model WRITE a summary as its answer and
 # the meter does not move (5.57% -> 5.61%). What compacts is the engine's own
@@ -245,13 +247,18 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # outcome arrives as a compaction status inside that turn. KAS stays in
 # :data:`ACP_BACKENDS_HARNESS_MANAGED_COMPACTION` too: membership here opens the
 # MANUAL command, and the threshold still leaves KAS to its own summarization.
-# Only the advertisement is committed (``test/fixtures/acp_frames/kas/session.jsonl``
-# names the verb); the drive above is quoted here, not committed, and no lane
-# re-runs it, so a kiro-cli release after 2.29.0 is not re-measured.
+# Re-driven on KAS 0.66.43 (kiro-cli 2.32.0) and committed:
+# ``test/fixtures/acp_frames/kas/compact-live.jsonl``. After three turns read
+# 6.31% -> 8.64% -> 10.76%, the verb answered ``{"success": true}`` after ~12s with
+# ``summarization_completed`` before it, and the next turn read 4.51%. No lane
+# re-runs it, so a later kiro-cli is not re-measured.
 #
-# kiro is a member on a SYNTHESIZED fixture, not a capture:
-# ``test/fixtures/acp_frames/kiro/notifications.jsonl`` (``recorded: synthesized``)
-# carries the ``_kiro.dev/compaction/status`` frames this membership relies on.
+# kiro is a member on a LIVE capture against kiro-cli 2.32.0:
+# ``test/fixtures/acp_frames/kiro/compaction-live.jsonl``. A ``/compact`` prompt is
+# answered ``end_turn`` first; ``_kiro.dev/compaction/status`` then sends
+# ``{type: started}`` and ``{type: completed}`` with the summary. Over three turns
+# ``contextUsagePercentage`` read 21.99 -> 30.40 -> 38.82, and the next ordinary
+# turn read 30.47. The one metadata frame right after ``completed`` read 81.03.
 #
 # claude is a member with no committed compaction capture: the one claude capture
 # (``test/fixtures/acp_frames/claude/session.jsonl``) is a single turn with no

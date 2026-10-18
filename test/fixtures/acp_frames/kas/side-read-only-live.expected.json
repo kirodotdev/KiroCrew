@@ -1,0 +1,533 @@
+[
+  {
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Fetching your cloud config",
+        "tool_call_id": "1",
+        "tool_kind": "other",
+        "wire_title": "Fetching your cloud config"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "1",
+        "tool_final": true,
+        "tool_output": "{\"kind\": \"upToDate\"}",
+        "tool_output_bytes": 20,
+        "tool_output_digest": "58ee84bfe48ca4ea914c7e6a8228e8938bb5054a3f602fa21dfdbfb18b139ccc",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "limit": null,
+          "offset": null,
+          "path": "/work/note.txt"
+        },
+        "title": "Read File",
+        "tool_call_id": "toolu_bdrk_012v1iJkvPvd3fyehGz15zsH",
+        "tool_input": "{\n  \"path\": \"/work/note.txt\",\n  \"offset\": null,\n  \"limit\": null\n}",
+        "tool_kind": "read",
+        "wire_title": "Read File"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "harness_tool_id": "read_file",
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "accept",
+            "label": "Allow"
+          },
+          {
+            "id": "always-accept",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Deny"
+          },
+          {
+            "id": "always-reject",
+            "label": "Always deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "limit": null,
+          "offset": null,
+          "path": "/work/note.txt"
+        },
+        "request_id": 1,
+        "shell_classified": true,
+        "title": "Read File",
+        "tool_call_id": "toolu_bdrk_012v1iJkvPvd3fyehGz15zsH",
+        "tool_input": "{\n  \"path\": \"/work/note.txt\",\n  \"offset\": null,\n  \"limit\": null\n}",
+        "tool_name": "read_file"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always-accept",
+      "once": "accept",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "limit": null,
+          "offset": null,
+          "path": "/work/note.txt"
+        },
+        "tool_call_id": "toolu_bdrk_012v1iJkvPvd3fyehGz15zsH",
+        "tool_input": "{\n  \"path\": \"/work/note.txt\",\n  \"offset\": null,\n  \"limit\": null\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_012v1iJkvPvd3fyehGz15zsH",
+        "tool_final": true,
+        "tool_output": "<file name=\"/work/note.txt\" language=\"plaintext\" >\n<content>\nhello from the probe\n\n</content>\n</file>",
+        "tool_output_bytes": 101,
+        "tool_output_digest": "38481aba1a8a05579a822d98112f0d7967c5fefb7b2decf115db201455997683",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "limit": null,
+          "offset": null,
+          "path": "/work/note.txt"
+        },
+        "title": "Read File",
+        "tool_call_id": "toolu_bdrk_012v1iJkvPvd3fyehGz15zsH",
+        "tool_input": "{\n  \"path\": \"/work/note.txt\",\n  \"offset\": null,\n  \"limit\": null\n}",
+        "wire_title": "Read File"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "query": "hello"
+        },
+        "title": "Grep Search",
+        "tool_call_id": "toolu_bdrk_01PGmU6pGavxvkncEqS8trKE",
+        "tool_input": "{\n  \"query\": \"hello\"\n}",
+        "tool_kind": "search",
+        "wire_title": "Grep Search"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "harness_tool_id": "grep_search",
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "accept",
+            "label": "Allow"
+          },
+          {
+            "id": "always-accept",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Deny"
+          },
+          {
+            "id": "always-reject",
+            "label": "Always deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "query": "hello"
+        },
+        "request_id": 2,
+        "shell_classified": true,
+        "title": "Grep Search",
+        "tool_call_id": "toolu_bdrk_01PGmU6pGavxvkncEqS8trKE",
+        "tool_input": "{\n  \"query\": \"hello\"\n}",
+        "tool_name": "grep_search"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always-accept",
+      "once": "accept",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "query": "hello"
+        },
+        "tool_call_id": "toolu_bdrk_01PGmU6pGavxvkncEqS8trKE",
+        "tool_input": "{\n  \"query\": \"hello\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01PGmU6pGavxvkncEqS8trKE",
+        "tool_final": true,
+        "tool_output": "You searched for hello and received the following results:\nnote.txt\n1:hello from the probe",
+        "tool_output_bytes": 90,
+        "tool_output_digest": "32611b7cc816d7f58e649d7a68608071e37b525c9c7adae0653c5bc467eb5a8e",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "query": "hello"
+        },
+        "title": "Grep Search",
+        "tool_call_id": "toolu_bdrk_01PGmU6pGavxvkncEqS8trKE",
+        "tool_input": "{\n  \"query\": \"hello\"\n}",
+        "wire_title": "Grep Search"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 5,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "ls",
+          "description": "List files in current directory",
+          "run_in_background": false
+        },
+        "title": "List files in current directory",
+        "tool_call_id": "run_command_toolu_bdrk_01VTZkMEKg5BQo1EQh6JaLay",
+        "tool_input": "{\n  \"command\": \"ls\",\n  \"description\": \"List files in current directory\",\n  \"run_in_background\": false\n}",
+        "tool_kind": "execute",
+        "wire_title": "List files in current directory"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "harness_tool_id": "run_command",
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "accept",
+            "label": "Allow"
+          },
+          {
+            "id": "always-accept",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Deny"
+          },
+          {
+            "id": "always-reject",
+            "label": "Always deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "ls",
+          "description": "List files in current directory",
+          "run_in_background": false
+        },
+        "request_id": 3,
+        "shell_classified": true,
+        "title": "ls",
+        "tool_call_id": "run_command_toolu_bdrk_01VTZkMEKg5BQo1EQh6JaLay",
+        "tool_input": "{\n  \"command\": \"ls\",\n  \"description\": \"List files in current directory\",\n  \"run_in_background\": false\n}",
+        "tool_name": "run_command"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always-accept",
+      "once": "accept",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "run_command_toolu_bdrk_01VTZkMEKg5BQo1EQh6JaLay",
+        "tool_output": "Output:\nThe user rejected this tool call.\n\nExit Code: -1",
+        "tool_output_bytes": 56,
+        "tool_output_digest": "42c14274a2ff27d26d6457d5f4c10e253e375f040cc1e19b80cd81bec315dbd0",
+        "tool_status": "failed"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "ls",
+          "description": "List files in current directory",
+          "run_in_background": false
+        },
+        "title": "List files in current directory",
+        "tool_call_id": "run_command_toolu_bdrk_01VTZkMEKg5BQo1EQh6JaLay",
+        "tool_input": "{\n  \"command\": \"ls\",\n  \"description\": \"List files in current directory\",\n  \"run_in_background\": false\n}",
+        "wire_title": "List files in current directory"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 6,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "path": "/work/created.txt",
+          "text": "x"
+        },
+        "title": "Write File",
+        "tool_call_id": "toolu_bdrk_01VcTYVGT5JgYxWn14grRYhb",
+        "tool_input": "{\n  \"path\": \"/work/created.txt\",\n  \"text\": \"x\"\n}",
+        "tool_kind": "edit",
+        "wire_title": "Write File"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "path": "/work/created.txt",
+          "text": "x"
+        },
+        "tool_call_id": "toolu_bdrk_01VcTYVGT5JgYxWn14grRYhb",
+        "tool_input": "{\n  \"path\": \"/work/created.txt\",\n  \"text\": \"x\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "harness_tool_id": "fs_write",
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "accept",
+            "label": "Allow"
+          },
+          {
+            "id": "always-accept",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Deny"
+          },
+          {
+            "id": "always-reject",
+            "label": "Always deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "path": "/work/created.txt",
+          "text": "x"
+        },
+        "request_id": 4,
+        "shell_classified": true,
+        "title": "Write File",
+        "tool_call_id": "toolu_bdrk_01VcTYVGT5JgYxWn14grRYhb",
+        "tool_input": "{\n  \"path\": \"/work/created.txt\",\n  \"text\": \"x\"\n}",
+        "tool_name": "fs_write"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always-accept",
+      "once": "accept",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01VcTYVGT5JgYxWn14grRYhb",
+        "tool_output": "{\"message\": \"The user rejected this tool call.\"}",
+        "tool_output_bytes": 48,
+        "tool_output_digest": "e4c3568fed02ff306cf000b822ce58c1d6c60d0e57da6864566a1933ca4fcc20",
+        "tool_status": "failed"
+      },
+      {
+        "diff_path": "/work/created.txt",
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "path": "/work/created.txt",
+          "text": "x"
+        },
+        "title": "Write File",
+        "tool_call_id": "toolu_bdrk_01VcTYVGT5JgYxWn14grRYhb",
+        "tool_input": "--- /work/created.txt\n+++ /work/created.txt\n@@ -0,0 +1 @@\n+x",
+        "wire_title": "Write File"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 7,
+    "stop_reason": "end_turn"
+  }
+]

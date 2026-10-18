@@ -1,7 +1,5 @@
-{"_meta": {"backend": "", "recorded": "synthesized", "date": "2026-09-06", "agent_version": "2.21.1", "note": "The _kiro.dev/* notification family only kiro-cli sends, plus the redaction case. See ../README.md."}}
+{"_meta": {"backend": "", "recorded": "synthesized", "date": "2026-09-06", "agent_version": "2.21.1", "note": "The _kiro.dev/* notification family only kiro-cli sends, plus the redaction case. compaction/status is not here: compaction-live.jsonl carries it live. See ../README.md."}}
 {"jsonrpc": "2.0", "method": "_kiro.dev/metadata", "params": {"sessionId": "kiro-session-0001", "contextUsagePercentage": 12.5, "meteringUsage": [{"unit": "credit", "value": 0.25, "unitPlural": "credits"}, {"unit": "token", "value": 4096, "unitPlural": "tokens"}]}}
-{"jsonrpc": "2.0", "method": "_kiro.dev/compaction/status", "params": {"sessionId": "kiro-session-0001", "status": "started"}}
-{"jsonrpc": "2.0", "method": "_kiro.dev/compaction/status", "params": {"sessionId": "kiro-session-0001", "status": "completed"}}
 {"jsonrpc": "2.0", "method": "_kiro.dev/clear/status", "params": {"sessionId": "kiro-session-0001", "status": "completed"}}
 {"jsonrpc": "2.0", "method": "_kiro.dev/agent/switched", "params": {"sessionId": "kiro-session-0001", "agentName": "kirocrew"}}
 {"jsonrpc": "2.0", "method": "_kiro.dev/mcp/server_initialized", "params": {"sessionId": "kiro-session-0001", "serverName": "kirocrew-core"}}

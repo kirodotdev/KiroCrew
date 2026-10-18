@@ -71,10 +71,13 @@ from kiro_crew.agent_sdk.backends import (
 # KAS is a member on measurement. It takes the derived spec over the wire
 # (``acp.kas_agents`` projects ``<agent>--readonly`` into ``customAgents``), and
 # the derivation empties its ``permissions`` block with the other grants, so the
-# projected agent carries no allow rule. Captured on kiro-cli 2.29.0
-# (``--agent-engine v3``): ``read_file``, ``run_command``, ``grep_search`` and
-# ``fs_write`` each raised ``session/request_permission`` under it, and a rejected
-# write left no file. An ``allow_always`` answer does not outlive its session: on
+# projected agent carries no allow rule. Captured LIVE on KAS 0.66.43 (kiro-cli
+# 2.32.0) and committed as ``test/fixtures/acp_frames/kas/side-read-only-live.jsonl``:
+# with a base spec whose ``allowedTools`` pre-approves all four, ``read_file``,
+# ``grep_search``, ``run_command`` and ``fs_write`` each raised
+# ``session/request_permission`` under the derived spec, and a rejected write left
+# no file. First measured on kiro-cli 2.29.0. An ``allow_always`` answer does not
+# outlive its session: on
 # one process, after a normal session's ``run_command`` and ``fs_write`` were
 # answered ``allow_always``, the same calls from a ``--readonly`` side session, from
 # a second normal session, and from a fresh process each asked again. What the
@@ -84,8 +87,8 @@ from kiro_crew.agent_sdk.backends import (
 # read under its kiro-cli policy name (``read_file``/``list_directory`` ->
 # ``fs_read``, ``grep_search`` -> ``grep``, ``file_search`` -> ``glob``), so a
 # read-only one is approved and anything else is refused.
-# That capture is quoted here, not committed: no fixture carries it and no lane
-# re-runs it, so a kiro-cli release after 2.29.0 is not re-measured.
+# The ``allow_always`` probe is quoted, not committed. No lane re-runs either, so a
+# kiro-cli release after 2.32.0 is not re-measured.
 #
 # codex is NOT a member. No side session on it is measured here to raise a
 # permission request for every call it does not run as a read, so a side turn on
