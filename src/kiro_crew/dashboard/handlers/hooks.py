@@ -1034,7 +1034,8 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             60,
             min(int(body.get("timeoutSeconds", _HOOK_TIMEOUT_DEFAULT)), _HOOK_TIMEOUT_MAX),
         )
-    except (ValueError, TypeError):
+    # OverflowError: json.loads reads 1e999 as inf, and int(inf) raises it.
+    except (ValueError, TypeError, OverflowError):
         return web.json_response(
             {"error": "timeoutSeconds must be an integer", "code": "timeout_not_an_integer"},
             status=400,

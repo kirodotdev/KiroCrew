@@ -1434,6 +1434,47 @@ class TestPromote:
         assert "min_count/min_sim" in _body(resp)["error"]
         store.promote_episodic_patterns.assert_not_called()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            # json.loads reads these as +/-inf; int(inf) raises OverflowError.
+            '{"min_count": 1e999}',
+            '{"min_count": -1e999}',
+            '{"min_count": [3]}',
+            '{"min_count": null}',
+        ],
+    )
+    async def test_infinite_or_non_number_min_count_is_400(self, raw: str) -> None:
+        store = _store(promote_episodic_patterns=MagicMock(return_value=0))
+        state = _make_state(vector_store=store)
+        req = _make_request(
+            state, method="POST", json_body=json.loads(raw), session_key="dashboard:ui"
+        )
+        resp = await mem_mod.api_memory_promote(req)
+        assert resp.status == 400
+        assert "min_count/min_sim" in _body(resp)["error"]
+        store.promote_episodic_patterns.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ('{"min_count": -2}', (-2, 0.75)),
+            ('{"min_count": 99999999999999999999999}', (99999999999999999999999, 0.75)),
+        ],
+    )
+    async def test_finite_min_count_is_forwarded_unchanged(
+        self, raw: str, expected: tuple[int, float]
+    ) -> None:
+        store = _store(promote_episodic_patterns=MagicMock(return_value=0))
+        state = _make_state(vector_store=store)
+        req = _make_request(
+            state, method="POST", json_body=json.loads(raw), session_key="dashboard:ui"
+        )
+        assert (await mem_mod.api_memory_promote(req)).status == 200
+        store.promote_episodic_patterns.assert_called_once_with(*expected)
+
 
 # ---------------------------------------------------------------------------
 # the memory-mutation session gate, on every route that carries it
