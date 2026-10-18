@@ -236,6 +236,7 @@ from kiro_crew.context_assembly.store_admission import (  # noqa: F401
     _TURN_LESSONS_CHARS,
     _TURN_LESSONS_MAX,
     _ShownLessons,
+    embed_startup_query,
 )
 from kiro_crew.context_assembly.turn_message import build_message as _build_message
 from kiro_crew.context_blocks import measure_prompt  # noqa: F401
@@ -925,7 +926,8 @@ def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None) -> bool:
 # All three share one model and must share one deadline: resetting the budget per
 # section would let concurrent starts pay the queue wait repeatedly and approach
 # the gateway's 25-second loop-stall hard-exit budget. A missed vector degrades
-# to each retrieval path's existing lexical fallback.
+# to each retrieval path's existing lexical fallback. A build that finds its first
+# message's embedding already running waits ``memory.startup_recall_timeout_secs``.
 _PROMPT_BUILD_EMBED_TIMEOUT_SECS = 5.0
 
 

@@ -2139,6 +2139,7 @@
         "inject_lessons": true,
         "inject_lessons_per_turn": false,
         "inject_activity": true,
+        "startup_recall_timeout_secs": 1.0,
         "migrated": false
       }
     },
@@ -2608,6 +2609,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "memory.startup_recall_timeout_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Session-Start Recall Wait (seconds)",
+      "help": "How long a new dashboard chat's first message waits for its own embedding, which the dashboard starts ahead of the session-start build, beside session startup when the chat has to start its session. The embedding ranks the memory activity and lessons the session starts with by meaning; past the wait they are ranked by keyword. 0 turns the early embedding off, and the build embeds the message itself, as on other surfaces. Clamped to [0, 10].",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 1.0
     },
     {
       "path": "memory.migrated",

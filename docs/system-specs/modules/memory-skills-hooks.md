@@ -1512,9 +1512,15 @@ request once — three embed calls on the same text through the shared embedder,
 one inference. With the switch off, that material
 is on demand through the store-bound `memory_recall` route and startup performs
 no query embedding. Warm follow-ups do not repeat startup memory injection. The
-prompt-build embedding deadline bounds that first-turn inference, and the
-synchronous `ContextBuilder.build_message` call remains off the event loop in
-the bounded `mc-embed` pool.
+prompt-build embedding deadline bounds that first-turn inference; past it the three
+readers rank by keyword. A dashboard turn starts the inference early through
+`embed_startup_query` on the `mc-recall` pool, beside `session/new` when the turn
+starts the session itself. The build then reads the cached vector, or joins the
+running inference and waits `memory.startup_recall_timeout_secs` for it; a build
+that runs its own inference keeps the five-second deadline. Only the query's vector
+is cached, and the store is read when the build runs. The synchronous
+`ContextBuilder.build_message` call remains off the event loop in the bounded
+`mc-embed` pool.
 V2 context includes essential preference/project anchors and query-free,
 project-scoped lessons. V2 prompt construction performs no embedding search or
 episodic/semantic retrieval. Its runtime tells the agent to call `memory_recall`
@@ -6379,7 +6385,7 @@ importable from `kiro_crew.context`:
 | `replay.py` | replay and recall projection of transcript rows: row quotas, delivery-identity merge, replay budget, thread-history fallback, turn restores |
 | `inclusion.py` | context-group scope, the folder-steering renderer, the skills loader call session start and re-injection share |
 | `member.py` | the member identity section and the V2 essentials envelope; delivery stays at the `member_turn_context` chokepoint |
-| `store_admission.py` | which store answers each memory and lesson section, the per-message lessons block, the shown-lesson record |
+| `store_admission.py` | which store answers each memory and lesson section, the first message's early embed (`embed_startup_query`), the per-message lessons block, the shown-lesson record |
 | `turn.py` | follow-up turn additions (post-compaction re-injection, Slack thread context, per-turn rails, guidance) and the user's own turn text |
 | `output_contract.py` | the output contract a session starts with: the critical-rules block per runtime (`_critical_rules_for`) and the `[UI LANGUAGE]` steer (`ui_language_tag` stays on the facade) |
 | `session_start.py` | `ContextBuilder.build_session_context`: the session-start block's order, its section timings (`_mark`, `_emit_context_section_timings`) and the redaction of replayed thread history |

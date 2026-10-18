@@ -234,6 +234,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         default_embedding_backend,
         default_embedding_space_signature,
         embedding_backend_serving,
+        embedding_in_flight,
         embedding_rebuild_generation,
         embedding_space_signature,
         get_shared_embedder,

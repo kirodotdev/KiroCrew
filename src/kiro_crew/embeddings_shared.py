@@ -658,6 +658,21 @@ def _shared_sync_embed(
 _shared_sync_embed.accepts_priority = True  # type: ignore[attr-defined]
 
 
+def embedding_in_flight(text: str) -> bool:
+    """Whether the shared embedder is computing the vector for *text* right now.
+
+    A caller that embeds *text* while this holds joins that inference, and a joined
+    wait ends at the caller's own deadline even while the inference runs. Starts,
+    loads and reads nothing beyond the in-flight record.
+    """
+    with _shared_embedder_lock:
+        backend = _shared_embedder
+    if backend is None:
+        return False
+    with _sync_embed_cache_lock:
+        return (id(backend), text[:_MAX_EMBED_CHARS]) in _sync_embed_flights
+
+
 def make_sync_embed_fn() -> Callable[[str], "list[float] | None"]:
     """Return a sync callable ``(str) -> list[float] | None`` over the shared embedder.
 

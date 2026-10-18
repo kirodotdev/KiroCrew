@@ -1,7 +1,8 @@
 """The context a dashboard turn's input carries: the execution context's memory-mode
 fold, the pending context drain, the folder-steering gate and the appended-context split,
-the unavailable-agent message, the DM member binding check, the memory assignment and the
-skills context restored after a compaction."""
+the unavailable-agent message, the DM member binding check, the memory assignment, the
+skills context restored after a compaction and the gate on embedding the first message
+ahead of its session-start build."""
 
 from __future__ import annotations
 
@@ -21,6 +22,35 @@ if TYPE_CHECKING:
         stricter_memory_mode,
         tighten_live_session_execution,
     )
+
+
+def _startup_query_prewarm_applies(
+    builder: Any, slot: Any, text: str, execution_context: Any
+) -> bool:
+    """Whether a turn may embed its first message before the session-start build.
+
+    The build ranks the memory it starts with against the first message, and that
+    embedding is the slow step of the build, so it can start early and run beside
+    the rest of the turn's start. Not where the build reads no learned memory: no
+    builder, an empty message, a temporary chat or execution, or a private member,
+    whose session start runs no embedding search. ``embed_startup_query`` checks the
+    rest: the config gates, the store and its embedder.
+    """
+    if builder is None or not text.strip() or slot.blocks_reads:
+        return False
+    if execution_context is None:
+        return True
+    return execution_context.member_id is None and execution_context.memory_mode != "temporary"
+
+
+def _message_rewritten_before_build(slot: Any, message: str) -> bool:
+    """Whether the turn's text changes between the session claim and the build.
+
+    An ``@prompt`` expansion replaces it, and drained sub-agent failures or pending
+    context are put in front of it. An embed of the claim-time text would then rank
+    nothing and hold the one inference thread ahead of the embed the build reads.
+    """
+    return bool(message.startswith("@") or slot._pending_subagent_failures or slot._pending_context)
 
 
 def _folder_steering_turn(
