@@ -2452,6 +2452,7 @@ def _reset_create_rate_limit_buckets():
 _REAL_MCP_POST_MODULES = frozenset(
     {
         "test_ephemeral_sessions",
+        "test_ephemeral_sessions_recognition",
         "test_mcp_api_base_resolution",
         "test_mcp_core",
         "test_mcp_core_coverage",

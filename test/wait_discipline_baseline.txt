@@ -191,7 +191,9 @@
  1 test_knowledge_add_source.py
  2 test_knowledge_agent_sync_off_loop.py
  2 test_knowledge_cross_thread.py
- 3 test_knowledge_handlers_coverage.py
+ 1 test_knowledge_handlers_coverage.py
+ 1 test_knowledge_handlers_coverage_module_wide.py
+ 1 test_knowledge_handlers_coverage_source_writes.py
  1 test_knowledge_ingest_magic_byte.py
  2 test_knowledge_store_sources.py
  1 test_knowledge_sync_local_file.py

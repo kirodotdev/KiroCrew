@@ -244,7 +244,7 @@ def test_re_assertion_changes_only_what_the_dedup_guard_compares(monkeypatch):
     re-alert period, so within the period the raw fingerprint matches and it
     suppresses, and past the period a different value is presented and it does
     not. The composed proof through the real writers is in
-    test_monitor_controller.py; this pins the derived-comparison in isolation.
+    test_monitor_controller_realert_stall.py; this pins the derived-comparison in isolation.
     """
     realert = 50.0
     monkeypatch.setattr(models, "DEFAULT_MONITOR_REALERT_SECS", realert)

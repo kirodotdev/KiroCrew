@@ -126,7 +126,6 @@
 2478 test/test_dashboard_updates_coverage.py
 11203 test/test_denied_commands_security.py
 2240 test/test_eager_spawn.py
-2417 test/test_ephemeral_sessions.py
 2765 test/test_fargate_launch_engine.py
 4437 test/test_github_pull_request_monitor.py
 5410 test/test_governance_distribution.py
@@ -136,14 +135,12 @@
 3557 test/test_issue_radar_crew_runtime.py
 2162 test/test_issue_radar_routes_coverage.py
 4427 test/test_job_sdk.py
-2409 test/test_knowledge_handlers_coverage.py
 2631 test/test_llm_pool.py
 2248 test/test_markdown_link_parentheses.py
 7022 test/test_mcp_discovery.py
 3224 test/test_mcp_gateway_stub_session_token.py
 2449 test/test_mcp_gatewayd_coverage.py
 3249 test/test_member_essential_context.py
-2405 test/test_monitor_controller.py
 2096 test/test_monitor_directive_apply.py
 5822 test/test_onboarding_import.py
 3579 test/test_overload_integration_glue.py
@@ -157,7 +154,6 @@
 5509 test/test_sel.py
 9530 test/test_session.py
 6171 test/test_session_control.py
-2398 test/test_session_ledger_projection.py
 7444 test/test_session_storage.py
 6415 test/test_session_transfer.py
 2185 test/test_side.py
