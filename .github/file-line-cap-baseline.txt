@@ -95,7 +95,6 @@
 2744 test/test_cli_server_more_coverage.py
 6406 test/test_crew_log_emit.py
 3125 test/test_cron_script.py
-2247 test/test_cron_secret_env.py
 3175 test/test_dashboard_approval.py
 2718 test/test_dashboard_server_composition_contract.py
 2478 test/test_dashboard_updates_coverage.py
@@ -105,7 +104,6 @@
 3102 test/test_handlers_memory_coverage.py
 2809 test/test_history_consolidation_retry.py
 4353 test/test_hooks.py
-2162 test/test_issue_radar_routes_coverage.py
 4427 test/test_job_sdk.py
 2631 test/test_llm_pool.py
 7022 test/test_mcp_discovery.py
@@ -114,14 +112,12 @@
 5822 test/test_onboarding_import.py
 2725 test/test_plugin_import.py
 8519 test/test_pod.py
-2147 test/test_recovery_l1_chat_runner.py
 3193 test/test_sandbox_absent_ceiling_seal.py
 12647 test/test_security.py
 5509 test/test_sel.py
 9530 test/test_session.py
 7444 test/test_session_storage.py
 6415 test/test_session_transfer.py
-2185 test/test_side.py
 3082 test/test_skills.py
 2650 test/test_slack_handler_composition_contract.py
 2629 test/test_slack_handler_coverage.py
