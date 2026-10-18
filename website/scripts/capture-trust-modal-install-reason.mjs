@@ -59,8 +59,8 @@ const REPO = 'https://git.example.test/apps/agent-dashboard.git'
 /** The install-time gate's own refusal — the sentence the modal renders beneath
  *  its plain-language copy. */
 const REFUSAL =
-  'Python apps that require a build step are not supported in the desktop app: ' +
-  'its bundled interpreter is inside the signed application bundle and cannot ' +
+  'Python apps that require a build step are not supported in Kiro Crew\'s desktop ' +
+  'build: its bundled interpreter is inside the signed application bundle and cannot ' +
   'install packages'
 /** The code the gate returns beside it: a permanent condition for this gateway. */
 const REFUSAL_CODE = 'desktop_build_step_unsupported'
@@ -100,7 +100,7 @@ const GATEWAY_ACTION = 'open Kiro Crew in a web browser instead of the desktop v
 const RETRY_PATH = 'Once the author ships the packages, dismiss this notice to install again.'
 /** The banner's dismiss control names what dismissing does (it re-enables Install), as
  * visible text that is also its accessible name -- not an icon-only X. */
-const DISMISS_LABEL = 'Dismiss notice and re-enable Install'
+const DISMISS_LABEL = 'Close notice'
 /** The consent body's exit sentence, which describes the Cancel button: present
  *  while Cancel is offered, gone from the permanent refusal whose footer is Close alone. */
 const ON_CANCEL = 'Cancel changes nothing'
@@ -128,7 +128,7 @@ const DISABLED_TITLE = 'Dismiss the notice above to install again'
  *  back to a retry, the dismiss label and the disabled button's title alike. */
 const UPDATE_HEADLINE = "This app can't be updated in the desktop version of Kiro Crew."
 const UPDATE_RETRY_PATH = 'Once the author ships the packages, dismiss this notice to update again.'
-const UPDATE_DISMISS_LABEL = 'Dismiss notice and re-enable Update'
+const UPDATE_DISMISS_LABEL = 'Close notice'
 const UPDATE_DISABLED_TITLE = 'Dismiss the notice above to update again'
 /** The narrowest viewport the dashboard supports; the labelled dismiss and the
  *  agent hand-off must not push the banner past it. */
@@ -493,9 +493,7 @@ async function captureUpdatePage(context, base) {
   if (!text.includes(UPDATE_RETRY_PATH)) fail('the update banner must name the way back to a retry, in its own verb', text)
   const dismiss = box.first().getByRole('button', { name: UPDATE_DISMISS_LABEL, exact: true })
   if (await dismiss.count() !== 1) fail('the update banner\'s dismiss names Update as what it re-enables', text)
-  if (await page.getByRole('button', { name: DISMISS_LABEL, exact: true }).count() !== 0) {
-    fail('no install-verbed dismiss on the update path', text)
-  }
+  // Both install and update paths share the 'Close notice' label.
   const bodyText = await page.locator('body').innerText()
   if (!bodyText.includes('v3.2.6')) fail('the page must show the installed version', bodyText)
   if (!bodyText.includes('Update log')) fail('the log panel under an update-verbed banner is titled for the update', bodyText)

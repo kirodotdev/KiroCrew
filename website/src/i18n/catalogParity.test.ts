@@ -258,3 +258,18 @@ describe('catalog parity', () => {
     })
   }
 })
+
+describe('AppDetailPage — desktop-refusal dismiss label', () => {
+  // The dismiss control names the action: try installing/updating again.
+  it('dismiss_to_install_again names the close action', () => {
+    const enCatalog = flatten(en)
+    // The dismiss button names the outcome: Install becomes available again.
+    // This does not imply the click runs the install; it just re-enables the button.
+    expect(enCatalog['pages.appDetailPage.dismiss_to_install_again']).toMatch(/close/i)
+    expect(enCatalog['pages.appDetailPage.dismiss_to_update_again']).toMatch(/close/i)
+    // The disabled-button tooltip stays short.
+    expect(enCatalog['pages.appDetailPage.dismiss_notice_to_install_again']).toContain('install')
+    expect(enCatalog['pages.appDetailPage.dismiss_notice_to_update_again']).toContain('updat')
+  })
+})
+

@@ -1622,6 +1622,27 @@ def update_app(
         )
         return AppResult(ok=False, name=name, error=tmp_obstruction)
 
+    # BEFORE the transaction opens, too: the installed `.app_secret` must be a
+    # regular file or absent. A LINK cannot be preserved: the move below
+    # relocates the link to `.<name>-secret-tmp` beside the app directory,
+    # where a relative in-tree target does not resolve; `tmp_secret.is_file()`
+    # then fails and the secret is lost on the update's success path. Refuse
+    # before anything moves, matching the `data`-link pre-transaction shape.
+    if is_link_or_junction(secret_file):
+        secret_link_refusal = (
+            "`.app_secret` in the app directory is a link; moving it aside for "
+            "the update places it outside its tree where a relative target does not "
+            "resolve and the secret is lost. Remove the link and retry the update."
+        )
+        sel().log_api_access(
+            caller="app_update",
+            operation="secret_link",
+            outcome="rejected",
+            resources=f"name={name!r}",
+            error=secret_link_refusal,
+        )
+        return AppResult(ok=False, name=name, error=secret_link_refusal)
+
     # Clean up stale tmp files from a previous failed update
     if _owned_data_dir(tmp_data) and _owned_data_dir(data_dir):
         shutil.rmtree(str(tmp_data))

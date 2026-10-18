@@ -92,6 +92,7 @@ DECLARED_SITES = frozenset(
         ("apps/manager.py", "gateway_data_dir_obstruction"),
         ("apps/manager.py", "migrated_builtin_cleanup_applies"),
         ("apps/manager.py", "uninstall_app"),
+        ("apps/manager.py", "update_app"),
         ("apps/plugin_import.py", "_convert_skills"),
         ("apps/plugin_import.py", "_copy_tree_without_links"),
         ("apps/plugin_import.py", "_discover_skill_dirs"),
