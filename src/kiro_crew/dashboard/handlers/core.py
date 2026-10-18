@@ -83,6 +83,7 @@ from kiro_crew.config.sections import (
     transcribe_language_options,
     transcribe_vocabulary_name,
 )
+from kiro_crew.config.service_sections import ON_BATTERY_MODES
 from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.chat_utils import drained_to_thread, run_config_write
@@ -3309,6 +3310,8 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "knowledge.sweep_chunk_budget": {"type": "int", "min": 0, "max": SWEEP_CHUNK_BUDGET_MAX},
     "knowledge.import_chunk_budget": {"type": "int", "min": 0, "max": IMPORT_CHUNK_BUDGET_MAX},
     "knowledge.embed_rate_limit": {"type": "int", "min": 0, "max": EMBED_RATE_LIMIT_MAX},
+    # Background work on battery. Explicit adds never run through the sweeps it gates.
+    "power.on_battery": {"type": "enum", "values": list(ON_BATTERY_MODES)},
     "knowledge.extraction_model": {"type": "str"},
     "knowledge.extraction_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "knowledge.extraction_pool_size": {

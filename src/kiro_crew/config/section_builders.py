@@ -100,8 +100,10 @@ from kiro_crew.config.service_sections import (
     CronHistoryConfig,
     MessagingConfig,
     MonitoringConfig,
+    PowerConfig,
     TaskRunnerConfig,
     WatchdogConfig,
+    normalize_on_battery,
 )
 from kiro_crew.instances.constants import DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_MINT_TIMEOUT
@@ -170,6 +172,11 @@ def _build_monitoring_config(data: dict, prefer_structured_arming: bool) -> Moni
         prefer_structured_arming=prefer_structured_arming,
         max_runtime_secs=coerce_runtime_ceiling(section.get("max_runtime_secs")),
     )
+
+
+def _build_power_config(power_data: dict) -> PowerConfig:
+    section = SectionReader(PowerConfig, power_data)
+    return PowerConfig(on_battery=normalize_on_battery(section.get("on_battery")))
 
 
 def _build_watchdog_config(watchdog_data: dict) -> WatchdogConfig:

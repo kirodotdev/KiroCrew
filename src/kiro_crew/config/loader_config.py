@@ -84,6 +84,7 @@ from kiro_crew.config.sections import (
     MemoryStoreConfig,
     MessagingConfig,
     MonitoringConfig,
+    PowerConfig,
     PublishConfig,
     ResourceLimitsConfig,
     SessionConfig,
@@ -224,6 +225,10 @@ class KiroCrewConfig:
     watchdog: WatchdogConfig = field(
         default_factory=WatchdogConfig,
         metadata=_meta("Watchdog", "ACP per-session watchdog / liveness-oracle windows."),
+    )
+    power: PowerConfig = field(
+        default_factory=PowerConfig,
+        metadata=_meta("Power", "What Knowledge Library sweeps do while on battery."),
     )
     resource_limits: ResourceLimitsConfig = field(
         default_factory=ResourceLimitsConfig,
@@ -658,6 +663,7 @@ class KiroCrewConfig:
             "mcp": asdict(self.mcp),
             "taskrunner": asdict(self.taskrunner),
             "watchdog": asdict(self.watchdog),
+            "power": asdict(self.power),
             "resource_limits": asdict(self.resource_limits),
             "messaging": asdict(self.messaging),
             "cron_history": asdict(self.cron_history),

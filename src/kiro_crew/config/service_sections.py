@@ -1,7 +1,7 @@
 """Sections that configure the gateway's background services.
 
 Owns the DTOs and defaults for ``taskrunner``, ``messaging``,
-``cron_history``, ``monitoring``, ``heartbeat`` and ``watchdog``. The monitoring
+``cron_history``, ``monitoring``, ``heartbeat``, ``watchdog`` and ``power``. The monitoring
 runtime bounds come from ``monitoring.limits``, their single owner.
 ``config.sections`` re-exports every name; this module never imports it, the
 loader, schema or validation.
@@ -325,5 +325,44 @@ class WatchdogConfig:
             "Wellness sample interval (s)",
             "Minimum spacing between CPU/IO counter samples used for movement "
             "deltas in the liveness oracle.",
+        ),
+    )
+
+
+#: ``power.on_battery`` values. ``normal`` ignores the power source.
+ON_BATTERY_NORMAL = "normal"
+ON_BATTERY_REDUCED = "reduced"
+ON_BATTERY_PAUSED = "paused"
+ON_BATTERY_MODES = (ON_BATTERY_NORMAL, ON_BATTERY_REDUCED, ON_BATTERY_PAUSED)
+
+
+def normalize_on_battery(value: object) -> str:
+    """``power.on_battery`` as a known mode; anything else is ``normal``.
+
+    An unknown value keeps today's behaviour rather than guessing a throttle: a
+    typo must never silently stop background work.
+    """
+    if isinstance(value, str) and value.strip().lower() in ON_BATTERY_MODES:
+        return value.strip().lower()
+    return ON_BATTERY_NORMAL
+
+
+@dataclass
+class PowerConfig:
+    """What Knowledge Library background sweeps do while this machine runs on battery."""
+
+    on_battery: str = field(
+        default=ON_BATTERY_NORMAL,
+        metadata=_meta(
+            "On battery",
+            "What Knowledge Library background sweeps do while this machine "
+            "runs on battery; nothing else reads it yet. 'normal' (the default) "
+            "ignores the power source. 'reduced' cuts each sweep's chunk budget "
+            "to a quarter, at least 10 chunks and never more than the "
+            "configured budget. 'paused' skips the sweeps until the machine is "
+            "back on mains. A document or folder you add yourself always "
+            "ingests, and a host that cannot report its power source counts as "
+            "plugged in.",
+            enum=list(ON_BATTERY_MODES),
         ),
     )

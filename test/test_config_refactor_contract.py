@@ -477,7 +477,7 @@ class TestLoaderSeamsReachTheOwners:
 
     def test_moved_builders_are_the_loader_names(self) -> None:
         moved = sorted(n for n in vars(section_builders) if n.startswith("_build_"))
-        assert len(moved) == 27
+        assert len(moved) == 28
         assert [n for n in moved if getattr(loader, n) is not getattr(section_builders, n)] == []
         loader_owned = sorted(
             n
