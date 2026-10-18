@@ -18,8 +18,9 @@ import { withOriginLink } from '../../components/withOriginLink'
 import { SessionTurnLimitButton } from '../../components/SessionTurnLimitMenu'
 import { injectOpensTurn } from './RecoveryCard'
 
-/** Where a capability refusal's fix lives: the member's Capabilities pane, or
- *  the member's editor (its Built from field picks the agent). */
+/** Where a capability refusal's fix lives: the member's Approvals section in
+ *  the crewmate editor, or the editor itself (its Built from field picks the
+ *  agent). */
 export type CapabilityFix = 'capabilities' | 'member'
 
 /** Session-start refusals the backend stamps (`meta.code`) from
@@ -37,7 +38,9 @@ const CAPABILITY_REFUSAL_COPY = {
 type CapabilityRefusalCode = keyof typeof CAPABILITY_REFUSAL_COPY
 const CAPABILITY_REFUSAL_FIX: Readonly<Record<CapabilityRefusalCode, CapabilityFix | undefined>> = {
   materialization_changed: 'capabilities',
-  parent_identity_changed: 'capabilities',
+  // No dashboard surface detaches a member from its parent, so the in-app fix
+  // is the editor's Built from field (or putting the parent back, as the copy says).
+  parent_identity_changed: 'member',
   foreign_private_copy: 'member',
   project_identity_changed: undefined,
   private_template_shadowed: undefined,
@@ -613,7 +616,6 @@ export const ErrorCard = memo(function ErrorCard({
       file: String(refusalMeta?.file ?? ''),
       project: String(refusalMeta?.project ?? ''),
       name: String(refusalMeta?.member ?? ''),
-      button: i18nT('crewCapabilities.detach'),
       field: i18nT('pages.kiroCrewAgentsPage.built_from'),
     }
     const FixIcon = refusal.fix === 'member' ? Settings : ShieldCheck

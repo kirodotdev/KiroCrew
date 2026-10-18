@@ -315,42 +315,6 @@ export function memberMemoryState(member: string, store: string, stores: Record<
   return 'unavailable'
 }
 
-export function MemoryStoreField({ value = '', member, memoryState = 'unavailable', onManage, busy = false, manageDisabled = false }: {
-  value?: string; member?: string; memoryState?: MemberMemoryState
-  onManage?: () => void; busy?: boolean; manageDisabled?: boolean
-  /** Compatibility for external callers; stores are never selectable here. */
-  options?: string[]; onChange?: (value: string) => void
-}) {
-  const isGlobal = member === 'default' && memoryState === 'legacy'
-  const hint = !member
-    ? i18nT('pages.kiroCrewAgentsPage.private_memory_auto')
-    : isGlobal
-      ? i18nT('pages.kiroCrewAgentsPage.global_memory_v1')
-      : memoryState === 'private'
-        ? i18nT('pages.kiroCrewAgentsPage.private_memory_owned')
-        : memoryState === 'legacy'
-          ? i18nT('pages.kiroCrewAgentsPage.private_memory_legacy')
-          : memoryState === 'ownership_mismatch'
-            ? `${i18nT('pages.kiroCrewAgentsPage.memory_binding_mismatch')} ${i18nT('pages.kiroCrewAgentsPage.memory_binding_diagnostic', { command: 'kirocrew doctor' })}`
-            : `${i18nT('pages.kiroCrewAgentsPage.memory_binding_unavailable')} ${i18nT('pages.kiroCrewAgentsPage.memory_binding_diagnostic', { command: 'kirocrew doctor' })}`
-  return (
-    <Field label={i18nT('pages.kiroCrewAgentsPage.memory_store')} hint={hint}>
-      {member && <span className="break-all font-mono text-[12px] text-muted">{isGlobal ? 'default' : value}</span>}
-      <div className="flex flex-wrap gap-2">
-        {(isGlobal || memoryState === 'private') && onManage && (
-          <Btn onClick={onManage} disabled={busy || manageDisabled} {...uiLocation('agents.manage-memory')}>
-            {i18nT('pages.kiroCrewAgentsPage.manage_private_memory')}
-          </Btn>
-        )}
-      </div>
-      {(isGlobal || memoryState === 'private') && onManage && manageDisabled && (
-        <p className="mt-2 text-[12px] text-muted">{i18nT('components.markdownPanel.save_or_discard_changes_first')}</p>
-      )}
-
-    </Field>
-  )
-}
-
 export function ModelField({ options, value, onChange, hint }: {
   options: string[]; value: string; onChange: (v: string) => void; hint?: string
 }) {

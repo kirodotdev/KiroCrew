@@ -74,34 +74,24 @@ function hookCalls(body: ts.Block): string[] {
 }
 
 /** The hooks the split lifted out of the page body, and the owner file
- *  defining each; a hook that was its own function as one file stays opaque. */
-const OWNER_HOOKS: Record<string, string> = {
-  useCrewDiscardGuard: 'KiroCrewAgentsPageDiscard.tsx',
-}
+ *  defining each; a hook that was its own function as one file stays opaque.
+ *  None today: the editor's state lives in `useCrewEditor`, outside the page. */
+const OWNER_HOOKS: Record<string, string> = {}
 
-/** The hook registrations of `KiroCrewAgentsPage` as one file, before the split,
- *  computed by `hookCalls` above. A change that adds, removes or moves a page
- *  hook edits this list in the same commit, at the position the hook
- *  registers. */
+/** The hook registrations of `KiroCrewAgentsPage`, computed by `hookCalls`
+ *  above. A change that adds, removes or moves a page hook edits this list in
+ *  the same commit, at the position the hook registers. */
 const PAGE_HOOKS = [
-  'useAppDispatch', 'useNavigate', 'useQueryClient', 'useQuery', 'usePreviewFlag', 'useQuery', 'useQuery',
-  'useQuery', 'useAvailableModels', 'useState', 'useState', 'useState', 'useState', 'useState', 'useState',
-  'useState', 'useState', 'useState', 'useState', 'useState', 'useState', 'useState', 'useState', 'useState',
-  'useState', 'useState', 'useState', 'useState', 'useState', 'useRef', 'useEffect', 'useState', 'useState',
-  'useState', 'useQuery', 'useEffect', 'useEffect', 'useQuery', 'useSearchParams', 'useEffect', 'useRef',
-  'useEffect', 'useEffect', 'useRef', 'useRef', 'useMutation', 'useMutation', 'useState', 'useRef', 'useRef',
-  'useRef', 'useRef', 'useEffect', 'useState', 'useState', 'useState', 'useState', 'useState', 'useState',
-  'useEffect', 'useRef', 'useEffect', 'useRef', 'useEffect', 'useEffect', 'useRef', 'useEffect', 'useQuery',
-  'useQuery', 'useCrewEditorSections', 'useGuideSelection', 'useGuidePredicate', 'useGuidePredicate',
-  'useGuidePredicate', 'useGuidePredicate',
+  'useQueryClient', 'useQuery', 'usePreviewFlag', 'useState', 'useState', 'useState', 'useState', 'useState',
+  'useState', 'useQuery', 'useRef', 'useGuardedLeave', 'useCrewEditor', 'useRegisterNavigationLeaveGuard',
+  'usePublishNavigationStake', 'useEffect', 'useSearchParams', 'useEffect', 'useRef', 'useEffect',
+  'useEffect', 'useEffect', 'useGuideSelection', 'useGuidePredicate', 'useGuidePredicate', 'useGuidePredicate',
 ]
 
 describe('KiroCrewAgentsPage owners', () => {
   it('are the files the page is made of', () => {
     expect(OWNERS).toEqual([
-      'KiroCrewAgentsPageDiscard.tsx',
       'KiroCrewAgentsPageFields.tsx',
-      'KiroCrewAgentsPagePanes.tsx',
       'KiroCrewAgentsPageRoster.tsx',
     ])
   })
@@ -124,7 +114,6 @@ describe('KiroCrewAgentsPage owners', () => {
       'EffortField',
       'Field',
       'INHERIT_MODEL',
-      'MemoryStoreField',
       'ModelField',
       'OWN_WORKSPACE',
       'SessionColorField',
@@ -151,7 +140,7 @@ describe('KiroCrewAgentsPage owners', () => {
     expect(offenders).toEqual([])
   })
 
-  it('register the page hooks in the order the page did as one file', () => {
+  it('register the page hooks in their pinned order', () => {
     expect(hookCalls(bodyOf(join(PAGES_DIR, 'KiroCrewAgentsPage.tsx'), 'KiroCrewAgentsPage'))).toEqual(PAGE_HOOKS)
   })
 

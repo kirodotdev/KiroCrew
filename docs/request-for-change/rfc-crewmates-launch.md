@@ -498,9 +498,13 @@ Implementation: the shared editor (hook + dialog) and the Crewmates-page wiring
 ship first. Folding the crew manager (`KiroCrewAgentsPage`) onto the same shared
 component, so "one editor" is literally true in code, is the committed follow-up.
 
-Status: the follow-up is open. `KiroCrewAgentsPage` shares only the section
-list (`useCrewEditorSections`) and keeps its own edit-sheet state, so a change to
-the editor must be mirrored there until the fold-in lands.
+Status: the follow-up has landed. The one editor is `CrewEditorNextDialog`
+driven by `useCrewEditor` (it replaced `CrewEditorDialog` in #19257), and
+`KiroCrewAgentsPage` (Customize > Crewmates) now opens that same editor rather
+than an edit sheet of its own, so one editor is literally true in code and
+there is nothing to mirror. Its **Built from** section is read-only: a
+crewmate's agent definition is edited on the Custom agents tab, not on the
+crewmate.
 
 Provenance: accepted by the product owner on 2026-09-30 (CREW-18688), recorded
 here ahead of the implementation PR (#15275) so the decision lands on main

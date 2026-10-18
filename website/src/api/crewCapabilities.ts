@@ -63,9 +63,6 @@ export const crewCapabilitiesApi = {
     post(`${endpoint(member)}/preview`, draft).then(j) as Promise<CapabilityPreview>,
   save: (member: string, draft: CapabilityDraft & { preview_token: string }): Promise<CapabilityView> =>
     put(endpoint(member), draft).then(j) as Promise<CapabilityView>,
-  /** Stop following the Parent: the member keeps its saved values as its own. */
-  detach: (member: string, revision: string, acceptMcpJson = false): Promise<CapabilityView> =>
-    post(`${endpoint(member)}/detach`, acceptMcpJson ? { revision, accept_mcp_json: true } : { revision }).then(j) as Promise<CapabilityView>,
 }
 export const crewCapabilitiesKey = (member: string) => ['crew-capabilities', member] as const
 export const capabilityKey = (row: CapabilityRef) => JSON.stringify([row.section, row.id])

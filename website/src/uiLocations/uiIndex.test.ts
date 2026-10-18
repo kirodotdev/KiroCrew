@@ -274,9 +274,9 @@ const FORWARDING_PROVEN = [
   // or its native <select> (touch); SegmentedControl draws a segment's own
   // marker on that segment's radio.
   'SimpleSelect', 'SegmentedControl',
-  // Proven in src/test/CrewEditorRail.test.tsx: a segment's marker lands on
-  // that section's tab in the crew editor's rail.
-  'CrewEditorRail',
+  // Proven in src/test/CrewEditorNextRail.test.tsx: a segment's marker lands
+  // on that section's tab in the crewmate editor's rail.
+  'CrewEditorNextRail',
   // Proven below: the shadcn Table puts the marker (and its name) on the
   // <table> itself, the picker a guide's "choose the job" step points at.
   'Table',

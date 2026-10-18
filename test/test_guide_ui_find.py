@@ -938,7 +938,7 @@ def test_route_compatibility_compares_the_tab_the_route_names() -> None:
 
 def test_a_control_on_another_tab_is_never_bound_or_walked() -> None:
     for label, lid in (
-        ("Manage memory", "agents.manage-memory"),
+        ("Edit default model", "agents.model"),
         ("Delete crewmate", "agents.delete"),
     ):
         asked = {"label": label, "route": "/capabilities?tab=mcp"}
@@ -973,14 +973,12 @@ def test_guide_start_turns_a_find_for_a_planned_control_into_its_walk(
         [
             {
                 "id": "ui.find",
-                "params": {"label": "Manage memory", "route": "/capabilities?tab=crews"},
+                "params": {"label": "Edit default model", "route": "/capabilities?tab=crews"},
                 "note": "n",
             }
         ]
     )
-    assert out == [
-        {"id": "ui.show", "params": {"location_id": "agents.manage-memory"}, "note": "n"}
-    ]
+    assert out == [{"id": "ui.show", "params": {"location_id": "agents.model"}, "note": "n"}]
 
 
 def test_a_page_is_reached_by_its_planned_opener_or_its_rail_entry_else_in_words() -> None:

@@ -59,13 +59,12 @@
  */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
-import { Loader2 } from 'lucide-react'
+import CrewEditorChunkLoading from '../../components/crew/CrewEditorChunkLoading'
 import NewCrewmateDialog, { type CreatedCrewmate, type CrewmateDraft } from './NewCrewmateDialog'
 import { useTranslation } from 'react-i18next'
 import { type MemberRosterRow } from '../../api/client'
 import { MEMBERS_ROSTER_QUERY_KEY, memberThreadQueryKey, type MemberThreadOutcome } from '../../api/membersQuery'
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
-import { i18nT } from '../../i18n/t'
 import { useAppSelector } from '../../store'
 import CrewMonitoredAvatar from '../../components/crew/CrewMonitoredAvatar'
 import { PROFILE_FACE_PX } from './CrewProfilePanel'
@@ -105,28 +104,6 @@ export {
 // opens the modal, and keeping it eager pushed App over its bundle budget. The
 // hook stays eager: it is called every render to drive the pill's open state.
 const CrewEditorModal = lazy(() => import('../../components/crew/CrewEditorModal'))
-// A tiny NON-lazy fallback shown while the CrewEditorModal chunk downloads on a
-// cold-cache first open, so the pill click gives immediate feedback instead of
-// rendering nothing until the chunk lands. Deliberately plain (no Radix dialog)
-// so it stays out of the lazy split's purpose — keeping the editor's code off the
-// main App chunk. The hook's own `crew-editor-loading` dialog takes over once the
-// chunk is in and the roster read is still pending.
-function CrewEditorChunkLoading() {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/60"
-      role="dialog"
-      aria-busy="true"
-      aria-label={i18nT('pages.chatPage.loading')}
-      data-testid="crew-editor-chunk-loading"
-    >
-      <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated px-5 py-4 text-[13px] text-muted shadow-lg">
-        <Loader2 size={16} className="lucide-inline animate-spin" />
-        {i18nT('pages.chatPage.loading')}
-      </div>
-    </div>
-  )
-}
 
 /** Creating a crewmate happens in a modal over this page: the header
  *  "+" New crewmate, the empty-state hero and the switcher's New crewmate open

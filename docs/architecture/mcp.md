@@ -3532,7 +3532,7 @@ Two steps, and the generator fails on either one alone; then regenerate:
    accepts an intrinsic element, or a component in its `FORWARDING_PROVEN`
    list (`Btn`, `SendBtn`, `DropdownMenuItem`, `Glass`, `IconButton`,
    `Clickable`, `Link`, `NavItem`, `Row`, `AddMenuItem`, `SimpleSelect`,
-   `SegmentedControl`, `CrewEditorRail`, `Table`, `DropdownMenuSubTrigger`,
+   `SegmentedControl`, `CrewEditorNextRail`, `Table`, `DropdownMenuSubTrigger`,
    `Item` today),
    each with its own rendered forwarding test, whose `afterEach` fails on any
    `data-ui-location` in the document not registered under that same id

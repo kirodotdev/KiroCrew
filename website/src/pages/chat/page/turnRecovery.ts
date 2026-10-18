@@ -108,9 +108,11 @@ export function useTurnRecovery({
   const openTurnLimitSetting = useCallback(() => {
     navigate(settingsPath({ tab: 'chat', sub: 'advanced', highlight: SETTINGS_TURN_TIME_LIMIT_HIGHLIGHT }))
   }, [navigate])
-  // A capability refusal row's fix: the member's Capabilities pane in the crew
-  // editor (a changed agent file or parent), or the editor itself, whose Built
-  // from field picks the agent (`foreign_private_copy`).
+  // A capability refusal row's fix: the member's Approvals section in the
+  // crewmate editor, where a changed agent file is reviewed and saved
+  // (`pane=capabilities` is the link's stable spelling), or the editor itself,
+  // whose Built from field picks the agent (`foreign_private_copy`,
+  // `parent_identity_changed`).
   const openMemberCapabilities = useCallback((member: string, fix: CapabilityFix = 'capabilities') => {
     const pane = fix === 'capabilities' ? '&pane=capabilities' : ''
     navigate(`/capabilities?tab=crews&crew=${encodeURIComponent(member)}${pane}`)

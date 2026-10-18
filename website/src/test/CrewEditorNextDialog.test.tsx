@@ -24,7 +24,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useState } from 'react'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
@@ -122,7 +122,16 @@ vi.mock('../components/CrewWakeSection', () => ({
   },
 }))
 vi.mock('../components/CrewWebhookSection', () => ({ default: () => <div data-testid="stub-webhook" /> }))
-vi.mock('../pages/overview/MemoryDocCard', () => ({ default: () => <div data-testid="stub-memory-doc" /> }))
+// Holds a local draft and reports it dirty like the real card, so an unmount
+// visibly loses the text.
+vi.mock('../pages/overview/MemoryDocCard', async () => {
+  const { useState } = await import('react')
+  function StubMemoryDocCard({ title, onDirtyChange }: { title: string; onDirtyChange?: (dirty: boolean) => void }) {
+    const [draft, setDraft] = useState('')
+    return <textarea data-testid="stub-memory-doc" aria-label={title} value={draft} onChange={e => { setDraft(e.target.value); onDirtyChange?.(e.target.value !== '') }} />
+  }
+  return { default: StubMemoryDocCard }
+})
 vi.mock('../pages/overview/MemoryRecordsEditor', () => ({ default: () => <div data-testid="stub-memory-records" /> }))
 vi.mock('../pages/overview/MemoryBackupsCard', () => ({ default: () => <div data-testid="stub-memory-backups" /> }))
 vi.mock('../pages/overview/MemoryRetiredCard', () => ({ default: () => <div data-testid="stub-memory-retired" /> }))
@@ -233,8 +242,10 @@ function Host({ memberId, openCrew }: { memberId?: string; openCrew?: string } =
   )
 }
 
+let lastQc: QueryClient | undefined
 function renderHost(opts?: { memberId?: string; openCrew?: string }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  lastQc = qc
   const store = configureStore({ reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer } })
   return render(
     <QueryClientProvider client={qc}>
@@ -263,8 +274,9 @@ describe('CrewEditorModal — single editing experience', () => {
     // The New dialog is the only experience — it mounts straight from the modal.
     const next = await screen.findByTestId('crew-editor-next-dialog')
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
-    // No classic dialog, and the retired Classic/New toggle is gone.
-    expect(screen.queryByRole('dialog', { name: /Edit crewmate/ })).toBeNull()
+    // No classic dialog, and the retired Classic/New toggle is gone. The one
+    // dialog is the New editor, named for the crewmate it edits.
+    expect(screen.getAllByRole('dialog', { name: /Edit crewmate/ })).toEqual([next])
     expect(within(next).queryByTestId('crew-editor-experience-toggle')).toBeNull()
     expect(within(next).queryByTestId('crew-editor-exp-classic')).toBeNull()
     expect(within(next).queryByTestId('crew-editor-exp-next')).toBeNull()
@@ -665,6 +677,37 @@ describe('CrewEditorNextDialog — Memory', () => {
     fireEvent.click(within(dialog).getByTestId('next-rail-memory'))
     // oncall-mem is a private V2 store owned by oncall, so Profile renders.
     expect(await within(dialog).findByTestId('next-memory-profile')).toBeInTheDocument()
+  })
+
+  it('names a private V2 store in the status line', async () => {
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-memory'))
+    expect(await within(dialog).findByTestId('next-memory-status')).toHaveTextContent('This crewmate has its own memory (V2).')
+  })
+
+  it('shows only the diagnostic for a store another member owns', async () => {
+    mockApi.kirocrewConfig.mockResolvedValue({ memory_stores: { default: {}, 'oncall-mem': { memory_version: 2, owner_member: 'someone-else' } } })
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-memory'))
+    expect(await within(dialog).findByTestId('next-memory-status')).toHaveTextContent(
+      'This member’s configured memory store belongs to another member. It cannot be used here. Inspect the cause on the gateway: kirocrew doctor',
+    )
+    expect(within(dialog).queryByTestId('next-memory-tab-memories')).toBeNull()
+    expect(within(dialog).queryByTestId('next-memory-profile')).toBeNull()
+  })
+
+  it('keeps an unsaved Profile draft, read-only, when the binding breaks mid-edit', async () => {
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-memory'))
+    const prefs = await within(dialog).findByRole('textbox', { name: 'Preferences' })
+    fireEvent.change(prefs, { target: { value: 'typed but not saved' } })
+    // Another session re-owns the store; the editor's config read refetches.
+    mockApi.kirocrewConfig.mockResolvedValue({ memory_stores: { default: {}, 'oncall-mem': { memory_version: 2, owner_member: 'someone-else' } } })
+    await act(async () => { await lastQc!.refetchQueries({ queryKey: ['kirocrewConfig'] }) })
+    expect(await within(dialog).findByText(/belongs to another member/)).toBeInTheDocument()
+    const kept = within(dialog).getByRole('textbox', { name: 'Preferences' })
+    expect(kept).toHaveValue('typed but not saved')
+    expect(kept).toBeDisabled()
   })
 })
 

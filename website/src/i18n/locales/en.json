@@ -6025,16 +6025,7 @@
   },
   "pages": {
     "agentsPage": {
-      "auto_approved": "Auto-Approved",
-      "could_not_load_this_agent_s_configuration_skills": "Could not load this agent's configuration — skills are hidden to avoid\n                        overwriting them. Reselect the agent to retry.",
-      "failed": "Failed",
-      "mcp_servers": "MCP Servers",
-      "skills": "Skills",
-      "system_prompt": "System Prompt",
-      "comes_with_the_template_read_only_here": "Comes with the template — read-only here",
-      "guardrails": "Guardrails",
-      "not_set_for_this_template": "Not set for this template",
-      "tools_and_mcp": "Tools & MCP"
+      "failed": "Failed"
     },
     "aidlc": {
       "dagView": {
@@ -7426,7 +7417,6 @@
     "kiroCrewAgentsPage": {
       "add_crew_member": "New crewmate",
       "agents": "Agents",
-      "also_used_by_these_crews": "Also used by {{crews}}. Agents that share a store can read each other’s files and memory.",
       "bindings_preview_info": "Memory V2 follows the member through private chats, Crew delegation, scheduled work and restart. Starting knowledge is copied only when you select it.",
       "cancel": "Cancel",
       "copy_from_optional": "Copy from (optional)",
@@ -7459,7 +7449,6 @@
       "effort_resolves_to": "Thinking at {{effort}}",
       "effort_unavailable_on_this_model": "{{model}} takes no reasoning effort, so there is none to set.",
       "filter_agents": "Filter crewmates…",
-      "finish_the_new_schedule_first": "Finish or cancel the new schedule first",
       "inherited": "Inherited",
       "inherited_from_the_agent_template": "taken from the custom agent it is built from.",
       "isolated_memory_and_files_for_this_crew": "The folder this crewmate reads and writes. Switch it and new chats start fresh in the new folder; the old one is kept.",
@@ -7486,7 +7475,6 @@
       "session_color_hint_member": "Sessions this crewmate starts use this color unless the session has a color of its own. Leave empty for no crewmate color.",
       "shared_lower": "shared",
       "shown_across_the_dashboard_instead_of_the_name_l": "Shown across the dashboard instead of the name ({{name}}). Leave empty to show the name itself.",
-      "the_agent_definition_it_boots_from_tools_mcp_ser": "The custom agent this crewmate is built from — its tools, connections and instructions.",
       "triggers": "Triggers",
       "triggers_hint": "When to route to this crewmate — free-text guidance {{productName}} reads to pick it. Leave empty to exclude this crewmate from automatic selection.",
       "triggers_hint_member": "Situations when {{productName}} should hand a task to this crewmate — free-text guidance it reads when picking one. Leave empty to exclude this crewmate from automatic selection.",

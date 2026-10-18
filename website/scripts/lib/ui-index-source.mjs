@@ -30,7 +30,7 @@ export const MARKER_ATTR = 'data-ui-location'
  * that entry's control, and the entry's `label` is the label. Each forwards
  * the attribute to the control it draws, proven by a rendered test.
  */
-export const SEGMENT_HOSTS = new Set(['SegmentedControl', 'CrewEditorRail'])
+export const SEGMENT_HOSTS = new Set(['SegmentedControl', 'CrewEditorNextRail'])
 const LITERAL_PREFIX = 'literal:'
 /**
  * Catalog namespace of `label: { from: 'description' }` keys: static text that

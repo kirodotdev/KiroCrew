@@ -660,7 +660,7 @@ describe('the crewmate-editor fix needs a crewmate to open', () => {
 describe('each sibling capability refusal routes to its own fix, never Resume', () => {
   const recoverable = { slot: 's1', continuable: true, interrupted: true, onContinue: () => undefined }
   const cases = [
-    ['parent_identity_changed', 'capabilities'],
+    ['parent_identity_changed', 'member'],
     ['foreign_private_copy', 'member'],
     ['project_identity_changed', null],
     ['private_template_shadowed', null],

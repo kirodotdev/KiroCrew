@@ -24,6 +24,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
+import { useLocation } from 'react-router-dom'
+import { i18nT } from '../i18n/t'
+import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../components/NavigationLeaveGuard'
 
 globalThis.ResizeObserver = class {
   observe() {}
@@ -82,25 +85,30 @@ vi.mock('../components/CrewAvatarBuilder', async () => {
 
 import KiroCrewAgentsPage from '../pages/KiroCrewAgentsPage'
 
+/** Opening the editor is a lazy `CrewEditorModal` chunk import followed by a
+ *  fresh-roster read (`staleTime: 0`) before the dialog renders, which can
+ *  outlast RTL's 1s default on a loaded runner. An explicit deadline. */
+const EDITOR_OPEN_TIMEOUT_MS = 5000
+
 /** Open the seeded crew's edit sheet. */
 async function openEditor(): Promise<HTMLElement> {
   renderWithProviders(<KiroCrewAgentsPage />)
   fireEvent.click(await screen.findByTestId('crew-card'))
-  return screen.findByRole('dialog', { name: 'Edit crewmate oncall' })
+  return screen.findByTestId('crew-editor-next-dialog', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS })
 }
 
-/** Edit Triggers so `dirtyPanes` is non-empty. Triggers is one of the seven
- *  fields #5539 left unguarded, and it lives on a pane the dismissal does not
- *  have to be on — the guard is about the crew, not the visible pane. */
-function makeDirty(sheet: HTMLElement, value = 'incidents, prod outages') {
-  fireEvent.click(within(sheet).getByTestId('crew-rail-routing'))
-  fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), { target: { value } })
+/** Rename the crewmate so `dirtyPanes` is non-empty. The display name lives
+ *  on General, a section the dismissal does not have to be on — the guard is
+ *  about the crew, not the visible section. */
+function makeDirty(sheet: HTMLElement, value = 'Ops desk') {
+  fireEvent.click(within(sheet).getByTestId('next-rail-general'))
+  fireEvent.change(within(sheet).getByTestId('display-name-input'), { target: { value } })
 }
 
 /** Put a TYPED schedule draft on screen. The draft guard keys on typed work,
  *  not on the form merely being open. */
 async function openSchedDraft(sheet: HTMLElement) {
-  fireEvent.click(within(sheet).getByTestId('crew-rail-schedules'))
+  fireEvent.click(within(sheet).getByTestId('next-rail-schedules'))
   fireEvent.click(await screen.findByTestId('crew-wake-add'))
   await screen.findByTestId('crew-wake-create')
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'draft' } })
@@ -108,8 +116,11 @@ async function openSchedDraft(sheet: HTMLElement) {
 
 /** Pick a picture, which stages an upload on the next Save. */
 async function pickPicture(sheet: HTMLElement) {
-  fireEvent.click(within(sheet).getByTestId('open-avatar-builder'))
-  fireEvent.click(await screen.findByRole('button', { name: 'stub-pick-picture' }))
+  fireEvent.click(within(sheet).getByTestId('next-rail-general'))
+  fireEvent.click(within(sheet).getByTestId('next-open-avatar-builder'))
+  // The stub renders beside the editor's modal layer, which hides it from the
+  // accessibility tree; the real builder is a dialog of its own.
+  fireEvent.click(await screen.findByRole('button', { name: 'stub-pick-picture', hidden: true }))
 }
 
 /** The confirm is a dialog named by its own title, which disambiguates its
@@ -162,8 +173,8 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     // Back out: the sheet stays and the edited value survives.
     fireEvent.click(within(confirmBox()).getByTestId('crew-sched-discard-keep'))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument())
-    expect(screen.getByRole('dialog', { name: 'Edit crewmate oncall' })).toBeInTheDocument()
-    expect(within(sheet).getByRole('textbox', { name: 'Triggers' })).toHaveValue('incidents, prod outages')
+    expect(screen.getByTestId('crew-editor-next-dialog')).toBeInTheDocument()
+    expect(within(sheet).getByTestId('display-name-input')).toHaveValue('Ops desk')
   })
 
   it('confirming Discard closes the sheet without saving', async () => {
@@ -177,7 +188,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     fireEvent.click(within(confirmBox()).getByTestId('crew-sched-discard-confirm'))
 
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByTestId('crew-editor-next-dialog')).not.toBeInTheDocument())
     // A dismissal, never a save.
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
   })
@@ -195,7 +206,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     // active layer — and is exactly the property a body-portal confirm outside
     // this DialogContent would have to fake by releasing the focus scope.
     expect(sheet).toBeInTheDocument()
-    expect(screen.getByTestId('crew-rail-routing')).toBeInTheDocument()
+    expect(screen.getByTestId('next-rail-general')).toBeInTheDocument()
   })
 
   it('a clean sheet closes immediately with no discard prompt', async () => {
@@ -204,7 +215,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     fireEvent.click(within(sheet).getByRole('button', { name: 'Cancel' }))
 
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByTestId('crew-editor-next-dialog')).not.toBeInTheDocument())
     expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
   })
 
@@ -226,38 +237,37 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     })
     renderWithProviders(<KiroCrewAgentsPage />)
     fireEvent.click(await screen.findByTestId('crew-card'))
-    const sheet = await screen.findByRole('dialog', { name: 'Edit crewmate Ops' })
+    const sheet = await screen.findByTestId('crew-editor-next-dialog', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS })
     fireEvent.click(within(sheet).getByRole('button', { name: 'Cancel' }))
 
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit crewmate Ops' })).not.toBeInTheDocument())
+      expect(screen.queryByTestId('crew-editor-next-dialog')).not.toBeInTheDocument())
     expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
   })
 
-  it('a rail pane switch while dirty stays unprompted', async () => {
-    // The guard is scoped to DISMISSAL on purpose. Every field except the
-    // schedule draft lives in the page's own state and survives a pane switch,
-    // so prompting there would be a warning about a loss that cannot happen —
-    // and those are what train people to click through the ones that matter.
+  it('a rail section switch while dirty stays unprompted', async () => {
+    // The guard is scoped to DISMISSAL on purpose. Every crew field lives in the
+    // controller's state and survives a section switch, so prompting there
+    // would be a warning about a loss that cannot happen — and those are what
+    // train people to click through the ones that matter.
     const sheet = await openEditor()
     makeDirty(sheet)
 
-    fireEvent.click(within(sheet).getByTestId('crew-rail-overview'))
+    fireEvent.click(within(sheet).getByTestId('next-rail-webhooks'))
 
     expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
     expect(screen.queryByRole('dialog', { name: NARROW })).not.toBeInTheDocument()
     // The switch landed, and coming back shows the edit intact.
-    fireEvent.click(within(sheet).getByTestId('crew-rail-routing'))
-    expect(within(sheet).getByRole('textbox', { name: 'Triggers' })).toHaveValue('incidents, prod outages')
+    fireEvent.click(within(sheet).getByTestId('next-rail-general'))
+    expect(within(sheet).getByTestId('display-name-input')).toHaveValue('Ops desk')
   })
 
-  it('a dismissal while the committing PUT is away closes without promising a discard', async () => {
+  it('a dismissal while the committing PUT is away neither closes nor promises a discard', async () => {
     // Once the PUT is gone the confirm cannot honor "Discard changes": the
     // request is not cancellable, so the backend keeps the edits whatever the
-    // user answers, and the values on screen are the ones they just submitted
-    // rather than unsaved work. Offering the confirm there is a promise the app
-    // breaks. Without the skip `dirtyPanes` is still non-empty (the roster
-    // refetch only happens on success), so the confirm WOULD be raised.
+    // user answers. Closing is wrong too: the save's own settlement owns the
+    // outcome, and a close would make a refusal land on no editor, silently
+    // dropping edits the user believes are saved. So the dismissal waits.
     mockApi.updateKirocrewAgent.mockImplementation(() => new Promise(() => {}))
     const sheet = await openEditor()
     makeDirty(sheet)
@@ -267,8 +277,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
 
     fireEvent.keyDown(sheet, { key: 'Escape', code: 'Escape' })
 
-    await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
+    expect(screen.getByTestId('crew-editor-next-dialog')).toBeInTheDocument()
     expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
   })
 
@@ -298,7 +307,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     // abandoned save never reaches the crew record.
     fireEvent.click(within(confirmBox()).getByTestId('crew-sched-discard-confirm'))
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByTestId('crew-editor-next-dialog')).not.toBeInTheDocument())
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
   })
 
@@ -325,7 +334,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
 
     fireEvent.click(within(confirmBox()).getByTestId('crew-sched-discard-confirm'))
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByTestId('crew-editor-next-dialog')).not.toBeInTheDocument())
     await act(async () => {})
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
   })
@@ -358,7 +367,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     // An open schedule draft keeps its OWN confirm — only that one can lock
     // Discard while the draft's create POST is in flight — and that confirm
     // closes the WHOLE sheet. Asking only about "the schedule you typed" while
-    // Discard also throws away a Model or Triggers edit is the same silent loss
+    // Discard also throws away a Model or name edit is the same silent loss
     // this guard exists to end, except behind a dialog, which is worse than no
     // dialog at all.
     const sheet = await openEditor()
@@ -371,7 +380,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     expect(within(ask).getByText(
       'The schedule you typed has not been saved and will be lost.',
     )).toBeInTheDocument()
-    expect(within(ask).getByTestId('crew-sched-discard-also-crew')).toBeInTheDocument()
+    expect(within(ask).getByTestId('next-sched-discard-also-crew')).toBeInTheDocument()
     expect(within(ask).getByTestId('crew-sched-discard-confirm')).toHaveTextContent('Discard changes')
   })
 
@@ -385,7 +394,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     fireEvent.keyDown(sheet, { key: 'Escape', code: 'Escape' })
 
     const ask = await screen.findByRole('dialog', { name: NARROW })
-    expect(within(ask).queryByTestId('crew-sched-discard-also-crew')).not.toBeInTheDocument()
+    expect(within(ask).queryByTestId('next-sched-discard-also-crew')).not.toBeInTheDocument()
     expect(within(ask).getByTestId('crew-sched-discard-confirm')).toHaveTextContent('Discard schedule')
   })
 
@@ -399,6 +408,90 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     // The save path routes through settleFor/closeSheet, never the guard.
     expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByTestId('crew-editor-next-dialog')).not.toBeInTheDocument())
+  })
+})
+
+/** The app shell's question: may the page on screen be left? */
+let mayLeave: () => boolean = () => true
+/** The router's current path, so a test can tell a navigation happened. */
+let pathname = ''
+function ShellProbe() {
+  mayLeave = useMayLeaveForNavigation()
+  pathname = useLocation().pathname
+  return null
+}
+
+/** Open the editor under the app shell's leave-guard channel. */
+async function openEditorUnderShell(): Promise<HTMLElement> {
+  renderWithProviders(
+    <NavigationLeaveGuardProvider>
+      <ShellProbe />
+      <KiroCrewAgentsPage />
+    </NavigationLeaveGuardProvider>,
+  )
+  fireEvent.click(await screen.findByTestId('crew-card'))
+  return screen.findByTestId('crew-editor-next-dialog', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS })
+}
+
+/** Dispatch a cancelable `beforeunload`; true when a listener asked the
+ *  browser to prompt. */
+function reloadPrompts(): boolean {
+  const ev = new Event('beforeunload', { cancelable: true })
+  window.dispatchEvent(ev)
+  return ev.defaultPrevented
+}
+
+// The modal guards its own close; leaving the route, Back and a reload are
+// the page's exits, and before the page registered guards a draft there was
+// discarded with no prompt.
+describe('crew editor — the page exits guard unsaved work', () => {
+  it('a clean editor lets the route go and arms no reload prompt', async () => {
+    await openEditorUnderShell()
+    expect(mayLeave()).toBe(true)
+    expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
+    expect(reloadPrompts()).toBe(false)
+  })
+
+  it('a dirty editor refuses a route leave, raises its discard confirm and arms the reload prompt', async () => {
+    const sheet = await openEditorUnderShell()
+    makeDirty(sheet)
+
+    let allowed = true
+    act(() => { allowed = mayLeave() })
+    expect(allowed).toBe(false)
+    await waitFor(() => expect(confirmBox()).toBeInTheDocument())
+    expect(screen.getByTestId('crew-editor-next-dialog')).toBe(sheet)
+    expect(reloadPrompts()).toBe(true)
+  })
+
+  it('after the discard is confirmed, the repeated leave goes through', async () => {
+    const sheet = await openEditorUnderShell()
+    makeDirty(sheet)
+    act(() => { mayLeave() })
+    await waitFor(() => expect(confirmBox()).toBeInTheDocument())
+    fireEvent.click(within(confirmBox()).getByTestId('crew-sched-discard-confirm'))
+    await waitFor(() =>
+      expect(screen.queryByTestId('crew-editor-next-dialog')).not.toBeInTheDocument())
+    expect(mayLeave()).toBe(true)
+    expect(reloadPrompts()).toBe(false)
+  })
+
+  it('a link inside the dirty editor asks the same guard instead of navigating', async () => {
+    // The editor's own links (Webhooks → Open webhooks) navigate in-app; the
+    // page must hand `useCrewEditor` a guarded `leave`, or the click skips the
+    // registered guard and unmounts the editor with the draft.
+    const sheet = await openEditorUnderShell()
+    makeDirty(sheet)
+    fireEvent.click(within(sheet).getByTestId('next-rail-webhooks'))
+    fireEvent.click(await within(sheet).findByRole('button', {
+      name: i18nT('components.crewWebhookSection.open_webhooks'),
+    }))
+
+    await waitFor(() => expect(confirmBox()).toBeInTheDocument())
+    expect(pathname).not.toBe('/webhooks')
+    expect(screen.getByTestId('crew-editor-next-dialog')).toBe(sheet)
+    fireEvent.click(within(sheet).getByTestId('next-rail-general'))
+    expect(within(sheet).getByTestId('display-name-input')).toHaveValue('Ops desk')
   })
 })

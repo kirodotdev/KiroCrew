@@ -220,15 +220,13 @@ export const LOCATIONS = {
     guide: false,
     placements: [{ ...ON_TAB, entry: 'content' }],
   },
-  // The crewmate editor's section rail (CrewEditorRail): the rows a guide
-  // opens on the way to a control drawn only in that section. Each is drawn
-  // for every crewmate.
+  // The crewmate editor's section rail (CrewEditorNextRail): the sections a
+  // guide opens on the way to a control drawn only there. `section-model` is
+  // General, which holds the model and Edit avatar; it is drawn for every
+  // crewmate, while the default crewmate has no Danger zone. The Memory section
+  // holds no registered control, so it is not registered: its one-word label
+  // would only tie a bare "memory" question with the chat's memory-mode chip.
   'agents.section-model': {
-    kind: 'tab',
-    guide: false,
-    placements: [{ ...ON_TAB, entry: 'content', requires: [{ kind: 'condition', id: 'crewmate_editor_open' }] }],
-  },
-  'agents.section-place': {
     kind: 'tab',
     guide: false,
     placements: [{ ...ON_TAB, entry: 'content', requires: [{ kind: 'condition', id: 'crewmate_editor_open' }] }],
@@ -238,7 +236,8 @@ export const LOCATIONS = {
     guide: false,
     placements: [{ ...ON_TAB, entry: 'content', requires: [{ kind: 'condition', id: 'crewmate_editor_open' }] }],
   },
-  // The editor's Model section: the crewmate's default model.
+  // The model field on the editor's General section: the crewmate's default
+  // model.
   'agents.model': {
     kind: 'field',
     label: { from: 'attr', attr: 'aria-label' },
@@ -261,16 +260,16 @@ export const LOCATIONS = {
     terms: CREATE_TERMS,
     placements: [{ ...ON_TAB, entry: 'content', requires: [{ kind: 'condition', id: 'no_crewmates' }] }],
   },
-  // The crewmate editor's header button (an existing crewmate, not a create).
-  // The Routing pane's "Edit avatar" is the same action deeper in; not registered.
+  // The crewmate editor's Edit avatar button, on its General section (an
+  // existing crewmate, not a create). The avatar itself beside it opens the same
+  // builder; not registered.
   'agents.edit-avatar': {
     kind: 'button',
-    label: { from: 'attr', attr: 'aria-label' },
     terms: {
       en: ["change my crewmate's avatar", 'change the avatar', 'crewmate picture', 'change the face', 'avatar'],
       'zh-CN': ['修改头像', '更换头像', '换头像', '队友头像', '改代理的头像', '改代理头像', '更换代理头像'],
     },
-    placements: [{ ...ON_TAB, entry: 'header', requires: [{ kind: 'condition', id: 'crewmate_editor_open' }] }],
+    placements: [{ surface: 'capabilities', parent: 'agents.section-model', entry: 'tab' }],
   },
   // The editor's Danger zone pane: the first, unarmed half of its two-step
   // delete (the armed half, "Yes, delete it", is a confirmation, not a place).
@@ -284,51 +283,5 @@ export const LOCATIONS = {
     // the workspace, memory store and transcripts.
     cautionKey: 'pages.kiroCrewAgentsPage.deleting_a_crew_unbinds_it_from_new_sessions_its',
     placements: [{ surface: 'capabilities', parent: 'agents.section-danger', entry: 'tab' }],
-  },
-  // The crewmate editor's header Chat (beside Edit avatar): opens a chat with
-  // that crewmate.
-  'agents.chat': {
-    kind: 'button',
-    terms: {
-      en: [
-        'chat with a crewmate', 'talk to a crewmate', 'message a crewmate', 'start a chat with a crewmate',
-        'talk to an agent', 'chat with an agent',
-      ],
-      'zh-CN': ['和队友聊天', '跟队友对话', '和代理聊天', '单独和队友聊', '给队友发消息', '和助手成员聊天'],
-      ja: ['クルーメイトとチャット', 'エージェントと話す'],
-      ko: ['크루메이트와 채팅', '에이전트와 대화'],
-      es: ['chatear con un agente', 'hablar con un agente'],
-      fr: ['discuter avec un agent', 'parler à un agent'],
-      de: ['mit einem Agenten chatten', 'mit einem Agenten sprechen'],
-      pt: ['conversar com um agente', 'falar com um agente'],
-      it: ['chattare con un agente', 'parlare con un agente'],
-      ru: ['написать агенту', 'поговорить с агентом'],
-    },
-    placements: [{ ...ON_TAB, entry: 'header', requires: [{ kind: 'condition', id: 'crewmate_editor_open' }] }],
-  },
-  // The editor's Workspace · Memory pane (MemoryStoreField): opens the memory
-  // the crewmate keeps, in Settings > Overview's memory view. Drawn only for a
-  // private memory or the default crewmate's global one.
-  'agents.manage-memory': {
-    kind: 'button',
-    terms: {
-      en: [
-        'what a crewmate remembers', "crewmate's memory", "see a crewmate's memory", "edit a crewmate's memory",
-        'what does my agent remember', 'private memory',
-      ],
-      'zh-CN': ['队友的记忆', '查看队友记忆', '助手记住了什么', '代理记住了什么', '管理队友记忆', '私有记忆'],
-      ja: ['クルーメイトの記憶', '何を覚えているか'],
-      ko: ['크루메이트의 기억', '무엇을 기억하는지'],
-      es: ['memoria del agente', 'qué recuerda el agente'],
-      fr: ["mémoire de l'agent", "ce dont l'agent se souvient"],
-      de: ['Gedächtnis des Agenten', 'was der Agent sich merkt'],
-      pt: ['memória do agente', 'o que o agente lembra'],
-      it: ["memoria dell'agente", "cosa ricorda l'agente"],
-      ru: ['память агента', 'что помнит агент'],
-    },
-    placements: [{
-      surface: 'capabilities', parent: 'agents.section-place', entry: 'tab',
-      requires: [{ kind: 'condition', id: 'crewmate_memory_manageable' }],
-    }],
   },
 } as const satisfies UiLocationArea

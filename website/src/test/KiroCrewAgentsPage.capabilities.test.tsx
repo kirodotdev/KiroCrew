@@ -1,3 +1,10 @@
+/**
+ * Customize > Crewmates as a host of the shared crewmate editor: the open
+ * editor and the create dialog survive the capabilities route turning mobile,
+ * the roster-load hand-off stays off while either holds a draft, and the chat
+ * error row's `&pane=capabilities` fix link lands on the editor's Approvals
+ * section, where a changed member agent file is reviewed and saved.
+ */
 import { cloneElement } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
@@ -11,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   api: {
     kirocrewAgents: vi.fn(), agentsInstalled: vi.fn(), workspaces: vi.fn(), kirocrewConfig: vi.fn(),
     agentResolvedModel: vi.fn(), models: vi.fn(), crons: vi.fn(), webhooks: vi.fn(),
-    agentDetail: vi.fn(), agentPatch: vi.fn(), skills: vi.fn(), updateKirocrewAgent: vi.fn(),
+    agentDetail: vi.fn(), skills: vi.fn(), updateKirocrewAgent: vi.fn(),
   },
   capabilities: { get: vi.fn(), preview: vi.fn(), save: vi.fn() },
 }))
@@ -20,6 +27,11 @@ vi.mock('../api/crewCapabilities', async importOriginal => ({
   ...await importOriginal<typeof import('../api/crewCapabilities')>(), crewCapabilitiesApi: mocks.capabilities,
 }))
 import KiroCrewAgentsPage from '../pages/KiroCrewAgentsPage'
+
+/** Opening the editor is a lazy `CrewEditorModal` chunk import followed by a
+ *  fresh-roster read (`staleTime: 0`) before the dialog renders, which can
+ *  outlast RTL's 1s default on a loaded runner. An explicit deadline. */
+const EDITOR_OPEN_TIMEOUT_MS = 5000
 
 beforeEach(() => {
   viewport.mobile = false
@@ -43,75 +55,34 @@ beforeEach(() => {
     runtime: { status: 'unverified', saved_revision: 'r1', sessions: [] },
   })
 })
-async function open() {
-  renderWithProviders(<KiroCrewAgentsPage />)
-  fireEvent.click(await screen.findByTestId('crew-card'))
-  const sheet = await screen.findByRole('dialog', { name: 'Edit crewmate oncall' })
-  fireEvent.click(within(sheet).getByTestId('crew-rail-capabilities'))
-  await screen.findByText('Parent template: atlas')
-  return sheet
-}
-async function edit() {
-  const sheet = await open()
-  fireEvent.click(within(sheet).getByRole('tab', { name: 'Tools', exact: true }))
-  fireEvent.click(within(sheet).getByRole('combobox', { name: 'Source for Read tool' }))
-  fireEvent.click(await screen.findByRole('option', { name: 'Removed', exact: true }))
-  await screen.findByTestId('crew-rail-dirty-capabilities')
-  return sheet
-}
 
-describe('capability pane inside the crew dialog', () => {
-  it('dismisses the nested footer confirm with Escape without closing the editor', async () => {
-    const sheet = await edit()
-    const discard = within(sheet).getByRole('button', { name: 'Discard draft', exact: true })
-    discard.focus()
-    fireEvent.click(discard)
-    const confirm = await screen.findByRole('dialog', { name: 'Discard the Capabilities draft?' })
-    fireEvent.keyDown(confirm, { key: 'Escape' })
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Discard the Capabilities draft?' })).toBeNull())
-    expect(screen.getByRole('dialog', { name: 'Edit crewmate oncall' })).toBe(sheet)
-    expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes and close the editor?' })).toBeNull()
-    expect(discard).toHaveFocus()
-    expect(within(sheet).getByRole('combobox', { name: 'Source for Read tool' })).toHaveTextContent('Removed')
-    fireEvent.click(discard)
-    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Discard the Capabilities draft?' })).getByRole('button', { name: 'Discard draft' }))
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Discard the Capabilities draft?' })).toBeNull())
-    expect(screen.getByRole('dialog', { name: 'Edit crewmate oncall' })).toBe(sheet)
-    expect(within(sheet).getByRole('combobox', { name: 'Source for Read tool' })).toHaveTextContent('Inherited')
-    expect(within(sheet).queryByTestId('crew-rail-dirty-capabilities')).toBeNull()
-    expect(mocks.capabilities.save).not.toHaveBeenCalled()
-    expect(mocks.api.updateKirocrewAgent).not.toHaveBeenCalled()
-  })
+const capabilitiesTree = () => (
+  <SidePanelLayout title="Capabilities" tabs={[{ key: 'crews', label: 'Crews', icon: null }]} rememberKey="capabilities">
+    {() => <KiroCrewAgentsPage embedded />}
+  </SidePanelLayout>
+)
+
+describe('Customize > Crewmates hosting the crewmate editor', () => {
   it('keeps the same editor and draft when the bare capabilities route becomes mobile', async () => {
-    const tree = <SidePanelLayout title="Capabilities" tabs={[{ key: 'crews', label: 'Crews', icon: null }]} rememberKey="capabilities">
-      {() => <KiroCrewAgentsPage embedded />}
-    </SidePanelLayout>
+    const tree = capabilitiesTree()
     const result = renderWithProviders(tree, { route: '/capabilities' })
     fireEvent.click(await screen.findByTestId('crew-card'))
-    const sheet = await screen.findByRole('dialog', { name: 'Edit crewmate oncall' })
-    fireEvent.click(within(sheet).getByTestId('crew-rail-capabilities'))
-    await screen.findByText('Parent template: atlas')
-    fireEvent.click(within(sheet).getByRole('tab', { name: 'Tools', exact: true }))
-    fireEvent.click(within(sheet).getByRole('combobox', { name: 'Source for Read tool' }))
-    fireEvent.click(await screen.findByRole('option', { name: 'Removed', exact: true }))
-    await screen.findByTestId('crew-rail-dirty-capabilities')
+    const sheet = await screen.findByTestId('crew-editor-next-dialog', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS })
+    fireEvent.change(within(sheet).getByTestId('display-name-input'), { target: { value: 'Pager' } })
     viewport.mobile = true
     result.rerender(cloneElement(tree))
     expect(sheet).toBeInTheDocument()
-    expect(screen.getByRole('combobox', { name: 'Source for Read tool' })).toHaveTextContent('Removed')
+    expect(within(sheet).getByTestId('display-name-input')).toHaveValue('Pager')
     viewport.mobile = false
     result.rerender(cloneElement(tree))
-    expect(screen.getByRole('dialog', { name: 'Edit crewmate oncall' })).toBe(sheet)
+    expect(screen.getByTestId('crew-editor-next-dialog')).toBe(sheet)
   })
 
   it('keeps the open create dialog and its typed name when the bare capabilities route becomes mobile', async () => {
-    // Regression: the resize guard used to key only on the editor `sheet`, so
-    // opening the create dialog, typing a draft, and narrowing past the
-    // breakpoint unmounted this page + the dialog and discarded the draft with
-    // no confirm. The guard now also pins the pane route while `createOpen`.
-    const tree = <SidePanelLayout title="Capabilities" tabs={[{ key: 'crews', label: 'Crews', icon: null }]} rememberKey="capabilities">
-      {() => <KiroCrewAgentsPage embedded />}
-    </SidePanelLayout>
+    // The resize guard pins the pane route while the create dialog is open, so
+    // narrowing past the breakpoint cannot unmount this page and the dialog
+    // and discard the typed draft with no confirm.
+    const tree = capabilitiesTree()
     const result = renderWithProviders(tree, { route: '/capabilities' })
     fireEvent.click(await screen.findByTestId('new-crew'))
     const dialog = await screen.findByRole('dialog', { name: 'New crewmate' })
@@ -124,20 +95,14 @@ describe('capability pane inside the crew dialog', () => {
   })
 
   it('suppresses the roster-load error hand-off while the create dialog holds a typed draft', async () => {
-    // Regression: the roster / editor-options ErrorNotice offered "Ask the
-    // agent", which navigates to chat and unmounts this page. Its `askAgent`
-    // guard keyed only on the editor `sheet`, so with the create dialog open
-    // (its draft in `createOpen`, not `sheet`) the hand-off stayed live and one
-    // click discarded the typed draft with no confirm. The guard now also
-    // suppresses the hand-off while `createOpen`.
+    // The notice's "Ask the agent" navigates to chat and unmounts this page,
+    // so it must not be offered while a dialog holds a typed draft.
     mocks.api.kirocrewAgents.mockRejectedValue(new Error('connection failed'))
     renderWithProviders(<KiroCrewAgentsPage />)
     // The roster failed to load, so the notice shows and — with nothing else
     // open — offers the hand-off.
     const notice = await screen.findByTestId('crews-roster-load-error')
     expect(within(notice).getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
-    // Open the create dialog and type a draft; the hand-off must disappear so a
-    // click cannot unmount the dialog and lose the draft.
     fireEvent.click(await screen.findByTestId('new-crew'))
     const dialog = await screen.findByRole('dialog', { name: 'New crewmate' })
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'Name' }), { target: { value: 'my-draft-crew' } })
@@ -146,80 +111,19 @@ describe('capability pane inside the crew dialog', () => {
     )
   })
 
-  it('gives member identity its own full-width row before narrow header actions', async () => {
-    const sheet = await open()
-    expect(within(sheet).getByTestId('crew-editor-identity')).toHaveClass('w-full')
-    expect(within(sheet).getByTestId('crew-editor-identity').parentElement).toHaveClass('flex-wrap')
+  it('lands the &pane=capabilities fix link on Approvals, then strips the params', async () => {
+    renderWithProviders(<KiroCrewAgentsPage />, { route: '/capabilities?tab=crews&crew=oncall&pane=capabilities' })
+    const sheet = await screen.findByTestId('crew-editor-next-dialog', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS })
+    await waitFor(() => expect(within(sheet).getByTestId('next-rail-approvals')).toHaveAttribute('aria-selected', 'true'))
+    // Landing is once per opening: the user's own navigation wins afterwards.
+    fireEvent.click(within(sheet).getByTestId('next-rail-general'))
+    expect(within(sheet).getByTestId('next-rail-general')).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('keeps the draft across rail changes and guards Escape', async () => {
-    const sheet = await edit()
-    fireEvent.click(within(sheet).getByTestId('crew-rail-overview'))
-    expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes and close the editor?' })).not.toBeInTheDocument()
-    expect(within(sheet).getByRole('button', { name: 'Save changes' })).toBeDisabled()
-    // The other panes' Save is dead while a capability draft is open; the
-    // reason is visible text in the footer note, not only a hover title.
-    expect(within(sheet).getByTestId('crew-unsaved-note')).toHaveTextContent('Save or discard the Capabilities draft first')
-    fireEvent.click(within(sheet).getByTestId('crew-rail-capabilities'))
-    expect(within(sheet).getByRole('combobox', { name: 'Source for Read tool' })).toHaveTextContent('Removed')
-    fireEvent.keyDown(sheet, { key: 'Escape' })
-    const confirm = await screen.findByRole('dialog', { name: 'Discard unsaved changes and close the editor?' })
-    fireEvent.click(within(confirm).getByTestId('crew-sched-discard-keep'))
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes and close the editor?' })).not.toBeInTheDocument())
-    expect(within(sheet).getByRole('combobox', { name: 'Source for Read tool' })).toHaveTextContent('Removed')
-    expect(mocks.capabilities.save).not.toHaveBeenCalled()
-    expect(mocks.api.updateKirocrewAgent).not.toHaveBeenCalled()
-  })
-
-  it('guards Escape immediately after replacing the tool reference', async () => {
-    const sheet = await open()
-    fireEvent.click(within(sheet).getByRole('tab', { name: 'Tools', exact: true }))
-    const input = within(sheet).getByRole('textbox', { name: 'Exact tool reference, such as @server/tool' })
-    fireEvent.change(input, { target: { value: '@docs/search' } })
-    fireEvent.keyDown(input, { key: 'Escape' })
-    const confirm = await screen.findByRole('dialog', { name: 'Discard unsaved changes and close the editor?' })
-    fireEvent.click(within(confirm).getByTestId('crew-sched-discard-keep'))
-    expect(sheet).toBeInTheDocument()
-    expect(input).toHaveValue('@docs/search')
-    expect(mocks.capabilities.save).not.toHaveBeenCalled()
-  })
-
-  it('discards only on explicit confirmation and leaves server state untouched', async () => {
-    const sheet = await edit()
-    fireEvent.keyDown(sheet, { key: 'Escape' })
-    const confirm = await screen.findByRole('dialog', { name: 'Discard unsaved changes and close the editor?' })
-    // The dialog's red button closes the editor; the pane footer's "Discard
-    // draft" does not, so the two labels must not read identically.
-    expect(within(confirm).getByTestId('crew-sched-discard-confirm')).toHaveTextContent('Discard changes and close')
-    // The pane footer sits behind the modal (aria-hidden), so read it by test id.
-    expect(within(within(sheet).getByTestId('capability-save-footer')).getByText('Discard draft', { exact: true })).toBeInTheDocument()
-    // The title wraps instead of truncating at narrow widths.
-    expect(within(confirm).getByText('Discard unsaved changes and close the editor?')).toHaveClass('whitespace-normal')
-    fireEvent.click(within(confirm).getByTestId('crew-sched-discard-confirm'))
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
-    expect(mocks.capabilities.save).not.toHaveBeenCalled()
-  })
-
-  it('locks instant template edits when capability state cannot be read', async () => {
-    mocks.capabilities.get.mockRejectedValue(new Error('connection failed'))
+  it('opens an ordinary Edit on General, not on the last deep link’s section', async () => {
     renderWithProviders(<KiroCrewAgentsPage />)
     fireEvent.click(await screen.findByTestId('crew-card'))
-    const sheet = await screen.findByRole('dialog', { name: 'Edit crewmate oncall' })
-    fireEvent.click(within(sheet).getByTestId('crew-rail-template'))
-    expect(await within(sheet).findByTestId('crew-template-switch-error')).toHaveTextContent('The capabilities request failed. Your draft is kept. Reload from server and retry.')
-    expect(await within(sheet).findByRole('combobox', { name: 'Model', exact: true })).toBeDisabled()
-    expect(mocks.api.agentPatch).not.toHaveBeenCalled()
-  })
-
-  it('makes the enrolled template definition read-only without changing the member model pane', async () => {
-    const sheet = await open()
-    fireEvent.click(within(sheet).getByTestId('crew-rail-template'))
-    const model = await screen.findByRole('combobox', { name: 'Model', exact: true })
-    expect(model).toBeDisabled()
-    expect(screen.getByRole('combobox', { name: 'Built from' })).toBeDisabled()
-    expect(screen.queryByText('Add skills')).not.toBeInTheDocument()
-    fireEvent.click(within(sheet).getByTestId('crew-rail-model'))
-    expect(await screen.findByRole('combobox', { name: 'Edit default model' })).not.toBeDisabled()
-    expect(mocks.api.agentPatch).not.toHaveBeenCalled()
+    const sheet = await screen.findByTestId('crew-editor-next-dialog', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS })
+    expect(within(sheet).getByTestId('next-rail-general')).toHaveAttribute('aria-selected', 'true')
   })
 })

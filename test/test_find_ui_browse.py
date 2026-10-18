@@ -258,8 +258,7 @@ TASK_LOCATION: dict[str, str] = {
     # Closed coverage gaps (each a registered control, checked at its render site).
     "Rename session": "chat.session-title",
     "Voice input": "composer.voice",
-    "Chat with crewmate": "agents.chat",
-    "Crewmate memory": "agents.manage-memory",
+    "Chat with crewmate": "members.roster-list",
     "Pause scheduled job": "schedule.pause",
     "Job run history": "schedule.view-executions",
     "Edit scheduled job": "schedule.edit-when",
@@ -285,7 +284,10 @@ RELATED_ONLY: dict[str, str] = {
 #: "App settings": an app's detail page has no configuration control, only a
 #: read-only Configuration card of the manifest's own guidance
 #: (AppDetailPage); an app's settings live inside that app's own page.
-COVERAGE_GAPS: frozenset[str] = frozenset({"App settings"})
+#: "Crewmate memory": the crewmate editor's Memory section shows it, but that
+#: section holds no registered control and is not registered itself (its
+#: one-word label would tie a bare "memory" question with chat.memory-mode).
+COVERAGE_GAPS: frozenset[str] = frozenset({"App settings", "Crewmate memory"})
 _NEGATIVE = "negative"
 
 

@@ -7,9 +7,9 @@
  * the agent does not have), so there is deliberately no "add" affordance here;
  * this is purely the per-mate layer on top of the agent's capability set.
  *
- * It drives the SAME crewCapabilitiesApi draft → preview → save path the classic
- * CrewCapabilitiesPane uses, so the security-ceiling checks are the real ones —
- * but with a calm toggle list instead of the dense classic chrome (no reload,
+ * It drives the crewCapabilitiesApi draft → preview → save path, so the
+ * security-ceiling checks are the real ones — with a calm toggle list rather
+ * than a full capability editor (no reload,
  * enrollment checkbox, parent/version badges, or nested category tablist).
  *
  * Auto-approve has two kinds, both of which skip the prompt:
