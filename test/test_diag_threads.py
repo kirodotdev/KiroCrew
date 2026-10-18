@@ -169,10 +169,15 @@ def test_a_window_longer_than_the_ring_reports_only_the_span_it_covers() -> None
             probe._readings.append((now - span + (span * i / count), 4.0))
 
     stats = probe.window()
+    after = time.time()
 
     assert stats["samples"] == count
     assert stats["window_truncated"] is True
-    assert 4.0 <= stats["window_secs"] <= 6.0, stats["window_secs"]
+    # ``window()`` reads the real clock, which has moved on since ``now`` by
+    # however long seeding took. That gap is measured, not guessed, so the
+    # bound holds on a runner of any speed.
+    eps = 0.01  # window_secs is rounded to the millisecond
+    assert span - eps <= stats["window_secs"] <= span + (after - now) + eps, stats["window_secs"]
 
 
 def test_a_window_inside_the_ring_reports_the_full_span() -> None:
@@ -184,9 +189,13 @@ def test_a_window_inside_the_ring_reports_the_full_span() -> None:
         probe._readings.append((now - 29.0, 4.0))
 
     stats = probe.window()
+    after = time.time()
 
     assert stats["window_truncated"] is False
-    assert 29.0 <= stats["window_secs"] <= 31.0, stats["window_secs"]
+    # The requested span runs from the boundary to the real clock ``window()``
+    # read, so it is 30 s plus the gap measured around the call.
+    eps = 0.01  # window_secs is rounded to the millisecond
+    assert 30.0 - eps <= stats["window_secs"] <= 30.0 + (after - now) + eps, stats["window_secs"]
 
 
 def test_an_empty_window_reports_none_not_zero() -> None:
