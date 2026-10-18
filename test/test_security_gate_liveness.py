@@ -393,7 +393,13 @@ def _url_payload_command(n: int) -> str:
 #: docstring naming its owners; 146 are the facade's ``_EXPORTS`` and
 #: ``TYPE_CHECKING`` rows for the moved names and the owner import at its foot; and
 #: 21 are the moved privates added to the frozen manifest.
-_PACKAGE_LINE_BUDGET = 30_209
+#:
+#: Raised again, from 30,209, for the argv floor's owner modules: ``argv_floor.py``
+#: is a mirror facade over ``argv_floor_self``, ``argv_floor_hosts``, ``argv_floor_ssh``
+#: and ``argv_floor_git``. The 462 lines are glue: the owners' docstrings, imports and
+#: logger, the facade's family map, owner list, install and two ``TYPE_CHECKING`` manifests.
+#: Every moved statement is unchanged; no rule, threshold or pass moved.
+_PACKAGE_LINE_BUDGET = 30_671
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

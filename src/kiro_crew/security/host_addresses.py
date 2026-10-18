@@ -3,7 +3,7 @@
 Each helper reads one platform's local address table -- the Windows adapter
 table, the Linux netlink RTM_GETADDR dump, the macOS ``getifaddrs`` list --
 and returns the addresses as strings, best-effort: a platform mismatch or any
-failure contributes an empty set and raises nothing.  ``argv_floor`` composes
+failure contributes an empty set and raises nothing.  ``argv_floor_hosts`` composes
 them into the own-host name set that backs ``_host_is_self``; they live in
 their own module so that ctypes/struct wire-format plumbing does not count
 against the floor module's size, whose per-module liveness cap exists to stop
@@ -16,8 +16,8 @@ blocking socket ``recv`` and must run only in the DNS enrichment worker.
 Each helper's docstring states its own contract.
 
 Layer.  This module imports nothing from the package, so the dependency runs
-one way: ``argv_floor`` imports these names and re-binds them in its own
-namespace, which is also the seam tests monkeypatch
+one way: ``argv_floor_hosts`` imports these names and re-binds them in its own
+namespace, which a patch through ``argv_floor`` reaches -- the seam tests monkeypatch
 (``argv_floor._windows_interface_addresses`` and siblings).
 """
 

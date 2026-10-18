@@ -562,7 +562,7 @@ The security controls ship as the package `src/kiro_crew/security/`. `kiro_crew.
 Two mechanisms make "the split changed nothing for a caller" a tested claim rather than a remembered one, pinned by `test_security_facade.py` and `test_security_single_storage.py`:
 
 - **A frozen export manifest** (`security/_exports.py`) lists every name the package exports, private helpers included. Each must resolve on the facade and be the SAME object the owning submodule holds — a re-export by identity, never a copy. The list is frozen rather than derived, because a derived list agrees with any facade; a name leaves it only when the symbol is deliberately deleted.
-- **Re-export by resolution, so the value has one home.** The facade binds no re-exported name. `_EXPORTS` maps each name to the SHORT NAME of the submodule that defines it, `_owner()` resolves that submodule (`sys.modules` for a module already loaded, `importlib.import_module` for the miss), a module `__getattr__` reads the value off the owner on every access, and `_ReExportModule.__setattr__`/`__delattr__` send a write or delete there. So the value lives only in the owner's namespace and the owner only in `sys.modules`, which is what makes a patch, a replaced module and a purged-and-reimported module all visible at once, in one direction, with nothing to keep in sync. The facade defines no control of its own, only that machinery and its `logger`: the code that composes the submodules lives in the four owners it imports at its foot (`deny_gate.py`, `display_safety.py`, `memory_audit.py`, `text_redaction.py`), once `_submodule()` and `logger` are bound, because all four read `_submodule()` from it and `deny_gate.py` and `memory_audit.py` also its `logger`. A function there resolves a bare global through its own module's namespace, which `__getattr__` never sees, so it asks `_submodule()` for the owner of a name it does not define and reads the name off it, once per scope.
+- **Re-export by resolution, so the value has one home.** The facade binds no re-exported name. `_EXPORTS` maps each name to the SHORT NAME of the submodule that defines it (or, for a mirror facade such as `argv_floor`, the facade that serves it and fans a write out to its owners), `_owner()` resolves that submodule (`sys.modules` for a module already loaded, `importlib.import_module` for the miss), a module `__getattr__` reads the value off the owner on every access, and `_ReExportModule.__setattr__`/`__delattr__` send a write or delete there. So the value lives only in the owner's namespace and the owner only in `sys.modules`, which is what makes a patch, a replaced module and a purged-and-reimported module all visible at once, in one direction, with nothing to keep in sync. The facade defines no control of its own, only that machinery and its `logger`: the code that composes the submodules lives in the four owners it imports at its foot (`deny_gate.py`, `display_safety.py`, `memory_audit.py`, `text_redaction.py`), once `_submodule()` and `logger` are bound, because all four read `_submodule()` from it and `deny_gate.py` and `memory_audit.py` also its `logger`. A function there resolves a bare global through its own module's namespace, which `__getattr__` never sees, so it asks `_submodule()` for the owner of a name it does not define and reads the name off it, once per scope.
 - **The boundary: a name this package does not define is an ordinary attribute of it.** `_EXPORTS` covers only names a submodule of this package defines. A name the facade imports for its own use from the standard library or another `kiro_crew` package (`re`, `Path`, `path_resolve_executor`) stays a plain attribute here, so a write to it lands here and reaches no submodule — a patch site for such a name names the module that READS it (`security.exfil`, `security.paths`), the same conversion a cross-submodule name has always needed. Two outside names are rows instead: `SecurityEventLog` and `maintenance_executor` belong to `deny_gate.py`, whose audit emitters are the only readers of the binding the facade held, so a patch written on the package reaches those emitters (`exfil.py` imports its own `SecurityEventLog`, patched there). `test_security_split_patch_reach.py` holds the rule for every name the test trees patch: each reader in the facade, the shell reader and their owners reads it from the module the write lands in.
 - **An unresolvable owner denies rather than answers.** Resolution can fail where a binding could not, so the failure modes are kept distinct on purpose: a name in the table whose owner will not import raises `ImportError`, and only a name that does not exist raises `AttributeError`. `getattr(security, "is_sensitive_path", None)` swallows the second and lets the first through, so an unresolvable gate cannot become a `None` a caller reads as "not sensitive". `_submodule()` also reads `sys.modules` before importing so that a caller who rebinds `importlib.import_module` — which tests do, for unrelated reasons — cannot reroute a gate's read to their own object.
 
@@ -593,8 +593,8 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   bounded per-turn evidence naming the tool call that produced one (see the
   credential-records bullet under XPIA Hardening).
 - `hosts_file.py` and `host_addresses.py` — pure helpers for the ssh self-target floor
-  in `argv_floor.py`: the hosts-file line parser and its digest, and the per-platform
-  readers of this machine's own interface addresses. `argv_floor` owns every read, the
+  in `argv_floor_hosts.py`: the hosts-file line parser and its digest, and the per-platform
+  readers of this machine's own interface addresses. `argv_floor_hosts` owns every read, the
   cache and the gate.
 - `_child_realpath.py` — the symlink-resolution worker the bounded resolver in
   `paths.py` runs as a script in its own interpreter (`python -S`) through
@@ -605,12 +605,28 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   bindings with Python tokenization and AST parsing, decodes supported base64
   literals, and asks whether the payload names a Kiro Crew credential-mint surface.
   It is a heuristic, never an interpreter or the OS credential boundary.
-- `argv_floor.py` — the always-on argv-structural floor. It owns three families:
-  protected or ambiguous git-publish detection; Kiro Crew termination, restart,
-  update, and destructive-cloud subcommands; and credential-mint predicates that
-  follow inline programs, here-documents, stdin redirections, and nested shells. It
-  also holds the ssh self-target floor (`_host_is_self`), backed by `hosts_file.py` and
-  `host_addresses.py`.
+- `argv_floor.py` — the always-on argv-structural floor, as a mirror facade
+  (`kiro_crew._facade_mirror`) over four owner modules beside it. It is the import path
+  of every name they define and serves each from the owner that defines it, so a write
+  through `kiro_crew.security.argv_floor` reaches every owner that binds the name. The
+  package re-exports only the argv floor names its `_EXPORTS` table lists, each naming
+  `argv_floor`, so a write of one of those through `kiro_crew.security` lands here too;
+  every other owner-defined name is reached through `kiro_crew.security.argv_floor`
+  only. Owners import only the owners listed before them in `_OWNERS`, never
+  the facade, and log under the `kiro_crew.security.argv_floor` logger. New work goes
+  to the owner of its family:
+  - `argv_floor_self.py` — Kiro Crew termination, restart, update, file-delivery,
+    gateway-restart and destructive-cloud subcommands, the dev-mode out-of-root
+    confirmation, and credential-mint predicates that follow inline programs,
+    here-documents, stdin redirections, and nested shells; also the frame walk the
+    ssh floor and `perm_verb_mention.py` reuse.
+  - `argv_floor_hosts.py` — which names and addresses are this host: the loopback
+    names, this machine's own names and interface addresses, the hosts-file aliases
+    and the DNS verdict cache behind `_host_is_self`, backed by `hosts_file.py` and
+    `host_addresses.py`.
+  - `argv_floor_ssh.py` — the ssh self-target floor (`_is_ssh_to_self`), which reads
+    the frame walk and the host verdicts below it.
+  - `argv_floor_git.py` — protected or ambiguous git-publish detection.
   Governance-home path writes are intentionally outside this module and are
   enforced by the OS sandbox. Structure is the point: the product name in a path,
   search pattern, or commit message is not itself a verdict.

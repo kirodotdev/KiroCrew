@@ -1,0 +1,10 @@
+{
+ "base_public_names": [
+  "logger",
+  "warm_own_host_names"
+ ],
+ "note": "S13: argv_floor.py became a mirror facade over argv_floor_self (the product's own subcommand floors and the credential-mint predicates), argv_floor_hosts (the names and addresses the ssh floor counts as this host), argv_floor_ssh (the ssh self-target floor) and argv_floor_git (release detection). It keeps its logger; every other public name it bound before the split is served from the owner that defines it.",
+ "rebound": {
+  "warm_own_host_names": "kiro_crew.security.argv_floor_hosts"
+ }
+}

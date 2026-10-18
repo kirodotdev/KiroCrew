@@ -2,7 +2,7 @@
 
 The tier reads the command line a tool call carries, and a program the line only
 NAMES is never opened — :mod:`kiro_crew.security.denied_rules` and
-:mod:`kiro_crew.security.argv_floor` both record that as the module's own
+:mod:`kiro_crew.security.argv_floor_ssh` both record that as the module's own
 doctrine, naming an OS-level fence in the sandbox as the fix of record. An
 operator reading **Settings → Security** has no way to infer it, and a control
 believed to be binding while it is advisory in practice is worse than one known

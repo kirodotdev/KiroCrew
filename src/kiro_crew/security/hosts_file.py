@@ -2,13 +2,13 @@
 
 The line parser that turns hosts-file text, fed one chunk at a time, into
 ``{name -> maps-to-local}``, the content digest a Windows cache key carries,
-and the two exceptions the reads raise.  ``argv_floor`` owns every read, the
-cache and the gate; these live apart so that parsing plumbing does not count
-against that module's per-module liveness cap.
+and the two exceptions the reads raise.  ``argv_floor_hosts`` owns every read,
+the cache and the gate; this parsing plumbing sits in its own module, which
+keeps it out of that module's per-module liveness cap.
 
-Layer.  This module imports nothing from the package: ``argv_floor`` imports
-these names and re-binds them in its own namespace, which is the seam tests
-monkeypatch.
+Layer.  This module imports nothing from the package: ``argv_floor_hosts`` imports
+these names and re-binds them in its own namespace, which a patch through
+``argv_floor`` reaches -- the seam tests monkeypatch.
 """
 
 from __future__ import annotations
