@@ -390,7 +390,6 @@ test/test_connections_kiro_spec_fields.py
 test/test_connections_l0_probe.py
 test/test_connections_registry.py
 test/test_connections_tool_aliases.py
-test/test_consolidate_cmd.py
 test/test_continuable_followups.py
 test/test_crash_dump_store.py
 test/test_crash_guard.py
@@ -749,13 +748,9 @@ test/test_skill_discover.py
 test/test_skill_home_paths.py
 test/test_skill_index_app_symlinks.py
 test/test_skill_paths_and_mcp_sync.py
-test/test_skill_pending.py
-test/test_skill_pending_notify.py
 test/test_skill_providers.py
 test/test_skill_script_validator.py
 test/test_skill_trigger_pointer.py
-test/test_skill_update_flow.py
-test/test_skill_versioning.py
 test/test_slack_agent_passthrough.py
 test/test_slack_dashboard_live_sync.py
 test/test_slack_handler_coverage_branches.py

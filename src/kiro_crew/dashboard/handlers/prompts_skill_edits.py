@@ -31,6 +31,7 @@ from kiro_crew.dashboard.handlers.prompts_paths import _is_path_too_long_error
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, validate_file_path
+from kiro_crew.skills import LiveSkillMutationRefused
 
 from ._shared import (
     _capability_manager,
@@ -75,6 +76,41 @@ def _under_skill_write_lock(fn: Any, *args: Any) -> Any:
 READONLY_SKILL_KEY_PREFIXES = ("kiro-user/", "kiro-workspace/")
 
 
+def _live_skill_mutation_refused(
+    exc: LiveSkillMutationRefused,
+    *,
+    tool_name: str,
+    metadata: dict,
+) -> web.Response:
+    """Answer a live auto-skill mutation the authority rule refused with a coded 409.
+
+    The skill is still there: a 404 would tell the operator it was already gone,
+    and a generic 400 would hide why, while the reason sat only in the gateway log.
+    """
+    try:
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name=tool_name,
+            tool_kind="skill",
+            outcome="rejected",
+            metadata={**metadata, "reason": exc.reason},
+        )
+    except Exception:  # noqa: BLE001 — the refusal must still reach the operator
+        logger.debug("Could not audit refused skill mutation", exc_info=True)
+    return web.json_response(
+        {
+            "error": f"skill mutation refused: {exc.detail}",
+            "code": "skill_mutation_refused",
+            "reason": exc.reason,
+            "detail": exc.detail,
+            "hint": exc.hint,
+        },
+        status=409,
+    )
+
+
 async def api_skill_pin(request: web.Request) -> web.Response:
     """POST /api/skills/-/pin — body {name, pinned:bool}. Pin/unpin an auto-skill
     so the lifecycle never archives it."""
@@ -114,7 +150,11 @@ async def api_skill_pin(request: web.Request) -> web.Response:
         return web.json_response({"error": "name required"}, status=400)
     try:
         ok = await asyncio.get_running_loop().run_in_executor(
-            discovery_executor(), _under_skill_write_lock, skills.set_pinned, name, pinned
+            discovery_executor(), _under_skill_write_lock, skills.set_pinned_checked, name, pinned
+        )
+    except LiveSkillMutationRefused as e:
+        return _live_skill_mutation_refused(
+            e, tool_name="api_skill_pin", metadata={"name": name, "pinned": pinned}
         )
     except Exception:
         _sel().log_tool_invocation(
@@ -304,7 +344,12 @@ async def api_skill_detail(request: web.Request) -> web.Response:
         # the ACL and renames it into place. On network-backed storage either can
         # stall long enough to matter to every other session sharing this loop, so
         # both go to a thread the way discover.py already routes the same two calls.
-        ok = await asyncio.to_thread(skills.delete_skill, name)
+        try:
+            ok = await asyncio.to_thread(skills.delete_skill_checked, name)
+        except LiveSkillMutationRefused as e:
+            return _live_skill_mutation_refused(
+                e, tool_name="api_skill_delete", metadata={"name": name}
+            )
         try:
             _sel().log_tool_invocation(
                 session_key="",
