@@ -185,7 +185,7 @@ export type UiRuntimePredicateId = typeof UI_RUNTIME_PREDICATES[number]
  * one on a location onto its opener's step, and the guide does not point at
  * that opener while it is unmet: it says there is nothing to stop instead of
  * opening an empty panel. Mirrors `OPENER_FACT_PREDICATES` in
- * `scripts/lib/ui-index.mjs`.
+ * `scripts/lib/ui-index-guide.mjs`.
  */
 export const UI_OPENER_FACT_PREDICATES = ['goal_loop_running', 'monitor_running'] as const satisfies readonly UiRuntimePredicateId[]
 

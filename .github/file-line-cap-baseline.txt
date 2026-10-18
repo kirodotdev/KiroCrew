@@ -160,7 +160,6 @@
 5831 test/test_vector_memory.py
 2238 test/test_wheel_engine.py
 2944 website/electron/gateway-supervisor.js
-2903 website/scripts/lib/ui-index.mjs
 2169 website/src/apps/command-bar/CommandBarOverlay.test.tsx
 2145 website/src/apps/design-tweak/DesignTweakPage.tsx
 2208 website/src/apps/issue-radar/api.ts

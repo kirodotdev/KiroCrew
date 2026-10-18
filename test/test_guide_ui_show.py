@@ -2,7 +2,7 @@
 
 ``ui.show`` points at one indexed UI location. Its plan (version 2: one step
 list per placement, each step with an id) is generated with the find_ui index
-(``website/scripts/lib/ui-index.mjs`` ``guidePlanFor``); the gateway accepts
+(``website/scripts/lib/ui-index-guide.mjs`` ``guidePlanFor``); the gateway accepts
 only an id whose packaged plan exists, records the placement the claiming tab
 walks, and find_ui hands out a ``ui.show`` guide_ref only for such an id.
 """

@@ -14,7 +14,7 @@ export const UI_AUTO_ATTR = 'data-ui-auto'
 export const UI_AUTO_BUILD_DIGEST: string =
   typeof __UI_AUTO_BUILD_DIGEST__ === 'string' ? __UI_AUTO_BUILD_DIGEST__ : ''
 
-/** Same shape as `AUTO_SITE_ID_RE` in scripts/lib/ui-index.mjs. */
+/** Same shape as `AUTO_SITE_ID_RE` in scripts/lib/ui-index-auto.mjs. */
 const AUTO_SITE_ID_RE = /^auto:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+(?::[0-9]+)?$/
 
 /** Whether *id* is an auto render-site id (not a location id, and not a curated id). */

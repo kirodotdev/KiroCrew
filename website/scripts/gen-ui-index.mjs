@@ -47,7 +47,7 @@
  * generated locations), the shared prerequisite vocabulary in
  * `src/uiLocations/conditions.ts`, the guide registry when a descriptor carries
  * a guide binding, and the 12 shipped catalogs. The pure logic is
- * `scripts/lib/ui-index.mjs`.
+ * `scripts/lib/ui-index.mjs` and the owners it re-exports.
  *
  * `--check` regenerates in memory and byte-compares the COMMITTED index only;
  * it writes nothing (except `--auto-out`), so it is safe in CI and in
@@ -574,7 +574,7 @@ function writeReport(file) {
 /**
  * The auto tier's inputs: every core candidate with one static label key,
  * mapped to the ONE indexed page (and, when proven, tab) whose module graph
- * reaches its file. See buildPageMap in scripts/lib/ui-index.mjs.
+ * reaches its file. See buildPageMap in scripts/lib/ui-index-auto.mjs.
  */
 function planAutoCandidates(index) {
   const files = new Set(sources.keys())

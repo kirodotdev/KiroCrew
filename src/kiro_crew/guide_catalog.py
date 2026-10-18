@@ -109,8 +109,8 @@ FIND_ROLES = ("button", "link", "menuitem", "tab", "switch", "checkbox", "textbo
 TRUST_ROOT_ROUTES = ("/settings/security", "/settings/computer-use", "/settings/secrets")
 #: An English name that deletes or removes something: a ``ui.find`` of it
 #: carries ``caution`` (the panel's warning, and the press alone never ends
-#: the step), whatever the agent passed. ``REMOVAL_LABEL_RE`` in
-#: ``website/scripts/lib/ui-index.mjs`` is the same rule for the auto tier.
+#: the step), whatever the agent passed. ``CAUTION_LABEL_RE`` in
+#: ``website/scripts/lib/ui-index-auto.mjs`` is the same rule for the auto tier.
 REMOVAL_LABEL_RE = re.compile(
     r"\b(?:delete|remove|uninstall|erase|reset|wipe|purge|destroy)\b"
     r"|\bclear\s+(?:all|data|everything|history|cache|memory)\b",

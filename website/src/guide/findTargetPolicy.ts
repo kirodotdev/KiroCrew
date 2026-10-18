@@ -64,7 +64,7 @@ export function isSensitiveSetting(entry: SettingEntry): boolean {
 }
 
 const TRUST_ROOT_LOCATION_RE = /^(?:settings\.tab\.(?:security|computer-use|secrets)$|settings\.sub\.(?:security|computer-use|secrets)\.|setting:(?:security|computer-use|secrets)\.)/
-/** Auto-site parents of the ceiling (`TRUST_ROOT_PARENTS` in scripts/lib/ui-index.mjs). */
+/** Auto-site parents of the ceiling (`TRUST_ROOT_PARENTS` in scripts/lib/ui-index-auto.mjs). */
 const TRUST_ROOT_AUTO_PARENTS: ReadonlySet<string> = new Set(['settings.tab.security', 'settings.tab.computer-use', 'settings.tab.secrets'])
 
 /** Words of a catalog key's last segment: `clearAllHistory` / `clear_all` -> `clear all ...`. */

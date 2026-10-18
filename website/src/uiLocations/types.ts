@@ -112,7 +112,7 @@ export interface UiLocationDescriptor {
    * An approved guide action. Opt-in only; a marker never implies guidance.
    * `false` keeps the location out of the generic `ui.show` guide too, which
    * otherwise covers every eligible curated location (see `guidePlanFor` in
-   * scripts/lib/ui-index.mjs).
+   * scripts/lib/ui-index-guide.mjs).
    */
   guide?: false | { action: string; params?: Record<string, string> }
   /**

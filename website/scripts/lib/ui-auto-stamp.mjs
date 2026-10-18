@@ -18,7 +18,7 @@
 import { createHash } from 'node:crypto'
 
 export const AUTO_MARKER_ATTR = 'data-ui-auto'
-/** Same shape as AUTO_SITE_ID_RE in ./ui-index.mjs: never a quote or a space. */
+/** Same shape as AUTO_SITE_ID_RE in ./ui-index-auto.mjs: never a quote or a space. */
 const SITE_RE = /^auto:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+(?::[0-9]+)?$/
 const CURATED = /data-ui-location|\buiLocation\(/
 
