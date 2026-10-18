@@ -750,9 +750,9 @@ class TestASwitchThatDoesNotTake:
     ):
         """`set_model` is not required to raise when it declines: a backend that judges
         the model VALUE exhausts its candidate ladder and returns, having stayed on the
-        backend default (`acp/session_handle.py`). The outcome row is durable and never
-        rewritten, so believing the call means the row claims a model the turn did not
-        run on -- and that row is what an owner reads when deciding what to pin.
+        backend default (`acp/session_handle_model_selection.py`). The outcome row is
+        durable and never rewritten, so believing the call means the row claims a model
+        the turn did not run on -- and that row is what an owner reads when deciding what to pin.
 
         The recording client here accepts the call and reports the same served model
         afterwards, which is exactly that shape."""

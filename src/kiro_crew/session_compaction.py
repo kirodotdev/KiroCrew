@@ -612,7 +612,7 @@ class CompactionCoordinator:
             # ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`` (KAS) summarizes on its
             # own initiative and its ``summarization_completed`` frame calls
             # ``reset_after_compaction()`` on the meter
-            # (``acp/session_handle.py``), so the reading this gate just read
+            # (``acp/session_handle_kas.py``), so the reading this gate just read
             # falls back below the threshold without us acting -- the same
             # relationship ``cc_managed`` encodes for Claude-Code sessions.
             # Recycling such a session would not have been the smaller harm: it

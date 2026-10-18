@@ -2,11 +2,11 @@
 
 Single-reader demux architecture: one AcpRuntime owns the subprocess and a
 reader task that routes frames by sessionId to per-session queues. Each
-``AcpSessionHandle`` (in ``session_handle.py``) owns one sessionId + queue and
+``AcpSessionHandle`` (in ``session_handle_class.py``) owns one sessionId + queue and
 provides the prompt/cancel/approve/reject API.
 
 The per-session handle, the runtime protocol it depends on, and the runtime
-exceptions live in ``session_handle.py`` / ``session_handle_runtime_contract.py``
+exceptions live in ``session_handle_class.py`` / ``session_handle_runtime_contract.py``
 (the lower layer); they are re-exported here so ``from kiro_crew.acp.runtime import
 AcpSessionHandle`` (and the exceptions) keeps working for existing callers and tests.
 """

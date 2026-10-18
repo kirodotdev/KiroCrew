@@ -1,8 +1,8 @@
 """The session's stale/stall watchdog.
 
 ``WatchdogSettings`` and its loader (the ``watchdog.*`` snapshot a handle takes), the turn
-park clocks, the liveness-oracle consult, the WORKING deferral log and metric, and the
-stalled-tool end.
+park clocks, the liveness-oracle consult, the WORKING deferral log and metric, the
+stalled-tool end and the input-wait status.
 
 Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -12,8 +12,8 @@ Instance fields written: ``_awaiting_permission``, ``_consult_future``, ``_crew_
 ``_keepalive_parked``, ``_keepalive_ts``, ``_oracle``, ``_parked_since``,
 ``_parked_total``, ``_watchdog``, ``_working_logged_ts``.
 
-Instance fields read: ``_runtime``, ``_session_id``, ``_turn_done``,
-``last_prompt_stats``.
+Instance fields read: ``_runtime``, ``_session_id``, ``_tool_output_seen``,
+``_turn_done``, ``last_prompt_stats``.
 """
 
 from __future__ import annotations
@@ -32,12 +32,23 @@ from kiro_crew.acp.liveness import (
     EVIDENCE_PLATFORM_LIMITED,
     EVIDENCE_REMOTE_FLAT,
     EVIDENCE_SHELL_CHILD_ABSENT,
+    INTERACTIVE_NARROWING_RISKS,
+    VERDICT_STUCK_INPUT,
     VERDICT_UNKNOWN,
     VERDICT_WORKING,
     _consume_future_exception,
     consult_offloaded,
 )
-from kiro_crew.acp.types import EVENT_COMPLETE, STOP_REASON_TOOL_STALL, AcpEvent, StructuredStatus
+from kiro_crew.acp.types import (
+    EVENT_COMPLETE,
+    PROGRESS_SOURCE_PROCESS_EVIDENCE,
+    STATUS_ORIGIN_LIVENESS_ORACLE,
+    STATUS_PHASE_WAITING,
+    STOP_REASON_TOOL_STALL,
+    WAIT_REASON_INPUT,
+    AcpEvent,
+    StructuredStatus,
+)
 from kiro_crew.executors import subprocess_executor
 
 if TYPE_CHECKING:
@@ -639,4 +650,52 @@ async def _end_stalled_tool(
         text=f"verdict={verdict}; idle_secs={int(idle)}; {evidence}",
         usage=self.last_prompt_stats.to_turn_usage(),
         status=status,
+    )
+
+
+def _input_wait_status(
+    self: AcpSessionHandle, verdict: str, evidence: str
+) -> StructuredStatus | None:
+    """The ``waiting_input`` status for the current stall, or None.
+
+    A stall is classified as waiting for input on either of two grounds,
+    and on nothing else: the oracle's own STUCK_INPUT evidence (Linux: a
+    flat subtree with a process blocked reading a tty / stdin pipe), or a
+    ``platform_limited`` no-progress verdict on a command the tool layer
+    classified as prompt-shaped (``INTERACTIVE_NARROWING_RISKS``) — the
+    one case the missing stdin evidence would have answered. A flat
+    build with no interactive classification stays an opaque tool stall.
+
+    ``safe_retry`` is True only when the classifier's read-only verdict
+    holds AND the call streamed no output: a command that has printed may
+    have acted, and a non-interactive retry must never replay a side
+    effect (SPEC-ADDENDUM §6). ``cancellable`` is always True (the call
+    can be cancelled via ``session/cancel``); ``resumable`` is False (a
+    blocked process cannot be resumed with input from here).
+    """
+    interactive = self._inflight_interactive
+    if verdict == VERDICT_STUCK_INPUT:
+        grounds = "stuck_input"
+    elif (
+        evidence.startswith(EVIDENCE_PLATFORM_LIMITED)
+        and interactive is not None
+        and interactive.risk in INTERACTIVE_NARROWING_RISKS
+    ):
+        grounds = "platform_limited+interactive_risk"
+    else:
+        return None
+    tool_call_id = self._inflight_tool_call_id
+    output_seen = bool(tool_call_id) and tool_call_id in self._tool_output_seen
+    safe_retry = bool(interactive and interactive.replay_safe and not output_seen)
+    return StructuredStatus(
+        session_id=self._session_id,
+        tool_call_id=tool_call_id,
+        phase=STATUS_PHASE_WAITING,
+        wait_reason=WAIT_REASON_INPUT,
+        progress_source=PROGRESS_SOURCE_PROCESS_EVIDENCE,
+        cancellable=True,
+        resumable=False,
+        safe_retry=safe_retry,
+        origin=STATUS_ORIGIN_LIVENESS_ORACLE,
+        evidence=f"{grounds}: {evidence}",
     )

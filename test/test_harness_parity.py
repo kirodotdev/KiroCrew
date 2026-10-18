@@ -1056,6 +1056,14 @@ _RUNTIME_PATH_MODULES = (
     "src/kiro_crew/acp/session_handle_compaction.py",
     "src/kiro_crew/acp/session_handle_turn.py",
     "src/kiro_crew/acp/session_handle_dispatch.py",
+    "src/kiro_crew/acp/session_handle_mcp.py",
+    "src/kiro_crew/acp/session_handle_kas.py",
+    "src/kiro_crew/acp/session_handle_native_children.py",
+    "src/kiro_crew/acp/session_handle_model_selection.py",
+    "src/kiro_crew/acp/session_handle_steering.py",
+    "src/kiro_crew/acp/session_handle_permissions.py",
+    "src/kiro_crew/acp/session_handle_updates.py",
+    "src/kiro_crew/acp/session_handle_class.py",
 )
 
 #: Backend-identity comparisons the runtime path is allowed to make, keyed by
@@ -1064,7 +1072,7 @@ _RUNTIME_PATH_MODULES = (
 #: :func:`test_every_runtime_path_identity_test_is_declared`.
 _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     (
-        "src/kiro_crew/acp/session_handle.py",
+        "src/kiro_crew/acp/session_handle_permissions.py",
         "_build_permission_event",
     ): "``_meta.kiro.consent`` on a permission request is KAS's own vocabulary (toolId "
     "plus consent capability). No other harness sends it, and reading it elsewhere would "
@@ -1093,14 +1101,14 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "makes every other harness fail CLOSED onto the prompt transport instead of "
     "inheriting a kiro-only verb (H5/H6).",
     (
-        "src/kiro_crew/acp/session_handle.py",
+        "src/kiro_crew/acp/session_handle_model_selection.py",
         "set_model",
     ): "KAS is deliberately absent from ``ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION``: it "
     "advertises the option and accepts the resolved id, so the member ladder would only "
     "add retries after a terminal failure and would turn a refusal into a silent "
     "stay-on-default. The reason is recorded at the branch.",
     (
-        "src/kiro_crew/acp/session_handle.py",
+        "src/kiro_crew/acp/session_handle_model_selection.py",
         "ensure_served_default",
     ): "The served-default backfill reads kiro-cli's own ``currentModelId`` semantics. "
     "Another host reaching it would have its resolved id rewritten from a list it did "
@@ -1113,7 +1121,7 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "``initialize`` extensionMethods. Every other ``ACP_BACKENDS_COMPACT`` member "
     "compacts on the ``/compact`` prompt, so the positive test keeps them on it.",
     (
-        "src/kiro_crew/acp/session_handle.py",
+        "src/kiro_crew/acp/session_handle_updates.py",
         "_handle_update",
     ): "KAS emits its own notification discriminants. The positive gate restores those "
     "displays without touching the kiro parser, and returns None for anything not "
@@ -1317,7 +1325,15 @@ def test_every_deny_set_enforcement_role_is_filled_on_both_drivers():
             for name in (acp_client.__name__, *acp_client._CLIENT_OWNERS)
         )
     )
-    handle_readers = _deny_set_readers(acp_runtime.AcpSessionHandle, "spec_denied_tools")
+    # The handle's methods live in its facade's owner modules; read them all, as the
+    # client half above does.
+    handle_facade = sys.modules[acp_runtime.AcpSessionHandle.__module__]
+    handle_readers = set().union(
+        *(
+            _deny_set_readers(sys.modules[name], "spec_denied_tools")
+            for name in (handle_facade.__name__, *handle_facade._SESSION_HANDLE_OWNERS)
+        )
+    )
 
     missing: list[str] = []
     for role, client_site, handle_site in _DENY_SET_ROLES:

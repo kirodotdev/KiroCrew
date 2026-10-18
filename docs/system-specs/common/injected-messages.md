@@ -535,7 +535,7 @@ recording steer/reject order; the webhook and reviewer denies are driven beside
 their own harnesses (`test_webhook_permission_requests.py`, the app's
 `test_review_pool.py`).
 
-The ACP transport's own refusals (`acp/client_permissions.py`, `acp/session_handle.py`)
+The ACP transport's own refusals (`acp/client_permissions.py`, `acp/session_handle_permissions.py`)
 sit below every surface and steer nothing: the security floor inside
 `approve_tool` backstops a surface that approved, the agent-spec restrictions a
 backend cannot express natively are enforced before any surface sees the

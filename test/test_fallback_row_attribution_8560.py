@@ -36,7 +36,7 @@ def _deep_chain_client(stream, *, primary="primary-model", advertised=("fallback
     ``AcpSessionHandle`` -> ``_runtime`` — with the extra wrapper layers a
     long-lived shared session accumulates. ``set_model`` writes the handle's
     ``_model``/``_resolved_model_id`` exactly as ``AcpSessionHandle.set_model``
-    does (``session_handle.py:1379-1384``). The depth-first walk reaches them,
+    does (``session_handle_model_selection.py``, ``set_model``). The depth-first walk reaches them,
     so this shape exercises the caller-side path with the walk as an
     independent second witness rather than as the row's only source.
     """

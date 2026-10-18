@@ -6,7 +6,8 @@ builds them and an adjustment is a single-file edit.
 
 1. ``session/update`` display/telemetry frames, whose discriminant blob arrives
    in a different shape than ``kiro-cli``'s. The handlers that act on a parsed
-   frame live in :mod:`kiro_crew.acp.session_handle`.
+   frame live in :mod:`kiro_crew.acp.session_handle_kas` (sub-agent frames in
+   :mod:`kiro_crew.acp.session_handle_native_children`).
 2. The **hooks** surface: the backend can delegate hook extraction AND
    execution to its ACP client, asking ``_kiro/hooks/list`` for the hooks
    matching a trigger, ``_kiro/hooks/sessionStart`` for results computed before

@@ -151,7 +151,7 @@ class TestWalkTerminates:
 
     def test_shared_runtime_is_visited_once(self):
         # Both the handle and the session provider hold the SAME runtime
-        # (session_handle.py / session_provider.py); it must not be double-counted.
+        # (session_handle_class.py / session_provider.py); it must not be double-counted.
         source, handle = _documented_shape(2)
         chain = _wrapper_chain(source)
         assert sum(1 for n in chain if n is handle._runtime) == 1

@@ -72,7 +72,7 @@ The class statement sets `__module__ = "kiro_crew.acp.client"`, so reprs, pickle
 the class's own code. The class keeps the three seed static methods that read the
 `AcpClient` global (`_settings_path_holds`, `_claim_pathname_if_ours`,
 `_restore_aside_without_clobber`) and `is_process_alive` (the pid-reader ratchet counts
-its name). `AcpRuntime` and `AcpSessionHandle` stay in their modules. `acp/client.py`
+its name). `AcpRuntime` stays in its module; `AcpSessionHandle`'s class home is below. `acp/client.py`
 keeps `_mise_which`, `_resolve_ssh_auth_sock` and `_resolve_spawn_env` (the spawn audit,
 the subprocess-encoding baseline and the cross-platform gate key them on this path) and
 the compatibility facade. The session start reads `_resolve_spawn_env` as a global of
@@ -80,7 +80,7 @@ its own module, which `acp/client.py` fills in right after defining it, because 
 owner never imports the facade; a patch through `kiro_crew.acp.client` reaches it
 through the mirror.
 
-`AcpSessionHandle`'s behaviour moves into `acp/session_handle_*.py` owner modules the
+`AcpSessionHandle`'s behaviour lives in `acp/session_handle_*.py` owner modules the
 same way, one responsibility each. A member's body is a module-level function there whose
 first parameter is `self` (annotated `AcpSessionHandle` for type checkers only), and the
 class binds it by name in one block above `__init__`, one comment header per owner. The
@@ -106,15 +106,29 @@ inventory, the binding, the reach and the import inventory.
 | Session-handle owner | Owns |
 |---|---|
 | `acp/session_handle_runtime_contract.py` | the contract between a handle and its runtime: the `AcpRuntimeError` family (`AcpRuntimeDead`, `AcpRequestTimeout`, ...) and `AcpRuntimeProtocol`, the interface the handle needs from `AcpRuntime` |
-| `acp/session_handle_watchdog.py` | the per-session stale/stall watchdog: `WatchdogSettings` and `_load_watchdog_settings`, the turn park clocks, the liveness-oracle consult, the WORKING deferral log and metric, and the stalled-tool end |
+| `acp/session_handle_watchdog.py` | the per-session stale/stall watchdog: `WatchdogSettings` and `_load_watchdog_settings`, the turn park clocks, the liveness-oracle consult, the WORKING deferral log and metric, the stalled-tool end and the input-wait status |
+| `acp/session_handle_mcp.py` | the session's MCP servers: the launch roster the liveness oracle attributes a tool by (`mcp_launch_roster`, `record_mcp_launches`), the init drain, the readiness wait, OAuth and sign-in offers, and the failed-server reattempt |
+| `acp/session_handle_kas.py` | what KAS speaks beyond ACP on a session: its hooks requests (list, session start, execute), the checkpoint rewind of an unanswered prompt (`discard_unanswered_prompt`), and its own session-update discriminants (mode, session info) |
+| `acp/session_handle_native_children.py` | harness-native child sessions (H16): the KAS sub-agent roster and child chunks, child-session bookkeeping, the resume refusal and the uncharged report |
+| `acp/session_handle_model_selection.py` | the session's model: the advertised list and its parsers (`parse_advertised_models`, `models_from_config_options`, ...), its storage with the session config and read-path revalidation, mode, model and effort selection through the backend's own verbs, and the served-default backfill |
+| `acp/session_handle_steering.py` | steering a live turn: `steer`, the codex steering-request protocol, settling abandoned answers, and the injected, proven and denied steer bookkeeping the dispatch loop reads |
 | `acp/session_handle_lifecycle.py` | the session outside its turn loop: awaited control requests and slash commands, cancel, death attribution, `destroy` and transcript cleanup |
 | `acp/session_handle_compaction.py` | compaction on every backend (`compact`, the KAS compaction verb, codex and claude inline compaction, `wait_for_compaction`) and the usage and metadata frames it is measured by |
+| `acp/session_handle_permissions.py` | permission requests and in-band refusals: the permission event, approve and reject, the spec-disabled deny and tripwire, the unidentifiable, unreadable and unretained MCP identity refusals, the reject audit (`_audit_handle_reject`) and session permission routing |
+| `acp/session_handle_updates.py` | `session/update` frames as `AcpEvent` values: tool calls and the per-tool-call caches they keep, child-tool frames and structured status frames |
 | `acp/session_handle_turn.py` | one turn end to end: `prompt`, `stream_command`, the per-turn reset and pre-turn drain in `_run_turn`, the abandoned-turn close and `wait_turn_done` |
+| `acp/session_handle_class.py` | the class statement: the constructor, the properties, the class default, the member table that binds every owner's members, and `_own_methods` |
 | `acp/session_handle_dispatch.py` | the per-turn event loop `_dispatch_events`: it reads the session queue, routes each frame and runs the in-band watchdog arm |
 
-The members no row above names, and the module-level code they read, are still defined in
-`acp/session_handle.py`. New `AcpSessionHandle` behaviour goes to the owner whose row names
-its responsibility, bound in the class under that owner's header.
+The class statement sets `__module__ = "kiro_crew.acp.session_handle"`, so reprs, pickles
+and `typing.get_type_hints` on the class name the facade, and `acp/session_handle.py`
+re-exports it: `kiro_crew.acp.session_handle.AcpSessionHandle` and
+`kiro_crew.acp.runtime.AcpSessionHandle` are the same class object, and a patch of a member on
+it reaches every caller. `inspect.getsource(AcpSessionHandle)` does not find the class through
+that module name; read a member's source, or `acp/session_handle_class.py`. `_own_methods`
+decorates the class there. `acp/session_handle.py` keeps only the compatibility facade. New
+`AcpSessionHandle` behaviour goes to the owner whose row names its responsibility, bound in the
+class (`acp/session_handle_class.py`) under that owner's header.
 
 New module-level code goes to the owner whose row above names its
 responsibility, not to `acp/client.py` or `acp/runtime.py`: stdio framing and

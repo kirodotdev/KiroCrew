@@ -47,27 +47,32 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_session_handle_bindings")
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
-    "__init__": ("function", False, "b84baaa24675", "session_handle"),
-    "_accept_oauth_request": ("function", False, "668a15b0478d", "session_handle"),
-    "_active_tool_calls": ("property", False, "d150141e37db", "session_handle"),
-    "_advertised_model_ids": ("function", False, "6806e867af4e", "session_handle"),
-    "_answer_kas_hook_execute": ("function", True, "b922d8462af7", "session_handle"),
-    "_answer_kas_hooks_request": ("function", True, "87459833bc5c", "session_handle"),
-    "_apply_init_notification": ("function", False, "ac6a24522ec0", "session_handle"),
-    "_apply_kas_context_pct": ("function", False, "386e4643466b", "session_handle"),
-    "_apply_kas_turn_completion": ("function", False, "7f31b87afeac", "session_handle"),
-    "_audit_handle_reject": ("function", False, "8a9e7399a659", "session_handle"),
+    "__init__": ("function", False, "b84baaa24675", "session_handle_class"),
+    "_accept_oauth_request": ("function", False, "668a15b0478d", "session_handle_mcp"),
+    "_active_tool_calls": ("property", False, "d150141e37db", "session_handle_class"),
+    "_advertised_model_ids": ("function", False, "6806e867af4e", "session_handle_model_selection"),
+    "_answer_kas_hook_execute": ("function", True, "b922d8462af7", "session_handle_kas"),
+    "_answer_kas_hooks_request": ("function", True, "87459833bc5c", "session_handle_kas"),
+    "_apply_init_notification": ("function", False, "ac6a24522ec0", "session_handle_mcp"),
+    "_apply_kas_context_pct": ("function", False, "386e4643466b", "session_handle_kas"),
+    "_apply_kas_turn_completion": ("function", False, "7f31b87afeac", "session_handle_kas"),
+    "_audit_handle_reject": ("function", False, "8a9e7399a659", "session_handle_permissions"),
     "_backfill_context_window": ("function", False, "f3e546765020", "session_handle_compaction"),
-    "_build_child_tool_activity_prefix": ("function", False, "f3c17ef22460", "session_handle"),
-    "_build_permission_event": ("function", False, "e64128661dfa", "session_handle"),
-    "_cancel_hook_tasks": ("function", False, "b60c5fea256e", "session_handle"),
+    "_build_child_tool_activity_prefix": (
+        "function",
+        False,
+        "f3c17ef22460",
+        "session_handle_native_children",
+    ),
+    "_build_permission_event": ("function", False, "e64128661dfa", "session_handle_permissions"),
+    "_cancel_hook_tasks": ("function", False, "b60c5fea256e", "session_handle_kas"),
     "_classify": ("function", False, "b92a06811c94", "session_handle_dispatch"),
     "_cleanup_transcript": ("function", False, "b60c5fea256e", "session_handle_lifecycle"),
     "_close_abandoned_turn": ("function", True, "b60c5fea256e", "session_handle_turn"),
     "_codex_compaction_event": ("function", False, "f2eb5a4fbc3e", "session_handle_compaction"),
     "_compacts_inline": ("function", False, "a6632a57e602", "session_handle_compaction"),
     "_consult_oracle_offloaded": ("function", True, "a74b2cf7aa76", "session_handle_watchdog"),
-    "_deny_spec_disabled_tool": ("function", True, "2dfacffa6279", "session_handle"),
+    "_deny_spec_disabled_tool": ("function", True, "2dfacffa6279", "session_handle_permissions"),
     "_died": ("function", False, "687ef4e00210", "session_handle_lifecycle"),
     "_dispatch_events": ("function", "agen", "883a50b3b1fa", "session_handle_dispatch"),
     "_drain_post_compaction_metadata": (
@@ -76,129 +81,204 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "0ca5ee4bb87d",
         "session_handle_compaction",
     ),
-    "_emit_tool_interrupted_sel": ("function", False, "866fc4f75f7c", "session_handle"),
+    "_emit_tool_interrupted_sel": ("function", False, "866fc4f75f7c", "session_handle_updates"),
     "_emit_watchdog_metric": ("function", False, "8cf581201a27", "session_handle_watchdog"),
     "_end_human_wait": ("function", False, "b60c5fea256e", "session_handle_watchdog"),
     "_end_stalled_tool": ("function", "agen", "1fcba2664f9e", "session_handle_watchdog"),
-    "_handle_kas_session_info": ("function", False, "f3c17ef22460", "session_handle"),
-    "_handle_kas_subagent": ("function", False, "5f796c64544c", "session_handle"),
-    "_handle_kas_subagent_chunk": ("function", False, "5f796c64544c", "session_handle"),
-    "_handle_kas_update": ("function", False, "761fcd4d2d41", "session_handle"),
-    "_handle_update": ("function", False, "74878d3f1402", "session_handle"),
-    "_identity_unreadable_cache_for_wire": ("function", False, "931b07357dc9", "session_handle"),
-    "_inflight_interactive": ("property", False, "55d13eb29157", "session_handle"),
-    "_inflight_tool": ("property", False, "06d9a24bbca9", "session_handle"),
-    "_inflight_tool_call_id": ("property", False, "bb418bb7ece8", "session_handle"),
+    "_handle_kas_session_info": ("function", False, "f3c17ef22460", "session_handle_kas"),
+    "_handle_kas_subagent": ("function", False, "5f796c64544c", "session_handle_native_children"),
+    "_handle_kas_subagent_chunk": (
+        "function",
+        False,
+        "5f796c64544c",
+        "session_handle_native_children",
+    ),
+    "_handle_kas_update": ("function", False, "761fcd4d2d41", "session_handle_kas"),
+    "_handle_update": ("function", False, "74878d3f1402", "session_handle_updates"),
+    "_identity_unreadable_cache_for_wire": (
+        "function",
+        False,
+        "931b07357dc9",
+        "session_handle_updates",
+    ),
+    "_inflight_interactive": ("property", False, "55d13eb29157", "session_handle_class"),
+    "_inflight_tool": ("property", False, "06d9a24bbca9", "session_handle_class"),
+    "_inflight_tool_call_id": ("property", False, "bb418bb7ece8", "session_handle_class"),
     "_inline_turn_finished_cleanly": (
         "function",
         False,
         "a6632a57e602",
         "session_handle_compaction",
     ),
-    "_input_wait_status": ("function", False, "7139eff8852c", "session_handle"),
-    "_is_kas_hooks_request": ("function", False, "50405edf7b6a", "session_handle"),
+    "_input_wait_status": ("function", False, "7139eff8852c", "session_handle_watchdog"),
+    "_is_kas_hooks_request": ("function", False, "50405edf7b6a", "session_handle_kas"),
     "_kas_compact_advertised": ("function", False, "a6632a57e602", "session_handle_compaction"),
     "_kas_compact_request": ("function", False, "b0a837a37097", "session_handle_compaction"),
     "_last_steer_monotonic": ("data", False, "", ""),
     "_log_working_deferral": ("function", False, "835e76052008", "session_handle_watchdog"),
-    "_mark_available_models_captured": ("function", False, "b60c5fea256e", "session_handle"),
-    "_no_tool_in_flight": ("function", False, "a6632a57e602", "session_handle"),
-    "_normalize_models": ("staticmethod", False, "0587318c8e24", "session_handle"),
-    "_note_mcp_sign_in_status": ("function", False, "d0d2b0689553", "session_handle"),
-    "_note_native_child": ("function", False, "09a8133eda4c", "session_handle"),
-    "_note_native_roster": ("function", False, "7a20326749ff", "session_handle"),
-    "_note_status_rejected": ("function", False, "a9ff3d5a4447", "session_handle"),
-    "_note_steering_denial": ("function", False, "b60c5fea256e", "session_handle"),
-    "_offer_mcp_sign_in": ("function", False, "b60c5fea256e", "session_handle"),
-    "_owns_mcp_frame": ("function", False, "50405edf7b6a", "session_handle"),
-    "_push_model_config_option": ("function", True, "e60b4fb0cbfc", "session_handle"),
-    "_reattempt_failed_mcp_servers": ("function", False, "b60c5fea256e", "session_handle"),
-    "_refuse_unidentifiable_mcp_approval": ("function", True, "5e39ccd3f4ad", "session_handle"),
-    "_refuse_unreadable_mcp_identity": ("function", True, "2dfacffa6279", "session_handle"),
-    "_refuse_unretained_provenance": ("function", True, "5e39ccd3f4ad", "session_handle"),
-    "_release_proven_steers": ("function", False, "dbae1777abcc", "session_handle"),
-    "_release_settled_tool_call": ("function", False, "2362e63eea68", "session_handle"),
-    "_remote_flat_launches": ("function", False, "b809e9b1faeb", "session_handle"),
-    "_report_evicted_attributions": ("function", False, "b60c5fea256e", "session_handle"),
-    "_restore_withdrawn": ("function", False, "491a23344d9c", "session_handle"),
+    "_mark_available_models_captured": (
+        "function",
+        False,
+        "b60c5fea256e",
+        "session_handle_model_selection",
+    ),
+    "_no_tool_in_flight": ("function", False, "a6632a57e602", "session_handle_updates"),
+    "_normalize_models": ("staticmethod", False, "0587318c8e24", "session_handle_model_selection"),
+    "_note_mcp_sign_in_status": ("function", False, "d0d2b0689553", "session_handle_mcp"),
+    "_note_native_child": ("function", False, "09a8133eda4c", "session_handle_native_children"),
+    "_note_native_roster": ("function", False, "7a20326749ff", "session_handle_native_children"),
+    "_note_status_rejected": ("function", False, "a9ff3d5a4447", "session_handle_updates"),
+    "_note_steering_denial": ("function", False, "b60c5fea256e", "session_handle_steering"),
+    "_offer_mcp_sign_in": ("function", False, "b60c5fea256e", "session_handle_mcp"),
+    "_owns_mcp_frame": ("function", False, "50405edf7b6a", "session_handle_mcp"),
+    "_push_model_config_option": (
+        "function",
+        True,
+        "e60b4fb0cbfc",
+        "session_handle_model_selection",
+    ),
+    "_reattempt_failed_mcp_servers": ("function", False, "b60c5fea256e", "session_handle_mcp"),
+    "_refuse_unidentifiable_mcp_approval": (
+        "function",
+        True,
+        "5e39ccd3f4ad",
+        "session_handle_permissions",
+    ),
+    "_refuse_unreadable_mcp_identity": (
+        "function",
+        True,
+        "2dfacffa6279",
+        "session_handle_permissions",
+    ),
+    "_refuse_unretained_provenance": (
+        "function",
+        True,
+        "5e39ccd3f4ad",
+        "session_handle_permissions",
+    ),
+    "_release_proven_steers": ("function", False, "dbae1777abcc", "session_handle_steering"),
+    "_release_settled_tool_call": ("function", False, "2362e63eea68", "session_handle_updates"),
+    "_remote_flat_launches": ("function", False, "b809e9b1faeb", "session_handle_mcp"),
+    "_report_evicted_attributions": ("function", False, "b60c5fea256e", "session_handle_updates"),
+    "_restore_withdrawn": ("function", False, "491a23344d9c", "session_handle_permissions"),
     "_retire_liveness_state": ("function", False, "b60c5fea256e", "session_handle_watchdog"),
     "_run_turn": ("function", "agen", "b55fe99c131a", "session_handle_turn"),
     "_runtime_idle_secs": ("function", False, "59162e39f6f1", "session_handle_watchdog"),
-    "_runtime_reattempts_mcp": ("function", False, "a6632a57e602", "session_handle"),
+    "_runtime_reattempts_mcp": ("function", False, "a6632a57e602", "session_handle_mcp"),
     "_send_awaited": ("function", True, "99990f4299d3", "session_handle_lifecycle"),
-    "_send_hook_error": ("function", True, "38fa0936b024", "session_handle"),
-    "_served_default_after_set_mode": ("function", True, "b60c5fea256e", "session_handle"),
-    "_settle_abandoned_steering": ("function", True, "b60c5fea256e", "session_handle"),
+    "_send_hook_error": ("function", True, "38fa0936b024", "session_handle_kas"),
+    "_served_default_after_set_mode": (
+        "function",
+        True,
+        "b60c5fea256e",
+        "session_handle_model_selection",
+    ),
+    "_settle_abandoned_steering": ("function", True, "b60c5fea256e", "session_handle_steering"),
     "_settle_codex_compaction": ("function", False, "01ddf3eeedf2", "session_handle_compaction"),
     "_settle_kas_compaction": ("function", False, "d0076098f390", "session_handle_compaction"),
-    "_steer_via_steering_request": ("function", True, "e2662ac6ac7a", "session_handle"),
-    "_structured_status_event": ("function", False, "f8008b3ce042", "session_handle"),
-    "_sync_effort_levels": ("function", False, "b60c5fea256e", "session_handle"),
-    "_sync_mcp_reattempting": ("function", False, "b60c5fea256e", "session_handle"),
-    "_take_injected_steers": ("function", False, "c42020aec8dd", "session_handle"),
-    "_tool_call_cache_overflow_for_wire": ("function", False, "9b594013b706", "session_handle"),
-    "_tool_kind_cache_for_wire": ("function", False, "b7b9268c0112", "session_handle"),
+    "_steer_via_steering_request": ("function", True, "e2662ac6ac7a", "session_handle_steering"),
+    "_structured_status_event": ("function", False, "f8008b3ce042", "session_handle_updates"),
+    "_sync_effort_levels": ("function", False, "b60c5fea256e", "session_handle_model_selection"),
+    "_sync_mcp_reattempting": ("function", False, "b60c5fea256e", "session_handle_mcp"),
+    "_take_injected_steers": ("function", False, "c42020aec8dd", "session_handle_steering"),
+    "_tool_call_cache_overflow_for_wire": (
+        "function",
+        False,
+        "9b594013b706",
+        "session_handle_updates",
+    ),
+    "_tool_kind_cache_for_wire": ("function", False, "b7b9268c0112", "session_handle_updates"),
     "_track_metadata": ("function", False, "87459833bc5c", "session_handle_compaction"),
     "_track_prompt_usage": ("function", False, "c8d5c402278d", "session_handle_compaction"),
-    "_tripwire_spec_disabled_tool": ("function", False, "8e767352900b", "session_handle"),
+    "_tripwire_spec_disabled_tool": (
+        "function",
+        False,
+        "8e767352900b",
+        "session_handle_permissions",
+    ),
     "_wait_for_response": ("function", True, "87f499e313b4", "session_handle_lifecycle"),
     "_working_tool_bound_reached": ("function", False, "c7051eec1093", "session_handle_watchdog"),
-    "agent_version": ("property", False, "bb418bb7ece8", "session_handle"),
-    "apply_session_permission_routing": ("function", True, "b60c5fea256e", "session_handle"),
-    "approve_tool": ("function", True, "1241f87a8dc0", "session_handle"),
-    "available_models": ("property", False, "92d6193dbe19", "session_handle"),
-    "awaiting_permission": ("property", False, "a6632a57e602", "session_handle"),
+    "agent_version": ("property", False, "bb418bb7ece8", "session_handle_class"),
+    "apply_session_permission_routing": (
+        "function",
+        True,
+        "b60c5fea256e",
+        "session_handle_permissions",
+    ),
+    "approve_tool": ("function", True, "1241f87a8dc0", "session_handle_permissions"),
+    "available_models": ("property", False, "92d6193dbe19", "session_handle_class"),
+    "awaiting_permission": ("property", False, "a6632a57e602", "session_handle_class"),
     "bind_session_key": ("function", False, "57eca86d38c3", "session_handle_lifecycle"),
     "cancel": ("function", True, "4b75d9a5e0c7", "session_handle_lifecycle"),
     "cleanup_transcript_files": ("staticmethod", False, "a9cece317161", "session_handle_lifecycle"),
     "command_result": ("function", True, "1f650230e18e", "session_handle_lifecycle"),
     "compact": ("function", True, "416a3df991e6", "session_handle_compaction"),
-    "config_options": ("property", False, "7eb96c2fda05", "session_handle"),
+    "config_options": ("property", False, "7eb96c2fda05", "session_handle_class"),
     "destroy": ("function", True, "b60c5fea256e", "session_handle_lifecycle"),
-    "discard_unanswered_prompt": ("function", True, "a6632a57e602", "session_handle"),
-    "drain_init": ("function", True, "c9912f3fb68d", "session_handle"),
-    "ensure_served_default": ("function", True, "4740fd0e8b58", "session_handle"),
-    "get_valid_effort_levels": ("function", False, "6806e867af4e", "session_handle"),
-    "has_unfinished_turn": ("property", False, "a6632a57e602", "session_handle"),
-    "inflight_interactive": ("property", False, "7949c1538a15", "session_handle"),
+    "discard_unanswered_prompt": ("function", True, "a6632a57e602", "session_handle_kas"),
+    "drain_init": ("function", True, "c9912f3fb68d", "session_handle_mcp"),
+    "ensure_served_default": ("function", True, "4740fd0e8b58", "session_handle_model_selection"),
+    "get_valid_effort_levels": (
+        "function",
+        False,
+        "6806e867af4e",
+        "session_handle_model_selection",
+    ),
+    "has_unfinished_turn": ("property", False, "a6632a57e602", "session_handle_class"),
+    "inflight_interactive": ("property", False, "7949c1538a15", "session_handle_class"),
     "is_responsive": ("function", False, "4b2fc7c136b8", "session_handle_watchdog"),
-    "is_turn_active": ("property", False, "a6632a57e602", "session_handle"),
-    "last_steer_monotonic": ("property", False, "59162e39f6f1", "session_handle"),
-    "maybe_refresh_available_models": ("function", True, "9de63ef05543", "session_handle"),
-    "mcp_session_report": ("function", False, "ac691973b9b4", "session_handle"),
-    "model": ("property", False, "bb418bb7ece8", "session_handle"),
-    "native_child_overflow": ("property", False, "fa6cfecd5574", "session_handle"),
-    "native_child_resume_refusal": ("function", False, "61b23cbd0173", "session_handle"),
-    "native_child_sessions": ("property", False, "602c14087aa8", "session_handle"),
+    "is_turn_active": ("property", False, "a6632a57e602", "session_handle_class"),
+    "last_steer_monotonic": ("property", False, "59162e39f6f1", "session_handle_class"),
+    "maybe_refresh_available_models": (
+        "function",
+        True,
+        "9de63ef05543",
+        "session_handle_model_selection",
+    ),
+    "mcp_session_report": ("function", False, "ac691973b9b4", "session_handle_mcp"),
+    "model": ("property", False, "bb418bb7ece8", "session_handle_class"),
+    "native_child_overflow": ("property", False, "fa6cfecd5574", "session_handle_class"),
+    "native_child_resume_refusal": (
+        "function",
+        False,
+        "61b23cbd0173",
+        "session_handle_native_children",
+    ),
+    "native_child_sessions": ("property", False, "602c14087aa8", "session_handle_class"),
     "note_keepalive": ("function", False, "b60c5fea256e", "session_handle_watchdog"),
     "parked_for_secs": ("function", False, "59162e39f6f1", "session_handle_watchdog"),
-    "parked_since": ("property", False, "c2eec8a41739", "session_handle"),
-    "pop_pending_oauth_requests": ("function", False, "92d6193dbe19", "session_handle"),
+    "parked_since": ("property", False, "c2eec8a41739", "session_handle_class"),
+    "pop_pending_oauth_requests": ("function", False, "92d6193dbe19", "session_handle_mcp"),
     "prompt": ("function", "agen", "ed7ccfb7b96f", "session_handle_turn"),
-    "prompt_or_tool_seen": ("property", False, "a6632a57e602", "session_handle"),
-    "prompt_outstanding_on_stall": ("property", False, "a6632a57e602", "session_handle"),
-    "queued_frame_count": ("function", False, "fa6cfecd5574", "session_handle"),
+    "prompt_or_tool_seen": ("property", False, "a6632a57e602", "session_handle_class"),
+    "prompt_outstanding_on_stall": ("property", False, "a6632a57e602", "session_handle_class"),
+    "queued_frame_count": ("function", False, "fa6cfecd5574", "session_handle_mcp"),
     "rebind_watchdog": ("function", False, "c12bb41fb34c", "session_handle_watchdog"),
-    "record_mcp_launches": ("function", False, "cf9b7e8daeb4", "session_handle"),
-    "refresh_available_models": ("function", True, "de8486367b30", "session_handle"),
-    "reject_tool": ("function", True, "84bed4474307", "session_handle"),
-    "report_native_children": ("function", False, "ccfc57bdf135", "session_handle"),
+    "record_mcp_launches": ("function", False, "cf9b7e8daeb4", "session_handle_mcp"),
+    "refresh_available_models": (
+        "function",
+        True,
+        "de8486367b30",
+        "session_handle_model_selection",
+    ),
+    "reject_tool": ("function", True, "84bed4474307", "session_handle_permissions"),
+    "report_native_children": ("function", False, "ccfc57bdf135", "session_handle_native_children"),
     "send_command": ("function", True, "068aab573b43", "session_handle_lifecycle"),
-    "served_model": ("property", False, "bb418bb7ece8", "session_handle"),
-    "session_id": ("property", False, "bb418bb7ece8", "session_handle"),
-    "set_config_option": ("function", True, "d17f94a912fd", "session_handle"),
-    "set_mode": ("function", True, "50a35c0990a8", "session_handle"),
-    "set_model": ("function", True, "bcd0cd3aa159", "session_handle"),
-    "status_rejections": ("property", False, "d8be45664668", "session_handle"),
-    "steer": ("function", True, "b0a837a37097", "session_handle"),
-    "steer_needs_loss_recovery": ("property", False, "a6632a57e602", "session_handle"),
-    "store_session_config": ("function", False, "83d029971996", "session_handle"),
+    "served_model": ("property", False, "bb418bb7ece8", "session_handle_class"),
+    "session_id": ("property", False, "bb418bb7ece8", "session_handle_class"),
+    "set_config_option": ("function", True, "d17f94a912fd", "session_handle_model_selection"),
+    "set_mode": ("function", True, "50a35c0990a8", "session_handle_model_selection"),
+    "set_model": ("function", True, "bcd0cd3aa159", "session_handle_model_selection"),
+    "status_rejections": ("property", False, "d8be45664668", "session_handle_class"),
+    "steer": ("function", True, "b0a837a37097", "session_handle_steering"),
+    "steer_needs_loss_recovery": ("property", False, "a6632a57e602", "session_handle_class"),
+    "store_session_config": ("function", False, "83d029971996", "session_handle_model_selection"),
     "stream_command": ("function", "agen", "07d1ae72fdc6", "session_handle_turn"),
-    "supports_config_option": ("function", False, "b86d69c93890", "session_handle"),
-    "supports_refusal_steer": ("property", False, "a6632a57e602", "session_handle"),
-    "supports_steer": ("property", False, "a6632a57e602", "session_handle"),
+    "supports_config_option": ("function", False, "b86d69c93890", "session_handle_model_selection"),
+    "supports_refusal_steer": ("property", False, "a6632a57e602", "session_handle_class"),
+    "supports_steer": ("property", False, "a6632a57e602", "session_handle_class"),
     "wait_for_compaction": ("function", True, "0258399cca12", "session_handle_compaction"),
-    "wait_mcp_ready": ("function", True, "1d4cd09ed23f", "session_handle"),
+    "wait_mcp_ready": ("function", True, "1d4cd09ed23f", "session_handle_mcp"),
     "wait_turn_done": ("function", True, "0ae71757d428", "session_handle_turn"),
 }
 
@@ -210,14 +290,22 @@ _DECLARED = frozenset({"_compaction_terminal_seen", "_kas_compact_turn"})
 _OWNERS = (
     "kiro_crew.acp.session_handle_runtime_contract",
     "kiro_crew.acp.session_handle_watchdog",
+    "kiro_crew.acp.session_handle_mcp",
+    "kiro_crew.acp.session_handle_kas",
+    "kiro_crew.acp.session_handle_native_children",
+    "kiro_crew.acp.session_handle_model_selection",
+    "kiro_crew.acp.session_handle_steering",
     "kiro_crew.acp.session_handle_lifecycle",
     "kiro_crew.acp.session_handle_compaction",
+    "kiro_crew.acp.session_handle_permissions",
+    "kiro_crew.acp.session_handle_updates",
     "kiro_crew.acp.session_handle_turn",
     "kiro_crew.acp.session_handle_dispatch",
+    "kiro_crew.acp.session_handle_class",
 )
 
 #: The module that holds the class statement and its class-resident members.
-_CLASS_HOME = "session_handle"
+_CLASS_HOME = "session_handle_class"
 
 _PACKAGE = "kiro_crew.acp"
 _FACADE = session_handle.__name__
@@ -795,14 +883,19 @@ def test_the_bare_global_scan_can_fail() -> None:
 def test_a_patch_through_the_facade_lands_on_every_owner_and_is_undone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    mcp = sys.modules["kiro_crew.acp.session_handle_mcp"]
     dispatch = sys.modules["kiro_crew.acp.session_handle_dispatch"]
-    before = session_handle.DRAIN_YIELD_AFTER_S
+    before = session_handle._MCP_DRAIN_NO_REPORT_CEILING
+    yield_before = session_handle.DRAIN_YIELD_AFTER_S
     with monkeypatch.context() as patch:
+        patch.setattr(session_handle, "_MCP_DRAIN_NO_REPORT_CEILING", 0.25)
         patch.setattr(session_handle, "DRAIN_YIELD_AFTER_S", 123.0)
+        assert mcp._MCP_DRAIN_NO_REPORT_CEILING == 0.25
         assert dispatch.DRAIN_YIELD_AFTER_S == 123.0
-        assert session_handle.DRAIN_YIELD_AFTER_S == 123.0
-    assert dispatch.DRAIN_YIELD_AFTER_S is before
-    assert session_handle.DRAIN_YIELD_AFTER_S is before
+        assert session_handle._MCP_DRAIN_NO_REPORT_CEILING == 0.25
+    assert mcp._MCP_DRAIN_NO_REPORT_CEILING is before
+    assert dispatch.DRAIN_YIELD_AFTER_S is yield_before
+    assert session_handle._MCP_DRAIN_NO_REPORT_CEILING is before
 
 
 def test_a_patch_of_a_served_helper_lands_on_its_reader_and_is_undone(
@@ -817,6 +910,79 @@ def test_a_patch_of_a_served_helper_lands_on_its_reader_and_is_undone(
         assert "_DRAIN_CLOSED_STOP_REASONS" not in vars(session_handle)
     assert turn._DRAIN_CLOSED_STOP_REASONS is before
     assert session_handle._DRAIN_CLOSED_STOP_REASONS is before
+
+
+# --------------------------------------------------------------------------- #
+# The class home: the class statement lives in session_handle_class.py.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_class_keeps_the_facade_as_its_module_name_and_pickle_path() -> None:
+    from kiro_crew.acp import runtime, session_handle_class
+
+    assert AcpSessionHandle is session_handle_class.AcpSessionHandle is runtime.AcpSessionHandle
+    assert (AcpSessionHandle.__module__, AcpSessionHandle.__qualname__) == (
+        _FACADE,
+        "AcpSessionHandle",
+    )
+    # What pickle and ``typing.get_type_hints`` do with a class: look it up by its module
+    # and qualified name.
+    assert getattr(sys.modules[AcpSessionHandle.__module__], "AcpSessionHandle") is AcpSessionHandle
+    assert inspect.getdoc(AcpSessionHandle)
+
+
+def test_every_class_resident_member_resolves_its_type_hints() -> None:
+    import typing
+
+    for name, (kind, _c, _d, owner) in _MEMBERS.items():
+        if kind == "data" or owner != _CLASS_HOME:
+            continue
+        typing.get_type_hints(_member_function(name))
+    assert set(typing.get_type_hints(AcpSessionHandle)) >= _DECLARED
+
+
+def test_only_the_facade_imports_the_class_home() -> None:
+    root = Path(session_handle.__file__ or "").resolve().parents[1]
+    importers = sorted(
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*.py")
+        if _imports_the_class_home(ast.parse(path.read_text(encoding="utf-8")))
+    )
+    assert importers == ["acp/session_handle.py"]
+
+
+def _imports_the_class_home(tree: ast.Module) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if node.module == f"{_PACKAGE}.{_CLASS_HOME}":
+                return True
+            if node.module == _PACKAGE and any(a.name == _CLASS_HOME for a in node.names):
+                return True
+        elif isinstance(node, ast.Import) and any(
+            a.name == f"{_PACKAGE}.{_CLASS_HOME}" for a in node.names
+        ):
+            return True
+    return False
+
+
+def test_the_class_home_import_scan_can_fail() -> None:
+    assert _imports_the_class_home(ast.parse("from kiro_crew.acp.session_handle_class import X\n"))
+    assert _imports_the_class_home(ast.parse("from kiro_crew.acp import session_handle_class\n"))
+    assert not _imports_the_class_home(ast.parse("from kiro_crew.acp import session_handle\n"))
+
+
+def test_the_model_parsers_normalize_through_the_function_the_class_binds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``parse_advertised_models`` calls its owner's ``_normalize_models`` (it read the class
+    attribute before the class moved), and the class binds that same function."""
+    models = sys.modules["kiro_crew.acp.session_handle_model_selection"]
+    assert vars(AcpSessionHandle)["_normalize_models"].__func__ is models._normalize_models
+    normalized: list[dict[str, str]] = [{"modelId": "normalized"}]
+    monkeypatch.setattr(models, "_normalize_models", lambda raw: normalized)
+    wrapped = {"models": {"availableModels": [{"modelId": "raw"}]}}
+    assert models.parse_advertised_models(wrapped) is normalized
+    assert models.parse_advertised_models({"models": [{"modelId": "raw"}]}) is normalized
 
 
 # --------------------------------------------------------------------------- #

@@ -284,7 +284,7 @@ ACP_BACKENDS_COMPACT = frozenset(
 # auto-summarization and emits ``summarization_started`` /
 # ``summarization_completed``, which ``acp.kas_wire`` maps to a compaction status and
 # which calls ``reset_after_compaction()`` on the meter
-# (``acp/session_handle.py``) -- so the reading that crossed
+# (``acp/session_handle_kas.py``) -- so the reading that crossed
 # ``session.autocompact_pct`` drops on its own and the user-facing "manages
 # compaction automatically" is a description rather than a hope. A backend outside
 # BOTH this set and ``ACP_BACKENDS_COMPACT`` has no compaction path Crew can see on

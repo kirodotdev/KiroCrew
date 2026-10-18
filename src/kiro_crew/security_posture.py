@@ -2168,10 +2168,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # gate-side log line) and defers user-facing display to the routed
         # permission event, whose sinks are already registered.
         "acp/runtime.py",
-        "acp/session_handle.py",
         "acp/session_handle_compaction.py",
         "acp/session_handle_dispatch.py",
+        "acp/session_handle_kas.py",
         "acp/session_handle_lifecycle.py",
+        "acp/session_handle_model_selection.py",
+        "acp/session_handle_native_children.py",
+        "acp/session_handle_permissions.py",
         "acp/session_handle_turn.py",
         "platform/defaults.py",
         "platform/interfaces.py",
