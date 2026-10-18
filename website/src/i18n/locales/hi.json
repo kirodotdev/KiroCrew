@@ -8605,6 +8605,8 @@
       "loading_preview": "पूर्वावलोकन लोड हो रहा है...",
       "no_preview_available": "कोई प्रीव्यू उपलब्ध नहीं।",
       "overwrite": "अधिलेखित करें",
+      "provider_could_not_search": "{{provider}} में खोज नहीं हो सकी: {{reason}}",
+      "provider_did_not_answer": "{{provider}} ने जवाब नहीं दिया।",
       "select_a_skill_to_preview": "पूर्वावलोकन के लिए कोई स्किल चुनें",
       "skill_search_results": "स्किल खोज परिणाम",
       "source": "स्रोत"

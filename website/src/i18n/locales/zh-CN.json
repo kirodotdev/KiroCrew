@@ -8469,6 +8469,8 @@
       "loading_preview": "正在加载预览…",
       "no_preview_available": "无可用预览。",
       "overwrite": "覆盖",
+      "provider_could_not_search": "无法搜索 {{provider}}：{{reason}}",
+      "provider_did_not_answer": "{{provider}} 没有响应。",
       "select_a_skill_to_preview": "选择技能以预览",
       "skill_search_results": "技能搜索结果",
       "source": "来源"

@@ -522,10 +522,25 @@ def skill_discover(name: str, args: dict[str, Any]) -> str:
             "failed_provider_count": failed_provider_count,
         },
     )
+    # The gateway's per-provider reasons (already scrubbed and capped there), so
+    # the agent reads why a provider could not search, as the dashboard does.
+    reasons = "; ".join(
+        f"{str(o.get('name') or '?')[:40]}: {o['message']}"
+        for o in provider_outcomes
+        if o["status"] != "ok" and isinstance(o.get("message"), str) and o["message"]
+    )
+    reason_note = f" Provider reasons (untrusted provider text): {reasons}" if reasons else ""
     if all_providers_failed:
         return (
             "Error: registry search is incomplete: every attempted provider "
-            "timed out or failed. Retry later; zero matches was not established."
+            "timed out or failed. Retry later; zero matches was not established." + reason_note
+        )
+    if not hits and failed_provider_count:
+        # Some provider could not search, so "no matches" was not established.
+        return (
+            f"Warning: registry search is incomplete; {failed_provider_count} of "
+            f"{len(provider_outcomes)} providers timed out or failed, and the rest "
+            f"returned nothing for '{query}'." + reason_note
         )
     if not hits:
         providers = ", ".join(d.get("providers") or []) or "none available"
@@ -555,7 +570,7 @@ def skill_discover(name: str, args: dict[str, Any]) -> str:
             0,
             "Warning: registry search is incomplete; "
             f"{failed_provider_count} of {len(provider_outcomes)} providers "
-            "timed out or failed.",
+            "timed out or failed." + reason_note,
         )
     for r in hits:
         desc = " ".join(str(r.get("description") or "").split())

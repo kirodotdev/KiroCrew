@@ -31,6 +31,7 @@ import asyncio
 import ipaddress
 import json
 import logging
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -62,6 +63,72 @@ READ_CHUNK_BYTES = 64 * 1024
 #: invoked when the internal-address screen fires. Signature:
 #: ``(url, host, canonical_host) -> None``.
 AuditHook = Callable[[str, str, str], None]
+
+
+class FetchError(Exception):
+    """Why a fetch produced nothing, for a caller that asked to know.
+
+    Raised only when a fetch is called with ``raise_on_failure=True``; every
+    other caller keeps the ``None`` contract. It carries facts a provider can
+    turn into a user-facing reason -- an HTTP status, whether the host said its
+    rate limit is used up, and when that limit resets -- and never the response
+    body or the URL, so nothing a remote host wrote reaches the user through it.
+
+    ``reason`` is one of a fixed set: ``http`` (a non-200 answer, see
+    ``status``), ``network`` (no answer: refused redirect, DNS, timeout, reset),
+    ``blocked`` (the internal-address screen refused the URL), ``too_large``,
+    ``decode`` (not UTF-8 text, or not JSON).
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        status: int | None = None,
+        rate_limited: bool = False,
+        reset_at: int | None = None,
+    ) -> None:
+        super().__init__(reason if status is None else f"{reason} {status}")
+        self.reason = reason
+        self.status = status
+        self.rate_limited = rate_limited
+        self.reset_at = reset_at
+
+
+def _http_failure(exc: urllib.error.HTTPError) -> FetchError:
+    """Classify a non-2xx answer, reading only its status and rate-limit headers.
+
+    A 429 is always a rate limit. A 403 is one only when the host says so with
+    ``X-RateLimit-Remaining: 0`` (GitHub's primary limit) or a ``Retry-After``
+    (its secondary limit); any other 403 is a plain refusal. The reset time comes
+    from ``X-RateLimit-Reset`` (epoch seconds) or ``Retry-After`` (seconds from
+    now), and is dropped when it does not parse.
+    """
+    headers = exc.headers
+    get = headers.get if headers is not None else (lambda _name, _default=None: None)
+    remaining = (get("X-RateLimit-Remaining") or "").strip()
+    retry_after = (get("Retry-After") or "").strip()
+    rate_limited = exc.code == 429 or (exc.code == 403 and (remaining == "0" or bool(retry_after)))
+    reset_at: int | None = None
+    if rate_limited:
+        # ``Retry-After`` first: on a secondary limit GitHub also sends the PRIMARY
+        # window's ``X-RateLimit-Reset``, which can be most of an hour away.
+        reset_raw = (get("X-RateLimit-Reset") or "").strip()
+        now = int(time.time())
+        if retry_after.isdigit():
+            reset_at = now + int(retry_after)
+        elif reset_raw.isdigit():
+            reset_at = int(reset_raw)
+        # A reset outside the next day is not a time worth naming (and a huge
+        # value would overflow ``time.gmtime``), so drop it.
+        if reset_at is not None and not now <= reset_at <= now + 86400:
+            reset_at = None
+    return FetchError(
+        "http",
+        status=exc.code,
+        rate_limited=rate_limited,
+        reset_at=reset_at,
+    )
 
 
 def audit_ssrf_blocked(caller: str, url: str, host: str, canonical_host: str) -> None:
@@ -188,11 +255,21 @@ def open_guarded(
     *,
     allowed_hosts: Iterable[str],
     internal_check: Callable[[str], bool],
+    raise_http_errors: bool = False,
 ):
-    """Open *req* with redirects held to *allowed_hosts*. None if blocked/failed."""
+    """Open *req* with redirects held to *allowed_hosts*. None if blocked/failed.
+
+    With ``raise_http_errors`` a non-2xx answer re-raises its ``HTTPError``
+    instead of reading as None, so a caller can see the status and headers.
+    Either way this is the one opener every fetch uses, so its guards cover all.
+    """
     opener = urllib.request.build_opener(_redirect_handler(allowed_hosts, internal_check))
     try:
         return opener.open(req, timeout=TIMEOUT_SECS)
+    except urllib.error.HTTPError:
+        if raise_http_errors:
+            raise
+        return None
     except urllib.error.URLError:
         return None
 
@@ -225,32 +302,55 @@ def sync_fetch_bytes(
     internal_check: Callable[[str], bool],
     headers: dict[str, str] | None = None,
     max_bytes: int = MAX_RESPONSE_BYTES,
+    raise_on_failure: bool = False,
 ) -> bytes | None:
     """Fetch *url* and return its bounded body. None on any failure.
 
     Blocking; callers reach it through :func:`fetch_json` / :func:`fetch_text` or
     their own executor offload.
+
+    With ``raise_on_failure`` every failure raises :class:`FetchError` instead,
+    so a provider can tell the user WHY it got nothing. The guards are the same
+    on both paths; only the way a failure is reported differs.
     """
     if internal_check(url):
+        if raise_on_failure:
+            raise FetchError("blocked")
         return None
     request_headers = {"User-Agent": USER_AGENT}
     if headers:
         request_headers.update(headers)
+    req = urllib.request.Request(url, headers=request_headers)
     try:
-        resp = open_guarded(
-            urllib.request.Request(url, headers=request_headers),
-            allowed_hosts=allowed_hosts,
-            internal_check=internal_check,
-        )
+        try:
+            resp = open_guarded(
+                req,
+                allowed_hosts=allowed_hosts,
+                internal_check=internal_check,
+                raise_http_errors=raise_on_failure,
+            )
+        except urllib.error.HTTPError as exc:
+            failure = _http_failure(exc)
+            exc.close()
+            raise failure from None
         if resp is None:
+            if raise_on_failure:
+                raise FetchError("network")
             return None
         try:
             if resp.status != 200:
+                if raise_on_failure:
+                    raise FetchError("http", status=resp.status)
                 return None
-            return read_bounded(resp, max_bytes)
+            body = read_bounded(resp, max_bytes)
+            if body is None and raise_on_failure:
+                raise FetchError("too_large")
+            return body
         finally:
             resp.close()
     except (urllib.error.URLError, OSError):
+        if raise_on_failure:
+            raise FetchError("network") from None
         return None
 
 
@@ -261,20 +361,27 @@ def sync_fetch_json(
     internal_check: Callable[[str], bool],
     headers: dict[str, str] | None = None,
     max_bytes: int = MAX_RESPONSE_BYTES,
+    raise_on_failure: bool = False,
 ) -> Any | None:
-    """Fetch *url* and decode it as JSON. None on any failure."""
+    """Fetch *url* and decode it as JSON. None on any failure.
+
+    ``raise_on_failure`` as in :func:`sync_fetch_bytes`.
+    """
     data = sync_fetch_bytes(
         url,
         allowed_hosts=allowed_hosts,
         internal_check=internal_check,
         headers=headers,
         max_bytes=max_bytes,
+        raise_on_failure=raise_on_failure,
     )
     if data is None:
         return None
     try:
         return json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
+        if raise_on_failure:
+            raise FetchError("decode") from None
         return None
 
 
@@ -285,12 +392,14 @@ def sync_fetch_text(
     internal_check: Callable[[str], bool],
     headers: dict[str, str] | None = None,
     max_bytes: int = MAX_RESPONSE_BYTES,
+    raise_on_failure: bool = False,
 ) -> str | None:
     """Fetch *url* and decode it as UTF-8 text. None on any failure.
 
     A body that is not valid UTF-8 returns None rather than lossily decoding:
     every consumer here writes the result to a skill file, and a mojibake'd
-    binary blob on disk is worse than a skipped file.
+    binary blob on disk is worse than a skipped file. ``raise_on_failure`` as in
+    :func:`sync_fetch_bytes`.
     """
     data = sync_fetch_bytes(
         url,
@@ -298,12 +407,15 @@ def sync_fetch_text(
         internal_check=internal_check,
         headers=headers,
         max_bytes=max_bytes,
+        raise_on_failure=raise_on_failure,
     )
     if data is None:
         return None
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
+        if raise_on_failure:
+            raise FetchError("decode") from None
         return None
 
 
@@ -313,11 +425,15 @@ async def run_off_loop(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any
     Every network call in this module is blocking ``urllib``, so each provider
     coroutine hands it here rather than stalling the event loop. Failures are
     swallowed to None because that is the contract every caller already has for
-    "the fetch did not produce anything".
+    "the fetch did not produce anything" -- except :class:`FetchError`, which only
+    a fetch that asked for it raises, and which passes through so that caller
+    learns why.
     """
     try:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+    except FetchError:
+        raise
     except Exception:
         logger.debug("Off-loop skill-provider fetch failed", exc_info=True)
         return None

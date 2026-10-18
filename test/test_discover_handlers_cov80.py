@@ -260,7 +260,11 @@ async def test_search_reports_provider_errors_in_response_and_audit(
     )
 
     assert payload["results"] == []
-    assert payload["provider_outcomes"] == [{"name": "covprov", "status": "error"}]
+    # An unexplained failure carries no code/message: only a provider that raised
+    # SkillProviderError gets a reason shown.
+    (outcome,) = payload["provider_outcomes"]
+    assert {k: outcome[k] for k in ("name", "status")} == {"name": "covprov", "status": "error"}
+    assert "code" not in outcome and "message" not in outcome
     kwargs = sel_mock.log_tool_invocation.call_args.kwargs
     assert kwargs["metadata"]["failed_provider_count"] == "1"
 
@@ -621,3 +625,106 @@ async def test_preview_prefers_agents_md_over_another_markdown_file(
     assert payload["name"] == "cov-skill"
     assert payload["files"] == ["README.md", "AGENTS.md"]
     assert payload["file_count"] == 2
+
+
+# --- provider reasons --------------------------------------------------------
+#
+# A provider that raises SkillProviderError could not look, which is a different
+# answer from "nothing matched". These pin that the reason reaches the user on
+# search, install and preview -- scrubbed -- and that an empty catalog still reads
+# as an ok, empty search.
+
+
+@pytest.mark.asyncio
+async def test_search_carries_the_providers_reason_scrubbed(
+    state: MagicMock, registry: ProviderRegistry, sel_mock: MagicMock
+) -> None:
+    from kiro_crew.skill_providers.base import SkillProviderError
+
+    provider = _BundleProvider()
+    provider.search = AsyncMock(  # type: ignore[method-assign]
+        side_effect=SkillProviderError(
+            "rate_limited", "Limit used up. token=ghp_" + "a" * 36 + " Try again later."
+        )
+    )
+    registry.register(provider)
+
+    payload = _body(
+        await h.api_skills_discover(_mk("GET", "/api/skills/-/discover?q=cov", state=state))
+    )
+
+    assert payload["results"] == []
+    (outcome,) = payload["provider_outcomes"]
+    assert outcome["status"] == "error"
+    assert "code" not in outcome  # the code stays in the audit log, not on the wire
+    metadata = sel_mock.log_tool_invocation.call_args.kwargs["metadata"]
+    assert metadata["failure_codes"] == "covprov:rate_limited"
+    assert outcome["display_name"] == "Cov Provider"
+    assert outcome["message"].startswith("Limit used up.")
+    assert "ghp_" + "a" * 36 not in outcome["message"]
+    assert len(outcome["message"]) <= h._MAX_REASON_CHARS
+
+
+@pytest.mark.asyncio
+async def test_an_empty_catalog_is_still_an_ok_empty_search(
+    state: MagicMock, registry: ProviderRegistry, sel_mock: MagicMock
+) -> None:
+    registry.register(_BundleProvider())  # search returns [] -- looked, nothing matched
+
+    payload = _body(
+        await h.api_skills_discover(_mk("GET", "/api/skills/-/discover?q=cov", state=state))
+    )
+
+    assert payload["results"] == []
+    (outcome,) = payload["provider_outcomes"]
+    assert outcome["status"] == "ok"
+    assert "code" not in outcome and "message" not in outcome
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["rate_limited", "not_found", "refused", "unavailable"])
+async def test_install_returns_the_providers_reason(
+    code: str,
+    state: MagicMock,
+    registry: ProviderRegistry,
+    sel_mock: MagicMock,
+    skills_root: Path,
+) -> None:
+    from kiro_crew.skill_providers.base import SkillProviderError
+
+    provider = _BundleProvider()
+    provider.fetch_skill_bundle = AsyncMock(  # type: ignore[method-assign]
+        side_effect=SkillProviderError(code, "Cannot import acme/x: 'a.md' is too big.")
+    )
+    registry.register(provider)
+    request = _mk("POST", "/i", state=state, body={"provider": "covprov", "skill_id": "cov-skill"})
+
+    response = await h.api_skills_discover_install(request)
+
+    assert response.status == 502
+    assert _body(response) == {"error": "Cannot import acme/x: 'a.md' is too big.", "code": code}
+    assert sel_mock.log_tool_invocation.call_args.kwargs["error"] == code
+    assert list(skills_root.iterdir()) == []  # a refusal writes nothing
+
+
+@pytest.mark.asyncio
+async def test_preview_carries_the_providers_reason(
+    state: MagicMock, registry: ProviderRegistry, sel_mock: MagicMock
+) -> None:
+    from kiro_crew.skill_providers.base import SkillProviderError
+
+    provider = _BundleProvider()
+    provider.fetch_skill_bundle = AsyncMock(  # type: ignore[method-assign]
+        side_effect=SkillProviderError("not_found", "GitHub found no repository acme/x.")
+    )
+    registry.register(provider)
+
+    payload = _body(
+        await h.api_skills_discover_preview(
+            _mk("GET", "/p?provider=covprov&id=acme/x", state=state)
+        )
+    )
+
+    assert payload["content"] == "" and payload["files"] == []
+    assert "code" not in payload
+    assert payload["error"] == "GitHub found no repository acme/x."

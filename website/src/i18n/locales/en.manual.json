@@ -3328,7 +3328,9 @@
     "skillBrowserModal": {
       "bundle_contents_count": "Bundle contents ({{count}} files)",
       "install_skill": "Install Skill",
-      "no_preview_available": "No preview available."
+      "no_preview_available": "No preview available.",
+      "provider_could_not_search": "Could not search {{provider}}: {{reason}}",
+      "provider_did_not_answer": "{{provider}} did not answer."
     },
     "skillDirectoryBrowser": {
       "failed_to_load_file": "Failed to load file",

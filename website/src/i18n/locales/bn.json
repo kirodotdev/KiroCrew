@@ -8605,6 +8605,8 @@
       "loading_preview": "প্রিভিউ লোড হচ্ছে...",
       "no_preview_available": "কোনো প্রিভিউ নেই।",
       "overwrite": "ওভাররাইট করুন",
+      "provider_could_not_search": "{{provider}}-এ খোঁজা যায়নি: {{reason}}",
+      "provider_did_not_answer": "{{provider}} সাড়া দেয়নি।",
       "select_a_skill_to_preview": "প্রিভিউ দেখতে একটি স্কিল নির্বাচন করুন",
       "skill_search_results": "স্কিল অনুসন্ধানের ফলাফল",
       "source": "উৎস"

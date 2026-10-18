@@ -8469,6 +8469,8 @@
       "loading_preview": "미리 보기를 불러오는 중…",
       "no_preview_available": "미리 보기가 없습니다.",
       "overwrite": "덮어쓰기",
+      "provider_could_not_search": "{{provider}}에서 검색할 수 없습니다: {{reason}}",
+      "provider_did_not_answer": "{{provider}}이(가) 응답하지 않았습니다.",
       "select_a_skill_to_preview": "미리 볼 스킬을 선택하세요",
       "skill_search_results": "스킬 검색 결과",
       "source": "출처"

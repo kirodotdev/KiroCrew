@@ -192,6 +192,81 @@ describe('SkillBrowserModal', () => {
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
   })
 
+  it('an empty catalog that answered ok still reads as no results', async () => {
+    mockApi.discoverSkills.mockResolvedValue({
+      results: [],
+      providers: ['github'],
+      provider_outcomes: [{ name: 'github', display_name: 'GitHub repo', status: 'ok' }],
+    })
+    renderModal()
+    await search('acme/empty')
+
+    expect(await screen.findByText(/found for/)).toBeInTheDocument()
+    expect(screen.queryByTestId('skill-browser-provider-error')).not.toBeInTheDocument()
+  })
+
+  it('a provider that could not search shows its reason instead of no results', async () => {
+    mockApi.discoverSkills.mockResolvedValue({
+      results: [],
+      providers: ['github'],
+      provider_outcomes: [{
+        name: 'github',
+        display_name: 'GitHub repo',
+        status: 'error',
+        message: 'Limit used up. Try again in about 12 minutes.',
+      }],
+    })
+    renderModal()
+    await search('acme/widgets')
+
+    expect(await screen.findByText('Could not search GitHub repo: Limit used up. Try again in about 12 minutes.'))
+      .toBeInTheDocument()
+    expect(screen.queryByText(/found for/)).not.toBeInTheDocument()
+  })
+
+  it('a silent provider with nothing back is named instead of "no results"', async () => {
+    mockApi.discoverSkills.mockResolvedValue({
+      results: [],
+      providers: ['skillsh'],
+      provider_outcomes: [{ name: 'skillsh', display_name: 'skills.sh', status: 'timeout' }],
+    })
+    renderModal()
+    await search('widget')
+
+    expect(await screen.findByText('skills.sh did not answer.')).toBeInTheDocument()
+    expect(screen.queryByText(/found for/)).not.toBeInTheDocument()
+  })
+
+  it('one failed provider beside results is named, and the results still show', async () => {
+    mockApi.discoverSkills.mockResolvedValue({
+      results: [aSkill()],
+      providers: ['skillsh', 'github'],
+      provider_outcomes: [
+        { name: 'skillsh', display_name: 'skills.sh', status: 'ok' },
+        { name: 'github', display_name: 'GitHub repo', status: 'timeout' },
+      ],
+    })
+    renderModal()
+    await search('widget')
+
+    expect(await screen.findByRole('option', { name: 'widget-wrangler' })).toBeInTheDocument()
+    expect(screen.getByText('GitHub repo did not answer.')).toBeInTheDocument()
+  })
+
+  it('the detail pane shows why a preview is empty when the provider said', async () => {
+    mockApi.discoverSkills.mockResolvedValue({ results: [aSkill({ description: '' })], providers: ['skillsh'] })
+    mockApi.previewDiscoveredSkill.mockResolvedValue({
+      name: '',
+      description: '',
+      error: 'skills.sh has no skill with that id.',
+    } satisfies DiscoverSkillPreview)
+    renderModal()
+    await search('widget')
+    fireEvent.click(await screen.findByRole('option', { name: 'widget-wrangler' }))
+
+    expect(await screen.findByText('skills.sh has no skill with that id.')).toBeInTheDocument()
+  })
+
   it('clearing the search drops the results and the selection', async () => {
     mockApi.discoverSkills.mockResolvedValue({ results: [aSkill()], providers: ['skillsh'] })
     renderModal()

@@ -4535,9 +4535,15 @@ Three rules survive beside it, for the cases the shape permits: `..` anywhere, a
 trailing dot, and a reserved device stem. The cost is real and accepted -- a
 repository carrying `my file.md` is refused rather than imported -- and it buys the
 property that an import lands complete or names the file it cannot take.
-`TestWriterCompatibility` pins both directions. `fetch_skill_bundle` can only answer `None`, so the
-reason currently reaches the log rather than the user — an error channel on the
-`SkillProvider` Protocol is follow-up work. Branch tracking / re-sync is deliberately out of scope (#746 covers the
+`TestWriterCompatibility` pins both directions. A refusal reaches the user: a provider that
+cannot answer raises `SkillProviderError(code, message)` (`skill_providers/base.py`), while
+`search() -> []` keeps meaning "looked, nothing matched" and `fetch_skill_bundle() -> None`
+"nothing to fetch". The codes (`rate_limited`, `not_found`, `refused`, `unavailable`) are for
+the audit log and the error-code contract; the user reads `message`, which the discover handler
+scrubs with `_redact_external` and caps at 300 characters. Search puts it on the provider's
+`provider_outcomes` entry as `message` (beside an optional `display_name`), install answers 502
+with `{error, code}`, and preview adds `error` to its empty shape. GitHub's rate limit names a
+relative wait from `Retry-After` or `X-RateLimit-Reset`. Branch tracking / re-sync is deliberately out of scope (#746 covers the
 adjacent design). Requests are unauthenticated (60/hour/IP), so private
 repositories are not reachable. An installed skill's key comes from the provider, not from its id:
 `_slugify` lowercases and folds `/`, `@` and `:` all onto `-`, so it is not

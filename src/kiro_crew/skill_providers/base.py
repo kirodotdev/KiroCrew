@@ -82,6 +82,45 @@ class SkillSearchResult:
     """Install/download count reported by the provider (0 = unknown)."""
 
 
+#: The codes a :class:`SkillProviderError` may carry. A code outside this set is
+#: reported as ``unavailable``, so a caller can branch on the code without
+#: trusting a provider to spell it.
+PROVIDER_ERROR_CODES = frozenset({"rate_limited", "not_found", "refused", "unavailable"})
+
+
+class SkillProviderError(Exception):
+    """A provider could not answer, as opposed to answering "nothing".
+
+    ``search`` returning ``[]`` means the provider looked and nothing matched;
+    ``fetch_skill_bundle``/``fetch_skill_content`` returning ``None`` means there
+    is nothing to fetch. Raising this instead says the provider could NOT look,
+    or refused on purpose, and why -- so the dashboard can show the reason in
+    place of an empty result.
+
+    ``code`` is one of :data:`PROVIDER_ERROR_CODES`:
+
+    - ``rate_limited`` -- the remote host's request budget is used up; the user
+      can wait (``message`` should say until when, if known);
+    - ``not_found`` -- the address names nothing: a missing or private
+      repository, a ref that does not exist;
+    - ``refused`` -- the content exists but the provider will not import it
+      (a size or file-count ceiling, a name collision, a partial listing);
+    - ``unavailable`` -- the host could not be reached or answered with
+      something unusable.
+
+    ``message`` is one short sentence for the person who can act on it. It is
+    still provider-authored text: the discover handler scrubs and caps it before
+    it reaches the dashboard, so a provider must not rely on it being shown
+    verbatim -- and must never put a token, a credential-bearing URL or a raw
+    response body in it.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code if code in PROVIDER_ERROR_CODES else "unavailable"
+        self.message = message
+
+
 @dataclass(frozen=True)
 class SkillProviderOutcome:
     """Outcome of one provider leg in a skill catalog search."""
@@ -89,6 +128,12 @@ class SkillProviderOutcome:
     name: str
     status: str
     """One of ``ok``, ``timeout``, or ``error``."""
+
+    code: str = ""
+    """For an ``error`` the provider explained: a :data:`PROVIDER_ERROR_CODES` member."""
+
+    message: str = ""
+    """For an ``error`` the provider explained: its reason, unscrubbed."""
 
 
 @dataclass(frozen=True)
@@ -122,7 +167,8 @@ class SkillProvider(Protocol):
 
         Returns up to *limit* results matching *query*. Empty query may
         return featured/popular skills or an empty list depending on the
-        provider's semantics.
+        provider's semantics. ``[]`` means "looked, nothing matched"; a
+        provider that could not look raises :class:`SkillProviderError`.
         """
         ...
 
@@ -130,7 +176,8 @@ class SkillProvider(Protocol):
         """Fetch the raw SKILL.md content for a given skill.
 
         Returns the full markdown content ready to write to disk, or
-        None if the skill cannot be fetched.
+        None if there is no such skill. A provider that can say why it got
+        nothing raises :class:`SkillProviderError` instead.
         """
         ...
 
@@ -152,7 +199,8 @@ class SkillProvider(Protocol):
     # ``fetch_skill_bundle(skill_id) -> list[tuple[str, str]] | None``
     #     Every file of the skill as ``(relative_path, content)``, not just the
     #     instruction file. Preferred by both preview and install when present;
-    #     ``fetch_skill_content`` is the single-file fallback.
+    #     ``fetch_skill_content`` is the single-file fallback. May raise
+    #     ``SkillProviderError`` exactly as ``fetch_skill_content`` may.
     #
     # ``install_slug(skill_id) -> str``
     #     The provider's own local key for a skill, used when the default
@@ -254,6 +302,21 @@ class ProviderRegistry:
                 return SkillSearchResponse(
                     results=results,
                     provider_outcomes=[SkillProviderOutcome(name=name, status="ok")],
+                )
+            except SkillProviderError as exc:
+                # The provider could not look and said why. Logged at info: the
+                # reason now reaches the user, so this is not an unexplained fault.
+                logger.info("Provider %s could not search (%s)", name, exc.code)
+                return SkillSearchResponse(
+                    results=[],
+                    provider_outcomes=[
+                        SkillProviderOutcome(
+                            name=name,
+                            status="error",
+                            code=exc.code,
+                            message=exc.message if isinstance(exc.message, str) else "",
+                        )
+                    ],
                 )
             except asyncio.TimeoutError:
                 logger.warning("Provider %s timed out for query %r", name, query)

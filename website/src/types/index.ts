@@ -732,10 +732,22 @@ export interface DiscoveredSkill {
   installs?: number
 }
 
+/** Outcome of one provider leg in a skill discovery search. */
+export interface SkillProviderOutcome {
+  name: string
+  /** Display label for the provider; absent on gateways that predate it. */
+  display_name?: string
+  status: 'ok' | 'timeout' | 'error'
+  /** The provider's reason, scrubbed server-side. Set only when it said why it could not search. */
+  message?: string
+}
+
 /** Response from GET /api/skills/-/discover */
 export interface DiscoverSkillsResponse {
   results: DiscoveredSkill[]
   providers: string[]
+  /** Additive for compatibility with gateways that predate outcome reporting. */
+  provider_outcomes?: SkillProviderOutcome[]
 }
 
 /** Response from GET /api/skills/-/discover/preview */
@@ -749,6 +761,8 @@ export interface DiscoverSkillPreview {
   /** Bundle file manifest (capped at 200 entries). */
   files?: string[]
   file_count?: number
+  /** Why the provider could not fetch the skill, when it said (scrubbed server-side). */
+  error?: string
 }
 
 /** Response from POST /api/skills/-/discover/install */

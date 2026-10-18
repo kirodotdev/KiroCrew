@@ -8741,6 +8741,8 @@
       "loading_preview": "Chargement de l'aperçu...",
       "no_preview_available": "Aucun aperçu disponible.",
       "overwrite": "Écraser",
+      "provider_could_not_search": "Impossible de chercher dans {{provider}} : {{reason}}",
+      "provider_did_not_answer": "{{provider}} n'a pas répondu.",
       "select_a_skill_to_preview": "Sélectionnez une compétence pour l'aperçu",
       "skill_search_results": "Résultats de recherche de compétences",
       "source": "Source"

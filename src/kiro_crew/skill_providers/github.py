@@ -70,13 +70,14 @@ because the shape genuinely permits them: ``..`` anywhere (the writer refuses it
 trailing dot (Windows strips it), and a reserved device name. A skill missing a file its own instructions
 reference does not fail at import; it fails later, somewhere else, as a puzzle.
 The only deliberate omissions are ``_EXCLUDED_NAMES``, which are never skill
-content. ``fetch_skill_bundle`` can only answer ``None``, so the reason reaches
-the log and not yet the user -- an error channel on the Protocol is follow-up work.
+content. Every refusal raises :class:`SkillProviderError` with the reason, so the
+user reads which file and why instead of "not found or empty".
 
 **Rate limit.** Requests are unauthenticated, which GitHub limits to 60 per hour
 per IP; one discover/preview/install cycle costs two API calls plus one raw fetch
-per file. Authenticated fetches (and caching the resolved tree) are follow-up
-work, not a gap in the trust posture.
+per file. When GitHub says the limit is used up, discovery and install say so,
+with the reset time GitHub sent. Authenticated fetches (and caching the resolved
+tree) are follow-up work, not a gap in the trust posture.
 """
 
 from __future__ import annotations
@@ -95,7 +96,7 @@ from typing import Any, Iterable
 
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.skill_providers import _http
-from kiro_crew.skill_providers.base import SkillSearchResult
+from kiro_crew.skill_providers.base import SkillProviderError, SkillSearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +224,8 @@ _MAX_SKILLS_PER_REPO = 20
 # guard is 5 MiB, so this is the one that binds first.
 _MAX_BUNDLE_FILES = 50
 _MAX_BUNDLE_BYTES = _http.MAX_RESPONSE_BYTES
+# The same ceiling in the unit a refusal message shows the user.
+_BUNDLE_MB = _MAX_BUNDLE_BYTES // (1024 * 1024)
 
 # The pin record written into every imported skill directory. Dot-prefixed to
 # match the loader's other sidecar (``.builtin-skill-provenance``) and so it
@@ -403,6 +406,14 @@ def parse_repo_spec(raw: Any) -> RepoSpec | None:
     return RepoSpec(owner=owner, repo=repo, ref=ref, path=path)
 
 
+def _is_bare_slug(query: str, spec: RepoSpec) -> bool:
+    """Whether *query* is a plain ``owner/repo`` with no ref, path or URL prefix."""
+    if spec.ref or spec.path:
+        return False
+    lowered = query.strip().lower()
+    return not any(lowered.startswith(prefix) for prefix in _URL_PREFIXES)
+
+
 class GitHubRepoProvider:
     """Provider that imports skills from a GitHub repository, pinned to a commit.
 
@@ -478,9 +489,18 @@ class GitHubRepoProvider:
         if spec is None:
             return []
 
-        commit = await self._resolve_commit(spec)
-        if commit is None:
-            return []
+        # Both raise SkillProviderError when GitHub could not answer, so ``[]``
+        # below always means "looked, and this repository holds no skill".
+        try:
+            commit = await self._resolve_commit(spec)
+        except SkillProviderError as exc:
+            # A bare ``owner/repo`` is also an ordinary catalog query shape
+            # ("react/hooks") that every aggregate search sends here, so a missing
+            # repository for it is "nothing matched", not a reason to show. An
+            # explicit address (@ref, :path, a github.com URL) still says why.
+            if exc.code == "not_found" and _is_bare_slug(query, spec):
+                return []
+            raise
         blobs = await self._list_blobs(spec, commit)
         if not blobs:
             return []
@@ -561,11 +581,7 @@ class GitHubRepoProvider:
         if spec is None:
             return None
         commit = await self._resolve_commit(spec)
-        if commit is None:
-            return None
         blobs = await self._list_blobs(spec, commit)
-        if not blobs:
-            return None
 
         own_files = _own_skill_files(blobs)
         if own_files is None:
@@ -573,7 +589,9 @@ class GitHubRepoProvider:
                 "GitHub address %r holds no SKILL.md at its root; refusing bundle",
                 spec.address(),
             )
-            return None
+            raise SkillProviderError(
+                "not_found", f"{spec.address()} has no SKILL.md or AGENTS.md at its root."
+            )
 
         wanted = [
             (path, size)
@@ -581,14 +599,14 @@ class GitHubRepoProvider:
             if posixpath.basename(path) not in _EXCLUDED_NAMES
         ]
         if not wanted:
-            return _refuse(spec, "it holds no importable file")
+            raise _refuse(spec, "it holds no importable file")
         if len(wanted) > _MAX_BUNDLE_FILES:
-            return _refuse(
+            raise _refuse(
                 spec, f"it holds {len(wanted)} files, over the {_MAX_BUNDLE_FILES} ceiling"
             )
         oversized = [path for path, size in wanted if size > _MAX_BUNDLE_BYTES]
         if oversized:
-            return _refuse(spec, f"{oversized[0]!r} is over the {_MAX_BUNDLE_BYTES}-byte ceiling")
+            raise _refuse(spec, f"{oversized[0]!r} is over the {_BUNDLE_MB} MB limit")
         # One question for the whole set, and PIN_FILENAME is part of it: the pin is
         # appended AFTER this point, so checking only the repository's own paths
         # would let a case-variant of our filename through and then overwrite it.
@@ -597,11 +615,14 @@ class GitHubRepoProvider:
         # cannot be complete.
         problem = _materialisation_problem([path for path, _ in wanted])
         if problem:
-            return _refuse(spec, problem)
+            raise _refuse(spec, problem)
 
-        fetched = await asyncio.gather(
-            *[self._fetch_blob(spec, commit, path) for path, _ in wanted]
-        )
+        try:
+            fetched = await asyncio.gather(
+                *[self._fetch_blob(spec, commit, path) for path, _ in wanted]
+            )
+        except _http.FetchError as exc:
+            raise _fetch_failure(spec, exc, what="file") from None
 
         bundle: list[tuple[str, str]] = []
         total = 0
@@ -611,14 +632,14 @@ class GitHubRepoProvider:
             # installing without it would report success for a skill missing a
             # file its own instructions may reference.
             if raw is None:
-                return _refuse(spec, f"{path!r} could not be fetched")
+                raise _refuse(spec, f"{path!r} could not be fetched")
             try:
                 content = raw.decode("utf-8")
             except UnicodeDecodeError:
-                return _refuse(spec, f"{path!r} is not UTF-8 text")
+                raise _refuse(spec, f"{path!r} is not UTF-8 text")
             total += len(raw)
             if total > _MAX_BUNDLE_BYTES:
-                return _refuse(spec, f"its files total over {_MAX_BUNDLE_BYTES} bytes")
+                raise _refuse(spec, f"its files total over {_BUNDLE_MB} MB")
             bundle.append((path, content))
 
         # The writer copies AGENTS.md to SKILL.md only when SKILL.md is ABSENT, so a
@@ -628,17 +649,17 @@ class GitHubRepoProvider:
         files = dict(bundle)
         if "SKILL.md" in files:
             if not files["SKILL.md"].strip():
-                return _refuse(spec, "its SKILL.md is empty")
+                raise _refuse(spec, "its SKILL.md is empty")
         elif not files.get("AGENTS.md", "").strip():
-            return _refuse(spec, "it has no usable instruction file")
+            raise _refuse(spec, "it has no usable instruction file")
 
         bundle.append((PIN_FILENAME, _pin_record(spec, commit, bundle)))
         return bundle
 
     # ---- GitHub plumbing -------------------------------------------------
 
-    async def _resolve_commit(self, spec: RepoSpec) -> str | None:
-        """Resolve *spec*'s ref to a full commit SHA, or None.
+    async def _resolve_commit(self, spec: RepoSpec) -> str:
+        """Resolve *spec*'s ref to a full commit SHA, or raise why it cannot be.
 
         Asks for the ``sha`` media type rather than the commit object: the object
         carries the commit's whole file list, which for a large merge exceeds the
@@ -652,14 +673,17 @@ class GitHubRepoProvider:
             f"{urllib.parse.quote(spec.owner)}/{urllib.parse.quote(spec.repo)}"
             f"/commits/{urllib.parse.quote(ref, safe='/')}"
         )
-        raw = await _fetch_text(url, accept="application/vnd.github.sha")
-        if not isinstance(raw, str):
-            return None
-        sha = raw.strip().lower()
+        try:
+            raw = await _fetch_text(url, accept="application/vnd.github.sha")
+        except _http.FetchError as exc:
+            raise _fetch_failure(spec, exc, what="ref") from None
+        sha = raw.strip().lower() if isinstance(raw, str) else ""
         # GitHub is external input: only a full 40-hex SHA may become part of a
         # URL and of the recorded pin.
         if not _FULL_SHA_RE.match(sha):
-            return None
+            raise SkillProviderError(
+                "unavailable", f"GitHub gave no usable commit for {spec.address()}."
+            )
         # When the ref we ASKED for is itself a full SHA, the answer has to be that
         # SHA. Git resolves a ref name before an object name, so a branch named
         # after 40 hex characters would otherwise answer with its own tip and
@@ -671,10 +695,14 @@ class GitHubRepoProvider:
                 spec.address(),
                 sha,
             )
-            return None
+            raise SkillProviderError(
+                "refused",
+                f"{spec.address()} names a commit, but GitHub resolved it to a "
+                "different one (a branch or tag shares its name).",
+            )
         return sha
 
-    async def _list_blobs(self, spec: RepoSpec, commit: str) -> list[tuple[str, int]] | None:
+    async def _list_blobs(self, spec: RepoSpec, commit: str) -> list[tuple[str, int]]:
         """List ``(path, size)`` for every blob under *spec*'s path at *commit*.
 
         Paths are relative to ``spec.path``, because the tree is requested as
@@ -692,18 +720,27 @@ class GitHubRepoProvider:
             f"{urllib.parse.quote(spec.owner)}/{urllib.parse.quote(spec.repo)}"
             f"/git/trees/{urllib.parse.quote(tree_ref, safe=':/')}?recursive=1"
         )
-        data = await _fetch_json(url)
+        try:
+            data = await _fetch_json(url)
+        except _http.FetchError as exc:
+            raise _fetch_failure(spec, exc, what="path") from None
         if not isinstance(data, dict):
-            return None
+            data = {}
         if data.get("truncated") is True:
             logger.warning(
                 "GitHub tree for %r is truncated; refusing a partial import",
                 spec.address(),
             )
-            return None
+            raise SkillProviderError(
+                "refused",
+                f"GitHub listed only part of {spec.address()}, so it cannot be "
+                "imported in full. Address one skill directory instead.",
+            )
         entries = data.get("tree")
         if not isinstance(entries, list):
-            return None
+            raise SkillProviderError(
+                "unavailable", f"GitHub gave no usable file list for {spec.address()}."
+            )
 
         blobs: list[tuple[str, int]] = []
         for entry in entries:
@@ -727,9 +764,10 @@ class GitHubRepoProvider:
     async def _fetch_blob(self, spec: RepoSpec, commit: str, rel_path: str) -> bytes | None:
         """Fetch one blob's raw bytes from the raw host, pinned to *commit*.
 
-        Bytes rather than text so the caller can tell a FAILED fetch (``None``)
-        from a body that is simply not UTF-8 -- one is an error to refuse on, the
-        other a fact about the file, and a text fetch collapses both to ``None``.
+        Bytes rather than text so the caller can tell a FAILED fetch from a body
+        that is simply not UTF-8 -- one is an error to refuse on, the other a fact
+        about the file. A failed fetch raises ``_http.FetchError``; ``None`` is
+        kept only for a test seam that answers "no body".
         """
         full_path = posixpath.join(spec.path, rel_path) if spec.path else rel_path
         return await _fetch_bytes(_raw_url(spec, commit, full_path))
@@ -742,7 +780,10 @@ class GitHubRepoProvider:
         a skill that is really there costs nothing.
         """
         rel = posixpath.join(skill_dir, "SKILL.md") if skill_dir else "SKILL.md"
-        raw = await self._fetch_blob(spec, commit, rel)
+        try:
+            raw = await self._fetch_blob(spec, commit, rel)
+        except _http.FetchError:
+            return None
         if raw is None:
             return None
         try:
@@ -769,17 +810,57 @@ def _key_label(raw: str) -> str:
     return lowered.strip("-._")[:_KEY_LABEL_CHARS].strip("-._")
 
 
-def _refuse(spec: RepoSpec, because: str) -> "list[tuple[str, str]] | None":
-    """Log why an import is refused and return None, the Protocol's only answer.
+def _refuse(spec: RepoSpec, because: str) -> SkillProviderError:
+    """Log why an import is refused and build the error that tells the user.
 
-    ``fetch_skill_bundle`` can say nothing but ``None``, which the install handler
-    renders as "not found or empty". The reason therefore lives in the log; giving
-    the Protocol an error channel so the user reads it instead is follow-up work.
-    A refusal is always preferred to a partial install: a skill missing a file it
+    Returned, not raised, so each call site reads ``raise _refuse(...)``. A
+    refusal is always preferred to a partial install: a skill missing a file it
     references fails later, somewhere else, as a puzzle.
     """
     logger.warning("Refusing GitHub skill %r: %s", spec.address(), because)
-    return None  # typed as the bundle's Optional so callers can `return _refuse(...)`
+    return SkillProviderError("refused", f"Can't install {spec.address()}: {because}.")
+
+
+def _wait_phrase(reset_at: int) -> str:
+    """``in about N minutes`` until *reset_at* (epoch seconds), at least one."""
+    minutes = max(1, -(-(reset_at - int(time.time())) // 60))
+    return f"in about {minutes} minute{'s' if minutes != 1 else ''}"
+
+
+def _fetch_failure(spec: RepoSpec, exc: _http.FetchError, *, what: str) -> SkillProviderError:
+    """Turn a failed GitHub fetch into the reason the user reads.
+
+    Built only from the address the user typed (already held to the grammar) and
+    the fixed facts on *exc* -- never the response body or the URL. *what* is the
+    thing that was being looked up: ``ref`` (resolving the commit), ``path``
+    (listing the tree) or ``file`` (fetching one blob).
+    """
+    if exc.rate_limited:
+        # A relative wait, not a clock time: the gateway builds this sentence
+        # and does not know the reader's time zone.
+        when = _wait_phrase(exc.reset_at) if exc.reset_at else "within the hour"
+        return SkillProviderError("rate_limited", f"GitHub is limiting requests. Try again {when}.")
+    if exc.status in (404, 422):
+        if what == "ref":
+            missing = (
+                f"no ref {spec.ref!r} in {spec.repo_slug}, or the repository is"
+                if spec.ref
+                else f"no repository {spec.repo_slug}, or it is"
+            )
+            return SkillProviderError("not_found", f"GitHub found {missing} private.")
+        if what == "path" and spec.path:
+            return SkillProviderError(
+                "not_found", f"GitHub found no directory {spec.path!r} in {spec.repo_slug}."
+            )
+        return SkillProviderError("not_found", f"GitHub could not find part of {spec.address()}.")
+    if exc.reason == "too_large":
+        return SkillProviderError(
+            "refused", f"GitHub's answer for {spec.address()} is over the {_BUNDLE_MB} MB limit."
+        )
+    if exc.reason == "decode":
+        return SkillProviderError("unavailable", "GitHub sent an answer that could not be read.")
+    detail = f" (HTTP {exc.status})" if exc.status else ""
+    return SkillProviderError("unavailable", f"Could not reach GitHub{detail}.")
 
 
 def _materialisation_problem(paths: "Iterable[str]") -> str:
@@ -961,6 +1042,7 @@ def _sync_fetch_json(url: str) -> Any | None:
         allowed_hosts=_ALLOWED_HOSTS,
         internal_check=_is_internal_url,
         headers={"Accept": "application/vnd.github+json"},
+        raise_on_failure=True,
     )
 
 
@@ -971,6 +1053,7 @@ def _sync_fetch_text(url: str, accept: str | None = None) -> str | None:
         allowed_hosts=_ALLOWED_HOSTS,
         internal_check=_is_internal_url,
         headers={"Accept": accept} if accept else None,
+        raise_on_failure=True,
     )
 
 
@@ -980,6 +1063,7 @@ def _sync_fetch_bytes(url: str) -> bytes | None:
         url,
         allowed_hosts=_ALLOWED_HOSTS,
         internal_check=_is_internal_url,
+        raise_on_failure=True,
     )
 
 

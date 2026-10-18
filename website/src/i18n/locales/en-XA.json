@@ -7652,7 +7652,9 @@
       "source": "[Şøùŕçè ·········]",
       "bundle_contents_count": "[Ɓùñðĺè çøñţèñţş ({{count}} ƒìĺèş) ·················]",
       "install_skill": "[Ìñşţàĺĺ Şķìĺĺ ············]",
-      "no_preview_available": "[Ñø þŕèṽìèẁ àṽàìĺàƀĺè. ···············]"
+      "no_preview_available": "[Ñø þŕèṽìèẁ àṽàìĺàƀĺè. ···············]",
+      "provider_could_not_search": "[Çøùĺð ñøţ şèàŕçĥ {{provider}}: {{reason}} ·················]",
+      "provider_did_not_answer": "[{{provider}} ðìð ñøţ àñşẁèŕ. ··············]"
     },
     "skillDirectoryBrowser": {
       "description": "[Ðèşçŕìþţìøñ ··········]",

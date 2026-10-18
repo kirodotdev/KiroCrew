@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from kiro_crew.skill_providers import _http
-from kiro_crew.skill_providers.base import SkillSearchResult
+from kiro_crew.skill_providers.base import SkillProviderError, SkillSearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,10 @@ class SkillsShProvider:
             return []
 
         url = f"{self._config.api_base}/search?q={urllib.parse.quote(query)}&limit={limit}"
-        data = await _fetch_json(url)
+        try:
+            data = await _fetch_json(url)
+        except _http.FetchError as exc:
+            raise _fetch_failure(exc, "search") from None
         if data is None:
             return []
 
@@ -180,7 +183,9 @@ class SkillsShProvider:
     async def fetch_skill_bundle(self, skill_id: str) -> list[tuple[str, str]] | None:
         """Fetch the full skill bundle (all files) from skills.sh.
 
-        Returns a list of (relative_path, content) tuples, or None on failure.
+        Returns a list of (relative_path, content) tuples, or None when there is
+        nothing to install (a malformed id, or a bundle with no usable file). A
+        fetch that fails raises ``SkillProviderError`` with the reason.
         Uses GET /api/download/{id} which returns all skill files.
         """
         # The skills.sh id is an "owner/repo/skill" path whose slashes are real
@@ -197,7 +202,10 @@ class SkillsShProvider:
             logger.debug("Rejecting malformed skill_id for download: %r", skill_id)
             return None
         url = f"{self._config.api_base}/download/{urllib.parse.quote(skill_id, safe='/')}"
-        data = await _fetch_json(url, bundle=True)
+        try:
+            data = await _fetch_json(url, bundle=True)
+        except _http.FetchError as exc:
+            raise _fetch_failure(exc, "download") from None
         # skills.sh is untrusted external input: an error/maintenance payload (or
         # a CDN interposing its SPA HTML) can be valid JSON that is not an object,
         # so guard the shape before .get() — a bare data.get() on a list/str/number
@@ -235,8 +243,28 @@ class SkillsShProvider:
         return result if result else None
 
 
+def _fetch_failure(exc: _http.FetchError, what: str) -> SkillProviderError:
+    """Turn a failed skills.sh fetch into the reason the user reads.
+
+    Built from fixed text and the status code only -- never the response body
+    or the URL. *what* is ``search`` or ``download``.
+    """
+    if exc.rate_limited:
+        return SkillProviderError(
+            "rate_limited", "skills.sh is limiting requests. Try again in a few minutes."
+        )
+    if exc.status == 404 and what == "download":
+        return SkillProviderError("not_found", "skills.sh has no skill with that id.")
+    if exc.reason == "too_large":
+        return SkillProviderError("refused", "skills.sh sent a bundle over the size limit.")
+    if exc.reason == "decode":
+        return SkillProviderError("unavailable", "skills.sh sent an answer that could not be read.")
+    detail = f" (HTTP {exc.status})" if exc.status else ""
+    return SkillProviderError("unavailable", f"Could not reach skills.sh{detail}.")
+
+
 async def _fetch_json(url: str, *, bundle: bool = False) -> Any | None:
-    """Fetch JSON from a URL. Returns None on any failure.
+    """Fetch JSON from a URL. Raises ``_http.FetchError`` when the fetch fails.
 
     Calls the module-global ``_sync_fetch_json`` so a test may patch this
     provider's fetch without reaching into ``_http``. ``bundle`` selects the
@@ -256,6 +284,7 @@ def _sync_fetch_json(url: str, *, bundle: bool = False) -> Any | None:
         internal_check=_is_internal_url,
         headers={"User-Agent": _USER_AGENT},
         max_bytes=_MAX_BUNDLE_RESPONSE_BYTES if bundle else _MAX_RESPONSE_BYTES,
+        raise_on_failure=True,
     )
 
 
@@ -307,9 +336,7 @@ def _is_allowed_host(url: str) -> bool:
 
 def _open_no_internal_redirect(req):  # type: ignore[no-untyped-def]
     """Open a request with redirects held to ``_ALLOWED_HOSTS``. None if blocked."""
-    return _http.open_guarded(
-        req, allowed_hosts=_ALLOWED_HOSTS, internal_check=_is_internal_url
-    )
+    return _http.open_guarded(req, allowed_hosts=_ALLOWED_HOSTS, internal_check=_is_internal_url)
 
 
 def _read_bounded(resp, max_bytes: int) -> bytes | None:

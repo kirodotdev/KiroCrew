@@ -153,6 +153,46 @@ class TestSkillDiscover:
         assert out.startswith("Error:")
         assert "incomplete" in out
         assert "No registry skills matched" not in out
+        assert "Provider reasons" not in out  # a bare timeout carries no reason
+
+    def test_a_providers_reason_reaches_the_agent(self, fake_get):
+        calls, responses = fake_get
+        responses["/discover?"] = {
+            "results": [],
+            "providers": ["github"],
+            "provider_outcomes": [
+                {
+                    "name": "github",
+                    "status": "error",
+                    "message": "GitHub is limiting requests. Try again in about 12 minutes.",
+                }
+            ],
+        }
+
+        out = mcp_core._call_tool_inner("skill_discover", {"query": "acme/widgets"})
+
+        assert out.startswith("Error:")
+        assert (
+            "Provider reasons (untrusted provider text): github: GitHub is limiting "
+            "requests. Try again in about 12 minutes." in out
+        )
+
+    def test_partial_failure_with_no_rows_does_not_claim_zero_matches(self, fake_get):
+        calls, responses = fake_get
+        responses["/discover?"] = {
+            "results": [],
+            "providers": ["skillsh", "github"],
+            "provider_outcomes": [
+                {"name": "skillsh", "status": "ok"},
+                {"name": "github", "status": "error", "message": "GitHub is limiting requests."},
+            ],
+        }
+
+        out = mcp_core._call_tool_inner("skill_discover", {"query": "acme/widgets"})
+
+        assert "No registry skills matched" not in out
+        assert "registry search is incomplete; 1 of 2 providers" in out
+        assert "github: GitHub is limiting requests." in out
 
     def test_partial_provider_failure_warns_that_results_are_incomplete(self, fake_get):
         calls, responses = fake_get

@@ -8741,6 +8741,8 @@
       "loading_preview": "Carregando prévia...",
       "no_preview_available": "Nenhuma prévia disponível.",
       "overwrite": "Substituir",
+      "provider_could_not_search": "Não foi possível pesquisar em {{provider}}: {{reason}}",
+      "provider_did_not_answer": "{{provider}} não respondeu.",
       "select_a_skill_to_preview": "Selecione uma habilidade para visualizar",
       "skill_search_results": "Resultados da pesquisa de habilidades",
       "source": "Origem"

@@ -27,13 +27,39 @@ from kiro_crew.external_text import redact_external_text as _redact_external
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel as _sel
-from kiro_crew.skill_providers.base import ProviderRegistry, SkillProvider, provider_available
+from kiro_crew.skill_providers.base import (
+    ProviderRegistry,
+    SkillProvider,
+    SkillProviderError,
+    provider_available,
+)
 from kiro_crew.skill_providers.skillsh import SkillsShConfig, SkillsShProvider
 from kiro_crew.skills import skills_dir as _skills_dir
 
 from .prompts import _deny_non_owner_skill_operation, api_skills
 
 logger = logging.getLogger(__name__)
+
+# Cap on a provider's reason before it reaches the dashboard. The reason is
+# provider-authored text, so it is scrubbed AND bounded: one sentence fits easily,
+# and a provider cannot use the field to push a page of text into the UI.
+_MAX_REASON_CHARS = 300
+
+# HTTP status for an install the provider refused or could not serve: the
+# upstream did not give us the skill, whatever its reason.
+_REASON_STATUS = 502
+
+
+def _safe_reason(message: object) -> str:
+    """A provider's reason, scrubbed and capped for the dashboard.
+
+    Capped AFTER the scrub, for the same reason the preview body is: cutting
+    first can split a credential into fragments no redaction pattern matches.
+    """
+    if not isinstance(message, str):
+        return ""
+    return _redact_external(message)[:_MAX_REASON_CHARS]
+
 
 # Slug validation for skill installation (filesystem safety).
 _SAFE_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
@@ -175,6 +201,11 @@ async def api_skills_discover(request: web.Request) -> web.Response:
       "providers": ["skillsh"],
       "provider_outcomes": [{"name": "skillsh", "status": "ok"}]
     }
+
+    An outcome with ``status: "error"`` may also carry ``message`` (the
+    provider's reason, scrubbed): the provider could not search, which is not the
+    same answer as zero results. ``display_name`` labels the provider for that
+    notice. The reason's code stays in the audit log.
     """
     if request.query.get("scope") == "installed":
         # The existing agent-facing READ route also serves local discovery.
@@ -253,11 +284,25 @@ async def api_skills_discover(request: web.Request) -> web.Response:
         )
 
     active_providers = registry.available_provider_names
-    provider_outcomes = [
-        {"name": _redact_external(outcome.name), "status": outcome.status}
-        for outcome in search_response.provider_outcomes
-    ]
+    provider_outcomes = []
+    for outcome in search_response.provider_outcomes:
+        entry = {
+            "name": _redact_external(outcome.name),
+            "display_name": _display_name(registry, outcome.name),
+            "status": outcome.status,
+        }
+        reason = _safe_reason(outcome.message)
+        if reason:
+            entry["message"] = reason
+        provider_outcomes.append(entry)
     failed_provider_count = sum(outcome["status"] != "ok" for outcome in provider_outcomes)
+    # The machine code of each explained failure goes to the audit log, not the
+    # wire: an operator can count rate limits without parsing the user's prose.
+    failure_codes = ",".join(
+        f"{outcome.name}:{outcome.code}"
+        for outcome in search_response.provider_outcomes
+        if outcome.code
+    )
 
     _sel().log_tool_invocation(
         session_key=request.get("session_key", "dashboard"),
@@ -269,6 +314,7 @@ async def api_skills_discover(request: web.Request) -> web.Response:
             "provider_filter": provider_filter or "all",
             "result_count": str(len(items)),
             "failed_provider_count": str(failed_provider_count),
+            **({"failure_codes": failure_codes} if failure_codes else {}),
         },
     )
     return web.json_response(
@@ -432,6 +478,21 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             error="timeout",
         )
         return web.json_response({"error": "Fetch timed out"}, status=504)
+    except SkillProviderError as exc:
+        # The provider could not fetch and said why. Show that reason instead of
+        # the generic "not found or empty" so the user can act on it.
+        reason = _safe_reason(exc.message) or f"{provider_name} gave no reason."
+        logger.info("Provider %s refused an install (%s)", provider_name, exc.code)
+        _sel().log_tool_invocation(
+            session_key=request.get("session_key", "dashboard"),
+            tool_name="install_skill_from_provider",
+            tool_kind="skill_provider_install",
+            outcome="error",
+            downstream_service=provider_name,
+            error=exc.code,
+        )
+        # ``code`` is required on every non-2xx body (test_error_code_contract).
+        return web.json_response({"error": reason, "code": exc.code}, status=_REASON_STATUS)
     except Exception as exc:
         # Canonical composition — same reason as _redact_external above.
         scrubbed = redact(str(exc))
@@ -753,6 +814,19 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
                 )
         if content is None:
             content = await asyncio.wait_for(provider.fetch_skill_content(skill_id), timeout=10.0)
+    except SkillProviderError as exc:
+        # Same empty shape, plus the reason, so the detail pane can say why it
+        # has nothing to show.
+        _sel().log_tool_invocation(
+            session_key=request.get("session_key", "dashboard"),
+            tool_name="preview_skill_from_provider",
+            tool_kind="skill_provider_preview",
+            outcome="error",
+            downstream_service=provider_name,
+            error=exc.code,
+        )
+        reason = _safe_reason(exc.message)
+        return web.json_response({**_empty, **({"error": reason} if reason else {})})
     except (asyncio.TimeoutError, Exception):
         _sel().log_tool_invocation(
             session_key=request.get("session_key", "dashboard"),

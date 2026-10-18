@@ -8469,6 +8469,8 @@
       "loading_preview": "プレビューを読み込み中…",
       "no_preview_available": "プレビューはありません。",
       "overwrite": "上書き",
+      "provider_could_not_search": "{{provider}} を検索できませんでした: {{reason}}",
+      "provider_did_not_answer": "{{provider}} から応答がありませんでした。",
       "select_a_skill_to_preview": "プレビュー対象のスキルを選択してください",
       "skill_search_results": "スキル検索結果",
       "source": "ソース"

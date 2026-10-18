@@ -8741,6 +8741,8 @@
       "loading_preview": "Cargando la vista previa...",
       "no_preview_available": "No hay vista previa disponible.",
       "overwrite": "Sobrescribir",
+      "provider_could_not_search": "No se pudo buscar en {{provider}}: {{reason}}",
+      "provider_did_not_answer": "{{provider}} no respondió.",
       "select_a_skill_to_preview": "Selecciona una skill para ver la vista previa",
       "skill_search_results": "Resultados de búsqueda de skills",
       "source": "Origen"
