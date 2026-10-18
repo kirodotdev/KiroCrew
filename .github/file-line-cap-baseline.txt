@@ -142,7 +142,6 @@
 12647 test/test_security.py
 5509 test/test_sel.py
 9530 test/test_session.py
-6171 test/test_session_control.py
 7444 test/test_session_storage.py
 6415 test/test_session_transfer.py
 2185 test/test_side.py

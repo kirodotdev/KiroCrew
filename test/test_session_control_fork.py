@@ -1,7 +1,7 @@
 """``session_fork``: a new session that CARRIES a transcript, opened by an agent.
 
 Three layers, three suites. The core (``session_control.fork_session``) is
-exercised against real slot objects, as ``test_session_control.py`` does for the
+exercised against real slot objects, as ``test_session_control*.py`` do for the
 other verbs, because every refusal reads production attributes off the slot and a
 permissive double would let a dead guard look alive. The HTTP route is asserted
 through the handler with the same request double the other routes use. The tool
@@ -44,7 +44,7 @@ def _enabled(monkeypatch):
 @pytest.fixture(autouse=True)
 def _fresh_create_budget():
     """The per-caller create-rate window is process-wide module state (see the
-    sibling fixture in ``test_session_control.py``); a fork spends the same budget."""
+    sibling fixture in ``session_control_helpers.py``); a fork spends the same budget."""
     create_rate_limit.reset_for_tests()
     yield
     create_rate_limit.reset_for_tests()

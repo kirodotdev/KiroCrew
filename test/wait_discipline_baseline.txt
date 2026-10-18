@@ -272,7 +272,8 @@
 16 test_session_capabilities.py
  1 test_session_card_source_links_knob.py
  2 test_session_config_hot_reload.py
- 5 test_session_control.py
+ 3 test_session_control_audit.py
+ 2 test_session_control_create.py
  1 test_session_control_reload.py
  2 test_session_control_rename.py
  1 test_session_control_revive.py
