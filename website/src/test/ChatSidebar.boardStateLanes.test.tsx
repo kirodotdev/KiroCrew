@@ -371,3 +371,66 @@ describe('board state lanes: queued children', () => {
     expect(slotKeysIn(container, 'lane-idle')).toEqual(['chat-queued'])
   })
 })
+
+describe('board column reorder feedback', () => {
+  function column(container: HTMLElement, id: string): HTMLElement {
+    const col = container.querySelector(`[data-testid="column-${id}"]`) as HTMLElement
+    expect(col, `column ${id} missing`).toBeTruthy()
+    return col
+  }
+  function startColumnDrag(container: HTMLElement, id: string) {
+    const grip = column(container, id).querySelector('span[draggable]') as HTMLElement
+    expect(grip, `no reorder grip on ${id}`).toBeTruthy()
+    fireEvent.dragStart(grip, { dataTransfer: { setData: vi.fn(), types: [] } })
+    return grip
+  }
+  const overColumn = (el: HTMLElement) =>
+    fireEvent.dragOver(el, { dataTransfer: { types: ['application/mc-column'] } })
+
+  it('dims the dragged column', () => {
+    const { container } = renderSidebar()
+    startColumnDrag(container, 'lane-waiting')
+    expect(column(container, 'lane-waiting').dataset.colDrag).toBe('source')
+    expect(column(container, 'lane-idle').dataset.colDrag).toBeUndefined()
+  })
+
+  it('marks the side a release would land on, toward either end', () => {
+    const { container } = renderSidebar()
+    startColumnDrag(container, 'lane-waiting')
+    overColumn(column(container, 'lane-idle'))
+    expect(column(container, 'lane-idle').dataset.colDrop).toBe('after')
+    overColumn(column(container, 'lane-approval'))
+    expect(column(container, 'lane-approval').dataset.colDrop).toBe('before')
+  })
+
+  it('marks nothing over the dragged column itself', () => {
+    const { container } = renderSidebar()
+    startColumnDrag(container, 'lane-working')
+    overColumn(column(container, 'lane-working'))
+    expect(column(container, 'lane-working').dataset.colDrop).toBeUndefined()
+  })
+
+  it('drops the mark when the pointer leaves the column', () => {
+    const { container } = renderSidebar()
+    startColumnDrag(container, 'lane-approval')
+    const idle = column(container, 'lane-idle')
+    overColumn(idle)
+    fireEvent.dragLeave(idle, { relatedTarget: document.body })
+    expect(idle.dataset.colDrop).toBeUndefined()
+  })
+
+  it('clears every mark when the drag ends without a drop', () => {
+    const { container } = renderSidebar()
+    const grip = startColumnDrag(container, 'lane-approval')
+    overColumn(column(container, 'lane-working'))
+    fireEvent.dragEnd(grip)
+    expect(container.querySelectorAll('[data-col-drag], [data-col-drop], [data-col-dragging]')).toHaveLength(0)
+  })
+
+  it('shows no column marks while a session card is dragged', () => {
+    const { container } = renderSidebar()
+    startCardDrag(container, 'chat-idle')
+    overColumn(column(container, 'lane-working'))
+    expect(column(container, 'lane-working').dataset.colDrop).toBeUndefined()
+  })
+})
