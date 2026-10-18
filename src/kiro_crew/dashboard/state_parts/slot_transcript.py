@@ -262,16 +262,16 @@ def append(
     meta: dict | None = None,
     mint_mid: bool = True,
 ) -> dict[str, Any]:
-    # A live human/model task row makes any in-flight return summary stale.
+    # A live row the person typed makes any in-flight return summary stale.
     # The local import avoids a state -> warm_task_brief -> state cycle, and
     # replay appends (broadcast=False) deliberately do not cancel current work.
-    if broadcast and role in {"user", "assistant"}:
+    if broadcast and role == "user":
         try:
-            from kiro_crew.dashboard.warm_task_brief import cancel_warm_task_brief
+            from kiro_crew.dashboard.warm_task_brief import cancel_for_live_user_row
 
             owner = getattr(self._on_message, "__self__", None)
             if owner is not None:
-                cancel_warm_task_brief(owner, self.key)
+                cancel_for_live_user_row(owner, self.key, content)
         except Exception:
             logger.debug("warm task brief cancellation failed for %s", self.key, exc_info=True)
     # A LIVE user row retires every unanswered STATELESS question: that row

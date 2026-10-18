@@ -198,7 +198,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # A return brief must not start or publish after a send has
                 # reserved the slot, even before its model turn begins.
                 ("warm_task_brief.py", "_prepare_warm_task_brief"),
+                ("warm_task_brief.py", "_settled"),
                 ("warm_task_brief.py", "_still_current"),
+                ("warm_task_brief.py", "_wait_for_idle_turn"),
                 ("ws.py", "_handle_slot_focused"),
             }
         },

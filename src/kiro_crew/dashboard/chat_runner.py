@@ -4268,11 +4268,9 @@ async def _run_chat(
     # reclassified or mirrored as authenticated-human speech.
     _incoming_message = message
 
-    # Any admitted turn supersedes a return summary immediately; publication
-    # still re-checks the durable fingerprint in case cancellation loses a race.
-    from kiro_crew.dashboard.warm_task_brief import cancel_warm_task_brief
-
-    cancel_warm_task_brief(state, slot.key)
+    # An admitted turn does not cancel a return summary: a patrol turn is not
+    # the person, and a typed turn already cancelled it through its user row.
+    # The summary waits for this turn to end and re-checks what the user typed.
 
     # Chokepoint invariant: a relay archive NEVER executes. Every dispatch entry
     # point (the primary send, regenerate, edit-resend, rewind, continue,

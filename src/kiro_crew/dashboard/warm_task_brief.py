@@ -1,9 +1,10 @@
 """Return-triggered warm task briefs for active dashboard work.
 
-Presence is deliberately process-local.  Only an owner ``slot_focused`` frame
-whose payload is exactly ``slot: null, hidden: true`` can arm an away episode;
-socket cleanup never calls this module.  A qualifying return claims the durable
-task fingerprint before it surfaces status or spends a background model call.
+Presence is deliberately process-local.  An owner ``slot_focused`` frame arms an
+away episode for the thread it leaves when it is ``slot: null, hidden: true`` or
+names another thread; socket cleanup never calls this module.  A qualifying
+return claims the durable task fingerprint before it surfaces status or spends
+a background model call.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from kiro_crew.session_summary import (
     MAX_USER_CHARS,
     TranscriptTurn,
     extract_turns,
+    is_injected_text,
     render_bounded_input,
 )
 from kiro_crew.warm_task_brief_contract import WARM_TASK_BRIEF_CLAIM_KIND as _CLAIM_KIND
@@ -44,6 +46,13 @@ logger = logging.getLogger(__name__)
 WARM_TASK_BRIEF_AWAY_SECS = 30 * 60
 WARM_TASK_BRIEF_TIMEOUT_SECS = 60.0
 WARM_TASK_BRIEF_MAX_OUTPUT_BYTES = 16 * 1024
+# A return while a turn runs waits for the turn to end, at most this long, and
+# only while the owner keeps the thread on screen.
+WARM_TASK_BRIEF_DEFER_MAX_SECS = 30 * 60
+_IDLE_POLL_SECS = 2.0
+# Away episodes are per thread; keep the oldest from piling up across many
+# threads the owner left and never reopened.
+_MAX_AWAY_EPISODES = 256
 _MAX_MESSAGE_CHARS = 1500
 # The opener and the failure line are fixed text, never model output. Both are
 # picked by the script the user's original request is written in; Latin-script
@@ -132,6 +141,11 @@ class TaskSnapshot:
     conductor: dict[str, Any] | None
     work_items: tuple[dict[str, Any], ...]
     previous_claim: str
+    # Covers only what the person typed. Patrol turns, worker reports and
+    # ledger writes change ``fingerprint`` but never make a prepared brief stale.
+    user_fingerprint: str = ""
+    # Server time of the newest genuine user turn, if it has one.
+    last_user_at: float | None = None
 
 
 def cancel_warm_task_brief(state: "DashboardState", slot_key: str) -> None:
@@ -143,8 +157,15 @@ def cancel_warm_task_brief(state: "DashboardState", slot_key: str) -> None:
     model_active = slot_key in active_models
     if task is not None and task is not current and not task.done() and not model_active:
         task.cancel()
+        _skip(slot_key, "cancelled")
     if isinstance(tasks, dict) and (task is None or task is not current) and not model_active:
         tasks.pop(slot_key, None)
+
+
+def cancel_for_live_user_row(state: "DashboardState", slot_key: str, content: object) -> None:
+    """Cancel on a row the person typed; automation rows like a wake never do."""
+    if isinstance(content, str) and not is_injected_text(content):
+        cancel_warm_task_brief(state, slot_key)
 
 
 def note_focus_frame(
@@ -170,24 +191,25 @@ def note_focus_frame(
     instant = time.time() if now is None else now
 
     # Leaving or replacing the currently displayed thread clears any transient
-    # preparing/unavailable status but does not, by itself, arm an episode.
+    # preparing/unavailable status.
     if isinstance(previous, str) and previous and slot_key != previous:
         cancel_warm_task_brief(state, previous)
 
-    # Every owner focus frame is the first later frame for every already-away
-    # episode.  Consume all of them; only an exact same-thread string return can
-    # become a candidate.
-    episodes = dict(away)
-    away.clear()
+    # An episode ends only when some owner view shows its thread again. A frame
+    # naming another thread leaves every other episode running.
     candidate: ReturnCandidate | None = None
     if isinstance(slot_key, str) and slot_key:
-        episode = episodes.get(slot_key)
+        episode = away.pop(slot_key, None)
         if episode is not None:
             started, generation = episode
             candidate = ReturnCandidate(slot_key, started, generation)
 
-    is_hidden_leave = slot_key is None and hidden is True
-    if is_hidden_leave and isinstance(previous, str) and previous:
+    # Hiding the page or switching to another thread leaves *previous*. An
+    # unreasoned null (non-chat route, split-view placeholder) does not.
+    is_leave = (slot_key is None and hidden is True) or (
+        isinstance(slot_key, str) and bool(slot_key) and slot_key != previous
+    )
+    if is_leave and isinstance(previous, str) and previous:
         # The registry still contains this connection.  It is the last owner
         # view only when no OTHER row names the same thread.
         another_view = any(key == previous for other, key in foreground.items() if other != conn)
@@ -196,8 +218,18 @@ def note_focus_frame(
             state._warm_task_brief_generation = generation
             state._warm_task_brief_slot_generation[previous] = generation
             away[previous] = (instant, generation)
+            while len(away) > _MAX_AWAY_EPISODES:
+                oldest = min(away, key=lambda key: away[key][0])
+                away.pop(oldest)
+                state._warm_task_brief_slot_generation.pop(oldest, None)
+            logger.debug("warm task brief away episode started for %s", previous)
 
     return candidate
+
+
+def _skip(slot_key: str, reason: str) -> None:
+    """One debug line per skipped brief: the thread key and a fixed reason."""
+    logger.debug("warm task brief skipped for %s: %s", slot_key, reason)
 
 
 def handle_focus_frame(
@@ -213,13 +245,16 @@ def handle_focus_frame(
         return
     away_secs = time.time() - candidate.away_started
     if away_secs < 0 or away_secs < WARM_TASK_BRIEF_AWAY_SECS:
+        _skip(candidate.slot_key, "short_away")
         return
     slot = state.get_slot(candidate.slot_key)
     if slot is None or slot.mode != members_mod.DM_SLOT_MODE:
+        _skip(candidate.slot_key, "not_member_thread")
         return
     tasks = state._warm_task_brief_tasks
     existing = tasks.get(candidate.slot_key)
     if existing is not None and not existing.done():
+        _skip(candidate.slot_key, "already_preparing")
         return
     task = asyncio.create_task(_prepare_warm_task_brief(state, slot, candidate))
     tasks[candidate.slot_key] = task
@@ -422,6 +457,11 @@ def _snapshot_sync(state: "DashboardState", slot: "_ChatSlot") -> TaskSnapshot |
             fingerprint_source, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
     ).hexdigest()
+    user_fingerprint = hashlib.sha256(
+        json.dumps([row["content_sha256"] for row in task_rows if row["role"] == "user"]).encode(
+            "utf-8"
+        )
+    ).hexdigest()
     return TaskSnapshot(
         slot_key=slot.key,
         history_key=history_key,
@@ -432,6 +472,17 @@ def _snapshot_sync(state: "DashboardState", slot: "_ChatSlot") -> TaskSnapshot |
         conductor=conductor,
         work_items=items,
         previous_claim=_record_claim(rows),
+        user_fingerprint=user_fingerprint,
+        last_user_at=max(
+            (
+                epoch
+                for turn in turns
+                if turn.role == "user" and not turn.injected
+                for epoch in [_parse_epoch(turn.ts)]
+                if epoch is not None
+            ),
+            default=None,
+        ),
     )
 
 
@@ -476,11 +527,50 @@ async def _still_current(
     current = await _snapshot(state, slot)
     if (
         current is None
-        or current.fingerprint != expected.fingerprint
+        or current.user_fingerprint != expected.user_fingerprint
         or (require_claim and current.previous_claim != expected.fingerprint)
     ):
         return None
     return current
+
+
+async def _wait_for_idle_turn(
+    state: "DashboardState", slot: "_ChatSlot", generation: int, deadline: float
+) -> bool:
+    """Wait until *slot* runs no turn while the owner keeps it on screen."""
+    generations = getattr(state, "_warm_task_brief_slot_generation", None)
+    while slot.running:
+        if (
+            not isinstance(generations, dict)
+            or generations.get(slot.key) != generation
+            or not _same_slot(state, slot)
+            or not _is_foreground(state, slot.key)
+            or time.monotonic() >= deadline
+        ):
+            return False
+        await asyncio.sleep(_IDLE_POLL_SECS)
+    return True
+
+
+async def _settled(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    expected: TaskSnapshot,
+    generation: int,
+    deadline: float,
+) -> TaskSnapshot | None:
+    """Re-read the claimed task once no turn runs; ``None`` means stale."""
+    while True:
+        if not await _wait_for_idle_turn(state, slot, generation, deadline):
+            _skip(slot.key, "turn_outlasted_return")
+            return None
+        # A send's row may still sit in memory; the re-read below reads disk.
+        await asyncio.to_thread(state.flush_slot_now, slot)
+        current = await _still_current(state, slot, expected, generation, require_claim=True)
+        if current is not None or not slot.running:
+            if current is None:
+                _skip(slot.key, "stale")
+            return current
 
 
 def _build_prompt(snapshot: TaskSnapshot) -> str:
@@ -537,10 +627,26 @@ def _post_message(
 async def _prepare_warm_task_brief(
     state: "DashboardState", slot: "_ChatSlot", candidate: ReturnCandidate
 ) -> None:
+    # A return during a turn (a patrol cycle, say) defers until the turn ends,
+    # as long as the owner keeps the thread on screen.
+    returned_at = time.time()
+    deadline = time.monotonic() + WARM_TASK_BRIEF_DEFER_MAX_SECS
+    if not await _wait_for_idle_turn(state, slot, candidate.generation, deadline):
+        _skip(slot.key, "turn_outlasted_return")
+        return
     if not _same_slot(state, slot) or slot.running or not _is_foreground(state, slot.key):
+        _skip(slot.key, "not_current")
         return
     snapshot = await _snapshot(state, slot)
-    if snapshot is None or snapshot.previous_claim == snapshot.fingerprint:
+    if snapshot is None:
+        _skip(slot.key, "no_open_task")
+        return
+    if snapshot.previous_claim == snapshot.fingerprint:
+        _skip(slot.key, "already_claimed")
+        return
+    # The owner already spoke after returning (say, during a deferred turn).
+    if snapshot.last_user_at is not None and snapshot.last_user_at > returned_at:
+        _skip(slot.key, "user_spoke_after_return")
         return
 
     # A display-only notice cannot enter model replay. It is deliberately not
@@ -552,11 +658,9 @@ async def _prepare_warm_task_brief(
         broadcast=False,
         meta={"kind": _CLAIM_KIND, "fingerprint": snapshot.fingerprint},
     )
-    await asyncio.to_thread(state.flush_slot_now, slot)
-    if (
-        await _still_current(state, slot, snapshot, candidate.generation, require_claim=True)
-        is None
-    ):
+    # _settled flushes the claim before its re-read. A patrol turn admitted
+    # since the snapshot defers the opener, too.
+    if await _settled(state, slot, snapshot, candidate.generation, deadline) is None:
         return
 
     language = _language_of(snapshot.original_request)
@@ -591,10 +695,8 @@ async def _prepare_warm_task_brief(
         logger.debug("warm task brief generation failed for %s", slot.key, exc_info=True)
 
     # A stale result is dropped. Messages already posted are ordinary history.
-    if (
-        await _still_current(state, slot, snapshot, candidate.generation, require_claim=True)
-        is None
-    ):
+    # A turn that started meanwhile defers publication until it ends.
+    if await _settled(state, slot, snapshot, candidate.generation, deadline) is None:
         return
     message = _parse_result(text)
     if message is None:

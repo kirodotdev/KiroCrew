@@ -147,11 +147,14 @@ sub-agent and MCP App state in [side](side.md), [subagent](subagent.md) and
 ## Return-triggered warm task brief
 
 The owner-only `slot_focused` WebSocket frame also drives the warm task brief.
-Only `{slot: null, hidden: true}` from the last owner connection viewing a
-thread starts an in-memory away episode. The first later owner focus frame
-consumes it. It qualifies only when it names the same thread after at least 30
-minutes. Socket cleanup, reconnect, ordinary null frames, focus loss, route or
-thread changes, and elapsed time alone never start work.
+When the last owner connection viewing a thread sends `{slot: null, hidden:
+true}` or a frame naming another thread, that thread starts an in-memory away
+episode. The episode ends the next time any owner frame names the thread
+again; frames for other threads leave it alone. That return qualifies after at
+least 30 minutes. Socket cleanup, reconnect, ordinary null frames, focus loss,
+and elapsed time alone never start work. A return while the thread runs a turn
+waits for the turn to end, up to 30 minutes, while the owner keeps the thread
+on screen. Each skip logs one debug line with the thread key and a fixed reason.
 
 A qualifying return writes a hidden durable fingerprint claim, then posts a
 short fixed crewmate opener ("Welcome back, let me catch you up on where we
@@ -161,8 +164,13 @@ genuine user request, conversation task rows, session ledger, and work ledger.
 The model result is a second ordinary crewmate message in first-person prose:
 what the user asked for, where it stands, and one to three suggestions, with no
 headings or lists. These generated rows
-are excluded from the task fingerprint. User turns, slot replacement, reset,
-close, task changes, and newer assistant rows drop a stale result unposted.
+are excluded from the task fingerprint. A new user turn, a new away episode,
+slot replacement, reset, close, and a finished task drop a stale result
+unposted. Patrol turns, `[work-ledger wake]` rows, and worker reports change
+the dedup fingerprint but do not make a prepared result stale; a turn running
+at publication defers the result until it ends. Only a live user row the person
+typed cancels a brief in preparation; assistant rows, automation rows and turn
+admission never do.
 Away state is never persisted, so restart and network loss fail silent.
 
 ## Implementation Boundaries

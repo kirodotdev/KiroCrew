@@ -44,6 +44,7 @@ _INJECTED_PREFIXES = (
     "[subagent batch completion event]",
     "[auto-nudge cycle",
     "[monitor wake]",
+    "[work-ledger wake]",
     "[tool refusal",
     "[tool stall",
     "=== restored context",
@@ -105,6 +106,11 @@ def _excerpt(text: str, keep_each_end: int) -> str:
 def _is_injected(text: str) -> bool:
     head = text.lstrip().lower()
     return any(head.startswith(p) for p in _INJECTED_PREFIXES)
+
+
+def is_injected_text(text: str) -> bool:
+    """True when a role-``user`` row's *text* came from automation."""
+    return _is_injected(text)
 
 
 def extract_turns(

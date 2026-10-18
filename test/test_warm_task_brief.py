@@ -120,21 +120,54 @@ def test_last_owner_tab_hidden_arms_one_episode():
     assert state._warm_task_brief_away == {"thread-x": (20, 1)}
 
 
-def test_chat_switch_and_unreasoned_null_never_arm():
+def test_unreasoned_null_never_arms():
     state = _State()
     _apply_presence(state, 1, "thread-x", now=0)
-    _apply_presence(state, 1, "thread-y", now=10)
     _apply_presence(state, 1, None, now=20)
     assert state._warm_task_brief_away == {}
 
 
-def test_return_to_other_thread_consumes_episode():
+def test_switching_to_another_thread_arms_the_one_left():
     state = _State()
     _apply_presence(state, 1, "thread-x", now=0)
-    _apply_presence(state, 1, None, hidden=True, now=10)
-    assert _apply_presence(state, 1, "thread-y", now=2000) is None
-    assert _apply_presence(state, 1, "thread-x", now=2010) is None
+    _apply_presence(state, 1, "thread-y", now=10)
+    assert state._warm_task_brief_away == {"thread-x": (10, 1)}
+    assert _apply_presence(state, 1, "thread-x", now=2000) == warm_task_brief.ReturnCandidate(
+        "thread-x", 10, 1
+    )
+    # Coming back to x is itself a switch away from y.
+    assert state._warm_task_brief_away == {"thread-y": (2000, 2)}
+
+
+def test_switch_does_not_arm_while_another_tab_shows_the_thread():
+    state = _State()
+    _apply_presence(state, 1, "thread-x", now=0)
+    _apply_presence(state, 2, "thread-x", now=0)
+    _apply_presence(state, 1, "thread-y", now=10)
     assert state._warm_task_brief_away == {}
+
+
+def test_episode_survives_frames_for_other_threads():
+    # The reported case: leave the conductor for another chat, hide the page
+    # there, come back to that chat, then open the conductor again.
+    state = _State()
+    _apply_presence(state, 1, "thread-x", now=0)
+    _apply_presence(state, 1, "thread-y", now=10)
+    _apply_presence(state, 1, None, hidden=True, now=20)
+    _apply_presence(state, 2, "thread-z", now=30)
+    _apply_presence(state, 1, "thread-y", now=40_000)
+    candidate = _apply_presence(state, 1, "thread-x", now=40_010)
+    assert candidate == warm_task_brief.ReturnCandidate("thread-x", 10, 1)
+    assert "thread-x" not in state._warm_task_brief_away
+
+
+def test_away_episodes_are_capped_oldest_first(monkeypatch):
+    monkeypatch.setattr(warm_task_brief, "_MAX_AWAY_EPISODES", 2)
+    state = _State()
+    for index, key in enumerate(["a", "b", "c", "d"]):
+        _apply_presence(state, 1, key, now=index)
+    assert set(state._warm_task_brief_away) == {"b", "c"}
+    assert "a" not in state._warm_task_brief_slot_generation
 
 
 def test_socket_cleanup_clears_retention_only_and_never_arms():
@@ -207,7 +240,8 @@ async def test_opener_precedes_the_single_model_call_and_result_is_plain_prose(m
     assert preparing["role"] == "assistant"
     assert preparing["content"] == "Welcome back, let me catch you up on where we are."
     assert preparing["meta"]["kind"] == "warm_task_brief_preparing"
-    assert slot.flushed == 1
+    # The claim flush, then the pre-publication flush.
+    assert slot.flushed == 2
     assert call_kwargs["crew_log_kind"] == "warm_task_brief"
     assert call_kwargs["crew_log_session_key"] == "dashboard:thread-x"
     assert call_kwargs["timeout"] == 60.0
@@ -277,13 +311,14 @@ async def test_model_failure_posts_an_ordinary_failure_message(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_changed_task_drops_stale_result_and_keeps_preparing(monkeypatch):
+async def test_user_send_drops_stale_result_and_keeps_preparing(monkeypatch):
     state = _State()
     slot = _Slot()
     state.slots[slot.key] = slot
     state._foreground_slots[1] = slot.key
     base = _snapshot()
-    snapshots = [base, _claimed(base), _snapshot("changed")]
+    sent = replace(_claimed(base), fingerprint="changed", user_fingerprint="sent")
+    snapshots = [base, _claimed(base), sent]
 
     async def read_snapshot(*args):
         return snapshots.pop(0)
@@ -703,3 +738,322 @@ def test_non_string_meta_kind_is_not_a_brief_row_and_never_raises(kind):
     from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
 
     assert is_warm_task_brief_message({"role": "user", "meta": {"kind": kind}}) is False
+
+
+def _arm_model(monkeypatch, slot, snapshots, run_model=None):
+    async def read_snapshot(*args):
+        return snapshots.pop(0)
+
+    async def default_model(*args, **kwargs):
+        return '{"message":"Here is where we are."}'
+
+    monkeypatch.setattr(warm_task_brief, "_IDLE_POLL_SECS", 0)
+    monkeypatch.setattr(warm_task_brief, "_snapshot", read_snapshot)
+    monkeypatch.setattr(warm_task_brief, "run_bg_oneliner", run_model or default_model)
+    monkeypatch.setattr(
+        warm_task_brief.KiroCrewConfig,
+        "load",
+        lambda: SimpleNamespace(agent=SimpleNamespace(resolve_model=lambda role: "background")),
+    )
+
+
+def _foreground_slot(state: _State) -> _Slot:
+    slot = _Slot()
+    state.slots[slot.key] = slot
+    state._foreground_slots[1] = slot.key
+    return slot
+
+
+def _kinds(slot: _Slot) -> list[str]:
+    return [row.get("meta", {}).get("kind", "") for row in slot.rows]
+
+
+class _BusySlot(_Slot):
+    """A slot whose turn ends after a set number of ``running`` reads."""
+
+    def __init__(self, busy_reads: int) -> None:
+        super().__init__()
+        self.busy_reads = busy_reads
+
+    @property
+    def running(self) -> bool:
+        if self.busy_reads <= 0:
+            return False
+        self.busy_reads -= 1
+        return True
+
+    @running.setter
+    def running(self, value: bool) -> None:
+        self.busy_reads = 0
+
+
+class _LiveState(_State):
+    """A state whose real slots route ``append`` callbacks back to it."""
+
+    def on_message(self, key: str, msg: dict) -> None:
+        self.frames.append(("chat_message", msg))
+
+    def flush_slot_now(self, slot) -> bool:
+        return True
+
+
+def _live_slot(state: _LiveState):
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    slot = _ChatSlot("thread-x")
+    slot.mode = "member"
+    slot._on_message = state.on_message
+    state.slots[slot.key] = slot
+    state._foreground_slots[1] = slot.key
+    return slot
+
+
+def _live_kinds(slot) -> list[str]:
+    return [(row.get("meta") or {}).get("kind", "") for row in slot.messages]
+
+
+def _spy_wait(monkeypatch) -> asyncio.Event:
+    """An event set once the brief polls the turn it waits for."""
+    waiting = asyncio.Event()
+    wait = warm_task_brief._wait_for_idle_turn
+
+    async def spy(state, slot, generation, deadline):
+        if slot.running:
+            waiting.set()
+        return await wait(state, slot, generation, deadline)
+
+    monkeypatch.setattr(warm_task_brief, "_wait_for_idle_turn", spy)
+    return waiting
+
+
+async def _start_brief(state, slot) -> asyncio.Task:
+    task = asyncio.create_task(
+        warm_task_brief._prepare_warm_task_brief(
+            state, slot, warm_task_brief.ReturnCandidate(slot.key, 0, 1)
+        )
+    )
+    state._warm_task_brief_tasks[slot.key] = task
+    return task
+
+
+@pytest.mark.asyncio
+async def test_return_during_a_turn_survives_that_turns_own_reply(monkeypatch):
+    state = _LiveState()
+    slot = _live_slot(state)
+    base = _snapshot()
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)])
+    waiting = _spy_wait(monkeypatch)
+
+    async def patrol_turn():
+        await waiting.wait()
+        # The real append path: a broadcast assistant row ends the turn.
+        slot.append("assistant", "Patrol: nothing new.", "msg msg-a")
+
+    slot.task = asyncio.create_task(patrol_turn())
+    task = await _start_brief(state, slot)
+    await asyncio.wait_for(task, timeout=30)
+
+    assert _live_kinds(slot)[-1] == "warm_task_brief_result"
+
+
+@pytest.mark.asyncio
+async def test_typed_user_row_during_the_deferral_cancels_the_brief(monkeypatch):
+    state = _LiveState()
+    slot = _live_slot(state)
+    _arm_model(monkeypatch, slot, [])
+    waiting = _spy_wait(monkeypatch)
+    release = asyncio.Event()
+
+    async def user_turn():
+        await waiting.wait()
+        slot.append("user", "Actually, stop and do this instead.", "msg msg-u")
+        await release.wait()
+
+    slot.task = asyncio.create_task(user_turn())
+    task = await _start_brief(state, slot)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=30)
+    finally:
+        release.set()
+        await asyncio.wait_for(slot.task, timeout=30)
+
+    assert "warm_task_brief_claim" not in _live_kinds(slot)
+
+
+@pytest.mark.asyncio
+async def test_a_wake_row_does_not_cancel_the_brief():
+    state = _State()
+    task = SimpleNamespace(done=lambda: False, cancelled=False)
+    task.cancel = lambda: setattr(task, "cancelled", True)
+    state._warm_task_brief_tasks["thread-x"] = task
+
+    warm_task_brief.cancel_for_live_user_row(
+        state, "thread-x", "[work-ledger wake] item=it_1 status=done"
+    )
+    assert task.cancelled is False
+    warm_task_brief.cancel_for_live_user_row(state, "thread-x", "a typed request")
+    assert task.cancelled is True
+
+
+def _brief_seen_by_a_real_turn(*, user_row: bool, message: str) -> list[bool]:
+    """Run one real dashboard turn beside a pending brief; was it cancelled?"""
+    from turn_harness import Do, SlotSpec, TurnScript, run_turn
+
+    from kiro_crew.acp.types import EVENT_TEXT_CHUNK, AcpEvent
+
+    seen: list[bool] = []
+    brief = SimpleNamespace(done=lambda: False, cancelled=False)
+    brief.cancel = lambda: setattr(brief, "cancelled", True)
+
+    def arm(ctx) -> None:
+        ctx.state._warm_task_brief_tasks[ctx.slot.key] = brief
+
+    def look(ctx) -> None:
+        seen.append(brief.cancelled)
+
+    script = TurnScript(
+        events=(AcpEvent(kind=EVENT_TEXT_CHUNK, text="Patrol: nothing new."), Do(look)),
+        message=message,
+        user_row=user_row,
+        setup=arm,
+    )
+    asyncio.run(run_turn(script, slot=SlotSpec()))
+    return seen
+
+
+def test_an_admitted_patrol_turn_does_not_cancel_a_brief():
+    assert _brief_seen_by_a_real_turn(user_row=False, message="[auto-nudge cycle 3]") == [False]
+
+
+def test_a_typed_turn_cancels_a_brief():
+    assert _brief_seen_by_a_real_turn(user_row=True, message="Do this next.") == [True]
+
+
+@pytest.mark.asyncio
+async def test_user_turn_during_the_deferral_drops_the_brief(monkeypatch):
+    state = _State()
+    slot = _BusySlot(busy_reads=1)
+    state.slots[slot.key] = slot
+    state._foreground_slots[1] = slot.key
+    monkeypatch.setattr(
+        warm_task_brief, "time", SimpleNamespace(time=lambda: 100.0, monotonic=lambda: 0.0)
+    )
+    spoke = replace(_snapshot(), last_user_at=101.0)
+    _arm_model(monkeypatch, slot, [spoke])
+
+    await asyncio.wait_for(
+        warm_task_brief._prepare_warm_task_brief(
+            state, slot, warm_task_brief.ReturnCandidate(slot.key, 0, 1)
+        ),
+        timeout=30,
+    )
+
+    assert slot.rows == []
+
+
+@pytest.mark.asyncio
+async def test_deferred_brief_is_dropped_when_the_owner_leaves(monkeypatch):
+    state = _State()
+    slot = _foreground_slot(state)
+    slot.running = True
+    _arm_model(monkeypatch, slot, [])
+    state._foreground_slots.clear()
+
+    await asyncio.wait_for(
+        warm_task_brief._prepare_warm_task_brief(
+            state, slot, warm_task_brief.ReturnCandidate(slot.key, 0, 1)
+        ),
+        timeout=30,
+    )
+
+    assert slot.rows == []
+
+
+@pytest.mark.asyncio
+async def test_deferral_gives_up_at_the_deadline(monkeypatch):
+    state = _State()
+    slot = _foreground_slot(state)
+    slot.running = True
+    _arm_model(monkeypatch, slot, [])
+    monkeypatch.setattr(warm_task_brief, "WARM_TASK_BRIEF_DEFER_MAX_SECS", 0)
+
+    await asyncio.wait_for(
+        warm_task_brief._prepare_warm_task_brief(
+            state, slot, warm_task_brief.ReturnCandidate(slot.key, 0, 1)
+        ),
+        timeout=30,
+    )
+
+    assert slot.rows == []
+
+
+@pytest.mark.asyncio
+async def test_patrol_turn_at_publication_defers_and_still_publishes(monkeypatch):
+    state = _LiveState()
+    slot = _live_slot(state)
+    base = _snapshot()
+    # A patrol turn and a worker report changed the task fingerprint, but
+    # nothing the user typed changed.
+    patrolled = replace(_claimed(base), fingerprint="after-patrol")
+
+    async def patrol_turn():
+        await waiting.wait()
+        slot.append("assistant", "Patrol: one PR went green.", "msg msg-a")
+
+    async def run_model(*args, **kwargs):
+        # A patrol turn is admitted while the model runs.
+        slot.task = asyncio.create_task(patrol_turn())
+        return '{"message":"Here is where we are."}'
+
+    _arm_model(monkeypatch, slot, [base, _claimed(base), patrolled], run_model)
+    waiting = _spy_wait(monkeypatch)
+    task = await _start_brief(state, slot)
+    await asyncio.wait_for(task, timeout=30)
+
+    kinds = _live_kinds(slot)
+    assert kinds[-1] == "warm_task_brief_result"
+    # The brief posts after the patrol reply, never inside the running turn.
+    contents = [row["content"] for row in slot.messages]
+    assert contents.index("Patrol: one PR went green.") < len(contents) - 1
+
+
+def test_user_fingerprint_ignores_assistant_rows_and_ledger(monkeypatch):
+    slot = _Slot()
+    rows = [{"role": "user", "content": "Original request", "ts": "2026-01-02T10:00:00+00:00"}]
+    state = SimpleNamespace(
+        conversation_log=SimpleNamespace(derive_messages_chained=lambda key: list(rows))
+    )
+    item = SimpleNamespace(
+        **{
+            field: None
+            for field in (
+                "item_id title verdict decision worker_session_key status reason "
+                "artifacts last_report_at created_at closed_at decided_at"
+            ).split()
+        },
+        state="open",
+        summary="one",
+    )
+    monkeypatch.setattr(warm_task_brief, "read_state", lambda key: {})
+    monkeypatch.setattr(warm_task_brief, "task_records", lambda key: (None, [item]))
+
+    first = warm_task_brief._snapshot_sync(state, slot)
+    rows.append({"role": "assistant", "content": "patrol answer"})
+    rows.append({"role": "user", "content": "[work-ledger wake] item=it_1 status=done"})
+    item.summary = "two"
+    patrolled = warm_task_brief._snapshot_sync(state, slot)
+    rows.append({"role": "user", "content": "please also do this"})
+    sent = warm_task_brief._snapshot_sync(state, slot)
+
+    assert first is not None and patrolled is not None and sent is not None
+    assert patrolled.fingerprint != first.fingerprint
+    assert patrolled.user_fingerprint == first.user_fingerprint
+    assert sent.user_fingerprint != first.user_fingerprint
+
+
+def test_work_ledger_wake_is_not_a_user_turn():
+    turns = warm_task_brief.extract_turns(
+        [{"role": "user", "content": "[work-ledger wake] item=it_1 status=done"}]
+    )
+    assert turns[0].injected is True
