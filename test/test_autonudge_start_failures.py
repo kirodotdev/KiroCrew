@@ -443,6 +443,13 @@ async def _reloaded_with_bound(
     return reloaded, loop.id
 
 
+#: The bound a loop is armed with before its stored value is rewritten. The
+#: runtime budget is wall-clock, so it must outlast the whole arm-to-reload round
+#: trip on the slowest runner: a budget that runs out first stops the loop as
+#: ``runtime_budget`` before the unreadable value is read at load.
+_ARMED_BOUND = {"max_cycles": 2, "max_runtime_secs": 3600}
+
+
 def _recording(svc: AutoNudgeService) -> list[str]:
     fired: list[str] = []
 
@@ -533,7 +540,9 @@ async def test_an_unreadable_bound_stops_the_loop_at_load_and_keeps_the_value(
     is deactivated at load under ``structural_terminal`` with its schedule cleared,
     the value stays as stored, and the WARNING names the field and the value."""
     caplog.set_level("WARNING", logger="kiro_crew.autonudge")
-    reloaded, loop_id = await _reloaded_with_bound(store_dir, field, stored, **{field: 2})
+    reloaded, loop_id = await _reloaded_with_bound(
+        store_dir, field, stored, **{field: _ARMED_BOUND[field]}
+    )
     try:
         loop = reloaded._loops[loop_id]
         assert (loop.active, loop.stopped_reason, loop.next_due_ts) == (
@@ -553,7 +562,9 @@ async def test_resume_does_not_revive_a_loop_with_an_unreadable_bound(store_dir,
     """Play, a reconciler and ``monitor_update`` all revive through ``update``. While
     the stored bound is unreadable the revival is declined, so the loop never runs
     without its limit; a revival that brings a fresh bound runs under that bound."""
-    reloaded, loop_id = await _reloaded_with_bound(store_dir, field, "abc", **{field: 2})
+    reloaded, loop_id = await _reloaded_with_bound(
+        store_dir, field, "abc", **{field: _ARMED_BOUND[field]}
+    )
     fired = _recording(reloaded)
     try:
         await reloaded.update(loop_id, active=True)
