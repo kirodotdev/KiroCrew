@@ -36,6 +36,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("kiro_crew.context")
 
+#: The built-in skill that drives the ``computer_*`` tools. A turn cannot use it
+#: while the session's Computer Use reading is off (no ``kirocrew-computer``
+#: server was mounted), so the trigger path neither matches nor offers it then.
+_COMPUTER_USE_SKILL = "computer-use"
+
 
 def build_message(
     self,
@@ -76,6 +81,7 @@ def build_message(
     context_provider: "ContextPromptProvider | None" = None,
     steering_dirs: tuple[str, ...] = (),
     skill_bodies_session: str | None = None,
+    skill_trigger_text: str | None = None,
 ) -> tuple[str, HookResult]:
     """Build the full message with context and hook processing.
 
@@ -109,6 +115,11 @@ def build_message(
     bodies the session already holds is kept under it, and nothing else in
     the prompt changes. The heartbeat does this, because a session key would
     also change the rest of its prompt. It defaults to *session_key*.
+
+    Pass *skill_trigger_text* to match skill triggers against it instead of
+    *text*: the person's own request without the context the caller prefixed,
+    or ``""`` for a turn whose text the person did not write, which then
+    matches and selects no skill. ``None`` keeps *text*.
 
     *provider_type* names the harness serving the session. A context
     provider that carries an :class:`EssentialDelivery` names it in place of
@@ -630,7 +641,29 @@ def build_message(
     # the largest single block of assembled context, and ACP replays native
     # history so a body already sent earlier in the conversation is still
     # in the window.
-    if not is_custom and not minimal_context:
+    #
+    # Triggers read the person's own request when the caller says what it is
+    # (`skill_trigger_text`), the turn text otherwise. Empty means the person
+    # wrote nothing this turn -- a runner continuation, the synthesis prompt,
+    # an MCP App's message -- so nothing is matched or selected: Kiro Crew's
+    # own words ("do NOT restart from scratch") must not load a skill.
+    trigger_text = text if skill_trigger_text is None else skill_trigger_text
+    if not is_custom and not minimal_context and trigger_text:
+        # A skill for a feature this session's backend did not mount describes
+        # tools the turn cannot call. Read from the same per-session reading the
+        # agent prompt's Computer Use block is rendered from, so they agree. A
+        # fresh session (a new backend) takes its own reading here: the prompt
+        # takes one only when it carries the block's token, and an operator's
+        # prompt that does not would leave a reused key on its first reading. A
+        # resume already re-took it above.
+        unusable = (
+            ()
+            if self._session_computer_use_gate(
+                session_key or "", refresh=is_new_session and not resumed
+            )
+            else (_COMPUTER_USE_SKILL,)
+        )
+
         # Jev (skills.select): when the point is on for this session, one
         # pick REPLACES what trigger matching chose. It is handed to the
         # loader rather than applied here so the loader's single SEL row
@@ -674,14 +707,17 @@ def build_message(
 
             return selected_skills(
                 self.skills,
-                text,
+                trigger_text,
                 project,
                 session_key=session_key,
                 loop=self._decisions_loop,
                 history_source=prior_turns,
+                unusable=unusable,
             )
 
-        triggered = self.skills.get_triggered_skills(text, project_dir=project, select=select)
+        triggered = self.skills.get_triggered_skills(
+            trigger_text, project_dir=project, select=select, unusable=unusable
+        )
         mapped = ctx.agent_skill_globs(agent, project_dir=project) if agent else []
         if mapped:
             allowed = {

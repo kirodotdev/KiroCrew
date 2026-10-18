@@ -110,6 +110,18 @@ def test_the_menu_keeps_every_restriction_the_baseline_applies():
     assert [row["key"] for row in rows] == ["matcher"]
 
 
+def test_a_skill_the_turn_cannot_use_is_neither_offered_nor_in_the_baseline():
+    """``unusable`` is the matcher's own gate (a feature that is off for the
+    session), so the menu and the baseline arm skip exactly what it skips."""
+    loader = _loader(("gated", {"triggers": "zebra"}), ("matcher", {"triggers": "zebra"}))
+    baseline: list[str] = []
+    rows = sel.candidates_from_loader(
+        loader, "zebra", None, baseline_out=baseline, unusable=("gated",)
+    )
+    assert [row["key"] for row in rows] == ["matcher"]
+    assert baseline == ["matcher"]
+
+
 def test_a_repo_scope_the_loader_accepts_is_offered():
     loader = _loader(
         ("scoped", {"triggers": "zebra", "repo_scope": "src/kiro_crew"}),
@@ -396,6 +408,18 @@ def test_a_pick_is_returned_to_the_caller(bg_loop, enabled, monkeypatch):
     loader = _loader(("review", {"triggers": "code review"}))
     picked = sel.selected_skills(loader, "review this code", None, session_key="s", loop=bg_loop)
     assert picked == ["review"]
+
+
+def test_the_oracle_is_never_offered_a_skill_the_turn_cannot_use(bg_loop, enabled, monkeypatch):
+    spy = AsyncMock(return_value=_answers(sel.NONE_OPTION))
+    monkeypatch.setattr(core, "decide", spy)
+    loader = _loader(("gated", {"triggers": "zebra"}), ("matcher", {"triggers": "zebra"}))
+    picked = sel.selected_skills(
+        loader, "zebra", None, session_key="s", loop=bg_loop, unusable=("gated",)
+    )
+    assert picked == []
+    _point, _state, questions = spy.await_args.args
+    assert questions[0].options == ["matcher", sel.NONE_OPTION]
 
 
 def test_a_refusal_to_pick_is_a_real_empty_selection(bg_loop, enabled, monkeypatch):

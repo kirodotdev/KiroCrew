@@ -312,7 +312,9 @@ phrase to reach the same score. A phrase prefixed with `!` is a negative: if all
 of its words appear, that crewmate is excluded whatever else it scored.
 Negatives are applied after every positive, so the order you write them in
 cannot change the outcome. Anything below a 0.7 overlap is not a match at all,
-and ties keep the order the crewmates appear in your config.
+and ties keep the order the crewmates appear in your config. Case is ignored,
+except in a phrase prefixed with `=`, which must appear exactly as written:
+`=Excel` fires on "Excel" but not on "excel".
 
 The same matcher picks [skills](skills.md), so "this phrasing matches" means one
 thing across the product.

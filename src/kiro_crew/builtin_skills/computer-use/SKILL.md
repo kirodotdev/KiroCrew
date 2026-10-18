@@ -1,7 +1,7 @@
 ---
 name: computer-use
 description: Read and drive native desktop apps through the accessibility layer — list apps, snapshot a window as a numbered element tree, then click/type/scroll/drag by element index or screen coordinates. Use for a desktop app, not a web page. macOS + Windows; off unless enabled in Settings.
-triggers: desktop, desktop app, native app, app window, on screen, click button, type into, accessibility, a11y, AXUIElement, computer use, drive the app, Finder, Preview, TextEdit, Excel, Word, System Events, !browser, !web page, !playwright
+triggers: desktop, desktop app, native app, app window, on screen, click button, type into, accessibility, a11y, AXUIElement, computer use, drive the app, =Finder, =Preview, TextEdit, =Excel, =Word, System Events, !browser, !web page, !playwright
 ---
 
 # Computer Use — driving native desktop apps

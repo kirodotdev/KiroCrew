@@ -252,10 +252,20 @@ The mechanism, when on:
   `triggers` through `trigger_match.py` → `trigger_score`. A phrase's score is the
   fraction of *its* words present in the message; an entry's score is its best
   phrase; a `!`-prefixed phrase whose words all appear is a veto evaluated after
-  every positive, so phrase order cannot change the outcome.
+  every positive, so phrase order cannot change the outcome. Case is ignored,
+  except in a phrase prefixed with `=`: its words must appear exactly as
+  written, so `=Word` fires on "Word" and not on "word".
 - The bar is `MIN_TRIGGER_OVERLAP = 0.7`. `always: true` skills are excluded (already
-  pinned) and a `repo_scope` mismatch suppresses mechanically. Matches are then
+  pinned) and a `repo_scope` mismatch suppresses mechanically. So does a skill the
+  turn cannot use: `computer-use` while the session's Computer Use reading (the
+  one its agent prompt's block is rendered from) is off. Matches are then
   truncated to `max_triggered`, highest score first.
+- The message matched is the person's own request. The dashboard passes it as
+  `skill_trigger_text`, without the context it prepends (sub-agent notices,
+  background context), and passes `""` on a turn whose text the person did not
+  write (a recovery or Continue continuation, the synthesis prompt, an MCP
+  App's message), which then matches and selects nothing. Other callers match
+  the turn text.
 - `skill_runtime/delivery.py` → `split_triggered` decides delivery. **A matched
   skill's full body lands in the prompt as `[Skill: name]` the first time it
   matches in a provider session**; a later match of the same unconfined skill in

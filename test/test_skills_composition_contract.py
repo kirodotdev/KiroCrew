@@ -261,7 +261,7 @@ _LOADER_SIGNATURES = {
     "get_auto_skill_version": "(self, name: 'str') -> 'int'",
     "get_context": "(self, budget: 'int | None' = None, only: 'list[str] | None' = None, project_dir: 'str | Path | None' = None, project_body_budget: 'int | None' = None, *, discovery_only: 'bool' = False, required_parts_out: 'list[str] | None' = None) -> 'str'",
     "get_pending_skill": "(self, slug: 'str') -> 'dict | None'",
-    "get_triggered_skills": "(self, text: 'str', project_dir: 'str | Path | None' = None, *, select: 'Callable[[], list[str] | None] | None' = None) -> 'list[str]'",
+    "get_triggered_skills": "(self, text: 'str', project_dir: 'str | Path | None' = None, *, select: 'Callable[[], list[str] | None] | None' = None, unusable: 'Collection[str]' = ()) -> 'list[str]'",
     "has_dollar_candidate": "(text: 'str') -> 'bool'",
     "is_auto_generated": "(self, name: 'str') -> 'bool'",
     "list_archived_auto_skills": "(self) -> 'list[dict]'",

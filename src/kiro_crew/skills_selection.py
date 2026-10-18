@@ -15,6 +15,7 @@ import hashlib
 import logging
 import os
 import time
+from collections.abc import Collection
 from pathlib import Path
 from typing import Callable
 
@@ -183,6 +184,7 @@ def get_triggered_skills(
     project_dir: str | Path | None = None,
     *,
     select: Callable[[], list[str] | None] | None = None,
+    unusable: Collection[str] = (),
 ) -> list[str]:
     """Return names of skills whose triggers match the given text.
 
@@ -194,6 +196,10 @@ def get_triggered_skills(
 
     *project_dir* is the session's active project, used only by the
     ``repo_scope`` gate; omitting it suppresses every repo-scoped skill.
+
+    *unusable* names skills the turn cannot use (their feature is off for the
+    session). They are skipped like a ``repo_scope`` mismatch, so one never
+    takes a slot under the cap.
 
     *select*, when given, may replace the matched set before the audit row
     is written; it returns ``None`` to keep the match. It is a callable, not
@@ -220,6 +226,8 @@ def get_triggered_skills(
     visible = self._iter_visible(project_dir) if cap > 0 else ()
     text_words: set[str] = words_of(text) if cap > 0 else set()
     for name, skill_file, _within in visible:
+        if name in unusable:
+            continue
         # A reader on the per-message path: one SKILL.md that is not UTF-8
         # costs its own match, never the turn (rationale on the helper).
         meta = self._readable_frontmatter(skill_file, within=_within)

@@ -11,12 +11,17 @@ sentence, a ``!`` negative that only sometimes wins), and the symptom would be a
 task quietly handled by the wrong crew — the memory-leak case a per-crew silo
 exists to prevent, arriving through the router instead of through the store.
 
-Grammar, unchanged from the skills loader that established it:
+Grammar, from the skills loader that established it:
 
 * Phrases are comma-separated; surrounding whitespace is insignificant.
 * A phrase's score is the fraction of ITS words present in the text, so a
   specific multi-word phrase must be matched more completely than a generic
   one-word phrase to reach the same score. An entry's score is its best phrase.
+* Matching ignores case. A positive phrase prefixed with ``=`` is the one
+  exception: its words must appear exactly as written, so ``=Word`` fires on
+  "open it in Word" but not on "reply with the word pong". It is for a name
+  that is also an ordinary word; the author marks it, so no other trigger's
+  matching changes.
 * A phrase prefixed with ``!`` is a NEGATIVE: if all of its words appear in the
   text, the entry is excluded no matter what its positive phrases scored.
   Negatives are evaluated after every positive so phrase ORDER cannot change the
@@ -43,9 +48,19 @@ MIN_TRIGGER_OVERLAP = 0.7
 _WORD_RE = re.compile(r"\w+")
 
 
+#: Marks a case-exact phrase in a trigger list, and its words in :func:`words_of`'s
+#: set. It never occurs inside a ``\w+`` word, so the two forms cannot collide.
+_EXACT = "="
+
+
 def words_of(text: str) -> set[str]:
-    """The lowercase word set used on both sides of a comparison."""
-    return set(_WORD_RE.findall(text.lower()))
+    """The word set a trigger list is scored against.
+
+    Every word lowercased, plus every word as written behind :data:`_EXACT`,
+    which is the form an ``=`` phrase looks up in :func:`trigger_score`.
+    """
+    exact = {_EXACT + word for word in _WORD_RE.findall(text)}
+    return set(_WORD_RE.findall(text.lower())) | exact
 
 
 def trigger_score(triggers: str, text_words: set[str]) -> tuple[float, bool]:
@@ -59,7 +74,8 @@ def trigger_score(triggers: str, text_words: set[str]) -> tuple[float, bool]:
     best = 0.0
     negated = False
     for raw in (triggers or "").split(","):
-        phrase = raw.strip().lower()
+        written = raw.strip()
+        phrase = written.lower()
         if not phrase:
             continue
         if phrase.startswith("!"):
@@ -67,7 +83,10 @@ def trigger_score(triggers: str, text_words: set[str]) -> tuple[float, bool]:
             if neg and neg <= text_words:
                 negated = True
             continue
-        phrase_words = set(_WORD_RE.findall(phrase))
+        if written.startswith(_EXACT):
+            phrase_words = {_EXACT + word for word in _WORD_RE.findall(written[1:])}
+        else:
+            phrase_words = set(_WORD_RE.findall(phrase))
         if not phrase_words:
             continue
         best = max(best, len(phrase_words & text_words) / len(phrase_words))

@@ -7688,6 +7688,11 @@ async def _run_chat(
                     needs_reinjection=_needs_reinjection,
                     steering_dirs=_folder_steering_dirs,
                     context_provider=client,
+                    # Skill triggers read only what the person asked: none of
+                    # the context prepended above, and nothing at all on a turn
+                    # whose text the person did not write (a recovery or Continue
+                    # continuation, the synthesis prompt, an MCP App's message).
+                    skill_trigger_text="" if _is_synthetic else _jev_route_text,
                 )
             slot_ctx_omitted = dict(_ctx_omitted)
             # The reported span is valid for the message as build_message

@@ -47,7 +47,7 @@ Instructions, examples, and reference material that the agent reads when this sk
 | `name` | No | Display name; the loader uses the directory-relative path when it is absent. |
 | `description` | No | Summary used in skill listings; the loader falls back to the directory-relative path. |
 | `always` | No | `true` to inject full content every eligible session. |
-| `triggers` | No | Comma-separated phrases. A positive phrase matches when at least 70% of its words appear in the user text. Prefix with `!` for a negative trigger; every negative-trigger word must appear to exclude the skill. |
+| `triggers` | No | Comma-separated phrases. A positive phrase matches when at least 70% of its words appear in the user text. Case is ignored. Prefix a phrase with `=` to match it exactly as written, for a name that is also an ordinary word: `=Word` fires on "Word" but not on "word". Prefix with `!` for a negative trigger; every negative-trigger word must appear to exclude the skill. |
 | `inject_on_trigger` | No | Defaults to `true`. For non-project skills, `false` contributes a one-line pointer instead of the full body. Trusted project skills always inject their body. |
 | `repo_scope` | No | Restricts injection to a session whose active project or an ancestor contains the specified relative path. |
 

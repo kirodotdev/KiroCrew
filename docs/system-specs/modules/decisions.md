@@ -30,7 +30,7 @@ Before transmission, the request -- the state, the questions and the provider mo
 
 ## 4. Skill selection
 
-The normal word-overlap result remains the fallback. The Jev candidate menu uses skills available through the existing loader and its project-confinement rules. The explicit no-skill option is `/no skill applies`: a key's first component is a directory name, so no skill can carry that name, and a skill literally called `none` or `(no skill applies)` stays selectable. Always-loaded skills are not candidates; negative triggers and `skills.max_triggered` remain effective. A zero trigger cap means no automatic selection and no Jev request. Skill identifiers are preserved, not shortened into different names.
+The normal word-overlap result remains the fallback. The Jev candidate menu uses skills available through the existing loader and its project-confinement rules. The explicit no-skill option is `/no skill applies`: a key's first component is a directory name, so no skill can carry that name, and a skill literally called `none` or `(no skill applies)` stays selectable. Always-loaded skills are not candidates, nor is a skill the turn cannot use (the matcher's `unusable` set: `computer-use` while the session's Computer Use reading is off); negative triggers and `skills.max_triggered` remain effective. A zero trigger cap means no automatic selection and no Jev request. Skill identifiers are preserved, not shortened into different names.
 
 A validated choice replaces the triggered list before the existing body/pointer split. The explicit no-skill answer produces an empty list; `None` means retain the original list. Custom-agent and minimal-context paths do not acquire automatic skill selection.
 
