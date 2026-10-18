@@ -100,8 +100,8 @@ with no row here.
      - pre-session registry query (whether ``_session/steer`` exists)
    * - ``ACP_BACKENDS_STEERING_REQUEST``
      - pre-session registry query (whether a user steer travels on an awaited
-       request instead: the ``_session/steering`` request of codex-acp and
-       claude-agent-acp, or goose's ``_goose/unstable/session/steer``)
+       request instead: the ``_session/steering`` request of codex-acp,
+       claude-agent-acp and pi-acp, or goose's ``_goose/unstable/session/steer``)
    * - ``ACP_BACKENDS_STEER_CONCURRENT_PROMPT``
      - pre-session registry query (whether a user steer travels as a second
        ``session/prompt`` that joins the running turn)

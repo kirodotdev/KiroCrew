@@ -47,8 +47,9 @@ from kiro_crew.agent_sdk.backends import (
 # opencode is not a member either: it has no steer verb, and a deny it is handed
 # ends its turn. It takes a user's mid-turn message as a second ``session/prompt``
 # instead (``ACP_BACKENDS_STEER_CONCURRENT_PROMPT`` below).
-# pi is not a member: pi-acp's ``initialize`` result advertises ``loadSession`` and
-# ``sessionCapabilities`` of list and delete, and no steering extension.
+# pi takes a user's mid-turn message over ``_session/steering`` instead (see
+# ``ACP_BACKENDS_STEERING_REQUEST``), so it is a non-member here for the same
+# reason codex is: the deny-notice path needs a steer that survives the refusal.
 # deepseek is not a member: it advertises close, list and resume only, and permits
 # one in-flight prompt per session, so a mid-turn steer has no verb to travel on.
 # goose is not a member: its steer is its own request, and it is not shown to
@@ -70,10 +71,10 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 # Backends that take a USER's mid-turn message over a REQUEST whose answer is
 # awaited, rather than kiro-cli's fire-and-forget ``_session/steer``, and that can
-# drop an accepted steer with its turn. Two verbs: ``_session/steering``, which
-# ``AcpSessionHandle`` speaks for codex-acp and ``AcpClient`` for
-# claude-agent-acp, and goose's ``_goose/unstable/session/steer``, spoken by
-# ``AcpClient`` (``_CLIENT_STEERING_REQUEST_METHODS``).
+# Two verbs: ``_session/steering``, which ``AcpSessionHandle`` speaks for
+# codex-acp and ``AcpClient`` for claude-agent-acp and pi-acp, and goose's
+# ``_goose/unstable/session/steer``, spoken by ``AcpClient``
+# (``_CLIENT_STEERING_REQUEST_METHODS``).
 #
 # goose, measured against a live goose 1.54.0 (and its ``acp/server.rs``): the
 # request is ``{sessionId, expectedRunId, prompt: [ContentBlock]}``, where the run
@@ -140,8 +141,21 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # with ``end_turn``; a cancelled or failed turn queues it. claude runs one adapter per
 # session, so ``AcpClient`` speaks the request for it, and only when the handshake
 # advertised it.
+#
+# pi-acp takes the same request, on its own evidence: read from the shipped
+# 0.1.8 bundle and driven live on ``@openma/pi-acp`` 0.1.8 with pi 1.3.0.
+# ``initialize`` advertises ``_meta.steering.supported: true`` (older adapters
+# advertise nothing). Driven live: a ``_session/steering`` sent during a
+# tool-free model call returned ``injected``, and the steered word was in the
+# reply before ``end_turn``.
+# ``steer()`` delivers after the current assistant turn finishes its tool
+# calls, before the next model call, answering ``injected``; with no running
+# turn it answers ``promptRequired`` and starts nothing. A concurrent
+# ``session/prompt`` steers the same way. There is no ``steering_consumed``
+# echo, so the request's own answer is the delivery evidence and a cancelled
+# or failed turn queues the text, exactly as for claude above.
 ACP_BACKENDS_STEERING_REQUEST = frozenset(
-    {ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE}
+    {ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE, ACP_BACKEND_PI}
 )
 
 # Backends that take a USER's mid-turn message as a second ``session/prompt`` sent

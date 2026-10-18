@@ -391,7 +391,7 @@ async def steer(self: AcpClient, message: str) -> bool:
 
     A backend in ``ACP_BACKENDS_STEERING_REQUEST`` is delivered by a request
     whose answer the read loop hands over instead: goose by
-    :meth:`_steer_via_request`, claude by :meth:`_steer_via_steering_request`.
+    :meth:`_steer_via_request`, claude and pi by :meth:`_steer_via_steering_request`.
 
     A backend in ``ACP_BACKENDS_STEER_CONCURRENT_PROMPT`` takes the steer as
     a second ``session/prompt`` instead (:meth:`_steer_via_concurrent_prompt`),
@@ -417,12 +417,15 @@ def _steering_request_ready(self: AcpClient) -> bool:
     """Whether this session's adapter takes ``_session/steering`` as this client
     sends it: advertised at the handshake, and claude-agent-acp at or above
     :data:`CLAUDE_ACP_STEERING_MIN_VERSION`. The floor is that adapter's own
-    release history, and claude is the only member this client sends
-    ``_session/steering`` to, so any other member fails closed here."""
+    release history (0.64.x answers ``injected`` and then drops the text).
+    pi-acp carries no floor: steering first appears in 0.1.8 already behaving,
+    and older adapters never advertise it. Any other member fails closed here."""
     if self._is_claude and getattr(self, "_steering_advertised", False) is True:
         return _adapter_version_at_least(
             getattr(self, "_agent_version", ""), CLAUDE_ACP_STEERING_MIN_VERSION
         )
+    if self._is_pi and getattr(self, "_steering_advertised", False) is True:
+        return True
     return False
 
 
