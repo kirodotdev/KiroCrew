@@ -43,6 +43,18 @@ vi.mock('../api/client', () => ({
 
 import { ArtifactBodyIframe } from '../components/ArtifactBody'
 
+/** Follow where the frame is pointed. The first document comes from the `src`
+ * attribute; every later one through `location.replace`, so the attribute is
+ * not where a re-minted document shows up (hooks/useFrameSrc.ts). */
+function trackNavigation(frame: HTMLIFrameElement): () => string | null {
+  const seen: string[] = []
+  Object.defineProperty(frame, 'contentWindow', {
+    configurable: true,
+    value: { location: { replace: (u: string) => { seen.push(u) } } },
+  })
+  return () => seen.at(-1) ?? frame.getAttribute('src')
+}
+
 function makeArtifact(content: string): Artifact {
   return { slug: SLUG, name: 'Widget', kind: 'widget', content } as unknown as Artifact
 }
@@ -131,16 +143,38 @@ describe('ArtifactBodyIframe document URL lifecycle', () => {
     })
     fireEvent.load(frame)
     expect(frame.style.opacity).toBe('1')
+    const pointedAt = trackNavigation(frame)
 
     mintSpy.mockResolvedValue({ url: '/sandbox-doc/second/tok' })
     rerender(<ArtifactBodyIframe artifact={makeArtifact('<p>changed</p>')} />)
-    await waitFor(() =>
-      expect(document.querySelector('iframe')?.getAttribute('src')).toBe(
-        '/sandbox-doc/second/tok',
-      ),
-    )
+    await waitFor(() => expect(pointedAt()).toBe('/sandbox-doc/second/tok'))
     // The new document has NOT reported load yet, and the frame stays visible.
     expect(document.querySelector('iframe')?.style.opacity).toBe('1')
+  })
+
+  it('swaps a re-minted document in place, leaving no spent url in history', async () => {
+    // An attribute change records the old url as a history entry of the page,
+    // and Back then renavigates the frame onto it: the single-use url answers
+    // `404: Not Found`, painted as the artifact body. A live content update is
+    // the commonest re-mint, so a frame on an artifact updated on a timer
+    // collected one dead entry per update.
+    const { rerender } = render(
+      <ArtifactBodyIframe artifact={makeArtifact(HTML_CONTENT)} />,
+    )
+    const frame = await waitFor(() => {
+      const el = document.querySelector('iframe')
+      if (!el) throw new Error('frame never mounted')
+      return el as HTMLIFrameElement
+    })
+    const pointedAt = trackNavigation(frame)
+
+    mintSpy.mockResolvedValue({ url: '/sandbox-doc/second/tok' })
+    rerender(<ArtifactBodyIframe artifact={makeArtifact('<p>changed</p>')} />)
+
+    await waitFor(() => expect(pointedAt()).toBe('/sandbox-doc/second/tok'))
+    // The attribute still names the first document: rewriting it is the
+    // navigation that records the history entry.
+    expect(frame.getAttribute('src')).toBe(DOC_URL)
   })
 
   it('offers a retry instead of an eternal progress label when the mint fails', async () => {
@@ -179,6 +213,7 @@ describe('ArtifactBodyIframe document URL lifecycle', () => {
     await waitFor(() =>
       expect(document.querySelector('iframe')?.getAttribute('src')).toBe(DOC_URL),
     )
+    const pointedAt = trackNavigation(document.querySelector('iframe') as HTMLIFrameElement)
 
     let release: (v: { url: string }) => void = () => {}
     mintSpy.mockReturnValueOnce(
@@ -189,15 +224,11 @@ describe('ArtifactBodyIframe document URL lifecycle', () => {
     rerender(<ArtifactBodyIframe artifact={makeArtifact('<p>changed</p>')} />)
 
     // Still showing the OLD document, not a placeholder, while the mint runs.
-    expect(document.querySelector('iframe')?.getAttribute('src')).toBe(DOC_URL)
+    expect(pointedAt()).toBe(DOC_URL)
     expect(screen.queryByText(/rendering…/i)).toBeNull()
 
     release({ url: '/sandbox-doc/second/tok' })
-    await waitFor(() =>
-      expect(document.querySelector('iframe')?.getAttribute('src')).toBe(
-        '/sandbox-doc/second/tok',
-      ),
-    )
+    await waitFor(() => expect(pointedAt()).toBe('/sandbox-doc/second/tok'))
   })
 
   it('clears the URL when content empties, leaving no stale document', async () => {
@@ -439,15 +470,14 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
   it('re-mints rather than re-rendering the spent url when Show artifact is taken', async () => {
     // Re-pointing the frame at the same spent URL recovers nothing — it 404s
     // again. Recovery is a fresh mint.
-    await loadedFrame('<p>silent</p>')
+    const pointedAt = trackNavigation(await loadedFrame('<p>silent</p>'))
     await act(async () => { vi.advanceTimersByTime(4000) })
 
     mintSpy.mockResolvedValue({ url: '/sandbox-doc/fresh/tok' })
     screen.getByRole('button', { name: /show artifact/i }).click()
 
     await waitFor(() => {
-      expect(document.querySelector('iframe')?.getAttribute('src'))
-        .toBe('/sandbox-doc/fresh/tok')
+      expect(pointedAt()).toBe('/sandbox-doc/fresh/tok')
       // Same wait, not a synchronous read after it: the notice is cleared in the
       // commit that registers the fresh document, which can land a frame after
       // the one that re-pointed `src`. Under load that later frame had not

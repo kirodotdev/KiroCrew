@@ -1,9 +1,10 @@
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { api } from '../../../api/client'
 import { useTheme } from '../../../hooks/useTheme'
 import { useSandboxDoc } from '../../../hooks/useSandboxDoc'
+import { useFrameSrc } from '../../../hooks/useFrameSrc'
 import { readThemeVars } from '../../../lib/widgetSrcdoc'
 import { fmtDateTime } from '../../../i18n/format'
 import { Btn } from '../../../components/ui'
@@ -54,6 +55,9 @@ export default function SessionStatusFrame({ slot, title, active }: { slot: stri
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [active, card, vars, theme, language])
   const document = useSandboxDoc(html)
+  // Later documents replace the first in place (hooks/useFrameSrc.ts).
+  const frameRef = useRef<HTMLIFrameElement>(null)
+  const frameSrc = useFrameSrc(frameRef, document.url)
   const status = eligible ? query.data?.status ?? 'waiting' : 'unavailable'
   return <section data-testid="session-status-frame" className="space-y-2 min-w-0">
     {eligible && query.data?.published_at != null && <p className="text-[11px] text-muted">{t('commandCenter.card_content_published', { time: fmtDateTime(query.data.published_at * 1000) })}</p>}
@@ -62,7 +66,7 @@ export default function SessionStatusFrame({ slot, title, active }: { slot: stri
     {/* No hand-off: native decision cards above may hold unsent answers. */}
     <ErrorNotice message={query.isError || document.failed ? t('commandCenter.dashboard_error') : status === 'failed' ? t('commandCenter.card_failed') : undefined} />
     {(query.isError || document.failed) && <Btn onClick={() => { void query.refetch(); document.retry() }} disabled={query.isFetching || document.pending}>{t('commandCenter.refresh')}</Btn>}
-    {active && document.url && <iframe title={title} src={document.url} sandbox={TASK_DASHBOARD_SANDBOX} referrerPolicy="no-referrer"
+    {active && document.url && <iframe ref={frameRef} title={title} src={frameSrc} sandbox={TASK_DASHBOARD_SANDBOX} referrerPolicy="no-referrer"
       className="w-full min-h-64 border border-border rounded-lg bg-bg" />}
   </section>
 }

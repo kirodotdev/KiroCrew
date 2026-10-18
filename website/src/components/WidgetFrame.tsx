@@ -11,6 +11,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { i18nT } from '../i18n/t'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
+import { useFrameSrc } from '../hooks/useFrameSrc'
 import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
 import { useNearViewport } from '../hooks/useNearViewport'
 
@@ -216,6 +217,8 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
   const { url: blobUrl, failed: mintFailed, pending: mintPending, retry: retryMint } = useSandboxDoc(
     visible ? srcdoc : null,
   )
+  // Later documents replace the first in place (hooks/useFrameSrc.ts).
+  const frameSrc = useFrameSrc(iframeRef, blobUrl)
   // Fade the iframe in once its document loads, so the reveal is a soft fade
   // instead of an abrupt blink-then-appear. Reset to false whenever a new blob
   // is built (first reveal, theme change, content rebuild) so each fresh render
@@ -637,7 +640,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
         {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
         <iframe
           ref={iframeRef}
-          src={blobUrl}
+          src={frameSrc}
           onLoad={() => { setIframeLoaded(true); onFrameLoaded() }}
           sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
           // NO clipboard-write delegation here, deliberately. These frames host

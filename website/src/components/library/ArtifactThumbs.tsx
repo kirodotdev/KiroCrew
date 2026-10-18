@@ -12,6 +12,7 @@ import MarkdownRenderer from '../MarkdownRenderer'
 import { i18nT } from '../../i18n/t'
 import { stripMd } from '../notifications/notifMeta'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
+import { useFrameSrc } from '../../hooks/useFrameSrc'
 import { useSilentLoadWatch } from '../../hooks/useSilentLoadWatch'
 import { useNearViewport } from '../../hooks/useNearViewport'
 import type { Artifact } from '../../types'
@@ -85,6 +86,8 @@ export function WidgetThumb({ content, slug }: { content: string; slug: string }
   // that is megabytes, and the stash then has to refuse mints it could otherwise
   // have served. Deferring keeps the pressure proportional to what is on screen.
   const { url: blobUrl, failed } = useSandboxDoc(near ? srcdoc : null)
+  // Later documents replace the first in place (hooks/useFrameSrc.ts).
+  const frameSrc = useFrameSrc(iframeRef, blobUrl)
   // Gated on the FIRST document only, and deliberately NOT reset when a new url
   // lands. A re-mint navigates the frame again, and re-hiding on every new url
   // leaves the thumb blank until the next `load` fires — long enough to read as
@@ -162,7 +165,7 @@ export function WidgetThumb({ content, slug }: { content: string; slug: string }
       {blobUrl ? (
         <iframe
           ref={iframeRef}
-          src={blobUrl}
+          src={frameSrc}
           sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
           title={i18nT('pages.artifactsPage.preview', { slug })}
           tabIndex={-1}

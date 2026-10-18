@@ -22,6 +22,7 @@ import type { ArtifactComment } from '../types'
 
 import { i18nT } from '../i18n/t'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
+import { useFrameSrc } from '../hooks/useFrameSrc'
 import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
 
 /** The selection an open comment composer annotates, resolved while it was
@@ -266,6 +267,8 @@ export default function RemoteArtifactDetailPage() {
   // and widget frames moved: some WebKit-based in-app browsers refuse a blob
   // load outright and can take the whole page down with it.
   const { url: blobUrl, failed, pending, retry } = useSandboxDoc(srcdoc)
+  // Later documents replace the first in place (hooks/useFrameSrc.ts).
+  const frameSrc = useFrameSrc(iframeRef, blobUrl)
   // A mint can succeed while the frame never fires `load` — a visible-but-blank
   // frame here, since this surface has no opacity gate. `silent` overlays the
   // same notice + retry the mint-`failed` branch uses so the blank is explained
@@ -472,7 +475,7 @@ export default function RemoteArtifactDetailPage() {
                   /* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onLoad is a frame-load lifecycle handler (it clears the silent-load watch), not a user interaction; the frame's own content is what a keyboard reaches, and nothing here can be triggered from one */
                   <iframe
                     ref={iframeRef}
-                    src={blobUrl}
+                    src={frameSrc}
                     onLoad={onFrameLoaded}
                     sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
                     // NO clipboard-write delegation here, deliberately. These frames host

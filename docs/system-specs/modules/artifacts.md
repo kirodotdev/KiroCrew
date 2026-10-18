@@ -1565,6 +1565,20 @@ to this kind would store content no reader can parse.
   reason, and because an iframe navigation has `mode === 'navigate'`, so the
   worker's offline fallback would otherwise serve the SPA shell INTO the widget
   frame (`website/src/test/serviceWorkerSkipRules.test.ts` runs the real worker).
+- **A re-minted document replaces the old one in place.** Rewriting a mounted
+  frame's `src` attribute records the old URL as a history entry of the page, so
+  the reader's next Back renavigates the frame onto a spent URL and paints the
+  gateway's plain `404: Not Found` where the artifact was. Every re-mint did this
+  (a live content update, a theme change, a retry), so a frame following an
+  artifact updated on a timer collected one dead entry per update. A frame
+  therefore takes its FIRST URL from the attribute and every later one through
+  `contentWindow.location.replace`, which records nothing; the previous document
+  stays up until the new one commits, as before (`website/src/hooks/useFrameSrc.ts`).
+  That call bypasses the sub-path DOM shim, so the hook adds the base itself.
+  `website/src/test/useFrameSrc.test.tsx` lists every `useSandboxDoc` caller and
+  fails when one renders its frame any other way. The crew dashboard frame is the
+  one left as it was: it is keyed on its sandbox grant, so a grant change makes a
+  new element, which this pinning would create with a spent URL.
 
 ## Versioning
 

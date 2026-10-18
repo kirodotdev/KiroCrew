@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, Eye, Image as ImageIcon, ImageOff, RotateCw } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
+import { useFrameSrc } from '../hooks/useFrameSrc'
 import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
 import { useScrollMemory } from '../hooks/useScrollMemory'
 import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridge'
@@ -302,6 +303,9 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
   // See hooks/useSandboxDoc.ts for why each rule
   // exists.
   const { url: blobUrl, failed, pending, retry } = useSandboxDoc(srcdoc)
+  // Later documents replace the first in place: an attribute change would leave
+  // the spent url in the page's history for Back to 404 on (hooks/useFrameSrc.ts).
+  const frameSrc = useFrameSrc(iframeRef, blobUrl)
   // ArtifactBody has always carried `docSilent`, but it covers a DIFFERENT
   // silent condition: a frame that loaded and then never reported its height
   // (its timer arms only once `loadedUrlRef.current === blobUrl`, i.e. after
@@ -447,7 +451,7 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
           {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onLoad is a document-load lifecycle handler (it arms the silent-document watch and reveals the frame), not a user interaction; the frame's own content is what a keyboard reaches, and nothing here can be triggered from one */}
           <iframe
             ref={iframeRef}
-            src={blobUrl}
+            src={frameSrc}
             onLoad={() => {
               loadedUrlRef.current = blobUrl
               // Every load restarts the observation, not just a new url. The case
