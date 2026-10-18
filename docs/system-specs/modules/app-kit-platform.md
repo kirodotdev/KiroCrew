@@ -1825,7 +1825,7 @@ keep receiving the session's rows. A queued
 send that a gateway restart restores has lost its attribution, because the
 restore drops the actor stamp: it drains alone, never merged with fresh words,
 as a user row marked `turnProvenanceRestored`, which titling skips on a slot no
-app owns, and never as a cron or sub-agent event. `test_chat_mode_security`
+app owns, and never as a cron or sub-agent event. `test_chat_mode_security_send`
 pins this, and `test_every_api_chat_body_key_is_classified` fails on a body
 field nobody has classified as turn-only or settings-bearing. Mode changes
 require an explicit live allowed slot and are limited to Normal, Reads and

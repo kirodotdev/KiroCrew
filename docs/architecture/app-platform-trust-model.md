@@ -125,7 +125,7 @@ access to its own slots is unchanged. A message the app sends runs as a turn: a
 send carrying a change to the session's agent binding, persona settings, or a
 harness slash command is refused before anything is written or queued
 (`chat_handlers._deny_app_session_settings`, pinned by
-`test_chat_mode_security`). The send cannot steer, its row is echoed to the
+`test_chat_mode_security_send`). The send cannot steer, its row is echoed to the
 user's open tabs, it neither starts nor names the session's auto-title (a
 queued send restored after a gateway restart has lost that attribution), and
 its SSE stream ends with the app's own turn. Mode changes must name a live allowed slot, which

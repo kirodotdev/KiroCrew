@@ -128,7 +128,6 @@
 4193 test/test_aws_control_routes.py
 3564 test/test_browser_cli_view.py
 2475 test/test_chat_mirror.py
-2267 test/test_chat_mode_security.py
 10498 test/test_cli.py
 2744 test/test_cli_server_more_coverage.py
 2260 test/test_config_live.py
@@ -150,11 +149,9 @@
 4437 test/test_github_pull_request_monitor.py
 5410 test/test_governance_distribution.py
 3102 test/test_handlers_memory_coverage.py
-2261 test/test_handlers_messaging_coverage.py
 2809 test/test_history_consolidation_retry.py
 2547 test/test_history_locking_remediation.py
 4353 test/test_hooks.py
-2374 test/test_issue_radar_crew_routes.py
 3557 test/test_issue_radar_crew_runtime.py
 2162 test/test_issue_radar_routes_coverage.py
 4427 test/test_job_sdk.py
@@ -164,7 +161,6 @@
 2631 test/test_llm_pool.py
 2248 test/test_markdown_link_parentheses.py
 7022 test/test_mcp_discovery.py
-2271 test/test_mcp_gateway_rewriter_fingerprint.py
 3224 test/test_mcp_gateway_stub_session_token.py
 2449 test/test_mcp_gatewayd_coverage.py
 2543 test/test_mcp_launch_approval.py

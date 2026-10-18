@@ -77,7 +77,7 @@
  2 test_channel_subscribe_timeout.py
  5 test_chat_close_interrupts_turn.py
  3 test_chat_fork_member_memory.py
- 3 test_chat_mode_security.py
+ 3 test_chat_mode_security_send.py
  2 test_chat_nav.py
  4 test_chat_regenerate_cov80.py
  1 test_chat_regenerate_cov80_edit_resend_boundary.py
