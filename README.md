@@ -366,6 +366,7 @@ make this tool possible:
 
 <a href="https://github.com/0618" title="MJ Zhang"><img src="https://github.com/0618.png?size=64" width="64" height="64" alt="MJ Zhang" /></a>
 <a href="https://github.com/0V" title="G2"><img src="https://github.com/0V.png?size=64" width="64" height="64" alt="G2" /></a>
+<a href="https://github.com/0xParth" title="Parth Shukla"><img src="https://github.com/0xParth.png?size=64" width="64" height="64" alt="Parth Shukla" /></a>
 <a href="https://github.com/aahei" title="Ahei"><img src="https://github.com/aahei.png?size=64" width="64" height="64" alt="Ahei" /></a>
 <a href="https://github.com/aahung" title="_sam"><img src="https://github.com/aahung.png?size=64" width="64" height="64" alt="_sam" /></a>
 <a href="https://github.com/abe238" title="Abe Diaz (@abe238)"><img src="https://github.com/abe238.png?size=64" width="64" height="64" alt="Abe Diaz (@abe238)" /></a>
