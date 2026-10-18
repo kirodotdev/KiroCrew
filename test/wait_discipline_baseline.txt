@@ -308,7 +308,7 @@
  1 test_slack_home_tab.py
  1 test_slack_sessions_view.py
  1 test_slot_create_default_agent.py
- 3 test_slot_ownership_checkpoint.py
+ 3 test_slot_ownership_checkpoint_post_await.py
  5 test_slot_patch_frames.py
  1 test_slot_payload_lineage.py
  1 test_slots_broadcast_byte_pacing.py

@@ -12,25 +12,45 @@ can create the slot they name.
 The route table is built inside fixtures, never at import: building it runs
 ``register_all``, which composes the platform context and writes under the data
 home, and at collection time that happens before any per-test isolation.
+
+Its last section pins the binders that never adopt an app-owned slot. The owner app's own
+task-review session, linked slot and conflicts, resume's answers for a missing or
+under-construction name, the mode route's grant re-read and the handlers mounted outside
+the chain live in ``test_slot_ownership_checkpoint_owner_session.py``. Acquisition after
+the setup of a send or create, the ownership rechecks after the awaits of title
+generation, the session summary, regenerate, switch-variant and rewind, and the placement
+of the final acquisition recheck live in ``test_slot_ownership_checkpoint_post_await.py``.
+The fixtures and helpers more than one of these files reads live in
+``slot_ownership_checkpoint_helpers.py``.
 """
 
 from __future__ import annotations
 
 import ast
 import asyncio
-import contextlib
 import errno
 import json
 import re
 import threading
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from chat_test_helpers import _make_app, _make_state, close_before_resume
+from slot_ownership_checkpoint_helpers import (  # noqa: F401 -- fixtures are requested by name
+    _GRANT,
+    _NOT_FOUND,
+    APP,
+    _client,
+    _persist,
+    _persist_and_close,
+    _with_reply,
+    chat_run_fixture,
+    regen_run_fixture,
+    sel_spy_fixture,
+    state_fixture,
+)
 
 from kiro_crew.dashboard import slot_ownership
 from kiro_crew.dashboard.slot_ownership import (
@@ -43,9 +63,6 @@ from kiro_crew.dashboard.slot_ownership import (
 from kiro_crew.dashboard.state import SlotOrigin, _ChatSlot
 from kiro_crew.testing.wait import LoopHop
 
-APP = "crew-keyboard"
-_GRANT = "kiro_crew.apps.permissions.app_can_manage_session_approvals"
-_NOT_FOUND = {"error": "not found", "code": "slot_not_found"}
 _FAMILY_PREFIX = "/api/chat/slots/{"
 #: Header the sweep's identity stand-in reads: absent is no claim at all, "-" is
 #: the dashboard user's empty claim, anything else is that app's claim.
@@ -70,47 +87,6 @@ def family_routes() -> list[tuple[str, str]]:
             if route.resource is not None and route.resource.canonical.startswith(_FAMILY_PREFIX)
         }
     )
-
-
-class _SelSpy:
-    def __init__(self) -> None:
-        self.rows: list[dict[str, Any]] = []
-
-    def log_api_access(self, **kw: Any) -> None:
-        self.rows.append(kw)
-
-    def denials(self) -> list[dict[str, Any]]:
-        return [r for r in self.rows if r.get("outcome") == "denied"]
-
-
-@pytest.fixture
-def sel_spy(monkeypatch: pytest.MonkeyPatch) -> _SelSpy:
-    spy = _SelSpy()
-    monkeypatch.setattr(slot_ownership, "sel", lambda: spy)
-    return spy
-
-
-@pytest.fixture
-def state(tmp_path, monkeypatch):
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    st = _make_state(tmp_path)
-    st.broadcast_ws = MagicMock()
-    st.push_slots_update = MagicMock()
-    st.owner_id = ""
-    return st
-
-
-def _as(app_name: str | None):
-    """Middleware standing in for token auth: the ``app`` claim, or none at all."""
-
-    @web.middleware
-    async def identity(request: web.Request, handler):
-        if app_name is not None:
-            request["app"] = app_name
-            request["user"] = "" if app_name else "local-app"
-        return await handler(request)
-
-    return identity
 
 
 @web.middleware
@@ -545,42 +521,6 @@ _FOREIGN = [
 ]
 
 
-def _client(state, caller: str | None) -> TestClient:
-    from kiro_crew.dashboard.chat import (
-        api_chat_slot_create,
-        api_chat_slot_drop,
-        api_chat_slot_generate_title,
-        api_chat_slot_mirror_unlink,
-        api_chat_slot_slack_link,
-        api_chat_slot_summary_generate,
-    )
-    from kiro_crew.dashboard.session_export import api_chat_slot_export
-
-    app = _make_app(state)
-    app.router.add_post("/api/chat/slots/{slot}/generate-title", api_chat_slot_generate_title)
-    app.router.add_post("/api/chat/slots/{slot}/drop", api_chat_slot_drop)
-    app.router.add_post("/api/chat/slots/{slot}/slack-link", api_chat_slot_slack_link)
-    app.router.add_post("/api/chat/slots/{slot}/mirror-unlink", api_chat_slot_mirror_unlink)
-    app.router.add_get("/api/chat/slots/{slot}/export", api_chat_slot_export)
-    app.router.add_post("/api/chat/slots", api_chat_slot_create)
-    app.router.add_post("/api/chat/slots/{slot}/summary", api_chat_slot_summary_generate)
-    app.middlewares.insert(0, _as(caller))
-    return TestClient(TestServer(app))
-
-
-def _with_reply(slot: _ChatSlot, reply: str = "the user's ORIGINAL reply") -> None:
-    slot.append("user", "the user's question")
-    slot.append("assistant", reply)
-    slot.drain()
-
-
-@pytest.fixture
-def regen_run(monkeypatch):
-    run = AsyncMock()
-    monkeypatch.setattr("kiro_crew.dashboard.chat_regenerate._run_chat", run)
-    return run
-
-
 class TestRegenerateAndSwitchVariant:
     """Both truncate or overwrite a reply, so a foreign app must not reach either."""
 
@@ -778,32 +718,6 @@ class TestExport:
 
 
 # ── requests that can create the slot they name ──────────────────────────────
-
-
-async def _persist(state, slot: _ChatSlot) -> None:
-    from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
-
-    slot._titled = True
-    slot.append("user", "USER-EARLIER")
-    slot.append("assistant", "USER-EARLIER-REPLY")
-    await save_slot_off_loop(state, slot)
-
-
-async def _persist_and_close(state, slot: _ChatSlot) -> None:
-    from kiro_crew.dashboard.chat_handlers import close_slot
-
-    await _persist(state, slot)
-    await close_slot(state, slot, slot.key)
-    assert slot.key not in state._slots
-    # Closed BEFORE any resume the test then runs, whatever the clock's resolution.
-    close_before_resume(state.conversation_log, f"dashboard:{slot.key}")
-
-
-@pytest.fixture
-def chat_run(monkeypatch):
-    run = AsyncMock()
-    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run)
-    return run
 
 
 class TestTranscriptOwnershipWithoutALiveSlot:
@@ -1624,560 +1538,3 @@ class TestBindersDoNotAdoptAnAppSlot:
         assert reads == []
         assert sel_spy.denials() == []
         assert squatter.linked_session_key == ""
-
-
-# ── owner session, own conflicts, resume and mode pins ──────────────────────
-
-
-def _task_review_slot(state, token: str = "abc", linked_token: str | None = None) -> _ChatSlot:
-    """The tab ``handlers/taskrunner._task_result_slot`` mints for an app's task."""
-    slot = state.get_or_create_slot(
-        f"task-review-{token}",
-        linked_session_key=f"taskrunner:t1:chat:{linked_token or token}",
-    )
-    slot._app = APP
-    return slot
-
-
-class TestTheOwnersSessionIsTheOneMintedForIt:
-    def test_a_task_review_tab_runs_on_its_own_session(self, state) -> None:
-        assert slot_ownership.own_session_key(_task_review_slot(state)) == "taskrunner:t1:chat:abc"
-        assert slot_ownership.app_owns_slot_session(APP, _task_review_slot(state, "t2"))
-
-    def test_a_link_minted_for_another_tab_is_foreign(self, state) -> None:
-        slot = _task_review_slot(state, "abc", linked_token="other")
-        assert slot_ownership.own_session_key(slot) == "dashboard:task-review-abc"
-        assert not slot_ownership.app_owns_slot_session(APP, slot)
-
-    def test_the_taskrunner_mints_the_shape_the_checkpoint_reads(self) -> None:
-        from kiro_crew.dashboard.handlers import taskrunner
-
-        src = Path(taskrunner.__file__).read_text(encoding="utf-8")
-        assert "task_review_session_key(task_id, token)" in src
-        assert 'f"{TASK_REVIEW_SLOT_PREFIX}{token}"' in src
-
-    @pytest.mark.asyncio
-    async def test_the_owner_app_reads_drives_and_closes_its_task_review_tab(
-        self, state, chat_run
-    ) -> None:
-        _task_review_slot(state)
-        with patch(_GRANT, return_value=False):
-            async with _client(state, APP) as client:
-                detail = await client.get("/api/chat/slots/task-review-abc")
-                assert detail.status == 200, await detail.text()
-                send = await client.post(
-                    "/api/chat?ws=1", json={"slot": "task-review-abc", "message": "hi"}
-                )
-                assert send.status == 200, await send.text()
-                closed = await client.delete("/api/chat/slots/task-review-abc")
-                assert closed.status == 200, await closed.text()
-        assert "task-review-abc" not in state._slots
-
-    @pytest.mark.asyncio
-    async def test_another_app_is_refused_on_the_tab(self, state) -> None:
-        _task_review_slot(state)
-        async with _client(state, "other-app") as client:
-            resp = await client.get("/api/chat/slots/task-review-abc")
-            assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-
-
-class TestOneRuleOnEveryPathToAnOwnedLinkedSlot:
-    """An owner app's slot linked to another conversation is refused on every path to it."""
-
-    @pytest.fixture
-    def linked(self, state) -> _ChatSlot:
-        slot = state.get_or_create_slot("mine", app=APP)
-        slot.linked_session_key = "slack:1700000000.000100"
-        slot.title = "kept"
-        return slot
-
-    @pytest.mark.asyncio
-    async def test_send(self, state, chat_run, linked) -> None:
-        with patch(_GRANT, return_value=True):
-            async with _client(state, APP) as client:
-                resp = await client.post("/api/chat?ws=1", json={"slot": "mine", "message": "x"})
-                assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-        chat_run.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_create(self, state, linked) -> None:
-        async with _client(state, APP) as client:
-            resp = await client.post("/api/chat/slots", json={"name": "mine", "title": "x"})
-            assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-        assert linked.title == "kept"
-
-    @pytest.mark.asyncio
-    async def test_resume_of_the_live_slot(self, state, linked) -> None:
-        async with _client(state, APP) as client:
-            resp = await client.post("/api/chat/slots/mine/resume", json={})
-            assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-
-    @pytest.mark.asyncio
-    async def test_approve(self, state, linked) -> None:
-        import asyncio
-
-        pending = asyncio.get_running_loop().create_future()
-        linked._approval_futures["r1"] = pending
-        with patch(_GRANT, return_value=True):
-            async with _client(state, APP) as client:
-                resp = await client.post(
-                    "/api/chat/slots/mine/approve", json={"request_id": "r1", "action": "approved"}
-                )
-                assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-        assert not pending.done()
-
-
-class TestAnAppsOwnConflictIsNotAMissingSlot:
-    @pytest.mark.asyncio
-    async def test_a_memory_mode_mismatch_on_the_apps_own_slot_is_a_409(
-        self, state, chat_run
-    ) -> None:
-        state.get_or_create_slot("mine", app=APP)
-        with patch(_GRANT, return_value=False):
-            async with _client(state, APP) as client:
-                send = await client.post(
-                    "/api/chat?ws=1",
-                    json={"slot": "mine", "message": "x", "memory_mode": "incognito"},
-                )
-                create = await client.post(
-                    "/api/chat/slots", json={"name": "mine", "memory_mode": "incognito"}
-                )
-                for resp in (send, create):
-                    body = await resp.json()
-                    assert resp.status == 409, body
-                    assert "already exists" in body["error"]
-        chat_run.assert_not_called()
-
-
-class TestResumeAnswersAnAppLikeEveryOtherRoute:
-    @pytest.mark.asyncio
-    async def test_a_missing_transcript_writes_no_audit_row(self, state, sel_spy) -> None:
-        async with _client(state, APP) as client:
-            for n in range(3):
-                resp = await client.post(f"/api/chat/slots/nope{n}/resume", json={})
-                assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-        assert sel_spy.denials() == []
-
-    @pytest.mark.asyncio
-    async def test_a_name_under_construction_is_the_uniform_404(self, state, sel_spy) -> None:
-        await _persist_and_close(state, state.get_or_create_slot("appconv", app=APP))
-        state._slots_under_construction.add("x1")
-        async with _client(state, APP) as client:
-            resp = await client.post("/api/chat/slots/x1/resume", json={"key": "dashboard:appconv"})
-            assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-        assert sel_spy.denials() == []
-        assert state.conversation_log.get_metadata("dashboard:appconv").get("closed")
-
-    @pytest.mark.asyncio
-    async def test_the_person_still_gets_the_retryable_conflict(self, state) -> None:
-        await _persist_and_close(state, state.get_or_create_slot("s1", origin=SlotOrigin.USER))
-        state._slots_under_construction.add("s1")
-        async with _client(state, "") as client:
-            resp = await client.post("/api/chat/slots/s1/resume", json={"key": "dashboard:s1"})
-            assert resp.status == 409
-            assert (await resp.json())["code"] == "resume_in_progress"
-
-    @pytest.mark.asyncio
-    async def test_construction_starting_during_the_reads_leaves_the_marker(
-        self, state, sel_spy, monkeypatch
-    ) -> None:
-        """Another build of the key starting inside the reads refuses with no write."""
-        from kiro_crew.dashboard import chat_handlers
-
-        await _persist_and_close(state, state.get_or_create_slot("a1", app=APP))
-        log = state.conversation_log
-        cleared: list[str] = []
-        real_clear = log.clear_closed
-        load_cfg = chat_handlers._load_restore_cfg
-
-        def clear_closed(key, **kw):
-            cleared.append(key)
-            return real_clear(key, **kw)
-
-        def construct_then_load():
-            state._slots_under_construction.add("a1")
-            return load_cfg()
-
-        monkeypatch.setattr(log, "clear_closed", clear_closed)
-        monkeypatch.setattr(chat_handlers, "_load_restore_cfg", construct_then_load)
-        async with _client(state, APP) as client:
-            resp = await client.post("/api/chat/slots/a1/resume", json={})
-            assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-        state._slots_under_construction.discard("a1")
-        assert cleared == []
-        meta, readable = log.get_metadata_status("dashboard:a1")
-        assert readable and meta.get("closed")
-        assert "a1" not in state._slots
-
-
-class TestModeRereadsTheGrantAfterTheBody:
-    @pytest.mark.asyncio
-    async def test_a_grant_removed_during_the_upload_is_not_used(self, state) -> None:
-        slot = state.get_or_create_slot("u1", origin=SlotOrigin.USER)
-        grant = MagicMock(side_effect=[True, False])
-        with patch(_GRANT, grant):
-            async with _client(state, APP) as client:
-                resp = await client.post("/api/chat/mode", json={"mode": "trust", "slot": "u1"})
-                assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-        assert grant.call_count == 2
-        assert not slot._trust
-
-    @pytest.mark.asyncio
-    async def test_a_slot_replaced_during_the_grant_read_is_not_trusted(self, state) -> None:
-        state.get_or_create_slot("shared", app=APP)
-        hop = LoopHop(asyncio.get_running_loop())
-        replacement = []
-        calls = []
-
-        async def replace():
-            state._slots.pop("shared")
-            replacement.append(state.get_or_create_slot("shared", app="other-app"))
-
-        def grant(_app: str) -> bool:
-            calls.append(None)
-            if len(calls) == 2:
-                hop.run(replace(), "the slot replacement")
-            return True
-
-        with patch(_GRANT, grant):
-            async with _client(state, APP) as client:
-                resp = await client.post("/api/chat/mode", json={"mode": "trust", "slot": "shared"})
-                hop.check()
-                assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-        assert len(calls) == 2
-        assert replacement and not replacement[0]._trust
-
-
-class TestHandlersOutsideTheChainAnswerOneBody:
-    """Mounted without the checkpoint, a missing and a foreign slot still read the same."""
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("route", ["delete", "side-open"])
-    async def test_missing_and_foreign(self, state, route) -> None:
-        from kiro_crew.dashboard.chat_handlers import api_chat_slot_delete
-        from kiro_crew.dashboard.handlers.side import api_side_open
-
-        state.get_or_create_slot("theirs", origin=SlotOrigin.USER)
-        app = web.Application(middlewares=[_as(APP)])
-        app["state"] = state
-        app.router.add_delete("/api/chat/slots/{slot}", api_chat_slot_delete)
-        app.router.add_post("/api/chat/slots/{slot}/side/open", api_side_open)
-        bodies = []
-        async with TestClient(TestServer(app)) as client:
-            for name in ("absent", "theirs"):
-                if route == "delete":
-                    resp = await client.delete(f"/api/chat/slots/{name}")
-                else:
-                    resp = await client.post(f"/api/chat/slots/{name}/side/open", json={})
-                bodies.append((resp.status, await resp.json()))
-        assert bodies == [(404, _NOT_FOUND), (404, _NOT_FOUND)]
-        assert "theirs" in state._slots
-
-
-class TestAcquisitionAfterSetup:
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("route", ["send", "create"])
-    async def test_a_user_transcript_created_during_setup_is_not_adopted(
-        self, state, chat_run, monkeypatch, route
-    ) -> None:
-        async def create_and_close(_request):
-            assert "s1" not in state._slots
-            await _persist_and_close(state, state.get_or_create_slot("s1", origin=SlotOrigin.USER))
-            return ""
-
-        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.cron_slot_creator", create_and_close)
-        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._maybe_auto_title", AsyncMock())
-        with patch(_GRANT, return_value=False):
-            async with _client(state, APP) as client:
-                url, body = (
-                    ("/api/chat?ws=1", {"slot": "s1", "message": "APP-PROMPT"})
-                    if route == "send"
-                    else ("/api/chat/slots", {"name": "s1", "title": "APP-TITLE"})
-                )
-                resp = await client.post(url, json=body)
-                assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-        chat_run.assert_not_called()
-        assert "s1" not in state._slots
-        assert "s1" not in state._slots_under_construction
-        meta = await asyncio.to_thread(state.conversation_log.get_metadata, "dashboard:s1")
-        assert not meta.get("app")
-        assert meta.get("title") != "APP-TITLE"
-        rows = await asyncio.to_thread(state.conversation_log.read_messages, "dashboard:s1")
-        assert all(row.get("content") != "APP-PROMPT" for row in rows)
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("route", ["send", "create"])
-    @pytest.mark.parametrize("caller", [APP, ""])
-    async def test_a_live_slot_appearing_during_setup_keeps_the_post_create_decision(
-        self, state, chat_run, monkeypatch, route, caller
-    ) -> None:
-        appeared = []
-
-        async def create_meanwhile(_request):
-            slot = state.get_or_create_slot("s1", app=caller)
-            appeared.append(slot)
-            return ""
-
-        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.cron_slot_creator", create_meanwhile)
-        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._maybe_auto_title", AsyncMock())
-        with patch(_GRANT, return_value=False):
-            async with _client(state, caller) as client:
-                url, body = (
-                    ("/api/chat?ws=1", {"slot": "s1", "message": "hello"})
-                    if route == "send"
-                    else ("/api/chat/slots", {"name": "s1"})
-                )
-                resp = await client.post(url, json=body)
-                assert resp.status == 200, await resp.text()
-        assert state._slots["s1"] is appeared[0]
-        assert not state._slots_under_construction
-
-    @pytest.mark.asyncio
-    async def test_cancellation_releases_the_free_key_reservation(self, state, monkeypatch) -> None:
-        from kiro_crew.dashboard import chat_handlers
-
-        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
-
-        def read_owner(*_args):
-            entered.set()
-            try:
-                assert release.wait(5), "transcript read was not released"
-                return ""
-            finally:
-                finished.set()
-
-        monkeypatch.setattr(chat_handlers, "transcript_acquisition_reason", read_owner)
-        pending = asyncio.create_task(
-            chat_handlers._app_slot_acquisition_recheck(state, APP, "s1", None, "test")
-        )
-        try:
-            assert await asyncio.to_thread(entered.wait, 5), "transcript read did not start"
-            assert "s1" in state._slots_under_construction
-            with pytest.raises(ValueError, match="still being built"):
-                state.get_or_create_slot("s1", origin=SlotOrigin.USER)
-            pending.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(pending, 5)
-            assert "s1" not in state._slots_under_construction
-            assert "s1" not in state._slots
-        finally:
-            release.set()
-            await asyncio.wait_for(asyncio.gather(pending, return_exceptions=True), 5)
-            assert await asyncio.to_thread(finished.wait, 5)
-
-
-class TestPostAwaitOwnership:
-    @staticmethod
-    async def replace(state):
-        state._slots.pop("s1")
-        replacement = state.get_or_create_slot("s1", origin=SlotOrigin.USER)
-        replacement.title = "PERSON-TITLE"
-        await asyncio.to_thread(
-            state.conversation_log.update_metadata,
-            "dashboard:s1",
-            {"app": "", "title": replacement.title},
-        )
-        return replacement
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("phase", ["generation", "persist-entry", "persist-exit"])
-    async def test_title_cannot_retitle_a_replacement(self, state, monkeypatch, phase) -> None:
-        from kiro_crew.dashboard import chat_title
-
-        slot = state.get_or_create_slot("s1", app=APP)
-        await _persist(state, slot)
-        original_title = slot.title
-        push = MagicMock()
-        monkeypatch.setattr(state, "push_slot_title", push)
-        persist = chat_title._persist_title
-
-        async def generate(*_args, **_kwargs):
-            if phase == "generation":
-                await self.replace(state)
-            return "APP-TITLE"
-
-        async def persist_with_replacement(*args, **kwargs):
-            if phase == "persist-entry":
-                await self.replace(state)
-            result = await persist(*args, **kwargs)
-            if phase == "persist-exit":
-                await self.replace(state)
-            return result
-
-        monkeypatch.setattr(chat_title, "_generate_title_via_kiro", generate)
-        monkeypatch.setattr(chat_title, "_persist_title", persist_with_replacement)
-        async with _client(state, APP) as client:
-            resp = await client.post("/api/chat/slots/s1/generate-title")
-            assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-        assert state._slots["s1"].title == "PERSON-TITLE"
-        meta = await asyncio.to_thread(state.conversation_log.get_metadata, "dashboard:s1")
-        assert meta["title"] == "PERSON-TITLE"
-        assert not meta.get("app")
-        push.assert_not_called()
-        if phase == "generation":
-            assert slot.title == original_title
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("phase", ["generation", "publication", "read-back"])
-    async def test_summary_cannot_publish_into_a_replacement(
-        self, state, monkeypatch, phase
-    ) -> None:
-        from kiro_crew.config.loader import KiroCrewConfig
-        from kiro_crew.dashboard import chat_handlers, chat_summary
-
-        slot = state.get_or_create_slot("s1", app=APP)
-        for index in range(3):
-            slot.append("user", f"goal {index}")
-            slot.append("assistant", f"result {index}")
-        await _persist(state, slot)
-        cfg = KiroCrewConfig()
-        cfg.session_summary.enabled = True
-        monkeypatch.setattr(chat_handlers.KiroCrewConfig, "load", staticmethod(lambda: cfg))
-        pushed = MagicMock()
-        monkeypatch.setattr(state, "push_session_summary", pushed)
-        log = state.conversation_log
-        publication_hold = log.publication_hold
-        read_back = chat_handlers.read_cached_intent_summary
-
-        async def generate(*_args, **_kwargs):
-            if phase == "generation":
-                await self.replace(state)
-            return json.dumps(
-                {"intents": [{"title": "App goal", "ranges": [[1, 1]]}], "constraints": []}
-            )
-
-        @contextlib.contextmanager
-        def publish_with_replacement(key):
-            with publication_hold(key):
-                if phase == "publication":
-                    # The worker has obtained the write lock; the map identity
-                    # is the only signal that changes, not the disk signature.
-                    state._slots["s1"] = _ChatSlot("s1")
-                yield
-
-        async def read_with_replacement(*args):
-            result = await read_back(*args)
-            if phase == "read-back":
-                await self.replace(state)
-            return result
-
-        model = AsyncMock(side_effect=generate)
-        monkeypatch.setattr(chat_summary, "run_bg_oneliner", model)
-        monkeypatch.setattr(log, "publication_hold", publish_with_replacement)
-        monkeypatch.setattr(chat_handlers, "read_cached_intent_summary", read_with_replacement)
-        async with _client(state, APP) as client:
-            resp = await client.post("/api/chat/slots/s1/summary")
-            assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-        model.assert_awaited_once()
-        assert state._slots["s1"] is not slot
-        assert not slot._summary_in_flight
-        if phase != "read-back":
-            pushed.assert_not_called()
-            assert slot._summary_turn_mark == 0
-            assert await asyncio.to_thread(log.get_cached_intent_summary, "dashboard:s1") is None
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("route", ["regenerate", "switch-variant"])
-    async def test_replacement_after_history_save_cannot_dispatch_or_broadcast(
-        self, state, regen_run, monkeypatch, route
-    ) -> None:
-        from kiro_crew.dashboard import chat_regenerate
-
-        slot = state.get_or_create_slot("s1", app=APP)
-        _with_reply(slot)
-        slot.messages[-1]["variants"] = [{"content": "alternative"}]
-        save = chat_regenerate.save_slot_off_loop
-        pushed = MagicMock()
-        monkeypatch.setattr(state, "push_slots_update", pushed)
-
-        async def save_and_replace(*args, **kwargs):
-            result = await save(*args, **kwargs)
-            await self.replace(state)
-            pushed.reset_mock()
-            return result
-
-        monkeypatch.setattr(chat_regenerate, "save_slot_off_loop", save_and_replace)
-        async with _client(state, APP) as client:
-            resp = await client.post(f"/api/chat/slots/s1/{route}", json={"index": 0})
-            assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-        regen_run.assert_not_called()
-        pushed.assert_not_called()
-        assert state._slots["s1"].messages == []
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("phase", ["discard", "flush", "save", "cleanup"])
-    async def test_rewind_does_not_commit_or_dispatch_a_replacement(
-        self, state, monkeypatch, phase
-    ) -> None:
-        from kiro_crew.dashboard import chat_rewind
-
-        slot = state.get_or_create_slot("s1", app=APP)
-        await _persist(state, slot)
-        before = list(slot.messages)
-        run = AsyncMock()
-        monkeypatch.setattr(chat_rewind, "_run_chat", run)
-        state.sessions._session_map.get.return_value = "orphan" if phase == "cleanup" else ""
-        save = chat_rewind._save_slot_to_history
-
-        async def discard(*_args, **_kwargs):
-            if phase == "discard":
-                await self.replace(state)
-            return True
-
-        async def flush():
-            if phase == "flush":
-                await self.replace(state)
-
-        def save_and_replace(*args, **kwargs):
-            result = save(*args, **kwargs)
-            if phase == "save":
-                state._slots["s1"] = _ChatSlot("s1")
-            return result
-
-        async def cleanup(_sid):
-            if phase == "cleanup":
-                await self.replace(state)
-
-        state.sessions.discard_conversation.side_effect = discard
-        state.sessions.aflush.side_effect = flush
-        monkeypatch.setattr(chat_rewind, "_save_slot_to_history", save_and_replace)
-        monkeypatch.setattr(chat_rewind, "_delete_orphan_kiro_session", cleanup)
-        async with _client(state, APP) as client:
-            resp = await client.post(
-                "/api/chat/slots/s1/rewind", json={"at_message_index": 0, "content": "APP-EDIT"}
-            )
-            assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-        await asyncio.wait_for(asyncio.gather(slot.task), 5)
-        run.assert_not_called()
-        assert state._slots["s1"].messages == []
-        if phase != "cleanup":
-            assert slot.messages == before
-
-
-class TestAcquisitionRecheckPlacement:
-    @pytest.mark.parametrize("handler_name", ["api_chat", "api_chat_slot_create"])
-    def test_no_await_between_final_recheck_and_acquisition(self, handler_name) -> None:
-        import inspect
-
-        from kiro_crew.dashboard import chat_handlers
-
-        tree = ast.parse(inspect.getsource(getattr(chat_handlers, handler_name)))
-        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
-        recheck = next(
-            node
-            for node in calls
-            if isinstance(node.func, ast.Name) and node.func.id == "_app_slot_acquisition_recheck"
-        )
-        acquire = next(
-            node
-            for node in calls
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "get_or_create_slot"
-        )
-        assert recheck.end_lineno is not None
-        assert recheck.end_lineno < acquire.lineno
-        assert not [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.Await, ast.AsyncWith, ast.AsyncFor))
-            and recheck.end_lineno < node.lineno < acquire.lineno
-        ]

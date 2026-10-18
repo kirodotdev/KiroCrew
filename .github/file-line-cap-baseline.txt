@@ -125,7 +125,6 @@
 3299 test/test_artifacts_handlers.py
 4053 test/test_auto_research.py
 6303 test/test_aws_control_backup.py
-2170 test/test_aws_control_backup_composition_contract.py
 4193 test/test_aws_control_routes.py
 3564 test/test_browser_cli_view.py
 2032 test/test_channel_folders.py
@@ -133,9 +132,7 @@
 2267 test/test_chat_mode_security.py
 10498 test/test_cli.py
 2744 test/test_cli_server_more_coverage.py
-2182 test/test_cloud_microvm_engine.py
 2288 test/test_cloud_source.py
-2166 test/test_computer_use_snapshot_macos.py
 2260 test/test_config_live.py
 2868 test/test_connections_mint.py
 2418 test/test_context.py
@@ -219,7 +216,6 @@
 2629 test/test_slack_handler_coverage.py
 2730 test/test_slack_options_lifecycle.py
 2390 test/test_slack_transport_dispatch.py
-2183 test/test_slot_ownership_checkpoint.py
 3265 test/test_snapshot.py
 2641 test/test_spawn_audit.py
 2008 test/test_steer_requeue.py
