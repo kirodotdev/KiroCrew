@@ -2,10 +2,11 @@
 
 kiro-cli's terminate evicts the session from the multiplexed process and leaves
 the transcript for the caller to unlink. KAS's extension namespace is ``_kiro/``
-(no ``.dev``) and it offers no evict-only verb, so its delete disposes the
-resident AND removes the persisted record. Reusing the kiro verb against KAS
-returns ``-32603``, so the session would never be freed and RSS would grow with
-every background task.
+(no ``.dev``), and its teardown, the delete, disposes the resident AND removes the
+persisted record. Reusing the kiro verb against KAS returns ``-32603``, so the
+session would never be freed and RSS would grow with every background task. KAS's
+evict-only ``session/close`` is sent only to release a session whose record is
+kept for a while (``test_kas_released_sessions.py``).
 """
 
 from __future__ import annotations

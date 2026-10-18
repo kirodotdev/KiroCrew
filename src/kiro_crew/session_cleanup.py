@@ -21,6 +21,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew import released_sessions
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.process_identity import (
     audit_kill_decision,
@@ -122,6 +123,11 @@ class CleanupOwner(Protocol):
     async def _reap_drained_bg_runtimes_locked(self) -> None: ...
 
     async def _reap_idle_stale_bg_runtime(self) -> bool: ...
+
+    @property
+    def admission_closed(self) -> bool: ...
+
+    async def get_bg_session(self) -> Any: ...
 
     def get_pid(self, key: str) -> int | None: ...
 
@@ -441,6 +447,22 @@ class SessionCleanup:
             await self._owner._expire_idle(self.state.idle_timeout)
         except Exception:
             self._deps.logger.exception("Cleanup loop: _expire_idle crashed; continuing")
+
+    async def _released_sessions_hook(self) -> None:
+        # A released session's record stays until its entry is due
+        # (``released_sessions``). The delete waits for this tick rather than a
+        # timer of its own, so an entry left by a gateway that exited is found by
+        # the next gateway the same way. Nothing is sent while admission is closed
+        # for a shutdown or an update; the entries wait for a later tick.
+        if self._owner.admission_closed:
+            return
+        try:
+            await released_sessions.sweep(self._owner, self._owner._cfg.agent.acp_backend)
+        except Exception:
+            self._deps.logger.warning(
+                "released-session sweep failed; will retry next tick",
+                exc_info=True,
+            )
 
     async def _bg_drain_reap_hook(self) -> None:
         # Two passes over the same lock, in this order: reap what already

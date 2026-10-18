@@ -5,17 +5,19 @@ member: the class binds it by name (``kiro_crew.session``), so it reads and writ
 manager's own state on the instance, and a patch of the member on the class or
 on an instance reaches every caller.
 
-Instance fields written: none.
+Instance fields written: ``_background_tasks``.
 
 Instance fields read: ``_background_runtime``, ``_pool``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
+from kiro_crew import released_sessions
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.metrics.provider import get_recorder
@@ -38,6 +40,24 @@ logger = logging.getLogger("kiro_crew.session")
 async def start_pool(self: SessionManager, *, blocking: bool = True) -> None:
     """Delegate background and warm-pool startup."""
     await self._pool.start_pool(blocking=blocking)
+    # Housekeeping, so a non-blocking start returns before it, as the pool's
+    # own startup housekeeping does.
+    if blocking:
+        await self._start_cleanup_for_waiting_deletes()
+        return
+    task = asyncio.create_task(self._start_cleanup_for_waiting_deletes())
+    self._background_tasks.add(task)
+    task.add_done_callback(self._background_tasks.discard)
+
+
+async def _start_cleanup_for_waiting_deletes(self: SessionManager) -> None:
+    """Start the cleanup loop when deletes an earlier process left are waiting.
+
+    Their hook is on that loop, and the loop otherwise starts only with the
+    first ordinary allocation, which an idle gateway may not make for hours.
+    """
+    if await asyncio.to_thread(released_sessions.pending):
+        self._ensure_cleanup_task()
 
 
 async def _ensure_background(
