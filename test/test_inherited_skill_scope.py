@@ -245,7 +245,7 @@ def test_native_view_without_inheritance_gets_no_search(native_custom):
 
 
 def test_only_a_kiro_cli_session_gets_the_inherited_trees(kiro_tree, monkeypatch):
-    """Only the ACP family (kiro-cli) lends these trees; Claude Code and an unnamed one do not."""
+    """Only kiro-cli lends these trees; KAS, Claude Code and an unnamed one do not."""
     home, agents, project = kiro_tree
     _write_agent(agents, {"name": "custom", "tools": ["read"]})
     monkeypatch.setattr(agent_discovery, "_kiro_agents_dir", lambda: agents)
@@ -256,6 +256,9 @@ def test_only_a_kiro_cli_session_gets_the_inherited_trees(kiro_tree, monkeypatch
     )
     assert context._skills_injection_plan(
         "custom", is_cc=True, project_dir=project, provider_type="claude_code"
+    ) == (False, [])
+    assert context._skills_injection_plan(
+        "custom", is_cc=False, project_dir=project, provider_type="kas"
     ) == (False, [])
     assert context._skills_injection_plan("custom", is_cc=False, project_dir=project) == (
         False,
@@ -306,7 +309,8 @@ def test_one_spelling_of_the_search_refusal():
 
 
 @pytest.mark.parametrize(
-    ("provider", "inherits"), [("acp", True), ("claude_code", False), (None, False)]
+    ("provider", "inherits"),
+    [("acp", True), ("kas", False), ("claude_code", False), (None, False)],
 )
 def test_skill_search_scope_follows_the_same_provider_rule(
     kiro_tree, monkeypatch, provider, inherits

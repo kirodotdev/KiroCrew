@@ -164,3 +164,33 @@ def test_mirror_note_names_the_real_return_expression(doc_text: str) -> None:
     )
     assert "return (bool(globs) or not is_custom), globs" in source
     assert "`bool(globs) or not is_custom`" in doc_text
+
+
+def test_inherited_trees_are_promised_for_kiro_cli_only(doc_text: str) -> None:
+    """The inherited-trees cell sits in a column that names kiro-cli and no other harness.
+
+    ``_skills_injection_plan`` lends the trees only when ``provider_type`` is
+    ``PROVIDER_ACP``, and a KAS session's label is ``kas``. The behaviour is pinned by
+    ``test_inherited_skill_scope.py``; this pins that the table's column for the
+    inherited row does not also promise it to KAS.
+    """
+    from kiro_crew.acp.types import PROVIDER_LABEL_KAS
+    from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP
+
+    assert PROVIDER_LABEL_KAS != PROVIDER_ACP
+    table = doc_text.split("### Resources", 1)[1].split("## Per-surface summary", 1)[0]
+    lines = table.splitlines()
+    at = next(i for i, line in enumerate(lines) if line.startswith("| custom | none |"))
+    start = at
+    while start > 0 and lines[start - 1].startswith("|"):
+        start -= 1
+    header = [cell.strip() for cell in lines[start].strip("|").split("|")]
+    inherited = lines[at]
+    cells = [cell.strip() for cell in inherited.strip("|").split("|")]
+    column = header[cells.index("inherited skill trees, injected by Crew")]
+    assert column == "kiro-cli", (
+        f"the inherited-trees cell sits under {column!r}; only a kiro-cli session gets "
+        "the trees, so the column must not name KAS or any other harness"
+    )
+    kas_column = next(name for name in header if "KAS" in name)
+    assert cells[header.index(kas_column)] == "nothing"

@@ -550,10 +550,10 @@ reaches the KAS wire. `agent_capabilities._rows` still requires strings, because
 each entry is a catalog key: a member enrolled in capability management cannot
 carry the object until that model represents it.
 
-`_skills_injection_plan` is the single decision for `skill://`, and it reads the
-mapping, not the backend:
+`_skills_injection_plan` is the single decision for `skill://`. It reads the
+mapping, and only an unmapped custom agent's row also depends on the harness:
 
-| Agent | `skill://` mapping | kiro-cli / KAS | Claude Code |
+| Agent | `skill://` mapping | kiro-cli | KAS, Claude Code and every other harness |
 |---|---|---|---|
 | `kirocrew` | none | whole catalog, injected by Crew | whole catalog, injected by Crew |
 | `kirocrew` | mapped | mapped set only, injected by Crew | mapped set only, injected by Crew |
@@ -564,8 +564,18 @@ The inherited trees are what kiro-cli gives a custom agent by default:
 `~/.kiro/skills` and the workspace's `.kiro/skills`
 (`agent_discovery.inherited_skill_globs`). Crew turns kiro-cli's own inheritance
 off on native launches to bound the startup catalog, so it supplies these trees
-itself, and the native view gets `skill_search` to load them. Claude Code
-lends no such trees, so a session there gets none. A workspace that
+itself, and the native view gets `skill_search` to load them. The rule is
+keyed on the harness label a turn is built with (`provider_type == PROVIDER_ACP`).
+A chat or member session is built with its served harness's label, and KAS's is
+`kas`, not `acp`, so there an unmapped custom agent on KAS, Claude Code or any
+other harness gets no skill directory and an empty `skill_search` scope; map its
+skills with `skill://` entries to give it any. Known gap, not intended:
+`/api/hooks/agent` builds its first turn with the configured `agent.provider`
+(`acp` on every ACP backend) instead of the served label, so on KAS its skill
+directory lists trees that `skill_search` cannot load
+([#21860](https://github.com/kirodotdev/KiroCrew/issues/21860)).
+
+On kiro-cli, a workspace that
 sets `chat.disableInheritingDefaultResources` gets none, and so does an agent that
 excludes or disables `skill_search`.
 
