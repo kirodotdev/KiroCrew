@@ -1,10 +1,9 @@
 """Tests for the (always-on) queue-during-subagents behavior.
 
 Covers the drain-filter primitive (_dequeue_next_system_message) that keeps a
-tangential user message queued while background sub-agents run, the api_chat
-ingest gate (unconditional: queues whenever sub-agents run for the slot), and
-the board's subagents_running slot annotation. There is no config toggle —
-steering is the effective opt-out.
+peer's, channel's or app's message queued while background sub-agents run, the
+api_chat ingest gate (which never holds the session's own composer send), and
+the board's subagents_running slot annotation.
 """
 
 from __future__ import annotations
@@ -18,8 +17,8 @@ from chat_test_helpers import _make_app, _make_state
 
 from kiro_crew.dashboard.chat_runner import subagents_hold_user_messages
 from kiro_crew.dashboard.chat_utils import (
+    COMPOSER_SEND_META,
     CRON_NOTIFICATION_KIND,
-    STEER_INTENT_META,
     SUBAGENT_COMPLETION_KIND,
     _dequeue_next_system_message,
 )
@@ -111,11 +110,11 @@ class TestDequeueCron:
 class TestDequeueSteerIntent:
     """A steer that fell back to the queue drains past the hold; a queued send waits."""
 
-    def test_steer_intent_drains_past_a_held_user_message(self):
+    def test_composer_send_drains_past_a_held_user_message(self):
         slot = _ChatSlot("s1")
         slot._queue = [
             {"id": "a", "content": "after the wave", "meta": {}},
-            {"id": "b", "content": "act on this now", "meta": {STEER_INTENT_META: True}},
+            {"id": "b", "content": "act on this now", "meta": {COMPOSER_SEND_META: True}},
         ]
 
         next_msg, consumed = _dequeue_next_system_message(slot)
@@ -124,7 +123,7 @@ class TestDequeueSteerIntent:
         assert [c["id"] for c in consumed] == ["b"]
         assert [q["content"] for q in slot._queue] == ["after the wave"]
 
-    @pytest.mark.parametrize("meta", [None, {}, {STEER_INTENT_META: "true"}, {STEER_INTENT_META: 1}])
+    @pytest.mark.parametrize("meta", [None, {}, {COMPOSER_SEND_META: "true"}, {COMPOSER_SEND_META: 1}])
     def test_only_a_literal_true_releases(self, meta):
         slot = _ChatSlot("s1")
         slot._queue = [{"id": "a", "content": "wait", "meta": meta}]
@@ -195,7 +194,7 @@ class TestSteerFallbackSurvivesTheHold:
         # The turn ends without kiro-cli consuming the steer.
         chat_runner._requeue_unconsumed_steers(state, slot)
         assert slot._queue[0]["content"] == "act now", slot._queue
-        assert slot._queue[0]["meta"][STEER_INTENT_META] is True
+        assert slot._queue[0]["meta"][COMPOSER_SEND_META] is True
 
         started, _spawn, run_chat = await self._drain(state, slot)
 
@@ -203,7 +202,7 @@ class TestSteerFallbackSurvivesTheHold:
         assert run_chat.call_args.args[2] == "act now"
         assert [q["content"] for q in slot._queue] == ["queued before, waits for the wave"]
         row = [m for m in slot.messages if m.get("role") == "user"][-1]
-        assert STEER_INTENT_META not in (row.get("meta") or {})
+        assert COMPOSER_SEND_META not in (row.get("meta") or {})
 
     async def test_unavailable_steer_is_queued_with_its_intent(self, tmp_path, monkeypatch):
         state = self._state(tmp_path, monkeypatch)
@@ -214,25 +213,49 @@ class TestSteerFallbackSurvivesTheHold:
             resp = await client.post("/api/chat", json={"slot": "s1", "message": "act now", "steer": True})
             assert (await resp.json()).get("queued") is True
 
-        assert slot._queue[-1]["meta"][STEER_INTENT_META] is True
+        assert slot._queue[-1]["meta"][COMPOSER_SEND_META] is True
         started, _spawn, run_chat = await self._drain(state, slot)
         assert started is True
         assert run_chat.call_args.args[2] == "act now"
 
-    async def test_queue_choice_still_waits_for_the_wave(self, tmp_path, monkeypatch):
+    async def test_queue_choice_runs_when_the_turn_ends(self, tmp_path, monkeypatch):
+        """Queue means after this turn, not after the background children."""
         state = self._state(tmp_path, monkeypatch)
         slot = _busy(state.get_or_create_slot("s1"))
         slot._acp_client = None
+        slot.queue_append("a peer's message, waits for the wave")
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post("/api/chat", json={"slot": "s1", "message": "after the wave"})
+            resp = await client.post("/api/chat", json={"slot": "s1", "message": "after this turn"})
             assert (await resp.json()).get("queued") is True
 
-        assert STEER_INTENT_META not in (slot._queue[-1].get("meta") or {})
-        started, spawn, _run_chat = await self._drain(state, slot)
-        assert started is False
-        spawn.assert_not_called()
-        assert slot.queue_depth == 1
+        assert slot._queue[-1]["meta"][COMPOSER_SEND_META] is True
+        started, _spawn, run_chat = await self._drain(state, slot)
+        assert started is True
+        assert run_chat.call_args.args[2] == "after this turn"
+        assert [q["content"] for q in slot._queue] == ["a peer's message, waits for the wave"]
+
+    async def test_turn_end_card_runs_under_the_hold(self, tmp_path, monkeypatch):
+        """The card a turn-end read hands the floor runs when the hold releases it."""
+        from kiro_crew.dashboard import chat_runner
+
+        state = self._state(tmp_path, monkeypatch)
+        slot = _busy(state.get_or_create_slot("s1"))
+        slot._acp_client = None
+        held = slot.queue_append("a peer's message, waits for the wave")
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat", json={"slot": "s1", "message": "mine"})
+            mine = (await resp.json())["queue_id"]
+
+        slot.task = None
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()) as run_chat,
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot, required_queue_id=held) is False
+            assert await chat_runner._start_next_queued_turn(state, slot, required_queue_id=mine) is True
+        assert run_chat.call_args.args[2] == "mine"
+        assert [q["id"] for q in slot._queue] == [held]
 
     async def test_peer_steer_requeue_carries_no_intent(self, tmp_path, monkeypatch):
         """Only the session's own human gets the release; a peer's text waits."""
@@ -250,7 +273,73 @@ class TestSteerFallbackSurvivesTheHold:
         chat_runner._requeue_unconsumed_steers(state, slot)
 
         assert slot._queue[0]["content"] == "peer text"
-        assert STEER_INTENT_META not in (slot._queue[0].get("meta") or {})
+        assert COMPOSER_SEND_META not in (slot._queue[0].get("meta") or {})
+
+
+@pytest.mark.asyncio
+class TestResultsArriveWhileChatting:
+    """A child's result reaches the main thread while its person is mid-chat.
+
+    The gateway queues a completion that lands during a running turn
+    (``kind=SUBAGENT_COMPLETION_KIND``), and the person may queue more messages
+    behind or ahead of it. With a sibling still running, the drain must hand off
+    both in arrival order, each as its own turn, and keep only third-party
+    messages parked.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _sel(self):
+        with patch("kiro_crew.dashboard.chat_handlers.sel", return_value=MagicMock()):
+            yield
+
+    async def _scenario(self, tmp_path, monkeypatch, *, result_first: bool):
+        from kiro_crew.dashboard import chat_runner
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        load = MagicMock()
+        load.return_value.dashboard.merge_queued_messages = True
+        monkeypatch.setattr(chat_runner.KiroCrewConfig, "load", load)
+        subs = MagicMock()
+        subs.running_agents_for = MagicMock(return_value=[{"id": "sibling"}])
+        state = _make_state(tmp_path, subagents=subs)
+        state.broadcast_ws = MagicMock()
+        slot = _busy(state.get_or_create_slot("s1"))
+        slot._acp_client = None
+        result = f"{SUBAGENT_COMPLETION_PREFIX}\nAgent `a1` completed \u2705\nResult"
+        slot.queue_append("a peer's message, waits for the wave")
+
+        async def _chat(text):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat", json={"slot": "s1", "message": text})
+                assert (await resp.json()).get("queued") is True
+
+        if result_first:
+            slot.queue_append(result, kind=SUBAGENT_COMPLETION_KIND)
+            await _chat("follow-up while it works")
+        else:
+            await _chat("follow-up while it works")
+            slot.queue_append(result, kind=SUBAGENT_COMPLETION_KIND)
+
+        ran = []
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()) as run_chat,
+        ):
+            for _ in range(3):
+                slot.task = None
+                if await chat_runner._start_next_queued_turn(state, slot):
+                    ran.append(run_chat.call_args.args[2])
+        return ran, result, slot
+
+    async def test_result_then_chat_drains_in_order(self, tmp_path, monkeypatch):
+        ran, result, slot = await self._scenario(tmp_path, monkeypatch, result_first=True)
+        assert ran == [result, "follow-up while it works"]
+        assert [q["content"] for q in slot._queue] == ["a peer's message, waits for the wave"]
+
+    async def test_chat_then_result_drains_in_order(self, tmp_path, monkeypatch):
+        ran, result, slot = await self._scenario(tmp_path, monkeypatch, result_first=False)
+        assert ran == ["follow-up while it works", result]
+        assert [q["content"] for q in slot._queue] == ["a peer's message, waits for the wave"]
 
 
 # ── API test: api_chat ingest gate (idle + sub-agents running) ──
@@ -258,10 +347,10 @@ class TestSteerFallbackSurvivesTheHold:
 
 @pytest.mark.asyncio
 class TestApiChatSubagentQueueGate:
-    """The idle-path ingest gate queues a message whenever sub-agents are
-    running for the slot (always on), querying the correct parent key."""
+    """The idle-path ingest gate: with sub-agents running for the slot, an app's
+    send is held, while the session's own human starts a turn at once."""
 
-    async def test_queues_when_subagents_running(self, tmp_path, monkeypatch):
+    async def test_composer_send_is_not_held_by_running_subagents(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         ran = {"called": False}
 
@@ -280,10 +369,52 @@ class TestApiChatSubagentQueueGate:
             assert resp.status == 200
             data = await resp.json()
 
-        assert data.get("queued") is True
-        assert ran["called"] is False  # gate returned before starting a turn
-        assert slot.queue_depth == 1
-        # The gate must query the slot's parent key, not a bare/mismatched one.
+        assert data.get("queued") is not True
+        assert ran["called"] is True
+        assert slot.queue_depth == 0
+
+    @pytest.mark.parametrize("internal_auth", [True, False], ids=["internal-secret", "unmarked"])
+    async def test_non_composer_send_is_held_by_running_subagents(
+        self, tmp_path, monkeypatch, internal_auth
+    ):
+        """Only the dashboard-user mark releases a send. A loopback internal-secret
+        send (an MCP tool, a cron script) and a caller carrying no mark at all wait
+        for the wave, and a busy-slot copy carries no composer mark."""
+        from aiohttp import web
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        ran = {"called": False}
+
+        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+            ran["called"] = True
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
+        subs = MagicMock()
+        subs.running_agents_for = MagicMock(return_value=[{"id": "a1"}])
+        state = _make_state(tmp_path, subagents=subs)
+        slot = state.get_or_create_slot("s1")
+
+        @web.middleware
+        async def _internal(request, handler):
+            # No app claim and no dashboard-user mark: token_auth's
+            # internal-secret grant, or any caller it never marked.
+            request["internal_auth"] = internal_auth
+            request["is_dashboard_user"] = False
+            return await handler(request)
+
+        app = _make_app(state)
+        app.middlewares.insert(0, _internal)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat?ws=1", json={"message": "from a cron", "slot": "s1"})
+            assert (await resp.json()).get("queued") is True
+            assert ran["called"] is False
+            _busy(slot)
+            slot._acp_client = None
+            resp = await client.post("/api/chat?ws=1", json={"message": "again", "slot": "s1"})
+            assert (await resp.json()).get("queued") is True
+
+        assert [q["content"] for q in slot._queue] == ["from a cron", "again"]
+        assert not any(COMPOSER_SEND_META in (q.get("meta") or {}) for q in slot._queue)
         subs.running_agents_for.assert_any_call("dashboard:s1")
 
     async def test_not_queued_when_no_subagents_running(self, tmp_path, monkeypatch):
@@ -361,6 +492,51 @@ class TestApiChatSubagentQueueGate:
         assert direct == []  # did not jump the parked message
         assert drained.call_args.args[2] == "first, parked while the child was live"
         assert [item["content"] for item in slot._queue] == ["second"]
+
+    @pytest.mark.parametrize("composer", [True, False], ids=["composer", "internal-secret"])
+    async def test_send_behind_parked_message_carries_composer_mark(
+        self, tmp_path, monkeypatch, composer
+    ):
+        """A composer send queued behind a parked message carries the composer
+        mark, so a hold the drained turn reinstates still releases it at that
+        turn's end; a non-composer send in the same branch carries none."""
+        from aiohttp import web
+
+        from kiro_crew.dashboard import chat_runner
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._run_chat", AsyncMock(return_value=None)
+        )
+        monkeypatch.setattr(chat_runner, "_run_chat", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(chat_runner, "spawn_guarded_turn", lambda *a, **k: None)
+        load = MagicMock()
+        load.return_value.dashboard.merge_queued_messages = False
+        monkeypatch.setattr(chat_runner.KiroCrewConfig, "load", load)
+        subs = MagicMock()
+        subs.running_agents_for = MagicMock(return_value=[{"id": "dead", "stalled": True}])
+        state = _make_state(tmp_path, subagents=subs)
+        slot = state.get_or_create_slot("s1")
+        slot.queue_append("first, parked while the child was live")
+
+        @web.middleware
+        async def _mark(request, handler):
+            request["internal_auth"] = not composer
+            request["is_dashboard_user"] = composer
+            return await handler(request)
+
+        app = _make_app(state)
+        app.middlewares.insert(0, _mark)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat?ws=1", json={"message": "second", "slot": "s1"})
+            assert (await resp.json()).get("queued") is True
+
+        assert [item["content"] for item in slot._queue] == ["second"]
+        meta = slot._queue[0].get("meta") or {}
+        if composer:
+            assert meta.get(COMPOSER_SEND_META) is True
+        else:
+            assert COMPOSER_SEND_META not in meta
 
 
 class TestSubagentsHoldUserMessages:

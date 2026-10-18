@@ -197,8 +197,9 @@ async def continue_slot_turn(
         # `hold_users` gate that exists to stop exactly this (chat_runner) — the
         # hold only holds plain USER messages. A parent turn would start and
         # interleave tool calls and repository writes with its own children's
-        # completion injections. `api_chat` queues instead of dispatching for the
-        # same reason; Continue has nowhere to queue to, so it refuses.
+        # completion injections. `api_chat` holds an automated send for the
+        # same reason (the person's own composer send runs, which is their
+        # choice); Continue has nowhere to queue to, so it refuses.
         #
         # Children guard — see _subagents_attached_response for the three
         # probes and why each is load-bearing. `effective_session_key`, never

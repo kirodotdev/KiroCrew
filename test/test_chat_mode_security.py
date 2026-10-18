@@ -548,6 +548,22 @@ async def test_app_on_user_slot_cannot_steer_past_running_subagents(state) -> No
 
 
 @pytest.mark.asyncio
+async def test_app_send_is_held_while_subagents_run(state) -> None:
+    """The session's own human is never held, but an app's send still waits."""
+    _user_slot(state, agent="researcher")
+    state.subagents = MagicMock()
+    state.subagents.running_agents_for.return_value = [{"id": "child"}]
+
+    sent = await _app_send(state, {"slot": "s1"})
+
+    assert sent.status == 200, sent.data
+    assert sent.data["queued"] is True
+    sent.run_chat.assert_not_called()
+    # The gate must query the slot's parent key, not a bare/mismatched one.
+    state.subagents.running_agents_for.assert_any_call("dashboard:s1")
+
+
+@pytest.mark.asyncio
 async def test_app_on_its_own_slot_keeps_the_steer_opt_out(state) -> None:
     _own_slot(state)
     state.subagents = MagicMock()

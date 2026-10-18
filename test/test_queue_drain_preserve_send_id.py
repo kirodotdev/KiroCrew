@@ -124,14 +124,26 @@ class TestBusySlotQueueEntry:
 class TestSubagentHoldQueueEntry:
     @pytest.mark.asyncio
     async def test_entry_carries_the_client_send_id(self, tmp_path, monkeypatch):
-        """The idle-slot hold (background sub-agents still running) is the other
-        queue producer a composer send can reach; it stamps the id the same way."""
+        """The idle-slot hold branch (sub-agents still attached) is the other
+        queue producer a composer send can reach; it stamps the id the same way.
+        A composer send lands there when its only child is stalled and a message
+        parked while that child was live is still queued ahead of it."""
+        from kiro_crew.dashboard import chat_runner
+
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=["agent-1"])
+        state.subagents.running_agents_for = MagicMock(
+            return_value=[{"id": "agent-1", "stalled": True}]
+        )
         slot = state.get_or_create_slot("held-chat")
+        slot.queue_append("parked while the child was live")
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", MagicMock())
+        monkeypatch.setattr(chat_runner, "_run_chat", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(chat_runner, "spawn_guarded_turn", lambda *a, **k: None)
+        load = MagicMock()
+        load.return_value.dashboard.merge_queued_messages = False
+        monkeypatch.setattr(chat_runner.KiroCrewConfig, "load", load)
 
         payload = await _post_busy(state, "held-chat", _TEXT, {"sendId": _SEND_ID})
 

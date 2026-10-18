@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.dashboard.chat_utils import (
     AUTOMATION_NOTICE_KIND,
+    COMPOSER_SEND_META,
     CRON_NOTIFICATION_KIND,
     MCP_APP_MESSAGE_KIND,
-    STEER_INTENT_META,
     SUBAGENT_COMPLETION_KIND,
 )
 
@@ -297,7 +297,7 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         _act_now: set[str] = getattr(slot, "_steer_act_now", set())
         if steer_msg in _act_now:
             _act_now.discard(steer_msg)
-            _meta[STEER_INTENT_META] = True
+            _meta[COMPOSER_SEND_META] = True
         # The decision receipt rides the entry for the same reason the two ids do:
         # the drain unions a consumed entry's meta onto the row it writes, so this is
         # the only writer a requeued steer has. Both outcomes a `message.steer`
