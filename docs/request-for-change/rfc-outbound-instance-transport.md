@@ -454,7 +454,7 @@ writable through the same surface it constrains is not a control. The two files
 are already in different protection classes, and the asymmetry is what makes the
 placement work rather than a preference:
 `~/.kiro/crew/config.json` is listed in the write-protected home paths
-(`src/kiro_crew/security/paths.py`), so the agent's file-edit tool cannot modify
+(`src/kiro_crew/security/paths_lists.py`), so the agent's file-edit tool cannot modify
 it; `~/.kiro/crew/instances.json`, which holds the records and therefore
 `hub_url`, appears in no security path at all and is agent-writable by design —
 registering a crew is ordinary agent work. Putting `allowed_methods` and the hub

@@ -1654,7 +1654,7 @@ control the running app **cannot** undo. That is the `capabilities.telemetry`
 the documented default-on behavior for standalone users).
 
 It is read from the trust-root `security_policy.json`, which lives in
-`security._SENSITIVE_HOME_DIRS` (defined in `security/paths.py`). The agent cannot
+`security._SENSITIVE_HOME_DIRS` (defined in `security/paths_lists.py`). The agent cannot
 rewrite its own ceiling: the sandbox mounts the file read-only, and it stays readable
 on purpose because `boot_platform()` resolves the ceiling inside the sandbox; only an
 enforced harness's child has it withheld (see [security](security.md#os-level-sandbox-sandboxpy)). That is what makes this enterprise-*pinnable* where a `config.json` field

@@ -354,7 +354,7 @@ the control secret reference and the served crew name a turn needs, and `wall_at
 when the platform will take the VM. Because teardown acts on the stored
 `microvm_id` with no tag to cross-check, a writable copy would let a sandboxed
 process choose which VM the next delete destroys, so the file is a write-protected
-target in `security/paths.py`.
+target in `security/paths_lists.py`.
 
 ## Where launch state lives
 

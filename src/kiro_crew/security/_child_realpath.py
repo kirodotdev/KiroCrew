@@ -2,7 +2,7 @@
 
 NOT PART OF THE POOL. This is :mod:`kiro_crew.subprocess_pool`'s first consumer:
 the pool is a general primitive for syscall-shaped work, and this file is the two
-ops the sensitive-path resolver (:mod:`kiro_crew.security.paths`) asks of it.  It
+ops the sensitive-path resolver (:mod:`kiro_crew.security.paths_resolver`) asks of it.  It
 lives beside that resolver because the resolver is the only thing that knows what
 its answers mean.  Read the pool's own contract as the generic thing, and read this
 as an example of meeting it.

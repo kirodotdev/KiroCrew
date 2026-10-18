@@ -892,7 +892,7 @@ def test_no_hardcoded_transcripts_dir():
 # slipped through the first version of this guard and was caught in review.
 _LITERAL_RE = re.compile(r'"\.kiro"\s*/\s*"agents"' r"|[\"']\.kiro/agents")
 # ``config/paths.py`` is the resolver that defines the default.
-# ``security/paths.py`` holds the sensitive-path denylist, whose entries are
+# ``security/paths_lists.py`` holds the sensitive-path denylist, whose entries are
 # HOME-RELATIVE literals
 # (the matcher anchors ``$HOME``-relative strings; ``kiro_agents_dir()`` returns
 # an absolute path, so the resolver's value cannot be used here) and which is
@@ -908,7 +908,7 @@ _LITERAL_RE = re.compile(r'"\.kiro"\s*/\s*"agents"' r"|[\"']\.kiro/agents")
 # through ``kiro_agents_dir()`` even in principle.
 _ALLOWED = {
     "config/paths.py",
-    "security/paths.py",
+    "security/paths_lists.py",
     # A third case, and a different kind. The AWS Control crew container runs as its
     # own process inside a Linux image where ``kiro_crew`` is not importable, so
     # ``supervisor/bundle.py`` re-implements this resolver rather than calling it.

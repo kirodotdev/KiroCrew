@@ -3693,7 +3693,7 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   `resolve_active_scope`, `governance_permits`, `governance_floor_ordinal`,
   `GOVERNANCE_ERROR_REASON` (the eval-error marker consumers match on),
   `vet_and_audit`.
-- `security/paths.py` — `_SENSITIVE_HOME_DIRS` keystone entries.
+- `security/paths_lists.py` — `_SENSITIVE_HOME_DIRS` keystone entries.
 - `security/denied_rules.py` — `pinned_builtin_command_ids` and `pinned_builtin_command_ids_for_snapshot`.
 - `agent_backend_governance.py` — the `agent_backend` scope: `SCOPE`,
   `narrow_selectable_backends` (the registry recompute, plus its host-bound,

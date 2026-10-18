@@ -2798,7 +2798,7 @@ the same reason attachments do not travel with a session transfer or export
 references by design), exactly as the scratch path they replace never did.
 
 `sessions/` is write-protected but deliberately not read-sensitive
-(`security/paths.py`), so `/api/file-raw` serves an attachment under the existing
+(`security/paths_lists.py`), so `/api/file-raw` serves an attachment under the existing
 sensitive-path policy.
 
 ## Source Provenance

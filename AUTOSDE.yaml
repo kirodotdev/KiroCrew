@@ -54,7 +54,7 @@ custom-rules:
       - Never read sensitive credential paths (for example ~/.aws, ~/.ssh,
         ~/.gnupg, ~/.docker, ~/.kube, ~/.npmrc, ~/.pypirc, ~/.netrc,
         ~/.git-credentials, ~/.kiro/crew/.env and the pre-move ~/.kirocrew/.env;
-        the canonical list is `_SENSITIVE_HOME_DIRS` in security/paths.py, and
+        the canonical list is `_SENSITIVE_HOME_DIRS` in security/paths_lists.py, and
         this list is illustrative, not the enforcement scope). File reads of
         user- or LLM-influenced paths MUST go
         through hooks.py, which enforces is_sensitive_path()

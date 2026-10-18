@@ -399,7 +399,15 @@ def _url_payload_command(n: int) -> str:
 #: and ``argv_floor_git``. The 462 lines are glue: the owners' docstrings, imports and
 #: logger, the facade's family map, owner list, install and two ``TYPE_CHECKING`` manifests.
 #: Every moved statement is unchanged; no rule, threshold or pass moved.
-_PACKAGE_LINE_BUDGET = 30_671
+#:
+#: Raised again, from 30,671, for the path floor's owner modules: ``paths.py`` is
+#: a mirror facade over ``paths_lists``, ``paths_resolver`` and ``paths_targets`` that
+#: keeps the gates. The 367 lines are glue: the owners' docstrings, imports and
+#: logger, the ``PathResolutionStalled.__module__`` restore, and the facade's owner
+#: imports, owner list, install and two ``TYPE_CHECKING`` manifests. Every moved
+#: statement is unchanged bar one docstring phrase in ``_home_targets_tier``; no rule,
+#: threshold or pass moved.
+_PACKAGE_LINE_BUDGET = 31_038
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

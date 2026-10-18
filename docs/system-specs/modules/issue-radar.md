@@ -435,7 +435,7 @@ a raw HTTP call. An agent session holds no dashboard credential:
 
 - the access cookie is `httpOnly`, so the frontend cannot hand it to the agent;
 - `.local_secret` — needed for the `GET /api/token/local` bootstrap — is on the
-  sensitive-path list in `security/paths.py`, so the tool gate refuses an agent's
+  sensitive-path list in `security/paths_lists.py`, so the tool gate refuses an agent's
   reads of it. The OS sandbox does not hide it
   (`sandbox._CREW_SANDBOX_VISIBLE_LEAVES`), because in-sandbox MCP servers
   authenticate back to the dashboard with it; the tool gate is the only fence.
