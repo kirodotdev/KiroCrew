@@ -1038,7 +1038,7 @@ def build_config(
         cron_history=_build_cron_history_config(cron_history_data),
         messaging=_build_messaging_config(messaging_data),
         # watchdog is advertised in config-baseline.json, served by
-        # /api/config/schema, and read by acp/session_handle.py, so load()
+        # /api/config/schema, and read by acp/session_handle_watchdog.py, so load()
         # passes this kwarg — without it config.json values would be
         # silently ignored and the dataclass defaults would always win.
         watchdog=_build_watchdog_config(watchdog_data),

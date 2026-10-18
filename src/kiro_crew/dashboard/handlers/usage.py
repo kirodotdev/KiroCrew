@@ -102,7 +102,7 @@ def _wrapper_chain(source: object) -> list[object]:
     ``providers/acp.py`` keeps its inner object on ``_client`` (also exposed as
     ``client``), ``acp/session_provider.py`` keeps the session handle on
     ``_handle``, and both the handle and the provider keep the spawned CLI
-    runtime on ``_runtime`` (``session_handle.py:215``, ``session_provider.py:61``)
+    runtime on ``_runtime`` (``session_handle.py`` ``__init__``, ``session_provider.py:61``)
     — and these nest, because ``providers/acp_runtime_start.py`` assigns an
     ``AcpSessionProvider`` to ``_client`` (the ``-> AcpClient`` annotation there
     carries a ``type: ignore``). A default Kiro turn therefore hides its resolved

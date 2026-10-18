@@ -80,6 +80,42 @@ its own module, which `acp/client.py` fills in right after defining it, because 
 owner never imports the facade; a patch through `kiro_crew.acp.client` reaches it
 through the mirror.
 
+`AcpSessionHandle`'s behaviour moves into `acp/session_handle_*.py` owner modules the
+same way, one responsibility each. A member's body is a module-level function there whose
+first parameter is `self` (annotated `AcpSessionHandle` for type checkers only), and the
+class binds it by name in one block above `__init__`, one comment header per owner. The
+constructor, the properties and the `_last_steer_monotonic` class default stay in the
+class, and the handle's state stays on the instance, so a patch of a method on the class
+(also when spelled through `kiro_crew.acp.runtime.AcpSessionHandle`) or on an instance, an
+`AcpSessionHandle.__new__` build and an unbound `AcpSessionHandle.<member>(stub, ...)` call
+all reach the one function; each owner's docstring names the instance fields its members
+write and read. `_own_methods` names each bound function after its class attribute, so its
+`__qualname__` (what a coroutine's and a task's repr print) and `inspect.signature` read as
+before the move, and only its `__module__` names the owner. The runtime exception family
+keeps `kiro_crew.acp.session_handle` as its `__module__`, so error chains name the path
+callers import it from; `AcpRuntimeProtocol` and `WatchdogSettings` keep their owner's,
+which nothing reads. `_SESSION_HANDLE_OWNERS` lists the owners lowest layer first: an owner
+imports only owners listed before it. Owners log under the `kiro_crew.acp.session_handle`
+logger and never import `acp/session_handle.py` at run time. The facade keeps binding every
+name it bound before -- its own unused imports are exempt from flake8's F401, and a frozen
+import inventory stands in for that check -- serves the moved private names nothing outside
+the family reads, and a write through it reaches every owner binding the same object
+(`kiro_crew._facade_mirror`). `test/test_session_handle_bindings.py` pins the member
+inventory, the binding, the reach and the import inventory.
+
+| Session-handle owner | Owns |
+|---|---|
+| `acp/session_handle_runtime_contract.py` | the contract between a handle and its runtime: the `AcpRuntimeError` family (`AcpRuntimeDead`, `AcpRequestTimeout`, ...) and `AcpRuntimeProtocol`, the interface the handle needs from `AcpRuntime` |
+| `acp/session_handle_watchdog.py` | the per-session stale/stall watchdog: `WatchdogSettings` and `_load_watchdog_settings`, the turn park clocks, the liveness-oracle consult, the WORKING deferral log and metric, and the stalled-tool end |
+| `acp/session_handle_lifecycle.py` | the session outside its turn loop: awaited control requests and slash commands, cancel, death attribution, `destroy` and transcript cleanup |
+| `acp/session_handle_compaction.py` | compaction on every backend (`compact`, the KAS compaction verb, codex and claude inline compaction, `wait_for_compaction`) and the usage and metadata frames it is measured by |
+| `acp/session_handle_turn.py` | one turn end to end: `prompt`, `stream_command`, the per-turn reset and pre-turn drain in `_run_turn`, the abandoned-turn close and `wait_turn_done` |
+| `acp/session_handle_dispatch.py` | the per-turn event loop `_dispatch_events`: it reads the session queue, routes each frame and runs the in-band watchdog arm |
+
+The members no row above names, and the module-level code they read, are still defined in
+`acp/session_handle.py`. New `AcpSessionHandle` behaviour goes to the owner whose row names
+its responsibility, bound in the class under that owner's header.
+
 New module-level code goes to the owner whose row above names its
 responsibility, not to `acp/client.py` or `acp/runtime.py`: stdio framing and
 write bounds to `acp/transport_framing.py`; an `AcpError` subclass, or a
@@ -2285,7 +2321,7 @@ whose transport behaviour this module owns.
 
 The bound is therefore a **no-progress** bound (`await_under_no_progress_bound` / `write_response_frame_bounded`): it polls the transport's write-buffer level and only gives up when the level held still for the whole window; a level that moved is activity — a shrink is the reader consuming, a growth is a frame from a writer the lock woke ahead of this caller landing on the pipe — and is measured again from the new level, so a large frame never gets a healthy shared runtime marked dead.
 
-A drop only counts when it is at least `_RESPONSE_WRITE_MIN_PROGRESS_BYTES` (4 KiB) per window, and that alone bounds the whole wait by construction: the level is finite and non-negative and every continued window removed at least the floor from it, so a backlog of B bytes is waited on for at most B/floor + 1 windows (plus the same for any sibling frame appended meanwhile). There is deliberately no flat ceiling — the largest frame is unbounded (any number of 5 MiB image blocks), so any fixed figure would either kill a live reader on a valid frame or be arbitrary. An awaitable found complete as a window closes counts as completed. A cancel notification (`cancel_session`, `send_notification`) waits for the lock under the same bound and is appended unlocked if the lock does not come, so the one cooperative signal that can end a wedged turn is never swallowed by the lock. The handle-owned deny sites in `session_handle.py` write their SEL audit before the (now bounded) reject write.
+A drop only counts when it is at least `_RESPONSE_WRITE_MIN_PROGRESS_BYTES` (4 KiB) per window, and that alone bounds the whole wait by construction: the level is finite and non-negative and every continued window removed at least the floor from it, so a backlog of B bytes is waited on for at most B/floor + 1 windows (plus the same for any sibling frame appended meanwhile). There is deliberately no flat ceiling — the largest frame is unbounded (any number of 5 MiB image blocks), so any fixed figure would either kill a live reader on a valid frame or be arbitrary. An awaitable found complete as a window closes counts as completed. A cancel notification (`cancel_session`, `send_notification`) waits for the lock under the same bound and is appended unlocked if the lock does not come, so the one cooperative signal that can end a wedged turn is never swallowed by the lock. The session handle's own deny sites (`AcpSessionHandle._run_turn`'s stranded-request reject, the `_dispatch_events` fail-close gate and the in-band refusals) write their SEL audit before the (now bounded) reject write.
 
 Under the proactor loop (`_is_proactor_loop`, keyed to the public `asyncio.ProactorEventLoop`; Windows's subprocess pipes report the whole in-flight overlapped write until it completes, so the level is flat while a live reader consumes a large frame) the wait falls back to the single platform-limited window `_RESPONSE_WRITE_UNOBSERVABLE_BOUND_SECS`, a fixed 900s (~30 MiB at ~40 KiB/s, the one place a fixed figure remains because there is no level to derive from; test-pinned) — the same declared degradation as the Windows watchdog.
 

@@ -229,7 +229,7 @@ def sandbox_unavailable_message(exc: BaseException | None = None) -> str:
 def _is_abnormal_stop(reason: str) -> bool:
     """True when an EVENT_COMPLETE stop_reason means the turn did NOT finish
     cleanly — timeout, stale-recovery, tool-stall, or any ``error: *`` (see
-    acp/session_handle.py / acp/types.py). A review that ended this way must be
+    acp/session_handle_dispatch.py / acp/types.py). A review that ended this way must be
     reported as a failure, not silently returned as partial success (which would
     wrongly mark the PR reviewed / post incomplete findings). The known abnormal
     reason CONSTANTS are matched explicitly (not just by an ``error`` prefix) so a

@@ -4,12 +4,12 @@ A timeout is a poor death detector: a stale-turn window (90s) or a tool-stall
 window (600s) kills healthy-but-slow work — a silent 30-minute redirected
 build, a ``wait(1800)`` poll, or a long non-streamed reasoning stretch. This
 module inverts that shape: an EFFECTIVE per-session oracle returns a verdict
-with evidence, so the watchdog in ``session_handle.py`` acts FASTER on real
+with evidence, so the watchdog in ``session_handle_dispatch.py`` acts FASTER on real
 deaths and never on healthy work.
 
     verdict = oracle(session) -> WORKING | DEAD | STUCK_INPUT | UNKNOWN
 
-Policy (enforced by the caller in ``session_handle._dispatch_events``):
+Policy (enforced by the caller in ``session_handle_dispatch._dispatch_events``):
 
 - ``WORKING``     -> never act (log once per interval at most), except an
   opaque MCP tool's ``mcp subtree active`` reading, which the tool branch
@@ -177,7 +177,7 @@ EVIDENCE_ESTABLISHED_FLAT = "established_flat"
 # the runtime's tree is readable, holds live descendants, and not one of them is
 # young enough to have been started by this dispatch. The caller narrows the
 # UNKNOWN window on this tag (see the shell branch of
-# ``session_handle._dispatch_events``) instead of spending the build-scale
+# ``session_handle_dispatch._dispatch_events``) instead of spending the build-scale
 # suspect window on a command that already exited — the sub-second shell tool
 # whose result frame was lost is never observed alive, so the plain
 # "no matching shell child" evidence must not buy it the full forbearance.
@@ -266,7 +266,7 @@ EVIDENCE_REMOTE_FLAT = "remote_flat"
 # weakest WORKING there is: the movement may belong to any process in the tree,
 # such as a sibling MCP server polling in the background, so it cannot tell a
 # live tool from one whose result frame was lost. The tool branch therefore
-# bounds this one WORKING reading (see ``session_handle._dispatch_events``)
+# bounds this one WORKING reading (see ``session_handle_dispatch._dispatch_events``)
 # while every other WORKING keeps deferring.
 EVIDENCE_MCP_SUBTREE_ACTIVE = "mcp subtree active"
 

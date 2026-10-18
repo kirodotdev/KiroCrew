@@ -1050,6 +1050,12 @@ def test_vocabulary_home_exempts_the_vocabulary_module_and_its_listed_owners_onl
 _RUNTIME_PATH_MODULES = (
     "src/kiro_crew/acp/runtime.py",
     "src/kiro_crew/acp/session_handle.py",
+    "src/kiro_crew/acp/session_handle_runtime_contract.py",
+    "src/kiro_crew/acp/session_handle_watchdog.py",
+    "src/kiro_crew/acp/session_handle_lifecycle.py",
+    "src/kiro_crew/acp/session_handle_compaction.py",
+    "src/kiro_crew/acp/session_handle_turn.py",
+    "src/kiro_crew/acp/session_handle_dispatch.py",
 )
 
 #: Backend-identity comparisons the runtime path is allowed to make, keyed by
@@ -1081,7 +1087,7 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "property means 'this host needs its agent re-sent'. Adding one would cost the "
     "kiro path an awaited step it does not need (H13).",
     (
-        "src/kiro_crew/acp/session_handle.py",
+        "src/kiro_crew/acp/session_handle_turn.py",
         "stream_command",
     ): "``_kiro.dev/commands/execute`` is kiro-cli's own RPC. The positive test is what "
     "makes every other harness fail CLOSED onto the prompt transport instead of "
@@ -1101,7 +1107,7 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "not author. KAS has its own narrower arm: it moves only an ``auto`` default its "
     "own ``model`` select does not list, onto an id that select does list.",
     (
-        "src/kiro_crew/acp/session_handle.py",
+        "src/kiro_crew/acp/session_handle_compaction.py",
         "_kas_compact_request",
     ): "``_kiro/session/compact`` is KAS's own extension verb, advertised in its "
     "``initialize`` extensionMethods. Every other ``ACP_BACKENDS_COMPACT`` member "

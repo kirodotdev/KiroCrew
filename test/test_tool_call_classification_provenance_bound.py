@@ -756,6 +756,7 @@ class TestTheProvenanceCachesShareOneBound:
         at the terminal), and each side-effects-only parse site releases right
         after its ``parse_session_update``."""
         import inspect
+        import sys
 
         from kiro_crew.acp import session_handle
 
@@ -763,7 +764,11 @@ class TestTheProvenanceCachesShareOneBound:
         trip = src.index("self._tripwire_spec_disabled_tool(ev, msg)")
         rel = src.index("self._release_settled_tool_call(")
         assert trip < rel < src.index("yield ev", trip)
-        whole = inspect.getsource(session_handle)
+        # The facade and every owner its code moved to, as one text.
+        whole = "\n".join(
+            inspect.getsource(sys.modules[name])
+            for name in (session_handle.__name__, *session_handle._SESSION_HANDLE_OWNERS)
+        )
         assert whole.count("self._release_settled_tool_call(") == 4
         for scope in ("upd, ssid)", "update, self._session_id)", "update, frame_sid)"):
             assert f"self._release_settled_tool_call({scope}" in whole, scope
@@ -807,10 +812,17 @@ class TestTheProvenanceCachesShareOneBound:
         ``_tool_call_kind`` is cleared, ``_tool_call_cache_overflow`` is too."""
         import ast
         import inspect
+        import sys
 
         from kiro_crew.acp import session_handle
 
-        tree = ast.parse(inspect.getsource(session_handle))
+        # The facade and every owner its code moved to, parsed as one module.
+        tree = ast.parse(
+            "\n".join(
+                inspect.getsource(sys.modules[name])
+                for name in (session_handle.__name__, *session_handle._SESSION_HANDLE_OWNERS)
+            )
+        )
         cleared_in: dict[str, set[str]] = {}
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):

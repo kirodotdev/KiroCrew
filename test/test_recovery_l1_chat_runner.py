@@ -140,7 +140,10 @@ class TestHandleClassifies:
         h._handle_update(_tool_result("t1", _CAPACITY))
         assert h.last_infra_error is not None
         # The per-turn reset is the same one that clears the stop reason.
-        src = inspect.getsource(AcpSessionHandle)
+        src = "".join(
+            inspect.getsource(inspect.getmodule(member))
+            for member in (AcpSessionHandle._run_turn, AcpSessionHandle.__init__)
+        )
         idx = src.index("self.last_infra_error = None")
         assert 'self._last_stop_reason = ""' in src[:idx]
 

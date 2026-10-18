@@ -643,7 +643,7 @@ def _resolve_session_start_timeout() -> float:
     """Snapshot ``agent.session_start_timeout_secs`` from config.
 
     Function-level import (mirrors ``_load_watchdog_settings`` in
-    session_handle.py) avoids the config -> dashboard -> acp import cycle;
+    session_handle_watchdog.py) avoids the config -> dashboard -> acp import cycle;
     any failure falls back to the built-in default rather than breaking a
     runtime. The loader clamps the on-disk value to
     [SESSION_START_TIMEOUT_MIN, SESSION_START_TIMEOUT_MAX]; the ``max`` here

@@ -136,7 +136,7 @@ Keeping the kiro session files means touching **four** unlink sites:
 
 | Unlink site | Reached by |
 |---|---|
-| `AcpSessionHandle._cleanup_transcript` (`acp/session_handle.py:799-814`), via `destroy()` (`:775`) | the session-sharing arm — the default — through `AcpSessionProvider.shutdown` (`acp/session_provider.py:173`) from `subagent_manager/run.py`'s `_teardown_run_session_impl` |
+| `AcpSessionHandle._cleanup_transcript`, via `AcpSessionHandle.destroy()` | the session-sharing arm — the default — through `AcpSessionProvider.shutdown` (`acp/session_provider.py:173`) from `subagent_manager/run.py`'s `_teardown_run_session_impl` |
 | `AcpSessionProvider.cleanup_session` (`acp/session_provider.py:180-200`) | `SessionManager._safe_cleanup` |
 | `AcpProvider.cleanup_session` (`providers/acp_lifecycle.py`) | `SessionManager._safe_cleanup` |
 | `_cleanup_session_files_sync` (`subagent_persistence.py:293`) | tombstone prune (`:280`) and orphan reconcile (`_reconcile_orphans_impl`) |

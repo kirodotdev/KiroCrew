@@ -1601,10 +1601,18 @@ class TestEveryBackendIdLogSiteIsSanitized:
         "src/kiro_crew/acp/client_start.py": [],
         "src/kiro_crew/acp/session_handle.py": [
             "reject_tool: no deny option advertised for req=%s",
+            "approve_tool: security floor rejected req=%s: %s",
+        ],
+        "src/kiro_crew/acp/session_handle_runtime_contract.py": [],
+        "src/kiro_crew/acp/session_handle_watchdog.py": [],
+        "src/kiro_crew/acp/session_handle_lifecycle.py": [],
+        "src/kiro_crew/acp/session_handle_compaction.py": [],
+        "src/kiro_crew/acp/session_handle_turn.py": [
             "rejected permission request id=%s stranded in the ",
+        ],
+        "src/kiro_crew/acp/session_handle_dispatch.py": [
             "Dropping stray response frame id=%s (no waiter)",
             "id=%s for fidelity-unaware consumer (child=%s)",
-            "approve_tool: security floor rejected req=%s: %s",
         ],
         "src/kiro_crew/acp/runtime.py": [
             "send_notification method=%s: %s; activity clock not refreshed",

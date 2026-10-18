@@ -536,7 +536,7 @@ class TestKnowledgePoolIdleTtl:
 class TestOrchestratorWatchdogThemeAreParsed:
     """load() must actually parse the watchdog and dashboard-theme fields from
     config.json. They are advertised in config-baseline.json and served by
-    /api/config/schema, and real consumers read them (acp/session_handle.py
+    /api/config/schema, and real consumers read them (acp/session_handle_watchdog.py
     .watchdog), but the cls(...) construction passed no watchdog= kwarg and
     DashboardConfig omitted theme_mode/
     theme_color/onboarded — so config values were silently ignored (defaults
@@ -561,7 +561,7 @@ class TestOrchestratorWatchdogThemeAreParsed:
 
     def test_per_agent_watchdog_overrides_are_parsed(self) -> None:
         """agents.*.watchdog_tool_stall_* overrides survive load(); read by
-        acp/session_handle._load_watchdog_settings for sessions on that agent."""
+        acp/session_handle_watchdog._load_watchdog_settings for sessions on that agent."""
         cfg = _load_from_dict(
             {
                 "agents": {
