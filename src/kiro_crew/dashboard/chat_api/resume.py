@@ -60,6 +60,7 @@ if TYPE_CHECKING:
         slot_history_key,
         slot_transcript_key,
         time,
+        transcripts_share_file,
     )
 
 
@@ -223,7 +224,9 @@ async def _live_slot_for_resume(
     existing = state._slots.get(name)
     if not existing:
         for slot in state._slots.values():
-            if effective_session_key(slot) == canonical:
+            if effective_session_key(slot) == canonical or transcripts_share_file(
+                slot_history_key(slot), history_key
+            ):
                 existing = slot
                 break
     if existing:
@@ -611,6 +614,7 @@ def _hydrate_slot_from_history(
             folder_unhidden=folder_unhidden,
             folder_checked_id=folder_checked_id,
             disk_meta_observed=disk_meta_observed,
+            history_key=slot_history_key(slot),
         ),
     )
     disk_total = len(all_messages)
@@ -779,7 +783,8 @@ async def resume_slot_from_history(
     under (any spelling ``_normalize_slot_key`` folds), ``history_key`` the
     transcript to load (``None`` means ``name``), ``request_app`` the app token's
     scope when the caller is an app (empty for the dashboard user and for
-    session control), and ``caller_label`` what SEL records as the caller.
+    session control), ``caller_label`` what SEL records as the caller, and
+    ``request_title`` the fallback title when the transcript stores none.
 
     ``containment`` is a caller's LAST gate before publish. It runs once the slot
     is hydrated -- so it reads the fields the slot actually carries, not a
@@ -856,8 +861,8 @@ async def resume_slot_from_history(
         return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
 
     # If slot already exists (active session), just return it — no duplicate.
-    # Check both by slot name AND by canonical session key to prevent two
-    # slots sharing the same kiro-cli process.
+    # Check by slot name, by canonical session key and by transcript file, so two
+    # slots never share one kiro-cli process or write one file.
     #
     # INVARIANT: both sides of this comparison derive identity through the same
     # rule. A slot answers with ``effective_session_key``, which for a
@@ -865,6 +870,11 @@ async def resume_slot_from_history(
     # the same way, via the session map. Two rules in play and a channel
     # transcript matches nothing here: it gets a second tab, so one conversation
     # shows as two sidebar rows backed by two kiro-cli processes.
+    #
+    # The file check covers what the session map cannot bind: an unbound channel
+    # tab's ``slack_<ts>`` stem and its ``slack:<ts>`` key name one file
+    # (``transcripts_share_file``). A second slot over it would write that file
+    # beside the first and restore its held notes and merge-card context again.
     resume_outcome = await _live_slot_for_resume(
         state, request_app, history_key, name, caller_label
     )
@@ -897,7 +907,7 @@ async def resume_slot_from_history(
     # persisted origin stays empty (get_or_create_slot then derives APP for an
     # app token, otherwise leaves it untagged, which is invisible to cross-slot
     # scopes) rather than claiming USER on a conversation we cannot attribute.
-    meta = state.conversation_log.get_metadata(history_key)
+    meta = await asyncio.to_thread(state.conversation_log.get_metadata, history_key)
     # The archived tab id, read before anything rebuilds the slot under a new one.
     archived_tab = str(meta.get("tab_id") or "")
 
@@ -1074,17 +1084,17 @@ async def resume_slot_from_history(
     # deletion would discard a LIVE session -- its docstring says to prefer this
     # wherever an empty result triggers something destructive.
     #
-    # Synchronous, like the ``get_metadata`` above it, so this adds no suspension
-    # point between the re-checks and the publish -- the property the comment on
-    # the awaits above depends on.
+    # The ``get_metadata`` above ran off the loop; this read stays ON the loop, so
+    # it adds no suspension point between the re-checks and the publish -- the
+    # property the comment on the awaits above depends on.
     post_read_meta, meta_readable = state.conversation_log.get_metadata_status(history_key)
     # Did this session exist when we looked? Both re-checks below need that, and
     # ``all_messages`` alone is the wrong witness: a METADATA-ONLY session -- a
     # metadata line with no messages, which ``update_metadata`` creates on upsert --
     # has an empty transcript, so gating on it silently disabled both guards for
     # exactly the sessions least able to survive it. The pre-read ``meta`` is the
-    # right witness, and it costs nothing: it is already read synchronously above,
-    # so consulting it adds no suspension point.
+    # right witness, and it costs nothing: it was already read off the loop above,
+    # so consulting it adds no suspension point here.
     #
     # A UNION rather than a swap, so the witness is never narrower than it was: a
     # transcript we managed to read is also evidence of prior existence, even where

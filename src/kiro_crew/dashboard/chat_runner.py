@@ -248,6 +248,7 @@ from kiro_crew.dashboard.chat_turn.tool_rows import (
     _tool_meta,
 )
 from kiro_crew.dashboard.chat_turn.turn_admission import _turn_admit
+from kiro_crew.dashboard.chat_turn.turn_context import hand_merge_cards_to_open_twin  # noqa: F401
 from kiro_crew.dashboard.chat_turn.turn_dispatch_gates import (
     _turn_dispatch_gates,
     _turn_dispatch_prep,
@@ -328,6 +329,9 @@ from kiro_crew.dashboard.session_directive_apply import (  # noqa: F401
     apply_session_directive_outcome,
 )
 from kiro_crew.dashboard.state import (  # noqa: F401
+    _MAX_CONSUMED_MERGE_CARDS,
+    _MAX_CONTEXT_PER_SOURCE,
+    _MAX_PENDING_CONTEXT,
     _MAX_SLOT_MESSAGES,
     CRON_NOTIFY_PREFIX,
     NATIVE_SUBAGENT_DONE_RESULT_CAP,
@@ -338,6 +342,8 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     NATIVE_SUBAGENT_TERMINAL_TTL_SECS,
     DashboardState,
     _ChatSlot,
+    _ConsumedMergeCard,
+    _log_task_exception,
     append_and_surface,
     build_infra_retry_prompt,
     build_stale_recovery_prompt,
@@ -378,6 +384,7 @@ from kiro_crew.llm_helpers import (  # noqa: F401
     first_advertised_fallback,
     probe_fallback_restore,
     provider_last_turn_usage,
+    record_interaction_event,
     run_bg_oneliner,
     slot_switch_session_lock,
     throttle_retry_delay,
@@ -938,6 +945,29 @@ async def _run_chat(
     # to clear it, and a cut with no text after it leaves nothing to judge.
     _compaction_text_offset = 0
     turn._compaction_text_offset = _compaction_text_offset
+    # The merge-card state below is bound here, after the phases that run
+    # before the outer try and before it, so the phases cut from _run_chat, the
+    # except arms and the finally all read a defined value on every exit. It
+    # lives on the turn, which is the one storage cell those phases and this
+    # frame share.
+    # True only when an empty-response verdict found no productive activity, so
+    # the prompt is still unanswered even if the recovery ladder gives up.
+    turn._empty_verdict_left_prompt_unanswered = False
+    # Merge-card context is consumed once the prompt carrying it has reached the
+    # model's native session and stays there (``_merge_cards_reached_the_model``);
+    # every other exit returns it to the draining slot from ``_turn_record_outcome``
+    # (chat_turn/queue_cycle.py), the first phase of the finally below.
+    turn._drained_merge_contexts = []
+    turn._merge_contexts_completed = False
+    # Whether this turn lands, decided after the stream by _turn_ending_chain;
+    # bound here so the finally reads a defined value on every exit, including
+    # one that never reached the decision.
+    turn._turn_lands = False
+    # What a verbatim replay of this turn re-queues: the message without the
+    # merge-card frames the drain below prepends (``TurnContext.prefix_without_cards``);
+    # ``_queue_recovery`` substitutes it for a requeue of ``message``.
+    _message_without_merge_cards = message
+    turn._message_without_merge_cards = _message_without_merge_cards
     try:
         _flow = await _turn_admit(turn)
         if _flow is _Flow.END:

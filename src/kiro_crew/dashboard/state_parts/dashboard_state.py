@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.listener_guard import ListenerGuard
     from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
     from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
+    from kiro_crew.dashboard.state_parts.slot_turns import _ConsumedMergeCard
     from kiro_crew.messaging.transport import MessagingTransport
     from kiro_crew.power import SleepInhibitor
     from kiro_crew.slack.outbound import PostedOptions
@@ -531,6 +532,12 @@ class DashboardState:
         )
         self._slots: dict[str, _ChatSlot] = {}
         self._slot_registry = SlotRegistry()
+        # Process-local guard for copies queued before a durable consumption
+        # stamp lands, and for a hydration that read the hold before it. An
+        # entry is kept once its stamp is proven, marked stamped so eviction
+        # takes it before any still-unstamped guard; the registry is
+        # count-bounded by _MAX_CONSUMED_MERGE_CARDS.
+        self._consumed_merge_cards: dict[str, _ConsumedMergeCard] = {}
         # Process-local Spec Builder outbox claims, keyed by directory + delivery.
         # Directory scope matters because aliases use different slots for the same
         # files; durable status remains owned by the app's decision ledger.

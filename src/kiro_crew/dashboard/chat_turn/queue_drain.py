@@ -573,7 +573,7 @@ async def _start_next_queued_turn(
     _forget_swept_replays(slot)
 
     # Above the dequeue, so a held note's visible line lands before this turn's
-    # user row: its context half drains inside _turn_build_prompt via drain_pending_context.
+    # user row: its context half drains inside _turn_build_prompt via take_turn_context.
     # Withheld when the next queued item carries a structural origin tag -- a cron
     # notification or a runner-injected recovery prompt -- for the same reason
     # _finish_queue_cycle withholds from synthesis: a note is owed to the next

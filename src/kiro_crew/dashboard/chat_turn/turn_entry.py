@@ -765,6 +765,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # by the poisoned-conversation canary in _on_acp_error_card, the typed
     # unsupported-history-image recovery or the thinking-binding rebuild in acp_recovery.py;
     # their cross-cycle streak and one-shot live in ``_escalation``.
+    # A discarded conversation cannot hold this turn's prompt, so drained merge
+    # cards return for the fresh one (_run_chat's ``_native_session_lacks_the_prompt``).
     needs_conversation_discard = False
     turn.needs_conversation_discard = needs_conversation_discard
     _escalation = PoisonedConversationEscalation(slot)

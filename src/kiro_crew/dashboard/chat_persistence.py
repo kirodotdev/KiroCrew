@@ -765,7 +765,10 @@ from kiro_crew.dashboard.slot_persistence.message_entries import (  # noqa: E402
     _build_message_entry_uncached,
     remember_unknown_row_fields,
 )
-from kiro_crew.dashboard.slot_persistence.metadata_codec import COLOR_HEX_RE  # noqa: E402,F401
+from kiro_crew.dashboard.slot_persistence.metadata_codec import (  # noqa: E402,F401
+    COLOR_HEX_RE,
+    _restore_fork_lineage,
+)
 from kiro_crew.dashboard.slot_persistence.metadata_line import (  # noqa: E402,F401
     _META_LAST_USER_AT,
     _PENDING_MEMORY_MODE_LOCK,
@@ -827,11 +830,13 @@ from kiro_crew.dashboard.slot_persistence.turn_marker import (  # noqa: E402,F40
 )
 from kiro_crew.dashboard.slot_persistence.write_guards import (  # noqa: E402,F401
     _FLUSH_SNAPSHOT_RETRIES,
+    DeleteWitness,
     _keep_owed_after_refusal,
     _line_is_this_slots,
     _queue_snapshot_is_stale,
     _stable_durable_queue,
     register_guarded_history_write,
+    session_delete_witness,
     session_transcript_remains,
     session_was_deleted,
 )
