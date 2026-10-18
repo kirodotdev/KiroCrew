@@ -39,7 +39,7 @@ import ConversationCard, { CARD_ROLE } from '../../cards/ConversationCard'
 import RecoveryCard, { opensTurn, resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import SkillLoadCard, { isSkillLoadRow } from './SkillLoadCard'
-import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, isAppAgentRefused, isAuthRequired, isCapabilitiesChanged, isContextOverflow, isKiroCliMissing, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, sessionStartFailureStreak, type FreshSessionState } from './ErrorCard'
+import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, capabilityRefusal, isAppAgentRefused, isAuthRequired, isContextOverflow, isKiroCliMissing, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, sessionStartFailureStreak, type CapabilityFix, type FreshSessionState } from './ErrorCard'
 import { FEATURE_REQUEST_FORM_URL, isFeatureRequestRow } from '../../prompts/featureRequest'
 import NoticeCard from './NoticeCard'
 import { resolveTransientNotice } from './transientNotice'
@@ -161,9 +161,10 @@ export interface TranscriptRendererOptions {
   /** Fix affordance for an `auth_required` row: deep-link to the Kiro sign-in
    *  card in Settings. Omitted on a surface with no settings route. */
   onOpenSignIn?: () => void
-  /** Fix affordance for a `materialization_changed` row: open the named crew
-   *  member's Capabilities pane. Omitted on a surface with no crew editor. */
-  onOpenCapabilities?: (member: string) => void
+  /** Fix affordance for a capability refusal row (`capabilityRefusal`): open
+   *  the named crew member where that code's fix lives. Omitted on a surface
+   *  with no crew editor. */
+  onOpenCapabilities?: (member: string, fix: CapabilityFix) => void
   /** Fix affordance for a `turn_timeout` row: deep-link to the Turn Time Limit
    *  setting. Omitted on a surface with no settings route. */
   onOpenTurnLimit?: () => void
@@ -295,15 +296,30 @@ export function appAgentRefusalIsNewest(messages: readonly ChatMessage[]): boole
   return isAppAgentRefused(messages[idx])
 }
 
-/** True when the newest error row is one of the four above: its card has
+/** True when the transcript's newest state is a capability start refusal
+ *  (`capabilityRefusal`): the newest error row is one, and nothing after it
+ *  opens a new turn. A retry runs the same check, so the composer's Resume
+ *  yields to the card's own fix. */
+function capabilityRefusalIsNewest(messages: readonly ChatMessage[]): boolean {
+  const idx = lastErrorIndex(messages)
+  if (idx < 0) return false
+  for (let j = idx + 1; j < messages.length; j++) {
+    const row = messages[j]
+    if (row.role === 'assistant' || opensTurn(row)) return false
+  }
+  return capabilityRefusal(messages[idx]) !== undefined
+}
+
+/** True when the newest error row is one of the five above: its card has
  *  withheld Resume (a retry replays the rejection) and names a remedy of its
  *  own, so the composer must not urge the press beneath it either. The one
  *  place that spells the set for the composer: ChatPage's and every pane's
- *  (`useChatPaneContinue`) both read this, so a fifth remedy card joins the
+ *  (`useChatPaneContinue`) both read this, so another remedy card joins the
  *  composer's gate by joining it here. Typing still works. */
 export function newestErrorOwnsRecovery(messages: readonly ChatMessage[]): boolean {
   return featureRequestRefusalIsNewest(messages) || sessionStartRepeatIsNewest(messages)
     || contextOverflowIsNewest(messages) || appAgentRefusalIsNewest(messages)
+    || capabilityRefusalIsNewest(messages)
 }
 
 /** Index of the last `error` row, so only that one offers Continue. Derived
@@ -629,9 +645,12 @@ export function createTranscriptRenderers(
         }
         const unentitled = isModelUnentitled(m)
         const authRequired = isAuthRequired(m)
-        const capabilitiesMember = isCapabilitiesChanged(m) ? String((m.meta as { member?: unknown } | undefined)?.member ?? '') : ''
-        const openCapabilities = isCapabilitiesChanged(m) && o.onOpenCapabilities
-          ? () => o.onOpenCapabilities!(capabilitiesMember)
+        const refusal = capabilityRefusal(m)
+        const capabilitiesMember = refusal ? String((m.meta as { member?: unknown } | undefined)?.member ?? '') : ''
+        // The editor fix opens the named crewmate, so it needs a name to open.
+        const refusalFix = refusal?.fix === 'member' && !capabilitiesMember ? undefined : refusal?.fix
+        const openCapabilities = refusalFix && o.onOpenCapabilities
+          ? () => o.onOpenCapabilities!(capabilitiesMember, refusalFix)
           : undefined
         // The form is offered on the seeded turn's own refusal and nowhere else:
         // a #4198 refused-send row in the same slot carries no kind (the send
@@ -667,7 +686,7 @@ export function createTranscriptRenderers(
             // signed-out wall, or the same spent allowance, or the same start
             // that already failed twice).
             onContinue={
-              !unentitled && !authRequired && !overflow && !featureRequestFormUrl && !sessionStartRepeat && !isCapabilitiesChanged(m) && !isAppAgentRefused(m) && o.onContinue && o.continuable && o.interrupted && newest
+              !unentitled && !authRequired && !overflow && !featureRequestFormUrl && !sessionStartRepeat && !refusal && !isAppAgentRefused(m) && o.onContinue && o.continuable && o.interrupted && newest
                 ? o.onContinue
                 : undefined
             }

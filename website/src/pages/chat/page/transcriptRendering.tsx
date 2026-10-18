@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Clock, AppWindow } from 'lucide-react'
 import type { MessageQuoteRole, MessageQuote } from '../../../chat-core/composer/messageQuote'
 import type { ChatMessage, ChatSlot } from '../../../types'
-import type { FreshSessionState } from '../ErrorCard'
+import type { CapabilityFix, FreshSessionState } from '../ErrorCard'
 import { toApiDecision } from '../../../utils/approvalDecision'
 import { isHiddenInvisibleAssistantRow } from '../../../utils/invisibleText'
 import { type MessageRenderer, mergeRenderers, type MessageRenderContext, resolveRenderer } from '../../../app-sdk/messageRenderers'
@@ -93,7 +93,7 @@ interface TranscriptRenderingOptions {
   interrupted: boolean
   openDefaultModelSetting: () => void
   openKiroSignIn: () => void
-  openMemberCapabilities: (member: string) => void
+  openMemberCapabilities: (member: string, fix?: CapabilityFix) => void
   openModelPickerFromError: () => void
   openTurnLimitSetting: () => void
   quoteWholeMessage: (role: MessageQuoteRole, content: string, ts?: string, mid?: string) => void

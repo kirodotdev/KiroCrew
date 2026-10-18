@@ -889,9 +889,79 @@ def test_project_that_shadows_a_global_parent_refuses_the_start(editor, tmp_path
     (folder / ".kiro" / "agents" / "parent.json").write_text(
         json.dumps({**parent, "prompt": "folder parent"})
     )
-    with pytest.raises(CapabilityError, match="^project_identity_changed$"):
+    with pytest.raises(CapabilityError, match="^project_identity_changed$") as refused:
         prepare_member_capabilities("A", folder)
+    assert refused.value.project == str(workspace.resolve())
     assert prepare_member_capabilities("A", workspace)["revision"]
+
+
+def test_project_file_shadowing_the_private_copy_names_that_file(editor, tmp_path, monkeypatch):
+    """The refusal names the project file to rename, so the chat row can say it."""
+    service, home, specs, parent = editor
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _use_workspace_project(home, monkeypatch, workspace)
+    save(service, enroll=True)
+    from kiro_crew.config import KiroCrewConfig
+
+    target = KiroCrewConfig.load().agents["A"].kiro_agent
+    folder = tmp_path / "folder-project"
+    (folder / ".kiro" / "agents").mkdir(parents=True)
+    (folder / ".kiro" / "agents" / f"{target}.json").write_text(
+        (specs / f"{target}.json").read_text()
+    )
+    with pytest.raises(CapabilityError, match="^private_template_shadowed$") as refused:
+        prepare_member_capabilities("A", folder)
+    assert refused.value.file == f"{target}.json"
+    assert refused.value.project == str(folder.resolve())
+
+
+@pytest.mark.parametrize("form", ["markdown", "declared"])
+def test_shadowing_file_is_named_as_it_is_on_disk(editor, tmp_path, monkeypatch, form):
+    """A ``.md`` shadow or one that only declares the name is named by its own filename."""
+    service, home, specs, parent = editor
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _use_workspace_project(home, monkeypatch, workspace)
+    save(service, enroll=True)
+    from kiro_crew.config import KiroCrewConfig
+
+    target = KiroCrewConfig.load().agents["A"].kiro_agent
+    agents = tmp_path / "folder-project" / ".kiro" / "agents"
+    agents.mkdir(parents=True)
+    if form == "markdown":
+        filename = f"{target}.md"
+        (agents / filename).write_text(f"---\nname: {target}\n---\nshadow prompt\n")
+    else:
+        filename = "shadow.json"
+        (agents / filename).write_text(json.dumps({"name": target, "prompt": "shadow"}))
+    with pytest.raises(CapabilityError, match="^private_template_shadowed$") as refused:
+        prepare_member_capabilities("A", agents.parent.parent)
+    assert refused.value.file == filename
+
+
+def test_workspace_file_shadowing_the_private_copy_names_that_file_on_reconcile(
+    editor, tmp_path, monkeypatch
+):
+    """A shadow in the member's own project is refused by reconcile, naming the file."""
+    from kiro_crew.agent_capabilities import reconcile_member_capabilities
+
+    service, home, specs, parent = editor
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _use_workspace_project(home, monkeypatch, workspace)
+    save(service, enroll=True)
+    from kiro_crew.config import KiroCrewConfig
+
+    target = KiroCrewConfig.load().agents["A"].kiro_agent
+    (workspace / ".kiro" / "agents").mkdir(parents=True)
+    (workspace / ".kiro" / "agents" / f"{target}.json").write_text(
+        (specs / f"{target}.json").read_text()
+    )
+    with pytest.raises(CapabilityError, match="^private_template_shadowed$") as refused:
+        reconcile_member_capabilities("A")
+    assert refused.value.file == f"{target}.json"
+    assert refused.value.project == str(workspace.resolve())
 
 
 def test_project_parent_refuses_a_start_from_another_project(editor, tmp_path, monkeypatch):
@@ -906,8 +976,9 @@ def test_project_parent_refuses_a_start_from_another_project(editor, tmp_path, m
     assert prepare_member_capabilities("A", workspace)["revision"]
     folder = tmp_path / "folder-project"
     folder.mkdir()
-    with pytest.raises(CapabilityError, match="^project_identity_changed$"):
+    with pytest.raises(CapabilityError, match="^project_identity_changed$") as refused:
         prepare_member_capabilities("A", folder)
+    assert refused.value.project == str(workspace.resolve())
     (workspace / ".kiro" / "agents" / "parent.json").unlink()
     with pytest.raises(CapabilityError, match="^parent_identity_changed$"):
         prepare_member_capabilities("A", workspace)

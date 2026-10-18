@@ -636,6 +636,52 @@ describe('a changed member agent file routes to Capabilities, never Resume', () 
   })
 })
 
+describe('a capability refusal as the newest state owns recovery', () => {
+  for (const code of ['materialization_changed', 'parent_identity_changed', 'foreign_private_copy', 'project_identity_changed', 'private_template_shadowed']) {
+    it(`${code}: the composer withholds Resume until a new turn opens`, () => {
+      const row = msg('error', { content: `${code}: x`, meta: { code, member: 'reviewer' } })
+      expect(newestErrorOwnsRecovery([msg('user'), row])).toBe(true)
+      expect(newestErrorOwnsRecovery([msg('user'), row, msg('assistant')])).toBe(false)
+    })
+  }
+  it('leaves an ordinary error row to Resume', () => {
+    expect(newestErrorOwnsRecovery([msg('user'), msg('error', { content: 'boom' })])).toBe(false)
+  })
+})
+
+describe('the crewmate-editor fix needs a crewmate to open', () => {
+  it('offers no button when the row names no member', () => {
+    const row = msg('error', { content: 'foreign_private_copy: x', meta: { code: 'foreign_private_copy', member: '' } })
+    const el = render(row, { slot: 's1', onOpenCapabilities: () => undefined }, { index: 0, messages: [row] }) as ReactElement
+    expect(el.props.onOpenCapabilities).toBeUndefined()
+  })
+})
+
+describe('each sibling capability refusal routes to its own fix, never Resume', () => {
+  const recoverable = { slot: 's1', continuable: true, interrupted: true, onContinue: () => undefined }
+  const cases = [
+    ['parent_identity_changed', 'capabilities'],
+    ['foreign_private_copy', 'member'],
+    ['project_identity_changed', null],
+    ['private_template_shadowed', null],
+  ] as const
+
+  for (const [code, fix] of cases) {
+    it(`${code}: ${fix ?? 'no in-app fix'}`, () => {
+      const row = msg('error', { content: `${code}: x`, meta: { code, member: 'reviewer' } })
+      const opened: [string, string][] = []
+      const el = render(row, { ...recoverable, onOpenCapabilities: (name, f) => { opened.push([name, f]) } }, { index: 0, messages: [row] }) as ReactElement
+      expect(el.props.onContinue).toBeUndefined()
+      if (fix) {
+        el.props.onOpenCapabilities()
+        expect(opened).toEqual([['reviewer', fix]])
+      } else {
+        expect(el.props.onOpenCapabilities).toBeUndefined()
+      }
+    })
+  }
+})
+
 describe('rows the defaults already draw correctly are left to them', () => {
   it('keeps the default entry for the rows this module does not claim', () => {
     expect(idFor(msg('user'))).toBe('user')

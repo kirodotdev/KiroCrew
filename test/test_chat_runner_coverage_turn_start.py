@@ -209,6 +209,65 @@ async def test_changed_member_spec_names_the_capabilities_fix(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "fix_words"),
+    [
+        ("parent_identity_changed", "stop following the parent"),
+        ("foreign_private_copy", "Built from"),
+        ("project_identity_changed", "Start the chat in /work/reviewer-project."),
+        (
+            "private_template_shadowed",
+            "Rename or remove reviewer-private.json in the .kiro/agents folder of "
+            "/work/reviewer-project,",
+        ),
+    ],
+)
+async def test_sibling_capability_refusals_name_their_own_fix(tmp_path, code, fix_words):
+    """Each sibling start refusal says how to fix it and keeps the member."""
+    from kiro_crew.agent_capabilities import CapabilityError
+
+    state, _client = _runner_state(tmp_path)
+    slot = _slot()
+    refusal = CapabilityError(code)
+    refusal.member = "reviewer"
+    if code == "private_template_shadowed":
+        refusal.file = "reviewer-private.json"
+    if code in ("project_identity_changed", "private_template_shadowed"):
+        refusal.project = "/work/reviewer-project"
+    state.sessions.get_or_create = AsyncMock(side_effect=refusal)
+    await _drive(state, slot)
+
+    error = next(row for row in slot.messages if row["role"] == "error")
+    assert error["content"].startswith(f"{code}: ")
+    assert fix_words in error["content"]
+    assert "{" not in error["content"]
+    assert error["meta"]["code"] == code
+    assert error["meta"]["member"] == "reviewer"
+    assert error["meta"].get("file", "") == refusal.file
+    assert error["meta"].get("project", "") == refusal.project
+
+
+@pytest.mark.asyncio
+async def test_project_refusal_without_a_saved_project_names_no_empty_project(tmp_path):
+    """A member saved with no project gets the fallback copy, not 'the project ,'."""
+    from kiro_crew.agent_capabilities import CapabilityError
+
+    state, _client = _runner_state(tmp_path)
+    slot = _slot()
+    refusal = CapabilityError("project_identity_changed")
+    refusal.member = "reviewer"
+    state.sessions.get_or_create = AsyncMock(side_effect=refusal)
+    await _drive(state, slot)
+
+    error = next(row for row in slot.messages if row["role"] == "error")
+    assert error["content"].startswith("project_identity_changed: ")
+    assert "the project ." not in error["content"]
+    assert "Start the chat in ." not in error["content"]
+    assert "own project" in error["content"]
+    assert "project" not in error["meta"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("damaged_record", [False, True])
 async def test_canonical_member_context_outranks_slot_alias_and_corruption_refuses(
     tmp_path, monkeypatch, damaged_record

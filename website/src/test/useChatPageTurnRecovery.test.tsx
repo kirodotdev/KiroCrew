@@ -76,10 +76,12 @@ describe('error-row fixes', () => {
     act(() => { hook.result.current.openDefaultModelSetting() })
     act(() => { hook.result.current.openKiroSignIn() })
     act(() => { hook.result.current.openMemberCapabilities('Ops & QA') })
+    act(() => { hook.result.current.openMemberCapabilities('Ops & QA', 'member') })
     expect((opts.navigate as ReturnType<typeof vi.fn>).mock.calls).toEqual([
       [settingsPath({ tab: 'chat', sub: 'models', highlight: SETTINGS_DEFAULT_MODEL_ID })],
       [KIRO_SIGN_IN_PATH],
       ['/capabilities?tab=crews&crew=Ops%20%26%20QA&pane=capabilities'],
+      ['/capabilities?tab=crews&crew=Ops%20%26%20QA'],
     ])
   })
 })
@@ -146,4 +148,16 @@ describe('fresh session on a context overflow', () => {
     hook.rerender({ ...opts, messages: overflowRows })
     expect(hook.result.current.cardOwnsRecovery).toBe(true)
   })
+
+  for (const code of ['parent_identity_changed', 'foreign_private_copy', 'project_identity_changed', 'private_template_shadowed']) {
+    it(`withholds the composer Resume while the newest row is ${code}`, () => {
+      const { opts, hook } = harness()
+      const rows = [
+        { role: 'user', content: 'hi', ts: 1 },
+        { role: 'error', content: `${code}: x`, ts: 2, meta: { code, member: 'reviewer' } },
+      ] as Opts['messages']
+      hook.rerender({ ...opts, messages: rows })
+      expect(hook.result.current.cardOwnsRecovery).toBe(true)
+    })
+  }
 })

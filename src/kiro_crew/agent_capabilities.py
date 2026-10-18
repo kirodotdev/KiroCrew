@@ -90,13 +90,17 @@ class CapabilityError(ValueError):
         self.status = status
         #: Crew member whose spec failed, set by the session start seam.
         self.member = ""
-        #: Basename of the member's own agent file a refusal is about. Crew names
-        #: it (``target + ".json"``), so a hand edit cannot change it. Never a
+        #: Basename of the agent file a refusal is about, as resolved on disk
+        #: (``<name>.md`` or a file declaring the name both count). Never a
         #: directory: the agents folder is fixed per scope and a path is not.
         self.file = ""
         #: The draft's own approval reference a shape refusal is about, echoed
         #: back so the pane names it without re-implementing the shape rule.
         self.ref = ""
+        #: The project a start refusal names: the saved one for
+        #: ``project_identity_changed``, the one holding the shadowing file for
+        #: ``private_template_shadowed``.
+        self.project = ""
 
 
 def _digest(value: Any) -> str:
@@ -944,7 +948,10 @@ class CapabilityService:
         if lineage:
             path, spec, own_descriptor = _source(target, project, allow_private=True)
             if own_descriptor["scope"] != "global":
-                raise CapabilityError("private_template_shadowed")
+                shadowed = CapabilityError("private_template_shadowed")
+                shadowed.file = path.name
+                shadowed.project = project
+                raise shadowed
             if spec.get("name") != target:
                 raise CapabilityError("source_changed")
             parent_name = lineage["forked_from"]
@@ -1849,7 +1856,9 @@ def prepare_member_capabilities(member: str, project_dir: str | Path | None = No
     saved_parent = intent["parent"]
     other_project = project != saved_parent["project"]
     if other_project and saved_parent["scope"] != "global":
-        raise CapabilityError("project_identity_changed")
+        moved = CapabilityError("project_identity_changed")
+        moved.project = saved_parent["project"]
+        raise moved
     if intent.get("status") != "saved":
         raise CapabilityError("materialization_pending")
     if intent.get("governance_generation") != governance_answer_generation():
@@ -1859,12 +1868,17 @@ def prepare_member_capabilities(member: str, project_dir: str | Path | None = No
         raise CapabilityError("foreign_private_copy")
     _, _, descriptor = _source(saved_parent["name"], project)
     if _parent_identity(descriptor) != _parent_identity(saved_parent):
-        raise CapabilityError(
+        changed = CapabilityError(
             "project_identity_changed" if other_project else "parent_identity_changed"
         )
-    _, spec, own = _source(binding.kiro_agent, project, allow_private=True)
+        changed.project = saved_parent["project"] if other_project else ""
+        raise changed
+    own_path, spec, own = _source(binding.kiro_agent, project, allow_private=True)
     if own["scope"] != "global":
-        raise CapabilityError("private_template_shadowed")
+        shadowed = CapabilityError("private_template_shadowed")
+        shadowed.file = own_path.name
+        shadowed.project = project
+        raise shadowed
     if _digest(spec) != intent.get("materialized"):
         raise CapabilityError("materialization_changed")
     if intent.get("governance_generation") != governance_answer_generation():

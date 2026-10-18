@@ -917,6 +917,18 @@ one the review can vouch for (`_unvouched`); a changed key the review cannot
 show refuses with `409 unreviewable_drift`, naming the file
 (`_stamp_reviewed`).
 
+Four sibling start refusals get the same row treatment, each with its own fix.
+`parent_identity_changed` offers the same Capabilities pane fix.
+`foreign_private_copy` opens the member editor at
+`/capabilities?tab=crews&crew=<member>`. `project_identity_changed` and
+`private_template_shadowed` offer no button, and the copy names the fix. A
+`project_identity_changed` row carries `meta.project`, the saved project to go
+to; when the member was saved with no project, the copy says "another project".
+A `private_template_shadowed` row carries `meta.file`, the basename of the
+project file that hides the member's own agent file, and `meta.project`, the
+project whose `.kiro/agents` holds that file. Each of these rows also
+withholds the composer's Resume through `newestErrorOwnsRecovery`.
+
 ## Crew records and binding
 
 A crew lives only in `config.json` under `agents.<name>`. It is not a kiro-cli

@@ -9,7 +9,7 @@ import { useAppSelector } from '../../../store'
 import { selectContinuable, selectTrailingSendUnconfirmed, selectTurnInterrupted } from '../../../store/chatSlice'
 import type { ChatMessage } from '../../../types'
 import { KIRO_SIGN_IN_PATH } from '../../developer/kiroSignInLink'
-import type { FreshSessionState } from '../ErrorCard'
+import type { CapabilityFix, FreshSessionState } from '../ErrorCard'
 import { newestErrorOwnsRecovery } from '../transcriptRenderers'
 
 interface TurnRecoveryOptions {
@@ -108,10 +108,12 @@ export function useTurnRecovery({
   const openTurnLimitSetting = useCallback(() => {
     navigate(settingsPath({ tab: 'chat', sub: 'advanced', highlight: SETTINGS_TURN_TIME_LIMIT_HIGHLIGHT }))
   }, [navigate])
-  // A `materialization_changed` row's fix: the member's Capabilities pane in
-  // the crew editor, where the changed agent file is reviewed and saved.
-  const openMemberCapabilities = useCallback((member: string) => {
-    navigate(`/capabilities?tab=crews&crew=${encodeURIComponent(member)}&pane=capabilities`)
+  // A capability refusal row's fix: the member's Capabilities pane in the crew
+  // editor (a changed agent file or parent), or the editor itself, whose Built
+  // from field picks the agent (`foreign_private_copy`).
+  const openMemberCapabilities = useCallback((member: string, fix: CapabilityFix = 'capabilities') => {
+    const pane = fix === 'capabilities' ? '&pane=capabilities' : ''
+    navigate(`/capabilities?tab=crews&crew=${encodeURIComponent(member)}${pane}`)
   }, [navigate])
   // The newest error row can be one whose card has withheld Resume and names a
   // remedy of its own: the issue form for the seeded feature-request turn the

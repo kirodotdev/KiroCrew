@@ -101,8 +101,9 @@ async def api_member_capabilities(request: web.Request) -> web.Response:
         return web.json_response(result)
     except CapabilityError as exc:
         if exc.file:
-            # The file's basename only, which Crew names itself: the pane points
-            # at the file a refusal is about. Literal bodies keep `code` visible
+            # A basename only, never a directory: the member's own agent file,
+            # or the project file that shadows it. The pane points at the file
+            # a refusal is about. Literal bodies keep `code` visible
             # to the error-code contract scan.
             return web.json_response(
                 {"error": exc.code, "code": exc.code, "file": exc.file},

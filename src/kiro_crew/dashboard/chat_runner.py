@@ -783,6 +783,38 @@ from kiro_crew.wakatime.heartbeats import (  # noqa: F401
 )
 from kiro_crew.widget_artifacts import register_widgets_off_loop
 
+#: Session-start refusals from ``agent_capabilities.prepare_member_capabilities`` that a retry
+#: repeats unchanged, each with the chat row's English text naming its fix.
+#: The dashboard shows its own localized copy and fix button per code.
+_SESSION_START_REFUSAL_TEXT = {
+    "materialization_changed": (
+        "This crew member's agent file changed outside the Capabilities page. "
+        "Open Capabilities, review the change and save it, then start a new chat."
+    ),
+    "parent_identity_changed": (
+        "This crew member's parent template was moved or replaced. Open "
+        "Capabilities and stop following the parent, or put the parent back, "
+        "then start a new chat."
+    ),
+    "foreign_private_copy": (
+        "This crew member uses another member's private agent. Open the crew "
+        "member and pick a different agent under Built from, then start a new chat."
+    ),
+    "project_identity_changed": (
+        "This crew member's saved capabilities belong to the project {project}. "
+        "Start the chat in {project}."
+    ),
+    "private_template_shadowed": (
+        "Rename or remove {file} in the .kiro/agents folder of {project}, then "
+        "start a new chat. That project file hides this crew member's own agent file."
+    ),
+}
+#: ``project_identity_changed`` when the member saved with no project to name.
+_PROJECT_CHANGED_OTHER_TEXT = (
+    "This crew member's saved capabilities belong to another project. "
+    "Start the chat in the crew member's own project."
+)
+
 logger = logging.getLogger(__name__)
 
 #: Shown once when a live backend lost this chat's session and a fresh
@@ -15998,17 +16030,19 @@ async def _run_chat(
         _err_meta: dict | None = None
         if isinstance(exc, (_MemoryUnavailable, UnknownMemoryStore)):
             _err_meta = {"code": "memory_unavailable"}
-        elif isinstance(exc, CapabilityError) and exc.code == "materialization_changed":
-            # The member's private agent file differs from what was last
-            # reviewed. A retry re-runs the same check, so the row names the
-            # fix (review it in Capabilities) and the card links there instead
-            # of offering Resume.
-            _err_text = (
-                "materialization_changed: This crew member's agent file changed "
-                "outside the Capabilities page. Open Capabilities, review the "
-                "change and save it, then start a new chat."
-            )
-            _err_meta = {"code": "materialization_changed", "member": exc.member}
+        elif isinstance(exc, CapabilityError) and exc.code in _SESSION_START_REFUSAL_TEXT:
+            # A session-start capability refusal a retry repeats unchanged. The
+            # row names the code's own fix, and the card offers that fix (or
+            # none) instead of Resume.
+            _refusal_text = _SESSION_START_REFUSAL_TEXT[exc.code]
+            if exc.code == "project_identity_changed" and not exc.project:
+                _refusal_text = _PROJECT_CHANGED_OTHER_TEXT
+            _err_text = f"{exc.code}: {_refusal_text.format(file=exc.file, project=exc.project)}"
+            _err_meta = {"code": exc.code, "member": exc.member}
+            if exc.file:
+                _err_meta["file"] = exc.file
+            if exc.project:
+                _err_meta["project"] = exc.project
         elif (
             isinstance(exc, CapabilityStartupError) and str(exc) == "capability_harness_unsupported"
         ):
