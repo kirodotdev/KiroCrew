@@ -215,7 +215,7 @@ def names_pull_request(text: str) -> bool:
         return False
     if _PR_SHORTHAND.search(text):
         return True
-    return any(_PR_BARE_NUMBER.search(bare.group("chain")) for bare in _PR_BARE.finditer(text))
+    return _PR_BARE.search(text) is not None
 
 
 def bare_pull_request_number(text: str) -> int | None:
@@ -392,10 +392,6 @@ def _infer_from_text(text: str) -> Target | None:
     # under-refusing stops work, so this resolves the way the rest of the design does.
     for bare in _PR_BARE.finditer(text):
         for found_number in _PR_BARE_NUMBER.findall(bare.group("chain")):
-            try:
-                bare_number = int(found_number)
-            except ValueError:
-                continue
-            if bare_number != number:
+            if int(found_number) != number:
                 return None
     return _gh_pr_target(owner, repo, number, host=_PUBLIC_HOST)

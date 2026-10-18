@@ -415,11 +415,12 @@ class PrObservation:
         carry up to ``_MAX_CHECK_PAGES * _CHECK_PAGE_SIZE`` rows, so an unbounded list
         here puts hundreds of kilobytes of provider-chosen text into that record.
 
-        The caps and the overflow marker are the canonical writer's own names rather
-        than new literals, because this is one population with one bound: two numbers
-        for it would drift, and the reader holding the smaller one would disagree about
-        what a complete board is. Truncation is said out loud in the retained dict, so
-        a reader cannot mistake a clipped board for a whole one.
+        The per-bucket cap is the canonical writer's own name rather than a new literal,
+        because this is one population with one bound: two numbers for it would drift,
+        and the reader holding the smaller one would disagree about what a complete
+        board is. The board-wide overflow marker is the same ``"checks:incomplete"``
+        string the canonical writer spells. Truncation is said out loud in the retained
+        dict, so a reader cannot mistake a clipped board for a whole one.
 
         The displaced bucket is bounded on its own terms, the way the canonical writer
         bounds it. A displaced row carries no verdict, so however many of them a head
@@ -475,9 +476,9 @@ class PrObservation:
         the remark metadata are read by the collector that builds the judge's evidence,
         and every one of them is also read by the core's reading-digest, which is what
         makes an unchanged subject quiet. A field no consumer reads is a claim the
-        reading cannot back, so there is none. What describes the FETCH rather than the
-        subject is not here at all: what the window had left stays on the transport,
-        which is the one place it is read -- to yield a call on a nearly-spent window.
+        reading cannot back, so there is none. The transport's rate-limit state is not
+        here at all: what the window had left stays on the transport, which is the one
+        place it is read -- to yield a call on a nearly-spent window.
         """
         facts: dict[str, object] = {
             "kind": "gh-pr",
@@ -921,10 +922,10 @@ def _collapse(
     so a string compare picks the newer row.
 
     Recency may arbitrate only where one identity means one lane. Two rows of one
-    workflow are that; two rows whose workflow could not be resolved are not, and
-    neither are a check run and a commit status sharing a name, so those take the
-    conservative path below rather than letting the later row stand for the earlier
-    one.
+    workflow are that; two rows from different runs whose workflow could not be
+    resolved are not, so those take the conservative path below rather than letting
+    the later row stand for the earlier one. A check run and a commit status sharing
+    a name never share a key: :func:`_family_of` is part of it, so they stay two rows.
     """
     per_key: dict[tuple[str, str, str], CheckRow] = {}
     unordered: set[tuple[str, str, str]] = set()
@@ -963,10 +964,6 @@ def _collapse(
         # a choice rather than a reading.
         if _UNDATED_RANK.get(bucket, 0) > _UNDATED_RANK.get(previous.bucket, 0):
             per_key[key] = CheckRow(qualified, bare, bucket, started or previous.started_at)
-        else:
-            per_key[key] = CheckRow(
-                previous.name, previous.bare, previous.bucket, previous.started_at
-            )
     return tuple(per_key.values()), seen
 
 

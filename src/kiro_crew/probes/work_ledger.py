@@ -13,7 +13,7 @@ even write, how many wakes one item may cause -- lives in
 :mod:`kiro_crew.ledger_wake` as pure functions. What is left here is the reading
 itself, which is the only part that needs a disk.
 
-Two facts this probe cannot read for itself and takes as values instead:
+Three facts this probe cannot read for itself and takes as values instead:
 
 * ``worker_running`` -- whether a worker's slot has a turn in flight. That lives
   in the dashboard's in-process slot table, which a probe running on a worker
@@ -22,13 +22,19 @@ Two facts this probe cannot read for itself and takes as values instead:
   separate question: "not running" is true of a worker thinking between turns as
   well as of one that ended, which is why ``is_stale`` makes the first wait out a
   window and lets the second skip it.
+* ``worker_looping`` -- whether the worker's own session holds an active loop that
+  will wake it. That lives in the AutoNudge service's loop table, not in the
+  ledger, so the driver injects a resolver for it too.
 
-Both default to the safe direction rather than to nothing: an absent resolver
-reads as "not running" and "not closed", which can only make the gate LOUDER (a
-stall wake the conductor did not need costs one turn) or later, never quieter
-about a worker that stopped. The opposite default would turn a missing handle into
-a watch that never reports a stalled worker, which is the failure this gate exists
-to remove.
+All three default to ``False`` rather than to nothing. For ``worker_running`` and
+``worker_looping`` that is the safe direction: "not running" and "not looping" can
+only make the gate LOUDER (a stall wake the conductor did not need costs one turn),
+never quieter about a worker that stopped, and the opposite default would turn a
+missing handle into a watch that never reports a stalled worker, which is the
+failure this gate exists to remove. ``worker_closed`` is the other way round:
+``True`` is the answer that flags, so "not closed" is the default that cannot invent
+a stall, and a worker that is gone is judged as a quiet one (see
+:func:`_always_open`).
 """
 
 from __future__ import annotations
@@ -42,11 +48,10 @@ from kiro_crew.work_vocab import WORK_BLOCKED_REASONS, WORK_REASON_STATUSES
 
 logger = logging.getLogger(__name__)
 
-#: This probe's subject kind. Defined HERE rather than in ``probes/__init__``, which
-#: imports this module: the constant has to be readable without reaching back into
-#: the package that is still mid-import. ``probes/__init__`` spells it a second time
-#: as its own literal (``WORK_LEDGER``) rather than re-exporting this one, for the
-#: same boot-path reason; the two must stay equal.
+#: This probe's subject kind. ``probes/__init__`` imports this module only inside
+#: ``build``, which keeps the ledger store off the gateway boot path, so it spells the
+#: kind a second time as its own literal (``WORK_LEDGER``) rather than importing this
+#: one; the two must stay equal.
 WORK_LEDGER_KIND = "work-ledger"
 
 #: Events read per item per tick. The kernel masks a repeat by key, so the tail
@@ -84,12 +89,9 @@ ACCEPTED_KEY = "all-accepted"
 #: abandoned is not persisted as an outcome its conductor never reached.
 CLOSED_KEY = "all-closed"
 
-_ACCEPTED_KEY = ACCEPTED_KEY
-
 #: :attr:`WorkLedgerProbe.revision` for a ledger that was read but holds no worker
 #: report yet. Not empty, because empty means "not known" to the gate.
 _NO_REPORTS = "no-reports"
-_CLOSED_KEY = CLOSED_KEY
 
 
 def _always_idle(_session_key: str) -> bool:
@@ -105,10 +107,12 @@ def _always_open(_session_key: str) -> bool:
     """Default close resolver: nothing is closed.
 
     Not ``True``, and the reason is the opposite side of :func:`_always_idle`'s. This
-    input only ever REMOVES the staleness window, so answering ``True`` without a handle
-    on the slot table would flag every quiet item the instant it was created -- a wake
-    per item for a worker that is simply still working. ``False`` falls back to measuring
-    the window, which is the behaviour that shipped.
+    input only ever makes the gate flag MORE or SOONER -- it skips the staleness window
+    for an item that has reported, flags a reported ``blocked`` / ``question`` item at
+    once, and outranks an active loop -- so answering ``True`` without a handle on the
+    slot table would flag an item the moment its worker reported ``progress``: a wake
+    per item for a worker that is simply still working. ``False`` falls back to
+    measuring the window.
     """
     return False
 
@@ -129,10 +133,10 @@ class WorkLedgerProbe(irq.Probe):
         worker_running: ``session_key -> has a turn in flight``. Defaults to
             :func:`_always_idle`.
         worker_closed: ``session_key -> its slot is gone``. Defaults to
-            :func:`_always_open`, so a build with no resolver measures the staleness
-            window exactly as it did before this input existed.
+            :func:`_always_open`, so a build with no resolver never skips the
+            staleness window.
         worker_looping: ``session_key -> its session holds an active loop``.
-            Defaults to :func:`_never_looping`, which flags as before.
+            Defaults to :func:`_never_looping`, which never suppresses a flag.
     """
 
     def __init__(
@@ -257,7 +261,7 @@ class WorkLedgerProbe(irq.Probe):
                 epoch=epoch,
                 observations=[
                     irq.Observation(
-                        _ACCEPTED_KEY if finished_well else _CLOSED_KEY,
+                        ACCEPTED_KEY if finished_well else CLOSED_KEY,
                         irq.Severity.TERMINAL,
                         detail,
                         irq.ResetsOn.NEVER,
