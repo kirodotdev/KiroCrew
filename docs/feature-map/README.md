@@ -58,6 +58,8 @@ A Handler cell that names a facade (`chat_handlers.py`, `handlers/agents.py`, `h
 
 `handlers/prompts.py` is such a facade too: the prompt and skill routes it names live in the `handlers/prompts_<role>.py` owners beside it.
 
+`handlers/agent_panel.py`, `handlers/hooks.py` and `handlers/crew_log.py` are such facades too. The panel routes `handlers/agent_panel.py` names live in `handlers/agent_panel_read.py` (the drawer's read), `handlers/agent_panel_publish.py` (the publish routes) and `handlers/agent_panel_dashboard.py` (the dynamic dashboard's agent routes). `handlers/hooks.py` keeps the inbound webhook route and serves the script-hook routes from `handlers/hooks_scripts.py` and the webhook management routes from `handlers/hooks_webhooks.py`, with the webhook's limits and caller checks in `handlers/hooks_webhook_intake.py`. `handlers/crew_log.py` keeps its routes; who may read which crew log through the unit-keyed door lives in `handlers/crew_log_scope.py`.
+
 `handlers/cron.py` is such a facade too: the cron job, run, lesson and cron-folder routes it names live in the `handlers/cron_<role>.py` owners beside it.
 
 ---

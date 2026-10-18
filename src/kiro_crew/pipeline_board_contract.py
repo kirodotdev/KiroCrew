@@ -42,9 +42,9 @@ from typing import Any, Final, Literal, TypedDict, cast
 # The host's byte cap, IMPORTED rather than restated. A local copy would need a reason to
 # exist, and the obvious one -- keeping the dashboard package out of this module's import
 # graph -- buys nothing: both consumers of this module (``agent_panel`` and
-# ``dashboard/handlers/agent_panel``) are reached only from inside that package. A copy
-# could only drift from the number the host actually enforces, and a producer bounding a
-# card against a stale limit builds cards the host drops whole.
+# ``dashboard/handlers/agent_panel_read``) are reached only from inside that package. A
+# copy could only drift from the number the host actually enforces, and a producer bounding
+# a card against a stale limit builds cards the host drops whole.
 from kiro_crew.dashboard.dynamic_cards import MAX_DATA_BYTES as _HOST_MAX_DATA_BYTES
 from kiro_crew.work_vocab import (
     WORK_ITEM_STATES,

@@ -121,7 +121,7 @@ An agentic field may declare:
 
 `dashboard_fields` is the read the `[DASHBOARD]` block already sends the
 crewmate to before every write (`dashboard_agentic.fields_for_agent`, served by
-`api_dashboard_fields` in `dashboard/handlers/agent_panel.py`). Each agentic
+`api_dashboard_fields` in `dashboard/handlers/agent_panel_dashboard.py`). Each agentic
 row in its reply gains an `upkeep` object:
 
 ```json

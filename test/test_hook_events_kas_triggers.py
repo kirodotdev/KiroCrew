@@ -381,7 +381,7 @@ class TestTheRefusalsThatMustSurvive:
         assert "enabled" in fire_src, "fire must keep filtering on enabled"
 
         handler = Path(__file__).resolve().parent.parent / (
-            "src/kiro_crew/dashboard/handlers/hooks.py"
+            "src/kiro_crew/dashboard/handlers/hooks_scripts.py"
         )
         body = handler.read_text(encoding="utf-8")
         start = body.index("async def api_hook_test")

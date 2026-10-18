@@ -46,7 +46,7 @@ def _publish_handler_ast():
 
     import kiro_crew
 
-    path = Path(kiro_crew.__file__).parent / "dashboard" / "handlers" / "agent_panel.py"
+    path = Path(kiro_crew.__file__).parent / "dashboard" / "handlers" / "agent_panel_publish.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "api_agent_panel_publish":
@@ -277,7 +277,7 @@ async def test_the_history_append_has_exactly_one_call_site():
     # with no emitter at all looks like -- this pin must not read those two alike.
     assert candidates, "the corpus filter matched no file, so this pin measured nothing"
 
-    assert sites == ["dashboard/handlers/agent_panel.py"], (
+    assert sites == ["dashboard/handlers/agent_panel_publish.py"], (
         f"on_panel_published is called from {sites}; the publish order is the caller's "
         "to keep, so every call site needs the ordering pins in this file extended to it"
     )

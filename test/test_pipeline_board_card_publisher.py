@@ -21,6 +21,7 @@ because those are not about cost.
 
 from __future__ import annotations
 
+import importlib
 import json
 import re
 from contextlib import contextmanager
@@ -440,7 +441,11 @@ def test_the_publish_call_sits_after_the_ownership_refusal() -> None:
     reachable-request test can distinguish "published after the check" from "published
     before it" once both have run. The controls below keep a moved anchor from reading as
     a pass."""
-    source = Path(routes.__file__).read_text(encoding="utf-8")
+    # a mirror facade: its code is in the owners it lists
+    source = Path(routes.__file__).read_text(encoding="utf-8") + "".join(
+        Path(importlib.import_module(o).__file__).read_text(encoding="utf-8")
+        for o in routes._OWNERS
+    )
     refusal = source.index("if record is not None and not _owned_by(record, mine):")
     publish = source.index("_publish_derived_card(request.app[")
     # Controls: both anchors exist exactly once, so neither a rename nor a second call
@@ -460,7 +465,11 @@ def test_the_publish_call_sits_before_the_render_branches() -> None:
     crew whose drawer template is broken loses its board -- which the card does not depend
     on, being built from the fold and the record.
     """
-    source = Path(routes.__file__).read_text(encoding="utf-8")
+    # a mirror facade: its code is in the owners it lists
+    source = Path(routes.__file__).read_text(encoding="utf-8") + "".join(
+        Path(importlib.import_module(o).__file__).read_text(encoding="utf-8")
+        for o in routes._OWNERS
+    )
     publish = source.index("_publish_derived_card(request.app[")
     assert source.count('"code": "panel_render_failed"') == 1
     assert publish < source.index('"code": "panel_render_failed"')
@@ -474,7 +483,11 @@ def test_only_the_publish_route_claims_to_be_authoritative() -> None:
     Textual for the same reason as the two pins above -- the claim is about which call site
     carries the argument, and both call sites store a card either way.
     """
-    source = Path(routes.__file__).read_text(encoding="utf-8")
+    # a mirror facade: its code is in the owners it lists
+    source = Path(routes.__file__).read_text(encoding="utf-8") + "".join(
+        Path(importlib.import_module(o).__file__).read_text(encoding="utf-8")
+        for o in routes._OWNERS
+    )
     publish_site = "state, card_slot, card_record, published_owner, authoritative=True"
     read_site = '_publish_derived_card(request.app["state"], slot_key, record, mine)'
     assert source.count(publish_site) == 1, "the publish route does not claim authority"
@@ -734,7 +747,11 @@ def test_the_store_is_never_handed_a_slot_the_panel_read_resolved(service: Any) 
     card is stored on the slot that names one crew. Both routes must hand the store the
     second one, so a future edit that passes the panel slot for brevity is caught here.
     """
-    source = Path(routes.__file__).read_text(encoding="utf-8")
+    # a mirror facade: its code is in the owners it lists
+    source = Path(routes.__file__).read_text(encoding="utf-8") + "".join(
+        Path(importlib.import_module(o).__file__).read_text(encoding="utf-8")
+        for o in routes._OWNERS
+    )
     assert source.count("_card_slot(cfg, crew_name, slug)") == 1, "the publish route"
     assert source.count("_card_slot(cfg, member, slug)") == 1, "the panel read route"
     # And the panel slot reaches the FOLD read only, never the store call.

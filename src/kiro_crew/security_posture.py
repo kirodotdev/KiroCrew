@@ -2425,6 +2425,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/debug.py",
         "dashboard/handlers/discover.py",
         "dashboard/handlers/hooks.py",
+        "dashboard/handlers/hooks_scripts.py",
+        "dashboard/handlers/hooks_webhooks.py",
         "dashboard/handlers/knowledge.py",
         "dashboard/handlers/memory.py",
         "dashboard/handlers/memory_embeddings.py",

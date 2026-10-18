@@ -41,7 +41,7 @@ class BodyStreamPayload:
     async def read(self, n: int = -1) -> bytes:
         """Whole body for ``read()``; the next *n* bytes for ``read(n)``.
 
-        ``read(n)`` is the incremental drain ``handlers/hooks.py::_read_hook_body``
+        ``read(n)`` is the incremental drain ``handlers/hooks_webhook_intake.py::_read_hook_body``
         runs, so it advances and answers ``b""`` at the end the way a real stream
         does. ``read()`` keeps returning the whole body, which is what the
         harnesses that predate ``read(n)`` rely on.

@@ -482,7 +482,7 @@ def test_the_drawer_serializer_classifies_every_record_key():
     being silently served or silently dropped. Keying the test on the record's OWN
     keys is what keeps the fold's shape and the drawer's shape from diverging
     silently: add a field to ``_panel_owner_record`` without classifying it in
-    ``agent_panel.py`` and this fails.
+    ``agent_panel_read.py`` and this fails.
     """
     from kiro_crew.crew_log import projection
 

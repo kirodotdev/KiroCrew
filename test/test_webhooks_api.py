@@ -61,10 +61,13 @@ class TestEveryStoreTouchingHandlerIsGuarded:
         assertion covers handlers this suite has no fixture for. Without it the
         next handler added could reintroduce the bug unnoticed.
         """
+        import importlib
         import inspect
         import re
 
         source = inspect.getsource(H)
+        # a mirror facade: its code is in the owners it lists
+        source += "".join(inspect.getsource(importlib.import_module(o)) for o in H._OWNERS)
         # Handlers, with the decorator line (if any) that precedes them.
         pattern = re.compile(
             r"(@_store_failure_guard\n)?async def (api_[a-z_]+)\(request: web\.Request\)"

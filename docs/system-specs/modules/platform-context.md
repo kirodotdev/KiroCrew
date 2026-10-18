@@ -631,7 +631,7 @@ Wired sites:
   back to the original executable (outer sandbox still applies); a
   `PlatformCompositionError` propagates fail-closed.
 - `hooks.py` — the deny check routes through `current_context().security.is_denied`;
-  the kiro-hooks egress (`dashboard/handlers/hooks.py`) scrubs command/matcher
+  the kiro-hooks egress (`dashboard/handlers/hooks_scripts.py`) scrubs command/matcher
   through the shared `redact_via_context` shim.
 - Credential redaction — all egress scrubs route through the single
   `kiro_crew.platform.redact_via_context` shim (the one canonical

@@ -145,6 +145,9 @@ class TestEveryRejectOnTheseSurfacesIsSteered:
     MODULES = {
         "cli_chat.py": 2,
         "dashboard/handlers/hooks.py": 2,
+        "dashboard/handlers/hooks_scripts.py": 0,
+        "dashboard/handlers/hooks_webhook_intake.py": 0,
+        "dashboard/handlers/hooks_webhooks.py": 0,
         "apps/builtins/code_review_sage/sage_lib/review_pool.py": 1,
         "messaging/auto_title.py": 1,
     }

@@ -35,7 +35,7 @@ strict session identity, and then a SCOPE. A session may read its own unit, the
 unit of any session it dispatched at any depth, and, if it is
 the owner at a dashboard tab, any unit at all. This module shapes output and nothing
 else, which is why a reviewer looking for the security argument should read
-``dashboard/handlers/crew_log.py``.
+``dashboard/handlers/crew_log_scope.py``.
 
 **Why a dispatch tree.** A conductor reading the crew logs of the sub-sessions it
 dispatched is the ordinary shape of the work rather than a special case, and the

@@ -463,7 +463,7 @@ async def _authorize_debug_read(
     secret, so it is the one signal that separates "the internal loopback caller
     authenticated" from "some auth ran and the request happens to carry a header".
     Reading the header instead would accept a cookie-authenticated caller that
-    merely attaches one, which is the same reasoning ``handlers/agent_panel``
+    merely attaches one, which is the same reasoning ``handlers/agent_panel_publish``
     records for its own session-key claim: the header is an identity CLAIM, so the
     grant has to come from the transport.
 

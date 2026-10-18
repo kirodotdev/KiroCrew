@@ -13,7 +13,7 @@ The instance store is two modules and one route, each with one job:
 | instance | `dashboard_templates/instance.py` | the copy, its versions, rollback, state, history |
 | route | `dashboard/handlers/member_dashboard.py` | what the frame reads |
 
-The agent-facing surface is separate and MCP-only: `dashboard/handlers/agent_panel.py` serves the `/api/agent-panel/dashboard/{fields,write,templates,preview,apply,rollback}` routes, `dashboard_agentic.py` checks and records agentic field writes and the mistake book, and `dashboard_feed.py` is the O(fields) subscription channel a filled page reads fold values through.
+The agent-facing surface is separate and MCP-only: `dashboard/handlers/agent_panel_dashboard.py`, behind the `dashboard/handlers/agent_panel.py` facade, serves the `/api/agent-panel/dashboard/{fields,write,templates,preview,apply,rollback}` routes, `dashboard_agentic.py` checks and records agentic field writes and the mistake book, and `dashboard_feed.py` is the O(fields) subscription channel a filled page reads fold values through.
 
 An array or object field is emptied with `dashboard_write` `clear: true` and no
 `value`. The MCP server (`mcp_panel.py`) reads the field's declared type from the

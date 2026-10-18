@@ -981,7 +981,7 @@ What does keep a page safe is unchanged by this amendment:
 | part | what it holds | where |
 | --- | --- | --- |
 | who wrote a template's script | only a `builtin` page (reviewed in this repo) or a `user` page (the operator put it in `panel-templates`) renders as a template | `RENDERABLE_SOURCES`, checked by `_check` in `src/kiro_crew/dashboard_templates/instance.py` |
-| who wrote a package's script | only the owner agent, resolved from the calling session | the package binding, `_page_binding` in `src/kiro_crew/dashboard/handlers/agent_panel.py` |
+| who wrote a package's script | only the owner agent, resolved from the calling session | the package binding, `_page_binding` in `src/kiro_crew/dashboard/handlers/agent_panel_dashboard.py` |
 | what reaches the page | typed values only, as text, never markup or a URL | `dashboard_write`, type-checked, redacted, bounded |
 | what the page can reach | `allow-scripts` only, `connect-src 'none'`, `frame-src 'none'`, `form-action 'none'` | `src/kiro_crew/dashboard_frame.py` |
 

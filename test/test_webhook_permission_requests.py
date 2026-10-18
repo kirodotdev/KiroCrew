@@ -151,7 +151,7 @@ def _drive(
 ):
     """Run one webhook turn; return (client, sel, gate, result_text)."""
     sel = _RecordingSel()
-    # _sel() in handlers/hooks.py resolves through the handlers package's
+    # _sel() in handlers/hooks_scripts.py resolves through the handlers package's
     # late-binding sel() exactly for this patch point.
     import kiro_crew.dashboard.handlers as handlers_pkg
 

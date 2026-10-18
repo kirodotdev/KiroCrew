@@ -1,0 +1,43 @@
+{
+ "base_public_names": [
+  "COALESCE_SECONDS",
+  "CREW_LOG_ENV",
+  "CREW_LOG_MCP_CALLER",
+  "CrewLogPublisher",
+  "ENV_FALSY",
+  "FRAME",
+  "LIST_CALLER_WORKSPACE_KEY",
+  "LIST_SCOPE_KEY",
+  "MAX_CACHED_SESSIONS",
+  "MAX_CACHED_SLOT_OWNERS",
+  "MAX_PAGE_REFS",
+  "SLOT_FRAME",
+  "SLOT_SUBSCRIBED_FRAME",
+  "TARGET_CLASS_KEY",
+  "api_crew_log_resolve",
+  "api_crew_log_sessions",
+  "api_crew_log_unit_page",
+  "api_crew_log_unit_projection",
+  "api_session_crew_log",
+  "api_session_crew_log_projection",
+  "api_session_crew_log_projections",
+  "crew_log_enable_hint",
+  "crew_log_enabled",
+  "crew_log_flag_value",
+  "env_file_display",
+  "guard_owner_surface_routes",
+  "install_crew_log_publisher",
+  "live_publisher",
+  "logger",
+  "require_owner_dashboard_request"
+ ],
+ "note": "A mirror facade (kiro_crew._facade_mirror) over the crew_log_scope owners beside it: names an owner holds are served from that owner, and a write through the facade reaches every module holding the name.",
+ "rebound": {
+  "CREW_LOG_ENV": "kiro_crew.constants",
+  "ENV_FALSY": "kiro_crew.constants",
+  "crew_log_enabled": "kiro_crew.constants",
+  "env_file_display": "kiro_crew.constants",
+  "guard_owner_surface_routes": "kiro_crew.dashboard.handlers._shared",
+  "require_owner_dashboard_request": "kiro_crew.dashboard.handlers._shared"
+ }
+}

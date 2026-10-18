@@ -189,11 +189,16 @@ class TestTheRetentionListingStaysOffTheLoop:
     def _calls_to(self, func_name):
         """Every call of *func_name*, with the enclosing function and whether it awaits."""
         import ast
+        import importlib
         import inspect
 
         from kiro_crew.dashboard.handlers import crew_log as mod
 
-        tree = ast.parse(inspect.getsource(mod))
+        # a mirror facade: its code is in the owners it lists
+        tree = ast.parse(
+            inspect.getsource(mod)
+            + "".join(inspect.getsource(importlib.import_module(o)) for o in mod._OWNERS)
+        )
         found = []
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):

@@ -1273,9 +1273,14 @@ class TestTheGrantIsRecheckedAfterTheRead:
         the route's own shaping ever runs.
         """
         import ast
+        import importlib
         import inspect
 
-        tree = ast.parse(inspect.getsource(routes))
+        # a mirror facade: its code is in the owners it lists
+        tree = ast.parse(
+            inspect.getsource(routes)
+            + "".join(inspect.getsource(importlib.import_module(o)) for o in routes._OWNERS)
+        )
         functions = [
             node
             for node in ast.walk(tree)

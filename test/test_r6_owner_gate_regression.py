@@ -55,12 +55,14 @@ _LOCAL_SUBJECT = "local-app"
 _MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 #: The five modules whose mutating routes carry the gate. ``handlers/security.py``
-#: is a facade, so its owners -- where its routes' functions live -- are listed too;
-#: the instances control plane is its facade and the owner its peer-reading routes
-#: live in.
+#: and ``handlers/hooks.py`` are facades, so their owners -- where their routes'
+#: functions live -- are listed too; the instances control plane is its facade and
+#: the owner its peer-reading routes live in.
 _GATED_MODULES = frozenset(
     {
         "kiro_crew.dashboard.handlers.hooks",
+        "kiro_crew.dashboard.handlers.hooks_scripts",
+        "kiro_crew.dashboard.handlers.hooks_webhooks",
         "kiro_crew.dashboard.handlers.mcp_custom",
         "kiro_crew.dashboard.handlers.mcp",
         "kiro_crew.dashboard.handlers.security",

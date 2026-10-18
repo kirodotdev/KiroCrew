@@ -486,13 +486,13 @@ async def read_bounded_json(
     decision about an external contract, not part of this one.
 
     The other self-authenticating webhook, ``POST /api/hooks/agent``, reads raw
-    bytes through ``handlers/hooks.py::_read_hook_body`` (it must HMAC the exact
-    bytes) and is not a caller, so this gate does not reach it.
+    bytes through ``handlers/hooks_webhook_intake.py::_read_hook_body`` (it must HMAC
+    the exact bytes) and is not a caller, so this gate does not reach it.
 
     The four module-local JSON body guards read through this helper and keep
     only their module's answer shape:
     ``handlers_channel._json_object`` (raises, via
-    :func:`bounded_json_error_as_exception`), ``handlers/hooks.py::_json_object``
+    :func:`bounded_json_error_as_exception`), ``handlers/hooks_webhook_intake.py::_json_object``
     (``default_empty`` defaults an absent or ``invalid_json`` body, never a 415
     or 413), ``handlers/session_storage.py::_json_body`` (absent is ``{}``,
     malformed is its own ``invalid_body`` 400), and

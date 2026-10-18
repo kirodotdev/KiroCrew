@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import importlib
 import json
 import re
 import sys
@@ -1886,11 +1887,18 @@ def test_only_a_save_of_a_written_page_can_start_a_check():
         )
     )
     assert users == [
-        "dashboard/handlers/agent_panel.py",
+        "dashboard/handlers/agent_panel_dashboard.py",
         "dashboard/handlers/member_dashboard_fields.py",
         "dashboard_verify.py",
     ]
-    tree = ast.parse(Path(routes.__file__).read_text(encoding="utf-8"))
+    # a mirror facade: its code is in the owners it lists
+    tree = ast.parse(
+        Path(routes.__file__).read_text(encoding="utf-8")
+        + "".join(
+            Path(importlib.import_module(o).__file__).read_text(encoding="utf-8")
+            for o in routes._OWNERS
+        )
+    )
     starters = {
         fn.name
         for fn in ast.walk(tree)

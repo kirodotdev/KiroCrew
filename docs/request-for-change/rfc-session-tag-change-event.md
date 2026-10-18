@@ -124,7 +124,7 @@ Three neighbouring issues sit around this one; none asks for it:
   `asyncio.to_thread` call)). A tag-change hook rides that same gate;
   the capability surface does not widen.
 - **Dispatch from an HTTP handler with no agent turn is already supported.**
-  `api_hook_test` (`src/kiro_crew/dashboard/handlers/hooks.py`) calls
+  `api_hook_test` (`src/kiro_crew/dashboard/handlers/hooks_scripts.py`) calls
   `run_script_hook` with a synthesized payload, and `run_script_hook`
   (`src/kiro_crew/hook_runtime/script_hooks.py`) builds a default `hook_event` itself when passed
   `None`, requiring no session and no agent config. A tag-write
@@ -391,7 +391,7 @@ enforced suppression).
 ### Phase 3: documentation and the hook-test surface
 
 Extend the events documentation and let `api_hook_test`
-(`dashboard/handlers/hooks.py`) synthesize a `SessionTagsChanged` payload so
+(`dashboard/handlers/hooks_scripts.py`) synthesize a `SessionTagsChanged` payload so
 the event is testable through the existing test endpoint, mirroring how it
 already synthesizes the `Stop` payload.
 
