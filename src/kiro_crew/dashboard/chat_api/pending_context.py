@@ -147,7 +147,7 @@ def _validate_source(source: object) -> web.Response | None:
 def _validate_max_age(max_age: object) -> web.Response | None:
     """Shared maxAge validation. Returns a 400 response on a bad value, else None.
 
-    ``drain_pending_context`` computes ``injected_at + max_age``, so a
+    ``take_turn_context`` computes ``injected_at + max_age``, so a
     non-numeric value raises a TypeError on the user's NEXT send -- far from the
     request that introduced it. Rejecting it here turns that into a 400 at the
     boundary. Both callers validate UNCONDITIONALLY, not only when an entry is
@@ -194,19 +194,17 @@ def _source_cap_reached(slot: _ChatSlot, source: str) -> bool:
     ``_enqueue_pending_context`` and the /note handler, which uses it to keep the
     visible transcript line independent of the context-queue cap.
 
-    Expired entries do not count. They are dropped by ``drain_pending_context``
+    Expired entries do not count. They are dropped by ``take_turn_context``
     but stay in the list until the next drain, so counting them would let ten
     already-dead notes lock a source out of fresh context indefinitely -- and the
     caller is told nothing, because the note still returns 200 with
     ``contextSkipped``. The same predicate decides both, so a count and a drain
     cannot disagree about which entries are live.
 
-    Entries HELD for the deferred-note flush count as well. They are not in the
-    queue yet, so a cap that reads the queue alone admits every one of them:
-    ten same-source notes posted during one turn each see a clear cap, and the
-    flush then promotes all ten at once, carrying that source past its
-    per-source ceiling. Counting the held halves here holds the ceiling at
-    admission so the flush never overfills the bucket.
+    Entries HELD for the deferred-note flush and merge-card contexts IN FLIGHT
+    on the running turn count as well. Neither is in the queue, so a cap that
+    reads the queue alone admits replacements before the existing obligations
+    return there. Counting both holds the per-source ceiling at admission.
     """
     if not source:
         return False
@@ -214,7 +212,7 @@ def _source_cap_reached(slot: _ChatSlot, source: str) -> bool:
     held = [n["context"] for n in slot._deferred_notes if n.get("context") is not None]
     pending = sum(
         1
-        for e in (*slot._pending_context, *held)
+        for e in (*slot._pending_context, *held, *slot._inflight_merge_contexts)
         if e.get("source") == source and not context_entry_expired(e, now)
     )
     return pending >= _MAX_CONTEXT_PER_SOURCE
@@ -232,7 +230,7 @@ def _enqueue_pending_context(
     Returns a 4xx response on a bad request (429 could not be queued, 400
     invalid ``max_age`` or credential-shaped content), else None on success.
     The entry is consumed on the next user-initiated message via
-    ``drain_pending_context``.
+    ``take_turn_context``.
 
     A 400 leaves the queue untouched. The two 429s come from different places:
     ``_build_pending_context_entry`` returns the per-source ``capacity_reached``

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -508,6 +509,33 @@ class TestHistorySaveOnClose:
         meta = state.conversation_log._read_metadata("dashboard:t1")
         assert meta.get("trust") is None
         assert meta.get("trust_reads") is None
+
+
+class TestResumeMetadataRead:
+    @pytest.mark.asyncio
+    async def test_metadata_read_runs_off_the_event_loop(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:legacy", "user", "hello")
+        loop_thread = threading.get_ident()
+        read_threads = []
+        get_metadata = log.get_metadata
+
+        def record_metadata_thread(key):
+            read_threads.append(threading.get_ident())
+            return get_metadata(key)
+
+        monkeypatch.setattr(log, "get_metadata", record_metadata_thread)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/legacy/resume", json={"key": "dashboard:legacy"}
+            )
+            body = await response.json()
+
+        assert response.status == 200, body
+        assert read_threads[0] != loop_thread
 
 
 # ── Resume deduplication ──

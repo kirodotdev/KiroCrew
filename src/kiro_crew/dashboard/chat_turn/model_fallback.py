@@ -1082,6 +1082,10 @@ async def _refusal_fallback_retry(turn) -> bool:
         kind=SYNTHETIC_RECOVERY_KIND,
         payload=_replay_payload,
         extra_meta=_replay_extra,
+        # The refused turn landed and consumed its merge cards, so the
+        # frames ride the replay: this is their one delivery to the
+        # fallback model.
+        keep_merge_cards=True,
     )
     # Stop-generation snapshots (slot + session) at ENQUEUE: the drain
     # purges the replay when either counter moved (a Stop landed while
@@ -1144,8 +1148,8 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
     _attachment_meta = turn._attachment_meta
     _attachments = turn._attachments
     _is_synthetic = turn._is_synthetic
+    _message_without_merge_cards = turn._message_without_merge_cards
     client = turn.client
-    message = turn.message
     session_key = turn.session_key
     slot = turn.slot
     # ── Reactive model-access-denial fallback ──
@@ -1427,7 +1431,7 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
                         _ma_replay_qid = _queue_recovery(
                             turn,
                             0,
-                            message,
+                            _message_without_merge_cards,
                             kind=SYNTHETIC_RECOVERY_KIND,
                             # Verbatim replay, same rule as the
                             # transient/throttle retries.

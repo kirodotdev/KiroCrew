@@ -807,7 +807,7 @@ slot_model | api_chat_slot_model | async function | (request: 'web.Request') -> 
 slot_model | api_chat_slots_model | async function | (request: 'web.Request') -> 'web.Response'
 slot_note | _discard_held_note | function | (slot: '_ChatSlot', note: 'dict[str, object]') -> 'None'
 slot_note | _note_delivered_live | function | (slot: '_ChatSlot', note: 'dict[str, object]') -> 'bool'
-slot_note | _persist_deferred_note_hold | async function | (state: 'DashboardState', slot: '_ChatSlot', note: 'dict[str, object]', authorized_history_key: 'str') -> 'web.Response | None'
+slot_note | _persist_deferred_note_hold | async function | (state: 'DashboardState', slot: '_ChatSlot', note: 'dict[str, object]', authorized_history_key: 'str', source_key: 'str | None' = None, source_expected_keys: 'tuple[str, ...] | None' = None, source_expected_created_at: 'str | None' = None, source_check: 'Callable[[], bool] | None' = None, target_expected_keys: 'tuple[str, ...] | None' = None) -> 'web.Response | None'
 slot_note | _note_already_durable | async function | (conversation_log: 'object', authorized_history_key: 'str', note: 'dict[str, object]') -> 'bool'
 slot_note | api_chat_slot_note | async function | (request: 'web.Request') -> 'web.Response'
 slot_settings | _autocompact_txn_lock | function | (history_key: 'str') -> 'asyncio.Lock'

@@ -106,7 +106,7 @@ async def _on_auth_required(turn: _ChatTurn, exc) -> None:
     # Non-retryable — respawning hits the same wall — so never re-queue, and
     # latch the service signed-out so the fail-closed gates stop trusting a
     # stale ready value.
-    message = turn.message
+    _message_without_merge_cards = turn._message_without_merge_cards
     session_key = turn.session_key
     sessions = turn.sessions
     logger.warning("ACP auth required in slot %s: %s", slot.key, exc)
@@ -120,7 +120,7 @@ async def _on_auth_required(turn: _ChatTurn, exc) -> None:
     # turn decides whether it produced an exact replacement row.
     await _requeue_auth_retry(
         slot,
-        message,
+        _message_without_merge_cards,
         _synthetic_recovery_turn=_synthetic_recovery_turn,
         _synthetic_payload=_synthetic_payload,
         _turn_actor=_turn_actor,
@@ -132,6 +132,11 @@ async def _on_auth_required(turn: _ChatTurn, exc) -> None:
     turn._auth_required = _auth_required
     needs_session_reset = True
     turn.needs_session_reset = needs_session_reset
+    # Raised after output streamed only as the translation of a runtime
+    # death (``session_provider._translate_dead``), so the post-login retry
+    # ``session/load``s a log without this prompt and replays the message
+    # without its card frames: the reset returns the drained cards to the
+    # queue (``_native_session_lacks_the_prompt``).
     await _persist_partial_reply(turn, "error: auth required")
     _auth_msg = str(exc)
     # Stamped with a kind (live broadcast `kind`, rebuilt transcript
@@ -152,8 +157,8 @@ async def _on_prompt_busy(turn: _ChatTurn) -> None:
     # Provider was killed after prompt-busy retries exhausted — reset (and
     # re-queue only when retry-eligible; see per-branch handling below).
     _is_synthetic = turn._is_synthetic
+    _message_without_merge_cards = turn._message_without_merge_cards
     _turn_emitted = turn._turn_emitted
-    message = turn.message
     logger.info("Prompt busy exhausted in slot %s — resetting session", slot.key)
     needs_session_reset = True  # checked in _turn_release_session (chat_turn/session_reset.py)
     turn.needs_session_reset = needs_session_reset
@@ -161,7 +166,7 @@ async def _on_prompt_busy(turn: _ChatTurn) -> None:
     slot._prompt_busy_retries += 1
     await _requeue_after_prompt_busy(
         slot,
-        message,
+        _message_without_merge_cards,
         _prompt_depth=_prompt_depth,
         _turn_emitted=_turn_emitted,
         _is_synthetic=_is_synthetic,
@@ -194,13 +199,13 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
     _directive_loop_id = turn._directive_loop_id
     _directive_self_wake = turn._directive_self_wake
     _escalation = turn._escalation
+    _message_without_merge_cards = turn._message_without_merge_cards
     _msg = turn._msg
     _prompt_depth = turn._prompt_depth
     _turn_emitted = turn._turn_emitted
     _turn_priority = turn._turn_priority
     _turn_thought = turn._turn_thought
     client = turn.client
-    message = turn.message
     session_key = turn.session_key
     slot = turn.slot
     state = turn.state
@@ -375,7 +380,7 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         # The verbatim requeue carries the retry identity forward via
         # _queue_recovery itself (one mechanism for every recovery
         # family), so this site needs no site-local re-stamp.
-        _queue_recovery(turn, 0, message, kind=SYNTHETIC_RECOVERY_KIND)
+        _queue_recovery(turn, 0, _message_without_merge_cards, kind=SYNTHETIC_RECOVERY_KIND)
         # Fresh conversation ⇒ fresh ladder for the recovery cycle.
         slot._transient_5xx_retries = 0
         slot._infra_retries = 0

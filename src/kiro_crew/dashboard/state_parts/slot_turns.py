@@ -51,7 +51,7 @@ import traceback
 import uuid
 from collections.abc import Iterator
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, NamedTuple
 
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
 from kiro_crew.dashboard.slot_queue_repository import EMPTY_QUEUE_SIGNATURE, SlotQueueRepository
@@ -144,6 +144,29 @@ def _log_task_exception(task: asyncio.Task[Any]) -> None:
 # An arrival over this is refused, not admitted by evicting a seated entry
 # the caller already holds a 200 for.
 _MAX_PENDING_CONTEXT = 50
+# Process-local replay guards outlive their queue seats: a stamped guard still
+# answers a hydration that read the hold before the stamp, and an unstamped one
+# holds back every twin until the write lands. Bound the registry independently
+# of slot count, and evict the stamped ones first (_register_consumed_merge_contexts).
+_MAX_CONSUMED_MERGE_CARDS = 512
+# Live entries one source may hold in that queue. Shared by the /context and
+# /note admission checks and by the turn that takes its session's note
+# context from another slot, so one prompt is bounded as one queue is.
+_MAX_CONTEXT_PER_SOURCE = 10
+
+
+class _ConsumedMergeCard(NamedTuple):
+    """One merge card's process-local replay guard.
+
+    ``transcript`` is the key the card was consumed on, matched by file.
+    ``stamped`` says its durable ``consumed`` stamp has been proven, which makes
+    the guard the cheaper one to evict: it then only answers a hydration that
+    read the hold before the stamp, where an unstamped guard is the whole
+    protection until the write lands.
+    """
+
+    transcript: str
+    stamped: bool = False
 
 
 def context_entry_expired(entry: dict, now: float) -> bool:
@@ -418,11 +441,11 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # completion. See ``take_pending_subagent_deliveries``.
     self._subagent_delivery_pending = {}
     self._pending_context = []
+    self._inflight_merge_contexts = []
     self._deferred_notes = []
-    # Note ids dropped at the flush's rebind seam. A dropped
-    # note has no delivery obligation left, but its durable entry may only
-    # be retired by a save — the ids recorded here are how the next full
-    # save knows to retire entries whose rows will never exist.
+    # Note ids whose remaining delivery obligation ended without a row-based
+    # retirement: rebind drops and committed plain notes restored from disk.
+    # The next full save removes their durable hold entries unconditionally.
     self._dropped_note_ids = set()
     # Regenerate feature: variants pending attachment to next finalized assistant message
     self._pending_variants = []
@@ -592,10 +615,11 @@ def purge_chunks(self: _ChatSlot) -> int:
 def has_pending_context_seat(self: _ChatSlot) -> bool:
     """True if one more entry fits the queue's seat ceiling.
 
-    Counts live entries plus each held note's context half, because the
-    deferred-note flush promotes that half into this same queue -- without the
-    reservation a later arrival takes the seat the flush needs and the note's
-    context is lost after its 200.
+    Counts live entries, each held note's context half, and each merge-card
+    context a running turn has taken (``_inflight_merge_contexts``), because the
+    deferred-note flush promotes that half into this same queue and a turn that
+    does not land puts its merge cards back at the front -- without the
+    reservation a later arrival takes a seat one of them needs.
     """
     now = time.time()
     seats = sum(1 for e in self._pending_context if not context_entry_expired(e, now))
@@ -603,6 +627,9 @@ def has_pending_context_seat(self: _ChatSlot) -> bool:
         ctx = note.get("context")
         if isinstance(ctx, dict) and not context_entry_expired(ctx, now):
             seats += 1
+    seats += sum(
+        1 for entry in self._inflight_merge_contexts if not context_entry_expired(entry, now)
+    )
     return seats + 1 <= _MAX_PENDING_CONTEXT
 
 
