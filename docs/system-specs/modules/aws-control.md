@@ -1969,7 +1969,7 @@ notice), and a costs 409 `aws_consent_required` is answered by the Cost Explorer
 ask, not a banner beside it. A reason the backend reports inside a 200 (the
 backup archive's `remoteError`) travels as the notice's message under the
 localised lead, so the hand-off carries the text AWS returned.
-`DrivePage.test.tsx::error surfaces reach the agent`,
+`DrivePage.errorSurfaces.test.tsx::error surfaces reach the agent`,
 `AwsControlPage.test.tsx::edge states`, and `ConsoleView.test.tsx` pin these.
 
 ## The crew bundle builder

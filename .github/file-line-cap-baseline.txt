@@ -213,7 +213,6 @@
 2944 website/electron/gateway-supervisor.js
 2903 website/scripts/lib/ui-index.mjs
 2967 website/src/App.tsx
-5306 website/src/apps/aws-control/DrivePage.test.tsx
 2169 website/src/apps/command-bar/CommandBarOverlay.test.tsx
 2145 website/src/apps/design-tweak/DesignTweakPage.tsx
 2208 website/src/apps/issue-radar/api.ts
