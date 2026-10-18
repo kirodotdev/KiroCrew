@@ -15031,7 +15031,8 @@ async def _run_chat(
             # strip defensively before re-queue all the same.
             slot.purge_chunks()
             if _should_suppress_requeue(slot):
-                pass
+                # A Stop still resolving ends the episode, so its count goes too.
+                slot._turn_retries = {}
             elif _stop_pressed():
                 # Resolved Stop: skip the "retrying" card the post-backoff re-read
                 # would only withdraw (see the AcpProcessDied arm). This ends the
@@ -15039,6 +15040,7 @@ async def _run_chat(
                 # as the post-backoff drop arm below: the attempt counted above
                 # would otherwise shorten the next turn's ladder.
                 slot._transient_5xx_retries = 0
+                slot._turn_retries = {}
                 slot._infra_retries = 0
                 slot._fallback_candidate_idx = 0
                 slot._fallback_walked = []
@@ -15130,6 +15132,7 @@ async def _run_chat(
                     # count left standing shortens the next real ladder, inflates
                     # its backoff seed and brings the fallback swap closer.
                     slot._transient_5xx_retries = 0
+                    slot._turn_retries = {}
                     slot._infra_retries = 0
                     slot._fallback_candidate_idx = 0
                     slot._fallback_walked = []
@@ -15241,6 +15244,7 @@ async def _run_chat(
                 # budget (premature fallback swap + spurious throttle notice)
                 # and a restore probe suppressed by the stale walk index.
                 slot._transient_5xx_retries = 0
+                slot._turn_retries = {}
                 slot._infra_retries = 0
                 slot._fallback_candidate_idx = 0
                 slot._fallback_walked = []

@@ -45,14 +45,26 @@ def _error(frame: dict):
 
 
 class _KasHistory:
-    """The model-visible user rows of one KAS session, and a provider stream over them."""
+    """The model-visible user rows of one KAS session, and a provider stream over them.
 
-    def __init__(self, failures: int, frame: dict, *, partial_first: bool = False) -> None:
+    ``before_failure(call)`` runs just before an attempt fails, where a test presses
+    Stop while that attempt is in flight.
+    """
+
+    def __init__(
+        self,
+        failures: int,
+        frame: dict,
+        *,
+        partial_first: bool = False,
+        before_failure=None,
+    ) -> None:
         self.history: list[str] = []
         self.calls = 0
         self._failures = failures
         self._frame = frame
         self._partial_first = partial_first
+        self._before_failure = before_failure
         self._answered = True
 
     async def stream(self, msg):
@@ -65,6 +77,8 @@ class _KasHistory:
         if self.calls <= self._failures:
             if self._partial_first and self.calls == 1:
                 yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial answer")
+            if self._before_failure is not None:
+                self._before_failure(self.calls)
             raise _error(self._frame)
         self._answered = True
         yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok-result")
@@ -314,3 +328,119 @@ class TestThrottledTurnRetry:
         assert client.discard_unanswered_prompt.await_count == TRANSIENT_RETRIES + 1
         assert kas.calls == TRANSIENT_RETRIES + 1, "the fallback re-send must not run"
         assert slot._fallback_walked == []
+        # The Stop ended the episode, so its counted re-sends go with it.
+        assert slot._turn_retries == {}
+
+    @pytest.mark.asyncio
+    async def test_a_stop_during_a_resend_drops_the_episode_count(self, tmp_path, monkeypatch):
+        """A Stop that lands while a re-send is in flight ends the episode before its backoff."""
+        from kiro_crew.dashboard.chat import _run_chat
+
+        slot_ref: list = []
+
+        def _stop_during_the_resend(call: int) -> None:
+            if call == 2:
+                slot_ref[0]._stop_generation = getattr(slot_ref[0], "_stop_generation", 0) + 1
+
+        kas = _KasHistory(failures=2, frame=_THROTTLE_FRAME, before_failure=_stop_during_the_resend)
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(kas.stream)
+        client.discard_unanswered_prompt = AsyncMock(side_effect=kas.discard_unanswered_prompt)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        slot_ref.append(slot)
+        waits: list[float] = []
+
+        async def _wait(secs):
+            waits.append(secs)
+
+        with patch("kiro_crew.dashboard.chat_runner._recovery_delay", side_effect=_wait):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        # One counted re-send; the Stop during it ended the episode before a second wait.
+        assert kas.calls == 2
+        assert len(waits) == 1
+        assert slot._turn_retries == {}
+
+    @pytest.mark.asyncio
+    async def test_a_stop_still_resolving_drops_the_episode_count(self, tmp_path, monkeypatch):
+        """A Stop still resolving when the re-send fails suppresses the next one and ends the episode."""
+        from kiro_crew.dashboard.chat import _run_chat
+
+        slot_ref: list = []
+
+        def _stop_resolving_during_the_resend(call: int) -> None:
+            if call == 2:
+                slot_ref[0]._stop_state = "soft_pending"
+
+        kas = _KasHistory(
+            failures=2, frame=_THROTTLE_FRAME, before_failure=_stop_resolving_during_the_resend
+        )
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(kas.stream)
+        client.discard_unanswered_prompt = AsyncMock(side_effect=kas.discard_unanswered_prompt)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        slot_ref.append(slot)
+        waits: list[float] = []
+
+        async def _wait(secs):
+            waits.append(secs)
+
+        with patch("kiro_crew.dashboard.chat_runner._recovery_delay", side_effect=_wait):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        assert kas.calls == 2
+        assert len(waits) == 1
+        assert slot._turn_retries == {}
+
+    @pytest.mark.asyncio
+    async def test_a_stopped_episode_leaves_no_retries_for_the_continue_turn(
+        self, tmp_path, monkeypatch
+    ):
+        """Stop ends the throttle episode, so the Continue that follows counts none of it.
+
+        Continue queues a synthetic recovery turn, which the per-turn reset skips
+        (a recovery turn adds to the running episode), so the Stop arm is the one
+        place the count of the stopped episode can be dropped.
+        """
+        from kiro_crew.dashboard.chat import _run_chat
+
+        kas = _KasHistory(failures=2, frame=_THROTTLE_FRAME)
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(kas.stream)
+        client.discard_unanswered_prompt = AsyncMock(side_effect=kas.discard_unanswered_prompt)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        waits: list[float] = []
+
+        async def _stop_on_second_wait(secs):
+            waits.append(secs)
+            if len(waits) == 2:
+                slot._stop_generation = getattr(slot, "_stop_generation", 0) + 1
+
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_runner._recovery_delay",
+                side_effect=_stop_on_second_wait,
+            ),
+            patch("kiro_crew.dashboard.chat_runner._emit_recovery_outcome") as outcomes,
+        ):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+            # One counted re-send, then the Stop dropped the second one.
+            assert kas.calls == 2
+            # The drained Continue entry runs as a synthetic recovery turn.
+            await _run_chat(state, slot, "Continue", _synthetic_recovery_turn=True)
+            await self._drain_bg(state)
+
+        assert kas.calls == 3
+        assert any("ok-result" in t for t in self._assistant_texts(slot))
+        assert "retries" not in self._landed_stats(slot)
+        assert not [c for c in outcomes.call_args_list if c.args[:2] == ("throttle", "recovered")]
+        assert slot._turn_retries == {}
