@@ -973,6 +973,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # and spawns nothing, so neither PATH nor an agent can choose it.
         "gateway_restart.py::_systemd_show",
         "slack/gateway_runtime/update_apply.py::_auto_apply_update",
+        # The `git status --porcelain` and `git diff --diff-filter=A` spawns,
+        # moved out of _auto_apply_update into its nested pre-check so every
+        # refusal also runs before the memory copy. Same trusted git binary
+        # (trusted_git_bin, never PATH), same git_command_env, fixed argv apart
+        # from the rev-parse'd target OID, cwd the configured checkout.
+        "slack/gateway_runtime/update_apply.py::_refused_before_reset",
         # Pluggable update provider: CommandProvider runs operator-configured
         # shell commands from security_policy.json or config.json (sensitive
         # home dirs the agent cannot write). The check command probes for a

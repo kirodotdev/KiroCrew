@@ -2497,12 +2497,19 @@ caller-supplied filename cannot walk out of it. Which store each surface may add
 [the shared `?store=` rule](#which-store-a-dashboard-route-reads-store) on the
 dashboard and `--store` on the CLI.
 
-**A managed-venv apply and `kirocrew update` take a copy first.** (The git-checkout auto-update and `POST /api/update` take none.) `platform/wheel_apply.snapshot_memory_before_update`
+**Every applier that rewrites this install takes a copy first.** (The gateway's
+unattended policy-provider apply does not yet: #21898.) `platform/wheel_apply.snapshot_memory_before_update`
 calls `back_up_all_stores` with `force=True` (the retention interval is bypassed) and
 `memory.backup_keep`. On a managed venv it is the shadow engine's last step before
 promotion, for the gateway's automatic update, an approved in-app update and
-`kirocrew update` alike; `kirocrew update`'s other updaters run it before they start. A
-copy that did not land refuses the update.
+`kirocrew update` alike; `kirocrew update`'s other updaters run it before they start.
+`POST /api/update` runs it after its last refusal and before the fast-forward or a
+policy apply that can apply, and the git-checkout auto-update runs it just before its
+`reset --hard`. A copy that did not land refuses the update: the CLI exits 1, the
+dashboard answers 500 `memory_snapshot_failed`, and the unattended auto-update skips
+this update with a warning and one dashboard notice, never exiting the gateway, and
+retries on its next check. `test/test_update_memory_copy_placement.py` pins the
+placement in each applier file.
 
 `kirocrew memory backup` / `backups` / `restore` are dispatched **before** the vector
 store is opened, and that ordering is the point: `store.init()` runs

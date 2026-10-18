@@ -342,6 +342,29 @@ async def _restart_gateway(
         state._gateway_restart_in_progress = False
 
 
+async def _snapshot_memory_or_refuse(state: DashboardState) -> web.Response | None:
+    """Copy every memory store, or refuse a failed copy or gateway shutdown.
+
+    The same copy-or-refuse step ``kirocrew update`` takes before each updater
+    (``snapshot_memory_before_update``), called just before this handler rewrites
+    the install. ``None`` means the copy landed and the apply may go on.
+    """
+    from kiro_crew.platform.wheel_apply import snapshot_memory_before_update, snapshot_refusal
+
+    copied, failure = await asyncio.to_thread(snapshot_memory_before_update)
+    if not failure:
+        logger.info("Pre-update memory snapshot: %d store(s) copied", copied)
+        if shutdown_event.is_set():
+            return web.json_response(
+                {"error": "The gateway is shutting down", "code": "shutting_down"}, status=503
+            )
+        return None
+    logger.warning("Update refused: pre-update memory snapshot failed: %s", failure)
+    message = snapshot_refusal(failure)
+    state.push_update_progress("failed", message)
+    return web.json_response({"error": message, "code": "memory_snapshot_failed"}, status=500)
+
+
 async def api_update_apply(request: web.Request) -> web.Response:
     """POST /api/update — git pull, rebuild, restart gateway."""
     owner_denied = await require_owner_dashboard_request(request, "update.apply")
@@ -359,8 +382,16 @@ async def api_update_apply(request: web.Request) -> web.Response:
     # git precondition below so an authenticated operator clicking Update cannot
     # run the built-in mechanism their own policy excluded. A dashboard token
     # proves who the caller is, not that this host may update by git.
-    from kiro_crew.platform.update_provider import apply_policy_update
+    from kiro_crew.platform.update_provider import apply_policy_update, resolve_provider
     from kiro_crew.platform.wheel_engine import respawn_executable
+
+    # Same gate as `kirocrew update`: a provider that is not configured to apply
+    # (check-only, or on Windows) rewrites nothing, so it spends no copy.
+    _provider = resolve_provider()
+    if _provider is not None and _provider.can_apply():
+        refused = await _snapshot_memory_or_refuse(state)
+        if refused is not None:
+            return refused
 
     # As a tracked task, not inline: the gateway's shutdown cancels it first and
     # waits for its installer to stop (``policy_applies_in_flight``). Inline, the
@@ -599,6 +630,12 @@ async def api_update_apply(request: web.Request) -> web.Response:
             {"error": f"Update refused: {floor_breach}", "code": "python_floor"},
             status=409,
         )
+
+    # Last check before the fast-forward rewrites the install: every refusal
+    # above leaves the tree alone, so none of them spends a copy.
+    refused = await _snapshot_memory_or_refuse(state)
+    if refused is not None:
+        return refused
 
     async def _apply() -> None:
         # Owns a missing bundle from the merge until the restart takes over.

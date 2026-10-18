@@ -59,13 +59,11 @@ def _snapshot_memory_or_exit() -> None:
     around the one store nothing else can rebuild is the loss this prevents.
     """
     from kiro_crew import memory_backup
-    from kiro_crew.platform.wheel_apply import snapshot_memory_before_update
+    from kiro_crew.platform.wheel_apply import snapshot_memory_before_update, snapshot_refusal
 
     copied, failure = snapshot_memory_before_update()
     if failure:
-        print(f"  ❌ Pre-update memory snapshot failed: {failure}")
-        print("     Not updating: the store would be rewritten with no fresh copy of it.")
-        print("     Check the log for the reason, then repair it: kirocrew memory backups")
+        print(f"  ❌ {snapshot_refusal(failure)}")
         sys.exit(1)
     # Named as the DEFAULT store's directory: a bare path beside a count covering every
     # store would point at the wrong place.

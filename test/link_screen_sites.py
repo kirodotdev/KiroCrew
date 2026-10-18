@@ -202,7 +202,10 @@ DECLARED_SITES = frozenset(
         ("skills_builtin_sync.py", "_ensure_builtin_skills"),
         ("skills_builtin_sync.py", "remove_retired_conductor_skill"),
         ("skills_candidate_tree.py", "_candidate_has_symlink"),
-        ("slack/gateway_runtime/update_apply.py", "_auto_apply_update._obstructions"),
+        (
+            "slack/gateway_runtime/update_apply.py",
+            "_auto_apply_update._refused_before_reset._obstructions",
+        ),
         ("snapshot_archive.py", "_copytree_safe._ignore_unsafe"),
         ("snapshot_build.py", "_estimate_selected_bytes"),
         ("snapshot_components.py", "safe_tree_root"),

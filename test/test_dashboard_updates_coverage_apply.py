@@ -564,6 +564,137 @@ class TestApplyRefusals:
 
         assert "after the tree moved" in (update_ownership.restart_refusal() or "")
 
+    async def _apply_with_copy(self, monkeypatch, tmp_path, copy_result, worker_procs):
+        """POST an apply with the shared memory copy stubbed; return (resp, state, events).
+
+        The copy is recorded into the same list as every spawn, so the order
+        between it and the fast-forward is read off one sequence.
+        """
+        from kiro_crew import dep_sync
+        from kiro_crew.platform import wheel_apply
+
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
+        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
+        monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
+        monkeypatch.setattr(dep_sync, "incoming_python_floor_breach", lambda *a, **k: None)
+        monkeypatch.setattr(updates, "_build_frontend", AsyncMock())
+        monkeypatch.setattr(updates, "_venv_pip_install", AsyncMock(return_value=False))
+        events = _sequence_procs(
+            monkeypatch,
+            [
+                _FakeProc(out=b""),
+                _FakeProc(out=b""),
+                _FakeProc(out=b"0\t1\n"),
+                _FakeProc(out=_UPSTREAM_OID + b"\n"),
+            ]
+            + worker_procs,
+        )
+
+        def _copy():
+            events.append(("memory-copy",))
+            return copy_result
+
+        monkeypatch.setattr(wheel_apply, "snapshot_memory_before_update", _copy)
+
+        req = _request({})
+        state = req.app["state"]
+        resp = await updates.api_update_apply(req)
+        await asyncio.gather(*list(state._background_tasks))
+        return resp, state, events
+
+    @pytest.mark.asyncio
+    async def test_memory_is_copied_before_the_fast_forward(self, monkeypatch, tmp_path):
+        """The same copy `kirocrew update` takes lands before the tree is rewritten."""
+        resp, _state, events = await self._apply_with_copy(
+            monkeypatch, tmp_path, (1, ""), [_FakeProc()]
+        )
+
+        assert resp.status == 200
+        merges = [i for i, e in enumerate(events) if e[:3] == ("git", "merge", "--ff-only")]
+        assert events.count(("memory-copy",)) == 1 and len(merges) == 1
+        assert events.index(("memory-copy",)) < merges[0]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_memory_copy_refuses_the_apply(self, monkeypatch, tmp_path):
+        """No fresh copy, no rewrite: a clear error and no worker scheduled."""
+        resp, state, events = await self._apply_with_copy(
+            monkeypatch, tmp_path, (0, "1 store(s) not copied"), []
+        )
+
+        assert resp.status == 500
+        body = json.loads(resp.body.decode())
+        assert body["code"] == "memory_snapshot_failed"
+        assert "1 store(s) not copied" in body["error"] and "Not updating" in body["error"]
+        assert ("memory-copy",) in events
+        assert not any(e[:2] == ("git", "merge") for e in events)
+        assert state._background_tasks == set()
+        assert ("failed", body["error"]) in self._progress(state)
+
+    @pytest.mark.asyncio
+    async def test_a_policy_apply_copies_memory_first_and_refuses_without_it(self, monkeypatch):
+        """A provider that can apply rewrites the install too, so it gets the same gate."""
+        from types import SimpleNamespace
+
+        from kiro_crew.platform import update_provider, wheel_apply
+
+        events: list[str] = []
+
+        async def _apply():
+            events.append("policy-apply")
+            return False
+
+        monkeypatch.setattr(
+            update_provider, "resolve_provider", lambda: SimpleNamespace(can_apply=lambda: True)
+        )
+        monkeypatch.setattr(update_provider, "apply_policy_update", _apply)
+        results = [(1, ""), (0, "disk full")]
+
+        def _copy():
+            events.append("memory-copy")
+            return results.pop(0)
+
+        monkeypatch.setattr(wheel_apply, "snapshot_memory_before_update", _copy)
+
+        first = await updates.api_update_apply(_request({}))
+        assert first.status == 500  # the stubbed provider answered "failed"
+        assert events == ["memory-copy", "policy-apply"]
+
+        refused = await updates.api_update_apply(_request({}))
+        assert refused.status == 500
+        assert json.loads(refused.body.decode())["code"] == "memory_snapshot_failed"
+        assert events == ["memory-copy", "policy-apply", "memory-copy"]
+
+    @pytest.mark.asyncio
+    async def test_a_policy_apply_refuses_shutdown_during_memory_copy(self, monkeypatch):
+        """Shutdown during the copy must refuse before the policy installer starts."""
+        from types import SimpleNamespace
+
+        from kiro_crew.platform import update_provider, wheel_apply
+
+        shutdown = SimpleNamespace(stopping=False)
+        shutdown.is_set = lambda: shutdown.stopping
+        monkeypatch.setattr(updates, "shutdown_event", shutdown)
+        monkeypatch.setattr(
+            update_provider, "resolve_provider", lambda: SimpleNamespace(can_apply=lambda: True)
+        )
+        applied = AsyncMock(return_value=False)
+        monkeypatch.setattr(update_provider, "apply_policy_update", applied)
+
+        def _copy():
+            shutdown.stopping = True
+            return (1, "")
+
+        monkeypatch.setattr(wheel_apply, "snapshot_memory_before_update", _copy)
+
+        resp = await updates.api_update_apply(_request({}))
+
+        assert resp.status == 503
+        assert json.loads(resp.body.decode()) == {
+            "error": "The gateway is shutting down",
+            "code": "shutting_down",
+        }
+        applied.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_an_unexpected_crash_surfaces_as_a_failed_update(self, monkeypatch, tmp_path):
         """An exception inside the worker must reach the UI, not just the log.
