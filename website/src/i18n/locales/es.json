@@ -20287,6 +20287,8 @@
         "status_unavailable": "No se pudo comprobar el estado de voz a texto. La insignia de arriba muestra el ajuste guardado, no una comprobación en vivo.",
         "polish": "Pulir transcripciones con IA",
         "polish_desc": "Envía el texto final, nunca el audio, al modelo de IA con el que ya chateas, que corrige la puntuación y las mayúsculas. Tus palabras nunca se cambian.",
+        "dictation_note": "Avisar al agente de que fue dictado",
+        "dictation_note_desc": "Añade al final de un mensaje con texto dictado una nota que avisa al agente de que puede contener errores de transcripción. Los mensajes que solo escribiste nunca la llevan, y la nota también aparece en la conversación.",
         "polish_desc_summary": "Envía el texto, nunca el audio, al modelo con el que chateas.",
         "model_slow_on_cpu": "Más lento que el tiempo real en este equipo, por lo que la transcripción se retrasa respecto a tu voz. Sigue siendo lo más preciso para entrada multilingüe y mixta.",
         "section_fine_tuning": "Ajuste fino",

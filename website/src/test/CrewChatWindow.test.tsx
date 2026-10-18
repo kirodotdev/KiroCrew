@@ -71,6 +71,9 @@ import {
   capsRetryInterval,
 } from '../pages/chat/crew-window/crewWindowStore'
 import { crewModePreviewOn } from './crewModePreview'
+import { crewWindowSlot } from '../pages/chat/crew-window/crewWindowRenderers'
+import { DICTATION_NOTE, _resetDictationProvenance, markDictated } from '../chat-core/composer/dictationProvenance'
+import { queryClient as globalQueryClient } from '../api/queryClient'
 
 class FakeEventSource {
   static all: FakeEventSource[] = []
@@ -523,6 +526,35 @@ describe('CrewChatWindow', () => {
     fireEvent.change(box, { target: { value: 'steer me' } })
     fireEvent.keyDown(box, { key: 'Enter' })
     await waitFor(() => expect(box).toHaveValue('steer me'))
+  })
+
+  // `stt.dictation_note` is this machine's setting, as the dictation is; the
+  // note rides the text the peer receives. The Voice atom's own marking is
+  // pinned in useComposerVoiceDictationNote.test; `markDictated` stands in.
+  it('ends a dictated message with the dictation note, and hands a refused one back without it', async () => {
+    _resetDictationProvenance()
+    globalQueryClient.setQueryData(['sttConfig'], { enabled: true, dictation_note: true })
+    try {
+      mocks.crewPeerPost.mockRejectedValueOnce(new Error('peer refused'))
+      renderWindow()
+      const box = await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
+      await waitFor(() => expect(box).not.toBeDisabled())
+      fireEvent.change(box, { target: { value: 'book the room' } })
+      markDictated(crewWindowSlot('cd-1', 'k1'))
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: `book the room\n\n${DICTATION_NOTE}`, slot: 'k1' }]))
+      await waitFor(() => expect(box).toHaveValue('book the room'))
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect(posted().filter(p => p[0] === 'api/chat?ws=1')).toHaveLength(2))
+      expect(posted().filter(p => p[0] === 'api/chat?ws=1')[1]).toEqual(['api/chat?ws=1', { message: `book the room\n\n${DICTATION_NOTE}`, slot: 'k1' }])
+      // The next message, typed by hand, carries nothing.
+      fireEvent.change(box, { target: { value: 'typed after' } })
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: 'typed after', slot: 'k1' }]))
+    } finally {
+      globalQueryClient.removeQueries({ queryKey: ['sttConfig'] })
+      _resetDictationProvenance()
+    }
   })
 
   it('shows the peer\'s stop in flight and its compaction, not a live Stop', async () => {

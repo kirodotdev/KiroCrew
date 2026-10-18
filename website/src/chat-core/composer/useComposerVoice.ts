@@ -41,6 +41,7 @@ import { usePushToTalk } from '../../hooks/usePushToTalk'
 import type { StopIntent } from '../../lib/pttSession'
 import { redeliverPending } from '../../hooks/voiceTranscriptInbox'
 import { haptic } from '../../lib/haptic'
+import { clearDictated, isDictated, markDictated } from './dictationProvenance'
 
 /** How long the "dictation added" cue stays after a held transcript lands. */
 const HELD_LANDED_MS = 4000
@@ -85,8 +86,11 @@ export interface ComposerVoiceHost {
   /**
    * A BATCH transcript for a session whose composer is not on screen. `append`
    * builds the new text from that session's current draft. Omit to drop.
+   * Returns the voice key of the draft that received the text when that is
+   * not `target` (a crew window's rewind box parks its words in the session's
+   * draft), so the dictation record marks the draft that holds them.
    */
-  deliverOffScreen?: (target: string, append: (base: string) => string) => void
+  deliverOffScreen?: (target: string, append: (base: string) => string) => string | void
   /** Streaming semantic endpointing judged the utterance complete: submit. */
   onAutoSubmit?: () => void
   /** Own the document-wide push-to-talk key binding. Default false. */
@@ -98,9 +102,15 @@ export interface ComposerVoiceHost {
    *  file token at the caret). Omit and the hook creates its own. */
   caretRef?: React.MutableRefObject<{ start: number; end: number } | null>
   pendingCaretRef?: React.MutableRefObject<number | null>
+  /** Which composer's dictation record the words go into
+   *  (`dictationProvenance`). A host whose composer keeps a draft of its own for
+   *  a session another composer also shows (a split pane) names its scope, so
+   *  words dictated here never mark a message typed there. Omit for the main
+   *  chat composer. */
+  dictationScope?: string
 }
 
-export type SttConfig = { streaming?: boolean; streaming_providers?: string[]; enabled?: boolean; dictation_panel?: boolean; available?: boolean; provider?: string; polish?: boolean; submit_on_release?: boolean; slide_to_send?: boolean; code?: string; prereqs?: string[]; providers?: unknown[] }
+export type SttConfig = { streaming?: boolean; streaming_providers?: string[]; enabled?: boolean; dictation_panel?: boolean; dictation_note?: boolean; available?: boolean; provider?: string; polish?: boolean; submit_on_release?: boolean; slide_to_send?: boolean; code?: string; prereqs?: string[]; providers?: unknown[] }
 
 /**
  * Whether dictation streams. The saved preference alone is not enough: a
@@ -203,6 +213,7 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   sessionIdRef.current = sessionId
   const isComposerForRef = useRef(host.isComposerFor); isComposerForRef.current = host.isComposerFor
   const deliverOffScreenRef = useRef(host.deliverOffScreen); deliverOffScreenRef.current = host.deliverOffScreen
+  const dictationScopeRef = useRef(host.dictationScope); dictationScopeRef.current = host.dictationScope
   const onAutoSubmitRef = useRef(host.onAutoSubmit); onAutoSubmitRef.current = host.onAutoSubmit
   const isComposerFor = useCallback((target: string | null) =>
     isComposerForRef.current ? isComposerForRef.current(target) : target === sessionIdRef.current, [])
@@ -518,7 +529,11 @@ export function useComposerVoice(host: ComposerVoiceHost) {
       // finds the transcript there as a draft instead.
       releaseSubmitRef.current = null
       if (!target || origin === 'stream') return
-      deliverOffScreenRef.current?.(target, append)
+      const deliver = deliverOffScreenRef.current
+      if (!deliver) return
+      const landed = deliver(target, append)
+      // The parked draft now holds spoken words, so its next send is dictated.
+      markDictated(typeof landed === 'string' ? landed : target, dictationScopeRef.current)
       return
     }
     // Foreground: streaming seeds frozenInputRef/frozenCaretRef in onPartial
@@ -541,6 +556,7 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     noteVoiceWrite(spliced.value, text)
     if (spliced.value !== inputRef.current) {
       setInput(spliced.value)
+      markDictated(target, dictationScopeRef.current)
       voicePendingCaretRef.current = spliced.caret
       if (redeliveringRef.current) {
         setHeldLanded(true)
@@ -680,6 +696,7 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     if (next !== inputRef.current) {
       noteVoiceWrite(next, text)
       setInput(next)
+      markDictated(sessionIdRef.current, dictationScopeRef.current)
       if (caretTarget !== null) voicePendingCaretRef.current = caretTarget
     }
     lastDictationAnchorRef.current = anchor
@@ -750,6 +767,8 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   const startBlockedRef = useRef(false)
   startBlockedRef.current = !!host.startBlocked
   const startGenRef = useRef(0)
+  // See `startVoice`: the dictation mark as it stood when the capture began.
+  const markedBeforeCaptureRef = useRef(false)
   // Release when THIS instance's capture and transcription are both over. Runs
   // every render on purpose: a start that fails (permission denied) never flips
   // `recording`, so a deps-keyed effect would not fire and the owner slot would
@@ -833,6 +852,10 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     postStopEditedRef.current = false
     frozenCaretRef.current = null
     tapThisSessionRef.current = !opts?.silent
+    // Whether this composer already held dictated words before this capture, so
+    // a discard that takes this capture's words back out can also take back the
+    // mark it set, and only that one.
+    markedBeforeCaptureRef.current = isDictated(sessionIdRef.current, dictationScopeRef.current)
     // Paired with `voice.start()`'s own `setError(null)` below: the two halves of the
     // composer's error reach the user as one value, so a capture that clears one and
     // not the other leaves the dictation panel blanked for a microphone that works.
@@ -962,6 +985,7 @@ export function useComposerVoice(host: ComposerVoiceHost) {
           // typed run abut its last word.
           const typedSuffix = cur.slice(written.length)
           setInput(frozen + dictationSeparator(frozen, typedSuffix) + typedSuffix)
+          if (!markedBeforeCaptureRef.current) clearDictated(sessionIdRef.current, dictationScopeRef.current)
         } else {
           // MID-DRAFT, which is the ordinary shape rather than an edge: the
           // restored caret sits at the END of the dictated region, so typing
@@ -1031,6 +1055,7 @@ export function useComposerVoice(host: ComposerVoiceHost) {
             // behind the draft's restored tail instead of where they were typing.
             // The same compensation the delivery path above already makes.
             voicePendingCaretRef.current = before.length + lead.length + typed.length
+            if (!markedBeforeCaptureRef.current) clearDictated(sessionIdRef.current, dictationScopeRef.current)
           }
           // else: the dictated region can't be verified exactly — the user edited
           // or replaced it (e.g. deleted the separator, or typed their own text

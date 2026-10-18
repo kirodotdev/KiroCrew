@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
+import { clearDictated, isDictated, markDictated, noteComposerEdit } from '../../../chat-core/composer/dictationProvenance'
 import type { RootState } from '../../../store'
 import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDraft, appendTypedText, mergeIntoDraft, typedDuringCreate } from '../../../utils/chatDrafts'
 import { registerMainComposer } from '../../../utils/composerRestore'
@@ -179,6 +180,9 @@ export function useComposerDraftLifecycle({
     inputRef.current = text
     const s = composerSlotRef.current
     if (s) { setDraft(drafts.current, s, text); saveDraftsDebounced() }
+    // Keyed exactly like the draft above: an emptied composer holds no dictated
+    // words, so the slot's next message starts unmarked.
+    noteComposerEdit(s, text)
     updateHistoryQuery(text)
     reconcileFileChipsRef.current?.(text)
   }, [saveDraftsDebounced, updateHistoryQuery, inputRef, composerSlotRef, drafts])
@@ -266,8 +270,19 @@ export function useComposerDraftLifecycle({
           setDraft(drafts.current, prevSlotVal, carry.baseline)
           setPasteDraft(pasteDrafts.current, prevSlotVal, pruneBlocksUtil(carry.baseline, blocks))
         }
+        // The dictation record follows the carried text, which may hold the
+        // dictated words; the origin keeps its record only while its restored
+        // draft still holds text.
+        if (isDictated(prevSlotVal)) {
+          markDictated(activeSlot)
+          if (!carry.baseline.trim()) clearDictated(prevSlotVal)
+        }
       }
     }
+    // A composer with no chat yet keeps no draft of its own: whatever it held is
+    // gone once it shows a chat, unless the carry above moved it, so its
+    // dictation record goes too.
+    if (prevSlotVal === null && activeSlot !== null) clearDictated(null)
     const raw = sessionStorage.getItem(PREFILL_STORAGE_KEY)
     const storedDraft = activeSlot ? drafts.current[activeSlot] ?? '' : ''
     const draftFallback = carried !== null ? appendTypedText(storedDraft, carried) : storedDraft
