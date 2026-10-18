@@ -6,6 +6,7 @@ It is the one sanctioned route for the blocking filesystem work of every file ro
 from __future__ import annotations
 
 import os
+import time
 from typing import TYPE_CHECKING, Callable, NamedTuple
 
 from aiohttp import web
@@ -15,8 +16,13 @@ if TYPE_CHECKING:
         _CONTROL_CHARS_RE,
         _PATH_PROBE_ADMIT_TIMEOUT_SECS,
         _PATH_PROBE_EXEC_CEILING_SECS,
+        _PATH_PROBE_STALL_SECS,
+        _PATH_PROBE_STUCK_TO_REFUSE,
+        _path_probe_inflight,
+        _path_probe_inflight_lock,
         _ProbeT,
         _sel,
+        _stall_prefix,
         executors,
     )
 
@@ -66,6 +72,105 @@ class _PathProbeBusy(Exception):
 _PathProbeBusy.__module__ = "kiro_crew.dashboard.handlers.files"
 
 
+def _path_probe_stall_key(args: tuple[object, ...]) -> str:
+    """The stall prefix a probe is charged to, or ``""`` for no key.
+
+    The key is the probe's FIRST positional argument when that is a non-empty
+    absolute path string: every probe-pool caller that names a request path
+    passes it first. A call whose first argument is anything else (a closure, a
+    list of paths, a config) gets no key and keeps the plain bounded-pool
+    behaviour. So does a relative path: the probe resolves it against a project
+    directory, not the gateway's working directory, so ``abspath`` would charge
+    the wrong mount.
+
+    Lexical on purpose, like :func:`_stall_prefix` itself: the key is computed
+    on the event loop before deciding whether to touch the filesystem at all, so
+    it must not stat the mount it may be about to refuse, nor ask the password
+    database. Only ``~`` and ``~/...`` are expanded, from the environment's home
+    variable; ``~name`` (a user lookup that can block on a directory service)
+    gets no key, and the worker expands it as before.
+
+    Under a home directory the key is one component deeper than
+    :func:`_stall_prefix`: ``/home/<user>/mnt/x`` keys to ``/home/<user>/mnt``,
+    ``C:\\Users\\<user>\\ws\\f`` to ``C:\\Users\\<user>\\ws``. A home holds the
+    workspace, the checkout and any FUSE or sshfs mount the user made, so a key
+    ending at the home would let two probes stuck on ``~/mnt/x`` refuse every
+    file route under the home, the workspace included. A key is a home when its
+    last component sits directly in a component spelled ``home`` or ``Users``,
+    the containers :func:`_stall_prefix` itself recognises; a UNC share root is
+    never one. The home itself, and a path that is not under a home, keep the
+    plain :func:`_stall_prefix` key. This applies to this gate only: the
+    sensitive-path resolver's cooldown keeps its own key.
+    """
+    first = args[0] if args else None
+    if not isinstance(first, str) or not first:
+        return ""
+    if first.startswith("~"):
+        home = os.environ.get("USERPROFILE" if os.name == "nt" else "HOME", "")
+        if not home or (len(first) > 1 and first[1] not in ("/", os.sep)):
+            return ""
+        first = home + first[1:]
+    if not os.path.isabs(first):
+        return ""
+    try:
+        abs_path = os.path.abspath(first)
+        base = _stall_prefix(abs_path)
+    except ValueError:
+        return ""
+    drive, rest = os.path.splitdrive(base)
+    if drive[:1] in ("\\", "/") and drive[1:2] in ("\\", "/"):
+        return base  # a UNC share root is a mount point, never a home
+    parts = rest.split(os.sep)
+    if len(parts) < 3 or not parts[-1] or parts[-2] not in ("home", "Users"):
+        return base
+    below = abs_path[len(base) :]
+    if not below.startswith(os.sep):
+        return base
+    child = below.lstrip(os.sep).split(os.sep, 1)[0]
+    return base + os.sep + child if child else base
+
+
+def _path_probe_prefix_wedged(key: str) -> bool:
+    """True while ``_PATH_PROBE_STUCK_TO_REFUSE`` probes under *key* have each run
+    longer than ``_PATH_PROBE_STALL_SECS``.
+
+    One stuck probe is not enough: a single request through a stray link to a
+    dead share costs one worker and refuses nothing, exactly as without this
+    check. A second one under the same prefix means callers keep asking for a
+    mount that does not answer, and from then on the prefix is refused.
+
+    Reads only the in-flight map, never the filesystem. The answer clears by
+    itself the moment a stuck thread returns, so a mount that recovers is
+    served again on the next request, with no backoff to wait out.
+    """
+    now = time.monotonic()
+    with _path_probe_inflight_lock:
+        starts = _path_probe_inflight.get(key)
+        if not starts:
+            return False
+        stuck = sum(1 for start in starts.values() if now - start >= _PATH_PROBE_STALL_SECS)
+        return stuck >= _PATH_PROBE_STUCK_TO_REFUSE
+
+
+def _tracked_path_probe(key: str, fn: Callable[..., _ProbeT], /, *args: object) -> _ProbeT:
+    """Run *fn* on the worker thread, listed in the in-flight map under *key* meanwhile.
+
+    The start time is taken here, on the worker, so time spent queued for a
+    worker never counts as time spent wedged.
+    """
+    token = object()
+    with _path_probe_inflight_lock:
+        _path_probe_inflight.setdefault(key, {})[token] = time.monotonic()
+    try:
+        return fn(*args)
+    finally:
+        with _path_probe_inflight_lock:
+            starts = _path_probe_inflight.get(key, {})
+            starts.pop(token, None)
+            if not starts:
+                _path_probe_inflight.pop(key, None)
+
+
 async def _run_path_probe(
     fn: Callable[..., _ProbeT], /, *args: object, transfer: bool = False
 ) -> _ProbeT:
@@ -95,12 +200,33 @@ async def _run_path_probe(
     back. Capacity accounting is the pool's own worker count, so a client that
     gives up on a wedged call cannot make the pool believe a slot is free while
     the thread is still parked; nothing here has to track that.
+
+    A probe also learns which MOUNT is dead. A probe whose first argument names
+    a path (:func:`_path_probe_stall_key`) is keyed to that path's stall prefix,
+    the same lexical key the sensitive-path resolver's cooldown uses, except
+    that under a home directory the key goes one component deeper, so a dead
+    mount inside the home (``~/mnt/nas``) does not refuse the workspace beside
+    it. While
+    ``_PATH_PROBE_STUCK_TO_REFUSE`` probes under the same prefix have run past
+    ``_PATH_PROBE_STALL_SECS``, the new one is refused with the same busy answer
+    before it takes a worker. So a caller hammering one dead mount stops taking
+    workers once two probes there are stuck, rather than retiring one per
+    request until the pool is gone, and paths under other prefixes keep being
+    served. Probes that arrive together, before any of them is past the budget,
+    are still bounded only by the pool. A transfer naming a stuck prefix is refused the same way,
+    but a transfer never marks a prefix stuck: it legitimately runs long.
     """
+    key = _path_probe_stall_key(args)
+    if key and _path_probe_prefix_wedged(key):
+        raise _PathProbeBusy()
     pool = executors.path_transfer_executor() if transfer else executors.path_probe_executor()
+    tracked = bool(key) and not transfer
+    call_args: tuple[object, ...] = (key, fn, *args) if tracked else args
+    call_fn: Callable[..., _ProbeT] = _tracked_path_probe if tracked else fn
     try:
         return await executors.run_in_cron_pool(
-            fn,
-            *args,
+            call_fn,
+            *call_args,
             timeout=_PATH_PROBE_EXEC_CEILING_SECS,
             queue_timeout=_PATH_PROBE_ADMIT_TIMEOUT_SECS,
             executor=pool,

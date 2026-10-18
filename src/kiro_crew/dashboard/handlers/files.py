@@ -188,11 +188,14 @@ from kiro_crew.dashboard.file_api.path_complete import (  # noqa: F401
     api_path_complete,
 )
 from kiro_crew.dashboard.file_api.path_probe import (  # noqa: F401
+    _path_probe_prefix_wedged,
+    _path_probe_stall_key,
     _PathProbe,
     _PathProbeBusy,
     _probe_busy_response,
     _probe_request_path,
     _run_path_probe,
+    _tracked_path_probe,
     _validate_dashboard_path,
 )
 from kiro_crew.dashboard.file_api.pinned_io import (  # noqa: F401
@@ -343,6 +346,7 @@ from kiro_crew.security import (  # noqa: F401
     _STREAM_HOLDBACK_JWT_MAX,
     _STREAM_HOLDBACK_MAX,
     BINARY_MIME_ALLOWLIST,
+    _stall_prefix,
     is_sensitive_canonical_path,
     is_sensitive_path,
     is_sensitive_resolved_path,
@@ -771,6 +775,22 @@ _PATH_PROBE_ADMIT_TIMEOUT_SECS = 2.0
 #: add a second refusal class this endpoint family does not yet define. Large
 #: enough that no healthy transfer under the module's own caps reaches it.
 _PATH_PROBE_EXEC_CEILING_SECS = 3600.0
+#: How long a probe may run before its path prefix counts as wedged. A healthy
+#: probe takes milliseconds; the figure matches the sensitive-path resolver's
+#: own budget. While ``_PATH_PROBE_STUCK_TO_REFUSE`` probes under a prefix are
+#: each past it, new probes under that prefix are refused without taking a
+#: worker (:func:`_path_probe_prefix_wedged`).
+_PATH_PROBE_STALL_SECS = 2.0
+#: How many stuck probes under one prefix it takes to refuse that prefix. Two,
+#: so one stray request to a dead share costs a worker and refuses nothing,
+#: while a caller that keeps asking holds at most two of the pool's workers.
+_PATH_PROBE_STUCK_TO_REFUSE = 2
+#: Probes running right now: stall prefix -> {token: monotonic start}. Written
+#: only by the worker thread that runs the probe (:func:`_tracked_path_probe`),
+#: so an entry lives exactly as long as its thread is busy, and the map never
+#: holds more entries than the probe pool has workers.
+_path_probe_inflight: dict[str, dict[object, float]] = {}
+_path_probe_inflight_lock = threading.Lock()
 
 
 #: Most paths one ``POST /api/file-kinds`` request may name. A transcript view
