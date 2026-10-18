@@ -273,12 +273,13 @@ def _refresh_from_config(self: TaskRunner) -> None:
     is already executing keeps the values it started with (its parallel cap
     and work dir are bound per run, not read from ``self`` mid-flight).
 
-    Reads the watcher's last applied snapshot (a plain attribute read) and
-    falls back to the fingerprint-cached loader before the watcher is armed.
-    A field is adopted only when its config value MOVED since the baseline
-    this runner was constructed against; an unchanged field keeps the
-    constructor's argument. ``workspace_dir`` goes through the same
-    sensitive-path validation the constructor applies.
+    Reads the watcher's last applied snapshot (a plain attribute read); before
+    the watcher has primed there is none and the refresh is skipped, never
+    replaced by a ``load()`` on the event loop. A field is adopted only when
+    its config value MOVED since the baseline this runner was constructed
+    against; an unchanged field keeps the constructor's argument.
+    ``workspace_dir`` goes through the same sensitive-path validation the
+    constructor applies.
     """
     if self._config_baseline is None:
         return

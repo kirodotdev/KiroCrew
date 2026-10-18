@@ -158,17 +158,7 @@ async def _execute_tasks(self: TaskRunner, run: Project, history_key: str) -> No
                     await asyncio.shield(self._sessions.reset(sk))
                 except (asyncio.CancelledError, Exception):
                     pass
-            if not success:
-                revised = await self._try_replan(run, task)
-                if not revised and run.status == "running":
-                    run.status = "failed"
-                    clean_err, _ = redact_exfiltration_urls(task.error or "")
-                    clean_err, _ = redact_credentials(clean_err)
-                    run.error = f"Task {task.index} failed: {clean_err}"
-                return
-            if task.result and len(task.result) > _RESULT_MEM_CAP:
-                task.result = task.result[:_RESULT_MEM_CAP]
-            await self._apersist_runs()  # persist after each task so crash recovery preserves progress
+            failed_task = None if success else task
         else:
             titles = ", ".join(t.title for t in resolved)
             await self._notify(
@@ -211,18 +201,18 @@ async def _execute_tasks(self: TaskRunner, run: Project, history_key: str) -> No
                 if isinstance(result, Exception) or not result:
                     failed_task = task
                     break
-            if failed_task:
-                revised = await self._try_replan(run, failed_task)
-                if not revised and run.status == "running":
-                    run.status = "failed"
-                    clean_err, _ = redact_exfiltration_urls(failed_task.error or "")
-                    clean_err, _ = redact_credentials(clean_err)
-                    run.error = f"Task {failed_task.index} failed: {clean_err}"
-                return
-            for t in resolved:
-                if t.result and len(t.result) > _RESULT_MEM_CAP:
-                    t.result = t.result[:_RESULT_MEM_CAP]
-            await self._apersist_runs()  # persist after parallel group so crash recovery preserves progress
+        if failed_task is not None:
+            revised = await self._try_replan(run, failed_task)
+            if not revised and run.status == "running":
+                run.status = "failed"
+                clean_err, _ = redact_exfiltration_urls(failed_task.error or "")
+                clean_err, _ = redact_credentials(clean_err)
+                run.error = f"Task {failed_task.index} failed: {clean_err}"
+            return
+        for t in resolved:
+            if t.result and len(t.result) > _RESULT_MEM_CAP:
+                t.result = t.result[:_RESULT_MEM_CAP]
+        await self._apersist_runs()  # persist after each group so crash recovery preserves progress
 
 
 async def _build_task_prompt(self: TaskRunner, run: Project, task: Task, attempt: int = 1) -> str:
@@ -320,8 +310,9 @@ async def _execute_single_task(
             # Run-scoped workspace wins over the runner default: a run whose
             # workspace_dir selected project B must EXECUTE against B, not the
             # runner's startup dir A (planning already used run.work_dir —
-            # executing elsewhere edits/tests the wrong project). Mirrors
-            # _build_task_prompt's resolution above.
+            # executing elsewhere edits/tests the wrong project).
+            # _build_task_prompt above prefers run.work_dir too, but falls back
+            # to the process directory rather than the runner default.
             work_dir=Path(run.work_dir) if run.work_dir else self._work_dir,
             log_task_fn=self._log_task,
             extract_lesson_fn=self._extract_lesson,

@@ -184,7 +184,7 @@ async def _taskq_begin_run(self: TaskRunner, run: Project) -> None:
     if not await handle.running_async({"phase": "executing", "steps": len(run.tasks)}):
         # THE ROW'S STATE DECIDES, not the refusal. A refused mark on this
         # container row is not the sibling case that fails the unit
-        # (``_execute_single_task`` below, ``workflows.agent_pool``): a STEP row
+        # (``run_steps._execute_single_task``, ``workflows.agent_pool``): a STEP row
         # holds a lane slot and must reach a WAITING state, which ``starting``
         # cannot, while this row holds no slot, enters no wait, and settles from
         # ``starting`` because ``TRANSITIONS[STARTING]`` carries every active

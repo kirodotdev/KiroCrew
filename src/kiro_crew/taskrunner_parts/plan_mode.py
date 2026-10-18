@@ -164,15 +164,6 @@ async def plan(
             workflow_revision=workflow_revision,
             execution_context=execution,
         )
-    except BaseException:
-        if created_task_dir:
-            try:
-                task_dir.rmdir()
-            except OSError:
-                logger.warning("Failed to remove rejected plan directory %s", task_dir)
-        self._start_ids_in_flight.discard(task_id)
-        raise
-    try:
         await self._bind_run_execution(run, f"{_SESSION_PREFIX}:{task_id}:runtime")
         if source == "yaml":
             run.tasks = _decompose_yaml_with_audit(
