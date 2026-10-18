@@ -341,7 +341,6 @@
  1 test_task_runner_compaction.py
  2 test_taskq_startup.py
  1 test_taskrunner_atomic_persistence.py
- 2 test_taskrunner_coverage.py
  2 test_taskrunner_execution_capture_async.py
  2 test_taskrunner_execution_context.py
  3 test_telegram_album.py
