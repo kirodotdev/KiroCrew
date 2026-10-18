@@ -13,7 +13,6 @@
 # it to rewrite every row:
 #   python3 scripts/check_file_line_cap.py --update-baseline
 5522 conftest.py
-4119 scripts/ci/runner_watchdog.py
 2666 scripts/docs_lint.py
 2524 src/kiro_crew/acp/liveness.py
 9026 src/kiro_crew/acp/runtime.py
