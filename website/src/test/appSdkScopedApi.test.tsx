@@ -142,6 +142,21 @@ describe('createScopedApi (via AppApiProvider) — SSRF / permission guard', () 
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('permits a backslash inside a query value (path portion carries no authority)', async () => {
+    const api = getScopedApi(['/api/apps/test'])
+    await api.get('/api/apps/test/items?q=a\\b')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/apps/test/items?q=a\\b')
+  })
+
+  it('rejects percent-encoded `..` traversal that escapes the allowlist', async () => {
+    const api = getScopedApi(['/api/apps/test'])
+    // The WHATWG URL parser resolves %2e as `.` during dot-segment removal,
+    // so this normalizes outside the declared scope.
+    await expect(api.get('/api/apps/test/%2e%2e/secret')).rejects.toThrow(/not permitted to access/)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('rejects paths outside the declared allowlist', async () => {
     const api = getScopedApi(['/api/apps/test'])
     await expect(api.get('/api/apps/other/secrets')).rejects.toThrow(/not permitted to access/)
@@ -193,6 +208,12 @@ describe('createScopedApi (via AppApiProvider) — SSRF / permission guard', () 
     fetchMock.mockResolvedValueOnce(new Response('', { status: 200, headers: { 'content-type': 'application/json' } }))
     const api = getScopedApi(['/api/apps/test'])
     await expect(api.post('/api/apps/test/action')).resolves.toBeUndefined()
+  })
+
+  it('returns undefined for a 205 Reset Content response', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 205 }))
+    const api = getScopedApi(['/api/apps/test'])
+    await expect(api.del('/api/apps/test/item/1')).resolves.toBeUndefined()
   })
 
   it('still parses a normal JSON body', async () => {
