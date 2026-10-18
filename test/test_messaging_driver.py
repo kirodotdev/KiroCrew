@@ -977,6 +977,84 @@ class TestStreamCredentialRedaction:
         assert "[REDACTED: credential]" in out
 
 
+def _tool(tool_call_id: str = "t1") -> AcpEvent:
+    return AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id=tool_call_id, title="grep", tool_final=False)
+
+
+def _text(text: str) -> AcpEvent:
+    return AcpEvent(kind=EVENT_TEXT_CHUNK, text=text)
+
+
+def _turn_across_tool(before: list[str], after: list[str]) -> tuple[str, list[tuple]]:
+    r = _RecordingRenderer()
+    p = _ScriptedProvider(
+        [*map(_text, before), _tool(), *map(_text, after)]
+        + [AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")]
+    )
+    out = _run(p, r)
+    joined = "".join(e[1] for e in r.events if e[0] == "text_chunk")
+    assert joined == out
+    return joined, r.events
+
+
+class TestTextAcrossAToolCall:
+    """Text written before a tool call is delivered before it, and ends there.
+
+    The redactor holds back each chunk's trailing run, so with nothing at the
+    boundary the tail of the pre-tool text was released by the post-tool text,
+    glued on and after the tool card: "around that time." + "No logs" read
+    "time.No logs" on Slack, and a fence opened after a file edit landed on the
+    end of the prose line.
+    """
+
+    def test_sentence_before_and_after_a_tool_stay_two_paragraphs(self):
+        joined, _ = _turn_across_tool(["I looked around that time."], ["No protocol logs here."])
+        assert joined == "I looked around that time.\n\nNo protocol logs here."
+
+    def test_held_tail_still_arrives_after_the_tool_card(self):
+        # Residual, pinned: the redactor's held run is released with the next
+        # text, so it reaches the renderer on the far side of the card. Joined
+        # renderers (Slack's plan-mode stream among them) read it correctly now
+        # that the break sits between the two; one that draws the card inline
+        # between chunks still shows "time." after it.
+        _, events = _turn_across_tool(["I looked around that time."], ["No logs."])
+        tool_at = [e[0] for e in events].index("tool_call")
+        before = "".join(e[1] for e in events[:tool_at] if e[0] == "text_chunk")
+        assert before == "I looked around that "
+
+    def test_fence_after_a_tool_opens_on_its_own_line(self):
+        joined, _ = _turn_across_tool(["Changed the examples."], ["```diff\n-old\n+new\n```\n"])
+        assert "\n```diff\n" in joined
+        assert "examples.```" not in joined
+
+    def test_pre_tool_text_ending_in_a_newline_gets_no_extra_break(self):
+        joined, _ = _turn_across_tool(["Checking now.\n"], ["Found it."])
+        assert joined == "Checking now.\nFound it."
+
+    def test_post_tool_text_opening_with_a_break_is_left_as_written(self):
+        joined, _ = _turn_across_tool(["Checking now."], ["\n\nFound it."])
+        assert joined == "Checking now.\n\nFound it."
+
+    def test_a_sentence_continued_across_the_tool_is_not_split(self):
+        joined, _ = _turn_across_tool(["Checking the server"], [" and the disk."])
+        assert joined == "Checking the server and the disk."
+
+    def test_only_the_first_text_after_the_tool_is_considered(self):
+        joined, _ = _turn_across_tool(["Done."], ["Next", "Step"])
+        assert joined == "Done.\n\nNextStep"
+
+    def test_no_text_before_the_tool_adds_nothing(self):
+        joined, _ = _turn_across_tool([], ["Found it."])
+        assert joined == "Found it."
+
+    def test_credential_split_by_a_tool_call_never_reassembles(self):
+        # Split literal on purpose so Semgrep does not mistake the synthetic
+        # fixture for a hardcoded AWS access key.
+        secret = "AKIA" + "1234567890ABCDEF"
+        joined, _ = _turn_across_tool([f"key {secret[:14]}"], [f"{secret[14:]} end"])
+        assert secret not in joined
+
+
 class TestToolGateEnforcement:
     """The PreToolUse security gate (sensitive-path keystone + governance
     ceiling + deny-list) must hard-DENY BEFORE the auto/trust/YOLO ladder, so a

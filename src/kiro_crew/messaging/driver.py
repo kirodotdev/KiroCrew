@@ -604,6 +604,17 @@ class TurnDriver:
         compaction_filter = _CompactionNoticeFilter()
         steering_filter = _SteeringMarkerFilter()
         stream_redactor = StreamRedactor(_redact)
+        # Last character fed to the redactor this turn, and whether a tool call
+        # ran since. Text either side of a tool call is one run to every
+        # renderer that joins its chunks -- Slack lays a message's markdown
+        # appends end to end with the task card in the plan -- so "around that
+        # time." + tool + "No logs" read "time.No logs", and a fence opened right
+        # after a file edit landed on the end of the prose line. The first text
+        # after the call opens with a paragraph break when neither side already
+        # has whitespace there: the native Slack path's ``tool_gap`` rule, which
+        # leaves a sentence the model continues with " and ..." alone.
+        fed_tail = ""
+        tool_gap = False
         pending_steer_events = 0
         unmatched_marker_events = 0
         # Monotonic start of this turn, compared with the provider's stamp of
@@ -664,7 +675,17 @@ class TurnDriver:
         tool_purposes: dict[str, str] = {}
 
         async def emit_text(text: str) -> None:
-            nonlocal accumulated
+            nonlocal accumulated, fed_tail, tool_gap
+            if not text:
+                return
+            if tool_gap:
+                tool_gap = False
+                # Fed to the redactor with the text rather than flushed at the
+                # call: the held tail and the next text stay one string to its
+                # scan, so a credential split by the call is still seen whole.
+                if fed_tail and not fed_tail.isspace() and not text[0].isspace():
+                    text = "\n\n" + text
+            fed_tail = text[-1]
             safe = stream_redactor.feed(text)
             if safe:
                 accumulated += safe
@@ -784,6 +805,7 @@ class TurnDriver:
                     tool_name=getattr(event, "tool_name", "") or "",
                     mcp_server=getattr(event, "mcp_server_name", "") or "",
                 )
+                tool_gap = True
                 await self.renderer.dispatch(
                     OutputEvent(
                         kind=TOOL_CALL,

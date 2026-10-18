@@ -1050,6 +1050,26 @@ class TestToolTimerAndWait:
         assert methods.count("start_stream") == 2, methods
         assert "stop_stream" in methods
 
+    def test_text_either_side_of_a_tool_card_is_not_glued(self):
+        # Slack lays a message's markdown appends end to end with the task card
+        # in the plan, so the two sentences need a break between them.
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="I looked around that time."),
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="a", title="grep", tool_final=False),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="No protocol logs here."),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("x"))
+        seq = [
+            kw.get("text", "<task>") for m, kw in rec.calls if m in ("append_stream", "append_task")
+        ]
+        streamed = "".join(s for s in seq if s != "<task>")
+        assert streamed == "I looked around that time.\n\nNo protocol logs here.", seq
+
 
 class _StepClock:
     """Monotonic clock that advances a fixed step on every call, so every text
