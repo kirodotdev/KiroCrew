@@ -41,7 +41,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import __version__, stdlib_shadow
+from kiro_crew import __version__, stdlib_shadow, version_line
 
 _SRC = Path(__file__).resolve().parent.parent / "src"
 _BUILD_DESKTOP = _SRC.parent / "packaging" / "build-desktop.sh"
@@ -201,7 +201,7 @@ class TestDetection:
         assert ast.literal_eval(res.stdout.strip()) == []
         started = _run(["-m", "kiro_crew", "--version"], _stdlib_concurrent_dir(), tmp_path)
         assert started.returncode == 0, started.stderr
-        assert started.stdout == f"kirocrew {__version__}\n"
+        assert started.stdout == f"{version_line()}\n"
 
     def test_report_names_module_entry_and_fix(self) -> None:
         shadow = stdlib_shadow.ShadowedModule(
@@ -330,7 +330,7 @@ class TestEntryRefusal:
         """What the launchers' ``-P`` buys: the same directory, a normal start."""
         res = _run(["-P", "-m", "kiro_crew", "--version"], shadowing_home, tmp_path)
         assert res.returncode == 0, res.stderr
-        assert res.stdout == f"kirocrew {__version__}\n"
+        assert res.stdout == f"{version_line()}\n"
 
     def test_bootstrap_refuses_before_importing_cli(
         self, monkeypatch: pytest.MonkeyPatch, capsys
