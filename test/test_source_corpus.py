@@ -395,7 +395,10 @@ class TestCorpusHealth:
     def test_sources_are_the_real_file_contents(self):
         """Pins the read, not just the count: a corpus of empty strings is worse."""
         root = src_root()
-        wanted = {"security/text_redaction.py": "def redact", "session_map.py": "def batched_save"}
+        wanted = {
+            "security/text_redaction.py": "def redact",
+            "session_map_store.py": "def batched_save",
+        }
         seen: dict[str, str] = {}
         for path, text in iter_source_texts():
             for key in (path.relative_to(root).as_posix(), path.name):

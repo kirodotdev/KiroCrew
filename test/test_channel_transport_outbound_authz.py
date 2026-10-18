@@ -1452,7 +1452,11 @@ class TestMirrorAdmission:
         """The store's writer carries bytes through; it does not import the signer."""
         import kiro_crew.session_map as session_map_mod
 
-        src = Path(session_map_mod.__file__).read_text(encoding="utf-8")
+        here = Path(session_map_mod.__file__).parent
+        src = "".join(
+            (here / f"{name.rpartition('.')[2]}.py").read_text(encoding="utf-8")
+            for name in (session_map_mod.__name__, *session_map_mod._OWNERS)
+        )
         assert "sign_mirror_admission(" not in src
 
     def test_every_mirror_writer_is_a_signer_a_sanitized_rollback_or_peerless(self) -> None:
@@ -1533,7 +1537,7 @@ class TestMirrorAdmission:
         assert others == {
             ("session_parts/links.py", "set_mirror_link"),
             # The store's own compare-and-set: stores the caller's bytes verbatim.
-            ("session_map.py", "replace_mirror_link_if"),
+            ("session_map_links.py", "replace_mirror_link_if"),
         }, others
 
     def test_restorable_link_carries_a_verified_row_and_strips_an_unverified_one(

@@ -75,7 +75,6 @@
 3181 src/kiro_crew/security_posture.py
 2232 src/kiro_crew/service/linux.py
 2421 src/kiro_crew/session_ledger.py
-2648 src/kiro_crew/session_map.py
 3685 src/kiro_crew/slack/events.py
 3892 src/kiro_crew/slack/interactions.py
 2115 src/kiro_crew/snapshot.py

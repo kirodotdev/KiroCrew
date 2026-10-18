@@ -65,7 +65,7 @@ The dashboard has real surfacing as of #658 / #751 / #752: a persistent inline `
 
 The resume mechanism already exists and is key-agnostic:
 
-- `SessionMap.set` accepts any key (`session_map.py:178-195`; the whole map is rewritten by `_save`, `session_map.py:110-122`).
+- `SessionMap.set` accepts any key (`session_map.py:178-195`; the whole map is rewritten by `_save`, in `session_map_store.py`).
 - `SessionManager.get_or_create` arms `set_resume_session_id` before `provider.start()` (`SessionAllocationService._get_or_create_impl`, `session_allocation_parts/get_or_create.py`).
 - `AcpRuntime.load_session` implements ACP `session/load`, capability-gated on the backend's `agentCapabilities.loadSession` (`acp/runtime.py:1014,1030-1034`, read at `runtime.py:522`). There is no `--resume` flag; spawn is `kiro-cli acp --agent <name>` plus an optional `--model`, sandbox-wrapped (`acp/runtime.py:406-425`).
 - `ConversationLog` is a general append-only JSONL store taking its root as the `base_dir` constructor argument (`ConversationLog.__init__`), with cross-process flocks; a class comment names subagent/cron/CLI writers (`ConversationLog._flock_state`).

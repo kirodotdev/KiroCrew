@@ -313,7 +313,7 @@ reflects a reply-binding delivery rather than a link that does not exist.
   binding here could serve its Phase B4 later.
 - **Reuse the existing thread-to-session index instead of a dedicated record.**
   Rejected. The shared index cannot carry this binding. `_rebuild_thread_index`
-  (`session_map.py`) rebuilds `_thread_to_session` only from each entry's
+  (`session_map_links.py`) rebuilds `_thread_to_session` only from each entry's
   `slack_thread_ts`, and `_slack_thread_of` / `_mirror_identity_of`
   (`session_control.py`) read that same `slack_thread_ts` through `get_slack_link`
   as a mirror room. So a binding stored there either sets `slack_thread_ts`, which

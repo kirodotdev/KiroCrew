@@ -2489,6 +2489,26 @@ envelope on a cold session.
 - `close_all()`: saves all active mappings before killing processes.
 - `start_pool()`: prunes stale entries (files deleted by kiro-cli GC).
 
+**Module layout:** `kiro_crew.session_map` is the import path and defines `SessionMap`
+itself: the constructor, the resume rule and both stale paths (`get`, `prune`, the per-read
+repair), the session pointer and the per-conversation state, the privacy rows, and the
+bind/unbind announcements beside the listeners they call. Every member that reads a name
+tests patch through that module, or the one ACP-layer constant, is defined there. The class
+binds its other members by name from two owner modules:
+
+| Owner | Owns |
+|---|---|
+| `session_map_store.py` | `_MAP_LOCK` and `_guarded`, the load, the deferred flush's scheduling and snapshot claims, and the atomic write (`batched_save`, `_save`, `flush`, `aflush`, `aclose`, `_write_payload`); the debounced task itself, `_flush_async`, stays in the facade, where tests patch its debounce |
+| `session_map_links.py` | the Slack thread link and its reverse index, the channel-neutral mirror binding, the session's own link, the compare-and-clear unlinks, the mutes, the binding nonces and `ConversationOwnershipConflict` |
+
+New work goes to the module that owns its responsibility. A bound member reads as a method of
+the class: its `__qualname__`, `__module__` and signature are the ones it had when the class
+was one module, and only its code object names the owner file. A module-level name that moved
+(`_MAP_LOCK`, `_guarded`, `ConversationOwnershipConflict`) is imported back, so
+`kiro_crew.session_map.<name>` is the owner's own object. `test/test_session_map_bindings.py`
+pins the bindings, the owners' import direction and the reach of every patch the tests make
+through the module.
+
 ### Asking for a fresh conversation on a slot that stays open
 
 `POST /api/chat/slots/{slot}/reset-conversation` drops one slot's resume pointer

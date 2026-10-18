@@ -385,10 +385,44 @@ class TestLockHoldIsBounded:
         )
 
 
+def _owner_trees() -> list[ast.Module]:
+    """Every module ``SessionMap`` binds members from (``session_map._OWNERS``), parsed."""
+    trees = [
+        ast.parse((SRC / f"{owner.rpartition('.')[2]}.py").read_text(encoding="utf-8"))
+        for owner in session_map_mod._OWNERS
+    ]
+    assert trees, "SessionMap binds its members from owner modules beside the facade"
+    return trees
+
+
+def _family_tree() -> ast.Module:
+    """``session_map.py`` and every owner module, scanned as one module."""
+    facade = ast.parse((SRC / "session_map.py").read_text(encoding="utf-8"))
+    owners = [node for tree in _owner_trees() for node in tree.body]
+    return ast.Module(body=[*facade.body, *owners], type_ignores=[])
+
+
 def _session_map_class() -> ast.ClassDef:
     tree = ast.parse((SRC / "session_map.py").read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name == "SessionMap":
+            # The class binds an owner's function by name (``m = _owner.m``, or
+            # ``staticmethod(_owner.m)``), so those functions are its members: scan them.
+            names = {
+                target.id
+                for stmt in node.body
+                if isinstance(stmt, ast.Assign)
+                for target in stmt.targets
+                if isinstance(target, ast.Name)
+            }
+            bound = [
+                fn
+                for owner_tree in _owner_trees()
+                for fn in owner_tree.body
+                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.name in names
+            ]
+            assert bound, "no owner function was found to scan with the class"
+            node.body.extend(bound)
             return node
     raise AssertionError("SessionMap class not found")
 
@@ -495,7 +529,7 @@ class TestNoLockAcrossFlushAwait:
 
     def test_no_async_def_is_guarded(self):
         offenders = []
-        tree = ast.parse((SRC / "session_map.py").read_text(encoding="utf-8"))
+        tree = _family_tree()
         for fn in self._async_defs(tree):
             decorators = {d.id for d in fn.decorator_list if isinstance(d, ast.Name)}
             if "_guarded" in decorators:
@@ -509,7 +543,7 @@ class TestNoLockAcrossFlushAwait:
 
     def test_no_map_lock_block_awaits(self):
         offenders: list[str] = []
-        tree = ast.parse((SRC / "session_map.py").read_text(encoding="utf-8"))
+        tree = _family_tree()
         for fn in self._async_defs(tree):
             for node in ast.walk(fn):
                 if not isinstance(node, (ast.With, ast.AsyncWith)):

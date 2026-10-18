@@ -221,10 +221,13 @@ def test_every_committed_binding_is_announced_to_the_recorder():
     Derived by asking which functions WRITE a binding key and persist it, so a new one
     is caught without being named.
     """
-    path = SRC / "session_map.py"
+    from kiro_crew import session_map
+
+    owners = [f"{name.rpartition('.')[2]}.py" for name in session_map._OWNERS]
+    paths = [SRC / "session_map.py", *(SRC / owner for owner in owners)]
     binding_keys = ("mirror", "slack_thread_ts")
     missing: list[str] = []
-    for func in _functions(_tree(path)):
+    for func in [f for path in paths for f in _functions(_tree(path))]:
         writes_binding = False
         for inner in ast.walk(func):
             if not isinstance(inner, ast.Assign):
