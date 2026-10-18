@@ -494,6 +494,49 @@ class TestSlotDetailPagination:
         assert contents == [f"msg {i}" for i in range(30)] + ["foreign mid-read"]
 
     @pytest.mark.asyncio
+    async def test_probe_losing_the_revision_race_is_retried_not_answered_by_a_full_read(
+        self, tmp_path, monkeypatch
+    ):
+        """Rows landing while the total/revision probe reads send it round again.
+
+        The probe's own two unpinned attempts both race a writer. It must hand that
+        to the snapshot retry rather than re-read the whole transcript to answer.
+        """
+        state = await self._slot_with_history(tmp_path, monkeypatch, "probe-race", count=30)
+        log = state.conversation_log
+        projection = log._read_projection
+        real_once = projection._read_messages_chained_page_once
+        raced = 0
+
+        def racing_once(key, *, limit, before):
+            nonlocal raced
+            result = real_once(key, limit=limit, before=before)
+            if limit == 0 and raced < 2:
+                raced += 1
+                log.append(key, "assistant", f"foreign {raced}")
+            return result
+
+        corpus_reads: list[str] = []
+        real_corpus = projection.read_messages_chained
+
+        def counting_corpus(key):
+            corpus_reads.append(key)
+            return real_corpus(key)
+
+        monkeypatch.setattr(projection, "_read_messages_chained_page_once", racing_once)
+        monkeypatch.setattr(projection, "read_messages_chained", counting_corpus)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/probe-race?limit=50")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        assert raced == 2
+        assert corpus_reads == [], "the probe must not read the whole transcript"
+        contents = [message["content"] for message in data["messages"]]
+        assert contents[-2:] == ["foreign 1", "foreign 2"]
+        assert [c for c in contents if c.startswith("msg ")] == [f"msg {i}" for i in range(30)]
+
+    @pytest.mark.asyncio
     async def test_cursor_branch_reads_bounded_page_off_the_loop_thread(
         self, tmp_path, monkeypatch
     ):

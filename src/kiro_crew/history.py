@@ -75,6 +75,7 @@ from kiro_crew.history_cache import (
     _FileChangeCacheEntry,
     _LRUCache,
     _SearchTextCache,
+    _TranscriptIndexBase,
     _TranscriptRowIndexEntry,
 )
 from kiro_crew.history_consolidation import (  # noqa: F401 - facade re-exports
@@ -455,6 +456,11 @@ class ConversationLog:
         #: contain offsets and counts only, never message content, so a bounded
         #: page does not retain the complete parsed transcript in memory.
         self._page_index_cache: _LRUCache[_TranscriptRowIndexEntry] = _LRUCache(cache_max)
+        #: The last complete row index per transcript, deliberately NOT dropped by
+        #: ``_invalidate_cache``: an append only extends the file, so the next
+        #: bounded page scans the new bytes instead of the whole file. It is
+        #: re-validated against the file on every use (see ``_TranscriptIndexBase``).
+        self._page_index_base: _LRUCache[_TranscriptIndexBase] = _LRUCache(cache_max)
         #: Bounded memo of ``(identity, gen, doc_chars, casefolded_blob)`` per
         #: session, consumed only by :meth:`search_sessions`. ``gen`` is the
         #: invalidation generation (:meth:`_cache_gen`) the entry was folded

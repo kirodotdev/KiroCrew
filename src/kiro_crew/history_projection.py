@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -30,7 +31,12 @@ from kiro_crew.chat_attachments import (
     stage_attachments_removal,
 )
 from kiro_crew.execution_context import STRICTEST_MEMORY_MODE
-from kiro_crew.history_cache import FileStamp, _FileChangeCacheEntry, _TranscriptRowIndexEntry
+from kiro_crew.history_cache import (
+    FileStamp,
+    _FileChangeCacheEntry,
+    _TranscriptIndexBase,
+    _TranscriptRowIndexEntry,
+)
 from kiro_crew.jsonl_util import (
     bounded_raw_records,
     raise_if_splitlines_boundary,
@@ -99,6 +105,10 @@ _TRANSCRIPT_PAGE_INDEX_STRIDE = 128
 #: where the stride is the smallest power-of-two multiple of the base that fits.
 _TRANSCRIPT_PAGE_INDEX_MAX_CHECKPOINTS = 1024
 _TRANSCRIPT_PAGE_READ_ATTEMPTS = 2
+#: Bytes before a saved scan boundary that must still be identical for an
+#: append-only file to resume its row index from there. Arbitrary: large enough
+#: to span several rows, small enough to re-read on every request.
+_TRANSCRIPT_INDEX_FINGERPRINT_BYTES = 4096
 
 #: Characters per text read in ``_read_messages_locked``. One whole-file
 #: ``read()`` or ``splitlines()`` is a single C call that holds the GIL for the
@@ -850,6 +860,28 @@ class TranscriptReadProjection:
             return None
         return (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_ino, stat.st_dev)
 
+    @staticmethod
+    def _handle_extends_base(handle: IO[bytes], base: _TranscriptIndexBase) -> bool:
+        """True when the open file is *base*'s file with more bytes appended after it.
+
+        Judged on the handle the caller then scans, never on the path, so a file
+        replaced between the check and the scan cannot be resumed from another
+        file's offsets. Same device and inode, longer than the saved boundary, and
+        the bytes just before the boundary unchanged. Atomic rewrites (compaction,
+        rotation, metadata updates) replace the inode, so they never pass; the
+        digest covers an in-place rewrite that reuses an inode.
+        """
+        info = os.fstat(handle.fileno())
+        if (info.st_dev, info.st_ino) != (base.dev, base.ino) or info.st_size <= base.scanned_end:
+            return False
+        lo = max(0, base.scanned_end - _TRANSCRIPT_INDEX_FINGERPRINT_BYTES)
+        handle.seek(lo)
+        window = handle.read(base.scanned_end - lo)
+        return (
+            len(window) == base.scanned_end - lo
+            and hashlib.blake2b(window, digest_size=16).digest() == base.digest
+        )
+
     def _row_index(self, key: str) -> _TranscriptRowIndexEntry:
         """Return a sparse valid-message-row index for one file revision."""
         path = self._log._path(key)
@@ -867,9 +899,25 @@ class TranscriptReadProjection:
         row_count = 0
         stride = _TRANSCRIPT_PAGE_INDEX_STRIDE
         checkpoints: list[tuple[int, int]] = []
+        resume_at = 0
+        scanned_end = 0
+        ends_on_newline = False
         with open(path, "rb") as handle:
+            file_identity = os.fstat(handle.fileno())
+            base = self._log._page_index_base.get(key)
+            if base is not None and self._handle_extends_base(handle, base):
+                # An append-only file: its saved prefix is still the same bytes,
+                # so only the rows added since need scanning.
+                row_count = base.row_count
+                checkpoints = list(base.checkpoints)
+                resume_at = base.scanned_end
+                if len(checkpoints) > 1:
+                    stride = checkpoints[1][0] - checkpoints[0][0]
+            handle.seek(resume_at)
             records = strict_raw_records_with_offsets(handle, path)
-            for start, _end, raw in records:
+            for start, end, raw in records:
+                scanned_end = end
+                ends_on_newline = raw.endswith(b"\n")
                 if self._message_record(raw) is None:
                     continue
                 if row_count % stride == 0:
@@ -881,6 +929,22 @@ class TranscriptReadProjection:
                         checkpoints = checkpoints[::2]
                         stride *= 2
                 row_count += 1
+            if scanned_end and ends_on_newline:
+                # Keep where this scan stopped so the next one can resume from it.
+                # The digest is read from the handle that was scanned, so it
+                # describes the same file the offsets came from.
+                lo = max(0, scanned_end - _TRANSCRIPT_INDEX_FINGERPRINT_BYTES)
+                handle.seek(lo)
+                window = handle.read(scanned_end - lo)
+                if len(window) == scanned_end - lo:
+                    self._log._page_index_base[key] = _TranscriptIndexBase(
+                        file_identity.st_dev,
+                        file_identity.st_ino,
+                        scanned_end,
+                        hashlib.blake2b(window, digest_size=16).digest(),
+                        row_count,
+                        tuple(checkpoints),
+                    )
 
         entry = _TranscriptRowIndexEntry(
             stamp,
@@ -1009,6 +1073,11 @@ class TranscriptReadProjection:
                 return page
         if expected_revision is not None:
             raise TranscriptRevisionChanged("chained transcript changed during page composition")
+        if limit == 0:
+            # The total/revision probe decodes no rows. Re-reading the whole
+            # transcript to answer it would cost far more than the probe it
+            # replaces, so the caller's retry policy decides instead.
+            raise TranscriptRevisionChanged("chained transcript changed during total probe")
 
         for _attempt in range(_TRANSCRIPT_PAGE_READ_ATTEMPTS):
             keys = self._chain_keys(key)

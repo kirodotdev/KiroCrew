@@ -171,8 +171,21 @@ materializing the complete parsed transcript. `TranscriptReadProjection` keeps a
 bounded in-memory sparse index per transcript revision, mapping every row
 stride to a byte offset. The stride starts at 128 rows and doubles whenever the
 entry would exceed 1024 checkpoints, so an entry's size is capped regardless of
-transcript length. Any file-stamp or invalidation-generation change rebuilds
-the index from byte zero; only an exact revision reuses checkpoints. A key with
+transcript length. A file-stamp or invalidation-generation change makes the
+cached entry unusable; an exact revision reuses it. The next scan then either
+starts at byte zero or resumes from the last complete scan: the projection keeps
+that scan (`_page_index_base`: device, inode, the record boundary it stopped at,
+a blake2b digest of the 4 KiB before the boundary, the row count and the
+checkpoints) across invalidation, because `ConversationLog.append` invalidates on
+every write and the file only grows by appends. The scan resumes only when the
+open handle it is about to read has the same device and inode, is longer than the
+boundary, and has the same digest before the boundary; it then scans only the
+appended rows. Compaction, rotation and metadata updates replace the file through
+`atomic_write` (a new inode), so they always rebuild from byte zero, and a final
+row without a line terminator is never used as a boundary. The premise is that
+product writes are `O_APPEND` appends or atomic replaces; an in-place edit that
+keeps the inode and the 4 KiB before the old end and also lengthens the file would
+not be noticed. A key with
 no transcript file is a stable empty revision (`total=0`); any other stat error
 propagates rather than reading as empty.
 The index is built lazily by the first paginated read of a revision (one O(rows)
@@ -192,8 +205,10 @@ requires the full file stamp (`mtime_ns`, `ctime_ns`, size, inode, device) and t
 history invalidation generation. An unpinned page read whose revision changes
 mid-read is retried once; a read pinned to an `expected_revision` is not, since
 the stamp that broke the pin cannot recur, and the caller's retry policy decides.
-Repeated churn falls back to the complete-reader oracle so the endpoint
-never returns a mixed revision. Indexed reads use the strict framing posture
+The `limit=0` total/revision probe never falls back to a full read: after its
+retry it raises `TranscriptRevisionChanged` to the caller, which spends one
+snapshot attempt on it. Repeated churn falls back to the complete-reader oracle,
+so the endpoint never returns a mixed revision. Indexed reads use the strict framing posture
 (`strict_raw_records_with_offsets`): a record over `RECORD_CAP` raises instead of
 being skipped, because a skipped row would shift every cursor above it; the
 endpoint then serves the request from the full reader, which has no per-record cap.

@@ -114,6 +114,27 @@ class _TranscriptRowIndexEntry(NamedTuple):
     checkpoints: tuple[tuple[int, int], ...]
 
 
+class _TranscriptIndexBase(NamedTuple):
+    """A row index kept across invalidation so an append-only file is not rescanned.
+
+    ``ConversationLog.append`` drops the cached :class:`_TranscriptRowIndexEntry`
+    on every write, so without this the next bounded page re-parses the whole
+    file. The base records the index of bytes ``[0, scanned_end)``, where
+    ``scanned_end`` is a record boundary, plus the file identity and a digest of
+    the last bytes before it. It is trusted only after the file is re-checked
+    (same device and inode, grown past ``scanned_end``, same digest), so it needs
+    no invalidation of its own: atomic rewrites change the inode, and an edit
+    that moves those bytes changes the digest.
+    """
+
+    dev: int
+    ino: int
+    scanned_end: int
+    digest: bytes
+    row_count: int
+    checkpoints: tuple[tuple[int, int], ...]
+
+
 _V = TypeVar("_V")
 
 
