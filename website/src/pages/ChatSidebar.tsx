@@ -16,6 +16,7 @@ import { CreatorFilterBar, CreatorFilteredSessions, useSharedCrewListView } from
 import { sharedCrewKeys } from '../hooks/sharedCrew/sharedCrewSocket'
 import { SharedCrewBylineContext } from './chat-sidebar/SessionCreatorByline'
 import { api } from '../api/client'
+import { fetchDashboardConfig } from '../api/dashboardConfigQuery'
 import { computeRecentRank, clampTintCount } from '../utils/recencyTint'
 import { useDndSensors } from '../hooks/useDndSensors'
 import { useSessionPalette } from '../hooks/useSessionPalette'
@@ -89,6 +90,7 @@ import { createFolderBlocks } from './chat-sidebar/folderBlocks'
 import { createListLanes } from './chat-sidebar/listLanes'
 import { createBoardLane } from './chat-sidebar/boardLane'
 import ErrorNotice from '../components/ErrorNotice'
+import { errMessage } from '../utils/thunkError'
 import { renderSidebarHeader } from './chat-sidebar/SidebarHeader'
 import { renderSearchDock } from './chat-sidebar/SearchDock'
 export { FILTER_LABEL_KEY, FILTER_DESCRIPTION_KEY, SORT_LABEL_KEY, FOLDER_SORT_LABEL_KEY } from './chat-sidebar/SearchDock'
@@ -855,16 +857,21 @@ function ChatSidebar({
   // tab, entered). Read once here so rows re-render only when it flips.
   const guideView = useGuide()?.view
   const guideOnRowControl = guideStepOnRowControl(guideView?.ownedHere && !guideView.needsEnter ? guideView.step : null)
+  const { data: dashboardConfig, error: dashboardConfigError } = useQuery({
+    queryKey: ['dashboardConfig'],
+    queryFn: fetchDashboardConfig,
+  })
+  const showMessagePreview = dashboardConfig?.session_card_message_preview !== false
   const rowShell: RowShell = useMemo(() => ({
     connected, mode, defaultAgent, installedAgents: tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount, showUnreadDot,
     // A session row on any touch screen (an iPad too) gets the single ⋯ menu,
     // not the overlay cluster.
     isMobile: isMobile || isTouchDevice,
-    dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex, manualSort, manualReorderOff, guideOnRowControl,
+    dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex, manualSort, manualReorderOff, guideOnRowControl, showMessagePreview,
   }), [
     connected, mode, defaultAgent, tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount, showUnreadDot,
     isMobile, isTouchDevice, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex,
-    manualSort, manualReorderOff, guideOnRowControl,
+    manualSort, manualReorderOff, guideOnRowControl, showMessagePreview,
   ])
   // What this render shows rows with. The row model reads the local-only members
   // for a local row alone.
@@ -999,6 +1006,20 @@ function ChatSidebar({
       <NeedsMeHoverLayer rootRef={sidebarRootRef} />
       {/* Outside the row list on purpose: a notice under a row adds a line every session
           pays for in above-fold density (AUTOSDE session-row-fixed-height). */}
+      {/* The full-width host hides the chat pane's config notice. */}
+      {/* No hand-off: while a session/folder rename is open, or on mobile where the drawer
+          may cover an unsent composer draft. */}
+      {fillsHost && dashboardConfigError && (
+        <ErrorNotice
+          title={i18nT('pages.settings.chatPanel.failed_to_load_dashboard_config')}
+          message={errMessage(dashboardConfigError) || i18nT('components.errorBoundary.something_went_wrong')}
+          variant="inline"
+          askAgent={!isMobile && !renamingSlot && !editingId}
+          testId="sidebar-config-error"
+          className="mx-1 mt-1 mb-0 min-w-0 flex-wrap shrink-0"
+          messageClassName="min-w-0 break-words"
+        />
+      )}
       {duplicateError ? (
         <ErrorNotice
           message={duplicateError.message}
