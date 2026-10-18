@@ -1085,6 +1085,24 @@ def _through_stable_link(path: str) -> str:
     return through_stable_link(path)
 
 
+def _imported_package_dir(package_file: str) -> Path:
+    """The directory ``kiro_crew`` was imported from, as the import system spelled it.
+
+    Absolute and normalized, but symlinks are NOT followed. The walks in
+    :func:`_resolve_kirocrew_bin` ask "which install does this process belong
+    to?", and the answer is the tree whose ``site-packages`` is on ``sys.path``,
+    not wherever that tree's files physically live. The universal macOS app is
+    where the two differ: its x64 backend tree shares every byte-identical
+    package with the arm64 tree through symlinks (``packaging/dedupe_universal_backend.py``),
+    so ``kiro_crew`` imported from ``kirocrew-backend-x64/.../site-packages``
+    resolves to a directory under ``kirocrew-backend-arm64/``. Walking up from
+    the resolved path would find that tree's ``bin/kirocrew`` -- a launcher
+    whose interpreter cannot run on an Intel Mac -- and write it into
+    ``kirocrew.json`` as the command for every built-in MCP server.
+    """
+    return Path(os.path.abspath(package_file)).parent
+
+
 def _resolve_kirocrew_bin() -> str:
     """Resolve the absolute path of the ``kirocrew`` executable.
 
@@ -1095,6 +1113,7 @@ def _resolve_kirocrew_bin() -> str:
        ``project/.venv``). Bounded by the first ``pyvenv.cfg`` walking up, so a
        pip-into-venv install falls through to step 2 instead.
     2. Same install as the current process: walk up from ``kiro_crew.__file__``
+       as imported (:func:`_imported_package_dir`; symlinks are not followed)
        looking for a sibling console script (see
        :func:`_kirocrew_bin_subpath` for the per-OS layout). Covers venv-based
        installs, pip installs, source-tree dev trees, and the desktop app —
@@ -1151,7 +1170,7 @@ def _resolve_kirocrew_bin() -> str:
         # after the package is fully loaded.
         import kiro_crew as _mc  # noqa: PLC0415  circular import
 
-        pkg_dir = Path(_mc.__file__).resolve().parent
+        pkg_dir = _imported_package_dir(_mc.__file__)
         for parent in pkg_dir.parents:
             venv_candidate = _kirocrew_bin_subpath(parent / ".venv")
             if _usable(venv_candidate):
@@ -1166,7 +1185,7 @@ def _resolve_kirocrew_bin() -> str:
     try:
         import kiro_crew as _mc  # noqa: PLC0415  circular import
 
-        pkg_dir = Path(_mc.__file__).resolve().parent
+        pkg_dir = _imported_package_dir(_mc.__file__)
         for parent in pkg_dir.parents:
             candidate = _kirocrew_bin_subpath(parent)
             if _usable(candidate):

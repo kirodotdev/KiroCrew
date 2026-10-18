@@ -130,6 +130,34 @@ def test_the_bundled_kas_root_is_sealed_in_both_spellings(
 
 
 @_POSIX_ONLY
+def test_a_shared_engine_bundle_is_sealed_where_it_lives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The universal build points ``kas-x64/<version>/bundle`` at the arm64 root's
+    # bundle. A write is denied by the path it RESOLVES to, so sealing the x64
+    # root alone would leave acp-server.js writable under kas-arm64 -- and the
+    # gateway runs that file unsandboxed on every bundle-route spawn.
+    dist = tmp_path / "Resources" / "backend-dist"
+    arm_bundle = dist / "kas-arm64" / "0.66.33" / "bundle"
+    arm_bundle.mkdir(parents=True)
+    x64_version = dist / "kas-x64" / "0.66.33"
+    x64_version.mkdir(parents=True)
+    (x64_version / "node").mkdir()
+    (x64_version / "install.json").write_text("{}")
+    (x64_version / "bundle").symlink_to(
+        os.path.relpath(arm_bundle, x64_version), target_is_directory=True
+    )
+    monkeypatch.setenv(BUNDLED_KAS_DIR_ENV, str(dist / "kas-x64"))
+    sandbox_tiers._bundled_kas_targets_cached.cache_clear()
+    targets = sandbox._resolved_install_root_targets()
+    assert str(dist / "kas-x64") in targets
+    assert str(arm_bundle.resolve()) in targets, "the shared bundle's real location is sealed"
+    # Real entries beside the link add nothing: the root already covers them.
+    assert str((x64_version / "node").resolve()) not in targets
+    sandbox_tiers._bundled_kas_targets_cached.cache_clear()
+
+
+@_POSIX_ONLY
 def test_the_bundled_kas_root_is_read_only_on_both_launchers() -> None:
     kas_root = "/Applications/Kiro Crew.app/Contents/Resources/backend-dist/kas-arm64"
     host = _host(install_root_targets=(INSTALL, kas_root))

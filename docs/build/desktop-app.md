@@ -222,9 +222,12 @@ error, not a refusal on the user's first prompt.
 
 Layout mirrors the backend trees. A universal macOS build stages one root per
 architecture, `backend-dist/kas-arm64/` and `backend-dist/kas-x64/` (Node ships
-no universal binary; the engine's own JS is shared), a single-arch build stages
-`backend-dist/kas/`. Each root holds `<version>/{bundle,node,install.json}` plus
-a `BUNDLED-VERSION` file beside the version directory. The Electron shell
+no universal binary; the engine's own JS is one `darwin-universal` tarball, so
+after staging the x64 root's `<version>/bundle/` becomes a relative symlink to
+the arm64 root's — see [the shared-half note above](#macos-default--one-universal-dmg-for-both-arches)),
+a single-arch build stages `backend-dist/kas/`. Each root holds
+`<version>/{bundle,node,install.json}` plus a `BUNDLED-VERSION` file beside the
+version directory. The Electron shell
 (`gateway-env.js`, `bundledKasEnvironment`) reads that file and the install
 record beside it, and exports the root as `KIROCREW_BUNDLED_KAS_DIR` — the
 arch-suffixed root first, the unsuffixed one second, never a root for another
@@ -392,8 +395,13 @@ How it works — **universal shell + dual embedded backends**:
 KiroCrew.app/Contents/
 ├── MacOS/ + Frameworks/…                 ← fat binaries (arm64 + x86_64)
 └── Resources/backend-dist/
-    ├── kirocrew-backend-arm64/           ← full PBS bundle, arm64
-    └── kirocrew-backend-x64/             ← full PBS bundle, x86_64
+    ├── kirocrew-backend-arm64/           ← full PBS bundle, arm64 (every file real)
+    ├── kirocrew-backend-x64/             ← PBS bundle, x86_64: bin/, lib-dynload/ and every
+    │                                        arch-specific entry real; each byte-identical
+    │                                        package/module/dist-info a relative symlink
+    │                                        into ../kirocrew-backend-arm64/
+    ├── kas-arm64/<v>/{bundle,node,…}     ← KAS engine root, arm64 (real)
+    └── kas-x64/<v>/{node,…}              ← x64 Node real; bundle/ → ../../kas-arm64/<v>/bundle
 ```
 
 The build runs the normal backend steps twice: natively for
@@ -401,7 +409,46 @@ The build runs the normal backend steps twice: natively for
 (`uv python install cpython-3.12-macos-x86_64-none`, executed under Rosetta)
 for `kirocrew-backend-x64/`. The frontend is built once (arch-independent).
 Each backend passes the same self-containment gate as a per-arch build — the
-x64 gate doubles as proof the bundle runs under Rosetta. In
+x64 gate doubles as proof the bundle runs under Rosetta.
+
+**The duplicate half is shared, not shipped twice.** Once both trees and both
+KAS roots are staged, `packaging/dedupe_universal_backend.py` (build step 3e,
+universal builds only) leaves the arm64 tree whole and replaces, in the x64
+tree, every *entry* of `lib/python3.12/` and `lib/python3.12/site-packages/`
+that is byte-identical in both trees (a whole package directory, a top-level
+module, a `*.dist-info`) with a relative symlink into the arm64 tree; the x64
+KAS root's `bundle/` (the engine is one `darwin-universal` tarball; only Node is
+per-arch) points at the arm64 root's. `bin/`, `lib-dynload/`, `config-*`,
+`_sysconfigdata*` and any entry that differs by a byte stay real x64 files, so
+`sys.executable`, `sysconfig` paths and every compiled extension are the x64
+tree's own, and a package is shared only when *everything* it expects beside
+`__file__` is shared with it. The stdlib's and `kiro_crew`'s `.pyc` caches are
+identical across the trees because `compileall` runs with
+`-d kirocrew-backend/lib`, a neutral `co_filename` prefix the import system
+replaces with the real source path on load. The self-containment probes run
+again on both trees after sharing, and the x64 KAS root is re-read through
+`installed_bundle()`, so an import or engine entry that crosses a symlink is
+proven at build time. Single-arch builds (the arm64 and x64 DMGs, Linux,
+Windows) have one tree and are untouched. Symlinks are the primitive because
+every later step already carries them for `Electron Framework.framework`:
+`codesign` seals them as links, `@electron/universal` resolves them when it
+merges the two interim apps, `generate-manifest.py` skips them and signs the
+real Mach-O once, and `ditto -c -k` keeps them in the zip and the DMG. Hard links
+do not survive the zip.
+
+**Why: the update zip must stay under 1 GiB.** The Squirrel.Mac inside every
+installed app (the pin Electron 43 and 44.0–44.6 carry) downloads the update zip
+into one in-memory `NSData` whose capacity doubles as it grows; past 1 GiB it
+asks for exactly 2 GiB, Electron's PartitionAlloc refuses any allocation that
+large by design, and the running app dies with `EXC_BREAKPOINT` mid-update
+([#21716](https://github.com/kirodotdev/KiroCrew/issues/21716),
+[#21738](https://github.com/kirodotdev/KiroCrew/issues/21738)). The *old* app
+performs the install, so a newer Electron in the release being shipped does not
+protect the users receiving it; only the artifact's size does. Two gates hold
+it: `build-desktop.sh` fails a universal build whose `*-mac.zip` is at or over
+1000 MiB, and `sign-and-notarize.yml`
+checks the notarized zip it is about to publish against the same ceiling. Raising
+the ceiling past 1024 MiB ships the crash; shrink the payload instead. In
 `website/electron/package.json`, `build.mac.x64ArchFiles` allowlists
 `backend-dist/**` (single-arch Mach-O files inside a universal app are
 intentional there), and `extraResources` ships the `backend-dist/` directory
@@ -416,9 +463,12 @@ wholesale so single- and dual-backend layouts both package.
 > `packaging/build-desktop.sh`, so a rename fails a test — update the constant
 > and the packaging layer in the same change.
 
-**Trade-off:** the DMG carries two full Python backend trees, so it is
-roughly **2× the size** of a per-arch DMG. That is the price of one artifact
-for both arches. The universal app follows the channel's default feed,
+**Trade-off:** the DMG carries two Python backend trees and two KAS roots. With
+the identical half shared it is roughly **1.4×** a per-arch DMG (the universal
+`kiro-cli-chat` and Electron shell are the rest); unshared it was 2×, and that
+is what carried the update zip past the 1 GiB cliff above. The price of one
+artifact for both arches is now the per-arch Node, Python and compiled
+extensions, twice. The universal app follows the channel's default feed,
 `feed/<channel>/latest-mac.yml`; the single-arch DMGs above follow their own
 `feed/<channel>/<arch>/latest-mac.yml`.
 
