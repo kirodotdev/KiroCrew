@@ -41,7 +41,9 @@ Publishing never changes permissions. See [artifacts](artifacts.md).
 | `src/kiro_crew/builtin_skills/pipeline-conductor/SKILL.md` | The operating procedure: pipeline spec, claim preflight, work-order brief, probe cycle and action table, intervention ladder, adjudication and override protocol, admission table, credit rules, `conductor-status/v1`, cleanup |
 | `.../pipeline-conductor/scripts/claim_preflight.py` | One claim verdict per candidate item |
 | `.../pipeline-conductor/scripts/coverage_filter.py` | The batch open-PR exclusion for the queue build |
-| `.../pipeline-conductor/scripts/fleet_probe.py` | The batch patrol probe |
+| `.../pipeline-conductor/scripts/fleet_probe.py` | The batch patrol probe: its entry point, the patrol cycle and the session-store lookup it uses, config validation, the `/proc` walk that builds a `BANNED` line, and the `cmd=` redactor; it loads the two modules below by path and re-exports their names |
+| `.../pipeline-conductor/scripts/fleet_probe_sessions.py` | A module `fleet_probe.py` loads, never run on its own: the probe's session side, meaning protocol tags, reading and classifying a transcript tail, and the handled set's state file and suppression rules |
+| `.../pipeline-conductor/scripts/fleet_probe_processes.py` | A module `fleet_probe.py` loads, never run on its own: the probe's process side, meaning the banned command shapes, reading a runner's argv, the kernel's view of a pid's binary, and process ownership |
 | `.../pipeline-conductor/scripts/credit_spend.py` | Per-item credit rollup and budget verdict |
 | `.../pipeline-conductor/scripts/spec_check.py` | The spec's closed-value fields, checked once before the run arms |
 | `src/kiro_crew/dashboard/session_control.py` (facade over `src/kiro_crew/dashboard/session_control_parts/`) | Worker-session stand-up and control: `create_session` (`session_create.py`), `send_to_target` (`session_messaging.py`), `read_messages` (`session_status.py`), `stop_target` (`turn_control.py`), `authorize_target` (`target_authorization.py`) |
@@ -252,6 +254,17 @@ The banned-process scan's contract:
   with the rest withheld, because a command line can carry a credential or a
   presigned URL.
 
+The probe is three files. `fleet_probe.py` is the script an agent runs, and it
+loads `fleet_probe_sessions.py` and `fleet_probe_processes.py` from its own
+directory by path: nothing goes on `sys.path` or into `sys.modules`, no bytecode
+is written, and each of the two imports only the standard library, so a bare
+interpreter still runs the synced skill. New work on reading a session's tail, or
+on when a dispositioned signal stays quiet, goes to `fleet_probe_sessions.py`;
+new work on deciding whether a process is a banned run, or whose it is, goes to
+`fleet_probe_processes.py`. A name a test replaces on the probe
+(`_proc_starttime_ticks`, `_SAFE_LONG_FLAG_NAMES`) stays defined in
+`fleet_probe.py` together with every function that reads it.
+
 **`credit_spend.py`** sums the credits an item's sessions burned from the
 gateway's usage shards and answers `within`, `exhausted`, `truncated` or
 `unmetered`. `exhausted` is monotone (more shards can only add spend, so it
@@ -436,4 +449,5 @@ derive `permissions` from the filtered list; all of them mount
 | `test/test_pipeline_conductor_fleet_probe_worker_count.py` | Reading a run's worker count from its argv, every runner form crossed with the budgeted and unbudgeted spellings |
 | `test/test_pipeline_conductor_fleet_probe_program_position.py` | Which argv token is the runner's program position: aliases, entry points, launchers, interpreters and a refuted `argv[0]` |
 | `test/test_pipeline_conductor_fleet_probe_argv_row.py` | The argv runner shape's opt-out switch and the `rule=`, `scope=` and `cmd=` its row prints |
+| `test/test_fleet_probe_owners.py` | The probe's split into a facade and two owners: every name a test replaces on the facade its own (never a re-export) and read by no owner, the corpus that finds those names reaching the suites that load the probe through a helper, every name the single file bound still bound, re-exports that are the owner's own objects, standard-library-only owners loaded by path under the facade's package and never registered, and a bare copy that runs under `-I -S` writing no bytecode |
 | `test/test_pipeline_conductor_coverage_filter.py` | The batch coverage exclusion: that a closing keyword aimed at the item in a pull request's own title or body is coverage while a bare reference is `MENTIONED` and leaves the item in the queue, that fork and draft PRs count while a neighbouring number does not, that an unreadable forge exits 3 with no `uncovered` list, that the filter writes nothing, and that its reference vocabulary agrees with `claim_preflight.py`'s |

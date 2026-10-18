@@ -28,7 +28,6 @@
 2317 src/kiro_crew/browser_cli/install.py
 2579 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status.py
 2232 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/push_guard.py
-2998 src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py
 2058 src/kiro_crew/change_card_catalog.py
 2478 src/kiro_crew/cli_doctor.py
 2339 src/kiro_crew/connections/warm.py
