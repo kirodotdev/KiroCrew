@@ -190,8 +190,22 @@ class TestAugmentedPath:
                 assert dirs.index("/opt/homebrew/bin") < dirs.index(n_dir)
                 assert dirs.index("/usr/local/bin") < dirs.index(n_dir)
 
-    def test_finds_an_adapter_installed_under_the_dotted_n_prefix(self, tmp_path) -> None:
-        """``N_PREFIX=~/.n`` puts a global ``codex-acp`` in ``~/.n/bin``; the resolver must see it."""
+    def test_finds_an_adapter_installed_under_the_dotted_n_prefix(self, tmp_path, monkeypatch) -> None:
+        """``N_PREFIX=~/.n`` puts a global ``codex-acp`` in ``~/.n/bin``; the resolver must see it.
+
+        The real :func:`shutil.which` lookup runs, but every executable check
+        outside ``tmp_path`` reports absent, so a ``codex-acp`` the runner has in
+        ``/usr/local/bin`` (ahead of n's dirs) cannot change the verdict.
+        """
+        root = os.path.normcase(os.path.abspath(str(tmp_path))) + os.sep
+        real_access = os.access
+
+        def _access_under_tmp_only(path, mode, *args, **kwargs):
+            if not os.path.normcase(os.path.abspath(os.fspath(path))).startswith(root):
+                return False
+            return real_access(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(os, "access", _access_under_tmp_only)
         bin_dir = tmp_path / ".n" / "bin"
         bin_dir.mkdir(parents=True)
         adapter = bin_dir / ("codex-acp.cmd" if sys.platform == "win32" else "codex-acp")
