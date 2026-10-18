@@ -330,12 +330,15 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
     }
     copyToClipboard(panelText).then(settle)
   }, [panelText])
+  // A payload row's Copy carries visible text, and that text is also its name.
+  // It never turns into the failure string: `ErrorNotice` below reports a
+  // refused write, and the retry control keeps saying what it copies.
   const copyTitle = copyOutcome === 'copied'
     ? i18nT('appSdk.chatMessageList.copied')
-    : copyOutcome === 'failed'
-      ? i18nT('appSdk.chatMessageList.copy_failed')
-      : hasPayload
-        ? i18nT('appSdk.chatMessageList.copy_input_and_output')
+    : hasPayload
+      ? i18nT('appSdk.chatMessageList.copy_input_and_output')
+      : copyOutcome === 'failed'
+        ? i18nT('appSdk.chatMessageList.copy_failed')
         : i18nT('appSdk.chatMessageList.copy')
 
   return (
@@ -400,9 +403,13 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
               title={copyTitle}
               aria-label={copyTitle}
               aria-live="polite"
-              className="inline-flex items-center p-0.5 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer shrink-0 transition-colors"
+              className={`inline-flex items-center rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer transition-colors ${hasPayload ? 'gap-1 px-1 py-0.5 min-w-0 text-left text-[11px] leading-4' : 'p-0.5 shrink-0'}`}
             >
-              {copyOutcome === 'copied' ? <Check size={11} className="text-ok" /> : <Copy size={11} />}
+              {copyOutcome === 'copied' ? <Check size={11} className="text-ok shrink-0" /> : <Copy size={11} className="shrink-0" />}
+              {/* A payload row's Copy takes both halves, not the tab on screen,
+                  so it says so in words: a tooltip never reaches a touch
+                  reader. */}
+              {hasPayload && <span data-testid="tool-panel-copy-label">{copyTitle}</span>}
             </button>
             {!hasPayload && panelOverflows && (
               <button

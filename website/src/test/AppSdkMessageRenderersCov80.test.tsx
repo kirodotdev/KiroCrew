@@ -837,6 +837,45 @@ describe('ToolCallPill expanded details from persisted meta', () => {
     expect(mockedCopy).toHaveBeenCalledWith('zzq-cmd --flag\n\nzzq-result-line')
   })
 
+  it('says in visible text that Copy takes input and output', async () => {
+    mockedCopy.mockResolvedValue(true)
+    render(<ToolCallPill
+      message={msg({ role: 'tool', content: '🔧 zzq-title', meta: { input: 'zzq-cmd --flag', output: 'zzq-result-line' } } as Partial<ChatMessage>)}
+      running={false}
+    />)
+    await expandPanel()
+    const button = screen.getByRole('button', { name: 'Copy input and output' })
+    expect(within(button).getByTestId('tool-panel-copy-label')).toHaveTextContent('Copy input and output')
+    await userEvent.click(button)
+    expect(mockedCopy).toHaveBeenCalledWith('zzq-cmd --flag\n\nzzq-result-line')
+    await waitFor(() => expect(screen.getByTestId('tool-panel-copy-label')).toHaveTextContent('Copied!'))
+  })
+
+  it('leaves a refused payload copy to ErrorNotice and keeps the Copy label', async () => {
+    mockedCopy.mockResolvedValue(false)
+    render(<ToolCallPill
+      message={msg({ role: 'tool', content: '🔧 zzq-title', meta: { input: 'zzq-cmd --flag', output: 'zzq-result-line' } } as Partial<ChatMessage>)}
+      running={false}
+    />)
+    await expandPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Copy input and output' }))
+    await waitFor(() => expect(screen.getByTestId('tool-panel-copy-error')).toBeInTheDocument())
+    expect(screen.getByTestId('tool-panel-copy-label')).toHaveTextContent('Copy input and output')
+    expect(screen.getByRole('button', { name: 'Copy input and output' })).toBeInTheDocument()
+    expect(screen.getAllByText('Copy failed')).toHaveLength(1)
+  })
+
+  it('keeps the fallback-row Copy icon-only', async () => {
+    mockedCopy.mockResolvedValue(true)
+    render(<ToolCallPill message={msg({ role: 'tool', content: '🔧 zzq-legacy' })} running={false} />)
+    await expandPanel()
+    const button = screen.getByRole('button', { name: 'Copy' })
+    expect(screen.queryByTestId('tool-panel-copy-label')).toBeNull()
+    expect(button).toHaveTextContent(/^$/)
+    await userEvent.click(button)
+    expect(mockedCopy).toHaveBeenCalledWith('🔧 zzq-legacy')
+  })
+
   it('renders the payload at the full-form height, not the 160px compact cap', async () => {
     render(<ToolCallPill
       message={msg({ role: 'tool', content: '🔧 zzq-title', meta: { output: 'zzq-result-line' } } as Partial<ChatMessage>)}
