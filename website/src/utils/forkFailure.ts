@@ -21,6 +21,7 @@ export function forkFailureMessageForCode(
   direction: 'head' | 'tail' | 'unknown' = 'head',
   surface: 'transcript' | 'offsite' | 'offsite-compact' = 'transcript',
   title?: string,
+  control?: string,
 ): string {
   if (code === 'fork_corpus_too_large') {
     // Surface decides whether "pick a message" is reachable at all, and both offsite
@@ -35,9 +36,12 @@ export function forkFailureMessageForCode(
     // The control's own label, so the sentence names what the reader must click and
     // stays localized with the button rather than hard-coding its English name.
     return i18nT(key, {
-      control: i18nT('pages.chat.assistantMessage.fork_conversation_from_here'),
+      control: control ?? i18nT('pages.chat.assistantMessage.fork_conversation_from_here'),
       title,
     })
+  }
+  if (code === 'no_messages_after_fork_point') {
+    return i18nT('pages.chatPage.fork_failed_error', { error: i18nT('pages.chat.assistantMessage.fork_no_later_messages') })
   }
   return i18nT('pages.chatPage.fork_failed_error', { error: raw || i18nT('pages.chatPage.unknown_error') })
 }
@@ -68,8 +72,9 @@ export function showTranscriptForkFailure(
   code: string | undefined,
   raw: string | undefined,
   direction: 'head' | 'tail',
+  control?: string,
 ): void {
-  show(forkFailureMessageForCode(code, raw || '', direction), undefined, findReport(raw))
+  show(forkFailureMessageForCode(code, raw || '', direction, 'transcript', undefined, control), undefined, findReport(raw))
 }
 
 /**

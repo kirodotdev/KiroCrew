@@ -5069,6 +5069,13 @@
         "needs_earlier_history_count_one": "Select to load earlier history — {{count}} earlier message remains",
         "needs_earlier_history_count_other": "Select to load earlier history — {{count}} earlier messages remain",
         "share_message": "Share as image",
+        "fork_earlier_messages": "Fork with earlier messages",
+        "fork_later_messages_only": "Fork with later messages only",
+        "fork_earlier_messages_hint": "Starts a new chat with this message and the ones before it. This chat is not changed.",
+        "fork_later_messages_only_hint": "Leaves out this message. Only the ones after it go to a new chat. This chat is not changed.",
+        "fork_no_later_messages": "No messages after this one yet.",
+        "fork_in_progress": "Forking…",
+        "fork_other_in_progress": "Another fork is starting.",
         "copy_failed": "Copy failed",
         "quote_message": "Quote message"
       },

@@ -62,7 +62,7 @@ vi.mock('../components/CliPanel', async (importOriginal) => {
 })
 import { ThemeProvider } from '../hooks/useTheme'
 import { store as appStore } from '../store'
-import { setVoicePlaying, switchSlot } from '../store/chatSlice'
+import { appendMessage, setVoicePlaying, switchSlot } from '../store/chatSlice'
 import { sseDisconnected } from '../store/dashboardSlice'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
@@ -72,13 +72,16 @@ import type { ChatMessage } from '../types'
 interface AssistantProps {
   content: string
   timestamp?: string
-  onFork?: (visibleIndex: number) => void | Promise<void>
+  onFork?: (visibleIndex: number, messageId?: string, direction?: 'head') => void | Promise<void>
   onQuote?: (text: string, rect: DOMRect) => void
   onAsk?: (text: string) => void
   onSpeak?: (content: string) => void
   onRegenerate?: () => void
   onApplyPlan?: (steps: never[]) => Promise<boolean>
   forkIndex?: number
+  forkDirectionChoice?: boolean
+  forkHasLaterMessages?: (forkIndex: number) => boolean
+  shareEnabled?: boolean
 }
 let assistantProps: AssistantProps | null = null
 
@@ -482,6 +485,94 @@ describe('ChatPage row callbacks — fork', () => {
     expect(said).toContain('network down')
     expect(said).not.toContain('[object Object]')
     expect(alertSpy).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['head', 'Fork with earlier messages', 'an earlier message'],
+    [undefined, 'Fork with later messages only', 'a later message'],
+  ] as const)('names the %s entry the menu shows when a too-large fork is refused with Tail-only Fork on', async (direction, label, where) => {
+    apiSpy('dashboardConfig').mockResolvedValue({ tail_fork_enabled: true })
+    apiSpy('forkChatSlot').mockRejectedValue(new ApiError(400, 'Bad Request', JSON.stringify({ error: 'too large', code: 'fork_corpus_too_large' })))
+    await renderTurn()
+    await waitFor(() => expect(assistantProps!.forkDirectionChoice).toBe(true))
+    await act(async () => { await (direction ? assistantProps!.onFork!(1, 'row-1', direction) : assistantProps!.onFork!(1, 'row-1')) })
+    const said = (await screen.findByTestId('action-error')).textContent ?? ''
+    expect(said).toContain(`choose “${label}”`)
+    expect(said).toContain(where)
+  })
+
+  it('keeps naming the lone fork entry when a too-large fork is refused with Tail-only Fork off', async () => {
+    apiSpy('dashboardConfig').mockResolvedValue({ tail_fork_enabled: false, social_share_enabled: true })
+    apiSpy('forkChatSlot').mockRejectedValue(new ApiError(400, 'Bad Request', JSON.stringify({ error: 'too large', code: 'fork_corpus_too_large' })))
+    await renderTurn()
+    await waitFor(() => expect(assistantProps!.shareEnabled).toBe(true))
+    await act(async () => { await assistantProps!.onFork!(1, 'row-1') })
+    const said = (await screen.findByTestId('action-error')).textContent ?? ''
+    expect(said).toContain('choose “Fork conversation from here”')
+  })
+
+  it.each([false, true] as const)('forks with history when the menu entry names head whatever Tail-only Fork says (setting %s)', async (setting) => {
+    apiSpy('dashboardConfig').mockResolvedValue({ tail_fork_enabled: setting })
+    apiSpy('forkChatSlot').mockResolvedValue({ ok: true, key: 'chat-2', title: 'fork' })
+    await renderTurn()
+    await act(async () => { await assistantProps!.onFork!(1, 'row-1', 'head') })
+    expect(apiMocks.forkChatSlot).toHaveBeenCalledWith('chat-1', 1, undefined, undefined, 'head', 'row-1')
+  })
+
+  it.each([[false, 'head'], [true, 'tail']] as const)('still lets the setting pick the direction for the plain entry (setting %s)', async (setting, direction) => {
+    apiSpy('dashboardConfig').mockResolvedValue({ tail_fork_enabled: setting })
+    apiSpy('forkChatSlot').mockResolvedValue({ ok: true, key: 'chat-2', title: 'fork' })
+    await renderTurn()
+    await act(async () => { await assistantProps!.onFork!(2, 'row-9') })
+    expect(apiMocks.forkChatSlot).toHaveBeenCalledWith('chat-1', 2, undefined, undefined, direction, 'row-9')
+  })
+
+  it('offers the fork-direction choice while Tail-only Fork is on', async () => {
+    apiSpy('dashboardConfig').mockResolvedValue({ tail_fork_enabled: true })
+    await renderTurn()
+    await waitFor(() => expect(assistantProps!.forkDirectionChoice).toBe(true))
+  })
+
+  it('withholds the fork-direction choice while Tail-only Fork is off, because the server would answer a tail request with a history fork', async () => {
+    // `shareEnabled` and `forkDirectionChoice` are both read from the one ['dashboardConfig']
+    // query, so `shareEnabled` going true proves the payload landed with the setting off.
+    apiSpy('dashboardConfig').mockResolvedValue({ tail_fork_enabled: false, social_share_enabled: true })
+    await renderTurn()
+    await waitFor(() => expect(assistantProps!.shareEnabled).toBe(true))
+    expect(assistantProps!.forkDirectionChoice).toBe(false)
+  })
+
+  it('withholds the fork-direction choice while the config does not name the setting', async () => {
+    apiSpy('dashboardConfig').mockResolvedValue({ social_share_enabled: true })
+    await renderTurn()
+    await waitFor(() => expect(assistantProps!.shareEnabled).toBe(true))
+    expect(assistantProps!.forkDirectionChoice).toBe(false)
+  })
+
+  it('tells the newest reply that no message follows it', async () => {
+    await renderTurn()
+    expect(assistantProps!.forkIndex).toBe(1)
+    expect(assistantProps!.forkHasLaterMessages!(1)).toBe(false)
+  })
+
+  it('keeps one check for an older reply that sees a message appended after it', async () => {
+    const { store } = await renderTurn()
+    const check = assistantProps!.forkHasLaterMessages!
+    expect(check(1)).toBe(false)
+    act(() => { store.dispatch(appendMessage(msg('user', 'which ones?', { ts: '2026-08-12T07:00:09Z' }))) })
+    expect(check(1)).toBe(true)
+    expect(assistantProps!.forkHasLaterMessages).toBe(check)
+  })
+
+  it('tells a reply with a later message that one follows it', async () => {
+    renderChatPage([
+      msg('user', 'what changed?', { ts: '2026-08-12T07:00:00Z' }),
+      msg('assistant', 'two files changed', { ts: '2026-08-12T07:00:05Z' }),
+      msg('user', 'which ones?', { ts: '2026-08-12T07:00:09Z' }),
+    ])
+    await waitFor(() => expect(assistantProps).not.toBeNull())
+    expect(assistantProps!.forkIndex).toBe(1)
+    expect(assistantProps!.forkHasLaterMessages!(1)).toBe(true)
   })
 })
 

@@ -11486,6 +11486,13 @@
         "needs_earlier_history_count_many": "Selecciona para cargar el historial anterior: quedan {{count}} mensajes anteriores",
         "needs_earlier_history_count_other": "Selecciona para cargar el historial anterior: quedan {{count}} mensajes anteriores",
         "share_message": "Compartir como imagen",
+        "fork_earlier_messages": "Bifurcar con los mensajes anteriores",
+        "fork_later_messages_only": "Bifurcar solo con los mensajes posteriores",
+        "fork_earlier_messages_hint": "Inicia una conversación nueva con este mensaje y los anteriores. Esta conversación no cambia.",
+        "fork_later_messages_only_hint": "Deja fuera este mensaje. Solo los posteriores pasan a una conversación nueva. Esta conversación no cambia.",
+        "fork_no_later_messages": "Todavía no hay mensajes después de este.",
+        "fork_in_progress": "Bifurcando…",
+        "fork_other_in_progress": "Se está iniciando otra bifurcación.",
         "copy_failed": "Error al copiar",
         "quote_message": "Citar mensaje"
       },

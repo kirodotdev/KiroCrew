@@ -11486,6 +11486,13 @@
         "needs_earlier_history_count_many": "Sélectionnez pour charger l’historique antérieur – {{count}} messages antérieurs restants",
         "needs_earlier_history_count_other": "Sélectionnez pour charger l’historique antérieur – {{count}} messages antérieurs restants",
         "share_message": "Partager en image",
+        "fork_earlier_messages": "Bifurquer avec les messages antérieurs",
+        "fork_later_messages_only": "Bifurquer avec les messages suivants uniquement",
+        "fork_earlier_messages_hint": "Démarre une nouvelle conversation avec ce message et les précédents. Cette conversation n'est pas modifiée.",
+        "fork_later_messages_only_hint": "Laisse ce message de côté. Seuls ceux qui le suivent passent dans une nouvelle conversation. Cette conversation n'est pas modifiée.",
+        "fork_no_later_messages": "Aucun message après celui-ci pour l’instant.",
+        "fork_in_progress": "Bifurcation…",
+        "fork_other_in_progress": "Une autre bifurcation est en cours.",
         "copy_failed": "Échec de la copie",
         "quote_message": "Citer le message"
       },

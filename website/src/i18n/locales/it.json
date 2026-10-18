@@ -11486,6 +11486,13 @@
         "needs_earlier_history_count_many": "Seleziona per caricare la cronologia precedente: restano {{count}} messaggi precedenti",
         "needs_earlier_history_count_other": "Seleziona per caricare la cronologia precedente: restano {{count}} messaggi precedenti",
         "share_message": "Condividi come immagine",
+        "fork_earlier_messages": "Dirama con i messaggi precedenti",
+        "fork_later_messages_only": "Dirama solo con i messaggi successivi",
+        "fork_earlier_messages_hint": "Avvia una nuova conversazione con questo messaggio e quelli precedenti. Questa conversazione non cambia.",
+        "fork_later_messages_only_hint": "Esclude questo messaggio. Solo quelli successivi passano in una nuova conversazione. Questa conversazione non cambia.",
+        "fork_no_later_messages": "Non ci sono ancora messaggi dopo questo.",
+        "fork_in_progress": "Diramazione in corso…",
+        "fork_other_in_progress": "È in corso un'altra diramazione.",
         "copy_failed": "Copia non riuscita",
         "quote_message": "Cita messaggio"
       },
