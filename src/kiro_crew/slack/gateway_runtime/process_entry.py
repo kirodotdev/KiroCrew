@@ -450,7 +450,7 @@ async def run_gateway(
     # Detached daemon thread, NOT awaited: ``beacon.send`` is blocking urllib
     # with a 5s timeout, and boot must never wait on the network (nor pin
     # interpreter exit — hence daemon=True, matching the model-download helper's
-    # reasoning in embeddings.py). Errors are swallowed inside ``send``; a failed
+    # reasoning in embeddings_download.py). Errors are swallowed inside ``send``; a failed
     # heartbeat is invisible by design. ``test_mode`` skips it entirely so the
     # offline E2E gate can never make an outbound request.
     #

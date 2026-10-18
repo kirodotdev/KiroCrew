@@ -226,7 +226,7 @@ Three details that are load-bearing:
   embedder, so the timings would describe the contention rather than the code.
 
 Not built, and deliberately: a **path-filtered PR comment** for changes to
-`vector_memory.py` / `vector_memory_runtime/` / `embeddings.py` / `context.py`. It
+`vector_memory.py` / `vector_memory_runtime/` / `embeddings*.py` / `context.py`. It
 is the natural second step once the nightly has produced a stable baseline for a
 few weeks, and it
 should stay a comment rather than a check for the reasons in the workflow's own

@@ -1806,7 +1806,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           CHANGED="$(git diff --name-only HEAD^1 HEAD)"
-          if printf '%s\n' "$CHANGED" | grep -Eq '^(src/kiro_crew/(.*memory.*|embeddings\.py|context\.py|context_assembly/.*|eval/bench/.*)|scripts/ci-member-memory-benchmark\.py|\.github/workflows/ci\.yml)$'; then
+          if printf '%s\n' "$CHANGED" | grep -Eq '^(src/kiro_crew/(.*memory.*|embeddings(_[a-z_]+)?\.py|context\.py|context_assembly/.*|eval/bench/.*)|scripts/ci-member-memory-benchmark\.py|\.github/workflows/ci\.yml)$'; then
             echo "selected=true" >> "$GITHUB_OUTPUT"
           fi
 

@@ -98,7 +98,7 @@ def _capability_manager() -> Any:
         # circular import: platform.defaults imports kiro_crew.apps.registry, so
         # apps -> platform at module scope closes the cycle. Deferred to call time,
         # the same pattern every other core seam reader uses (agent_discovery.py,
-        # mcp_discovery.py, dashboard/handlers/_shared.py).
+        # mcp_discovery_server_info.py, dashboard/handlers/_shared.py).
         from kiro_crew.platform.context import current_context
 
         mgr = current_context().capability_manager

@@ -344,7 +344,7 @@ static bearer token directly on the server config:
 This **bypasses OAuth entirely**: the probe resolves any `${VAR}`/`${env:VAR}`
 reference in the header value (the same credential-filtered expansion the
 gateway applies to declared env — an unresolved reference stays literal) and
-sends the result on the handshake (`mcp_discovery.py`), so no browser flow
+sends the result on the handshake (`mcp_discovery_remote.py`), so no browser flow
 happens. The failure modes differ accordingly — a `401` on an entry whose sent
 `Authorization` header carried a real, resolved credential stays a hard `error`
 (a supplied credential was rejected), whereas a `401` on an entry with **no**

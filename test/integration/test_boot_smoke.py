@@ -471,7 +471,8 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.autonudge", "_MAINTENANCE_LOCKS"): "keyed cache",
     ("kiro_crew.dashboard.handlers.mcp", "_mcp_probe_cache"): "keyed cache",
     ("kiro_crew.dashboard.handlers.mcp", "_mcp_probe_ts"): "keyed cache",
-    ("kiro_crew.mcp_discovery", "_probe_cache"): "keyed cache",
+    ("kiro_crew.mcp_discovery_probe_state", "_probe_cache"): "keyed cache",
+    ("kiro_crew.mcp_discovery_probe", "_probe_cache"): "keyed cache",
     ("kiro_crew.agent_discovery", "_PARSED_SPECS_CACHE"): "keyed cache",
     # Process-wide values resolved on first use, home-independent: the thread
     # pools, and the umask-derived default file mode (``0o666 & ~umask``) that

@@ -77,7 +77,7 @@ def _doctor_vector_memory(issues: list[str]) -> None:
         # Designed degradation, not a defect: no vendored native libs exist for
         # this platform (e.g. linux/armv7l or win32/arm64 — Intel Macs are NOT
         # an example, darwin/x86_64 maps to the shipped macos_x86_64) and
-        # embeddings.py documents the keyword-search fallback. Nothing for the
+        # embeddings_native.py documents the keyword-search fallback. Nothing for the
         # user to fix — don't fail.
         print(
             "  runtime:     ⏹ unsupported platform "

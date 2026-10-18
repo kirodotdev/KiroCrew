@@ -2535,6 +2535,21 @@ not coordinate, so reason about them separately:
 
 ### In-Process Embedder (`embeddings.py`)
 
+`embeddings.py` is a mirror facade (`kiro_crew._facade_mirror`) over sibling owner
+modules: every name below still reads and patches as `embeddings.<name>`, and every owner
+logs to the `kiro_crew.embeddings` logger. New work goes to the owner of its
+responsibility:
+
+| Owner | Owns |
+|---|---|
+| `embeddings_settings.py` | the model, runtime and download constants, the `PRIORITY_*` classes and `EmbeddingWork`, and the `memory` knobs for idle eviction, thread counts and the bulk duty cycle |
+| `embeddings_native.py` | loading the vendored runtime: the platform library directory, the CPU-feature and MSVC-runtime checks, the library-path seam, `verify_vendored_libs` and `_load_llama_class` |
+| `embeddings_gguf.py` | the GGUF metadata read and the context policy a model is loaded with |
+| `embeddings_model.py` | the bundled model path, the custom model's validation, identity and background verification, and `model_file_present` |
+| `embeddings_llama.py` | `EmbeddingBackend` and `LlamaCppEmbedder`, with their native-memory and timing helpers |
+| `embeddings_shared.py` | the shared embedder (`get_shared_embedder`, `install_shared_embedder`, `register_embedding_backend`), the embedding-space signature, reconcile and align, and the sync embed cache |
+| `embeddings_download.py` | `ModelDownloadManager`, its process singleton and the background download task |
+
 Embeddings run in-process via the vendored llama-cpp-python 0.3.34 runtime (`kiro_crew/_vendor/llama_cpp`) — no external server, no HTTP hop, no runtime pip install. There is no remote embedding URL, so no URL validation or SSRF hardening is needed on this path; see `../post-launch-removals.md` for why a network embedding client must not come back.
 
 - `LlamaCppEmbedder.embed(text)` / `embed_batch(texts)` → returns 1024-dim vectors or `None` on any failure (graceful degradation)
@@ -2825,7 +2840,7 @@ alignment requires readiness.
 
 ### Model Download Manager (`embeddings.py`)
 
-`ModelDownloadManager` (singleton via `model_download_manager()`) downloads the embedding GGUF in the BACKGROUND at gateway startup — boot is never blocked by the 610MB transfer:
+`ModelDownloadManager` (`embeddings_download.py`; singleton via `model_download_manager()`) downloads the embedding GGUF in the BACKGROUND at gateway startup — boot is never blocked by the 610MB transfer:
 
 **Where the transfer lives.** The streamed-and-verified HTTPS transfer itself is `asset_downloader.download_to` (shared with hosted feature-video media, `feature-videos.md`): it owns connecting, hashing while streaming, the atomic install and the wording of each failure. `ModelDownloadManager` keeps everything that is about the MODEL — which url to resolve, the sha/size pins, the Ollama salvage, the retry ladder, and turning byte counts into the `status` dict. A second private downloader would be a second place for "did we verify this before installing it?" to be answered differently.
 
@@ -5393,7 +5408,7 @@ Success is 200 `{"approved": "<auto/name>"}`; a malformed slug is still an uncod
 
 ## MCP Discovery (`mcp_discovery.py`)
 
-Auto-sync runs at startup and on demand from the dashboard. The authoritative managed-server inventory and its always-on, gated and opt-in rules are in [MCP architecture](../../architecture/mcp.md#managed-servers).
+Auto-sync runs at startup and on demand from the dashboard. `mcp_discovery.py` is a mirror facade over its `mcp_discovery_*` owners; [MCP architecture](../../architecture/mcp.md#discovery-and-probing) says which owner holds what. The authoritative managed-server inventory and its always-on, gated and opt-in rules are in [MCP architecture](../../architecture/mcp.md#managed-servers).
 
 **Server sources** (merged by `list_servers()`):
 1. `agents/defaults.json` → `mcpServers` (default: none beyond the managed servers)

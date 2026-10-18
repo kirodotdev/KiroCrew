@@ -45,7 +45,7 @@ So this module shares exactly one thing with the metrics trunk: the atomic
 create-once file pattern proven by ``handlers_system.py::_get_telemetry_salt``
 (``os.link`` for atomicity, owner-only mode, in-memory fallback). It reuses
 NONE of its state, config, or dependencies — ``urllib.request`` only (already
-used by ``embeddings.py``), so no new dependency.
+used by ``embeddings_download.py``), so no new dependency.
 
 PRIVACY:
   * The install id is a random UUID4 generated locally. It is derived from

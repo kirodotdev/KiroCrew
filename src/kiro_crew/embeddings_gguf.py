@@ -1,0 +1,233 @@
+"""Reading a GGUF model's embedding metadata and the context it is loaded with.
+
+A bounded parse of the GGUF header's metadata (architecture, causal flag,
+trained context length) decides each model's native context and batch size, so
+an encoder is never loaded with a context its weights cannot serve.
+
+:mod:`kiro_crew.embeddings` stays the import path and the patch surface for every
+name here; that module's comment lists the owners.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import struct
+from pathlib import Path
+from typing import BinaryIO, NamedTuple
+
+from kiro_crew.embeddings_settings import _ENCODER_ARCHITECTURES, _N_CTX, _N_UBATCH
+
+logger = logging.getLogger("kiro_crew.embeddings")
+
+
+# ── GGUF embedding metadata ──
+
+_GGUF_SCALAR_BYTES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+_GGUF_TYPE_UINT32 = 4
+_GGUF_TYPE_INT32 = 5
+_GGUF_TYPE_BOOL = 7
+_GGUF_TYPE_STRING = 8
+_GGUF_TYPE_ARRAY = 9
+_GGUF_MAX_METADATA_ITEMS = 100_000
+_GGUF_MAX_ARRAY_ITEMS = 2_000_000
+_GGUF_MAX_DECODED_STRING_BYTES = 1_000_000
+_GGUF_CAUSAL_SUFFIX = ".attention.causal"
+# `<architecture>.context_length`: the position count the model was trained
+# with, which llama.cpp reads into ``hparams.n_ctx_train``. For an encoder with
+# learned absolute positions it is also the row count of the position table.
+_GGUF_CONTEXT_LENGTH_SUFFIX = ".context_length"
+
+
+class _GGUFEmbeddingMetadata(NamedTuple):
+    """The KV-header fields that decide a model's llama.cpp context parameters."""
+
+    architecture: str | None
+    causal: bool | None
+    context_length: int | None
+
+
+def _read_gguf_embedding_metadata(path: Path) -> _GGUFEmbeddingMetadata:
+    """Read the architecture and its optional causal and context-length keys.
+
+    All three come from the GGUF KV header. The causal flag is the
+    ``<architecture>.attention.causal`` boolean that llama.cpp reads for every
+    architecture into ``hparams.causal_attn`` (default true when absent); the
+    context length is the ``<architecture>.context_length`` integer it reads
+    into ``hparams.n_ctx_train``. The file's ``pooling_type`` key is not read:
+    every model is loaded with ``_POOLING_TYPE_LAST`` passed explicitly.
+
+    The header is walked with plain bounded reads, never a mapping: a mapping's
+    length is fixed when it is built, so a GGUF truncated in place while its
+    header is parsed turns the next access past the new end into a SIGBUS the
+    gateway process cannot catch. A read that comes up short is a ValueError
+    instead, which _model_context_policy turns into the decoder sizes.
+    """
+    with path.open("rb") as source:
+        return _parse_gguf_embedding_metadata(source, os.fstat(source.fileno()).st_size)
+
+
+def _parse_gguf_embedding_metadata(source: BinaryIO, file_size: int) -> _GGUFEmbeddingMetadata:
+    """Parse the KV header from ``source``, a binary stream positioned at its start.
+
+    ``file_size`` is the byte count the file had when it was opened; it bounds
+    every field the header declares. The parser reads only what it inspects --
+    fixed-width fields, keys and captured strings, each at most
+    _GGUF_MAX_DECODED_STRING_BYTES -- with one ``read()`` per field, and seeks
+    past every value it does not need, so no byte beyond the caps is read. A
+    field reaching past ``file_size``, or a read returning fewer bytes than
+    asked (the file shrank under the parse), is ``truncated GGUF header``.
+    """
+    offset = 0
+
+    def _claim(size: int) -> None:
+        nonlocal offset
+        if size > file_size - offset:
+            raise ValueError("truncated GGUF header")
+        offset += size
+
+    def _read_exact(size: int) -> bytes:
+        _claim(size)
+        chunk = source.read(size)
+        if len(chunk) != size:
+            raise ValueError("truncated GGUF header")
+        return chunk
+
+    def _skip(size: int) -> None:
+        _claim(size)
+        source.seek(size, os.SEEK_CUR)
+
+    def _unpack(fmt: str) -> int:
+        return int(struct.unpack(fmt, _read_exact(struct.calcsize(fmt)))[0])
+
+    def _read_string() -> str:
+        length = _unpack("<Q")
+        if length > _GGUF_MAX_DECODED_STRING_BYTES:
+            raise ValueError("oversized GGUF metadata string")
+        return _read_exact(length).decode("utf-8")
+
+    def _skip_string() -> None:
+        _skip(_unpack("<Q"))
+
+    def _read_value(value_type: int, *, capture: bool) -> object | None:
+        if value_type == _GGUF_TYPE_STRING:
+            if capture:
+                return _read_string()
+            _skip_string()
+            return None
+        if value_type == _GGUF_TYPE_ARRAY:
+            element_type = _unpack("<I")
+            count = _unpack("<Q")
+            if count > _GGUF_MAX_ARRAY_ITEMS:
+                raise ValueError("oversized GGUF metadata array")
+            if element_type == _GGUF_TYPE_STRING:
+                for _ in range(count):
+                    _skip_string()
+                return None
+            element_size = _GGUF_SCALAR_BYTES.get(element_type)
+            if element_size is None:
+                raise ValueError(f"unsupported GGUF array type {element_type}")
+            _skip(element_size * count)
+            return None
+        value_size = _GGUF_SCALAR_BYTES.get(value_type)
+        if value_size is None:
+            raise ValueError(f"unsupported GGUF metadata type {value_type}")
+        if capture and value_type == _GGUF_TYPE_UINT32:
+            return _unpack("<I")
+        if capture and value_type == _GGUF_TYPE_INT32:
+            return _unpack("<i")
+        if capture and value_type == _GGUF_TYPE_BOOL:
+            return _unpack("<B") != 0
+        _skip(value_size)
+        return None
+
+    if _read_exact(4) != b"GGUF":
+        raise ValueError("invalid GGUF magic")
+    version = _unpack("<I")
+    if version not in {2, 3}:
+        raise ValueError(f"unsupported GGUF version {version}")
+    _unpack("<Q")  # tensor count; only the following KV section is needed
+    metadata_count = _unpack("<Q")
+    if metadata_count > _GGUF_MAX_METADATA_ITEMS:
+        raise ValueError("oversized GGUF metadata table")
+
+    architecture: str | None = None
+    causal_by_architecture: dict[str, bool] = {}
+    context_length_by_architecture: dict[str, int] = {}
+    for _ in range(metadata_count):
+        key = _read_string()
+        capture = (
+            key == "general.architecture"
+            or key.endswith(_GGUF_CAUSAL_SUFFIX)
+            or key.endswith(_GGUF_CONTEXT_LENGTH_SUFFIX)
+        )
+        value = _read_value(_unpack("<I"), capture=capture)
+        if key == "general.architecture" and isinstance(value, str):
+            architecture = value.strip().lower()
+        elif key.endswith(_GGUF_CAUSAL_SUFFIX) and isinstance(value, bool):
+            causal_by_architecture[key[: -len(_GGUF_CAUSAL_SUFFIX)].lower()] = value
+        elif (
+            key.endswith(_GGUF_CONTEXT_LENGTH_SUFFIX)
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            and value > 0
+        ):
+            context_length_by_architecture[key[: -len(_GGUF_CONTEXT_LENGTH_SUFFIX)].lower()] = value
+    return _GGUFEmbeddingMetadata(
+        architecture,
+        causal_by_architecture.get(architecture or ""),
+        context_length_by_architecture.get(architecture or ""),
+    )
+
+
+class _ContextPolicy(NamedTuple):
+    """The llama.cpp context sizes chosen for one GGUF before it loads."""
+
+    n_ctx: int
+    n_batch: int
+    n_ubatch: int
+
+
+# What a decoder (causal) file trained for at least _N_CTX positions gets, the
+# bundled Qwen model included, and the fallback when a header cannot be read.
+# Kept as one constant so that path stays byte-for-byte the shipped one.
+_DECODER_CONTEXT_POLICY = _ContextPolicy(_N_CTX, _N_CTX, _N_UBATCH)
+
+
+def _model_context_policy(path: Path) -> _ContextPolicy:
+    """Choose context sizes before llama.cpp constructs the native context."""
+    try:
+        metadata = _read_gguf_embedding_metadata(path)
+    except (OSError, OverflowError, UnicodeError, ValueError, struct.error):
+        logger.warning(
+            "Could not read GGUF metadata for %s; using the default context sizes.",
+            path.name,
+        )
+        return _DECODER_CONTEXT_POLICY
+
+    # Every file's context and logical batch are clamped to the trained
+    # position count its GGUF declares. A model with learned absolute positions
+    # indexes a position table with n_ctx_train rows -- encoder families, but
+    # causal gpt2 and starcoder as well -- and llama.cpp aborts the process
+    # (`GGML_ASSERT(i01 >= 0 && i01 < ne01)` in ggml's get_rows) when a token
+    # sits past its end, whatever the model's causality. With n_batch equal to
+    # that count, the vendored binding's create_embedding() -> embed(truncate=True)
+    # keeps the first n_batch tokens of a longer input instead (pinned by
+    # test_vendored_embed_truncates_to_the_logical_batch_by_default); _load_model
+    # states that rule once per model. A file trained for _N_CTX positions or
+    # more (the bundled Qwen model declares 32,768) keeps the ceiling.
+    window = _N_CTX
+    if metadata.context_length is not None:
+        window = min(_N_CTX, metadata.context_length)
+
+    # Two llama.cpp paths abort unless one physical micro-batch holds every
+    # token: encode(), which every cache-less architecture is routed through,
+    # and decode() for a model whose GGUF declares `.attention.causal = false`.
+    # Absent that key the runtime defaults to causal attention, so a model
+    # outside the cache-less set (llama-embed included) stays on the decoder path.
+    non_causal = metadata.causal is False or metadata.architecture in _ENCODER_ARCHITECTURES
+    if non_causal:
+        return _ContextPolicy(window, window, window)
+    # Decoder models keep the lower-RSS micro-batch, which llama.cpp requires
+    # to stay within the logical batch.
+    return _ContextPolicy(window, window, min(_N_UBATCH, window))

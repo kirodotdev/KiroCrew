@@ -472,7 +472,7 @@ docker stats kirocrew --no-stream
 
 The embedding model downloads on first use into `~/.kiro/crew/models/`
 inside the volume (a flat directory — that is the only tree
-`embeddings.py` writes models to). Downloads stage into that same
+`embeddings_download.py` writes models to). Downloads stage into that same
 directory as `.<model-file>.<pid>.tmp` and are unlinked in a `finally`, so a
 retry does not accumulate files — only a hard kill mid-download (OOM,
 `docker kill`) can strand one. Check before clearing anything:

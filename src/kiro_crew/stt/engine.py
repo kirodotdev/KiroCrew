@@ -15,7 +15,7 @@ worker of its own:
   started ``run_in_executor`` future cannot be cancelled, so a wedged model load
   would otherwise hold a general-purpose worker for the life of the process. What
   is NOT needed is the dedicated inference thread and priority queue
-  ``embeddings.py`` carries, because every request here is interactive: there is
+  ``embeddings_llama.py`` carries, because every request here is interactive: there is
   no bulk class that could starve one.
 - **It writes nothing to stdout.** ``print_progress=False`` and
   ``print_realtime=False`` suppress the progress writers; with both set, a load and

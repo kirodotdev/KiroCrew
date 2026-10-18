@@ -1465,7 +1465,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "MCP server metadata",
-        "mcp_discovery.py",
+        "mcp_discovery_server_info.py",
         "McpServerInfo.to_dict() is the serialization boundary for every dashboard "
         "MCP listing; header values and reflected credentials in probe errors are "
         "redacted there before the payload leaves the backend.",
@@ -2617,13 +2617,19 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # egress path of its own.
         "discord/transport_dispatch_ledger.py",
         "discord/transport_dispatch_spawn_approval.py",
+        # The owners of mcp_discovery.py beside its "MCP server metadata" sink: what
+        # they redact is stored on the McpServerInfo record that sink serializes, so
+        # the split adds no egress path of its own.
+        "mcp_discovery_config.py",
+        "mcp_discovery_probe.py",
+        "mcp_discovery_probe_state.py",
         # Redaction of a LOG line or a diagnostic URL/token, not agent output on
         # its way to a user. These match the (deliberately broad) redactor regex
         # in the drift guard but are not egress paths.
         "cli_doctor.py",
         "cloud/connect.py",
         "cloud/login.py",
-        "embeddings.py",
+        "embeddings_download.py",
         # NOTE: papyrus's tectonic.py is deliberately NOT here — see the sinks
         # list below. Its redacted URL does reach the dashboard, so filing it as
         # non-egress was wrong and would have let the drift guard miss a future

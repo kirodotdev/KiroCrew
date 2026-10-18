@@ -481,7 +481,20 @@ an enabled app's tools vanish).
 
 ## Discovery and probing
 
-Source: `mcp_discovery.py`.
+Source: `mcp_discovery.py`, a mirror facade (`kiro_crew._facade_mirror`) over sibling
+owner modules, so every name they define still reads and patches as
+`mcp_discovery.<name>`. The facade keeps the discovery passes: `probe_all`, with the
+quarantine exclusion, and the discover-and-sync step (`sync_discovered_servers`,
+`register_servers_for_cc`). New work goes to the owner of its responsibility:
+
+| Owner | Owns |
+|---|---|
+| `mcp_discovery_server_info.py` | `McpServerInfo`, the scope names and config-source tables, and `redact_mcp_headers` / `redact_mcp_error` |
+| `mcp_discovery_probe_state.py` | the protocol revision the remote probe offers and steps down to, the probe timeouts and error cap, the once-only warning ledgers, and the probe-result cache |
+| `mcp_discovery_managed.py` | the managed servers' subcommand and tool-module tables, `managed_server_is_session_bound`, the in-process tool read, and stale-command repair |
+| `mcp_discovery_config.py` | loading the agent config and the `mcp.json` sources per scope, and `list_servers` |
+| `mcp_discovery_remote.py` | `_probe_remote`: the HTTP handshake, header expansion, and the authorization checks |
+| `mcp_discovery_probe.py` | `probe_server`: refusing a disabled server, and the stdio handshake of a local server spawned in the sandbox on a private loop, with its temp refusals |
 
 `list_servers()` reads `~/.kiro/agents/kirocrew.json`, then each scope file with
 provenance, re-resolves stale managed commands, and overlays cached probe

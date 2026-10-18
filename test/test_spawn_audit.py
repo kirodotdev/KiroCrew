@@ -1932,7 +1932,7 @@ FIRST_PARTY_SPAWNS: frozenset[str] = frozenset(
         # runs for the same argv. Third-party servers and any customized
         # managed command/args/env compare unequal, pass False, and keep the
         # full fail-close + opt-in behavior.
-        "mcp_discovery.py::probe_server",
+        "mcp_discovery_probe.py::probe_server",
         # The built-in SAPI synthesizer. The flag value is COMPUTED
         # (``engine == SYSTEM_ENGINE_SAPI``), so only the Windows branch claims
         # it: that argv is a System32 ``powershell.exe`` resolved by
@@ -2398,7 +2398,7 @@ def test_agent_influenced_sites_are_routed():
     """Agent-influenced spawns must stay routed through the sandbox."""
     unrouted = _collect_unrouted_spawns()
     for key in (
-        "mcp_discovery.py::probe_server",
+        "mcp_discovery_probe.py::probe_server",
         "task_executor.py::run_tests",
         "git_coord.py::_git",
         "git_coord.py::_is_git_repo",
