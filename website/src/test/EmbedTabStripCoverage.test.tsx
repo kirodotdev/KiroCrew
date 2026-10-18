@@ -207,6 +207,32 @@ describe('EmbedTabStrip — opened on a chat link', () => {
     expect(storedTabs()).toEqual(['chat-1', 'chat-3'])
   })
 
+  it('keeps host-injected tabs in order when the link names one of them', () => {
+    tabsWindow.__kirocrewTabs = ['chat-1', 'chat-3']
+    tabsWindow.__kirocrewActiveTabIndex = 0
+    wrap(makeStore(), '/embed/chat/chat-3')
+    expect(tabTitles()).toEqual(['First Chat', 'Third Chat'])
+    expect(selectedTabs()).toEqual([false, true])
+  })
+
+  it('still opens the linked chat and tells the host when storage refuses writes', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('quota', 'QuotaExceededError')
+    })
+    const events: unknown[] = []
+    const onUpdate = (e: Event) => events.push((e as CustomEvent).detail)
+    window.addEventListener('kirocrew-tab-update', onUpdate)
+    try {
+      wrap(makeStore({ activeSlot: null }), '/embed/chat/chat-2')
+      expect(tabTitles()).toEqual(['Second Chat'])
+      expect(mockNavigate).toHaveBeenCalledWith('/embed/chat/chat-2?sid=chat-2', { replace: true })
+      expect(events).toEqual([{ tabs: ['chat-2'], activeIndex: 0 }])
+    } finally {
+      window.removeEventListener('kirocrew-tab-update', onUpdate)
+      setItem.mockRestore()
+    }
+  })
+
   it('treats /embed/chat/ with no slug as no link and restores the tabs', () => {
     seed(['chat-1'], 0)
     wrap(makeStore(), '/embed/chat/')

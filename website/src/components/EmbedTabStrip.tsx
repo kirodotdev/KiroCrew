@@ -6,6 +6,7 @@ import { createSlot } from '../store/chatSlice'
 import { X, Plus } from 'lucide-react'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
+import { safeSetSessionItem } from '../utils/safeStorage'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import {
   TAB_STATUS_COLOR,
@@ -112,8 +113,10 @@ export default function EmbedTabStrip() {
   // Persist to sessionStorage + notify plugin on every change
   const persist = useCallback((newTabs: Tab[], newIndex: number) => {
     const slugs = newTabs.map(t => t.slug)
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(slugs))
-    sessionStorage.setItem(STORAGE_INDEX_KEY, String(newIndex))
+    // Storage can be full or denied in a host iframe; the host event and the
+    // navigation that follow must still happen.
+    safeSetSessionItem(STORAGE_KEY, JSON.stringify(slugs))
+    safeSetSessionItem(STORAGE_INDEX_KEY, String(newIndex))
     window.dispatchEvent(new CustomEvent('kirocrew-tab-update', {
       detail: { tabs: slugs, activeIndex: newIndex }
     }))
