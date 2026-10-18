@@ -452,7 +452,12 @@ filter from a sandbox torn down underneath it, so it can neither audit nor
 persist anything it goes on to do, and nobody is watching it -- its parent
 records the run as ok either way. Such a child refuses instead of proceeding
 (`sandbox.refuse_unaudited_on_dead_fs`, gated on a marker the cron launcher puts
-in the child's environment AND on that errno). Everything else, including the
+in the child's environment AND on that errno). The child's own tool-call audit
+(`ScriptContext._audit_tool_call`) writes synchronously for the same reason, so
+its `ENOSYS` reaches the same refusal. The launcher also probes the data home
+again after the script body, before it prints any non-error status, and the
+parent treats every non-zero child exit as a failure, so a teardown during the
+run cannot be recorded as ok. Everything else, including the
 gateway's own spawns and any other audit failure, keeps the log-and-proceed
 posture above. `test_sandbox_cron_child_audit.py` pins both halves.
 

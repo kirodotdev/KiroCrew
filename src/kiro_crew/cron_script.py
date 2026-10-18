@@ -61,6 +61,7 @@ from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
     popen_limited,
+    refuse_unaudited_on_dead_fs,
     run_limited,
     wrap_argv,
 )
@@ -1322,8 +1323,13 @@ class ScriptContext:
                 tool_kind="cron_script_tool",
                 outcome=outcome,
                 error=error,
+                # Synchronous, so a write failure reaches this handler instead of
+                # being swallowed by the background writer.
+                critical=True,
             )
-        except Exception:
+        except Exception as exc:
+            # A cron child whose audit write hits ENOSYS refuses to go on.
+            refuse_unaudited_on_dead_fs(exc, "cron script tool-call audit")
             logger.debug("SEL audit logging failed in cron_script tool call", exc_info=True)
 
     def _post(self, path: str, body: dict) -> dict:
@@ -2408,17 +2414,22 @@ def run_script_sandboxed(
         "ctx = ScriptContext(job=job)\n"
         "try:\n"
         "    fn(ctx)\n"
-        "    print(json.dumps({'status': 'ok'}))\n"
+        "    _envelope = {'status': 'ok'}\n"
         "except Skip:\n"
-        "    print(json.dumps({'status': 'skip'}))\n"
+        "    _envelope = {'status': 'skip'}\n"
         "except Done as d:\n"
-        "    print(json.dumps({'status': 'done', 'message': d.message}))\n"
+        "    _envelope = {'status': 'done', 'message': d.message}\n"
         "except Report as r:\n"
-        "    print(json.dumps({'status': 'report', 'message': r.message}))\n"
+        "    _envelope = {'status': 'report', 'message': r.message}\n"
         "except Exception as e:\n"
-        "    print(json.dumps({'status': 'error', 'error': str(e)}))\n"
+        "    _envelope = {'status': 'error', 'error': str(e)}\n"
         "finally:\n"
         "    ctx.close()\n"
+        # Probe again before any non-error envelope: a sandbox torn down WHILE
+        # the body ran passed the preamble probe, and its run persisted nothing.
+        "if _envelope['status'] != 'error':\n"
+        "    child_persistence_preflight()\n"
+        "print(json.dumps(_envelope))\n"
     )
 
     # A granted launcher is born inside the private pinned dir, as defense in
@@ -2661,7 +2672,10 @@ def run_script_sandboxed(
         if cancelled:
             return {"status": "cancelled", "error": "Cancelled by user"}
 
-        if proc.returncode != 0 and not stdout.strip():
+        # Any non-zero exit is a failure, even with stdout: the launcher's own
+        # code exits 0 after its envelope, so a non-zero exit means the run
+        # failed, and a status-shaped stdout line cannot outvote it.
+        if proc.returncode != 0:
             # Report the TERMINAL stderr context, not the head. A process that
             # dies hard leaves its diagnosis LAST -- the traceback is the final
             # thing written -- while whatever a startup path logged first (a
