@@ -107,7 +107,6 @@
 3175 test/test_dashboard_approval.py
 2718 test/test_dashboard_server_composition_contract.py
 2478 test/test_dashboard_updates_coverage.py
-11203 test/test_denied_commands_security.py
 2765 test/test_fargate_launch_engine.py
 4437 test/test_github_pull_request_monitor.py
 5410 test/test_governance_distribution.py

@@ -497,6 +497,41 @@
       "command_or_flow": "test/test_denied_commands_security_hosts_file.py",
       "platform": "any",
       "reason": "The deny fence's own assertions, as a behaviour row rather than a classification: the shell rows of this corpus each ask 'is this one command still permitted', and this file asks the complementary question -- that the real refusals still fire and the documented permits still pass. A fix that widened a rule until every golden path happened to survive would still trip it, which is the failure mode a per-command corpus cannot see. (part of the split test_denied_commands_security.py)"
+    },
+    {
+      "kind": "test",
+      "surface": "S1 bash classifier fence",
+      "command_or_flow": "test/test_denied_commands_security_rows.py",
+      "platform": "any",
+      "reason": "The deny fence's own assertions, as a behaviour row rather than a classification: the shell rows of this corpus each ask 'is this one command still permitted', and this file asks the complementary question -- that the real refusals still fire and the documented permits still pass. A fix that widened a rule until every golden path happened to survive would still trip it, which is the failure mode a per-command corpus cannot see. (part of the split test_denied_commands_security.py)"
+    },
+    {
+      "kind": "test",
+      "surface": "S1 bash classifier fence",
+      "command_or_flow": "test/test_denied_commands_security_mentions.py",
+      "platform": "any",
+      "reason": "The deny fence's own assertions, as a behaviour row rather than a classification: the shell rows of this corpus each ask 'is this one command still permitted', and this file asks the complementary question -- that the real refusals still fire and the documented permits still pass. A fix that widened a rule until every golden path happened to survive would still trip it, which is the failure mode a per-command corpus cannot see. (part of the split test_denied_commands_security.py)"
+    },
+    {
+      "kind": "test",
+      "surface": "S1 bash classifier fence",
+      "command_or_flow": "test/test_denied_commands_security_kill.py",
+      "platform": "any",
+      "reason": "The deny fence's own assertions, as a behaviour row rather than a classification: the shell rows of this corpus each ask 'is this one command still permitted', and this file asks the complementary question -- that the real refusals still fire and the documented permits still pass. A fix that widened a rule until every golden path happened to survive would still trip it, which is the failure mode a per-command corpus cannot see. (part of the split test_denied_commands_security.py)"
+    },
+    {
+      "kind": "test",
+      "surface": "S1 bash classifier fence",
+      "command_or_flow": "test/test_denied_commands_security_mint.py",
+      "platform": "any",
+      "reason": "The deny fence's own assertions, as a behaviour row rather than a classification: the shell rows of this corpus each ask 'is this one command still permitted', and this file asks the complementary question -- that the real refusals still fire and the documented permits still pass. A fix that widened a rule until every golden path happened to survive would still trip it, which is the failure mode a per-command corpus cannot see. (part of the split test_denied_commands_security.py)"
+    },
+    {
+      "kind": "test",
+      "surface": "S1 bash classifier fence",
+      "command_or_flow": "test/test_denied_commands_security_stdin.py",
+      "platform": "any",
+      "reason": "The deny fence's own assertions, as a behaviour row rather than a classification: the shell rows of this corpus each ask 'is this one command still permitted', and this file asks the complementary question -- that the real refusals still fire and the documented permits still pass. A fix that widened a rule until every golden path happened to survive would still trip it, which is the failure mode a per-command corpus cannot see. (part of the split test_denied_commands_security.py)"
     }
   ]
 }
