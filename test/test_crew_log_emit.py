@@ -4565,6 +4565,8 @@ def _record(fn, *a, **k):
 
 atexit.register = _record
 importlib.import_module("kiro_crew.dashboard.server")
+emit = sys.modules.get("kiro_crew.crew_log.emit")
+glue = {"kiro_crew.crew_log.emit", *getattr(emit, "_OWNERS", ())}
 print(
     json.dumps(
         {
@@ -4572,7 +4574,7 @@ print(
                 k
                 for k in sys.modules
                 if k.startswith("kiro_crew.crew_log.")
-                and k != "kiro_crew.crew_log.emit"
+                and k not in glue
             ),
             "glue": "kiro_crew.crew_log.emit" in sys.modules,
             "hooks": [n for n in registered if "drain_for_shutdown" in n],
@@ -6425,8 +6427,10 @@ def test_every_report_call_site_names_a_literal_operation():
 
     sites = []
     for module, wanted in ((emit, ast.Name), (writer_mod, ast.Attribute)):
-        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
+        glob = "emit*.py" if module is emit else Path(module.__file__).name
+        paths = sorted(Path(module.__file__).parent.glob(glob))
+        trees = [ast.parse(p.read_text(encoding="utf-8")) for p in paths]
+        for node in (n for tree in trees for n in ast.walk(tree)):
             if not isinstance(node, ast.Call) or not isinstance(node.func, wanted):
                 continue
             name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr

@@ -6,13 +6,34 @@ only**: it owns which facts matter and where they are known, not storage or its 
 
 ## Who owns what
 
-The emitter is three modules, and the line between them is where new work goes:
+The emitter is three parts, and the line between them is where new work goes:
 
 | Module | Owns | New work that belongs there |
 |---|---|---|
-| `crew_log/emit.py` | every `on_*` entry point and what each fact records; the open-handle cache that is the writer's `open_unit` adapter; the child-origin pins; the supersede repair, and the settlement of a job the writer rejected at its ceiling; `reset_caches`, `flush`, `drain_for_shutdown`, `live_turn` and the loss counters as the public surface | a new lifecycle fact, field or emitter |
+| `crew_log/emit.py` and its `crew_log/emit_*.py` owners | every `on_*` entry point and what each fact records; the open-handle cache that is the writer's `open_unit` adapter; the child-origin pins; the supersede repair, and the settlement of a job the writer rejected at its ceiling; `reset_caches`, `flush`, `drain_for_shutdown`, `live_turn` and the loss counters as the public surface | a new lifecycle fact, field or emitter, in the owner the table below names |
 | `crew_log/writer.py` | `CrewLogWriter`: the per-unit buffer and its order, retention and backoff, the refusal rule, the memory ceilings, the `write/dropped` loss marker, the inline path, stall reporting and the shutdown drain, all paced by one frozen `WriterLimits`; `WriteJob`, whose named constructors (`append`, `opening`, `follow_on`) select a row of the writer's policy table; and `WarningBudget`, the one rate-limited failure report the writer and the emitter share | how an append reaches the file |
 | `crew_log/turn_tracker.py` | `TurnTracker`: each live turn's record (its step and call ordinals, whether its closer is owed), the settle-once tool registry, the attempt counts, the supersede repair's debt, and the never-evict-a-live-turn rule the emitter's own caches are trimmed by | per-turn bookkeeping |
+
+`crew_log/emit.py` is the emitter's import path and patch surface: a `kiro_crew._facade_mirror`
+facade over the owners below, lowest layer first. It binds every name they define and serves the
+nine module globals they rebind with `global`, so `kiro_crew.crew_log.emit.<name>` is the object
+the code reads and a patch through it reaches every owner holding the name
+(`test/test_emit_facade.py`). A function that rebinds or reads the installed writer, tracker or
+warning budget (`_writer_instance`, `_tracker_instance`, `_warnings_instance`, `_next_limits`),
+the child-origin loss counters or `_child_liveness` belongs in `emit_runtime`, because a
+`global` write lands in one module's namespace.
+
+| Owner | Owns |
+|---|---|
+| `crew_log/emit_state.py` | `enabled`; the boot-path import gates `_crew_log` (storage) and `_note_eager` (the eager fold's wake); the session kind and the two sources; `session_id_of`; the process-wide maps and `_lock`, which guards them |
+| `crew_log/emit_tree.py` | a slot's lineage (`slot_previous_store`, `_durable_previous`, `_candidate_is_same_slot`, `_parent_citation`); the `_record_session_tree_*` folds that advance the in-memory session tree after a commit; the settled signal `_TreeSettle` and `awaiting_commit` |
+| `crew_log/emit_runtime.py` | the installed writer, turn tracker and warning budget and every function that rebinds or reads them: `reset_caches`; the handle cache that is the writer's `open_unit` adapter; `_write`, `_submit`, `_hand_over` and the settlement of a job the writer rejected at its ceiling; the supersede repair; `flush`, `drain_for_shutdown` and the loss counters; `live_turn`; the child-origin pins; `on_session_closed` |
+| `crew_log/emit_text.py` | `_safe_text` and `safe_work_fields` (redaction), `_clip`, the one-line fit checks, `_append_body_entry`'s `message/chunk` slicing, `_payload_digest` |
+| `crew_log/emit_session.py` | `on_session_opened`, `on_session_adopted`, `on_session_released`, `on_session_spawned`, `on_class_observed` and `on_open_tab_unrestored` |
+| `crew_log/emit_turn.py` | a turn's start and end; messages, request configuration, the composed context, steps, tool calls, approvals, the plan, model selection and compaction; `close_open_tool_calls`; `background/completed` |
+| `crew_log/emit_children.py` | `subagent/*` entries on the dispatching session's log, and `dismiss_child` |
+| `crew_log/emit_surfaces.py` | ledger, radar, object, work, panel and dashboard entries, change cards and guides, and their `*_entry_fits` checks |
+| `crew_log/emit_crew.py` | the crew kind: `on_crew_dispatch` and `on_crew_report` |
 
 Both collaborators are built on first use and never at import, for the boot-path rule
 under "Storage runs off the event loop"; `reset_caches()` retires both -- the writer through

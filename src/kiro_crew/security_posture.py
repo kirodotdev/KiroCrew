@@ -312,7 +312,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Crew log entries",
-        "crew_log/emit.py",
+        "crew_log/emit_text.py",
         "Message bodies written to the append-only per-session crew log under "
         "`<home>/crew-log/sessions/` -- what the user typed and what the model "
         "answered. This sink is a FILE rather than "

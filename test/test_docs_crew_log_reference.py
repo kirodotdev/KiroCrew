@@ -240,7 +240,9 @@ def _emitter_definers(package: Path) -> frozenset[str]:
         for path in package.glob("*.py")
         if re.search(r"^def on_[a-z_]+\(", path.read_text(encoding="utf-8"), re.MULTILINE)
     )
-    assert "emit.py" in definers, f"the emitter definitions were not found: {sorted(definers)}"
+    assert any(
+        name == "emit.py" or name.startswith("emit_") for name in definers
+    ), f"the emitter definitions were not found: {sorted(definers)}"
     return definers
 
 

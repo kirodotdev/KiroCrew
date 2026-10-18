@@ -78,7 +78,7 @@ class _Log:
 
         `_append_body_entry` slices an oversize body into `message/chunk` entries and
         the citing `message/sent` carries `chunks` and `chars` and NO `text`
-        (`emit.py`: the overflow branch builds its data from `turn` / `step` / extras
+        (`emit_text.py`: the overflow branch builds its data from `turn` / `step` / extras
         only). So this is not a reply with an empty body -- it is a reply whose body
         is somewhere this fold does not read.
         """

@@ -1248,7 +1248,7 @@ def test_a_previous_object_with_an_empty_sid_refuses_the_whole_record() -> None:
     """An empty citation is refused exactly as an oversized one is, and for the same
     reason: it is not a value the emitter can write.
 
-    ``emit.py`` gates the write on the id's own truthiness, so ``{"sid": ""}`` never
+    ``emit_session.py`` gates the write on the id's own truthiness, so ``{"sid": ""}`` never
     reaches a log the gateway wrote. An entry carrying one is therefore not the
     emitter's, and nothing on it is believed -- which is also precisely how the
     ``parent.slot`` field one line above treats an empty slot, so the two citations

@@ -39,7 +39,7 @@ SOURCE_ROOT = Path(kiro_crew.__file__).parent
 # CrewLog.open(...)``) fails it too; the list is not the only guard.
 VETTED: frozenset[tuple[str, str]] = frozenset(
     {
-        ("emit.py", "_reap_child_origin"),
+        ("emit_runtime.py", "_reap_child_origin"),
         ("holders.py", "holders"),
         ("read.py", "dispatch_view"),
         ("session_tree.py", "reading"),
@@ -170,8 +170,8 @@ def test_every_log_parameter_in_the_package_is_annotated() -> None:
                 ):
                     untyped.append((path.name, fn.name, fn.lineno))
     assert (
-        seen.get("emit.py", 0) >= 5
-    ), f"walk found only {seen} 'log' parameters; expected five in emit.py"
+        sum(n for name, n in seen.items() if name == "emit.py" or name.startswith("emit_")) >= 5
+    ), f"walk found only {seen} 'log' parameters; expected five in emit.py and its owners"
     assert not untyped, (
         "a 'log' parameter is annotated neither as a CrewLog nor as a logging.Logger, so the "
         f"no-handle check cannot tell whether its frame holds a handle: {untyped}"

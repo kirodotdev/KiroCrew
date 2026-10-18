@@ -482,7 +482,7 @@ def test_only_a_vocabulary_the_writer_clamps_is_enforced():
 #: The append primitives in :mod:`kiro_crew.crew_log.emit` and its durable writer,
 #: each mapped to the index of the positional argument that names the entry type.
 #:
-#: Keyed on the CALLEE rather than on any type-shaped literal, because emit.py also
+#: Keyed on the CALLEE rather than on any type-shaped literal, because emit_turn.py also
 #: hands an entry type to helpers that append nothing -- ``_entry_line_fits`` is
 #: given ``"plan/updated"`` to measure a line -- and counting those would report a
 #: type as emitted at a site that never appends.
@@ -569,10 +569,12 @@ def _types_the_writers_append() -> dict[str, bool]:
 
 
 def _writer_files():
-    """The writers' source files: the emitter, its durable writer, and the store facade
-    with its ``store_*.py`` owners, where the crash-repair closer lives."""
+    """The writers' source files: the emitter facade with its ``emit_*.py`` owners, its
+    durable writer, and the store facade with its ``store_*.py`` owners, where the
+    crash-repair closer lives."""
+    emit_files = sorted(Path(emit.__file__).parent.glob("emit*.py"))
     store_files = sorted(Path(store_mod.__file__).parent.glob("store*.py"))
-    return [Path(emit.__file__), Path(writer_mod.__file__), *store_files]
+    return [*emit_files, Path(writer_mod.__file__), *store_files]
 
 
 def _walk(fields):
