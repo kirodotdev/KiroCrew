@@ -429,7 +429,7 @@ def test_the_seams_other_modules_import_keep_their_identity() -> None:
 
 def test_the_shared_state_keeps_its_identity() -> None:
     """Module state is the server's: the own-address warm task set a startup hook fills
-    is the one object ``test_denied_commands_security`` polls, and the tailnet awake
+    is the one object ``test_denied_commands_security_own_host`` polls, and the tailnet awake
     cache a reader rebinds with ``global`` is the server's binding."""
     hook = server._register_own_host_warm
     assert hook.__globals__["_OWN_HOST_WARM_TASKS"] is server._OWN_HOST_WARM_TASKS

@@ -1043,8 +1043,9 @@ class TestTheShippedCorpusIsALiveGate:
         # A band, not a count: the point is "a real corpus, not a stub and not an
         # unreviewed dump". The ceiling moved when the denial differential adopted
         # this file as its own corpus and the rows that only its retired fixture
-        # carried were folded in here.
-        assert 25 <= len(rows) <= 60, len(rows)
+        # carried were folded in here. It moved again when the split deny-fence test
+        # file's parts got their own test rows.
+        assert 25 <= len(rows) <= 70, len(rows)
         assert all(row["reason"] for row in rows)
         kinds = {row["kind"] for row in rows}
         # Four kinds ship, and each is one the verifier knows what to do with: a
