@@ -571,6 +571,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _HELD_ASYNC_LAUNCH_TOOLS,
         _LAUNCH_SHAPED_WORDS,
         BACKGROUND_LAUNCH_LABELS_MAX,
+        CODEX_COMPACTION_TITLE,
         BackgroundLaunchRecord,
         _is_launch_shaped,
         _printable_launch_label,

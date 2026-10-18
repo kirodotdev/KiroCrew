@@ -38,6 +38,7 @@ from kiro_crew.acp.transport_errors import (
 from kiro_crew.acp.types import (
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
+    ACP_BACKENDS_UNMARKED_COMPACTION_PAIR,
     EVENT_COMPACTION_STATUS,
     KNOWN_SESSION_UPDATES,
     METHOD_COMPACTION_STATUS,
@@ -253,9 +254,10 @@ def _codex_compaction_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
 
     Gated on ``ACP_BACKENDS_INLINE_COMPACTION``, the set of harnesses whose
     compaction lands INSIDE the prompt turn -- so a harness that earns that
-    membership inherits the translation by joining the set. The MARKER is what
-    actually decides: ``_meta.contextCompaction`` is codex-acp's own, and
-    claude (a member) stamps nothing, so the parser declines its frames.
+    membership inherits the translation by joining the set. The FRAME decides:
+    ``_meta.contextCompaction`` is codex-acp's own marker, and the unmarked 2.2.2
+    shape is read only for ``ACP_BACKENDS_UNMARKED_COMPACTION_PAIR``. claude (a
+    member) sends neither, so the parser declines its frames.
 
     Reached on this class through the dormant codex seam -- a live codex
     session is served by ``AcpRuntime``, whose ``AcpSessionHandle`` carries the
@@ -279,13 +281,23 @@ def _codex_compaction_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
     update = params.get("update")
     if not isinstance(update, dict):
         return None
-    status_type = parse_codex_compaction_update(update)
+    status_type = parse_codex_compaction_update(
+        update,
+        self._codex_compaction_pending,
+        allow_unmarked=self.backend in ACP_BACKENDS_UNMARKED_COMPACTION_PAIR,
+    )
     if status_type is None:
         return None
     if status_type != "started" and not self._codex_compaction_pending:
         return None
     logger.info("Compaction status (codex): %s", status_type)
-    self._codex_compaction_pending = status_type == "started"
+    # The start's call id, so an unmarked (2.2.2) terminal can be matched to it.
+    call_id = update.get("toolCallId")
+    self._codex_compaction_pending = (
+        (call_id if isinstance(call_id, str) and call_id else True)
+        if status_type == "started"
+        else False
+    )
     if status_type == "completed":
         self._compaction_failed_at = None
         self.last_prompt_stats.reset_after_compaction()

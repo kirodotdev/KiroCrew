@@ -376,7 +376,7 @@ class AcpSessionHandle:
         # compaction that ERRORS reports nothing at all: codex-acp's ``runCompact``
         # never resolves, so the ``session/prompt`` request goes unanswered, which
         # leaves this armed for ``_settle_codex_compaction`` at the turn's terminal.
-        self._codex_compaction_pending = False
+        self._codex_compaction_pending: bool | str = False
         self._cancelled = False
         # Unresponsive-cancel tracking (mirrors AcpClient._cancel_ts /
         # _cancel_grace_secs). Set by cancel(); the dispatch loop uses them to

@@ -465,6 +465,10 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "reports whether /compact works, which is what a reader choosing a harness "
         "acts on"
     ),
+    "ACP_BACKENDS_UNMARKED_COMPACTION_PAIR": (
+        "which frame shape the compaction parser reads; the compaction itself is "
+        "the manual_compact line"
+    ),
     "ACP_BACKENDS_HARNESS_MANAGED_COMPACTION": (
         "what answers a full context on a harness Crew cannot hand /compact to. The "
         "card already reports whether /compact works, which is the part a reader "

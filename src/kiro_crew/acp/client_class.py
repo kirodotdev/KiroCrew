@@ -652,7 +652,7 @@ class AcpClient:
         # nothing at all -- codex-acp's ``runCompact`` never resolves, so the
         # ``session/prompt`` request goes unanswered -- which leaves this armed
         # for ``_settle_codex_compaction`` to close out at the turn's terminal.
-        self._codex_compaction_pending: bool = False
+        self._codex_compaction_pending: bool | str = False
         # When this session's harness last launched work that outlives the
         # prompt (a backgrounded command, a Workflow). Never reset per turn: a
         # turn ending says nothing about whether that work has finished, and

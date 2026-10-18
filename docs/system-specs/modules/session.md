@@ -1321,9 +1321,10 @@ against sweep completeness, and are torn down at `close_all`.
   never the string form of `_kiro.dev/commands/execute`, which kiro-cli 2.14.0
   exits rc=0 on) and its result arrives afterwards, while claude, codex, opencode,
   goose and pi finish the whole compaction inside the prompt turn. claude and opencode emit no
-  status at all, goose emits only a `Compaction complete` chunk and pi only a `Compaction completed` chunk; codex reports the compaction as a `tool_call` pair marked
-  `_meta.contextCompaction` (translated by
-  `_dispatch.parse_codex_compaction_update`) that arrives before the prompt
+  status at all, goose emits only a `Compaction complete` chunk and pi only a `Compaction completed` chunk; codex reports the compaction as a `tool_call` pair, marked
+  `_meta.contextCompaction` on 1.11.0 and unmarked on 2.2.2 (both translated by
+  `_dispatch.parse_codex_compaction_update`; the unmarked shape only for
+  `ACP_BACKENDS_UNMARKED_COMPACTION_PAIR`), that arrives before the prompt
   response, so its terminal is read from the stream like kiro-cli's.
   For the two that emit nothing `wait_for_compaction()` answers `completed` from the
   capability

@@ -395,8 +395,17 @@ class BackgroundLaunchRecord:
 #: this literal against the adapter bundle.
 _CODEX_COMPACTION_META_KEY = "contextCompaction"
 
+#: The title codex-acp gives its compaction ``tool_call``. From 2.2.2 the pair
+#: carries no ``_meta`` at all, and of what is left (``kind: think``, the status,
+#: this title) only the title tells a compaction from any other think call. So it
+#: is matched exactly, and only on frames with no marker. Measured on codex-acp
+#: 2.2.2 in the Real Adapter Contract Tests lane.
+CODEX_COMPACTION_TITLE = "Compact conversation"
 
-def parse_codex_compaction_update(update: dict[str, Any]) -> str | None:
+
+def parse_codex_compaction_update(
+    update: dict[str, Any], pending: object = None, *, allow_unmarked: bool = False
+) -> str | None:
     """Classify a codex-acp context-compaction frame, or ``None``.
 
     Returns ``started`` or ``completed`` -- the same vocabulary kiro-cli's
@@ -420,6 +429,19 @@ def parse_codex_compaction_update(update: dict[str, Any]) -> str | None:
     display text the adapter is free to reword, and it is localized on some
     clients.
 
+    codex-acp 2.2.2 dropped the marker. Its pair, captured in the lane
+    (``test/fixtures/acp_frames/codex/compact-live-2.2.2.jsonl``)::
+
+        tool_call        kind=think  status=in_progress  title="Compact conversation"
+        tool_call_update             status=completed    (no title, no kind)
+
+    So an UNMARKED frame is read only with *allow_unmarked* (the caller's harness is
+    in ``ACP_BACKENDS_UNMARKED_COMPACTION_PAIR``), and only in that exact shape: a
+    ``think`` call titled
+    ``CODEX_COMPACTION_TITLE`` starts it, and the update completes it only when its
+    ``toolCallId`` is *pending* -- the id the caller kept from that start. A marked
+    frame never needs *pending*, so the 1.11.0 path is unchanged.
+
     Two arms rather than three, because there is no third frame to read:
 
     * There is no ``failed`` status. A compaction that errors emits an
@@ -438,9 +460,19 @@ def parse_codex_compaction_update(update: dict[str, Any]) -> str | None:
     if kind not in (UPDATE_TOOL_CALL, UPDATE_TOOL_CALL_UPDATE):
         return None
     meta = update.get("_meta")
-    if not isinstance(meta, dict) or _CODEX_COMPACTION_META_KEY not in meta:
-        return None
     status = update.get("status")
+    if not isinstance(meta, dict) or _CODEX_COMPACTION_META_KEY not in meta:
+        if meta is not None or not allow_unmarked:
+            return None
+        if kind == UPDATE_TOOL_CALL:
+            unmarked = (
+                update.get("kind") == "think" and update.get("title") == CODEX_COMPACTION_TITLE
+            )
+        else:
+            call_id = update.get("toolCallId")
+            unmarked = isinstance(pending, str) and bool(call_id) and call_id == pending
+        if not unmarked:
+            return None
     if kind == UPDATE_TOOL_CALL and status == "in_progress":
         return "started"
     if kind == UPDATE_TOOL_CALL_UPDATE and status == "completed":

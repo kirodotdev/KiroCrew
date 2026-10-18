@@ -36,16 +36,13 @@ adjust the assertions, never to relax one to match whatever the new tree does. T
 bump by hand: edit the exact version, run ``npm install --package-lock-only`` in
 that directory, and commit both files.
 
-ONE contract this lane cannot measure, which a codex-acp bump therefore has to cover
-by hand: whether ``session/close`` leaves the Codex thread LOADABLE. This lane's
-credential is fabricated, and ``session/load`` on a thread that never ran a real turn
-is refused -- "no rollout found for thread id", measured -- so the property is not
-assertable here however the test is written. Where it IS asserted is
-``test_codex_session_mcp.py::test_real_codex_acp_load_after_close_restores``, which
-prompts and so runs only under ``KIROCREW_LIVE_CODEX_PROMPT_TESTS=1`` on a host holding
-a codex credential. codex's membership in ``ACP_BACKENDS_SESSION_SHARING`` rests on that
-property, so a codex-acp bump needs one credentialled run of that test beside this
-lane's green; this lane going green alone does not establish it.
+TWO codex contracts this lane cannot measure, which a codex-acp bump has to cover
+by hand: ``session/delete`` disposing the thread, and a real model ANSWERING from a
+reloaded one. Both live in the opt-in
+``test_codex_session_mcp.py::test_real_codex_acp_load_after_close_restores``, which runs
+only under ``KIROCREW_LIVE_CODEX_PROMPT_TESTS=1`` on a host holding a codex credential.
+Close-then-load itself IS in this lane: the turn tests serve codex a loopback model, so
+the thread has a rollout to reload.
 """
 
 from __future__ import annotations

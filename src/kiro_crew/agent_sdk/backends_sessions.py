@@ -44,7 +44,7 @@ from kiro_crew.agent_sdk.backends import (
 #
 # codex-acp answers yes with a thread ``codex`` persists under ``CODEX_HOME``, and
 # the answer is MEASURED rather than argued -- codex-acp 1.11.0 against codex
-# 0.154.0, one real adapter:
+# 0.154.0, one real adapter (the load half re-measured on 2.2.2, below):
 #
 #   * ``session/close`` (a request) evicts: the sessionId stops answering. That is
 #     the same fact ``ACP_BACKENDS_SESSION_EVICTION`` records, and it is unchanged.
@@ -63,17 +63,11 @@ from kiro_crew.agent_sdk.backends import (
 # What is measured where, because the halves have different reach.
 # ``test_real_codex_acp_session_close_evicts`` carries the ``real_adapter`` marker, so
 # the contract lane runs it on a pinned adapter and an adapter bump that stops
-# ``session/close`` evicting goes red there. The RESTORE half has no such lane cover:
-# ``session/load`` on a thread the lane's fabricated credential created is refused --
-# "no rollout found for thread id", measured -- because a session that never ran a real
-# turn has nothing to reload, so the property cannot be asserted without a credential.
-# ``test_real_codex_acp_load_after_close_restores`` is where it IS asserted, and that
-# test is opt-in: it prompts, so it runs only where a host sets
-# ``KIROCREW_LIVE_CODEX_PROMPT_TESTS`` and holds a codex credential, never in CI.
-# So an adapter bump does not re-measure the restore this membership rests on, and a
-# release that made ``close`` destroy the record would reach the field before any lane
-# went red. Re-measuring it is a credentialled run of that opt-in test, which
-# ``test/real_adapter_gate.py`` names as part of a codex-acp bump.
+# ``session/close`` evicting goes red there. The RESTORE half is in the lane too, on
+# 2.2.2: ``test_real_codex_acp_closed_session_loads_again`` runs real turns against a
+# loopback model, closes, and loads in the same and in a restarted adapter, and the
+# next turn's model request carries the first turn. ``session/delete`` and the recall
+# ANSWER stay with the opt-in ``test_real_codex_acp_load_after_close_restores``.
 #
 # KAS answers NO, and that is the whole of its exclusion: its teardown maps to
 # ``_kiro/session/delete``, which REMOVES the persisted record, so there is nothing
@@ -228,8 +222,8 @@ ACP_BACKENDS_SERIAL_SESSION_STARTS = frozenset({ACP_BACKEND_KIRO})
 # H13 keeps it free of conditionals added in service of an adapter -- a harness
 # added later is one member here, not one more ``elif`` there.
 #
-# codex's restore is asserted only by an opt-in credentialled test, never in CI;
-# see ``ACP_BACKENDS_SESSION_SHARING``.
+# codex's restore is asserted in the Real Adapter Contract lane; see
+# ``ACP_BACKENDS_SESSION_SHARING``.
 #
 # pi is a member: pi-acp advertises ``loadSession`` and resolves a ``session/load``
 # from the id alone through its own session map, replaying the conversation as

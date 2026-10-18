@@ -90,7 +90,9 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # advertises no capability for the method; an older goose without it answers
 # ``-32601`` and the steer is queued.
 #
-# codex, measured against a live codex-acp 1.11.0: a steer sent while a prompt is in
+# codex, measured against a live codex-acp 1.11.0 and re-measured on 2.2.2 in the
+# Real Adapter Contract lane (``test_real_codex_acp_steer_is_injected_into_the_running_turn``,
+# against a loopback model): a steer sent while a prompt is in
 # flight is answered ``{outcome: "injected"}`` within milliseconds and the running
 # turn reads it; the same request with no turn running is answered
 # ``{outcome: "startedNewTurn"}`` and the adapter runs a turn of its own that no
@@ -203,12 +205,15 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # driven over stdio advertises ``compact`` in its ``available_commands_update``
 # ("Summarize conversation to avoid hitting the context limit"), intercepts the
 # ``/compact`` prompt as that command, and answers the same ``session/prompt``
-# request once the compaction is done. The frames are a MARKED tool-call pair --
-# ``_meta.contextCompaction`` -- which ``_dispatch.parse_codex_compaction_update``
-# translates into the compaction status every consumer already reads, so the waiter
+# request once the compaction is done. On 1.11.0 the frames are a MARKED tool-call
+# pair -- ``_meta.contextCompaction``. 2.2.2 sends the same pair UNMARKED, re-measured
+# in the Real Adapter Contract lane and committed as
+# ``test/fixtures/acp_frames/codex/compact-live-2.2.2.jsonl``.
+# ``_dispatch.parse_codex_compaction_update`` reads both shapes and
+# translates them into the compaction status every consumer already reads, so the waiter
 # is satisfied from inside the turn rather than stranded after it. Its native
 # auto-compaction is real but CONDITIONAL: with ``model_auto_compact_token_limit``
-# set it fires on its own and emits the same marked pair, and with the limit absent a
+# set it fires on its own and emits the same pair (measured on 1.11.0), and with the limit absent a
 # session held at 50k tokens across three turns compacted not once. So the old
 # "manages compaction automatically" promise was true only for an operator who had
 # configured it.
@@ -408,6 +413,14 @@ ACP_BACKENDS_INLINE_COMPACTION = frozenset(
         ACP_BACKEND_PI,
     }
 )
+
+# Inline-compaction members whose compaction pair may arrive UNMARKED, and so are
+# read by ``_dispatch.CODEX_COMPACTION_TITLE`` on a ``think`` call plus the start's
+# ``toolCallId``. codex is the member: codex-acp 2.2.2 sends the pair with no
+# ``_meta``, captured in ``test/fixtures/acp_frames/codex/compact-live-2.2.2.jsonl``.
+# Every other member is read by the marker alone, so its own ``think`` call with
+# that title is never taken for a compaction.
+ACP_BACKENDS_UNMARKED_COMPACTION_PAIR = frozenset({ACP_BACKEND_CODEX})
 
 
 # Backends implementing ``_kiro.dev/commands/execute`` — the kiro extension that

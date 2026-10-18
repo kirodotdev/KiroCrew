@@ -109,6 +109,8 @@ with no row here.
      - pre-session registry query (whether manual ``/compact`` is offered at all)
    * - ``ACP_BACKENDS_INLINE_COMPACTION``
      - semantic question (``SessionCapabilities.compacts_inline``)
+   * - ``ACP_BACKENDS_UNMARKED_COMPACTION_PAIR``
+     - frame translation (whether a compaction pair with no marker is read)
    * - ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION``
      - semantic question (whether a skipped autocompact is answered by the harness)
    * - ``ACP_BACKENDS_CONTEXT_RECYCLE``
@@ -877,4 +879,5 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
+    ACP_BACKENDS_UNMARKED_COMPACTION_PAIR,
 )

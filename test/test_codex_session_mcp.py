@@ -1453,3 +1453,323 @@ def test_real_codex_acp_load_after_close_restores():
             "session/load succeeded after session/delete, so delete no longer disposes "
             "the thread and release has no verb that does\n" + context
         )
+
+
+# ── turn-level memberships, measured against a loopback model ───────────────
+
+# The lane's credential is fabricated, so codex cannot reach a real model. Every
+# membership below needs a TURN, so the driver serves codex's Responses API itself:
+# a stdlib HTTP server on 127.0.0.1 (ephemeral port, test process only) that answers
+# each request with one assistant message. The first turn's request is HELD open so a
+# steer can land while the turn is in flight. Every request body is logged, which is
+# how the test sees what codex actually sent its model.
+_TURN_DRIVER = r"""
+import json, os, queue, subprocess, sys, threading, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+root, entry, node = sys.argv[1:4]
+work = os.path.join(root, "work")
+log, lock, held = [], threading.Lock(), []
+first_seen, release = threading.Event(), threading.Event()
+USAGE = {"input_tokens": 100, "input_tokens_details": None, "output_tokens": 5,
+         "output_tokens_details": None, "total_tokens": 105}
+
+
+class Model(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _json(self, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        with lock:
+            log.append({"method": "GET", "path": self.path})
+        self._json({"data": [], "models": []})
+
+    def do_POST(self):
+        text = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode("utf-8", "replace")
+        with lock:
+            n = len(log)
+            log.append({"method": "POST", "path": self.path,
+                        "encoding": self.headers.get("Content-Encoding"), "body": text})
+            hold = not held and "TURN-ONE-PELICAN" in text
+            if hold:
+                held.append(n)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+
+        def emit(ev):
+            self.wfile.write(("event: %s\ndata: %s\n\n" % (ev["type"], json.dumps(ev))).encode())
+            self.wfile.flush()
+
+        emit({"type": "response.created", "response": {"id": "resp_%d" % n}})
+        if hold:
+            first_seen.set()
+            release.wait(60)
+        emit({"type": "response.output_item.done", "item": {
+            "type": "message", "role": "assistant", "id": "msg_%d" % n,
+            "content": [{"type": "output_text", "text": "STUB-REPLY-%d" % n}]}})
+        emit({"type": "response.completed", "response": {"id": "resp_%d" % n, "usage": USAGE}})
+
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Model)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+with open(os.path.join(root, "codex_home", "config.toml"), "w") as fh:
+    fh.write('model = "gpt-5-codex"\nmodel_provider = "stub"\n'
+             '[model_providers.stub]\nname = "stub"\n'
+             'base_url = "http://127.0.0.1:%d/v1"\nwire_api = "responses"\n'
+             'env_key = "KIROCREW_STUB_MODEL_KEY"\n'
+             'request_max_retries = 0\nstream_max_retries = 0\n' % server.server_address[1])
+env = dict(os.environ, CODEX_HOME=os.path.join(root, "codex_home"), NO_BROWSER="1",
+           KIROCREW_STUB_MODEL_KEY="stub-key")
+
+
+class Agent:
+    def __init__(self):
+        self.p = subprocess.Popen([node, entry], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, cwd=work, env=env, text=True, bufsize=1)
+        self.q, self.frames, self.next = queue.Queue(), [], 0
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self):
+        for line in self.p.stdout:
+            self.q.put(line)
+        self.q.put(None)
+
+    def send(self, method, params, notify=False):
+        msg = {"jsonrpc": "2.0", "method": method, "params": params}
+        if not notify:
+            self.next += 1
+            msg["id"] = self.next
+        self.p.stdin.write(json.dumps(msg) + "\n")
+        self.p.stdin.flush()
+        return msg.get("id")
+
+    def until(self, done, timeout):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if done(None):
+                return None
+            try:
+                line = self.q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if line is None:
+                return {"_eof": True}
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            self.frames.append(msg)
+            if "method" in msg and "id" in msg:  # an agent->client request: refuse it
+                if msg["method"] == "session/request_permission":
+                    answer = {"result": {"outcome": {"outcome": "cancelled"}}}
+                else:
+                    answer = {"error": {"code": -32601, "message": "n/a"}}
+                self.p.stdin.write(json.dumps(dict(answer, jsonrpc="2.0", id=msg["id"])) + "\n")
+                self.p.stdin.flush()
+            elif done(msg):
+                return msg
+        return {"_timeout": True}
+
+    def reply(self, rid, timeout=30):
+        return self.until(lambda m: m is not None and m.get("id") == rid and "method" not in m, timeout)
+
+    def call(self, method, params, timeout=30):
+        return self.reply(self.send(method, params), timeout)
+
+    def reap(self):
+        for step in (self.p.terminate, self.p.kill):
+            try:
+                step()
+                self.p.communicate(timeout=15)
+                return
+            except subprocess.TimeoutExpired:
+                continue
+            except Exception:
+                return
+
+
+def text(s):
+    return [{"type": "text", "text": s}]
+
+
+def since(agent, mark, sid):
+    return [f for f in agent.frames[mark:] if (f.get("params") or {}).get("sessionId") == sid]
+
+
+def is_idle(msg, sid):
+    params = msg.get("params") or {}
+    update = params.get("update") or {}
+    status = ((update.get("_meta") or {}).get("codex") or {}).get("threadStatus") or {}
+    return params.get("sessionId") == sid and status.get("type") == "idle"
+
+
+def recalled(tag):
+    # The proof a loaded thread kept its context: the next turn's MODEL REQUEST
+    # carries the first turn. Replay frames are recorded but not relied on.
+    return any(tag in e.get("body", "") and "TURN-ONE-PELICAN" in e["body"] for e in log)
+
+
+out = {}
+a = Agent()
+try:
+    out["init"] = (a.call("initialize", {"protocolVersion": 1, "clientCapabilities": {"fs": {}}}) or {}).get("result")
+    new = a.call("session/new", {"cwd": work, "mcpServers": []})
+    out["new_error"] = new.get("error")
+    sid = (new.get("result") or {}).get("sessionId")
+    out["sid"] = sid
+    if sid:
+        p1 = a.send("session/prompt", {"sessionId": sid, "prompt": text("TURN-ONE-PELICAN: remember it.")})
+        a.until(lambda m: first_seen.is_set(), 60)
+        out["held_turn_seen"] = first_seen.is_set()
+        out["steer"] = a.call("_session/steering", {"sessionId": sid, "prompt": text("STEER-MID-TURN")}, 20)
+        release.set()
+        out["p1"] = a.reply(p1)
+        out["steer_reached_model"] = any("STEER-MID-TURN" in e.get("body", "") for e in log[(held or [0])[0] + 1:])
+        out["close"] = a.call("session/close", {"sessionId": sid})
+        mark = len(a.frames)
+        out["load_same"] = a.call("session/load", {"sessionId": sid, "cwd": work, "mcpServers": []})
+        a.until(lambda m: False, 3)
+        out["load_same_replay"] = "TURN-ONE-PELICAN" in json.dumps(since(a, mark, sid))
+        out["recall_same"] = a.call("session/prompt", {"sessionId": sid, "prompt": text("RECALL-SAME: which word?")})
+        out["recall_same_had_context"] = recalled("RECALL-SAME")
+finally:
+    a.reap()
+out["frames_a"] = a.frames
+
+if out.get("sid"):
+    b = Agent()
+    try:
+        b.call("initialize", {"protocolVersion": 1, "clientCapabilities": {"fs": {}}})
+        mark = len(b.frames)
+        out["load_fresh"] = b.call("session/load", {"sessionId": sid, "cwd": work, "mcpServers": []})
+        b.until(lambda m: False, 3)
+        out["load_fresh_replay"] = "TURN-ONE-PELICAN" in json.dumps(since(b, mark, sid))
+        out["recall_fresh"] = b.call("session/prompt", {"sessionId": sid, "prompt": text("RECALL-FRESH: which word?")})
+        out["recall_fresh_had_context"] = recalled("RECALL-FRESH")
+        mark, before = len(b.frames), len(log)
+        out["compact"] = b.call("session/prompt", {"sessionId": sid, "prompt": text("/compact")}, 60)
+        out["compact_frames"] = since(b, mark, sid)
+        out["compact_requests"] = len(log) - before
+        # Last, so the turn startedNewTurn launches cannot race anything measured above.
+        # The prompt answer can precede the thread going idle, and a steer in that gap
+        # is answered "failed" (seen once in the lane), so wait for codex to say idle.
+        b.until(lambda m: m is not None and is_idle(m, sid), 15)
+        out["idle_steer"] = b.call("_session/steering", {"sessionId": sid, "prompt": text("STEER-IDLE")}, 20)
+        b.send("session/cancel", {"sessionId": sid}, notify=True)
+    finally:
+        b.reap()
+    out["frames_b"] = b.frames
+out["requests"] = [{k: (v[:300] if k == "body" else v) for k, v in e.items()} for e in log]
+server.shutdown()
+print(json.dumps(out))
+"""
+
+
+@pytest.fixture(scope="module")
+def codex_turns() -> dict:
+    """One driven run of the real adapter, shared by the four measurements below."""
+    _require_codex_acp(with_node=True)
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as w:
+        root = Path(w)
+        (root / "work").mkdir()
+        (root / "codex_home").mkdir()
+        (root / "codex_home" / "auth.json").write_text(
+            json.dumps({"OPENAI_API_KEY": "sk-not-a-real-key-" + "0" * 24}), encoding="utf-8"
+        )
+        driver = root / "drive_turns.py"
+        driver.write_text(_TURN_DRIVER, encoding="utf-8")
+        result = _run_driver_reaping_group(
+            [sys.executable, str(driver), str(root), str(_ENTRY), shutil.which("node") or "node"],
+            timeout=600,
+            cwd=root / "work",
+        )
+    try:
+        m = json.loads(result.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        pytest.fail(f"the turn driver produced no measurement\nstderr: {result.stderr[-3000:]}")
+    # session/new makes no model call, so a refusal here is a contract break, never a skip.
+    assert m.get(
+        "sid"
+    ), f"session/new failed: {m.get('new_error')!r}\nstderr: {result.stderr[-3000:]}"
+    m["_context"] = json.dumps({k: v for k, v in m.items() if k != "frames_a"})[-6000:]
+    return m
+
+
+@pytest.mark.real_adapter
+def test_real_codex_acp_advertises_image_prompts(codex_turns):
+    """``AcpClient`` sends image blocks only on a literal ``promptCapabilities.image: true``."""
+    agent = (codex_turns.get("init") or {}).get("agentCapabilities") or {}
+    caps = agent.get("promptCapabilities")
+    assert isinstance(caps, dict) and caps.get("image") is True, codex_turns["_context"]
+
+
+@pytest.mark.real_adapter
+def test_real_codex_acp_steer_is_injected_into_the_running_turn(codex_turns):
+    """Codex's membership in ``ACP_BACKENDS_STEERING_REQUEST`` (see ``backends_turns``)."""
+    from kiro_crew.acp.client_turn_control import steering_advertised
+    from kiro_crew.acp.types import STEERING_INJECTED, STEERING_STARTED_NEW_TURN
+
+    m, ctx = codex_turns, codex_turns["_context"]
+    assert steering_advertised(m.get("init")), ctx
+    assert m.get("held_turn_seen"), "the first turn never reached the model stub\n" + ctx
+    assert (m.get("steer") or {}).get("result", {}).get("outcome") == STEERING_INJECTED, ctx
+    assert m.get("steer_reached_model"), "the injected steer never reached a model request\n" + ctx
+    assert (m.get("p1") or {}).get("result", {}).get("stopReason") == "end_turn", ctx
+    idle = (m.get("idle_steer") or {}).get("result", {}).get("outcome")
+    assert idle == STEERING_STARTED_NEW_TURN, ctx
+
+
+@pytest.mark.real_adapter
+def test_real_codex_acp_compact_runs_inside_the_turn(codex_turns):
+    """Codex's membership in ``ACP_BACKENDS_COMPACT`` and ``INLINE_COMPACTION``."""
+    m, ctx = codex_turns, codex_turns["_context"]
+    commands = [
+        c.get("name")
+        for f in m.get("frames_a", []) + m.get("frames_b", [])
+        for c in ((f.get("params") or {}).get("update") or {}).get("availableCommands") or []
+    ]
+    assert "compact" in commands, ctx
+    assert m.get("compact_requests"), "/compact made no model request\n" + ctx
+    assert (m.get("compact") or {}).get("result", {}).get("stopReason") == "end_turn", ctx
+
+
+@pytest.mark.real_adapter
+def test_real_codex_acp_compact_pair_reads_as_started_then_completed(codex_turns):
+    """``_dispatch.parse_codex_compaction_update`` reads the pair the adapter sends.
+
+    Threaded the way both consumers thread it: the start's ``toolCallId`` is what
+    lets an unmarked (2.2.2) terminal be matched, so the marker is not required.
+    """
+    from kiro_crew.acp._dispatch import parse_codex_compaction_update
+
+    m, ctx = codex_turns, codex_turns["_context"]
+    pending: object = False
+    statuses = []
+    for f in m.get("compact_frames", []):
+        update = (f.get("params") or {}).get("update") or {}
+        status = parse_codex_compaction_update(update, pending, allow_unmarked=True)
+        if status:
+            statuses.append(status)
+            pending = (update.get("toolCallId") or True) if status == "started" else False
+    assert statuses == ["started", "completed"], ctx
+
+
+@pytest.mark.real_adapter
+def test_real_codex_acp_closed_session_loads_again(codex_turns):
+    """Codex's membership in ``ACP_BACKENDS_SESSION_SHARING``: close, then load restores."""
+    m, ctx = codex_turns, codex_turns["_context"]
+    close = m.get("close") or {}
+    assert "result" in close and not close.get("error"), ctx
+    assert "result" in (m.get("load_same") or {}), ctx
+    assert m.get("recall_same_had_context"), "the same-process reload lost the first turn\n" + ctx
+    assert "result" in (m.get("load_fresh") or {}), ctx
+    assert m.get("recall_fresh_had_context"), "the restarted reload lost the first turn\n" + ctx
