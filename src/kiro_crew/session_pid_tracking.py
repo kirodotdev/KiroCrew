@@ -4,9 +4,7 @@ The two tracking files -- ``kiro_pids.txt`` (bare and ``child:parent`` lines) an
 ``kiro_session_pids.txt`` (``<gateway>:<pid>:<start token>`` roots) -- with their paths,
 locks, lenient reads, atomic rewrites, the track and untrack writers and the Windows
 pending-pin rows no pass may prune; the identity probes a record is keyed by (start token,
-age, spawn grace); the in-process registry of sweep-protected pids; and, until the provider
-teardown moves to ``session_pid_provider_kill``, ``_commit_teardown``, the commit
-``_sync_kill_provider`` takes before its first signal.
+age, spawn grace); and the in-process registry of sweep-protected pids.
 
 Split out of ``kiro_crew.session_pid``, which stays the import path and the patch target:
 every name here is reached as ``kiro_crew.session_pid.<name>``, and a patch through that
@@ -28,7 +26,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
-from kiro_crew.runtime_ownership import PidRefcount, commit_runtime_teardown
+from kiro_crew.runtime_ownership import PidRefcount
 
 #: The family logs as ``kiro_crew.session_pid``, the name callers, log filters and
 #: ``caplog`` assertions use.
@@ -820,36 +818,6 @@ _PROTECTED_PIDS: PidRefcount = PidRefcount()
 
 
 _PROTECTED_LOCK = threading.Lock()
-
-
-def _commit_teardown(pid: int, token: int) -> bool:
-    """Close *pid* to new tenants and answer whether the signal may be delivered.
-
-    The gate's verdict is computed before a start-id read, a group resolution and
-    an unbounded descendant walk, on a thread that does not own the tenancy table.
-    This is where that verdict is made current AND the window is shut: re-reading
-    before each signal, which this replaces, could only abandon the LATER SIGKILL,
-    because the SIGTERM was already out and its grace is by design long enough for a
-    shared turn to begin. A claim arriving in that grace would have been granted a
-    defence against a signal already delivered.
-
-    True obliges the caller to call :func:`release_runtime_teardown` on every exit
-    path; a barrier left standing refuses that pid's tenancies for the life of the
-    gateway.
-
-    Logged at WARNING when it declines, because an abandoned kill leaves a process
-    alive that a drain decided to end: the next drain revisits it, and until then
-    this line is the only record of why the teardown did not happen.
-    """
-    if commit_runtime_teardown(pid, token):
-        return True
-    logger.warning(
-        "_sync_kill_provider: ABANDONING the authorized kill of pid %d -- a tenant "
-        "claimed this process after the gate allowed it, so the signal would land "
-        "on a live turn; the next drain revisits it",
-        pid,
-    )
-    return False
 
 
 def register_protected_pid(pid: int) -> None:

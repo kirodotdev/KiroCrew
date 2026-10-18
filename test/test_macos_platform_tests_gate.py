@@ -463,6 +463,7 @@ class TestTheOnDemandLaneCannotBecomeAGate:
             "src/kiro_crew/session_pid_mappings.py",
             "src/kiro_crew/session_pid_orphan_kill.py",
             "src/kiro_crew/session_pid_orphan_scan.py",
+            "src/kiro_crew/session_pid_provider_kill.py",
             "src/kiro_crew/session_pid_rss.py",
             "src/kiro_crew/session_pid_tracking.py",
             "src/kiro_crew/session_lifecycle.py",

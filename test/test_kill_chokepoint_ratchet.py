@@ -85,7 +85,7 @@ BYPASS_BASELINE = 67
 #: synchronous provider teardown (a dashboard reset-all, a pool teardown, a
 #: failed start's cleanup) and the runtime's own kill.
 ATTRIBUTED_KILL_PATHS = (
-    ("session_pid.py", "_sync_kill_provider"),
+    ("session_pid_provider_kill.py", "_sync_kill_provider"),
     ("acp/runtime.py", "kill"),
 )
 
@@ -376,7 +376,7 @@ def test_the_leaked_provider_killer_commits_the_teardown_before_it_signals() -> 
     And every commit needs its release: a barrier left standing refuses that pid's
     tenancies for the life of the gateway, so the paired call is pinned too.
     """
-    tree = _parse(SRC / "session_pid.py")
+    tree = _parse(SRC / "session_pid_provider_kill.py")
     assert tree is not None
     target = _function_named(tree, "_sync_kill_provider")
     assert target is not None
