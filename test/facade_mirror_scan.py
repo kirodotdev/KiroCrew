@@ -567,7 +567,8 @@ def _spelling_patterns(dotted: str) -> tuple[re.Pattern[str], ...]:
 
 
 def _mentions(text: str, dotted_names: Iterable[str]) -> bool:
-    """Whether *text* spells any of *dotted_names* (see :func:`_spelling_patterns`).
+    """Whether *text* spells any of *dotted_names* (see :func:`_spelling_patterns`), or
+    reaches one through an alias of its parent module (:func:`_alias_chain`).
 
     A spelling of a module always contains its leaf, so a C-level substring check rejects
     almost every file before any pattern runs.
@@ -581,11 +582,48 @@ def _mentions(text: str, dotted_names: Iterable[str]) -> bool:
         from_import, attribute, relative = _spelling_patterns(name)[1:]
         if head in text and from_import.search(text):
             return True
-        if f".{leaf}" in text and head.rpartition(".")[2] in text and attribute.search(text):
-            return True
+        if f".{leaf}" in text and head.rpartition(".")[2] in text:
+            if attribute.search(text) or _alias_chain(text, name):
+                return True
         if (f"'.{leaf}'" in text or f'".{leaf}"' in text) and relative.search(text):
             return True
     return False
+
+
+def _alias_chain(text: str, dotted: str) -> bool:
+    """Whether *text* writes ``<alias>.<leaf>`` outside an import line, where ``<alias>``
+    is a name *text* binds the parent module of *dotted* to (:func:`_text_aliases`).
+
+    ``from kiro_crew.mcp_tools import browser as mod`` then ``mod.mcp_core`` spells
+    ``kiro_crew.mcp_tools.browser.mcp_core`` without any of the literal spellings above.
+    """
+    head, _, leaf = dotted.rpartition(".")
+    head_leaf = head.rpartition(".")[2]
+    needle = f".{leaf}"
+    if not head_leaf or needle not in text or head_leaf not in text:
+        return False
+    # The words written before ``.<leaf>``, read backwards from each occurrence with
+    # string scans only: this runs for every file and spelling the cheaper checks pass.
+    candidates = set()
+    for at in _occurrences(text, needle):
+        end = at + len(needle)
+        if end < len(text) and (text[end].isalnum() or text[end] == "_"):
+            continue
+        start = at
+        while start > 0 and text[start - 1] in " \t":
+            start -= 1
+        stop = start
+        while start > 0 and (text[start - 1].isalnum() or text[start - 1] == "_"):
+            start -= 1
+        if start == stop or not _starts_a_name(text, start, ".'\""):
+            continue
+        line = text[text.rfind("\n", 0, start) + 1 : start].lstrip()
+        if not line.startswith(("from ", "import ")):
+            candidates.add(text[start:stop])
+    candidates.discard(head_leaf)  # ``<head leaf>.<leaf>`` is :func:`_spelling_patterns`'
+    if "import_module" not in text:
+        candidates = {word for word in candidates if re.search(rf"\bas\s+{word}\b", text)}
+    return bool(candidates) and not candidates.isdisjoint(_text_aliases(text, head))
 
 
 def _admitted(text: str, spellings: Mapping[str, str]) -> bool:
@@ -818,8 +856,9 @@ def needs_syntax_tree(text: str, spellings: Mapping[str, str]) -> bool:
     that alias. A file is sent to :func:`patch_events` when it also holds anything those
     cannot follow: a patch spelling in :data:`_SYNTAX_ONLY`; a quoted spelling of a facade
     that is not one of those forms (a module constant, an f-string or concatenation part,
-    ``importorskip``, a ``.__dict__`` target); a bare ``import <dotted>`` or a
-    ``package.leaf`` attribute chain; or an alias assigned on to another name.
+    ``importorskip``, a ``.__dict__`` target); a bare ``import <dotted>``, a
+    ``package.leaf`` attribute chain or one through an alias of the parent module
+    (:func:`_alias_chain`); or an alias assigned on to another name.
     """
     mentioned = [spelling for spelling in spellings if _mentions(text, [spelling])]
     if not mentioned:
@@ -859,6 +898,8 @@ def needs_syntax_tree(text: str, spellings: Mapping[str, str]) -> bool:
                     continue
                 if end >= len(text) or not (text[end].isalnum() or text[end] == "_"):
                     return True
+        if _alias_chain(text, spelling):
+            return True  # ``<alias of the parent>.<leaf>``: patched as a dotted chain
         for alias in _text_aliases(text, spelling):
             if re.search(rf"=\s*{re.escape(alias)}\s*(?:#.*)?$", text, re.MULTILINE):
                 return True

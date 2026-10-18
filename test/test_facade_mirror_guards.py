@@ -953,6 +953,7 @@ def _corpus_events() -> tuple[tuple[str, PatchSite], ...]:
     )
 
 
+@functools.lru_cache(maxsize=1)
 def _corpus_patched_names() -> dict[str, set[str]]:
     """Facade -> every name the test trees patch through it (:func:`routed_patched_names`)."""
     return routed_patched_names(
@@ -1110,6 +1111,13 @@ def test_every_name_the_test_trees_patch_through_a_facade_reaches_its_readers() 
         assert patch_reach_failures(facade, reach_sample(names, index)) == [], name
 
 
+def test_the_corpus_reads_patches_through_an_alias_of_a_module_binding_the_facade() -> None:
+    """``test/test_mcp_browser_tool.py`` patches these only as ``mod.mcp_core.<name>``,
+    with ``mod`` bound to ``kiro_crew.mcp_tools.browser``."""
+    corpus = _corpus_patched_names().get("kiro_crew.mcp_core", set())
+    assert {"_vet_browse_governance", "_session_token_header"} <= corpus
+
+
 #: Patches only the syntax tree reads, one per blind spot of the regular expressions:
 #: (source, the name it patches through ``pkg.facade``).
 _SYNTAX_ONLY_CASES = (
@@ -1128,6 +1136,13 @@ _SYNTAX_ONLY_CASES = (
     ("import pkg.facade as fa\nvars(fa).update({'i': 1})\n", "i"),
     ("from unittest import mock\nmock.patch.dict('pkg.facade.__dict__', {'j': 1})\n", "j"),
     ("import pytest\nfa = pytest.importorskip('pkg.facade')\nfa.k = 1\n", "k"),
+    ("from pkg import handler as mod\nmod.facade.l = 1\n", "l"),
+    (
+        "def test_x(monkeypatch):\n    from pkg import handler as mod\n"
+        "    monkeypatch.setattr(mod.facade, 'm', None)\n",
+        "m",
+    ),
+    ("import pkg.handler as mod\nmod.facade.n = 1\n", "n"),
 )
 
 
@@ -1162,6 +1177,8 @@ def test_a_file_the_regular_expressions_fully_read_is_never_parsed() -> None:
     )
     assert not needs_syntax_tree(readable, _SPELLINGS)
     assert not needs_syntax_tree("x = 1\n", _SPELLINGS), "a file naming no facade"
+    other_leaf = "from pkg import handler as mod\nmod.run()\nmod.facade_x = 1\nxmod.facade.y = 2\n"
+    assert not needs_syntax_tree(other_leaf, _SPELLINGS), "the alias never reaches the facade"
 
     def never(path: str, text: str) -> list[PatchSite]:
         raise AssertionError(f"{path} was parsed")
