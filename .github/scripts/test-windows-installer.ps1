@@ -465,6 +465,139 @@ if ($env:GITHUB_STEP_SUMMARY) {
   Add-Content -Path $env:GITHUB_STEP_SUMMARY `
     -Value "Windows installed gateway ready: **$gatewayElapsed seconds** (ceiling: $MaxGatewayReadySeconds seconds)."
 }
+
+# The commands Settings shows for a file-only setting must run AS PASTED in each shell
+# a Windows user has, against the INSTALLED launcher. Three things are proved here, none
+# of them by a unit test: the gateway's own resolver names the bundle's `.cmd` shim, the
+# production formatter turns that launcher into prefixes with the right quoting, and
+# Windows PowerShell 5.1, PowerShell 7 and cmd.exe each deliver a padded Unicode token to
+# the CLI as ONE argument (5.1 drops a separate empty argument before a `.cmd` shim, which
+# is why the value rides attached as `--value-base64=<token>`).
+$expectedLauncher = Join-Path $installLocation "resources\backend-dist\kirocrew-backend\bin\kirocrew.cmd"
+if (-not (Test-Path -LiteralPath $expectedLauncher -PathType Leaf)) {
+  throw "The installed kirocrew launcher is missing: $expectedLauncher"
+}
+foreach ($shellName in @("powershell.exe", "pwsh.exe")) {
+  if (-not (Get-Command $shellName -CommandType Application -ErrorAction SilentlyContinue)) {
+    throw "$shellName is not available; the config-set proof needs Windows PowerShell 5.1 and PowerShell 7."
+  }
+}
+$windowsPowerShellMajor = (& powershell.exe -NoProfile -Command '$PSVersionTable.PSVersion.Major' | Select-Object -Last 1).Trim()
+if ($windowsPowerShellMajor -ne "5") {
+  throw "powershell.exe reported major version $windowsPowerShellMajor; the proof needs Windows PowerShell 5.1."
+}
+
+$savedConfigProofEnv = @{
+  KIROCREW_HOME = $env:KIROCREW_HOME
+  PYTHONNOUSERSITE = $env:PYTHONNOUSERSITE
+  PYTHONUTF8 = $env:PYTHONUTF8
+  PYTHONPYCACHEPREFIX = $env:PYTHONPYCACHEPREFIX
+}
+$cmdDriver = Join-Path $gatewayHome "config-set-proof.cmd"
+try {
+  $env:KIROCREW_HOME = $gatewayHome
+  $env:PYTHONNOUSERSITE = "1"
+  $env:PYTHONUTF8 = "1"
+  $env:PYTHONPYCACHEPREFIX = Join-Path $gatewayHome "pycache"
+
+  # Ask the gateway's resolver, from the bundled interpreter, which launcher it hands out.
+  $resolverCode = "from kiro_crew.agent import _resolve_kirocrew_bin; print(_resolve_kirocrew_bin())"
+  $resolvedLauncher = (& $bundledPython -s -P -c $resolverCode | Select-Object -Last 1).Trim()
+  if ($LASTEXITCODE -ne 0) {
+    throw "The bundled launcher resolver exited with code $LASTEXITCODE."
+  }
+  if ($resolvedLauncher -ine $expectedLauncher) {
+    throw "The gateway resolves the launcher '$resolvedLauncher'; expected the bundled shim '$expectedLauncher'."
+  }
+
+  # Feed that same resolved value to the production formatter.
+  $helperCode = "import json, sys; from kiro_crew.kiro_prerequisite_status import config_set_hints_for_launcher as hints; print(json.dumps(hints(sys.argv[1], sys.argv[2])))"
+  $hintJson = (& $bundledPython -s -P -c $helperCode $resolvedLauncher win32 | Select-Object -Last 1)
+  if ($LASTEXITCODE -ne 0) {
+    throw "The config-set hint formatter exited with code $LASTEXITCODE."
+  }
+  $hints = $hintJson | ConvertFrom-Json
+  if ($hints.version -ne 1 -or $hints.encoding -ne "utf-8-base64") {
+    throw "Unexpected config-set hint envelope: $hintJson"
+  }
+  $shellRows = @($hints.shells)
+  if ($shellRows.Count -ne 2 -or $shellRows[0].id -ne "powershell" -or $shellRows[1].id -ne "cmd") {
+    throw "Expected the powershell and cmd rows in order; got: $hintJson"
+  }
+  $powershellPrefix = $shellRows[0].prefix
+  $cmdPrefix = $shellRows[1].prefix
+  $expectedPowershellPrefix = "& '" + $expectedLauncher.Replace("'", "''") + "'"
+  $expectedCmdPrefix = '"' + $expectedLauncher + '"'
+  if ($powershellPrefix -cne $expectedPowershellPrefix) {
+    throw "PowerShell prefix was '$powershellPrefix'; expected '$expectedPowershellPrefix'."
+  }
+  if ($cmdPrefix -cne $expectedCmdPrefix) {
+    throw "cmd prefix was '$cmdPrefix'; expected '$expectedCmdPrefix'."
+  }
+
+  # `["C:/my skills/a&b's/é"]`: a space, an ampersand, an apostrophe and a non-ASCII letter,
+  # padded with `==`. The accent is built from its code point so this file's encoding
+  # cannot change what is being proved.
+  $token = "WyJDOi9teSBza2lsbHMvYSZiJ3Mvw6kiXQ=="
+  $expectedPath = "C:/my skills/a&b's/" + [char]0x00E9
+  $configFile = Join-Path $gatewayHome "config.json"
+
+  function Reset-ExtraPaths {
+    # Directly through the bundled CLI, before EACH shell: a value left by an earlier
+    # shell must not let a later, broken shell look green.
+    & $bundledPython -s -P -m kiro_crew config set skills.extra_paths --value-base64=W10= | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      throw "Resetting skills.extra_paths exited with code $LASTEXITCODE."
+    }
+    $afterReset = @((Get-Content -LiteralPath $configFile -Raw -Encoding utf8 | ConvertFrom-Json).skills.extra_paths)
+    if ($afterReset.Count -ne 0) {
+      throw "skills.extra_paths was not empty after the reset: $($afterReset -join ', ')"
+    }
+  }
+
+  function Assert-ExtraPathsPersisted {
+    param([string]$Shell, [int]$ExitCode)
+
+    if ($ExitCode -ne 0) {
+      throw "The $Shell command exited with code $ExitCode."
+    }
+    $stored = @((Get-Content -LiteralPath $configFile -Raw -Encoding utf8 | ConvertFrom-Json).skills.extra_paths)
+    if ($stored.Count -ne 1 -or $stored[0] -cne $expectedPath) {
+      throw "$Shell persisted skills.extra_paths = [$($stored -join ' | ')]; expected exactly [$expectedPath]."
+    }
+  }
+
+  $setCommand = "config set skills.extra_paths --value-base64=$token"
+
+  Reset-ExtraPaths
+  & powershell.exe -NoProfile -Command "$powershellPrefix $setCommand" | Out-Null
+  Assert-ExtraPathsPersisted "Windows PowerShell 5.1" $LASTEXITCODE
+
+  Reset-ExtraPaths
+  & pwsh.exe -NoProfile -Command "$powershellPrefix $setCommand" | Out-Null
+  Assert-ExtraPathsPersisted "PowerShell 7" $LASTEXITCODE
+
+  Reset-ExtraPaths
+  # `call`: a batch file that runs another one without it never comes back.
+  Set-Content -Encoding ascii -LiteralPath $cmdDriver -Value @(
+    "@echo off",
+    "call $cmdPrefix $setCommand",
+    "exit /b %ERRORLEVEL%"
+  )
+  $cmdRun = Start-Process -FilePath "cmd.exe" -ArgumentList "/s /c `"`"$cmdDriver`"`"" `
+    -Wait -PassThru -NoNewWindow
+  Assert-ExtraPathsPersisted "cmd.exe" $cmdRun.ExitCode
+  Write-Host "Config-set commands persisted the padded Unicode list from Windows PowerShell 5.1, PowerShell 7 and cmd.exe."
+} finally {
+  Remove-Item -LiteralPath $cmdDriver -Force -ErrorAction SilentlyContinue
+  foreach ($name in $savedConfigProofEnv.Keys) {
+    if ($null -eq $savedConfigProofEnv[$name]) {
+      Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
+    } else {
+      Set-Item -Path "Env:$name" -Value $savedConfigProofEnv[$name]
+    }
+  }
+}
 }
 
 $uninstaller = Get-ChildItem -LiteralPath $installLocation -File -Filter "Uninstall*.exe" |

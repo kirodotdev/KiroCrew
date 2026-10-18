@@ -333,6 +333,7 @@ Examples:
   kirocrew config get                   # Show all config
   kirocrew config get agent.provider    # Get a specific value
   kirocrew config set dashboard.url http://localhost:5476
+  kirocrew config set skills.extra_paths --value-base64=WyIvb3B0L3NraWxscyJd  # ["/opt/skills"]
   kirocrew config edit                  # Open in $EDITOR
   kirocrew config defaults              # Stored values holding a superseded default
   kirocrew config defaults --adopt      # Take the current defaults for all of them
@@ -349,6 +350,17 @@ env var overrides it.
     cfg_set = cfg_sub.add_parser("set", help="Set a config value")
     cfg_set.add_argument("key", nargs="?", help="Dot-separated key (e.g. agent.provider)")
     cfg_set.add_argument("value", nargs="?", help="Value to set")
+    cfg_set.add_argument(
+        "--value-base64",
+        dest="value_base64",
+        default=None,
+        metavar="TOKEN",
+        help=(
+            "Value as standard Base64 of its UTF-8 text, attached with '=' "
+            "(--value-base64=TOKEN) so no shell can alter or drop it; "
+            "an empty token sets empty text"
+        ),
+    )
     cfg_set.add_argument("--file", "-f", dest="file", help="Load full config from a JSON file")
     cfg_set.add_argument(
         "--local",

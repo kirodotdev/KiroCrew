@@ -9093,7 +9093,16 @@
       "fileOnlyDescription": "아래 CLI 명령으로 이 값을 설정하세요.",
       "fileSettingAriaLabel": "파일 전용 설정 {{key}}",
       "openSettingsAriaLabel": "{{key}}을(를) 설정 → {{tab}}에서 열기",
-      "orEditConfigJson": "또는 ~/.kiro/crew/config.json 파일을 직접 편집하세요."
+      "orEditConfigJson": "또는 ~/.kiro/crew/config.json 파일을 직접 편집하세요.",
+      "commandValueLabel": "명령에 넣을 값",
+      "commandValueDescription": "설정할 값입니다. 아래 명령은 입력하는 대로 갱신됩니다.",
+      "commandListValueLabel": "명령에 넣을 값 (한 줄에 하나)",
+      "commandListValueDescription": "한 줄에 항목 하나를 입력하세요. 항목 앞뒤의 공백과 빈 줄은 무시됩니다. 아래 명령은 입력하는 대로 갱신됩니다.",
+      "commandDecodedValueLabel": "이 명령이 설정하는 값",
+      "legacyCommandShellNote": "셸에 따라 이 명령의 따옴표를 바꿔야 할 수 있습니다.",
+      "commandShellPosix": "macOS / Linux 터미널",
+      "commandShellPowerShell": "Windows PowerShell",
+      "commandShellCmd": "Windows 명령 프롬프트"
     },
     "pttTestStrip": {
       "focus_lost": "창이 포커스를 잃어 키에서 손을 뗀 것을 감지하지 못했습니다. 실제 대화에서는 안전 타이머가 녹음을 중지합니다.",
@@ -15569,7 +15578,7 @@
       "footer_kirocrew_gb": "{{productName}} (GB)",
       "footer_largest_session_gb": "최대 세션 (GB)",
       "footer_lineage_over_cap": "저장된 세션 로그",
-      "footer_lineage_over_cap_hint": "오래된 세션 로그가 쌓이고 있습니다. {{cap}}개보다 많이 존재하며, 이는 {{productName}}이(가) 누가 무엇을 열었는지 확인하기 위해 읽는 수를 넘습니다. 이 페이지의 세션은 모두 그대로 표시되지만, 열린 뒤 재시작된 세션은 이를 연 세션 아래가 아니라 최상위에 표시될 수 있습니다. 오래된 로그는 기본적으로 30일 후 만료됩니다. 더 일찍 만료되게 하려면 터미널에서 다음을 실행하세요: kirocrew config set session.archive_retention_days 7 (또는 다른 일수). 보존 기간이 꺼져 있었다면 이 명령으로 다시 켜집니다. 이 설정은 지정한 일수보다 오래된 닫힌 세션의 로그와 아카이브에 있는 오래된 저장 기록만 삭제합니다. 실행 중인 세션과 그보다 새로운 것은 유지됩니다.",
+      "footer_lineage_over_cap_hint": "오래된 세션 로그가 쌓이고 있습니다. {{cap}}개보다 많이 존재하며, 이는 {{productName}}이(가) 누가 무엇을 열었는지 확인하기 위해 읽는 수를 넘습니다. 이 페이지의 세션은 모두 그대로 표시되지만, 열린 뒤 재시작된 세션은 이를 연 세션 아래가 아니라 최상위에 표시될 수 있습니다. 오래된 로그는 기본적으로 30일 후 만료됩니다. 더 일찍 만료되게 하려면 보존 기간을 변경하세요. 보존 기간이 꺼져 있었다면 일수를 설정하면 다시 켜집니다. 이 설정은 지정한 일수보다 오래된 닫힌 세션의 로그와 아카이브에 있는 오래된 저장 기록만 삭제합니다. 실행 중인 세션과 그보다 새로운 것은 유지됩니다.",
       "memory_hint": "각 행은 자체 런타임의 메모리를 표시합니다. 세션의 값에는 그 아래에 중첩된 세션이나 작업이 포함되지 않습니다. 그룹화 시 그룹의 머리글 행은 구성원의 합계를 표시합니다.",
       "footer_session_procs": "세션 프로세스",
       "footer_sessions": "세션",
@@ -17007,6 +17016,10 @@
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "완료된 각 세션을 분석해 반복될 절차 — 향후 세션이 다른 대상에 대해 다시 실행할 절차 — 가 나타나면 재사용 가능한 SKILL.md 초안을 작성합니다. 기본값은 꺼짐입니다. 초안은 맞춤 설정 → 스킬의 대기 큐에 검토용으로 등록되며, 승인 없이는 아무것도 적용되지 않습니다(아래 참조).",
         "auto_generate_skills_from_sessions": "세션에서 스킬 자동 생성",
+        "extra_skill_paths": "추가 스킬 경로",
+        "extra_skill_paths_description": "추가 스킬을 불러올 폴더를 한 줄에 경로 하나씩 입력하세요. 경로 앞뒤의 공백과 빈 줄은 무시됩니다. 그곳에서 찾은 스킬은 읽기 전용이며, 이름이 겹치면 내 스킬 폴더의 스킬이 우선합니다. 변경 사항은 재시작 없이 적용됩니다.",
+        "extra_skill_paths_placeholder": "한 줄에 폴더 하나",
+        "failed_to_save_extra_skill_paths": "추가 스킬 경로를 저장하지 못했습니다. 입력한 내용은 필드에 그대로 남아 있습니다.",
         "failed_to_save_skills_setting": "스킬 설정을 저장하지 못했습니다",
         "keep_every_auto_generated_candidate_in_the_pendi": "자동 생성된 모든 후보를 승인할 때까지 대기 큐에 보관합니다. 이 설정을 끄면 문서만 있는 스킬은 자동으로 공개됩니다. 스크립트를 포함한 스킬은 어떤 경우에도 항상 승인이 필요합니다.",
         "require_approval_before_generated_skills_go_live": "생성된 스킬을 적용하기 전에 승인 필요",

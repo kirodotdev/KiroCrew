@@ -1,4 +1,4 @@
-"""Tests for PATCH /api/config/kirocrew validators (enum, int, float, bool, str)."""
+"""Tests for PATCH /api/config/kirocrew validators (enum, int, float, bool, str, str_list)."""
 
 from __future__ import annotations
 
@@ -1139,6 +1139,119 @@ class TestBoolValidator:
 
 
 # ── Str validator (pool_agent) ───────────────────────────────────────────
+
+
+class TestStrListValidator:
+    """``skills.extra_paths`` is a ``str_list``: a JSON list of strings, shape only."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "value",
+        [
+            [],
+            ["/opt/skills"],
+            ["/b", "/a", "/b"],  # order and duplicates are the user's
+            ["~/skills", "relative/skills", "/does/not/exist", ""],  # the loader judges paths
+            ["C:/my skills/a&b's/é"],
+        ],
+        ids=["empty", "one", "order-and-duplicates", "unjudged-paths", "unicode"],
+    )
+    async def test_a_list_of_strings_is_stored_as_submitted(self, tmp_config, value) -> None:
+        async with TestClient(TestServer(_make_app())) as client:
+            response = await _patch(client, "skills.extra_paths", value)
+            assert response.status == 200
+        written = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert written["skills"]["extra_paths"] == value
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "value",
+        ["/opt/skills", None, 7, True, {"0": "/a"}, ["/a", 1], ["/a", None], [["/a"]], [True]],
+        ids=[
+            "scalar-string",
+            "null",
+            "number",
+            "bool",
+            "object",
+            "mixed-number",
+            "mixed-null",
+            "nested-list",
+            "bool-item",
+        ],
+    )
+    async def test_anything_but_a_list_of_strings_is_a_400_and_writes_nothing(
+        self, tmp_config, value
+    ) -> None:
+        before = tmp_config.read_bytes()
+        async with TestClient(TestServer(_make_app())) as client:
+            response = await _patch(client, "skills.extra_paths", value)
+            assert response.status == 400
+            assert (await response.json())["error"] == "must be a list of strings"
+        assert tmp_config.read_bytes() == before
+
+    @pytest.mark.asyncio
+    async def test_a_second_write_replaces_the_list(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as client:
+            assert (await _patch(client, "skills.extra_paths", ["/a", "/b"])).status == 200
+            assert (await _patch(client, "skills.extra_paths", [])).status == 200
+        written = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert written["skills"]["extra_paths"] == []
+
+    def test_every_str_list_entry_declares_its_bounds(self) -> None:
+        from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+        str_lists = {k: s for k, s in _EDITABLE_CONFIG.items() if s["type"] == "str_list"}
+        assert str_lists
+        for key, spec in str_lists.items():
+            assert isinstance(spec.get("max_items"), int) and spec["max_items"] > 0, key
+            assert isinstance(spec.get("max_item_len"), int) and spec["max_item_len"] > 0, key
+        assert str_lists["skills.extra_paths"]["max_items"] == 64
+        assert str_lists["skills.extra_paths"]["max_item_len"] == 4096
+
+    @pytest.mark.asyncio
+    async def test_the_bounds_themselves_are_accepted(self, tmp_config) -> None:
+        value = ["/" + "a" * 4095] + [f"/p{i}" for i in range(63)]
+        async with TestClient(TestServer(_make_app())) as client:
+            response = await _patch(client, "skills.extra_paths", value)
+            assert response.status == 200
+        written = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert written["skills"]["extra_paths"] == value
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("value", "error"),
+        [
+            ([f"/p{i}" for i in range(65)], "must be at most 64 items"),
+            (["/" + "a" * 4096], "each item must be at most 4096 characters"),
+            (["/ok", "/" + "b" * 10_000], "each item must be at most 4096 characters"),
+        ],
+        ids=["65-items", "4097-chars", "one-long-item"],
+    )
+    async def test_a_list_past_its_bounds_is_a_400_and_writes_nothing(
+        self, tmp_config, monkeypatch, value, error
+    ) -> None:
+        audit = MagicMock()
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: audit)
+        before = tmp_config.read_bytes()
+        async with TestClient(TestServer(_make_app())) as client:
+            response = await _patch(client, "skills.extra_paths", value)
+            assert response.status == 400
+            assert (await response.json())["error"] == error
+        assert tmp_config.read_bytes() == before
+        assert audit.log_api_access.call_args.kwargs["outcome"] == "denied"
+        assert audit.log_api_access.call_args.kwargs["resources"] == "skills.extra_paths"
+
+    @pytest.mark.asyncio
+    async def test_a_refused_shape_names_the_key_not_the_value(
+        self, tmp_config, monkeypatch
+    ) -> None:
+        audit = MagicMock()
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: audit)
+        async with TestClient(TestServer(_make_app())) as client:
+            response = await _patch(client, "skills.extra_paths", ["/secret-looking", 1])
+            assert response.status == 400
+        assert audit.log_api_access.call_args.kwargs["outcome"] == "denied"
+        assert audit.log_api_access.call_args.kwargs["resources"] == "skills.extra_paths"
 
 
 class TestStrValidator:

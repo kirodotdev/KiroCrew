@@ -24,6 +24,8 @@ import ast
 import importlib
 import inspect
 import logging
+import sys
+import threading
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -33,6 +35,7 @@ import source_corpus
 import kiro_crew
 from kiro_crew import _facade_mirror
 from kiro_crew import kiro_prerequisite as facade
+from kiro_crew import kiro_prerequisite_service as service_module
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
 # Walks src/kiro_crew for owner imports; keep it on one worker.
@@ -452,3 +455,78 @@ def test_the_owner_import_scan_finds_an_outside_importer(tmp_path: Path) -> None
         "relative.py",
         "pkg/up.py",
     }
+
+
+# --------------------------------------------------------------------------- #
+# The config-set hints in the owner snapshot
+# --------------------------------------------------------------------------- #
+
+
+def _assume_ready_service(tmp_path: Path) -> KiroPrerequisiteService:
+    return KiroPrerequisiteService(
+        platform_name="linux",
+        environ={"HOME": str(tmp_path), "PATH": ""},
+        home=tmp_path,
+        assume_ready=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_each_snapshot_resolves_the_launcher_off_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop_thread = threading.get_ident()
+    calls: list[int] = []
+
+    def resolver() -> dict[str, object]:
+        calls.append(threading.get_ident())
+        return {"version": 1, "encoding": "utf-8-base64", "shells": [], "call": len(calls)}
+
+    monkeypatch.setattr(service_module, "_resolve_config_set_hints", resolver)
+    service = _assume_ready_service(tmp_path)
+    assert calls == []  # construction resolves nothing
+
+    first = await service.snapshot()
+    second = await service.snapshot()
+
+    assert len(calls) == 2  # one per snapshot, never held for the service's lifetime
+    assert loop_thread not in calls
+    assert first["config_set_hints"]["call"] == 1
+    assert second["config_set_hints"]["call"] == 2
+
+
+@pytest.mark.asyncio
+async def test_an_unresolvable_launcher_omits_the_hints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(service_module, "_resolve_config_set_hints", lambda: None)
+
+    snapshot = await _assume_ready_service(tmp_path).snapshot()
+
+    assert "config_set_hints" not in snapshot
+
+
+def test_the_resolver_wrapper_formats_the_resolved_launcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew import agent
+    from kiro_crew.kiro_prerequisite_status import config_set_hints_for_launcher
+
+    monkeypatch.setattr(agent, "_resolve_kirocrew_bin", lambda: "/opt/kiro crew/kirocrew")
+
+    hints = service_module._resolve_config_set_hints()
+
+    assert hints == config_set_hints_for_launcher("/opt/kiro crew/kirocrew", sys.platform)
+
+
+def test_the_resolver_wrapper_survives_a_resolver_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew import agent
+
+    def boom() -> str:
+        raise OSError("install pruned")
+
+    monkeypatch.setattr(agent, "_resolve_kirocrew_bin", boom)
+
+    assert service_module._resolve_config_set_hints() is None

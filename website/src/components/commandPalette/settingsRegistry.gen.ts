@@ -2504,6 +2504,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "skills.auto_create_from_sessions"
   },
   {
+    "id": "skills.extra-skill-paths",
+    "label": "Extra skill paths",
+    "labelKey": "pages.settings.skillsPanel.extra_skill_paths",
+    "description": "Folders to load extra skills from, one path per line. Spaces around a path and blank lines are ignored. Skills found there are read-only, and a skill in your own skills folder wins on a duplicate name. Changes apply without a restart.",
+    "tab": "skills",
+    "type": "input",
+    "occurrence": 1,
+    "configKey": "skills.extra_paths"
+  },
+  {
     "id": "skills.require-approval-before-generated-skills-go-live",
     "label": "Require approval before generated skills go live",
     "labelKey": "pages.settings.skillsPanel.require_approval_before_generated_skills_go_live",

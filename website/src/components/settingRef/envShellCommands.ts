@@ -53,6 +53,65 @@ export function configSetCommand(key: string, placeholder: string): string {
 }
 
 /**
+ * The one rule that turns a multi-line string-list editor into list items: split on
+ * LF or CRLF, trim each line, drop the empty ones, keep order and duplicates. The
+ * Skills editor writes this list and the command row encodes the same list, so the
+ * command a user copies sets exactly what the editor would save. Nothing here
+ * expands `~`, resolves, deduplicates, sorts or checks a path: the consumer of the
+ * list owns what a path means.
+ */
+export function stringListLines(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+}
+
+/** Standard Base64 of the UTF-8 bytes of `text`, converted in chunks so a long value never builds a huge argument list. */
+function utf8Base64(text: string): string {
+  const bytes = new TextEncoder().encode(text)
+  const chunk = 0x2000
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return btoa(binary)
+}
+
+/**
+ * Build `kirocrew config set` for a gateway that supplied launcher prefixes.
+ *
+ * `prefix` is the server-resolved launcher for one shell and `key` a schema key, so
+ * the only user text is the value, and that exists solely inside the Base64 token.
+ * The token is attached to the flag with `=` as ONE argument: Windows PowerShell 5.1
+ * drops a separate empty argument before a `.cmd` shim, and an attached empty token
+ * (`--value-base64=`) survives every shell. A schema type of `array` sends the lines
+ * of `text` as a JSON list (see {@link stringListLines}); any other type sends `text`
+ * verbatim and the CLI parses it exactly as it parses a positional value.
+ */
+export function configSetCommandV1(
+  prefix: string,
+  key: string,
+  schemaType: string | undefined,
+  text: string,
+): string {
+  return `${prefix} config set ${key} --value-base64=${utf8Base64(configSetDecodedValue(schemaType, text))}`
+}
+
+/** The exact text a command built from `text` sets, shown beside it so the user can audit the encoding. */
+export function configSetDecodedValue(schemaType: string | undefined, text: string): string {
+  return schemaType === 'array' ? JSON.stringify(stringListLines(text)) : text
+}
+
+/** The value a command editor starts from when the caller has no meaningful sample: blank for a list, otherwise a literal of the schema type. */
+export function configSetSampleValue(schemaType: string | undefined): string {
+  if (schemaType === 'array') return ''
+  if (schemaType === 'integer' || schemaType === 'number') return '7'
+  if (schemaType === 'boolean') return 'true'
+  return 'value'
+}
+
+/**
  * Value placeholder for a file-mode CLI command: explicit prop override wins,
  * then schema type (`true|false` for booleans), then generic `<value>`.
  */

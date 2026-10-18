@@ -9369,7 +9369,16 @@
       "copyCommand": "Copiar comando",
       "orEditConfigJson": "Alternativamente, edita ~/.kiro/crew/config.json directamente.",
       "openSettingsAriaLabel": "Abrir {{key}} en Configuración → {{tab}}",
-      "fileSettingAriaLabel": "Configuración solo de archivo {{key}}"
+      "fileSettingAriaLabel": "Configuración solo de archivo {{key}}",
+      "commandValueLabel": "Valor para el comando",
+      "commandValueDescription": "El valor que se establecerá. El comando de abajo se actualiza mientras escribes.",
+      "commandListValueLabel": "Valores para el comando, uno por línea",
+      "commandListValueDescription": "Añade una entrada por línea. Se ignoran los espacios alrededor de una entrada y las líneas en blanco. El comando de abajo se actualiza mientras escribes.",
+      "commandDecodedValueLabel": "Este comando establece",
+      "legacyCommandShellNote": "En algunos shells puede que haya que cambiar las comillas de este comando.",
+      "commandShellPosix": "macOS / Linux",
+      "commandShellPowerShell": "Windows PowerShell",
+      "commandShellCmd": "Símbolo del sistema de Windows"
     },
     "pttTestStrip": {
       "focus_lost": "La ventana perdió el foco y no vimos que la soltaras. En un chat real un temporizador de seguridad detiene la grabación por ti.",
@@ -16085,7 +16094,7 @@
       "footer_kirocrew_gb": "{{productName}} (GB)",
       "footer_largest_session_gb": "Sesión más grande (GB)",
       "footer_lineage_over_cap": "Registros de sesión guardados",
-      "footer_lineage_over_cap_hint": "Se acumulan registros de sesión antiguos: hay más de {{cap}}, más de los que {{productName}} lee para saber quién abrió a quién. Todas las sesiones de esta página siguen apareciendo; una sesión reiniciada desde que se abrió puede aparecer en el nivel superior en lugar de bajo la sesión que la abrió. De forma predeterminada, los registros antiguos caducan a los 30 días. Para que caduquen antes, ejecuta en una terminal: kirocrew config set session.archive_retention_days 7 (u otro número de días); si la retención estaba desactivada, esto la vuelve a activar. Eso elimina solo los registros de sesiones cerradas y las transcripciones guardadas antiguas (listadas en Archivo) más antiguas que los días fijados; las sesiones en marcha y todo lo más reciente se conservan.",
+      "footer_lineage_over_cap_hint": "Se acumulan registros de sesión antiguos: hay más de {{cap}}, más de los que {{productName}} lee para saber quién abrió a quién. Todas las sesiones de esta página siguen apareciendo; una sesión reiniciada desde que se abrió puede aparecer en el nivel superior en lugar de bajo la sesión que la abrió. De forma predeterminada, los registros antiguos caducan a los 30 días. Para que caduquen antes, cambia el período de retención; si la retención estaba desactivada, fijar un número de días la vuelve a activar. Eso elimina solo los registros de sesiones cerradas y las transcripciones guardadas antiguas (listadas en Archivo) más antiguas que los días fijados; las sesiones en marcha y todo lo más reciente se conservan.",
       "memory_hint": "Cada fila muestra la memoria de su propio entorno de ejecución. La cifra de una sesión no incluye las sesiones ni tareas anidadas bajo ella. Con Agrupar por, la fila de cabecera de un grupo suma sus miembros.",
       "footer_session_procs": "Procesos de sesión",
       "footer_sessions": "Sesiones",
@@ -17537,6 +17546,10 @@
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analiza cada sesión completada y redacta un SKILL.md reutilizable cuando la sesión demuestra un procedimiento recurrente — uno que una sesión futura, trabajando sobre un objetivo distinto, volvería a ejecutar. Desactivado por defecto. Los borradores pasan a la cola de pendientes de Personalizar → Habilidades para su revisión — nada se activa sin tu aprobación (ver más abajo).",
         "auto_generate_skills_from_sessions": "Generar habilidades automáticamente a partir de las sesiones",
+        "extra_skill_paths": "Rutas de habilidades adicionales",
+        "extra_skill_paths_description": "Carpetas de las que cargar habilidades adicionales, una ruta por línea. Se ignoran los espacios alrededor de una ruta y las líneas en blanco. Las habilidades que se encuentren allí son de solo lectura, y una habilidad de tu propia carpeta de habilidades tiene prioridad si el nombre se repite. Los cambios se aplican sin reiniciar.",
+        "extra_skill_paths_placeholder": "Una carpeta por línea",
+        "failed_to_save_extra_skill_paths": "No se pudieron guardar las rutas de habilidades adicionales. Tu texto sigue en el campo.",
         "failed_to_save_skills_setting": "No se pudo guardar la configuración de habilidades",
         "keep_every_auto_generated_candidate_in_the_pendi": "Mantén cada candidato generado automáticamente en la cola de pendientes hasta que lo apruebes. Si lo desactivas, las habilidades de solo texto se publican automáticamente; las que incluyen scripts siempre requieren aprobación.",
         "require_approval_before_generated_skills_go_live": "Requerir aprobación antes de publicar las habilidades generadas",

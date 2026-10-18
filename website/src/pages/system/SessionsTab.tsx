@@ -7,7 +7,7 @@
  * `Group by` folds rows on an ATTRIBUTE (agent, channel). Sorting, expansion,
  * grouping, and aggregation come from `@tanstack/react-table`.
  */
-import { type MutableRefObject, useCallback, useEffect, useMemo, useState } from 'react'
+import { type MutableRefObject, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -30,6 +30,7 @@ import { Btn, Card, ContentSkeleton, EmptyState, IconButton, SearchInput } from 
 import { Popover, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table'
 import InfoTip from '../../components/InfoTip'
+import { SettingRef } from '../../components/settingRef/SettingRef'
 import SegmentedControl, { type Segment } from '../../components/SegmentedControl'
 import { fmtNumber, fmtPercent } from '../../i18n/format'
 import {
@@ -770,12 +771,15 @@ export default function SessionsTab({ planeStateRef }: Props) {
             a label that names logs on disk, since the strip already counts
             sessions, task sessions and session procs; the hint names the cap
             itself, because it opens away from the value it explains. Shown
-            only when there is something to say. */}
+            only when there is something to say. The retention command sits
+            beside the stat as a SettingRef, not in the hint: a hint is a
+            tooltip, and a command a reader has to copy cannot live in one. */}
         {totals?.lineage_over_cap === true && (
           <FooterStat
             label={i18nT('pages.sessionsTab.footer_lineage_over_cap')}
             value={`${fmtNumber(totals.lineage_cap)}+`}
             hint={i18nT('pages.sessionsTab.footer_lineage_over_cap_hint', { cap: fmtNumber(totals.lineage_cap) })}
+            action={<SettingRef configKey="session.archive_retention_days" valuePlaceholder="7" />}
           />
         )}
       </div>
@@ -802,12 +806,15 @@ function FooterStat({
   value,
   warn,
   hint,
+  action,
 }: {
   label: string
   value: string
   warn?: boolean
   /** The page's "?" hint (the column-header pattern), for a stat a reader cannot act on from its label alone. */
   hint?: string
+  /** An interactive affordance for the stat, rendered after the value; never inside the hint's tooltip. */
+  action?: ReactNode
 }) {
   // An inline-flex row: the hint's button is a flex box of its own, and inline
   // text beside a block would break the stat over two lines.
@@ -820,6 +827,7 @@ function FooterStat({
       <span className={`font-mono tabular-nums text-[12px] font-medium ${warn ? 'text-warn' : 'text-text-strong'}`}>
         {value}
       </span>
+      {action}
     </span>
   )
 }

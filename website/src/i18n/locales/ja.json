@@ -9093,7 +9093,16 @@
       "copyCommand": "コマンドをコピー",
       "orEditConfigJson": "または、~/.kiro/crew/config.json を直接編集してください。",
       "openSettingsAriaLabel": "設定 → {{tab}} で {{key}} を開く",
-      "fileSettingAriaLabel": "ファイル専用設定 {{key}}"
+      "fileSettingAriaLabel": "ファイル専用設定 {{key}}",
+      "commandValueLabel": "コマンドに入れる値",
+      "commandValueDescription": "設定する値です。下のコマンドは入力に合わせて更新されます。",
+      "commandListValueLabel": "コマンドに入れる値（1 行に 1 つ）",
+      "commandListValueDescription": "1 行に 1 項目を入力します。項目の前後の空白と空行は無視されます。下のコマンドは入力に合わせて更新されます。",
+      "commandDecodedValueLabel": "このコマンドが設定する値",
+      "legacyCommandShellNote": "シェルによっては、このコマンドの引用符を調整する必要がある場合があります。",
+      "commandShellPosix": "macOS / Linux のターミナル",
+      "commandShellPowerShell": "Windows PowerShell",
+      "commandShellCmd": "Windows コマンドプロンプト"
     },
     "pttTestStrip": {
       "focus_lost": "ウィンドウがフォーカスを失い、キーを離したことを検出できませんでした。実際のチャットでは安全用のタイマーが録音を停止します。",
@@ -15569,7 +15578,7 @@
       "footer_kirocrew_gb": "{{productName}} (GB)",
       "footer_largest_session_gb": "最大セッション (GB)",
       "footer_lineage_over_cap": "保存済みセッションログ",
-      "footer_lineage_over_cap_hint": "古いセッションログが溜まっています。{{cap}} 件より多く存在し、{{productName}} がどのセッションがどれを開いたかを調べるために読む数を超えています。このページのセッションはすべて表示されたままですが、開いたあとに再起動したセッションは、開いた元の下ではなくトップレベルに表示されることがあります。古いログはデフォルトで 30 日後に期限切れになります。もっと早く期限切れにするには、ターミナルで次を実行してください: kirocrew config set session.archive_retention_days 7（または別の日数）。保持期間がオフになっていた場合は、これで再びオンになります。これで削除されるのは、設定した日数より古い、終了したセッションのログと、アーカイブに並ぶ古い保存済み記録だけです。実行中のセッションとそれより新しいものは残ります。",
+      "footer_lineage_over_cap_hint": "古いセッションログが溜まっています。{{cap}} 件より多く存在し、{{productName}} がどのセッションがどれを開いたかを調べるために読む数を超えています。このページのセッションはすべて表示されたままですが、開いたあとに再起動したセッションは、開いた元の下ではなくトップレベルに表示されることがあります。古いログはデフォルトで 30 日後に期限切れになります。もっと早く期限切れにするには、保持期間を変更してください。保持期間がオフになっていた場合は、日数を設定すると再びオンになります。これで削除されるのは、設定した日数より古い、終了したセッションのログと、アーカイブに並ぶ古い保存済み記録だけです。実行中のセッションとそれより新しいものは残ります。",
       "memory_hint": "各行はそのランタイム自身のメモリを示します。セッションの値には、その下にネストされたセッションやタスクは含まれません。グループ化では、グループの見出し行はそのメンバーの合計を示します。",
       "footer_session_procs": "セッションプロセス数",
       "footer_sessions": "セッション",
@@ -17007,6 +17016,10 @@
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "完了したセッションを分析し、繰り返し使われる手順 — 将来のセッションが別の対象に対して再び実行するような手順 — が示されたときに再利用可能な SKILL.md を作成します。デフォルトではオフです。ドラフトは「カスタマイズ → スキル」の保留キューにステージされます。レビュー用です。何もライブにはなりません（以下を参照してください）。",
         "auto_generate_skills_from_sessions": "セッションからスキルを自動生成",
+        "extra_skill_paths": "追加のスキルパス",
+        "extra_skill_paths_description": "追加のスキルを読み込むフォルダーを、1 行に 1 パスで指定します。パスの前後の空白と空行は無視されます。そこで見つかったスキルは読み取り専用で、名前が重複した場合は自分のスキルフォルダーのスキルが優先されます。変更は再起動なしで反映されます。",
+        "extra_skill_paths_placeholder": "1 行に 1 フォルダー",
+        "failed_to_save_extra_skill_paths": "追加のスキルパスを保存できませんでした。入力した内容はフィールドに残っています。",
         "failed_to_save_skills_setting": "スキル設定を保存できませんでした",
         "keep_every_auto_generated_candidate_in_the_pendi": "承認するまで、自動生成されたすべての候補を保留キューに保持します。これをオフにすると、テキストのみのスキルを自動公開できます。スクリプトをバンドルするスキルは、関係なく常に承認が必要です。",
         "require_approval_before_generated_skills_go_live": "生成されたスキルがライブになる前に承認が必要",

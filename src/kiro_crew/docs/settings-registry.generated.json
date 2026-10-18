@@ -1492,6 +1492,14 @@
       "configKey": "skills.auto_create_from_sessions"
     },
     {
+      "id": "skills.extra-skill-paths",
+      "label": "Extra skill paths",
+      "tab": "skills",
+      "route": "/settings/skills?highlight=key%3Askills.extra_paths",
+      "description": "Folders to load extra skills from, one path per line. Spaces around a path and blank lines are ignored. Skills found there are read-only, and a skill in your own skills folder wins on a duplicate name. Changes apply without a restart.",
+      "configKey": "skills.extra_paths"
+    },
+    {
       "id": "skills.require-approval-before-generated-skills-go-live",
       "label": "Require approval before generated skills go live",
       "tab": "skills",

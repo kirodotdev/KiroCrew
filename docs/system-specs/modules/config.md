@@ -4064,6 +4064,24 @@ corrupt existing document as described above.
 - An enum value outside its set → that field's default, with a logged line
 - An out-of-range number → clamped (see "Security-Bounded Config Clamp")
 
+### Editable string lists (`str_list`)
+
+`PATCH /api/config/kirocrew` accepts a `str_list` entry of `_EDITABLE_CONFIG` as a JSON list
+whose items are all strings, and nothing else (a scalar, `null`, an object or a mixed list is a
+400 `must be a list of strings`, with nothing written). Every `str_list` entry declares
+`max_items` and `max_item_len`, and a longer list or a longer item is a 400 (`must be at most
+<n> items`, `each item must be at most <n> characters`), as every `str` entry has a `max_len`;
+`skills.extra_paths` allows 64 items of up to 4096 characters. A refusal records only the key
+as its SEL resource, never the value. Within the bounds the check is shape only: `[]`, empty
+items from a non-UI caller, duplicates, relative and non-existent paths are stored as sent, in
+order. `skills.extra_paths` is the one such entry. It is written through the normal locked
+writer, and the `SkillsLoader` watcher applies it live (no restart): the loader's own
+screening (expansion, resolution, sensitive-path exclusion, existence) stays the only judge of
+a path. Settings → Skills trims each line and drops blank ones before it sends the list; the
+same list is what `kirocrew config set skills.extra_paths --value-base64=…` stores.
+`dashboard.change_cards.check_setting_value` has the same `str_list` branch and bounds, so a card fails up
+front rather than falling through (no card can carry the list; see crew-mode).
+
 ### Default context discovery
 
 `skills.max_triggered=0` disables per-message trigger injection, not discovery.

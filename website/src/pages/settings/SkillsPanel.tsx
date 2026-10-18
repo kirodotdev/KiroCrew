@@ -1,13 +1,23 @@
 import { useRef, useState } from 'react'
 import { Link, Navigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
+import { SettingsSection, SettingsCard, SettingsToggle, SettingsInput } from '../../components/settings'
 import { api } from '../../api/client'
 import { useOptimisticConfigPaths, setConfigPathValue } from './useOptimisticConfigPaths'
+import { stringListLines } from '../../components/settingRef/envShellCommands'
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
-type SkillsCfg = { auto_create_from_sessions?: boolean; approval_required?: boolean }
+type SkillsCfg = { auto_create_from_sessions?: boolean; approval_required?: boolean; extra_paths?: string[] }
+
+// The field below spells this key as a literal: the settings registry generator reads
+// `configKey` only from a string literal, not from a constant.
+const EXTRA_PATHS_KEY = 'skills.extra_paths'
+
+const EMPTY_PATHS: string[] = []
+
+const sameList = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((item, i) => item === b[i])
 
 /** Where the pending queue lives — Approve, Dismiss, Dismiss-all and `?review=`. */
 const PENDING_QUEUE_ROUTE = '/capabilities?tab=skills'
@@ -38,6 +48,14 @@ export function SkillsPanel() {
   // its stale failure, but a save on the other toggle says nothing about
   // whether this one persisted, so its failure stays up.
   const saveErrorPathRef = useRef<string | null>(null)
+  // The extra-paths field keeps its own failure: it sits beside an unsaved draft the
+  // generic banner below must not be mistaken for, and a toggle save says nothing
+  // about whether this list persisted.
+  const [extraPathsError, setExtraPathsError] = useState('')
+  // What the user has typed and not yet saved, or null while the field simply shows
+  // the stored list. Null is what lets a refetch refresh the field without ever
+  // replacing text the user is still editing.
+  const [extraPathsDraft, setExtraPathsDraft] = useState<string | null>(null)
   const [params] = useSearchParams()
   const reviewSlug = params.get('review')
 
@@ -57,17 +75,27 @@ export function SkillsPanel() {
   // approval_required defaults ON — generated skills stay gated behind review.
   const approvalRequired = overlay.shown('skills.approval_required', skills?.approval_required ?? true)
 
-  const patchMut = useMutation(overlay.mutationOpts<{ path: string; value: boolean }>({
+  const storedExtraPaths = overlay.shown(EXTRA_PATHS_KEY, skills?.extra_paths ?? EMPTY_PATHS)
+
+  const patchMut = useMutation(overlay.mutationOpts<{ path: string; value: boolean | string[] }>({
     queryKey: ['kirocrewConfig'],
     mutationFn: ({ path, value }) => api.patchConfig(path, value),
     path: v => v.path,
     displayValue: v => v.value,
     applyToCache: (cached, { path, value }) => setConfigPathValue(cached as { skills?: SkillsCfg }, path, value),
     onFailure: (_err, { path }) => {
+      if (path === EXTRA_PATHS_KEY) {
+        setExtraPathsError(i18nT('pages.settings.skillsPanel.failed_to_save_extra_skill_paths'))
+        return
+      }
       saveErrorPathRef.current = path
       setSaveError(i18nT('pages.settings.skillsPanel.failed_to_save_skills_setting'))
     },
     onSupersede: path => {
+      if (path === EXTRA_PATHS_KEY) {
+        setExtraPathsError('')
+        return
+      }
       if (saveErrorPathRef.current === path) {
         saveErrorPathRef.current = null
         setSaveError('')
@@ -76,6 +104,28 @@ export function SkillsPanel() {
   }))
 
   const disabled = cfgQ.isLoading || cfgQ.isError || patchMut.isPending
+
+  // Save on blur: one trim / drop-empty rule (shared with the command a Settings
+  // reference shows) turns the text into the list, and an unchanged list is not written.
+  // A success clears the draft only if the text still normalises to what was saved, so
+  // typing that landed after the request began is kept rather than overwritten.
+  const commitExtraPaths = () => {
+    if (extraPathsDraft === null) return
+    const paths = stringListLines(extraPathsDraft)
+    if (sameList(paths, storedExtraPaths)) {
+      setExtraPathsDraft(null)
+      return
+    }
+    patchMut.mutate(
+      { path: EXTRA_PATHS_KEY, value: paths },
+      {
+        onSuccess: () =>
+          setExtraPathsDraft(current =>
+            current !== null && sameList(stringListLines(current), paths) ? null : current,
+          ),
+      },
+    )
+  }
 
   // Hand a hand-written or bookmarked `?review=` to the queue that honours it,
   // rather than rendering a page with no queue on it.
@@ -109,6 +159,23 @@ export function SkillsPanel() {
           disabled={disabled || !autoCreate}
           configKey="skills.approval_required"
         />
+        {/* Locked while a save is in flight: the field is not offered for typing during
+            the round trip, so a slow success cannot land on text it never saw. */}
+        <SettingsInput
+          label={i18nT('pages.settings.skillsPanel.extra_skill_paths')}
+          description={i18nT('pages.settings.skillsPanel.extra_skill_paths_description')}
+          placeholder={i18nT('pages.settings.skillsPanel.extra_skill_paths_placeholder')}
+          value={extraPathsDraft ?? storedExtraPaths.join('\n')}
+          onChange={setExtraPathsDraft}
+          onBlur={commitExtraPaths}
+          disabled={disabled}
+          multiline
+          configKey="skills.extra_paths"
+        />
+        {/* No hand-off: the draft above is unsaved text, and the hand-off's navigation
+            would unmount the panel and lose it. A failed save leaves the text in the
+            field to retry. */}
+        <ErrorNotice message={extraPathsError} variant="inline" />
       </SettingsCard>
       {/* The way out. Naming a destination the reader has to find themselves is
           most of the friction here: the toggles decide what gets staged, and

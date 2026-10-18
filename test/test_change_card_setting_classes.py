@@ -43,6 +43,17 @@ def test_the_cannot_widen_list_names_only_editable_paths():
     assert not (_CLASSES["_CANNOT_WIDEN_SETTINGS"] - set(_EDITABLE_CONFIG))
 
 
+def test_the_extra_skill_paths_are_in_exactly_the_cannot_widen_class():
+    # Listed for exactly-one completeness. A card carries no list value, so none can
+    # reach it today (test_change_cards_settings pins that); if cards ever do, this
+    # entry must move to a widening class with a type-guarded list comparator.
+    path = "skills.extra_paths"
+    assert _EDITABLE_CONFIG[path] == {"type": "str_list", "max_items": 64, "max_item_len": 4096}
+    assert [name for name, members in _CLASSES.items() if path in members] == [
+        "_CANNOT_WIDEN_SETTINGS"
+    ]
+
+
 def test_ordered_values_are_values_the_route_accepts():
     for path, order in catalog._SETTING_ORDER.items():
         spec = _EDITABLE_CONFIG.get(path)

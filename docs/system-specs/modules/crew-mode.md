@@ -1041,7 +1041,7 @@ from its capability impact. A setting whose value is a command this machine runs
 path (`_EDITABLE_CONFIG`) is in exactly one of `change_card_catalog._SETTING_ORDER` (values
 ordered tightest to widest, so a move toward the end is `widen`), `_CODE_EXEC_SETTINGS` or
 `_CANNOT_WIDEN_SETTINGS`, and `test/test_change_card_setting_classes.py` fails on a new path
-until it is placed in one. `dashboard.tailscale.pin_scope`, which the route takes as any short string, is ranked on
+until it is placed in one. `skills.extra_paths` (a `str_list`) sits in `_CANNOT_WIDEN_SETTINGS` only for that exactly-one completeness: no card can reach it today, because a card carries no config-list value (`setting.change.value` is scalar-only and `op`/`item` is confined to the dashboard-store list controls), and a scalar for it fails `check_setting_value`'s `str_list` branch. A list of skill directories can widen what an agent loads, so if cards ever carry list values it must move to a widening class with a type-guarded list comparator; `test_change_cards_settings.py` keeps the list `value`, the `op`/`item` and the scalar all rejected so that extension fails loudly rather than being silently classified. `dashboard.tailscale.pin_scope`, which the route takes as any short string, is ranked on
 the value the loader applies (`config.sections.effective_pin_scope`: case, spaces,
 fallback to `node`). A stored card whose `risk` differs from the one its kind and params
 now derive, because a setting was reclassified, keeps loading with the newly derived

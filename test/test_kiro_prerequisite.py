@@ -910,3 +910,158 @@ class TestKiroPrerequisiteHelpers:
         )
 
         assert str(executable) in candidates
+
+
+class TestConfigSetHintsForLauncher:
+    """``config_set_hints_for_launcher``: the prefix each shell pastes before ``config set``."""
+
+    @staticmethod
+    def _hints(launcher: str, platform_name: str) -> dict[str, Any]:
+        from kiro_crew.kiro_prerequisite_status import config_set_hints_for_launcher
+
+        return config_set_hints_for_launcher(launcher, platform_name)
+
+    @staticmethod
+    def _prefixes(hints: dict[str, Any]) -> dict[str, str]:
+        assert hints["version"] == 1
+        assert hints["encoding"] == "utf-8-base64"
+        return {row["id"]: row["prefix"] for row in hints["shells"]}
+
+    def test_windows_lists_powershell_then_cmd(self) -> None:
+        launcher = r"C:\Program Files\Kiro Crew\resources\bin\kirocrew.cmd"
+
+        hints = self._hints(launcher, "win32")
+
+        assert [row["id"] for row in hints["shells"]] == ["powershell", "cmd"]
+        assert self._prefixes(hints) == {
+            "powershell": f"& '{launcher}'",
+            "cmd": f'"{launcher}"',
+        }
+
+    def test_windows_path_with_ampersand_stays_one_quoted_token(self) -> None:
+        launcher = r"C:\a&b\kirocrew.cmd"
+
+        prefixes = self._prefixes(self._hints(launcher, "win32"))
+
+        assert prefixes["powershell"] == r"& 'C:\a&b\kirocrew.cmd'"
+        assert prefixes["cmd"] == r'"C:\a&b\kirocrew.cmd"'
+
+    def test_windows_apostrophe_is_doubled_for_powershell_only(self) -> None:
+        launcher = r"C:\Users\O'Brien\kirocrew.cmd"
+
+        prefixes = self._prefixes(self._hints(launcher, "win32"))
+
+        assert prefixes["powershell"] == r"& 'C:\Users\O''Brien\kirocrew.cmd'"
+        assert prefixes["cmd"] == r'"C:\Users\O' + "'" + r'Brien\kirocrew.cmd"'
+
+    def test_a_caret_stays_inside_the_quotes_when_there_is_no_percent(self) -> None:
+        launcher = r"C:\a^b\kirocrew.cmd"
+
+        prefixes = self._prefixes(self._hints(launcher, "win32"))
+
+        assert prefixes["cmd"] == r'"C:\a^b\kirocrew.cmd"'
+
+    @pytest.mark.parametrize(
+        ("launcher", "expected_powershell"),
+        [
+            (r"C:\100%\kirocrew.cmd", r"& 'C:\100%\kirocrew.cmd'"),
+            (r"C:\%KC_MARK%\kirocrew.cmd", r"& 'C:\%KC_MARK%\kirocrew.cmd'"),
+            (r"C:\%%\kirocrew.cmd", r"& 'C:\%%\kirocrew.cmd'"),
+            (r"C:\a%b\kirocrew.CMD", r"& 'C:\a%b\kirocrew.CMD'"),
+            (r"\\host\share\100%\kirocrew.bat", r"& '\\host\share\100%\kirocrew.bat'"),
+            (
+                r"C:\Program Files\100%\Scripts\kirocrew.exe",
+                r"& 'C:\Program Files\100%\Scripts\kirocrew.exe'",
+            ),
+            (r"C:\Users\O'Brien%\kirocrew.cmd", r"& 'C:\Users\O''Brien%\kirocrew.cmd'"),
+        ],
+    )
+    def test_a_percent_in_the_path_leaves_only_the_powershell_row(
+        self, launcher: str, expected_powershell: str
+    ) -> None:
+        hints = self._hints(launcher, "win32")
+
+        assert [row["id"] for row in hints["shells"]] == ["powershell"]
+        assert self._prefixes(hints) == {"powershell": expected_powershell}
+
+    @pytest.mark.parametrize(
+        ("launcher", "expected_powershell"),
+        [
+            ("C:\\O\u2018Brien\\kirocrew.cmd", "& 'C:\\O\u2018\u2018Brien\\kirocrew.cmd'"),
+            ("C:\\O\u2019Brien\\kirocrew.cmd", "& 'C:\\O\u2019\u2019Brien\\kirocrew.cmd'"),
+            ("C:\\O\u201aBrien\\kirocrew.cmd", "& 'C:\\O\u201a\u201aBrien\\kirocrew.cmd'"),
+            ("C:\\O\u201bBrien\\kirocrew.cmd", "& 'C:\\O\u201b\u201bBrien\\kirocrew.cmd'"),
+            (
+                "C:\\a'\u2018\u2019\u201a\u201b\\kirocrew.cmd",
+                "& 'C:\\a''\u2018\u2018\u2019\u2019\u201a\u201a\u201b\u201b\\kirocrew.cmd'",
+            ),
+        ],
+    )
+    def test_every_powershell_single_quote_character_is_doubled(
+        self, launcher: str, expected_powershell: str
+    ) -> None:
+        prefixes = self._prefixes(self._hints(launcher, "win32"))
+
+        assert prefixes["powershell"] == expected_powershell
+        assert prefixes["cmd"] == f'"{launcher}"'
+
+    def test_a_double_quote_like_character_is_not_doubled_for_powershell(self) -> None:
+        launcher = "C:\\a\u201cb\u201d\\kirocrew.cmd"
+
+        prefixes = self._prefixes(self._hints(launcher, "win32"))
+
+        assert prefixes["powershell"] == f"& '{launcher}'"
+
+    @pytest.mark.parametrize(
+        ("launcher", "expected_powershell"),
+        [
+            (r"C:\a!b\kirocrew.cmd", r"& 'C:\a!b\kirocrew.cmd'"),
+            (r"C:\a!b\kirocrew.bat", r"& 'C:\a!b\kirocrew.bat'"),
+            (r"C:\a!b\kirocrew.exe", r"& 'C:\a!b\kirocrew.exe'"),
+            (
+                r"C:\Program Files\Hi!\Scripts\kirocrew.exe",
+                r"& 'C:\Program Files\Hi!\Scripts\kirocrew.exe'",
+            ),
+            (r"C:\x!y!z\kirocrew.cmd", r"& 'C:\x!y!z\kirocrew.cmd'"),
+            (r"C:\100%!\kirocrew.cmd", r"& 'C:\100%!\kirocrew.cmd'"),
+            (r"C:\a%b!c\kirocrew.CMD", r"& 'C:\a%b!c\kirocrew.CMD'"),
+            (r"C:\100%!\kirocrew.exe", r"& 'C:\100%!\kirocrew.exe'"),
+            (r"C:\Users\O'Brien!\kirocrew.cmd", r"& 'C:\Users\O''Brien!\kirocrew.cmd'"),
+        ],
+    )
+    def test_a_bang_in_the_path_leaves_only_the_powershell_row(
+        self, launcher: str, expected_powershell: str
+    ) -> None:
+        hints = self._hints(launcher, "win32")
+
+        assert [row["id"] for row in hints["shells"]] == ["powershell"]
+        assert self._prefixes(hints) == {"powershell": expected_powershell}
+
+    @pytest.mark.parametrize("platform_name", ["linux", "darwin"])
+    def test_a_bang_in_a_posix_path_is_left_to_sh_quoting(self, platform_name: str) -> None:
+        launcher = "/opt/hi!/kirocrew"
+
+        prefixes = self._prefixes(self._hints(launcher, platform_name))
+
+        assert prefixes == {"posix": shlex.quote(launcher)}
+
+    @pytest.mark.parametrize("platform_name", ["linux", "darwin"])
+    def test_posix_has_one_row_quoted_for_sh(self, platform_name: str) -> None:
+        launcher = "/opt/kiro crew/it's/kirocrew"
+
+        hints = self._hints(launcher, platform_name)
+
+        assert [row["id"] for row in hints["shells"]] == ["posix"]
+        assert self._prefixes(hints)["posix"] == shlex.quote(launcher)
+
+    def test_a_percent_in_a_posix_path_is_left_to_sh_quoting(self) -> None:
+        launcher = "/opt/100%/kirocrew"
+
+        prefixes = self._prefixes(self._hints(launcher, "linux"))
+
+        assert prefixes == {"posix": shlex.quote(launcher)}
+
+    def test_a_plain_posix_launcher_is_not_quoted(self) -> None:
+        prefixes = self._prefixes(self._hints("/usr/bin/kirocrew", "linux"))
+
+        assert prefixes == {"posix": "/usr/bin/kirocrew"}

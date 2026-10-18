@@ -3296,6 +3296,11 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # require approval regardless — enforced in the generation path).
     "skills.auto_create_from_sessions": {"type": "bool"},
     "skills.approval_required": {"type": "bool"},
+    # Extra skill directories (Settings → Skills). A list of strings, bounded in count
+    # and item length (every ``str_list`` entry declares both). The SkillsLoader owns
+    # path expansion, sensitive-path exclusion and existence, so a path it declines is
+    # skipped there rather than refused here.
+    "skills.extra_paths": {"type": "str_list", "max_items": 64, "max_item_len": 4096},
     # Knowledge Library ingestion. Chunk budget max mirrors the point past which
     # a single sweep stops being a trickle; dedup cadence max is ~a day of sweeps.
     "knowledge.auto_add_documents": {"type": "bool"},
@@ -3638,6 +3643,16 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 reason = validate_fn(value, request, provider)
             if reason:
                 return _deny(reason, f"{path_key}={value}")
+    elif spec["type"] == "str_list":
+        # The audit resource is the key alone: the refused value can be up to the whole
+        # request body, and a list is no shorter in the log than in config.json.
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            return _deny("must be a list of strings", path_key)
+        max_items, max_item_len = spec["max_items"], spec["max_item_len"]
+        if len(value) > max_items:
+            return _deny(f"must be at most {max_items} items", path_key)
+        if any(len(item) > max_item_len for item in value):
+            return _deny(f"each item must be at most {max_item_len} characters", path_key)
     elif spec["type"] == "dict":
         # One-level record written ATOMICALLY as a single value, for settings
         # where multiple scalar fields form one verdict and a partial write is

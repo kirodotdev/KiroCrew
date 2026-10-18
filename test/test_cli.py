@@ -11377,3 +11377,53 @@ class TestChatProviderShutdown:
             await cli_chat._chat("hello", None)
         assert provider.shutdowns == 1
         assert collected["n"] == 1
+
+
+class TestConfigSetValueBase64Grammar:
+    """``config set`` takes the value as ONE ``--value-base64=<token>`` argument.
+
+    Windows PowerShell 5.1 drops a separate empty argument before a ``.cmd`` shim, so the
+    attached ``=`` form is the only spelling that carries empty text through every shell.
+    """
+
+    @staticmethod
+    def _parse(*argv: str):
+        import argparse
+
+        from kiro_crew import cli_parser_gateway
+
+        parser = argparse.ArgumentParser(prog="kirocrew")
+        cli_parser_gateway.register_config_parser(parser.add_subparsers(dest="command"))
+        return parser.parse_args(["config", "set", *argv])
+
+    def test_the_flag_defaults_to_none(self):
+        args = self._parse("agent.streaming", "true")
+
+        assert args.value_base64 is None
+        assert args.value == "true"
+
+    def test_the_equals_empty_form_parses_as_the_empty_string(self):
+        args = self._parse("some.key", "--value-base64=")
+
+        assert args.value_base64 == ""
+        assert args.value is None
+
+    def test_a_padded_token_is_kept_byte_for_byte(self):
+        token = "WyJDOi9teSBza2lsbHMvYSZiJ3Mvw6kiXQ=="
+
+        assert self._parse("skills.extra_paths", f"--value-base64={token}").value_base64 == token
+
+    def test_the_flag_may_precede_the_key(self):
+        args = self._parse("--value-base64=W10=", "skills.extra_paths")
+
+        assert (args.key, args.value_base64) == ("skills.extra_paths", "W10=")
+
+    def test_the_existing_positional_file_and_local_grammar_is_unchanged(self):
+        assert self._parse("--local", "dashboard.url", "http://x").local is True
+        assert self._parse("--file", "c.json").file == "c.json"
+        positional = self._parse("agent.streaming", "false")
+        assert (positional.key, positional.value, positional.local) == (
+            "agent.streaming",
+            "false",
+            False,
+        )

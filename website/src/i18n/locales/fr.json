@@ -9369,7 +9369,16 @@
       "copyCommand": "Copier la commande",
       "orEditConfigJson": "Alternativement, modifiez directement ~/.kiro/crew/config.json.",
       "openSettingsAriaLabel": "Ouvrir {{key}} dans Paramètres → {{tab}}",
-      "fileSettingAriaLabel": "Paramètre fichier uniquement {{key}}"
+      "fileSettingAriaLabel": "Paramètre fichier uniquement {{key}}",
+      "commandValueLabel": "Valeur pour la commande",
+      "commandValueDescription": "La valeur à définir. La commande ci-dessous se met à jour pendant que tu tapes.",
+      "commandListValueLabel": "Valeurs pour la commande, une par ligne",
+      "commandListValueDescription": "Ajoute une entrée par ligne. Les espaces autour d’une entrée et les lignes vides sont ignorés. La commande ci-dessous se met à jour pendant que tu tapes.",
+      "commandDecodedValueLabel": "Cette commande définit",
+      "legacyCommandShellNote": "Dans certains shells, il faudra peut-être modifier les guillemets de cette commande.",
+      "commandShellPosix": "macOS / Linux",
+      "commandShellPowerShell": "Windows PowerShell",
+      "commandShellCmd": "Invite de commandes Windows"
     },
     "pttTestStrip": {
       "focus_lost": "La fenêtre a perdu le focus et nous n’avons pas vu le relâchement. Dans une vraie conversation, une minuterie de sécurité arrête l’enregistrement pour vous.",
@@ -16085,7 +16094,7 @@
       "footer_kirocrew_gb": "{{productName}} (Go)",
       "footer_largest_session_gb": "Plus grande session (Go)",
       "footer_lineage_over_cap": "Journaux de session stockés",
-      "footer_lineage_over_cap_hint": "D'anciens journaux de session s'accumulent : il en existe plus de {{cap}}, plus que {{productName}} n'en lit pour établir qui a ouvert qui. Chaque session de cette page reste listée ; une session redémarrée depuis son ouverture peut apparaître au premier niveau plutôt que sous la session qui l'a ouverte. Par défaut, les anciens journaux expirent au bout de 30 jours. Pour les faire expirer plus tôt, exécute dans un terminal : kirocrew config set session.archive_retention_days 7 (ou un autre nombre de jours) ; si la rétention a été désactivée, cela la réactive. Cela ne supprime que les journaux des sessions fermées et les anciennes transcriptions enregistrées (listées sous Archives) plus anciennes que le nombre de jours choisi ; les sessions en cours et tout ce qui est plus récent sont conservés.",
+      "footer_lineage_over_cap_hint": "D'anciens journaux de session s'accumulent : il en existe plus de {{cap}}, plus que {{productName}} n'en lit pour établir qui a ouvert qui. Chaque session de cette page reste listée ; une session redémarrée depuis son ouverture peut apparaître au premier niveau plutôt que sous la session qui l'a ouverte. Par défaut, les anciens journaux expirent au bout de 30 jours. Pour les faire expirer plus tôt, modifie la durée de rétention ; si la rétention a été désactivée, définir un nombre de jours la réactive. Cela ne supprime que les journaux des sessions fermées et les anciennes transcriptions enregistrées (listées sous Archives) plus anciennes que le nombre de jours choisi ; les sessions en cours et tout ce qui est plus récent sont conservés.",
       "memory_hint": "Chaque ligne indique la mémoire de son propre environnement d'exécution. Le chiffre d'une session n'inclut pas les sessions ni les tâches imbriquées sous elle. Avec Grouper par, la ligne d'en-tête d'un groupe totalise ses membres.",
       "footer_session_procs": "Processus de session",
       "footer_sessions": "Sessions",
@@ -17537,6 +17546,10 @@
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analyser chaque session terminée et rédiger un SKILL.md réutilisable lorsqu'elle démontre une procédure récurrente — une procédure qu'une session future, travaillant sur une autre cible, exécuterait à nouveau. Désactivé par défaut. Les brouillons sont placés dans la file d'attente de Personnaliser → Compétences pour relecture — rien n'est activé sans ton approbation (voir ci-dessous).",
         "auto_generate_skills_from_sessions": "Générer automatiquement des compétences à partir des sessions",
+        "extra_skill_paths": "Chemins de compétences supplémentaires",
+        "extra_skill_paths_description": "Dossiers d’où charger des compétences supplémentaires, un chemin par ligne. Les espaces autour d’un chemin et les lignes vides sont ignorés. Les compétences trouvées là sont en lecture seule, et une compétence de ton propre dossier de compétences l’emporte en cas de nom en double. Les modifications s’appliquent sans redémarrage.",
+        "extra_skill_paths_placeholder": "Un dossier par ligne",
+        "failed_to_save_extra_skill_paths": "Échec de l’enregistrement des chemins de compétences supplémentaires. Ton texte reste dans le champ.",
         "failed_to_save_skills_setting": "Échec de l’enregistrement du réglage des compétences",
         "keep_every_auto_generated_candidate_in_the_pendi": "Conserver chaque candidat généré automatiquement dans la file d'attente jusqu'à ce que vous l'approuviez. Désactiver cette option permet aux compétences purement textuelles d'être publiées automatiquement ; les compétences qui embarquent des scripts nécessitent toujours une approbation.",
         "require_approval_before_generated_skills_go_live": "Exiger une approbation avant la mise en service des compétences générées",

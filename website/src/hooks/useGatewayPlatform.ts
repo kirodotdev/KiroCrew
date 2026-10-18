@@ -1,6 +1,11 @@
-import { useContext } from 'react'
+import { useContext, useMemo } from 'react'
 import { QueryClient, QueryClientContext, useQuery } from '@tanstack/react-query'
-import { api, type KiroPrerequisiteStatus } from '../api/client'
+import {
+  api,
+  type ConfigSetHintsV1,
+  type ConfigSetShellId,
+  type KiroPrerequisiteStatus,
+} from '../api/client'
 
 /** What the gateway host is, for copy that names an OS feature by its real name. */
 export type GatewayPlatform = 'darwin' | 'windows' | 'other'
@@ -76,6 +81,54 @@ const ORPHAN_TREE_CACHE = new QueryClient()
  * See `classifyPlatform` for why anything unrecognised is generic wording.
  */
 export function useGatewayPlatform(): GatewayPlatform {
+  return classifyPlatform(usePrerequisiteStatus()?.platform)
+}
+
+/**
+ * The shell prefixes the gateway resolved for `kirocrew config set`, or `undefined`
+ * when the cached status carries none a command may be built from.
+ *
+ * Absent from a gateway older than the field, from a non-owner's redacted status, and
+ * before the gate has loaded; each is the legacy-command case, not an error. A payload
+ * is trusted only when it is exactly the V1 shape: version 1, the one encoding this UI
+ * writes, at least one shell, every id recognised and unique, and every prefix a
+ * single-line non-empty string. Anything else reads as absent, so a malformed or
+ * future-versioned payload degrades to the legacy command rather than to a command
+ * the shell would mis-run.
+ */
+export function useConfigSetHintsV1(): ConfigSetHintsV1 | undefined {
+  const hints = usePrerequisiteStatus()?.config_set_hints
+  return useMemo(() => parseConfigSetHintsV1(hints), [hints])
+}
+
+const CONFIG_SET_SHELL_IDS: readonly ConfigSetShellId[] = ['posix', 'powershell', 'cmd']
+
+function parseConfigSetHintsV1(raw: unknown): ConfigSetHintsV1 | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const { version, encoding, shells } = raw as Record<string, unknown>
+  if (version !== 1 || encoding !== 'utf-8-base64') return undefined
+  if (!Array.isArray(shells) || shells.length === 0) return undefined
+  const seen = new Set<ConfigSetShellId>()
+  const rows: ConfigSetHintsV1['shells'] = []
+  for (const row of shells) {
+    if (typeof row !== 'object' || row === null) return undefined
+    const { id, prefix } = row as Record<string, unknown>
+    if (typeof prefix !== 'string' || prefix.trim() === '' || /[\r\n]/.test(prefix)) return undefined
+    if (!CONFIG_SET_SHELL_IDS.includes(id as ConfigSetShellId)) return undefined
+    const shellId = id as ConfigSetShellId
+    if (seen.has(shellId)) return undefined
+    seen.add(shellId)
+    rows.push({ id: shellId, prefix })
+  }
+  return { version: 1, encoding: 'utf-8-base64', shells: rows }
+}
+
+/**
+ * The cached prerequisite status, read without fetching. Every reader in this module
+ * goes through here so each registers the same options on the shared query; see
+ * `useGatewayPlatform` for why the `queryFn` stays a real fetch.
+ */
+function usePrerequisiteStatus(): KiroPrerequisiteStatus | undefined {
   const provided = useContext(QueryClientContext)
   const { data } = useQuery<KiroPrerequisiteStatus>(
     {
@@ -85,5 +138,5 @@ export function useGatewayPlatform(): GatewayPlatform {
     },
     provided ?? ORPHAN_TREE_CACHE,
   )
-  return classifyPlatform(data?.platform)
+  return data
 }

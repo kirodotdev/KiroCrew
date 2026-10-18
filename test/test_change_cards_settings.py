@@ -183,6 +183,72 @@ def test_op_on_a_non_list_setting_and_value_on_a_list_setting_are_refused():
     assert exc.value.code == "list_setting"
 
 
+# ── skills.extra_paths: an editable list that no card can carry ──
+#
+# The path is classified (``_CANNOT_WIDEN_SETTINGS``) only so every editable path sits in
+# exactly one class. A card carries no config-list value, so none can propose it. The
+# refusal pin below is a tripwire: extending cards to lists makes it fail, which is the
+# signal to reclassify the path as widening with a type-guarded list comparator. The
+# ``str_list`` value check has its own test, ahead of the pin.
+
+_EXTRA_PATHS = "skills.extra_paths"
+_EXTRA_PATHS_SPEC = {"type": "str_list", "max_items": 64, "max_item_len": 4096}
+
+
+def test_check_setting_value_takes_only_a_list_of_strings_for_str_list():
+    spec = _EXTRA_PATHS_SPEC
+    cards.check_setting_value(spec, [])
+    cards.check_setting_value(spec, ["/b", "/a", "/b"])
+    for bad in ("/a", "", None, 3, True, {"0": "/a"}, ["/a", 1], ["/a", None], [["/a"]], [False]):
+        with pytest.raises(catalog.CardCatalogError) as exc:
+            cards.check_setting_value(spec, bad)
+        assert exc.value.code == "invalid_value", bad
+
+
+def test_check_setting_value_holds_a_str_list_to_its_bounds():
+    spec = {"type": "str_list", "max_items": 2, "max_item_len": 3}
+    cards.check_setting_value(spec, ["abc", "de"])
+    for bad, reason in (
+        (["a", "b", "c"], "at most 2 items"),
+        (["abcd"], "at most 3 characters"),
+        (["a", "abcd"], "at most 3 characters"),
+    ):
+        with pytest.raises(catalog.CardCatalogError) as exc:
+            cards.check_setting_value(spec, bad)
+        assert exc.value.code == "invalid_value", bad
+        assert reason in str(exc.value), bad
+
+
+def test_a_list_value_stays_refused_on_a_card_for_the_extra_paths():
+    """Pin: a card's value is scalar, so the list setting stays out of a card's reach.
+
+    The refusal does not depend on the ``str_list`` value check, which
+    ``test_check_setting_value_takes_only_a_list_of_strings_for_str_list`` covers.
+    """
+    for value in ([], ["/a"]):
+        with pytest.raises(catalog.CardCatalogError) as exc:
+            catalog.validate_params("setting.change", {"path": _EXTRA_PATHS, "value": value})
+        assert exc.value.code == "invalid_param"
+
+
+def test_a_scalar_or_a_list_op_is_refused_for_the_extra_paths():
+    target = cards.resolve_setting({"path": _EXTRA_PATHS})
+    assert target["spec"] == _EXTRA_PATHS_SPEC
+    with pytest.raises(catalog.CardCatalogError) as exc:
+        cards.check_target_params(target, {"value": "/a"})
+    assert exc.value.code == "invalid_value"
+    with pytest.raises(catalog.CardCatalogError) as exc:
+        cards.check_target_params(target, {"op": "add", "item": "/a"})
+    assert exc.value.code == "not_a_list"
+    # The catalog refuses the op on its own too, without the gateway's pre-check.
+    p = catalog.validate_params("setting.change", {"path": _EXTRA_PATHS, "op": "add", "item": "/a"})
+    with pytest.raises(catalog.CardCatalogError) as exc:
+        catalog.build_preview(
+            "setting.change", p, {"store": "kirocrew", "key": _EXTRA_PATHS, "value": []}, {}
+        )
+    assert exc.value.code == "not_a_list"
+
+
 def test_find_setting_reports_a_string_list_with_its_items(monkeypatch):
     monkeypatch.setattr(cards, "read_setting_value", lambda target: ["fable-1", 3])
     rows = cards.find_settings(_MODELS)

@@ -4891,6 +4891,12 @@ exclude). To keep it off the per-message filesystem/config hot path:
   answers `None` there (see [decisions.md](decisions.md)), which keeps the empty
   match and writes no row. Only a `select` that returns a pick or `[]` at cap 0
   is injected and audited as a selection;
+- Settings → Skills edits `skills.extra_paths` as one multiline field, one path per line.
+  On blur the text is split on LF/CRLF, each line trimmed and blank lines dropped (order and
+  duplicates kept; the same rule builds the `kirocrew config set` command a Settings reference
+  shows), and `PATCH /api/config/kirocrew` writes the list. The UI does not expand `~`,
+  resolve, deduplicate, sort or probe a path: the loader below remains the only authority, and
+  a path it declines is skipped there rather than rejected at the save;
 - `extra_paths` is re-resolved by `reconfigure(cfg)` on a config write, running
   the SAME screening as construction — expanduser, resolve, `is_sensitive_path`
   reject, existence check — and failing closed per entry, so a root added by hand

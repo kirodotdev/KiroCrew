@@ -38,6 +38,7 @@ from kiro_crew.kiro_prerequisite_spawn_identity import identity_component_droppe
 from kiro_crew.kiro_prerequisite_status import (
     PrerequisiteStatus,
     _platform_label,
+    config_set_hints_for_launcher,
     legacy_idle_operation,
 )
 
@@ -78,6 +79,23 @@ def _established_installation(data_home: Path) -> bool:
         except OSError:
             continue
     return False
+
+
+def _resolve_config_set_hints() -> dict[str, Any] | None:
+    """The shell prefixes for ``kirocrew config set``, or None when no launcher resolves.
+
+    Zero arguments, so a test replaces this one seam instead of the resolver behind it.
+    ``agent`` is imported here because it loads the whole agent-spec graph, which the
+    status path should not pay for until a snapshot asks.
+    """
+    from kiro_crew.agent import _resolve_kirocrew_bin
+
+    try:
+        launcher = _resolve_kirocrew_bin()
+    except Exception:
+        logger.debug("Could not resolve the kirocrew launcher for config hints", exc_info=True)
+        return None
+    return config_set_hints_for_launcher(launcher, sys.platform)
 
 
 _OWNER_PREFIX = "kiro_crew.kiro_prerequisite_"
@@ -411,6 +429,13 @@ class KiroPrerequisiteService:
     async def _dashboard_snapshot(self) -> dict[str, Any]:
         """Apply host facts to every dashboard response, including repair/update."""
         result = await self._agent_spec_overlay(self._snapshot_dict())
+        # Resolved per snapshot, off-loop: the resolver stats files and walks PATH, and
+        # it re-validates its own answer because a gateway outlives the install it
+        # started from. Only this owner-side snapshot carries it; the handler's
+        # non-owner payload is built field by field and never copies it.
+        hints = await asyncio.to_thread(_resolve_config_set_hints)
+        if hints is not None:
+            result["config_set_hints"] = hints
         # A missing Kiro candidate cannot produce a sandbox_unavailable verdict,
         # and Kiro's delegated sandbox does not establish a Crew OS backend for
         # other harnesses. Use the runtime detector independently, off-loop because

@@ -62,3 +62,83 @@ describe('SkillsPanel – auto-generate toggle', () => {
     expect(patchConfigMock).not.toHaveBeenCalledWith('skills.approval_required', expect.anything())
   })
 })
+
+describe('SkillsPanel – extra skill paths', () => {
+  const EXTRA_PATH = 'skills.extra_paths'
+
+  beforeEach(() => {
+    patchConfigMock.mockClear()
+    kirocrewConfigMock.mockClear()
+    kirocrewConfigMock.mockImplementation(() =>
+      Promise.resolve({
+        skills: { auto_create_from_sessions: false, approval_required: true, extra_paths: ['/opt/a', '~/b'] },
+      }),
+    )
+  })
+
+  /** The field once the stored list has loaded into it. */
+  async function loadedField(initial: string) {
+    const field = await screen.findByLabelText('Extra skill paths')
+    await waitFor(() => expect(field).toHaveValue(initial))
+    return field
+  }
+
+  it('shows the stored paths one per line', async () => {
+    wrap(<SkillsPanel />)
+    expect(await loadedField('/opt/a\n~/b')).toBeInstanceOf(HTMLTextAreaElement)
+  })
+
+  it('shows an empty field when no extra paths are stored', async () => {
+    kirocrewConfigMock.mockImplementation(() =>
+      Promise.resolve({ skills: { auto_create_from_sessions: false, approval_required: true } }),
+    )
+    wrap(<SkillsPanel />)
+    const field = await screen.findByLabelText('Extra skill paths')
+    await waitFor(() => expect(kirocrewConfigMock).toHaveBeenCalled())
+    expect(field).toHaveValue('')
+  })
+
+  it('connects the label, the description and the settings row to the field', async () => {
+    wrap(<SkillsPanel />)
+    const field = await loadedField('/opt/a\n~/b')
+    const row = field.closest(`[data-setting-key="${EXTRA_PATH}"]`)
+    expect(row).not.toBeNull()
+    expect(row).toHaveTextContent(/one path per line/i)
+    expect(row).toHaveTextContent(/blank lines are ignored/i)
+    expect(field).toHaveAttribute('placeholder', 'One folder per line')
+  })
+
+  it('PATCHes the exact normalized list on blur: trimmed, blank lines dropped, order and duplicates kept', async () => {
+    wrap(<SkillsPanel />)
+    const field = await loadedField('/opt/a\n~/b')
+    fireEvent.change(field, { target: { value: '  /x  \r\n\r\n/y\n   \n/x\n' } })
+    expect(patchConfigMock).not.toHaveBeenCalled() // typing alone writes nothing
+    fireEvent.blur(field)
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(EXTRA_PATH, ['/x', '/y', '/x']))
+    expect(patchConfigMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('saves an empty list when the field is cleared', async () => {
+    wrap(<SkillsPanel />)
+    const field = await loadedField('/opt/a\n~/b')
+    fireEvent.change(field, { target: { value: '' } })
+    fireEvent.blur(field)
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(EXTRA_PATH, []))
+  })
+
+  it('does not write when the edit normalizes back to the stored list', async () => {
+    wrap(<SkillsPanel />)
+    const field = await loadedField('/opt/a\n~/b')
+    fireEvent.change(field, { target: { value: '\n  /opt/a  \n~/b\n\n' } })
+    fireEvent.blur(field)
+    await waitFor(() => expect(field).toHaveValue('/opt/a\n~/b'))
+    expect(patchConfigMock).not.toHaveBeenCalledWith(EXTRA_PATH, expect.anything())
+  })
+
+  it('does not write on a blur with no edit', async () => {
+    wrap(<SkillsPanel />)
+    const field = await loadedField('/opt/a\n~/b')
+    fireEvent.blur(field)
+    expect(patchConfigMock).not.toHaveBeenCalled()
+  })
+})

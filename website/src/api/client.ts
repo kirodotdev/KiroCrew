@@ -81,6 +81,8 @@ export type {
   UsageSeriesPayload,
 } from './client/telemetry'
 export type {
+  ConfigSetHintsV1,
+  ConfigSetShellId,
   KiroPrerequisiteStatus,
   KasBundleStatus,
   KasLoginStatus,

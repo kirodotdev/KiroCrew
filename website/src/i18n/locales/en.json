@@ -5707,7 +5707,16 @@
       "copyCommand": "Copy command",
       "orEditConfigJson": "Alternatively, edit ~/.kiro/crew/config.json directly.",
       "openSettingsAriaLabel": "Open {{key}} in Settings → {{tab}}",
-      "fileSettingAriaLabel": "File-only setting {{key}}"
+      "fileSettingAriaLabel": "File-only setting {{key}}",
+      "commandValueLabel": "Value for the command",
+      "commandValueDescription": "The value to set. The command below updates as you type.",
+      "commandListValueLabel": "Values for the command, one per line",
+      "commandListValueDescription": "Add one entry per line. Spaces around an entry and blank lines are ignored. The command below updates as you type.",
+      "commandDecodedValueLabel": "This command sets",
+      "legacyCommandShellNote": "This command may need quoting changes in some shells.",
+      "commandShellPosix": "macOS / Linux",
+      "commandShellPowerShell": "Windows PowerShell",
+      "commandShellCmd": "Windows Command Prompt"
     },
     "pttTestStrip": {
       "focus_lost": "The window lost focus and we never saw you let go. In a real chat a safety timer stops recording for you.",
@@ -8948,7 +8957,7 @@
       "footer_kirocrew_gb": "{{productName}} (GB)",
       "footer_largest_session_gb": "Largest session (GB)",
       "footer_lineage_over_cap": "Stored session logs",
-      "footer_lineage_over_cap_hint": "Old session logs are piling up: more than {{cap}} exist, more than {{productName}} reads to work out who opened whom. Every session on this page is still listed; a session restarted since it was opened may show as top-level instead of under its opener. Old logs expire after 30 days by default. To expire them sooner, in a terminal run: kirocrew config set session.archive_retention_days 7 (or another number of days); if retention was turned off, this turns it back on. That removes only closed sessions' logs and old saved transcripts (listed under Archive) older than the days you set; running sessions and anything newer are kept.",
+      "footer_lineage_over_cap_hint": "Old session logs are piling up: more than {{cap}} exist, more than {{productName}} reads to work out who opened whom. Every session on this page is still listed; a session restarted since it was opened may show as top-level instead of under its opener. Old logs expire after 30 days by default. To expire them sooner, change the retention period; if retention was turned off, setting a number of days turns it back on. That removes only closed sessions' logs and old saved transcripts (listed under Archive) older than the days you set; running sessions and anything newer are kept.",
       "memory_hint": "Each row shows its own runtime's memory. A session's figure does not include the sessions or tasks nested under it. Under Group by, a group's header row totals its members.",
       "footer_session_procs": "Session procs",
       "footer_sessions": "Sessions",
@@ -9500,6 +9509,10 @@
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analyze each completed session and draft a reusable SKILL.md when the session demonstrates a recurring procedure — one a future session, working on a different target, would run again. Off by default. Drafts are staged to the pending queue on Customize → Skills for review — nothing goes live without your approval (see below).",
         "auto_generate_skills_from_sessions": "Auto-generate skills from sessions",
+        "extra_skill_paths": "Extra skill paths",
+        "extra_skill_paths_description": "Folders to load extra skills from, one path per line. Spaces around a path and blank lines are ignored. Skills found there are read-only, and a skill in your own skills folder wins on a duplicate name. Changes apply without a restart.",
+        "extra_skill_paths_placeholder": "One folder per line",
+        "failed_to_save_extra_skill_paths": "Failed to save the extra skill paths. Your text is still in the field.",
         "keep_every_auto_generated_candidate_in_the_pendi": "Keep every auto-generated candidate in the pending queue until you approve it. Turning this off lets prose-only skills publish automatically; skills that bundle scripts always require approval regardless.",
         "require_approval_before_generated_skills_go_live": "Require approval before generated skills go live",
         "review_pending_candidates_on_agent_capabilities": "Review pending candidates on Customize → Skills",

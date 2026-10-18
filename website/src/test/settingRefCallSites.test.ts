@@ -221,6 +221,32 @@ describe('telemetry.enabled reaches its own control', () => {
   })
 })
 
+describe('session.archive_retention_days is a file-only setting with a command on the Sessions page', () => {
+  it('is a Sessions footer call site whose key resolves to a file-only schema entry', () => {
+    // The key has no Settings control, so the chip must open a command: it resolves to a
+    // real file-only schema entry, not a Settings link.
+    const result = resolveSettingRef('session.archive_retention_days', buildSchemaIndex(SCHEMA_FIXTURE))
+    expect(result.mode).toBe('file')
+    if (result.mode === 'file') expect(result.schemaEntry.type).toBe('integer')
+    // The Sessions footer renders <SettingRef configKey="session.archive_retention_days" />
+    // beside its stat. Discovery from source puts the key under the resolution test above,
+    // so a typo in that call site fails there.
+    expect(CALL_SITE_CONFIG_KEYS).toContain('session.archive_retention_days')
+  })
+})
+
+describe('skills.extra_paths reaches its own control', () => {
+  it('is one Skills tab input in the generated registry, so a reference opens the field', () => {
+    // The array schema entry is what the registry's Skills input edits.
+    expect(SCHEMA_FIXTURE.find(e => e.path === 'skills.extra_paths')?.type).toBe('array')
+    const hits = SETTINGS_REGISTRY.filter(e => e.configKey === 'skills.extra_paths')
+    expect(hits).toHaveLength(1)
+    expect(hits[0].tab).toBe('skills')
+    expect(hits[0].type).toBe('input')
+    expect(resolveSettingRef('skills.extra_paths', buildSchemaIndex(SCHEMA_FIXTURE)).mode).toBe('ui')
+  })
+})
+
 describe('telemetry.beacon_enabled reaches its own control', () => {
   it('resolves to a settings link on the privacy tab, not a command to paste', () => {
     const result = resolveSettingRef(

@@ -41,6 +41,20 @@ Current status:
   `win.signtoolOptions.publisherName`, so a mis-signed publish would break every
   client's update at once rather than degrade quietly — which is why the publish
   lane verifies the signature before the bytes become immutable.
+- **Settings command hints are proved against the installed bundle**
+  (`.github/scripts/test-windows-installer.ps1`). The bundled interpreter prints
+  `kiro_crew.agent._resolve_kirocrew_bin()`, which must equal
+  `<install>\resources\backend-dist\kirocrew-backend\bin\kirocrew.cmd`, and that value
+  goes to `config_set_hints_for_launcher`; the PowerShell and cmd prefixes are asserted
+  exactly. The script then resets `skills.extra_paths` through the bundled CLI before each of
+  three runs (Windows PowerShell 5.1, PowerShell 7, and a `.cmd` driver under `cmd /s /c`)
+  and checks `config.json` holds exactly the one padded Unicode value, so a broken shell
+  cannot pass on an earlier shell's write. Why one attached `--value-base64=<token>`:
+  Windows PowerShell 5.1 drops a separate empty-string argument before a `.cmd` shim.
+  A launcher whose path holds a `%` or a `!` gets no cmd row and keeps the PowerShell row:
+  cmd.exe expands `%NAME%` inside double quotes, and a cmd.exe started with delayed
+  expansion (`/v:on`) expands `!NAME!` the same way and passes that mode to the shim, so
+  neither character has a quoted spelling that runs the right file in every cmd.exe.
 - **Assisted installer, per user by default** — `nsis.oneClick` is false and
   `perMachine` is false, so the installer offers an install-mode page whose
   default is a per-user install into a directory named from the product name,

@@ -76,7 +76,7 @@ Kiro Crew ships with built-in skills that are synced from the packaged skills di
 ## Skill Sources and Priority
 
 1. `~/.kiro/crew/skills/` — global skills.
-2. `skills.extra_paths` — read-only extra directories; a global skill wins on a duplicate name.
+2. `skills.extra_paths` — read-only extra directories; a global skill wins on a duplicate name. Edit them in Settings → Skills → Extra skill paths: one path per line, and spaces around a path and blank lines are ignored (order and duplicates are kept). The list is saved when you leave the field and applies without a restart; a path that does not exist or is not allowed is skipped, not rejected. From a terminal, `kirocrew config set skills.extra_paths '["/opt/skills"]'` works too; if your shell mangles the quotes (Windows PowerShell does), pass the JSON as Base64 in one attached argument: `kirocrew config set skills.extra_paths --value-base64=WyIvb3B0L3NraWxscyJd`.
 3. `<active-project>/.kiro/skills/` — loaded last, only when project skills are enabled and the user has granted that exact project directory trust.
 
 The startup sync also copies `$KIROCREW_PROJECT_DIR/skills/` and packaged built-in skills into the global directory, preserving newer user files unless the source is newer.

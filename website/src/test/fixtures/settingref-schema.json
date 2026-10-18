@@ -47,5 +47,19 @@
   "label": "Dashboard URL",
   "help": "Public URL for the dashboard (used in Slack links).",
   "tags": []
+ },
+ {
+  "path": "session.archive_retention_days",
+  "type": "integer",
+  "label": "Archive Retention (days)",
+  "help": "Days to keep compacted/rotated session archives before auto-cleanup.",
+  "tags": []
+ },
+ {
+  "path": "skills.extra_paths",
+  "type": "array",
+  "label": "Extra Skill Paths",
+  "help": "Additional directories to scan for skills.",
+  "tags": []
  }
 ]

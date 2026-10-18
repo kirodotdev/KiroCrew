@@ -9093,7 +9093,16 @@
       "copyCommand": "复制命令",
       "orEditConfigJson": "或者，直接编辑 ~/.kiro/crew/config.json。",
       "openSettingsAriaLabel": "在设置 → {{tab}} 中打开 {{key}}",
-      "fileSettingAriaLabel": "仅文件设置 {{key}}"
+      "fileSettingAriaLabel": "仅文件设置 {{key}}",
+      "commandValueLabel": "用于命令的值",
+      "commandValueDescription": "要设置的值。下方的命令会随你输入而更新。",
+      "commandListValueLabel": "用于命令的值（每行一个）",
+      "commandListValueDescription": "每行输入一项。每项前后的空格和空行会被忽略。下方的命令会随你输入而更新。",
+      "commandDecodedValueLabel": "此命令设置的值",
+      "legacyCommandShellNote": "在某些 shell 中，此命令的引号可能需要调整。",
+      "commandShellPosix": "macOS / Linux 终端",
+      "commandShellPowerShell": "Windows PowerShell",
+      "commandShellCmd": "Windows 命令提示符"
     },
     "pttTestStrip": {
       "focus_lost": "窗口失焦了，我们没有看到你松手。在真实对话里会有一个安全计时器替你停止录音。",
@@ -15569,7 +15578,7 @@
       "footer_kirocrew_gb": "{{productName}} (GB)",
       "footer_largest_session_gb": "最大会话 (GB)",
       "footer_lineage_over_cap": "已存会话日志",
-      "footer_lineage_over_cap_hint": "旧会话日志在堆积：数量已超过 {{cap}}，超出 {{productName}} 为判断谁打开了谁而读取之数。本页会话仍全部列出；打开后又重启过的会话可能显示在顶层，而不排在打开它的会话之下。旧日志默认在 30 天后过期。要让它们更早过期，在终端运行：kirocrew config set session.archive_retention_days 7（或其他天数）；如果保留期已被关闭，此命令会重新开启它。它只删除早于所设天数、已关闭会话日志以及归档页里所存旧转录；运行中会话和更新内容一律保留。",
+      "footer_lineage_over_cap_hint": "旧会话日志在堆积：数量已超过 {{cap}}，超出 {{productName}} 为判断谁打开了谁而读取之数。本页会话仍全部列出；打开后又重启过的会话可能显示在顶层，而不排在打开它的会话之下。旧日志默认在 30 天后过期。要让它们更早过期，请修改保留期；如果保留期已被关闭，设置天数会重新开启它。它只删除早于所设天数、已关闭会话日志以及归档页里所存旧转录；运行中会话和更新内容一律保留。",
       "memory_hint": "每一行显示自身运行时内存。会话数值不含嵌套在它之下的会话和任务。分组时，组标题行显示其成员之和。",
       "footer_session_procs": "会话进程",
       "footer_sessions": "会话",
@@ -17007,6 +17016,10 @@
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "分析每个已完成会话，当该会话展示出会复现的流程（即未来会话在处理不同目标时仍会再次执行的流程）时起草可复用 SKILL.md。默认关闭。草稿会暂存到“自定义 → 技能”的待审队列中供审阅 — 未经你批准不会生效（见下文）。",
         "auto_generate_skills_from_sessions": "从会话自动生成技能",
+        "extra_skill_paths": "额外技能路径",
+        "extra_skill_paths_description": "用于加载额外技能的文件夹，每行一个路径。路径前后的空格和空行会被忽略。在这些位置找到的技能为只读；若名称重复，以你自己技能文件夹中的技能为准。更改无需重启即可生效。",
+        "extra_skill_paths_placeholder": "每行一个文件夹",
+        "failed_to_save_extra_skill_paths": "无法保存额外技能路径。你输入的内容仍保留在字段中。",
         "failed_to_save_skills_setting": "保存技能设置失败",
         "keep_every_auto_generated_candidate_in_the_pendi": "将所有自动生成的候选技能保留在待审队列中，直到你批准。关闭此项后，纯文本技能会自动发布；包含脚本的技能无论如何都需要批准。",
         "require_approval_before_generated_skills_go_live": "生成的技能生效前需要批准",

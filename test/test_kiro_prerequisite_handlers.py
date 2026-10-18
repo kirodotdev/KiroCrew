@@ -707,6 +707,43 @@ class TestKiroPrerequisiteHandlers:
                 assert response.status == 403
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("owner_id", "expect_hints"),
+        [("test-user", True), ("configured-owner", False)],
+        ids=["owner", "non-owner"],
+    )
+    async def test_config_set_hints_reach_only_the_owner(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        owner_id: str,
+        expect_hints: bool,
+    ) -> None:
+        from kiro_crew import kiro_prerequisite_service as service_module
+        from kiro_crew.kiro_prerequisite_status import config_set_hints_for_launcher
+
+        hints = config_set_hints_for_launcher(r"C:\Kiro Crew\bin\kirocrew.cmd", "win32")
+        monkeypatch.setattr(service_module, "_resolve_config_set_hints", lambda: hints)
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=_no_audit,
+            assume_ready=True,
+        )
+        app = self._app(service, app_claim="", user="test-user", owner_id=owner_id)
+
+        async with TestClient(TestServer(app)) as client:
+            response = await client.get("/api/kiro-prerequisite")
+            assert response.status == 200
+            body = await response.json()
+
+        if expect_hints:
+            assert body["config_set_hints"] == hints
+        else:
+            assert "config_set_hints" not in body
+
+    @pytest.mark.asyncio
     async def test_probe_failure_backstop_preserves_returning_user_state(
         self,
         tmp_path: Path,

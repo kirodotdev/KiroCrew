@@ -17,7 +17,7 @@ vi.mock('../api/client', () => ({
   api: { kiroPrerequisite: vi.fn().mockResolvedValue({ platform: 'linux' }) },
 }))
 
-import { useGatewayPlatform } from '../hooks/useGatewayPlatform'
+import { useConfigSetHintsV1, useGatewayPlatform } from '../hooks/useGatewayPlatform'
 import { api } from '../api/client'
 
 const PREREQUISITE_KEY = ['kiro-prerequisite']
@@ -118,5 +118,86 @@ describe('useGatewayPlatform', () => {
     render(<PlatformReader />)
 
     expect(screen.getByText('reader:other')).toBeTruthy()
+  })
+})
+
+const V1_HINTS = {
+  version: 1,
+  encoding: 'utf-8-base64',
+  shells: [
+    { id: 'powershell', prefix: "& 'C:\\Kiro Crew\\bin\\kirocrew.cmd'" },
+    { id: 'cmd', prefix: '"C:\\Kiro Crew\\bin\\kirocrew.cmd"' },
+  ],
+}
+
+const HintsReader = (): JSX.Element => {
+  const hints = useConfigSetHintsV1()
+  return <div data-testid="hints">{hints ? JSON.stringify(hints) : 'none'}</div>
+}
+
+/** Seeds the gate's cache with a status carrying `hints` and mounts only the reader. */
+const renderHints = async (hints: unknown, qc = makeClient()): Promise<QueryClient> => {
+  render(<HintsReader />, { wrapper: wrapperFor(qc) })
+  act(() => {
+    qc.setQueryData(PREREQUISITE_KEY, { platform: 'Windows', config_set_hints: hints })
+  })
+  return qc
+}
+
+describe('useConfigSetHintsV1', () => {
+  it('returns a valid V1 payload from the cached status without fetching', async () => {
+    await renderHints(V1_HINTS)
+
+    await waitFor(() =>
+      expect(JSON.parse(screen.getByTestId('hints').textContent ?? '')).toEqual(V1_HINTS),
+    )
+    expect(api.kiroPrerequisite).not.toHaveBeenCalled()
+  })
+
+  it('is undefined before the gate has loaded and on a gateway that sends no hints', async () => {
+    const qc = makeClient()
+    render(<HintsReader />, { wrapper: wrapperFor(qc) })
+    expect(screen.getByTestId('hints').textContent).toBe('none')
+
+    act(() => {
+      qc.setQueryData(PREREQUISITE_KEY, { platform: 'Windows' })
+    })
+    await waitFor(() => expect(qc.getQueryData(PREREQUISITE_KEY)).toBeTruthy())
+    expect(screen.getByTestId('hints').textContent).toBe('none')
+  })
+
+  it.each([
+    ['a future version', { ...V1_HINTS, version: 2 }],
+    ['another encoding', { ...V1_HINTS, encoding: 'base64url' }],
+    ['no shells', { ...V1_HINTS, shells: [] }],
+    ['shells that are not a list', { ...V1_HINTS, shells: 'powershell' }],
+    ['an unknown shell id', { ...V1_HINTS, shells: [{ id: 'fish', prefix: 'kirocrew' }] }],
+    ['a duplicate shell id', { ...V1_HINTS, shells: [V1_HINTS.shells[0], V1_HINTS.shells[0]] }],
+    ['an empty prefix', { ...V1_HINTS, shells: [{ id: 'posix', prefix: '   ' }] }],
+    ['a non-string prefix', { ...V1_HINTS, shells: [{ id: 'posix', prefix: 7 }] }],
+    ['a multi-line prefix', { ...V1_HINTS, shells: [{ id: 'posix', prefix: 'kirocrew\nrm -rf x' }] }],
+    ['a row that is not an object', { ...V1_HINTS, shells: ['posix'] }],
+    ['a payload that is not an object', 'powershell'],
+  ])('reads %s as absent', async (_name, hints) => {
+    await renderHints(hints)
+
+    await waitFor(() => expect(screen.getByTestId('hints').textContent).toBe('none'))
+  })
+
+  it('does not change what useGatewayPlatform returns', async () => {
+    const qc = makeClient()
+    render(
+      <>
+        <PlatformReader />
+        <HintsReader />
+      </>,
+      { wrapper: wrapperFor(qc) },
+    )
+    act(() => {
+      qc.setQueryData(PREREQUISITE_KEY, { platform: 'Windows', config_set_hints: V1_HINTS })
+    })
+
+    await waitFor(() => expect(screen.getByText('reader:windows')).toBeTruthy())
+    expect(typeof useGatewayPlatform).toBe('function')
   })
 })

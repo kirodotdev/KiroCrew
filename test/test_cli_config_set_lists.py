@@ -12,6 +12,7 @@ Every test writes under a temp data home; none touches ``~/.kiro/crew``.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 from pathlib import Path
 from unittest.mock import patch
@@ -207,3 +208,191 @@ def test_parse_list_value_returns_the_json_list_or_refuses():
     assert _parse_list_value(TRUSTED, '["a", "b"]') == ["a", "b"]
     with pytest.raises(ValueError, match="expected a JSON array"):
         _parse_list_value(TRUSTED, "[a,b]")
+
+
+# --------------------------------------------------------------------------- #
+# --value-base64: the value as one attached token, so no shell can rewrite it
+# --------------------------------------------------------------------------- #
+
+EXTRA_PATHS = "skills.extra_paths"
+#: Base64 of ``["C:/my skills/a&b's/é"]`` -- padded, and carrying a non-ASCII letter.
+UNICODE_TOKEN = "WyJDOi9teSBza2lsbHMvYSZiJ3Mvw6kiXQ=="
+UNICODE_PATH = "C:/my skills/a&b's/é"
+
+
+def _set_encoded(
+    home: Path,
+    key: str | None,
+    token: str | None,
+    *,
+    value: str | None = None,
+    file: str | None = None,
+    local: bool = False,
+) -> None:
+    args = argparse.Namespace(
+        config_action="set",
+        key=key,
+        value=value,
+        value_base64=token,
+        file=file,
+        local=local,
+    )
+    with (
+        patch("kiro_crew.cli_config.config_path", return_value=home / "config.json"),
+        patch("kiro_crew.cli_config.config_local_path", return_value=home / "config.local.json"),
+        patch("kiro_crew.config.loader.config_path", return_value=home / "config.json"),
+        patch("kiro_crew.config.loader.config_dir", return_value=home),
+        patch("kiro_crew.cli_config.sel"),
+    ):
+        _config_cmd(args)
+
+
+def _refused_encoded(home: Path, *, capsys, **kwargs) -> str:
+    with pytest.raises(SystemExit) as exc:
+        _set_encoded(home, **kwargs)
+    assert exc.value.code == 1
+    return capsys.readouterr().err
+
+
+def test_an_encoded_unicode_list_is_stored_exactly(home, capsys):
+    _set_encoded(home, EXTRA_PATHS, UNICODE_TOKEN)
+    assert _read(home / "config.json")["skills"]["extra_paths"] == [UNICODE_PATH]
+    assert "✅" in capsys.readouterr().out
+
+
+def test_the_encoded_empty_list_token_writes_an_empty_list(home):
+    _set_encoded(home, EXTRA_PATHS, "W10=")
+    assert _read(home / "config.json")["skills"]["extra_paths"] == []
+
+
+def test_an_encoded_list_keeps_order_and_duplicates(home):
+    token = base64.b64encode(json.dumps(["/b", "/a", "/b"]).encode()).decode()
+    _set_encoded(home, EXTRA_PATHS, token)
+    assert _read(home / "config.json")["skills"]["extra_paths"] == ["/b", "/a", "/b"]
+
+
+def test_encoded_and_positional_forms_store_the_same_value(home, tmp_path):
+    other = tmp_path / "other"
+    other.mkdir()
+    _set(home, TRUSTED, '["a","b"]')
+    _set_encoded(other, TRUSTED, "WyJhIiwiYiJd")
+    assert (
+        _read(home / "config.json")["agent"]["apps_trusted"]
+        == _read(other / "config.json")["agent"]["apps_trusted"]
+        == ["a", "b"]
+    )
+
+
+def test_the_local_overlay_takes_an_encoded_value(home):
+    _set_encoded(home, TRUSTED, "WyJhIiwiYiJd", local=True)
+    assert _read(home / "config.local.json")["agent"]["apps_trusted"] == ["a", "b"]
+    assert not (home / "config.json").exists()
+
+
+def test_an_encoded_value_reaches_the_scalar_parser(home):
+    _set_encoded(home, "session.autocompact_pct", base64.b64encode(b"82").decode())
+    assert _read(home / "config.json")["session"]["autocompact_pct"] == 82
+
+
+def test_the_equals_empty_form_is_empty_text_not_a_missing_value(home, capsys):
+    # ``--value-base64=`` parses to the empty string. A truthiness test would send it
+    # to the Usage branch; it is a value, and a scalar key takes it as empty text.
+    _set_encoded(home, "dashboard.url", "")
+    captured = capsys.readouterr()
+    assert "Usage:" not in captured.err
+    assert "✅" in captured.out
+    assert _read(home / "config.json")["dashboard"]["url"] == ""
+
+
+def test_the_equals_empty_form_on_a_list_key_is_refused_as_not_an_array(home, capsys):
+    err = _refused_encoded(home, capsys=capsys, key=TRUSTED, token="")
+    assert "Usage:" not in err
+    assert "expected a JSON array" in err
+    assert not (home / "config.json").exists()
+
+
+def test_a_missing_key_with_a_token_prints_usage(home, capsys):
+    err = _refused_encoded(home, capsys=capsys, key=None, token=UNICODE_TOKEN)
+    assert err == (
+        "Usage: kirocrew config set <key> <value>\n"
+        "       kirocrew config set --local <key> <value>\n"
+        "       kirocrew config set --file <path.json>\n"
+    )
+    assert not (home / "config.json").exists()
+
+    # The same token with a key is a value and writes, so the usage above is the missing
+    # key's and not the answer to a flag nothing reads.
+    _set_encoded(home, EXTRA_PATHS, UNICODE_TOKEN)
+    assert _read(home / "config.json")["skills"]["extra_paths"] == [UNICODE_PATH]
+
+
+@pytest.mark.parametrize(
+    ("token", "reason"),
+    [
+        ("not base64!", "standard Base64"),
+        ("W10", "standard Base64"),  # padding dropped
+        ("W10=\n", "standard Base64"),  # a stray newline is not skipped
+        ("-_8=", "standard Base64"),  # the URL-safe alphabet is not standard
+        ("/w==", "UTF-8"),  # decodes to the lone byte 0xFF
+    ],
+)
+def test_a_malformed_token_is_refused_and_writes_nothing(home, capsys, token, reason):
+    err = _refused_encoded(home, capsys=capsys, key=EXTRA_PATHS, token=token)
+    assert "--value-base64" in err
+    assert reason in err
+    assert not (home / "config.json").exists()
+
+
+def test_a_malformed_token_leaves_a_stored_value_untouched(home, capsys):
+    _set(home, TRUSTED, '["keep-me"]')
+    capsys.readouterr()
+    before = (home / "config.json").read_text(encoding="utf-8")
+
+    err = _refused_encoded(home, capsys=capsys, key=TRUSTED, token="W10")
+
+    assert err == "❌ --value-base64: not valid standard Base64 (check the padding and alphabet)\n"
+    assert (home / "config.json").read_text(encoding="utf-8") == before
+
+    # A well-formed token for the same key replaces the value, so the refusal above is
+    # the token's and not a flag nothing reads.
+    _set_encoded(home, TRUSTED, "WyJhIiwiYiJd")
+    assert _read(home / "config.json")["agent"]["apps_trusted"] == ["a", "b"]
+
+
+def test_a_token_with_a_positional_value_is_refused(home, capsys):
+    err = _refused_encoded(home, capsys=capsys, key=TRUSTED, token="W10=", value="[]")
+    assert "not both" in err
+    assert not (home / "config.json").exists()
+
+
+def test_a_token_with_a_positional_value_is_refused_even_when_empty(home, capsys):
+    _refused_encoded(home, capsys=capsys, key=TRUSTED, token="", value="[]")
+    assert not (home / "config.json").exists()
+
+
+def test_a_token_with_file_is_refused(home, tmp_path, capsys):
+    source = tmp_path / "whole.json"
+    source.write_text('{"agent": {"apps_trusted": ["x"]}}', encoding="utf-8")
+    err = _refused_encoded(home, capsys=capsys, key=None, token="W10=", file=str(source))
+    assert "cannot be combined with --file" in err
+    assert not (home / "config.json").exists()
+
+
+def test_an_empty_token_with_file_is_refused(home, tmp_path, capsys):
+    source = tmp_path / "whole.json"
+    source.write_text("{}", encoding="utf-8")
+    err = _refused_encoded(home, capsys=capsys, key=None, token="", file=str(source))
+    assert "cannot be combined with --file" in err
+
+
+def test_decode_value_base64_is_strict_standard_base64():
+    from kiro_crew.cli_config import _decode_value_base64
+
+    assert _decode_value_base64("") == ""
+    assert _decode_value_base64("W10=") == "[]"
+    assert _decode_value_base64(UNICODE_TOKEN) == f'["{UNICODE_PATH}"]'
+    for bad in ("W10", "W 10=", "W10=\n", "-_8="):
+        with pytest.raises(ValueError, match="standard Base64"):
+            _decode_value_base64(bad)
+    with pytest.raises(ValueError, match="UTF-8"):
+        _decode_value_base64("/w==")

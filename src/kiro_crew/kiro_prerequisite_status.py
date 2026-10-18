@@ -13,6 +13,7 @@ import os
 import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 from kiro_crew import platform_compat
 from kiro_crew.kiro_cli import is_bundled_kiro_cli
@@ -87,6 +88,60 @@ def login_commands_for(
             suffix = ""
         return f"{prefix}{_LOGIN_TAIL}{suffix}", f"{prefix}{_SSO_LOGIN_TAIL}{suffix}", bundled
     return KIRO_CLI_LOGIN_COMMAND, KIRO_CLI_SSO_LOGIN_COMMAND, False
+
+
+def config_set_hints_for_launcher(launcher: str, platform_name: str) -> dict[str, Any]:
+    """The per-shell prefixes a Settings command row pastes before ``config set``.
+
+    The browser cannot tell whether the working launcher is ``kirocrew`` on PATH, a
+    virtual-environment executable or the desktop bundle's ``.cmd`` shim, so the
+    gateway that resolved it names the prefix for each shell it can be pasted into.
+    Windows lists Windows PowerShell / PowerShell 7 first (a single-quoted path
+    behind the call operator, spelled by :func:`_powershell_single_quoted`) and
+    cmd.exe second, spelled by :func:`_cmd_launcher_prefix`, which leaves the row out
+    when no spelling is safe. Any other platform has the one ``posix`` row. Pure
+    string work, so a caller may run it anywhere.
+
+    The value travels as one ``--value-base64=<token>`` argument that the caller
+    appends, which is why this carries no value syntax: a separate empty argument is
+    dropped by Windows PowerShell 5.1 before a ``.cmd`` shim, an attached token is not.
+    """
+    if platform_name == "win32":
+        shells = [{"id": "powershell", "prefix": f"& {_powershell_single_quoted(launcher)}"}]
+        cmd_prefix = _cmd_launcher_prefix(launcher)
+        if cmd_prefix is not None:
+            shells.append({"id": "cmd", "prefix": cmd_prefix})
+    else:
+        shells = [{"id": "posix", "prefix": shlex.quote(launcher)}]
+    return {"version": 1, "encoding": "utf-8-base64", "shells": shells}
+
+
+# Every character PowerShell's tokenizer reads as a single quote: the ASCII apostrophe
+# and the four typographic ones (U+2018 to U+201B). Any of them ends a single-quoted
+# string, and a doubled one is that character once.
+_POWERSHELL_SINGLE_QUOTES = frozenset("'\u2018\u2019\u201a\u201b")
+
+
+def _powershell_single_quoted(text: str) -> str:
+    """*text* as a PowerShell single-quoted string, each single-quote character doubled."""
+    body = "".join(ch * 2 if ch in _POWERSHELL_SINGLE_QUOTES else ch for ch in text)
+    return f"'{body}'"
+
+
+def _cmd_launcher_prefix(launcher: str) -> str | None:
+    """The cmd.exe spelling of *launcher* as the first word of a pasted command, or
+    ``None`` when no spelling runs the right file in every cmd.exe.
+
+    Double quotes carry every legal path character except ``%`` and ``!``. cmd.exe
+    expands ``%NAME%`` for any variable set in the user's session, quotes or not, so a
+    launcher beneath a folder named ``%NAME%`` would run a different path. A cmd.exe
+    started with delayed expansion (``/v:on``) expands ``!NAME!`` the same way and
+    hands that mode to the shim it runs. So a launcher with either character has no
+    cmd.exe row, and the PowerShell row stays.
+    """
+    if "!" in launcher or "%" in launcher:
+        return None
+    return f'"{launcher}"'
 
 
 def _is_off_path_override(binary: str, environ: Mapping[str, str]) -> bool:

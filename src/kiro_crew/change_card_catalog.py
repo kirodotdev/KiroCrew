@@ -157,7 +157,8 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
 
 #: Card-editable config paths (``_EDITABLE_CONFIG``) that no value can widen
 #: what an agent may do: models, efforts, timeouts, budgets, display and
-#: background-work switches. Every editable path is in exactly one of this set,
+#: background-work switches (``skills.extra_paths`` is the one entry listed for
+#: completeness only; see its note). Every editable path is in exactly one of this set,
 #: ``_SETTING_ORDER`` or ``_CODE_EXEC_SETTINGS``, so a new path is classified
 #: before a card can show it.
 _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
@@ -223,6 +224,13 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "session.pool_ttl_secs",
         "session.timeout_secs",
         "session_summary.enabled",
+        # Listed for exactly-one completeness, not because a card can reach it: a card
+        # carries no list value (``setting.change.value`` is scalar and ``op``/``item``
+        # is confined to the dashboard store), so no card proposes this path. A list of
+        # skill directories can widen what an agent loads, so if cards ever carry list
+        # values this moves out of here to a widening class with a type-guarded list
+        # comparator.
+        "skills.extra_paths",
         # Generated skills still wait for approval unless
         # ``skills.approval_required`` (ordered above) is turned off.
         "skills.auto_create_from_sessions",

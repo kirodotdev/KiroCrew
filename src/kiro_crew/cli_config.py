@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import dataclasses
 import errno
 import json
@@ -159,6 +160,12 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
     elif action == "set":
 
         file_path = getattr(args, "file", None)
+        # ``is not None``, never truthiness: ``--value-base64=`` is the empty string and
+        # means "set empty text".
+        encoded = getattr(args, "value_base64", None)
+        if encoded is not None and file_path:
+            print("❌ --value-base64 cannot be combined with --file", file=sys.stderr)
+            sys.exit(1)
         if file_path:
             fp = Path(file_path).expanduser().resolve()
 
@@ -205,6 +212,18 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             key = args.key
             value = args.value
             use_local = getattr(args, "local", False)
+            if encoded is not None:
+                if value is not None:
+                    print(
+                        "❌ Give the value as VALUE or as --value-base64, not both",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                try:
+                    value = _decode_value_base64(encoded)
+                except ValueError as decode_error:
+                    print(f"❌ --value-base64: {decode_error}", file=sys.stderr)
+                    sys.exit(1)
             if not key or value is None:
                 print("Usage: kirocrew config set <key> <value>", file=sys.stderr)
                 print("       kirocrew config set --local <key> <value>", file=sys.stderr)
@@ -826,6 +845,23 @@ def _declared_type_error(entry: ConfigEntry, value: object) -> str | None:
     if not isinstance(value, expected):
         return f"expected {entry.type}, got {type(value).__name__}"
     return None
+
+
+def _decode_value_base64(token: str) -> str:
+    """The UTF-8 text a ``--value-base64`` token carries, or raise ``ValueError``.
+
+    Strict standard Base64: an alphabet or padding error is refused rather than
+    skipped, so a token a shell mangled never decodes to a different value. The empty
+    token is valid and decodes to empty text.
+    """
+    try:
+        raw = base64.b64decode(token, validate=True)
+    except ValueError:  # binascii.Error is a ValueError
+        raise ValueError("not valid standard Base64 (check the padding and alphabet)") from None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("the decoded bytes are not valid UTF-8 text") from None
 
 
 def _is_list_key(key: str) -> bool:
