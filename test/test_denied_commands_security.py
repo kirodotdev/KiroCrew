@@ -10794,6 +10794,123 @@ class TestHostsFileWarmUp:
         assert _denied_by("ssh -o ConnectTimeout=10 backup@host uptime") is None
         assert _denied_by("ssh loopalias uptime") == self._RULE
 
+    def _publish_during_first_gate_parse(self, monkeypatch, addrs):
+        """The enrichment worker publishes *addrs* while the gate parses the file."""
+        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", False)
+        real_parse = _argv_floor._parse_hosts_file
+        parses: "list[bool]" = []
+
+        def _parse(*args, **kwargs):
+            parses.append(_argv_floor._NETLINK_ADDRS_PUBLISHED)
+            if len(parses) == 1:
+                _argv_floor._publish_netlink_addresses(addrs)
+            return real_parse(*args, **kwargs)
+
+        monkeypatch.setattr(_argv_floor, "_parse_hosts_file", _parse)
+        return parses
+
+    def test_a_cold_ssh_to_a_remote_alias_is_allowed_when_publication_lands_mid_parse(
+        self, monkeypatch
+    ):
+        # The first ssh on a cold worker: the enrichment worker's netlink
+        # publish (its real publish step) lands inside the gate's parse, as it
+        # does whenever that parse is slow.  The remote alias is judged again
+        # on the new key and allowed, not refused as ssh-to-self.
+        path = self._hosts(monkeypatch, "10.4.4.4 farbox\n")
+        parses = self._publish_during_first_gate_parse(monkeypatch, {"203.0.113.66"})
+        assert _denied_by("ssh farbox uptime") is None
+        assert parses == [False, True]
+        assert _argv_floor._HOSTS_FILE_CACHE[path][0][-2] is True
+        assert "kirocrew-hosts-warm" not in self.started
+
+    def test_the_second_judgement_uses_the_newly_published_own_set(self, monkeypatch):
+        # The address published mid-parse is this host's, and a line aliases
+        # a name to it: the retry judges that alias local, never remote.
+        self._hosts(monkeypatch, "10.4.4.4 farbox\n203.0.113.66 ownalias\n")
+        parses = self._publish_during_first_gate_parse(monkeypatch, {"203.0.113.66"})
+        # The first table, judged before publication, maps ownalias remote:
+        # only the own-state re-check stops that table from being served.
+        assert _argv_floor._hosts_file_verdict("ownalias") is True
+        assert parses == [False, True]
+        assert _denied_by("ssh ownalias uptime") == self._RULE
+        assert _denied_by("ssh farbox uptime") is None
+
+    def test_a_file_edited_during_the_gate_parse_is_pending_at_once(self, monkeypatch):
+        # Only a moved OWN state is judged again: a FILE that changes
+        # mid-parse is refused as pending after one parse, with the warm
+        # scheduled.
+        path = self._hosts(monkeypatch, "10.4.4.4 farbox\n")
+        real_parse = _argv_floor._parse_hosts_file
+        parses: "list[int]" = []
+
+        def _parse(*args, **kwargs):
+            parses.append(1)
+            table = real_parse(*args, **kwargs)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write("10.5.5.5 newbox\n")
+            return table
+
+        monkeypatch.setattr(_argv_floor, "_parse_hosts_file", _parse)
+        assert _argv_floor._hosts_file_verdict("farbox") is True
+        assert len(parses) == 1
+        assert _argv_floor._HOSTS_FILE_CACHE == {}
+        assert self.started.count("kirocrew-hosts-warm") == 1
+
+    def test_an_own_set_that_moves_before_a_remote_answer_is_judged_again(self, monkeypatch):
+        # The own set grows between the table's key and the remote answer's
+        # re-check: the gate judges again on the grown set and serves it.
+        self._hosts(monkeypatch, "10.4.4.4 farbox\n")
+        reads: "list[int]" = []
+
+        def _own():
+            reads.append(1)
+            grown = len(reads) > 2  # the key read and its re-check see the old set
+            return frozenset({"127.0.0.1"} | ({"198.51.100.9"} if grown else set()))
+
+        monkeypatch.setattr(_argv_floor, "_own_host_names", _own)
+        assert _argv_floor._hosts_file_verdict("farbox") is False
+        assert "kirocrew-hosts-warm" not in self.started
+
+    def test_a_key_still_moving_after_every_attempt_is_pending(self, monkeypatch):
+        # The bound: an own set that moves on every read is judged a fixed
+        # number of times, then a remote entry is refused as pending.
+        self._hosts(monkeypatch, "10.4.4.4 farbox\n")
+        reads = iter(range(10_000))
+        monkeypatch.setattr(
+            _argv_floor, "_own_host_names", lambda: frozenset({f"10.200.0.{next(reads) % 250}"})
+        )
+        real_parse = _argv_floor._parse_hosts_file
+        parses: "list[int]" = []
+
+        def _parse(*args, **kwargs):
+            parses.append(1)
+            return real_parse(*args, **kwargs)
+
+        monkeypatch.setattr(_argv_floor, "_parse_hosts_file", _parse)
+        assert _argv_floor._hosts_file_verdict("farbox") is True
+        assert len(parses) == _argv_floor._HOSTS_KEY_MOVED_ATTEMPTS == 3
+        assert _argv_floor._HOSTS_FILE_CACHE == {}
+        assert self.started.count("kirocrew-hosts-warm") == 1
+
+    def test_a_failed_re_stat_after_the_parse_is_pending_at_once(self, monkeypatch):
+        # The key cannot be re-read after a real parse: a read failure, not a
+        # moved own state, so the gate refuses at once, unretried.
+        self._hosts(monkeypatch, "10.4.4.4 farbox\n")
+        real_key = _argv_floor._hosts_file_key
+        calls: "list[int]" = []
+
+        def _key(path):
+            calls.append(1)
+            if len(calls) == 2:  # the re-stat after the parse
+                raise PermissionError(path)
+            return real_key(path)
+
+        monkeypatch.setattr(_argv_floor, "_hosts_file_key", _key)
+        assert _argv_floor._hosts_file_verdict("farbox") is True
+        assert len(calls) == 2
+        assert _argv_floor._HOSTS_FILE_CACHE == {}
+        assert self.started.count("kirocrew-hosts-warm") == 1
+
     def test_an_own_address_learned_later_re_marks_a_cached_alias(self, monkeypatch):
         self._hosts(monkeypatch, "198.51.100.44 lateownalias\n")
         _argv_floor._warm_hosts_file_cache()
@@ -10936,7 +11053,11 @@ class TestHostsFileWarmUp:
 
         self._fire_after_lookup(monkeypatch, _merge)
         assert _argv_floor._host_is_self("ownalias") is True
-        assert "kirocrew-hosts-warm" in self.started
+        # The gate judged the file again on the merged set, in the same call:
+        # the alias is cached local, so no pending warm was needed.
+        assert dict(_argv_floor._HOSTS_FILE_CACHE)[str(self.tmp_path / "hosts")][1] == {
+            "ownalias": True
+        }
 
     def test_publication_after_the_key_check_is_a_deny(self, monkeypatch):
         # A table judged before publication must not be read as authoritative
