@@ -199,7 +199,7 @@ so) and re-exported by `kiro_crew.subagent`, which stays the place to read and p
 | `INJECTION_TIMEOUT` | 900 | Inner cap: max seconds for a single `stream_and_collect` call (15 minutes); default `_DEFAULT_INJECTION_TIMEOUT = 900.0`, tunable via `KIROCREW_INJECTION_TIMEOUT` (float seconds, clamped to `_ON_DONE_TIMEOUT`) |
 | `_RESET_TIMEOUT` | 30 | Max seconds for session reset in finally block |
 | `_TURN_LIMIT` | 1000 | Default tool-call budget per subagent, from `constants.DEFAULT_SUBAGENT_MAX_TURNS` (configurable via `agent.subagent_max_turns`, per-spawn via `max_turns`) |
-| `_STALL_IDLE_SECS` | 120 | Seconds with no stream activity before a running subagent is surfaced as **stalled** in the running-card (configurable via `agent.subagent_stall_idle_secs`). The badge never terminates anything. Its one effect beyond the card: a stalled child no longer holds the parent's user messages (`chat_runner.subagents_hold_user_messages`): a new send is dispatched, and a message already parked when the flag is set drains immediately — the `subagent_stalled` event fires `chat_runner.drain_idle_parent_queue_for_stall`, which starts the idle parent slot's queued-turn drain (a running slot and a live sibling are left alone). The user closes it from the UX (per-row stop / Stop-all) and the run's captured deadline (three hours by default, `_TIMEOUT_SECS`) still applies. A WATCHDOG stall (`EVENT_COMPLETE` with `error: tool stall`) is a different signal and IS acted on: see *Stop reason → state*. |
+| `_STALL_IDLE_SECS` | 120 | Seconds with no stream activity before a running subagent is surfaced as **stalled** in the running-card (configurable via `agent.subagent_stall_idle_secs`). The badge never terminates anything. Its one effect beyond the card: a stalled child no longer holds the parent's user messages (`chat_turn.queue_drain.subagents_hold_user_messages`): a new send is dispatched, and a message already parked when the flag is set drains immediately — the `subagent_stalled` event fires `chat_turn.queue_drain.drain_idle_parent_queue_for_stall`, which starts the idle parent slot's queued-turn drain (a running slot and a live sibling are left alone). The user closes it from the UX (per-row stop / Stop-all) and the run's captured deadline (three hours by default, `_TIMEOUT_SECS`) still applies. A WATCHDOG stall (`EVENT_COMPLETE` with `error: tool stall`) is a different signal and IS acted on: see *Stop reason → state*. |
 | `_SYSTEM_PREFIX` | (string) | Injected before task text to prevent spawn recursion |
 | `COMPLETION_KEEP_DEFAULT_CHARS` | 3000 | Default character cap for the completion event injected into the parent session (configurable via `agent.completion_keep_chars`). Lives in `context_management.py` alongside the helper. |
 
@@ -877,7 +877,7 @@ The level never rewrites the figure and never moves the posture, which stays
 figure-based. It is reported beside them: `summary_lines` (the
 `resource_status` tool, whose guidance then names the pressure instead of
 "heavy work is fine"), the `[RESOURCES]` context line, and the diagnostics
-bundle. The eager-spawn admission (`chat_runner._pressure_hold_blocks_prewarm`)
+bundle. The eager-spawn admission (`chat_turn.eager_spawn._pressure_hold_blocks_prewarm`)
 admits no new speculative pre-warm while the hold applies, and leaves the idle
 ones already live to the host bands; the re-probe after a
 pre-warm registered does not read it. The cron, runner and adaptive-controller
@@ -2697,7 +2697,7 @@ per-sub-agent completion note. Dashboard chat only.
   with no await the tab cannot close nor a sibling register under it. A child
   only the store holds is the fire gate's to see. A probe that raises leaves
   the synthesis disarmed.
-- **Fire** — `chat_runner._finish_queue_cycle` asks the ONE store-reading
+- **Fire** — `chat_turn.queue_cycle._finish_queue_cycle` asks the ONE store-reading
   check, `chat_utils.synthesis_fire_verdict`, on the slot's real session key
   (`effective_session_key`, which a channel- or cron-born tab does not spell
   `dashboard:<slot>`). It holds for a running child or an in-flight delivery,

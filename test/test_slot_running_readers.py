@@ -166,9 +166,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_rewind.py", "api_chat_slot_rewind"),
                 # The memory-ready queue drain starts a turn only on a slot no
                 # dispatch has reserved, the same guard the dispatch routes take.
-                ("chat_runner.py", "_drain_parked_queues"),
-                ("chat_runner.py", "_eager_spawn"),
-                ("chat_runner.py", "_prefetch_ttl"),
+                ("chat_turn/queue_drain.py", "_drain_parked_queues"),
+                ("chat_turn/eager_spawn.py", "_eager_spawn"),
+                ("chat_turn/eager_spawn.py", "_prefetch_ttl"),
                 ("handlers/autonudge.py", "api_autonudge_fire"),
                 ("handlers/mcp_apps.py", "api_mcp_apps_message"),
                 ("handlers/members.py", "api_member_fresh_start"),
@@ -209,7 +209,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_slack.py", "drain_slack_backfill"),
                 # The synthesis outage re-check fires only on an idle slot: a
                 # running TURN, not a reservation, is what it must not overlap.
-                ("chat_runner.py", "_arm_synthesis_recheck"),
+                ("chat_turn/queue_cycle.py", "_arm_synthesis_recheck"),
                 # A guide or card tool call is admitted only from the turn this
                 # slot is executing; a reservation has no tool call yet.
                 ("handlers/guide.py", "_resolve_agent_caller"),
@@ -244,8 +244,8 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         ("chat_regenerate.py", "api_chat_slot_edit_resend"),
         ("chat_regenerate.py", "api_chat_slot_regenerate"),
         ("chat_rewind.py", "api_chat_slot_rewind"),
-        ("chat_runner.py", "_launch_synthesis"),
-        ("chat_runner.py", "_start_next_queued_turn"),
+        ("chat_turn/queue_cycle.py", "_launch_synthesis"),
+        ("chat_turn/queue_drain.py", "_start_next_queued_turn"),
         ("handlers/mcp_apps.py", "api_mcp_apps_message"),
         ("handlers/messaging.py", "api_send_message"),
         ("handlers/taskrunner.py", "api_taskrunner_to_chat"),

@@ -254,8 +254,33 @@ def test_the_local_import_check_sees_a_dead_one() -> None:
     assert _unread_local_imports(nested) == []
 
 
+def _imported_from_the_runner(sources: list[str]) -> set[str]:
+    """The names *sources* import from ``kiro_crew.dashboard.chat_runner`` by name."""
+    found = set()
+    for source in sources:
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.ImportFrom) and node.module == cr.__name__:
+                found |= {alias.name for alias in node.names}
+    return found
+
+
+def test_the_runner_importer_scan_sees_a_by_name_import() -> None:
+    sources = [
+        "from kiro_crew.dashboard.chat_runner import a, b as c\n",
+        "from kiro_crew.dashboard import chat_runner\nimport kiro_crew.dashboard.chat_runner\n",
+    ]
+    assert _imported_from_the_runner(sources) == {"a", "b"}
+
+
 def test_every_name_the_runner_imports_is_read() -> None:
-    keep = set(_BASE_NAMES) | _facade_patched_names()
+    importers = [
+        path.read_text(encoding="utf-8")
+        for path in sorted(
+            (Path(__file__).resolve().parents[1] / "src" / "kiro_crew").rglob("*.py")
+        )
+        if path.name != "chat_runner.py" and "chat_turn" not in path.parts
+    ]
+    keep = set(_BASE_NAMES) | _facade_patched_names() | _imported_from_the_runner(importers)
     runner = Path(cr.__file__).read_text(encoding="utf-8")
     owners = [
         Path(owner.__file__).read_text(encoding="utf-8") for owner in chat_turn.owner_modules()

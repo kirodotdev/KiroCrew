@@ -856,7 +856,7 @@ def _priority_args(path: str, function: str, callee: str) -> list[str]:
         # The turn's eager respawn runs in its tail, from the priority the turn
         # recorded in its outcome.
         (
-            "dashboard/chat_runner.py",
+            "dashboard/chat_turn/queue_cycle.py",
             "_end_turn_tail",
             "schedule_eager_spawn",
             "outcome.start_priority",

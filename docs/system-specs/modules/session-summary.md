@@ -230,7 +230,7 @@ crowd out the session; intent survives truncation.
 
 ## Generation
 
-Dispatched from `_finish_queue_cycle` in `dashboard/chat_runner.py` — the post-turn
+Dispatched from `_finish_queue_cycle` in `dashboard/chat_turn/queue_cycle.py` — the post-turn
 hub, alongside auto-titling — as a background task, for a cycle in which a turn
 reached a provider (learn-cron-dashboard.md, "Every turn exit runs the turn's
 tail"); a cycle of local commands has nothing to summarize. Not from `hooks.py`: the
@@ -491,7 +491,7 @@ no check on where a message came from — it gates on `enabled`, an in-flight pa
 incognito mode, liveness, a clean `end_turn`, the turn count and the cadence, and
 nothing else. Coverage is decided instead by *where the generator is called from*:
 the automatic pass has exactly one dispatch site, `_finish_queue_cycle` at the
-tail of a `_ChatSlot` turn in `dashboard/chat_runner.py`, plus the explicit
+tail of a `_ChatSlot` turn in `dashboard/chat_turn/queue_cycle.py`, plus the explicit
 on-demand route in `dashboard/chat_api/slot_summary.py`. Only a turn that ran through
 `_run_chat` on a slot reaches the automatic pass — and reaching it is not the same
 as producing a summary, because the gates above still apply. The on-demand route

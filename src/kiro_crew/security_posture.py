@@ -2278,14 +2278,16 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # runner's helpers that moved into them (deny rows, file-change snapshots, the MCP
         # sign-in banner, native cards, tool rows, spec-hook notices, the stats footer,
         # the cross-surface legs, prompt and skill mentions, the segment flush, the
-        # eager-spawn error detail), unchanged. Their output reaches the surfaces it
-        # reached from the runner: the call sites moved, the set of egress paths did not.
+        # eager-spawn error detail, the queued-turn drain), unchanged. Their output
+        # reaches the surfaces it reached from the runner: the call sites moved, the
+        # set of egress paths did not.
         "dashboard/chat_turn/deny_chokepoints.py",
         "dashboard/chat_turn/eager_spawn.py",
         "dashboard/chat_turn/file_changes.py",
         "dashboard/chat_turn/mcp_session.py",
         "dashboard/chat_turn/native_cards.py",
         "dashboard/chat_turn/prompt_assembly.py",
+        "dashboard/chat_turn/queue_drain.py",
         "dashboard/chat_turn/recipient.py",
         "dashboard/chat_turn/segment_flush.py",
         "dashboard/chat_turn/tool_rows.py",

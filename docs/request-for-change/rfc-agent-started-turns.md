@@ -90,7 +90,7 @@ The reader holds `_turn_lock` until the callback has marked the slot busy (step 
 
 ### 2. The agent-started turn in the dashboard
 
-`on_agent_turn` runs synchronously on the event loop. It claims the slot the way a dispatched user turn does (compare `_start_next_queued_turn`, `src/kiro_crew/dashboard/chat_runner.py`): it sets `slot.running` and schedules `_run_chat` with a new `agent_started=True` flag and no message. `_run_chat` then holds the per-session semaphore for the turn, as every turn does. Only after `slot.running` is set does the reader release `_turn_lock`.
+`on_agent_turn` runs synchronously on the event loop. It claims the slot the way a dispatched user turn does (compare `_start_next_queued_turn`, `src/kiro_crew/dashboard/chat_turn/queue_drain.py`): it sets `slot.running` and schedules `_run_chat` with a new `agent_started=True` flag and no message. `_run_chat` then holds the per-session semaphore for the turn, as every turn does. Only after `slot.running` is set does the reader release `_turn_lock`.
 
 If `slot.running` is already set, the callback starts nothing and the frame stays in `_buffer`. Two kinds of turn can hold the slot at that moment, and the rule has to serve both:
 
@@ -121,7 +121,7 @@ The assistant row and its tool rows are written by the same code a user turn use
 
 ### 4. Notifications
 
-The turn ends through the normal turn-end path, so the unread badge and the turn sound fire the way they do for a finished user turn (`app-notifications.md`, "Unread badge" and "Sound events"). `_notify_autonudge_turn_end` (`chat_runner.py`) is skipped for an agent-started turn: a monitor or autonudge loop did not send its prompt, so the turn must not count as one of its cycles.
+The turn ends through the normal turn-end path, so the unread badge and the turn sound fire the way they do for a finished user turn (`app-notifications.md`, "Unread badge" and "Sound events"). `_notify_autonudge_turn_end` (`chat_turn/queue_cycle.py`) is skipped for an agent-started turn: a monitor or autonudge loop did not send its prompt, so the turn must not count as one of its cycles.
 
 ### 5. Slot busy accounting
 
