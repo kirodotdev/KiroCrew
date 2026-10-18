@@ -7084,7 +7084,9 @@
       "defaultValue": {
         "enabled": false,
         "api_base_url": "",
-        "send_heartbeats": false
+        "send_heartbeats": false,
+        "oauth_client_id": "",
+        "oauth_token_expires_at": 0
       }
     },
     {
@@ -7134,6 +7136,38 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "wakatime.oauth_client_id",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "wakatime"
+      ],
+      "label": "OAuth Client ID",
+      "help": "WakaTime OAuth app client ID, from https://wakatime.com/apps. Required to read stats, summaries, and durations after WakaTime makes API keys write-only on 1 November 2026. The matching client secret and the user's access and refresh tokens are stored in the secrets vault, not here. Empty keeps the integration on API-key auth, which still works before the cutoff and for self-hosted backends.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "wakatime.oauth_token_expires_at",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "wakatime"
+      ],
+      "label": "OAuth Token Expiry",
+      "help": "Epoch seconds when the stored OAuth access token expires, so the client refreshes it before a call rather than after a 401. Managed by the OAuth flow; 0 means no token is stored. Not a secret, so it lives in config rather than the vault.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "teams",

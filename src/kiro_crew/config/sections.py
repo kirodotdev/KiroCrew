@@ -473,3 +473,28 @@ if TYPE_CHECKING:  # the owner-defined names this module serves, for type checke
         _LAST_WARNED_TRANSCRIBE_LANGUAGES,
         _LAST_WARNED_TRANSCRIBE_VOCABULARY,
     )
+    oauth_client_id: str = field(
+        default="",
+        metadata=_meta(
+            "OAuth Client ID",
+            "WakaTime OAuth app client ID, from https://wakatime.com/apps. "
+            "Required to read stats, summaries, and durations after WakaTime "
+            "makes API keys write-only on 1 November 2026. The matching client "
+            "secret and the user's access and refresh tokens are stored in the "
+            "secrets vault, not here. Empty keeps the integration on API-key "
+            "auth, which still works before the cutoff and for self-hosted "
+            "backends.",
+            tags=["wakatime"],
+        ),
+    )
+    oauth_token_expires_at: int = field(
+        default=0,
+        metadata=_meta(
+            "OAuth Token Expiry",
+            "Epoch seconds when the stored OAuth access token expires, so the "
+            "client refreshes it before a call rather than after a 401. Managed "
+            "by the OAuth flow; 0 means no token is stored. Not a secret, so it "
+            "lives in config rather than the vault.",
+            tags=["wakatime"],
+        ),
+    )

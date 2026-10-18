@@ -759,6 +759,8 @@ def _build_wakatime_config(wakatime_data: dict) -> WakaTimeConfig:
         enabled=bool(section.get("enabled")),
         api_base_url=str(section.get("api_base_url") or section.default("api_base_url")),
         send_heartbeats=section.read("send_heartbeats", _safe_bool),
+        oauth_client_id=str(section.get("oauth_client_id") or section.default("oauth_client_id")),
+        oauth_token_expires_at=section.read("oauth_token_expires_at", _safe_int),
     )
 
 
