@@ -1023,6 +1023,19 @@ custom commands and registry-governed entries remain with Kiro's native loader
 rather than losing their restrictions in the ACP array. A native entry without
 another verifiable identity channel retains the strict caller refusal.
 
+KAS session extras also carry the exact admitted source spec beside the custom
+agent payload and its derived-spec snapshot. An eligible member session uses that
+same-generation object to decide whether a finite managed `kirocrew-core` element
+may be added; it never reopens the agent file after the freshness check. Both
+`session/new` and `session/load` apply this member-only composition before
+`hoist_managed_servers`, using the actual signed stub token. The process-level
+scope limits full discovery, names-only discovery and dispatch to
+`spawn_run`, `spawn_status`, `spawn_list` and `spawn_steer`, plus an already
+projected `skill_search`. Kiro's construction path gains no awaited step: the
+composition runs only inside the positive KAS/member branch (H13). The new-session
+identity guard is declared in the H6 runtime-site catalog: this adapter composes
+KAS's custom-agent wire payload, rather than selecting every member-capable host.
+
 `memory_mode` is fixed before provider startup and before `session/new`, including
 late-start adoption. Incognito and Temporary suppress Crew raw-frame recording
 and payload diagnostics, do not resume retained native context, and cannot retain

@@ -386,19 +386,21 @@ class TestSaveKeepsAnAbsentChoiceAbsent:
     def home(self, tmp_path: Path):
         d = tmp_path / "crew"
         d.mkdir()
+        # Import the CLI consumer before patching its loader dependencies: its
+        # by-value imports must not retain this test's mocks after teardown.
         with (
-            patch("kiro_crew.config.loader.config_path", return_value=d / "config.json"),
-            patch(
-                "kiro_crew.config.loader.config_local_path",
-                return_value=d / "config.local.json",
-            ),
-            patch("kiro_crew.config.loader.config_dir", return_value=d),
             patch("kiro_crew.cli_config.config_path", return_value=d / "config.json"),
             patch(
                 "kiro_crew.cli_config.config_local_path",
                 return_value=d / "config.local.json",
             ),
             patch("kiro_crew.cli_config.sel"),
+            patch("kiro_crew.config.loader.config_path", return_value=d / "config.json"),
+            patch(
+                "kiro_crew.config.loader.config_local_path",
+                return_value=d / "config.local.json",
+            ),
+            patch("kiro_crew.config.loader.config_dir", return_value=d),
         ):
             yield d
 

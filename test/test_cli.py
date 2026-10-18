@@ -500,6 +500,7 @@ class TestUpdateFailures:
                 assert e.code == 1
 
 
+
 class TestBannerBranding:
     """The ASCII banners must spell the product's real name.
 

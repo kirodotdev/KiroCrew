@@ -273,6 +273,16 @@ class SessionExtras:
     nothing, or takes its agent at spawn time.
     """
 
+    source_spec: Any = None
+    """The exact agent spec used to build ``custom_agents``.
+
+    A session-level adapter may need to preserve an authored selection while
+    composing the final wire payload. Carrying the already-admitted object keeps
+    that decision on the same source generation as ``custom_agents`` and
+    ``derived_spec_snapshot``; a second file read would reopen a revocation race.
+    ``None`` when the host consumes no wire-registered agent definition.
+    """
+
 
 # ── Seam 5: notification aliases ──
 

@@ -258,6 +258,19 @@ async def load_session(
             session_key=session_key,
         )
         kas_agents = kas_extras.custom_agents
+        if member_session_key and member_mounted and kas_agents is not None:
+            from kiro_crew.members import member_managed_spawn_mount
+
+            kas_agents, mcp_servers = await asyncio.to_thread(
+                member_managed_spawn_mount,
+                kas_agents,
+                active_agent,
+                member_session_key,
+                stub_token,
+                mcp_servers,
+                kas_extras.source_spec,
+                work_dir=session_work_dir,
+            )
         payload_snapshot = kas_extras.derived_spec_snapshot
         # Same carriage as create_session: a resumed session re-initializes
         # its servers, and the managed ones must win the same-name contest

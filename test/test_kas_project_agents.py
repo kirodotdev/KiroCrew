@@ -82,6 +82,25 @@ async def test_a_project_only_agent_binds_with_its_prompt_and_tools(layout):
 
 
 @pytest.mark.asyncio
+async def test_session_extras_carries_the_exact_source_spec(layout):
+    user, checkout, _project_dir = layout
+    source = {
+        "name": "solo",
+        "prompt": "user prompt",
+        "tools": ["fs_read"],
+        "excludedTools": ["grep"],
+    }
+    _write(user, "solo", source)
+
+    extras = await KasHarness().session_extras("solo", work_dir=str(checkout))
+
+    assert extras.source_spec == source
+    assert extras.source_spec is not extras.custom_agents[0]
+    assert extras.custom_agents[0]["tools"] == expand_kiro_cli_tool_names(["fs_read"])
+    assert extras.custom_agents[0]["excludedTools"] == expand_kiro_cli_tool_names(["grep"])
+
+
+@pytest.mark.asyncio
 async def test_a_project_spec_grants_nothing(layout):
     _user, checkout, project = layout
     _write(project, "proj", {"name": "proj", "prompt": "p", "tools": ["*"], **_GRANTS})

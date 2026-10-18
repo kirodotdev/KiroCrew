@@ -1120,6 +1120,12 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "property means 'this host needs its agent re-sent'. Adding one would cost the "
     "kiro path an awaited step it does not need (H13).",
     (
+        "src/kiro_crew/acp/runtime_session_create.py",
+        "create_session",
+    ): "The member worker mount composes KAS's custom-agent wire payload before "
+    "managed-server hoisting. Other harnesses carry their tools through their own "
+    "native specs or projections, so member support alone cannot select this adapter.",
+    (
         "src/kiro_crew/acp/session_handle_turn.py",
         "stream_command",
     ): "``_kiro.dev/commands/execute`` is kiro-cli's own RPC. The positive test is what "
