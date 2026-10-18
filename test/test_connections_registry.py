@@ -139,7 +139,7 @@ def test_every_registry_mcp_authorization_server_is_banner_allowlisted():
 
     consent_host_for_issuer_host = {
         "api.figma.com": "www.figma.com",
-        "mcp.mixpanel.com": "mixpanel.com",
+        "auth.mixpanel.com": "mixpanel.com",
     }
     allowlisted_hosts = {host for host, _path in _OAUTH_AUTHORIZATION_ENDPOINTS}
     for provider in get_all_registry_providers():

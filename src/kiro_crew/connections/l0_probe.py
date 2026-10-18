@@ -67,6 +67,11 @@ DEFAULT_CONCURRENCY = 4
 DEFAULT_TIMEOUT_SECONDS = 10.0
 _MAX_METADATA_BYTES = 16 * 1024
 _READ_CHUNK_BYTES = 4096
+# One response header line may be this long. aiohttp's default is 8190 bytes, and
+# Mixpanel's issuer sends a ~12 KB Content-Security-Policy on its metadata
+# document, so the default refused the response before the body was read. The
+# body keeps its own _MAX_METADATA_BYTES bound.
+_MAX_HEADER_FIELD_BYTES = 32 * 1024
 _REPORT_SCHEMA_VERSION = 3
 _PROBE_SCOPE = "static-metadata"
 _WELL_KNOWN_AUTHORIZATION = "/.well-known/oauth-authorization-server"
@@ -504,12 +509,21 @@ def build_report(
     return report
 
 
+def client_session() -> aiohttp.ClientSession:
+    """The HTTP client every probe and record run fetches through."""
+
+    return aiohttp.ClientSession(
+        auto_decompress=False,
+        max_field_size=_MAX_HEADER_FIELD_BYTES,
+    )
+
+
 async def run_probe(
     *, concurrency: int, timeout_seconds: float, record: bool = False
 ) -> list[ProbeResult]:
     """Probe every registry entry, launch-gated or not."""
 
-    async with aiohttp.ClientSession(auto_decompress=False) as session:
+    async with client_session() as session:
         return await probe_all(
             session,
             get_all_registry_providers(),
