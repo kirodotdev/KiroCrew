@@ -21,6 +21,7 @@ from typing import Any, NamedTuple
 
 from kiro_crew import agent as agent_mod
 from kiro_crew import agent_state
+from kiro_crew.agent_discovery import skill_resource_uris
 from kiro_crew.agent_files import (
     AGENT_FILENAME,
 )
@@ -114,7 +115,13 @@ def _mirrored_surface(spec: dict[str, Any], agent: str) -> dict[str, Any]:
     """The part of the default *spec* that *agent*'s derived spec is a function of.
 
     The fingerprint covers exactly this, so an edit to a part of the default the derived
-    spec does not copy does not force a re-derive.
+    spec does not copy does not force a re-derive -- and, conversely, every part the
+    derived spec DOES copy has to be here, or a change to it leaves the mirror stale
+    with a fingerprint that still matches. The worker copies the default's ``skill://``
+    resources (:func:`_mirror_worker_skill_resources`), so those belong in the surface
+    too: without them a dashboard skill map or unmap rewrites ``kirocrew.json`` without
+    moving this hash, the spawn gate's fingerprint check passes, and the worker starts
+    on the old skill set until the next gateway restart.
     """
     if agent == _HEARTBEAT_AGENT:
         servers = spec.get("mcpServers")
@@ -126,7 +133,14 @@ def _mirrored_surface(spec: dict[str, Any], agent: str) -> dict[str, Any]:
             if isinstance(servers.get(name), dict)
         }
         return {"mcpServers": copied}
-    return {key: spec[key] for key in _WORKER_MIRRORED_SHAPES if key in spec}
+    surface = {key: spec[key] for key in _WORKER_MIRRORED_SHAPES if key in spec}
+    # Only the ``skill://`` entries, because that is all the derivation copies from
+    # ``resources`` -- a ``file://`` glob on the default is not mirrored, so a change to
+    # one must not force a worker re-derive.
+    skills = skill_resource_uris(spec)
+    if skills:
+        surface["resources"] = skills
+    return surface
 
 
 def _canonical_grant_pattern(ref: str) -> str | None:
@@ -676,6 +690,59 @@ def _install_worker_agent() -> None:
     agent_mod.logger.info("Installed worker agent config: %s", path)
 
 
+def _mirror_worker_skill_resources(config: dict, installed_default: dict[str, Any] | None) -> None:
+    """Append the default's ``skill://`` mappings to *config*'s ``resources``, by merge.
+
+    A skill reaches a generated spec ONLY through a ``skill://`` entry in its
+    ``resources``: the scoping rule gives an agent other than the ``kirocrew``
+    template exactly its own ``skill://`` entries, so a worker whose spec carries
+    none sees an empty ``skill_search`` scope and no startup skills directory. The
+    mirror copies ``tools``, ``allowedTools``, ``excludedTools``, ``mcpServers`` and
+    ``model``, and ``resources`` is not among them, so this function carries the
+    skill mappings separately.
+
+    A MERGE onto whatever ``resources`` the assembled *config* already holds, never a
+    replacement. ``build_agent_config`` seeds the default's ``resources`` -- the
+    shipped ``file://.kiro/steering/**/*.md`` workspace-steering glob among them --
+    and that glob is parity with the default agent, so it is kept. The ``skill://``
+    URIs below are APPENDED to it; a URI already present keeps its slot and is not
+    added twice.
+
+    The ONE source is the installed default spec: an operator who mapped an app
+    skill onto the agent they run has mapped it for the work their dispatched
+    workers do. The previous worker file is deliberately NOT a source -- it is a
+    DERIVED file, so an add-only merge from it would resurrect a mapping the default
+    has since dropped (an operator who unmaps a skill, or deregisters its app, would
+    see it return on the next boot forever). The worker file crosses exactly one
+    field, a frozen ``model``; the default's ``skill://`` set is re-read fresh each
+    boot, so a drop on the default is a drop on the worker.
+
+    ``skill://`` is the fail-safe boundary on what this function ADDS. ``resources``
+    is a hand-editable field that also holds ``file://`` globs and, in a malformed
+    spec, arbitrary values; a ``file://`` glob on the default points at the operator's
+    own tree, so appending one onto the worker would widen its resource surface past
+    both the default's shipped glob and skills. :func:`skill_resource_uris` keeps only
+    well-formed ``skill://`` string entries and drops the rest, so a non-skill or
+    malformed default entry contributes nothing.
+
+    Order-preserving and de-duplicated -- config's own entries first, then the
+    default's ``skill://`` URIs -- so a boot that re-runs this writes the same list
+    rather than growing one.
+    """
+    existing_resources = config.get("resources")
+    merged: list[Any] = list(existing_resources) if isinstance(existing_resources, list) else []
+    present = {entry for entry in merged if isinstance(entry, str)}
+    if isinstance(installed_default, dict):
+        for uri in skill_resource_uris(installed_default):
+            if uri not in present:
+                present.add(uri)
+                merged.append(uri)
+    if merged:
+        config["resources"] = merged
+    else:
+        config.pop("resources", None)
+
+
 def _write_worker_spec(config: dict, path: Path, *, template_grants: list[str]) -> None:
     """Mirror the default onto *config* and write it to *path*. Caller holds the locks.
 
@@ -742,6 +809,13 @@ def _write_worker_spec(config: dict, path: Path, *, template_grants: list[str]) 
                 )
             except Exception:  # noqa: BLE001 — the audit must not break the install
                 agent_mod.logger.debug("SEL audit unavailable for unmirrored server", exc_info=True)
+
+    # MERGE the default's ``skill://`` mappings onto ``resources``: it is not a
+    # mirrored key (the loop above copies a key wholesale, which would carry
+    # ``file://`` globs and anything else), and a skill reaches a generated spec
+    # only through a ``skill://`` entry. The default's shipped steering glob stays;
+    # the previous worker file is not a source (see the function for why).
+    _mirror_worker_skill_resources(config, installed_default)
 
     tools = [ref for ref in (config.get("tools") or []) if isinstance(ref, str)]
     if "@kirocrew-work" not in tools:

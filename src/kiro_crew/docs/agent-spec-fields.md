@@ -656,16 +656,24 @@ Inside an owned spec a rebuild reassembles the file from `defaults.json`, your
 edit to a field the rebuild computes is replaced. Five keys are carried across
 rather than recomputed on the fork and publish path — `prompt`, `model`,
 `resources`, `tools`, `allowedTools` (`agent_capabilities.py`,
-`_maintain_owned`) — and the worker mirror keeps one: an explicit `model` pick is read back off the file and
+`_maintain_owned`) — and the worker mirror keeps two: an explicit `model` pick is read back off the file and
 carried across, because the mirror's fallback carries the shipped sentinel and
-would otherwise clobber your pin.
+would otherwise clobber your pin; and the `skill://` entries of `resources` are
+mirrored from the default spec, because a skill reaches a generated spec only
+through a `skill://` mapping and the mirror does not otherwise copy `resources`.
+The worker keeps the `resources` it inherits from the default as today — the
+shipped workspace-steering glob among them — and the default's `skill://` entries
+are appended to it; nothing else is added, so an operator who mapped no skill sees
+the same `resources` as before. The previous worker file is not a source (only a
+frozen `model` crosses from it), so a skill the operator unmaps on the default is
+not resurrected on the next boot.
 
 | Spec | Ownership | Refreshed |
 |---|---|---|
 | `kirocrew.json` | generated | every gateway start, and on `kirocrew setup --agent-only` |
 | `kirocrew-lite.json` | generated | every gateway start |
 | `kirocrew-guest.json` | generated | every gateway start (the tool-less agent a non-operator channel sender talks to) |
-| `kirocrew-worker.json` | DERIVED from `kirocrew.json` | every gateway start, and re-checked before every worker session |
+| `kirocrew-worker.json` | DERIVED from `kirocrew.json`; the `skill://` entries of `resources` are mirrored from the default spec, so a worker reaches the app skills its operator mapped | every gateway start, and re-checked before every worker session |
 | `kirocrew-dashboard-author.json` | generated; on a refresh of a spec this installer confirms as its own, an authorized `model` pin and your `resources` skill selection are carried forward (an explicit empty `resources` is preserved) | every gateway start (if a file of this name already exists that is NOT this installer's own — its bytes do not reproduce the ownership digest the installer recorded in the `agent_model_state.json` sidecar for its last managed write, or its read fails — it is left **untouched** and the install is **skipped** — no backup is written and the agent stays unselectable under this name until you remove or rename the file; a user `kirocrew-dashboard-author.md` beside it also blocks the first install, because the `.json` would shadow that markdown spec, while once the `.json` is this installer's own a sibling `.md` no longer stops its refresh) |
 | `kirocrew-conductor.json` | generated; your `allowedTools` entries are carried forward | every gateway start |
 | `kirocrew-ledger-conductor.json` | generated; your `allowedTools` entries are carried forward | every gateway start |

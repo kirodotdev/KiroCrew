@@ -517,6 +517,207 @@ def test_the_work_server_survives_the_mirror(worker_from_installed_default):
     assert "@kirocrew-work/work_report" in worker["allowedTools"]
 
 
+# ── the worker inherits the default's skill:// mappings ────────────────────
+
+#: The shipped workspace-steering glob ``build_agent_config`` seeds into every spec's
+#: ``resources`` (``config/defaults.json``). It is parity with the default agent, so
+#: the worker keeps it; the skill mappings are appended after it.
+_TEMPLATE_STEERING_GLOB = "file://.kiro/steering/**/*.md"
+
+
+def _default_with_resources(resources: list) -> dict[str, Any]:
+    spec = json.loads(json.dumps(_DEFAULT_SPEC_ON_DISK))
+    spec["resources"] = resources
+    return spec
+
+
+def test_the_worker_inherits_a_skill_mapping_from_the_default(tmp_path, monkeypatch):
+    """The gap this closes. A skill reaches a generated spec ONLY through a
+    ``skill://`` entry in its ``resources``, and the mirror does not copy
+    ``resources`` -- so an operator who maps an app skill onto the agent they run
+    dispatches workers that see an empty ``skill_search`` scope and no startup
+    skills directory. The mapping is APPENDED after the shipped steering glob."""
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    (tmp_path / AGENT_FILENAME).write_text(
+        json.dumps(_default_with_resources(["skill://~/.kiro/crew/skills/my-app/SKILL.md"])),
+        encoding="utf-8",
+    )
+    agent._install_worker_agent()
+    worker = json.loads((tmp_path / WORKER_AGENT_FILENAME).read_text(encoding="utf-8"))
+    assert "skill://~/.kiro/crew/skills/my-app/SKILL.md" in worker["resources"]
+    # The shipped steering glob is parity with the default and must survive.
+    assert _TEMPLATE_STEERING_GLOB in worker["resources"]
+
+
+def test_only_skill_resources_are_inherited_not_a_default_file_glob(tmp_path, monkeypatch):
+    """``skill://`` is the fail-safe boundary on what is INHERITED. A ``file://`` glob
+    an operator added to the DEFAULT spec points at their own tree, so it is not
+    carried onto the worker -- only its ``skill://`` entries are, appended after the
+    worker's own shipped steering glob."""
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    (tmp_path / AGENT_FILENAME).write_text(
+        json.dumps(
+            _default_with_resources(
+                [
+                    "file://.kiro/project-steering/**/*.md",
+                    "skill://~/.kiro/crew/skills/app-a/SKILL.md",
+                ]
+            )
+        ),
+        encoding="utf-8",
+    )
+    agent._install_worker_agent()
+    worker = json.loads((tmp_path / WORKER_AGENT_FILENAME).read_text(encoding="utf-8"))
+    assert "skill://~/.kiro/crew/skills/app-a/SKILL.md" in worker["resources"]
+    assert "file://.kiro/project-steering/**/*.md" not in worker["resources"]
+    # The worker's OWN shipped glob stays; the operator's default-spec glob does not.
+    assert _TEMPLATE_STEERING_GLOB in worker["resources"]
+
+
+def test_a_malformed_default_resources_value_adds_no_skill_mapping(tmp_path, monkeypatch):
+    """A spec is a hand-editable JSON file, so ``resources`` can hold anything. A
+    non-list, or non-string / non-``skill://`` entries, add nothing -- the worker
+    keeps only its shipped steering glob, the same fail-safe shape the grant passes
+    take."""
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    for bad in ("not a list", [123, {"x": 1}, "ftp://nope", "skill-not-a-uri"], None):
+        (tmp_path / AGENT_FILENAME).write_text(
+            json.dumps(_default_with_resources(bad) if bad is not None else _DEFAULT_SPEC_ON_DISK),
+            encoding="utf-8",
+        )
+        agent._install_worker_agent()
+        worker = json.loads((tmp_path / WORKER_AGENT_FILENAME).read_text(encoding="utf-8"))
+        skills = [r for r in worker.get("resources", []) if str(r).startswith("skill://")]
+        assert skills == [], f"{bad!r} should add no skill mapping: {worker.get('resources')}"
+        # The shipped glob is untouched by a malformed inherited value.
+        assert worker.get("resources") == [_TEMPLATE_STEERING_GLOB], bad
+
+
+def test_a_skill_on_the_previous_worker_file_is_not_a_source(tmp_path, monkeypatch):
+    """The previous worker file is DERIVED and is NOT a source for the mirror: a
+    ``skill://`` present only there (not on the default) is not carried forward, so an
+    operator who unmaps a skill on the default does not have it resurrected from the
+    worker file forever. The one field that crosses from the worker file is a frozen
+    ``model``."""
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    (tmp_path / AGENT_FILENAME).write_text(json.dumps(_DEFAULT_SPEC_ON_DISK), encoding="utf-8")
+    prior = _stale_worker_spec()
+    prior["resources"] = ["skill://~/.kiro/crew/skills/only-on-worker-file/SKILL.md"]
+    (tmp_path / WORKER_AGENT_FILENAME).write_text(json.dumps(prior), encoding="utf-8")
+    agent._install_worker_agent()
+    worker = json.loads((tmp_path / WORKER_AGENT_FILENAME).read_text(encoding="utf-8"))
+    assert "skill://~/.kiro/crew/skills/only-on-worker-file/SKILL.md" not in worker.get(
+        "resources", []
+    )
+    # Only the default has no skill, so the worker keeps just its shipped glob.
+    assert worker.get("resources") == [_TEMPLATE_STEERING_GLOB]
+
+
+def test_the_default_skill_mappings_are_merged_without_duplicates(tmp_path, monkeypatch):
+    """The default's ``skill://`` entries are appended after config's own steering
+    glob, de-duplicated, so a boot that re-runs this writes the SAME list rather than
+    growing one (idempotent)."""
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    (tmp_path / AGENT_FILENAME).write_text(
+        json.dumps(
+            _default_with_resources(
+                [
+                    "skill://~/.kiro/crew/skills/from-default/SKILL.md",
+                    # A duplicate of the default's own entry is not added twice.
+                    "skill://~/.kiro/crew/skills/from-default/SKILL.md",
+                ]
+            )
+        ),
+        encoding="utf-8",
+    )
+    agent._install_worker_agent()
+    once = json.loads((tmp_path / WORKER_AGENT_FILENAME).read_text(encoding="utf-8"))["resources"]
+    assert once == [
+        _TEMPLATE_STEERING_GLOB,
+        "skill://~/.kiro/crew/skills/from-default/SKILL.md",
+    ]
+    # Idempotent: the written list is a fixpoint — re-running over it produces it again.
+    agent._install_worker_agent()
+    twice = json.loads((tmp_path / WORKER_AGENT_FILENAME).read_text(encoding="utf-8"))["resources"]
+    assert twice == once
+
+
+def test_a_worker_with_no_skill_mapping_keeps_only_the_shipped_steering_glob(
+    worker_from_installed_default,
+):
+    """The default-behaviour pin: a worker whose operator mapped no skill carries the
+    SAME ``resources`` as the default agent -- the shipped steering glob and nothing
+    else -- so nothing changed for anyone who never mapped a skill."""
+    worker = worker_from_installed_default()
+    assert worker["resources"] == [_TEMPLATE_STEERING_GLOB]
+
+
+def test_a_skill_mapped_on_the_default_re_derives_the_worker_at_spawn(tmp_path, monkeypatch):
+    """A ``skill://`` mapped on the default while the gateway runs reaches the worker at
+    its NEXT spawn, not only after a restart. ``apply_skill_mapping`` rewrites
+    ``kirocrew.json`` without re-deriving the worker, so the worker file is left stale;
+    the spawn gate (`_require_fresh_worker_spec`) must notice and re-derive it. That
+    only works if the freshness surface includes the default's ``skill://`` resources,
+    so this drives the real gate rather than the fingerprint alone."""
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    (tmp_path / AGENT_FILENAME).write_text(json.dumps(_DEFAULT_SPEC_ON_DISK), encoding="utf-8")
+    agent._install_worker_agent()
+    assert agent._derived_spec_matches_default("kirocrew-worker") is True
+
+    # Operator maps a skill on the default (as apply_skill_mapping would) -- no installer
+    # re-derives the worker, so its file is now stale.
+    mapped = _default_with_resources(["skill://~/.kiro/crew/skills/newly-mapped/SKILL.md"])
+    (tmp_path / AGENT_FILENAME).write_text(json.dumps(mapped), encoding="utf-8")
+    assert (
+        agent._derived_spec_matches_default("kirocrew-worker") is False
+    ), "a skill mapped on the default did not move the worker's freshness fingerprint"
+
+    # The spawn gate re-derives the stale mirror in place; the worker now has the skill.
+    agent._require_fresh_worker_spec(None)
+    worker = json.loads((tmp_path / WORKER_AGENT_FILENAME).read_text(encoding="utf-8"))
+    assert "skill://~/.kiro/crew/skills/newly-mapped/SKILL.md" in worker["resources"]
+    assert agent._derived_spec_matches_default("kirocrew-worker") is True
+
+
+def test_a_skill_unmapped_on_the_default_re_derives_the_worker_at_spawn(tmp_path, monkeypatch):
+    """The reverse, and the one a stale fingerprint silently gets wrong: unmapping a
+    skill on the default must drop it from the worker at the next spawn, not leave it
+    live until a restart."""
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    mapped = _default_with_resources(["skill://~/.kiro/crew/skills/to-remove/SKILL.md"])
+    (tmp_path / AGENT_FILENAME).write_text(json.dumps(mapped), encoding="utf-8")
+    agent._install_worker_agent()
+    worker = json.loads((tmp_path / WORKER_AGENT_FILENAME).read_text(encoding="utf-8"))
+    assert "skill://~/.kiro/crew/skills/to-remove/SKILL.md" in worker["resources"]
+    assert agent._derived_spec_matches_default("kirocrew-worker") is True
+
+    # Operator unmaps the skill on the default; the worker file is left stale with it.
+    (tmp_path / AGENT_FILENAME).write_text(json.dumps(_DEFAULT_SPEC_ON_DISK), encoding="utf-8")
+    assert (
+        agent._derived_spec_matches_default("kirocrew-worker") is False
+    ), "unmapping a skill on the default did not move the worker's freshness fingerprint"
+
+    # The spawn gate re-derives; the worker drops the removed skill.
+    agent._require_fresh_worker_spec(None)
+    worker = json.loads((tmp_path / WORKER_AGENT_FILENAME).read_text(encoding="utf-8"))
+    assert "skill://~/.kiro/crew/skills/to-remove/SKILL.md" not in worker.get("resources", [])
+    assert agent._derived_spec_matches_default("kirocrew-worker") is True
+
+
+def test_a_default_file_glob_change_does_not_force_a_worker_rederive(tmp_path, monkeypatch):
+    """The converse, so the surface stays minimal: a ``file://`` glob on the default is
+    not mirrored onto the worker, so a change to one must NOT move the fingerprint and
+    force a pointless re-derive."""
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    (tmp_path / AGENT_FILENAME).write_text(json.dumps(_DEFAULT_SPEC_ON_DISK), encoding="utf-8")
+    agent._install_worker_agent()
+    assert agent._derived_spec_matches_default("kirocrew-worker") is True
+
+    changed = _default_with_resources(["file://.kiro/project-steering/**/*.md"])
+    (tmp_path / AGENT_FILENAME).write_text(json.dumps(changed), encoding="utf-8")
+    assert agent._derived_spec_matches_default("kirocrew-worker") is True
+
+
 # ── the refresh heals a spec an older build wrote ──────────────────────────
 
 
