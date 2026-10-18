@@ -19,7 +19,7 @@ from typing import Literal
 from kiro_crew import shutdown_event as _gateway_shutdown_event
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.backend_runtime import _FACADE, _facade
-from kiro_crew.apps.backend_runtime.pidfile import _forget_app_pid_if
+from kiro_crew.apps.backend_runtime.pidfile import _forget_exited_leader_row
 from kiro_crew.apps.backend_runtime.ports import _allocated_ports
 from kiro_crew.apps.backend_runtime.registration import _app_enabled_state
 from kiro_crew.apps.backend_runtime.termination import _drain_exited_root_tree, stop_app_backend
@@ -197,215 +197,250 @@ def _restart_exited_backend(ap: AppProcess, returncode: int | None) -> bool:
     app_name = ap.app_name
     activation_error_warned = False
     steady_state_warned = False
-    while True:
-        entered_steady_state = False
-        identity_moved = False
-        with _health_reconcile_lock:
-            with _lock:
-                proc = ap.proc
-                if _processes.get(app_name) is not ap:
-                    identity_moved = True
-                elif proc is None or proc.poll() is None:
-                    return False
-                else:
-                    previous_attempts = _restart_attempts.get(app_name, 0)
-            if not identity_moved:
-                # ``None`` is deliberately fail-closed: an unreadable installed.json
-                # must not bring an app back after the operator may have disabled it.
-                if shutdown_event.is_set() or _app_enabled_state(app_name) is not True:
-                    return False
-                attempt_number = previous_attempts + 1
-                steady_state = previous_attempts >= _RESTART_ON_EXIT_FAST_ATTEMPTS
-                if steady_state:
-                    delay = _RESTART_STEADY_INTERVAL
-                    with _lock:
-                        if _processes.get(app_name) is not ap:
-                            identity_moved = True
-                        else:
-                            entered_steady_state = not steady_state_warned
-                else:
-                    delay = (
-                        0.0
-                        if previous_attempts == 0
-                        else min(
-                            _RESTART_ON_EXIT_INITIAL_DELAY * (2 ** (previous_attempts - 1)),
-                            _RESTART_ON_EXIT_MAX_DELAY,
-                        )
-                    )
-                if not identity_moved:
-                    if steady_state:
-                        logger.info(
-                            "App %s backend exited (rc=%s); restarting "
-                            "(attempt %d, steady) in %.1fs",
-                            app_name,
-                            returncode,
-                            attempt_number,
-                            delay,
-                        )
+    # The exited leader's row is dropped once, in the ``finally`` below, and never
+    # inside the loop: every retry asks attribution again. The row carries the spawn
+    # tree's instance token, and that token is what admits a pre-fork worker or a
+    # detached child of this app still holding the port, so a removal taken while the
+    # loop is still retrying leaves each later attempt unable to attribute the very
+    # process it is trying to replace, and the app stays down for as long as its own
+    # orphan keeps the port.
+    #
+    # The drop is GATED on ``leader_row_superseded``: it fires only once the loop has
+    # committed to superseding this leader (the post-wait re-check popped it from the
+    # tracking table, right before the tree drain), which is exactly where the base
+    # removed the row inline. Every EARLY return -- a transient-unreadable
+    # ``installed.json``, a shutdown, an identity that moved, a stop that won -- leaves
+    # the row in place as the base did, so a leader that exited leaving workers on the
+    # port keeps its handle: the reap can still census it, and adoption can still
+    # attribute it, rather than the group becoming an unnamed orphan holding the port.
+    leader_row_superseded = False
+    try:
+        while True:
+            entered_steady_state = False
+            identity_moved = False
+            with _health_reconcile_lock:
+                with _lock:
+                    proc = ap.proc
+                    if _processes.get(app_name) is not ap:
+                        identity_moved = True
+                    elif proc is None or proc.poll() is None:
+                        return False
                     else:
-                        logger.info(
-                            "App %s backend exited (rc=%s); restarting "
-                            "(fast attempt %d/%d) in %.1fs",
-                            app_name,
-                            returncode,
-                            attempt_number,
-                            _RESTART_ON_EXIT_FAST_ATTEMPTS,
-                            delay,
+                        previous_attempts = _restart_attempts.get(app_name, 0)
+                if not identity_moved:
+                    # ``None`` is deliberately fail-closed: an unreadable installed.json
+                    # must not bring an app back after the operator may have disabled it.
+                    if shutdown_event.is_set() or _app_enabled_state(app_name) is not True:
+                        return False
+                    attempt_number = previous_attempts + 1
+                    steady_state = previous_attempts >= _RESTART_ON_EXIT_FAST_ATTEMPTS
+                    if steady_state:
+                        delay = _RESTART_STEADY_INTERVAL
+                        with _lock:
+                            if _processes.get(app_name) is not ap:
+                                identity_moved = True
+                            else:
+                                entered_steady_state = not steady_state_warned
+                    else:
+                        delay = (
+                            0.0
+                            if previous_attempts == 0
+                            else min(
+                                _RESTART_ON_EXIT_INITIAL_DELAY * (2 ** (previous_attempts - 1)),
+                                _RESTART_ON_EXIT_MAX_DELAY,
+                            )
                         )
+                    if not identity_moved:
+                        if steady_state:
+                            logger.info(
+                                "App %s backend exited (rc=%s); restarting "
+                                "(attempt %d, steady) in %.1fs",
+                                app_name,
+                                returncode,
+                                attempt_number,
+                                delay,
+                            )
+                        else:
+                            logger.info(
+                                "App %s backend exited (rc=%s); restarting "
+                                "(fast attempt %d/%d) in %.1fs",
+                                app_name,
+                                returncode,
+                                attempt_number,
+                                _RESTART_ON_EXIT_FAST_ATTEMPTS,
+                                delay,
+                            )
 
-        if identity_moved:
-            settlement = _settle_superseding_start(app_name, ap, None)
-            if settlement == "continue":
-                continue
-            return settlement == "return_true"
+            if identity_moved:
+                # The tracked process is not this leader -- a successor took over, or a
+                # stop/disable/shutdown ended it. Either way THIS loop is the losing
+                # party, so it must NOT drop the row: the winning lifecycle operation
+                # owns row cleanup. A successor recorded its own identity; a stop
+                # decided whether to keep the row (an ordinary stop that tolerated a
+                # surviving port-holder deliberately RETAINS it so a later re-enable can
+                # re-attribute the survivor). Arming the drop here would delete that
+                # retained row and strand the survivor unmanageable. So the row is left
+                # in place on every identity-moved verdict, matching the base.
+                settlement = _settle_superseding_start(app_name, ap, None)
+                if settlement == "continue":
+                    # ``ap`` is restored to tracking here, so it counts as live and
+                    # unsuperseded; keep its row.
+                    leader_row_superseded = False
+                    continue
+                return settlement == "return_true"
 
-        if entered_steady_state:
-            logger.warning(
-                "App %s backend still failing after %d fast restart attempts; "
-                "retrying every %.0fs while the app stays enabled (disable the app to stop)",
-                app_name,
-                _RESTART_ON_EXIT_FAST_ATTEMPTS,
-                _RESTART_STEADY_INTERVAL,
-            )
-            steady_state_warned = True
-
-        if shutdown_event.wait(delay):
-            return False
-
-        # Re-check after waiting. ``stop_app_backend`` takes the same serialization
-        # before popping, so a deliberate stop cannot race this removal into a respawn.
-        post_wait_identity_moved = False
-        with _health_reconcile_lock:
-            if shutdown_event.is_set() or _app_enabled_state(app_name) is not True:
-                return False
-            with _lock:
-                proc = ap.proc
-                if _processes.get(app_name) is not ap:
-                    post_wait_identity_moved = True
-                elif proc is None or proc.poll() is None:
-                    return False
-                else:
-                    _processes.pop(app_name, None)
-                    _allocated_ports.pop(app_name, None)
-                    _restart_attempts[app_name] = previous_attempts + 1
-                    lifecycle_snapshot = _lifecycle_generation.get(app_name, (0, _LIFECYCLE_START))
-
-        if post_wait_identity_moved:
-            settlement = _settle_superseding_start(app_name, ap, None)
-            if settlement == "continue":
-                continue
-            return settlement == "return_true"
-
-        _forget_app_pid_if(app_name, ap.pid, ap.pid_start_time)
-        # The dead root's tree goes before its replacement is spawned: a launcher
-        # whose forked server outlived it would otherwise keep the app's files (and
-        # possibly its port) while a second server comes up beside it. Same drain
-        # as the stop path; a root that took its whole tree with it costs one probe.
-        if proc is not None and (
-            _drain_exited_root_tree(app_name, proc, ap.pid_start_time, ap.spawn_instance) is False
-        ):
-            logger.warning(
-                "App %s: a descendant of the exited backend root (pid %d) survived the "
-                "drain; the replacement is spawned beside it",
-                app_name,
-                proc.pid,
-            )
-        if ap.log_fh:
-            try:
-                ap.log_fh.close()
-            except OSError:
-                pass
-
-        verdict = _activation_denied(app_name, "restart")
-        if verdict.denied and not verdict.transient:
-            logger.warning(
-                "App %s backend not restarted: blocked by activation policy: %s",
-                app_name,
-                verdict.denied,
-            )
-            try:
-                sel().log_api_access(
-                    caller="gateway",
-                    operation="app_backend_restart",
-                    outcome="denied",
-                    resources=app_name,
-                    error=verdict.denied,
-                )
-            except Exception as exc:  # noqa: BLE001 — denial remains fail-closed
-                logger.debug("SEL audit failed for app %s restart deny: %s", app_name, exc)
-            return False
-
-        backend_still_declared = True
-        if verdict.transient:
-            evaluation_error = verdict.denied or "activation evaluation error"
-            if not activation_error_warned:
+            if entered_steady_state:
                 logger.warning(
-                    "App %s backend restart activation evaluation failed; "
-                    "refusing this attempt and retrying on the restart cadence: %s",
+                    "App %s backend still failing after %d fast restart attempts; "
+                    "retrying every %.0fs while the app stays enabled (disable the app to stop)",
                     app_name,
-                    evaluation_error,
+                    _RESTART_ON_EXIT_FAST_ATTEMPTS,
+                    _RESTART_STEADY_INTERVAL,
                 )
-                activation_error_warned = True
-            try:
-                sel().log_api_access(
-                    caller="gateway",
-                    operation="app_backend_restart",
-                    outcome="error",
-                    resources=app_name,
-                    error=evaluation_error,
-                )
-            except Exception as exc:  # noqa: BLE001 — evaluation remains fail-closed
-                logger.debug("SEL audit failed for app %s restart error: %s", app_name, exc)
-            replacement = None
-        else:
-            # The permit is a gateway-initiated exercise of the app's execution
-            # grant with no operator in the loop, so SEL records it as it does the
-            # denial: an operator reconstructing a trust timeline must see the
-            # decision, not infer it from the spawn that followed.
-            try:
-                sel().log_api_access(
-                    caller="gateway",
-                    operation="app_backend_restart",
-                    outcome="allowed",
-                    resources=f"{app_name} attempt={attempt_number}",
-                )
-            except Exception as exc:  # noqa: BLE001 — the permit stands without its audit line
-                logger.debug("SEL audit failed for app %s restart allow: %s", app_name, exc)
-            try:
-                replacement = _facade()._start_app_backend(app_name)
-                if replacement is None:
-                    manifest = get_app_manifest(app_name)
-                    backend_still_declared = bool(
-                        manifest is not None and manifest.backend.entryPoint
-                    )
-            except Exception as exc:  # noqa: BLE001 — a raised spawn is a retryable failure
-                logger.warning(
-                    "App %s backend restart attempt %d failed to spawn: %s",
-                    app_name,
-                    attempt_number,
-                    exc,
-                )
-                replacement = None
+                steady_state_warned = True
 
-        # The compare and any teardown are serialized with public START generation
-        # bumps. A later START is intent only: the shared handoff below waits outside
-        # both locks before deciding whether another supervisor really took over.
-        with _health_reconcile_lock:
-            with _lock:
-                lifecycle_now = _lifecycle_generation.get(app_name, (0, _LIFECYCLE_START))
-            superseding_start = (
-                lifecycle_now != lifecycle_snapshot and lifecycle_now[1] == _LIFECYCLE_START
-            )
-            if lifecycle_now != lifecycle_snapshot and not superseding_start:
-                logger.info(
-                    "App %s backend restart was cancelled after spawn; stopping replacement",
-                    app_name,
-                )
-                if replacement is not None:
-                    stop_app_backend(app_name, _expected=replacement)
+            if shutdown_event.wait(delay):
                 return False
-            if not superseding_start:
+
+            # Re-check after waiting. ``stop_app_backend`` takes the same serialization
+            # before popping, so a deliberate stop cannot race this removal into a respawn.
+            post_wait_identity_moved = False
+            with _health_reconcile_lock:
                 if shutdown_event.is_set() or _app_enabled_state(app_name) is not True:
+                    return False
+                with _lock:
+                    proc = ap.proc
+                    if _processes.get(app_name) is not ap:
+                        post_wait_identity_moved = True
+                    elif proc is None or proc.poll() is None:
+                        return False
+                    else:
+                        _processes.pop(app_name, None)
+                        _allocated_ports.pop(app_name, None)
+                        _restart_attempts[app_name] = previous_attempts + 1
+                        lifecycle_snapshot = _lifecycle_generation.get(
+                            app_name, (0, _LIFECYCLE_START)
+                        )
+                        # The loop has now committed to superseding this leader: it is
+                        # popped from tracking and a replacement follows. This is where
+                        # the base dropped the row inline, so it is where the deferred
+                        # drop is armed -- every path that returns BEFORE reaching here
+                        # keeps the row, matching the base.
+                        leader_row_superseded = True
+
+            if post_wait_identity_moved:
+                # Same as the pre-wait identity-moved verdict above: THIS loop lost the
+                # slot to a successor or a stop, so it does not own the row and must not
+                # drop it -- the winning operation does. Leave the row in place.
+                settlement = _settle_superseding_start(app_name, ap, None)
+                if settlement == "continue":
+                    # ``ap`` is restored to tracking here, so it counts as live and
+                    # unsuperseded; keep its row.
+                    leader_row_superseded = False
+                    continue
+                return settlement == "return_true"
+
+            # The dead root's tree goes before its replacement is spawned: a launcher
+            # whose forked server outlived it would otherwise keep the app's files (and
+            # possibly its port) while a second server comes up beside it. Same drain
+            # as the stop path; a root that took its whole tree with it costs one probe.
+            if proc is not None and (
+                _drain_exited_root_tree(app_name, proc, ap.pid_start_time, ap.spawn_instance)
+                is False
+            ):
+                logger.warning(
+                    "App %s: a descendant of the exited backend root (pid %d) survived the "
+                    "drain; the replacement is spawned beside it",
+                    app_name,
+                    proc.pid,
+                )
+            if ap.log_fh:
+                try:
+                    ap.log_fh.close()
+                except OSError:
+                    pass
+
+            verdict = _activation_denied(app_name, "restart")
+            if verdict.denied and not verdict.transient:
+                logger.warning(
+                    "App %s backend not restarted: blocked by activation policy: %s",
+                    app_name,
+                    verdict.denied,
+                )
+                try:
+                    sel().log_api_access(
+                        caller="gateway",
+                        operation="app_backend_restart",
+                        outcome="denied",
+                        resources=app_name,
+                        error=verdict.denied,
+                    )
+                except Exception as exc:  # noqa: BLE001 — denial remains fail-closed
+                    logger.debug("SEL audit failed for app %s restart deny: %s", app_name, exc)
+                return False
+
+            backend_still_declared = True
+            if verdict.transient:
+                evaluation_error = verdict.denied or "activation evaluation error"
+                if not activation_error_warned:
+                    logger.warning(
+                        "App %s backend restart activation evaluation failed; "
+                        "refusing this attempt and retrying on the restart cadence: %s",
+                        app_name,
+                        evaluation_error,
+                    )
+                    activation_error_warned = True
+                try:
+                    sel().log_api_access(
+                        caller="gateway",
+                        operation="app_backend_restart",
+                        outcome="error",
+                        resources=app_name,
+                        error=evaluation_error,
+                    )
+                except Exception as exc:  # noqa: BLE001 — evaluation remains fail-closed
+                    logger.debug("SEL audit failed for app %s restart error: %s", app_name, exc)
+                replacement = None
+            else:
+                # The permit is a gateway-initiated exercise of the app's execution
+                # grant with no operator in the loop, so SEL records it as it does the
+                # denial: an operator reconstructing a trust timeline must see the
+                # decision, not infer it from the spawn that followed.
+                try:
+                    sel().log_api_access(
+                        caller="gateway",
+                        operation="app_backend_restart",
+                        outcome="allowed",
+                        resources=f"{app_name} attempt={attempt_number}",
+                    )
+                except Exception as exc:  # noqa: BLE001 — the permit stands without its audit line
+                    logger.debug("SEL audit failed for app %s restart allow: %s", app_name, exc)
+                try:
+                    replacement = _facade()._start_app_backend(app_name)
+                    if replacement is None:
+                        manifest = get_app_manifest(app_name)
+                        backend_still_declared = bool(
+                            manifest is not None and manifest.backend.entryPoint
+                        )
+                except Exception as exc:  # noqa: BLE001 — a raised spawn is a retryable failure
+                    logger.warning(
+                        "App %s backend restart attempt %d failed to spawn: %s",
+                        app_name,
+                        attempt_number,
+                        exc,
+                    )
+                    replacement = None
+
+            # The compare and any teardown are serialized with public START generation
+            # bumps. A later START is intent only: the shared handoff below waits outside
+            # both locks before deciding whether another supervisor really took over.
+            with _health_reconcile_lock:
+                with _lock:
+                    lifecycle_now = _lifecycle_generation.get(app_name, (0, _LIFECYCLE_START))
+                superseding_start = (
+                    lifecycle_now != lifecycle_snapshot and lifecycle_now[1] == _LIFECYCLE_START
+                )
+                if lifecycle_now != lifecycle_snapshot and not superseding_start:
                     logger.info(
                         "App %s backend restart was cancelled after spawn; stopping replacement",
                         app_name,
@@ -413,12 +448,30 @@ def _restart_exited_backend(ap: AppProcess, returncode: int | None) -> bool:
                     if replacement is not None:
                         stop_app_backend(app_name, _expected=replacement)
                     return False
-                if not backend_still_declared:
-                    return True
-                if replacement is not None:
-                    return True
+                if not superseding_start:
+                    if shutdown_event.is_set() or _app_enabled_state(app_name) is not True:
+                        logger.info(
+                            "App %s backend restart was cancelled after spawn; stopping replacement",
+                            app_name,
+                        )
+                        if replacement is not None:
+                            stop_app_backend(app_name, _expected=replacement)
+                        return False
+                    if not backend_still_declared:
+                        return True
+                    if replacement is not None:
+                        return True
 
-        settlement = _settle_superseding_start(app_name, ap, replacement)
-        if settlement == "continue":
-            continue
-        return settlement == "return_true"
+            settlement = _settle_superseding_start(app_name, ap, replacement)
+            if settlement == "continue":
+                # ``_settle_superseding_start`` restores ``ap`` to the tracking table
+                # here (nothing else was tracked), so this leader counts as live and
+                # unsuperseded and its row must NOT be dropped by the ``finally``.
+                # Disarm the flag; a later iteration re-arms it only if it commits to
+                # superseding again.
+                leader_row_superseded = False
+                continue
+            return settlement == "return_true"
+    finally:
+        if leader_row_superseded:
+            _forget_exited_leader_row(app_name, ap)

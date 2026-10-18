@@ -123,9 +123,7 @@ async def teardown_app_runtime(
     # and refuses BEFORE any teardown mutation. Ordinary disable keeps its existing
     # unbounded wait contract. The proven result is passed into on_app_disable so
     # ownership cannot be checked a second time after teardown has begun.
-    startup_stopped = await stop_app_startup_hooks(
-        name, bounded=withdrawing_trust
-    )
+    startup_stopped = await stop_app_startup_hooks(name, bounded=withdrawing_trust)
     if not startup_stopped:
         return TeardownResult(
             warnings=[],
@@ -234,12 +232,8 @@ async def teardown_app_runtime(
     # (a)'s benefit is kept where it is free: on an ORDINARY disable there is no
     # security urgency, so an app that is off and has no observed port still does
     # not get its code launched.
-    live_port = await loop.run_in_executor(
-        subprocess_executor(), recorded_backend_port, name
-    )
-    app_may_be_running = (
-        withdrawing_trust or record.get("enabled") is True or live_port is not None
-    )
+    live_port = await loop.run_in_executor(subprocess_executor(), recorded_backend_port, name)
+    app_may_be_running = withdrawing_trust or record.get("enabled") is True or live_port is not None
     if not app_may_be_running:
         logger.info(
             "skipping %r's own shutdown code: not enabled and no backend port observed",
@@ -331,9 +325,7 @@ async def teardown_app_runtime(
         # Captured BEFORE the stop: `stop_app_backend` drops both the live tracking
         # entry and the pidfile record, and those are the only gateway-owned
         # evidence of which port this backend actually used.
-        port_hint = await loop.run_in_executor(
-            subprocess_executor(), recorded_backend_port, name
-        )
+        port_hint = await loop.run_in_executor(subprocess_executor(), recorded_backend_port, name)
         await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
         live_port = await loop.run_in_executor(
             subprocess_executor(), lambda: unstopped_backend_port(name, port_hint=port_hint)
@@ -341,7 +333,8 @@ async def teardown_app_runtime(
         if live_port is not None:
             logger.warning(
                 "backend for app %r is still listening on port %s after stop",
-                name, live_port,
+                name,
+                live_port,
             )
             _fail(
                 f"backend still running on port {live_port} — the gateway stopped "
@@ -493,9 +486,7 @@ async def notify_slot_close_undone(app: str, slot_key: str) -> bool:
     try:
         await hook(slot_key)
     except Exception:  # noqa: BLE001 - reported to the caller, never raised
-        logger.warning(
-            "slot-close UNDO hook for app %r failed on %r", app, slot_key, exc_info=True
-        )
+        logger.warning("slot-close UNDO hook for app %r failed on %r", app, slot_key, exc_info=True)
         return False
     return True
 
@@ -527,9 +518,7 @@ async def notify_slot_closed(app: str, slot_key: str) -> bool:
     try:
         await hook(slot_key)
     except Exception:  # noqa: BLE001 - reported to the caller, never raised
-        logger.warning(
-            "slot-close hook for app %r failed on %r", app, slot_key, exc_info=True
-        )
+        logger.warning("slot-close hook for app %r failed on %r", app, slot_key, exc_info=True)
         return False
     return True
 

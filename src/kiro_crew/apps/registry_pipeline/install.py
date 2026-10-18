@@ -1334,7 +1334,18 @@ async def install_from_registry(
         # durable_success, which is precisely why an exception raised AFTER
         # durable_success was set (e.g. set_app_provenance) still names the
         # genuinely-retained restorable stale instead of stranding it.
-        outcome = {"ok": False, "name": name, "error": str(exc)}
+        #
+        # ``committed`` tells the caller whether the install already landed on
+        # disk when this exception struck. ``set_app_provenance`` runs with
+        # ``durable_success`` already True, so a failure there (ENOSPC/EDQUOT on
+        # the metadata write) returns ok=False while the new code is in place.
+        # The caller must NOT treat that as a rollback and restore the pre-update
+        # spawn record: that row still vouches for whatever rebinds the port, so
+        # restoring it over committed new code would let the recovery adopt an
+        # old-code survivor as the updated backend. A ``committed`` failure is a
+        # fail-closed outcome: the row stays revoked/unrecorded and nothing is
+        # adopted.
+        outcome = {"ok": False, "name": name, "error": str(exc), "committed": durable_success}
         return outcome
     finally:
         # RESTORATION BELONGS TO THE LIFETIME, NOT TO THE LIST OF FAILURES.
