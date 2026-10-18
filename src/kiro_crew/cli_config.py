@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import dataclasses
 import errno
 import json
 import os
@@ -24,6 +23,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
     workspace_dir_from_entry,
 )
+from kiro_crew.config.resolution import _SECTION_KEYS_EMITTED_ELSEWHERE
 from kiro_crew.config.sections import _migrate_workspaces
 from kiro_crew.config.superseded_defaults import (
     acked_superseded,
@@ -299,14 +299,12 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                         file=sys.stderr,
                     )
                     sys.exit(1)
+            # Both destinations take the key check, BEFORE the split: the
+            # overlay outranks config.json, so a key nothing reads written there
+            # looks like a pinned setting and silently does nothing
+            # (kirodotdev/KiroCrew#9909: `config set --local memory.enabled false`).
+            _refuse_unknown_key(key, parsed, overlay=use_local)
             if use_local:
-                top_key = key.split(".")[0]
-                _known_sections = {f.name for f in dataclasses.fields(KiroCrewConfig)}
-                if top_key not in _known_sections:
-                    print(
-                        f"⚠️  Warning: '{top_key}' is not a recognized config section",
-                        file=sys.stderr,
-                    )
                 p = config_local_path()
 
                 # NOTE: unlike the automatic/background config writers (which now
@@ -341,21 +339,6 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 )
                 print(f"✅ {key} = {json.dumps(parsed)} (saved to config.local.json)")
             else:
-                # Validate the key exists before taking the lock. A declared
-                # leaf counts as existing even when it is not stored yet, but
-                # then its value is type-checked here: this is its first write,
-                # so no stored value stands in for the declaration.
-                cfg = KiroCrewConfig.load()
-                d = cfg.to_dict()
-                if not _dict_set(d, key, parsed):
-                    declared = _declared_entry(key)
-                    if declared is None:
-                        print(f"❌ Unknown key: {key}", file=sys.stderr)
-                        sys.exit(1)
-                    type_error = _declared_type_error(declared, parsed)
-                    if type_error:
-                        print(f"❌ {key}: {type_error}", file=sys.stderr)
-                        sys.exit(1)
 
                 def _mutate_base(existing: dict) -> dict:
                     # Apply the set on the freshly-locked raw data.
@@ -713,6 +696,65 @@ def _dict_set(d: dict, key: str, value: object) -> bool:
         return False
     cur[parts[-1]] = value
     return True
+
+
+def _refuse_unknown_key(key: str, parsed: object, *, overlay: bool = False) -> None:
+    """Exit with ``Unknown key`` unless *key* is one the loaded config can hold.
+
+    Validated before any lock is taken. A declared leaf counts as existing even
+    when it is not stored yet, but then its value is type-checked here: this is
+    its first write, so no stored value stands in for the declaration.
+
+    With *overlay* (``--local``) a ``<section>.<name>`` listed in
+    ``_SECTION_KEYS_EMITTED_ELSEWHERE`` is also accepted: the loader reads it
+    in that section, but ``to_dict()`` writes it from outside the section, so
+    the loaded document may not show it. Its value is still checked.
+    """
+    if overlay:
+        parts = key.split(".")
+        if len(parts) == 2 and parts[1] in _SECTION_KEYS_EMITTED_ELSEWHERE.get(
+            parts[0], frozenset()
+        ):
+            _refuse_emitted_elsewhere_value(key, parts[0], parts[1], parsed)
+            return
+    d = KiroCrewConfig.load().to_dict()
+    if _dict_set(d, key, parsed):
+        return
+    declared = _declared_entry(key)
+    if declared is None:
+        print(f"❌ Unknown key: {key}", file=sys.stderr)
+        sys.exit(1)
+    type_error = _declared_type_error(declared, parsed)
+    if type_error:
+        print(f"❌ {key}: {type_error}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _refuse_emitted_elsewhere_value(key: str, section: str, name: str, parsed: object) -> None:
+    """Exit 1 when *parsed* does not fit the field ``to_dict()`` writes *key* from.
+
+    The registry declares these fields by their dataclass spelling
+    (``slack_dm_activation``, ``observe_max_messages``) or under the section
+    (``slack.trusted_bot_ids``), so the first row found among those spellings
+    supplies the type. ``slack.dm_activation`` also takes the loader's own
+    activation check, which would otherwise turn a bad value into ``mention``.
+    """
+    from kiro_crew.config.sections_slack import _VALID_ACTIVATIONS, _validate_activation
+
+    for path in (key, f"{section}_{name}", name):
+        entry = _declared_entry(path)
+        if entry is not None:
+            error = _declared_type_error(entry, parsed)
+            if error:
+                print(f"❌ {key}: {error}", file=sys.stderr)
+                sys.exit(1)
+            break
+    if key == "slack.dm_activation" and _validate_activation(str(parsed)) != parsed:
+        allowed = ", ".join(sorted(_VALID_ACTIVATIONS))
+        print(
+            f"❌ {key}: {parsed!r} is not one of the selectable values: {allowed}", file=sys.stderr
+        )
+        sys.exit(1)
 
 
 def _dict_set_create(d: dict, key: str, value: object) -> None:
