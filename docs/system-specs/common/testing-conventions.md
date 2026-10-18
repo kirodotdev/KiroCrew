@@ -1444,17 +1444,22 @@ measures, never above.
   tmpfs cleared on reboot. That reliance is deliberate and is worth knowing if you own a
   long-lived CI host: it is bounded at one directory per killed run.
 
-  Reported, not yet fatal, and that split is a staged rollout rather than a soft opinion.
-  Two classes under that root are deliberately **not** residue and are excluded by name:
-  the computer-use screenshot spool, which production keeps as a persistent ring buffer,
-  and the scratch that Chromium and the Playwright driver create because a child inherits
-  the redirected `TMPDIR`. What remains is a handful of single `mkstemp` **files**, some
-  of them written by production code a test merely reached — one inode each, not the
-  `mkdtemp` directories the rule is about. Failing the suite on that set today would
-  block every unrelated change while it is attributed, and a guard that blocks unrelated
-  work is a guard somebody deletes. Set `KIROCREW_TMP_RESIDUE_STRICT=1` to make it fatal,
-  which is how the remaining set gets burned down and how the line gets held afterwards —
-  the same shape as `windows-expected-failures.txt`.
+  Fatal in CI's `Backend Tests*` jobs, a warning elsewhere. Those six jobs in `ci.yml`
+  set `KIROCREW_TMP_RESIDUE_STRICT=1`, so a test that leaves residue fails the shard it
+  runs in. A local run only warns, because a developer host has its own tools writing under
+  the redirected `TMPDIR` that CI does not have; set the variable yourself to hold a
+  local run to the CI rule. Two classes under that root are deliberately **not** residue
+  and are excluded by name: the computer-use screenshot spool, which production keeps as
+  a persistent ring buffer, and the scratch that Chromium and the Playwright driver
+  create because a child inherits the redirected `TMPDIR`.
+
+  A residue line names the test that created the entry when `tempfile` made it in that
+  worker. The usual cause is not a missing cleanup but a late writer: a background
+  thread that still holds a path under the removed directory and calls
+  `mkdir(parents=True)`, which re-creates it. The crew-log eager fold worker is one: a
+  fold still running when a test removes its private `KIROCREW_HOME` re-creates that
+  home. Use the conftest's per-test `KIROCREW_HOME` pin instead of a private home,
+  because the conftest stops that worker before the pin lifts.
 
   Why it is worth a guard rather than a convention: `/tmp` is commonly a tmpfs with a
   fixed **inode** budget (1,048,576 on the hosts this was measured on), and it returns

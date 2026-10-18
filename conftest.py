@@ -3732,18 +3732,11 @@ _TMP_RESIDUE_ALLOWED_PREFIXES: tuple[str, ...] = (
 
 #: Make temp residue FAIL the run rather than warn.
 #:
-#: Off by default, and that is a staged rollout rather than a soft opinion. The guard
-#: found real residue on CI surfaces this host cannot reach, and the entries that remain
-#: after the exclusions above are single ``mkstemp`` FILES rather than the ``mkdtemp``
-#: directories the rule is written about -- one inode each, several of them created by
-#: production code a test merely reached. Failing the suite on that set today would block
-#: every unrelated change while the set is attributed, and a guard that blocks unrelated
-#: work is a guard somebody deletes.
-#:
-#: So: the residue is removed either way (which is the whole inode win), and it is
-#: REPORTED either way. Set this to make it fatal -- in a burn-down branch, or in CI once
-#: the remaining set is empty. Same shape as ``windows-expected-failures.txt``: a known
-#: set, visible, with a way to hold the line once it is closed.
+#: The residue is removed and REPORTED either way; this decides only whether the report
+#: fails the run. CI's ``Backend Tests*`` jobs in ``ci.yml`` set it, so a test that leaves
+#: residue fails the shard it runs in. A local run warns by default, because a developer
+#: host has its own tools writing under the redirected ``TMPDIR`` that CI does not have;
+#: set it yourself to hold a local run to the CI rule.
 _TMP_RESIDUE_STRICT_ENV = "KIROCREW_TMP_RESIDUE_STRICT"
 
 
@@ -3845,8 +3838,9 @@ def _isolate_tempfile_base(tmp_path_factory):
     can both NAME it (residue is still a defect) and REMOVE it (so the accumulation stops
     regardless of whether anyone acts on the report).
 
-    The report WARNS by default and fails only under ``KIROCREW_TMP_RESIDUE_STRICT`` --
-    see ``_TMP_RESIDUE_STRICT_ENV`` for why that is a staged rollout and not a shrug.
+    The report WARNS by default and fails under ``KIROCREW_TMP_RESIDUE_STRICT``, which
+    CI's ``Backend Tests*`` jobs set -- see ``_TMP_RESIDUE_STRICT_ENV`` for why a local
+    run only warns.
 
     Under ``-n auto`` each xdist worker is its own process, so each gets its own
     root and reports only its own leaks; the controller runs no tests and creates

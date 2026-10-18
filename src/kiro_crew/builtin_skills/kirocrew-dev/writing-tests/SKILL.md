@@ -79,9 +79,11 @@ watches. The before/after example is in testing-conventions.md § Rules.
 
 `ignore_errors=True` also **hides** a cleanup that could not finish, so it is not proof
 of anything. The floor helps, but it is not your discipline: the rootdir conftest redirects
-`tempfile`'s base per run, removes it, and **reports** residue — as a warning today, fatal
-under `KIROCREW_TMP_RESIDUE_STRICT=1`. So a leak of yours will not necessarily turn CI red;
-clean up anyway. (Staged rollout and its owner: testing-conventions.md § Rules.)
+`tempfile`'s base per run, removes it, and **reports** residue. CI's `Backend Tests*` jobs
+set `KIROCREW_TMP_RESIDUE_STRICT=1`, so a leak of yours turns that shard red; a local run
+only warns unless you set it. Need a data home? Use the conftest's per-test `KIROCREW_HOME`
+pin, not a private temp home: a background worker can re-create a home you removed.
+(Details: testing-conventions.md § Rules.)
 
 Why it earns a guard: `/tmp` is often a tmpfs with a fixed **inode** budget
 (1,048,576 on the hosts this was measured on) and it returns `ENOSPC` to every other
