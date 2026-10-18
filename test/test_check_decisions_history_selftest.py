@@ -99,9 +99,16 @@ def test_other_childs_rejection_does_not_match() -> None:
 def test_self_test_passes_on_this_platform() -> None:
     """The whole self-test stays green, so the gate floor keeps working here."""
     result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "check_decisions_history.py"), "--test"],
+        [
+            sys.executable,
+            "-X",
+            "utf8",
+            str(ROOT / "scripts" / "check_decisions_history.py"),
+            "--test",
+        ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
