@@ -8574,7 +8574,8 @@
       "browser_reserved_hint": "In einem Browser-Tab fängt der Browser diese Tastenkürzel ab, bevor die Seite sie sieht — die Alternativen funktionieren überall; die Desktop-App unterstützt beide.",
       "desktop_app_only": "Nur Desktop-App",
       "panel_toggles": "Panels umschalten",
-      "unset": "Nicht festgelegt"
+      "unset": "Nicht festgelegt",
+      "save_refused": "Nicht gespeichert: Der Browserspeicher ist voll. Gib etwas Speicher frei und versuche es erneut."
     },
     "sidePanelLayout": {
       "more_below": "Weiter unten",
@@ -17499,7 +17500,8 @@
         "backend_encoder_only": "{{name}} — teilweise beschleunigt, Textschritt auf der CPU",
         "backend_cpu_only": "Läuft auf CPU — kein GPU in diesem Build",
         "last_recognition_value": "{{duration}} für den fertigen Text, {{rtf}}× der Audiolänge",
-        "decode_threads_value": "{{n}} Dekodier-Threads"
+        "decode_threads_value": "{{n}} Dekodier-Threads",
+        "ptt_save_refused": "Nicht gespeichert: Der Browserspeicher ist voll. Gib etwas Speicher frei und versuche es erneut."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "oben. Im Gegensatz zu Slack hat das Bot Framework keinen\n              rein ausgehenden Modus.",

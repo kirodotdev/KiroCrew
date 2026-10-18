@@ -649,10 +649,17 @@ const PTT_MODES: readonly PttMode[] = ['toggle', 'ptt', 'hybrid']
  */
 function PushToTalkConfig() {
   const [cfg, setCfg] = useState(() => loadPttConfig())
+  const [saveError, setSaveError] = useState<string | null>(null)
+  // A save the browser refuses (storage full) stores nothing, so the form keeps
+  // showing the stored binding and says why the change did not take.
   const patch = (next: Partial<typeof cfg>) => {
     const merged = { ...cfg, ...next }
+    if (!savePttConfig(merged)) {
+      setSaveError(i18nT('pages.settings.sttSettings.ptt_save_refused'))
+      return
+    }
+    setSaveError(null)
     setCfg(merged)
-    savePttConfig(merged)
   }
 
   const bare = isBareModifier(cfg.binding)
@@ -700,6 +707,9 @@ function PushToTalkConfig() {
         checked={cfg.enabled}
         onChange={v => patch({ enabled: v })}
       />
+      {saveError && (
+        <ErrorNotice variant="inline" message={saveError} askAgent testId="ptt-save-error" className="my-1" />
+      )}
 
       <SettingsSelect
         label={i18nT('pages.settings.sttSettings.ptt_key')}

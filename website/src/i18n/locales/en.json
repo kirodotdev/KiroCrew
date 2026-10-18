@@ -5335,6 +5335,7 @@
       "keyboard_shortcuts": "Keyboard shortcuts",
       "keyboard_shortcuts_2": "Keyboard Shortcuts",
       "or": "or",
+      "save_refused": "Not saved: the browser's storage is full. Free some space and try again.",
       "search": "Search",
       "search_everywhere": "Search Everywhere",
       "show_or_focus_the_kiro_crew_window": "Show or focus the {{productName}} window",
@@ -9607,7 +9608,8 @@
         "ptt_mode_toggle": "Press on/off",
         "ptt_try_desc": "Press your shortcut key to check that this keyboard sends it properly.",
         "ptt_heading_desc_other": "Press a key to start talking instead of clicking the microphone button. Alt + Shift + Space works out of the box — you can leave everything here as it is.",
-        "ptt_key_desc_other": "Pick a key that doesn't type anything on its own, so it won't interfere with what you're writing. Right Alt is left out because most layouts use it to compose characters."
+        "ptt_key_desc_other": "Pick a key that doesn't type anything on its own, so it won't interfere with what you're writing. Right Alt is left out because most layouts use it to compose characters.",
+        "ptt_save_refused": "Not saved: the browser's storage is full. Free some space and try again."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "above. Unlike Slack, the Bot Framework has no\n              outbound-only mode.",

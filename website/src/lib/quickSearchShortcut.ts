@@ -1,6 +1,7 @@
 import { isMac } from '../utils/platform'
-import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { safeGetItem } from '../utils/safeStorage'
 import { CODE_TOKENS } from './shortcutRegistry'
+import { savePrefExplicitly } from './uiPrefs'
 
 /**
  * Configurable activation shortcut for the Search Everywhere command palette.
@@ -139,7 +140,7 @@ export function saveQuickSearchConfig(config: QuickSearchConfig): boolean {
   } else {
     toStore = { mode: config.mode }
   }
-  const ok = safeSetItem(QUICK_SEARCH_SHORTCUT_KEY, JSON.stringify(toStore))
+  const ok = savePrefExplicitly(QUICK_SEARCH_SHORTCUT_KEY, JSON.stringify(toStore))
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event(QUICK_SEARCH_SHORTCUT_EVENT))
   }

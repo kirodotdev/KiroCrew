@@ -1333,6 +1333,16 @@ Contract:
     during restore and reconcile; its marker clears only for a child the host
     acknowledged and only once the synced fingerprints persisted; and host adoption
     (`adoptHostUiPrefsOnNextLoad`) removes the key.
+  - PLAIN DIRTY marker: a plain key written only by an explicit user action
+    records the save in `mc-ui-prefs-plain-dirty` (`savePrefExplicitly`, which writes the mark first and rolls it back if the value is refused) at its
+    writer's save seam: the Shortcuts switches (`components/ShortcutsModal.tsx`),
+    the Search everywhere chord, the panel toggle chords and the push-to-talk
+    key. Without it a value saved after a failed restore or reconcile is outside
+    the frozen owned-at-failure snapshot, and the next successful pass puts the
+    host value over the user's choice. A marked key counts as owned on both
+    restore paths and is forced into the next upload; its mark clears once that
+    upload is baselined; host adoption removes the key. Only allowlisted plain
+    keys are accepted.
 - Also excluded: any value that GATES A SAFETY CONFIRMATION. `mc-yolo-ack` is the
   instance — its presence makes the approval-mode picker skip the confirmation
   and enable full auto-approval — and the reason is that this file sits in the

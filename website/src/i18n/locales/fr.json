@@ -8709,7 +8709,8 @@
       "browser_reserved_hint": "Dans un onglet de navigateur, le navigateur intercepte ces raccourcis avant que la page ne les voie — les alternatives fonctionnent partout ; l'application de bureau prend en charge les deux.",
       "desktop_app_only": "Application de bureau uniquement",
       "panel_toggles": "Affichage des panneaux",
-      "unset": "Non défini"
+      "unset": "Non défini",
+      "save_refused": "Non enregistré : le stockage du navigateur est plein. Libère de l’espace et réessaie."
     },
     "sidePanelLayout": {
       "more_below": "Plus bas",
@@ -17764,7 +17765,8 @@
         "backend_encoder_only": "{{name}} — partiellement accéléré, l'étape texte sur le CPU",
         "backend_cpu_only": "Fonctionne sur CPU — pas de GPU dans cette version",
         "last_recognition_value": "{{duration}} pour le texte final, {{rtf}}× la durée de l’audio",
-        "decode_threads_value": "{{n}} threads de décodage"
+        "decode_threads_value": "{{n}} threads de décodage",
+        "ptt_save_refused": "Non enregistré : le stockage du navigateur est plein. Libère de l’espace et réessaie."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "ci-dessus. Contrairement à Slack, le Bot Framework n'a pas de\n              mode sortant uniquement.",

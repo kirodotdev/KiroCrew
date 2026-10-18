@@ -19,8 +19,8 @@
  * That one change costs less than re-recording the key after every destructive
  * upgrade, which is why this key is durable while `getPreferredMicId` is not.
  */
-import { safeSetItem } from '../utils/safeStorage'
 import { i18nT } from '../i18n/t'
+import { savePrefExplicitly } from './uiPrefs'
 
 export type PttMode = 'toggle' | 'ptt' | 'hybrid'
 
@@ -362,12 +362,14 @@ export function loadPttConfig(mac: boolean = IS_MAC): PttConfig {
   }
 }
 
-/** Persist and broadcast, so every mounted consumer re-reads without prop drilling. */
-export function savePttConfig(cfg: PttConfig): void {
-  safeSetItem(PTT_STORAGE_KEY, JSON.stringify(cfg))
+/** Persist and broadcast, so every mounted consumer re-reads without prop drilling.
+ *  Returns false when storage refused the choice (nothing was stored). */
+export function savePttConfig(cfg: PttConfig): boolean {
+  const ok = savePrefExplicitly(PTT_STORAGE_KEY, JSON.stringify(cfg))
   try {
     window.dispatchEvent(new Event(PTT_CHANGED_EVENT))
   } catch {
-    /* no window (SSR/test env) — persistence already happened */
+    /* no window (SSR/test env) — the persistence attempt already happened */
   }
+  return ok
 }

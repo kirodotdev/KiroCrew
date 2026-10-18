@@ -16,6 +16,7 @@ import {
   hasUnreconciledKeys,
   reconcileNewDurableKeys,
   adoptHostUiPrefsOnNextLoad,
+  savePrefExplicitly,
   __resetUiPrefsSyncForTests,
 } from '../lib/uiPrefs'
 import { loadBoardFolderCollapse, persistBoardOverride } from '../utils/boardFolderCollapse'
@@ -30,8 +31,10 @@ import {
 import { MAC_CTRL_DIGITS_KEY, SHORTCUTS_ENABLED_KEY } from '../hooks/useKeyboardShortcuts'
 import { QUICK_SEARCH_SHORTCUT_KEY } from '../lib/quickSearchShortcut'
 import { PANEL_TOGGLE_SHORTCUTS_KEY } from '../lib/panelToggleShortcuts'
-import { PTT_STORAGE_KEY } from '../lib/pushToTalk'
+import { PTT_STORAGE_KEY, savePttConfig } from '../lib/pushToTalk'
 import { SHORTCUT_OVERRIDES_KEY } from '../lib/shortcutRegistry'
+
+const PLAIN_DIRTY = 'mc-ui-prefs-plain-dirty'
 
 describe('uiPrefs', () => {
   beforeEach(() => {
@@ -932,6 +935,82 @@ describe('uiPrefs', () => {
     it('a warm origin whose stored roster predates the Shortcuts keys keeps its own choices too (issue #16237)', async () => {
       await warmRosterProfileWithoutShortcutKeys()
       await expectWarmProfileKeepsItsShortcutChoices()
+    })
+
+    it('keeps a push-to-talk key saved after a failed reconcile and uploads it on the retry', async () => {
+      await warmRosterProfileWithoutShortcutKeys()
+      mockFetch(() => ({ ok: false, status: 503, json: () => Promise.resolve({}) }))
+      expect(await reconcileNewDurableKeys()).toBe(-1)
+
+      // The user picks a key on Settings > Voice while the sync is off.
+      const chosen = '{"enabled":true,"mode":"hybrid","binding":{"code":"ControlRight"},"holdMs":500}'
+      savePttConfig(JSON.parse(chosen) as Parameters<typeof savePttConfig>[0])
+      expect(localStorage.getItem(PTT_STORAGE_KEY)).toBe(chosen)
+
+      const host = '{"enabled":true,"mode":"hybrid","binding":{"code":"ShiftRight"},"holdMs":500}'
+      mockFetch(() => okJson({ prefs: { [PTT_STORAGE_KEY]: host } }))
+      expect(await reconcileNewDurableKeys()).toBe(0)
+      expect(localStorage.getItem(PTT_STORAGE_KEY)).toBe(chosen)
+
+      // The choice goes up once, then the mark is spent.
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(lastPatch(spy)).toEqual({ [PTT_STORAGE_KEY]: chosen })
+      const spy2 = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(spy2).not.toHaveBeenCalled()
+    })
+
+    it('a value set without the save seam after a failed reconcile still lets the host win', async () => {
+      await warmRosterProfileWithoutShortcutKeys()
+      mockFetch(() => ({ ok: false, status: 503, json: () => Promise.resolve({}) }))
+      expect(await reconcileNewDurableKeys()).toBe(-1)
+      localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
+      mockFetch(() => okJson({ prefs: { [SHORTCUTS_ENABLED_KEY]: '1' } }))
+      expect(await reconcileNewDurableKeys()).toBe(1)
+      expect(localStorage.getItem(SHORTCUTS_ENABLED_KEY)).toBe('1')
+    })
+
+    it('a settings import drops the explicit-save marks so the imported host copy wins', async () => {
+      startUiPrefsSync()
+      expect(savePrefExplicitly(PTT_STORAGE_KEY, '{}')).toBe(true)
+      expect(localStorage.getItem(PLAIN_DIRTY)).not.toBeNull()
+      mockFetch(() => okJson({ prefs: {} }))
+      expect(await adoptHostUiPrefsOnNextLoad()).toBe(true)
+      expect(localStorage.getItem(PLAIN_DIRTY)).toBeNull()
+    })
+
+    it('stores a key outside the allowlist without a mark', () => {
+      expect(savePrefExplicitly('mc-mic-device-id', 'abc')).toBe(true)
+      expect(localStorage.getItem('mc-mic-device-id')).toBe('abc')
+      expect(localStorage.getItem(PLAIN_DIRTY)).toBeNull()
+    })
+
+    it('stores nothing when the mark is refused', () => {
+      localStorage.setItem(PTT_STORAGE_KEY, 'OLD')
+      const realSet = Storage.prototype.setItem
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k, v) {
+        if (k === PLAIN_DIRTY) throw new DOMException('full', 'QuotaExceededError')
+        return realSet.call(this, k, v)
+      })
+      expect(savePrefExplicitly(PTT_STORAGE_KEY, 'NEW')).toBe(false)
+      vi.restoreAllMocks()
+      expect(localStorage.getItem(PTT_STORAGE_KEY)).toBe('OLD')
+      expect(localStorage.getItem(PLAIN_DIRTY)).toBeNull()
+    })
+
+    it('rolls the mark back when the value is refused', () => {
+      expect(savePrefExplicitly(SHORTCUTS_ENABLED_KEY, '0')).toBe(true)
+      const marks = localStorage.getItem(PLAIN_DIRTY)
+      const realSet = Storage.prototype.setItem
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k, v) {
+        if (k === PTT_STORAGE_KEY) throw new DOMException('full', 'QuotaExceededError')
+        return realSet.call(this, k, v)
+      })
+      expect(savePrefExplicitly(PTT_STORAGE_KEY, 'NEW')).toBe(false)
+      vi.restoreAllMocks()
+      expect(localStorage.getItem(PTT_STORAGE_KEY)).toBeNull()
+      expect(localStorage.getItem(PLAIN_DIRTY)).toBe(marks)
     })
 
     it('a warm origin adopts the host value for a new key it never held', async () => {

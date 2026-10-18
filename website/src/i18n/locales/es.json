@@ -8709,7 +8709,8 @@
       "browser_reserved_hint": "En una pestaña del navegador, el navegador captura estos atajos antes de que la página los reciba — las alternativas funcionan en todas partes; la aplicación de escritorio admite ambas.",
       "desktop_app_only": "Solo aplicación de escritorio",
       "panel_toggles": "Alternar paneles",
-      "unset": "Sin definir"
+      "unset": "Sin definir",
+      "save_refused": "No se guardó: el almacenamiento del navegador está lleno. Libera espacio e inténtalo de nuevo."
     },
     "sidePanelLayout": {
       "more_below": "Más abajo",
@@ -17764,7 +17765,8 @@
         "backend_encoder_only": "{{name}} — parcialmente acelerado, el paso de texto va en la CPU",
         "backend_cpu_only": "Se ejecuta en CPU: este build no tiene GPU",
         "last_recognition_value": "{{duration}} para el texto final, {{rtf}}× la duración del audio",
-        "decode_threads_value": "{{n}} hilos de decodificación"
+        "decode_threads_value": "{{n}} hilos de decodificación",
+        "ptt_save_refused": "No se guardó: el almacenamiento del navegador está lleno. Libera espacio e inténtalo de nuevo."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "más arriba. A diferencia de Slack, el Bot Framework no tiene un modo solo de salida.",
