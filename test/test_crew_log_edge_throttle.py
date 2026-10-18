@@ -175,6 +175,7 @@ async def test_same_model_retry_success_no_fallback_logged(tmp_path, monkeypatch
     """
     monkeypatch.setattr("kiro_crew.dashboard.chat_runner._agent_fallback_chain", lambda: ())
     monkeypatch.setattr("kiro_crew.dashboard.chat_runner.transient_retry_delay", lambda _a: 0.0)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner.throttle_retry_delay", lambda _a: 0.0)
 
     call_count = 0
 
@@ -223,6 +224,7 @@ async def test_fallback_swap_records_model_selected(tmp_path, monkeypatch):
         lambda: ("fallback-model-A", "auto"),
     )
     monkeypatch.setattr("kiro_crew.dashboard.chat_runner.transient_retry_delay", lambda _a: 0.0)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner.throttle_retry_delay", lambda _a: 0.0)
 
     async def _fake_advance(client, fb_state, *, surface="", log_suffix=""):
         if fb_state.pos < len(fb_state.chain):
@@ -277,6 +279,7 @@ async def test_empty_fallback_chain_fails_with_no_cost(tmp_path, monkeypatch):
     """
     monkeypatch.setattr("kiro_crew.dashboard.chat_runner._agent_fallback_chain", lambda: ())
     monkeypatch.setattr("kiro_crew.dashboard.chat_runner.transient_retry_delay", lambda _a: 0.0)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner.throttle_retry_delay", lambda _a: 0.0)
 
     async def _stream():
         raise _transient_error()
@@ -355,6 +358,7 @@ async def test_repeated_fallback_swaps_produce_multiple_model_selected(tmp_path,
         lambda: candidates,
     )
     monkeypatch.setattr("kiro_crew.dashboard.chat_runner.transient_retry_delay", lambda _a: 0.0)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner.throttle_retry_delay", lambda _a: 0.0)
 
     async def _fake_advance(client, fb_state, *, surface="", log_suffix=""):
         if fb_state.pos < len(fb_state.chain):

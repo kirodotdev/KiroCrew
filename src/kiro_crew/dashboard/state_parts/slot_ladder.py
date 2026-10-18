@@ -34,8 +34,8 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_synthesis_inflight``, ``_synthesis_recheck``, ``_synthesis_rechecks``,
 ``_tool_stall_exhausted_emitted``, ``_tool_stall_retries``, ``_transient_5xx_retries``,
 ``_transient_ladder_started``, ``_turn_channel_narrowed``, ``_turn_channel_origin``,
-``_turn_user_sent``, ``_wait_contested``, ``_wait_last_ping``, ``_wait_state``,
-``_wait_steer_baseline``, ``replays``.
+``_turn_retries``, ``_turn_user_sent``, ``_wait_contested``, ``_wait_last_ping``,
+``_wait_state``, ``_wait_steer_baseline``, ``replays``.
 """
 
 from __future__ import annotations
@@ -114,6 +114,12 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # start of the network-drop recovery window. Re-stamped whenever the
     # ladder starts from zero, so it needs no reset of its own.
     self._transient_ladder_started = 0.0
+    # Re-sends of the current user turn after a pre-output transient error,
+    # by mechanism (``throttle`` / ``transient_5xx``). A plain count, not a
+    # budget: _transient_5xx_retries is rewound by a fallback swap, this is
+    # not. Read by the landed turn's footer stats and recovery telemetry;
+    # emptied when a top-level turn that is not a recovery starts.
+    self._turn_retries = {}
     # L1 gateway-capacity retries: how many times THIS cycle waited out an
     # infrastructure refusal of a tool call (the ladder owns the budget; this
     # is the slot-visible count the health panel classifies as recovering).

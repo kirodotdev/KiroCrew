@@ -653,6 +653,13 @@ class AcpSessionProvider(LLMProvider):
         finally:
             await self._end_shared_turn(claim)
 
+    async def discard_unanswered_prompt(self) -> bool:
+        """Forward to the session handle: rewind KAS history to before the last prompt."""
+        discard = getattr(self._handle, "discard_unanswered_prompt", None)
+        if discard is None:
+            return False
+        return await self._guarded(discard()) is True
+
     async def steer(self, message: str) -> bool:
         """Forward a mid-turn steer to the session handle (kiro _session/steer).
 

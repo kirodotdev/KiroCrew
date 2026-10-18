@@ -122,18 +122,23 @@ def _attach_owned_turn_stats(
     model: str,
     ttft_ms: int,
     reply_mids: list[str] | None,
+    retries: int = 0,
 ) -> bool:
     """``_attach_turn_stats``, narrowed to rows the runner in flight appended.
 
     ``reply_mids`` is ``slot._turn_reply_mids``: a workflow or sub-agent result
     another writer appends into the window mid-turn is skipped, so it never
     takes this turn's figures. ``None`` keeps the plain boundary scan.
+    ``retries`` is how many times the user turn was re-sent after a pre-output
+    transient error (``slot._turn_retries``), recorded only when positive.
     """
     stats = turn_stats_meta(elapsed_ms, credits, cost_usd, model)
     if stats is None:
         return False
     if ttft_ms > 0:
         stats["ttft_ms"] = int(ttft_ms)
+    if retries > 0:
+        stats["retries"] = int(retries)
     boundary = max(0, turn_boundary)
     for m in reversed(slot.messages[boundary:]):
         if m.get("role") != "assistant":

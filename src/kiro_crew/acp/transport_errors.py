@@ -147,6 +147,11 @@ class AcpError(Exception):
         # formatter rewrites a dispatch failure into the generic 5xx prose.
         # ``None`` means unclassified: readers fall back to the message text.
         self.connection_failure: bool | None = None
+        # Whether a TRANSIENT failure is the provider throttling (429, "Too many
+        # requests", ThrottlingException), decided from the raw frame like
+        # ``connection_failure``. The interactive ladder waits longer for it and
+        # rewinds the failed prompt before re-sending. ``None`` means unclassified.
+        self.throttle: bool | None = None
         # Set by :func:`_raise_acp_error` when the frame's ``data`` names
         # ``errorKind: cloud_credential_error``: the process cached credentials
         # it cannot reload, so the remedy is a fresh process, not a retry.
@@ -1805,6 +1810,9 @@ def _raise_acp_error(
     # transient verdict qualifies, so a terminal frame never becomes waitable.
     err.connection_failure = (
         bool(err.transient) and classify_provider_error(raw_data).kind == PROVIDER_ERROR_CONNECTION
+    )
+    err.throttle = (
+        bool(err.transient) and classify_provider_error(raw_data).kind == PROVIDER_ERROR_THROTTLE
     )
     # Tag deterministic STRUCTURAL rejections so self-driving callers can
     # stop resending identical context. Keep the classifier data-scoped: a phrase

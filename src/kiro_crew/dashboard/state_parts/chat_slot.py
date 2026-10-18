@@ -200,6 +200,7 @@ class _ChatSlot:
         "_tool_stall_exhausted_emitted",
         "_transient_5xx_retries",
         "_transient_ladder_started",
+        "_turn_retries",
         "_infra_retries",
         "_fallback_candidate_idx",
         "_fallback_walked",
@@ -503,6 +504,7 @@ class _ChatSlot:
     _tool_stall_exhausted_emitted: bool
     _transient_5xx_retries: int
     _transient_ladder_started: float
+    _turn_retries: dict[str, int]
     _infra_retries: int
     _fallback_candidate_idx: int
     _fallback_walked: list[str]

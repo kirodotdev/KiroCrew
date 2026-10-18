@@ -75,6 +75,8 @@ KIND_STEERING_QUEUED = "steering_queued"
 KIND_STEERING_INJECTED = "steering_injected"
 KIND_STEERING_CLEARED = "steering_cleared"
 KIND_AGENT_SUBTASK = "agent-subtask"  # hyphenated, not underscored
+# Sent once per prompt, right after KAS stores the user row: names that row's id.
+KIND_USER_MESSAGE_ID_ASSIGNED = "user_message_id_assigned"
 
 # Summarization maps to Crew's compaction status; steering to mid-turn steer.
 SUMMARIZATION_KINDS = frozenset(
@@ -95,7 +97,11 @@ FIELD_PIPELINE = "pipeline"
 FIELD_STAGES = "stages"
 FIELD_UNIT = "unit"
 FIELD_USAGE = "usage"
+FIELD_USER_MESSAGE_ID = "userMessageId"
 UNIT_CREDIT = "credit"
+# ``initialize``'s ``agentCapabilities._meta.kiro`` flag that announces the
+# ``_kiro/checkpoint/*`` verbs (``METHOD_KAS_CHECKPOINT_REVERT``).
+CAPABILITY_CHECKPOINTS = "checkpoints"
 
 
 def kiro_meta(update: dict) -> dict[str, Any] | None:

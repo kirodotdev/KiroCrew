@@ -31,8 +31,10 @@ if TYPE_CHECKING:
         RefusalInfo,
         ResetCause,
         _ChatSlot,
+        _emit_recovery_outcome,
         _has_user_queued_followup,
         _remove_queued_by_id,
+        acp_error_is_throttle,
         append_and_surface,
         build_recovery_requeue,
         effective_session_key,
@@ -340,6 +342,41 @@ def _shared_dependency_delay(exc: BaseException, local_delay: float, *, slot_key
     if shared is not None:
         delay = max(delay, shared - time.time())
     return max(0.0, delay)
+
+
+async def _discard_unanswered_attempt(client: Any, slot_key: str) -> None:
+    """Drop a throttled attempt's prompt from the backend's history before re-sending it.
+
+    Without it KAS keeps the failed copy and the model reads every attempt as
+    another queued request. Fail-soft: when the backend cannot or will not, the
+    retry still goes out and the failed copy stays.
+    """
+    try:
+        discarded = await client.discard_unanswered_prompt() is True
+    except Exception:
+        logger.info("Could not drop the throttled prompt in slot %s", slot_key, exc_info=True)
+        return
+    if discarded:
+        logger.info("Dropped the throttled prompt from slot %s before re-sending it", slot_key)
+
+
+def _count_turn_retry(slot: _ChatSlot, exc: BaseException) -> None:
+    """Count one re-send of the current user turn under its mechanism."""
+    mechanism = "throttle" if acp_error_is_throttle(exc) else "transient_5xx"
+    retries = getattr(slot, "_turn_retries", None)
+    if not isinstance(retries, dict):
+        retries = {}
+    retries[mechanism] = retries.get(mechanism, 0) + 1
+    slot._turn_retries = retries
+
+
+def _turn_retry_outcomes(slot: _ChatSlot, outcome: str) -> None:
+    """Emit one recovery-outcome point per retry mechanism the turn used, then forget them."""
+    retries = getattr(slot, "_turn_retries", None)
+    if isinstance(retries, dict):
+        for mechanism, attempts in retries.items():
+            _emit_recovery_outcome(mechanism, outcome, attempts)
+    slot._turn_retries = {}
 
 
 def _should_suppress_requeue(slot) -> bool:

@@ -24,7 +24,7 @@ from kiro_crew import name_grant, permission_floor
 from kiro_crew.acp.client import AcpError, AcpPromptBusy, advertised_model_ids
 from kiro_crew.acp.types import EVENT_STEER_CONSUMED, TurnUsage
 from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
-from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling_on
+from kiro_crew.agent_sdk.drivers.acp import provider_error_client, resolve_pin_spelling_on
 from kiro_crew.agent_sdk.drivers.acp_vocab import (
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TIMEOUT,
@@ -120,6 +120,10 @@ _TURN_BILLED_ATTR = "_kc_turn_billed"
 # does not. Kept separate from the prompt-busy budget above.
 _TRANSIENT_RETRIES = 3
 _TRANSIENT_DELAY = 2.0  # base seconds; exponential backoff + jitter
+# The interactive ladder's base for a throttle. KAS already retries a throttled
+# request for about 6 s inside one attempt (3 tries, 1 s then 2 s apart), so a
+# 2 s gap rarely outlasts the throttle window; one KAS attempt's length does.
+THROTTLE_RETRY_BASE_DELAY = 6.0
 
 # Per-process RNG for retry jitter, auto-seeded from os.urandom at import. The
 # entropy seed spreads jitter uniformly *across* processes/machines — so a
@@ -422,6 +426,16 @@ def transient_retry_delay(attempt: int) -> float:
     return base + _JITTER_RNG.random() * 0.25 * base
 
 
+def throttle_retry_delay(attempt: int) -> float:
+    """The :func:`transient_retry_delay` curve from :data:`THROTTLE_RETRY_BASE_DELAY`.
+
+    The interactive ladder's wait before re-sending a turn the provider throttled
+    (``acp_error_is_throttle``); every other transient keeps the 2 s base.
+    """
+    base = THROTTLE_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+    return base + _JITTER_RNG.random() * 0.25 * base
+
+
 # ── Network-drop recovery window (interactive turns) ──
 #
 # A dropped network path (Wi-Fi off and on, a VPN reconnect, a laptop waking up)
@@ -453,6 +467,24 @@ def acp_error_is_connection_failure(exc: BaseException) -> bool:
     return any(m in low for m in _CONNECTION_MARKERS) and not any(
         m in low for m in _PROVIDER_ANSWER_MARKERS
     )
+
+
+def acp_error_is_throttle(exc: BaseException) -> bool:
+    """True when *exc* is a transient failure because the provider throttled.
+
+    Prefers the structured ``AcpError.throttle`` verdict taken from the raw frame
+    at raise time, and falls back to the message text for an exception raised
+    without it. Never true for an error the transient classifier rejects.
+    """
+    if not acp_error_is_transient(exc):
+        return False
+    flag = getattr(exc, "throttle", None)
+    if isinstance(flag, bool):
+        return flag
+    client: Any = provider_error_client()
+    if client is None:
+        return False
+    return bool(client.classify_provider_error(str(exc)).kind == client.PROVIDER_ERROR_THROTTLE)
 
 
 def connection_recovery_open(

@@ -317,7 +317,9 @@ from kiro_crew.dashboard.chat_turn.recovery import (  # noqa: F401
     _COMPACTION_FAILED_RETRIES,
     COMPACT_REPLAY_PENDING_NOTICE,
     _answer_text_only,
+    _count_turn_retry,
     _current_turn_carries_image_ref,
+    _discard_unanswered_attempt,
     _drop_queued_replay,
     _drop_revoked_replays,
     _empty_auto_continue_enabled,
@@ -340,6 +342,7 @@ from kiro_crew.dashboard.chat_turn.recovery import (  # noqa: F401
     _shared_dependency_delay,
     _should_suppress_requeue,
     _terminal_error_meta,
+    _turn_retry_outcomes,
     refusal_card_text,
 )
 from kiro_crew.dashboard.chat_turn.segment_flush import (
@@ -613,6 +616,7 @@ from kiro_crew.llm_helpers import (  # noqa: F401
     _billing_stats,
     acp_error_is_connection_failure,
     acp_error_is_session_not_found,
+    acp_error_is_throttle,
     acp_error_is_transient,
     acp_error_needs_fresh_credentials,
     advance_fallback_candidate,
@@ -635,6 +639,7 @@ from kiro_crew.llm_helpers import (  # noqa: F401
     route_baseline_latch,
     run_bg_oneliner,
     slot_switch_session_lock,
+    throttle_retry_delay,
     transient_retry_delay,
     usage_has_billing,
 )
@@ -4520,6 +4525,9 @@ async def _run_chat(
         top_level=_prompt_depth == 0,
         recovery_turn=_synthetic_recovery_turn,
     )
+    # Same episode boundary for the re-send count: a recovery turn adds to it.
+    if _prompt_depth == 0 and not _synthetic_recovery_turn:
+        slot._turn_retries = {}
     # Set when a steer cut persists text quietly (no frame): that text becomes
     # visible only with the turn-end ``chat_done`` refresh, so the clock stops
     # there unless a later broadcast stops it first.
@@ -13887,6 +13895,7 @@ async def _run_chat(
                 model=_turn_model,
                 ttft_ms=_ttft_visible.ms,
                 reply_mids=_reply_mids if isinstance(_reply_mids, list) and _reply_mids else None,
+                retries=sum(slot._turn_retries.values()) if _prompt_depth == 0 else 0,
             )
             if _prompt_depth == 0 and _stats_attached:
                 slot._carried_ttft_clock = None
@@ -13963,6 +13972,8 @@ async def _run_chat(
                     )
                 if slot._tool_stall_retries > 0 and not slot._tool_stall_exhausted_emitted:
                     _emit_recovery_outcome("tool_stall", "recovered", slot._tool_stall_retries)
+                if _prompt_depth == 0:
+                    _turn_retry_outcomes(slot, "recovered")
             slot._empty_response_retries = 0
             slot._empty_episode_productive = False
             slot._prompt_busy_retries = 0
@@ -13974,6 +13985,8 @@ async def _run_chat(
             slot._tool_stall_exhausted_emitted = False
             slot._transient_5xx_retries = 0
             slot._infra_retries = 0
+            if _prompt_depth == 0:
+                slot._turn_retries = {}
             # Same evidence, same reason, for the streak of deaths that belonged
             # to a process this slot was sharing rather than to the slot itself:
             # a landed turn proves recovery worked, so the next shared death
@@ -14982,14 +14995,23 @@ async def _run_chat(
             # capped at CONNECTION_RETRY_MAX_DELAY, so a short outage resumes
             # the turn instead of ending it. Past the window it falls through to
             # the same branches as an exhausted provider-error ladder.
+            #
+            # A throttle waits on its own, longer curve (one KAS attempt is ~6s of
+            # the engine's own retries) and rewinds the failed prompt before the
+            # re-send, so the model reads one copy instead of one per attempt.
             if slot._transient_5xx_retries == 0:
                 slot._transient_ladder_started = time.monotonic()
             slot._transient_5xx_retries += 1
             _in_recovery_window = slot._transient_5xx_retries > TRANSIENT_RETRIES
+            _throttled = acp_error_is_throttle(exc)
             _base_delay = (
                 connection_retry_delay(slot._transient_5xx_retries)
                 if acp_error_is_connection_failure(exc)
-                else transient_retry_delay(slot._transient_5xx_retries)
+                else (
+                    throttle_retry_delay(slot._transient_5xx_retries)
+                    if _throttled
+                    else transient_retry_delay(slot._transient_5xx_retries)
+                )
             )
             # Local curve, floored by the dependency coordinator's shared
             # cooldown for this provider scope (one schedule per scope, RFC
@@ -15058,6 +15080,10 @@ async def _run_chat(
                         },
                     )
                 await _recovery_delay(_delay)
+                # The rewind awaits a KAS answer, so it runs BEFORE the Stop
+                # re-read below: a Stop landing during it still drops the re-send.
+                if _throttled and not (_should_suppress_requeue(slot) or _stop_pressed()):
+                    await _discard_unanswered_attempt(client, slot.key)
                 # Re-read the STOP signals after the multi-second backoff: the
                 # guard above ran before the wait, and a Stop pressed during it
                 # resolves while no prompt is active, so nothing downstream
@@ -15108,6 +15134,7 @@ async def _run_chat(
                     slot._fallback_candidate_idx = 0
                     slot._fallback_walked = []
                 else:
+                    _count_turn_retry(slot, exc)
                     _queue_recovery(
                         0,
                         message,
@@ -15188,6 +15215,11 @@ async def _run_chat(
             )
             slot._transient_5xx_retries = fallback_rewound_transient_budget()
             await asyncio.sleep(transient_retry_delay(1))
+            # The rewind runs before the Stop guard below, as on the same-model arm.
+            if acp_error_is_throttle(exc) and not (
+                _should_suppress_requeue(slot) or _stop_pressed()
+            ):
+                await _discard_unanswered_attempt(client, slot.key)
             # Stop guard AFTER the sleep: a Stop
             # pressed during this backoff resolves while no prompt is active,
             # so without this check the cancelled prompt would be requeued and
@@ -15218,6 +15250,7 @@ async def _run_chat(
                 # fail-closed re-check would destroy this fallback-model retry in
                 # every channel-linked or unattended session — exactly the
                 # long-running jobs most likely to hit throttle fallback.
+                _count_turn_retry(slot, exc)
                 _queue_recovery(
                     0,
                     message,
@@ -15898,6 +15931,8 @@ async def _run_chat(
                 # TRANSIENT_RETRIES. (_posttoken_retry_used needs no counterpart
                 # here: it is already refreshed at genuine-turn start.)
                 slot._transient_5xx_retries = 0
+                if _prompt_depth == 0:
+                    _turn_retry_outcomes(slot, "exhausted")
                 # Same NO-REQUEUE-exit rule for the L1 gateway-capacity count:
                 # without it a cycle whose L1 continuation died here leaves the
                 # slot reading "recovering" on the health panel until some later

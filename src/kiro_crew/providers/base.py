@@ -598,6 +598,15 @@ class LLMProvider(ABC):
         provider with no steer extension (granted by opt-in, never inherited)."""
         return False
 
+    async def discard_unanswered_prompt(self) -> bool:
+        """Remove the last prompt, which got no answer, from the backend's history.
+
+        For a caller about to re-send it, so the model does not read the failed
+        copy beside the new one. True only when the backend confirmed it. Default
+        False: the backend keeps the failed copy.
+        """
+        return False
+
     @property
     def supports_steer(self) -> bool:
         """True when the provider implements mid-turn steer. Default False."""

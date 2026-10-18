@@ -813,6 +813,17 @@ class AcpProvider(LLMProvider):
         """True when the inner client can steer a deny notice into a refused turn."""
         return bool(getattr(self._client, "supports_refusal_steer", False))
 
+    async def discard_unanswered_prompt(self) -> bool:
+        """The inner client's rewind of an unanswered prompt; False when it has none.
+
+        Only the session provider (KAS through the shared runtime) carries one: a
+        dedicated ``AcpClient`` keeps the failed copy.
+        """
+        discard = getattr(self._client, "discard_unanswered_prompt", None)
+        if discard is None:
+            return False
+        return await discard() is True
+
     async def new_conversation(self) -> None:
         """Clean-slate reset on the SAME warm process (no cold start).
 

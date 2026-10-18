@@ -158,6 +158,7 @@ from kiro_crew.acp.types import (
     MAX_STEERING_TEXT_CHARS,
     METHOD_CANCEL,
     METHOD_COMMANDS_EXECUTE,
+    METHOD_KAS_CHECKPOINT_REVERT,
     METHOD_KAS_MCP_STATUS,
     METHOD_KAS_SESSION_COMPACT,
     METHOD_MCP_OAUTH_REQUEST,
@@ -1598,6 +1599,9 @@ class AcpSessionHandle:
         # already-current mode does not surface a spurious agent-switch echo
         # (kiro-cli only emits on a real _kiro.dev/agent/switched). None = unseen.
         self._last_kas_mode_id: str | None = None
+        # (turn ordinal, KAS row id) of the user row KAS stored for this handle's
+        # latest prompt; what :meth:`discard_unanswered_prompt` rewinds to.
+        self._kas_prompt_row: tuple[int, str] | None = None
         # KAS sub-agent roster keyed by agentSubtaskId. Each entry is shaped for
         # EVENT_SUBAGENT_LIST consumption by _native_subagent_sync in chat_runner.
         self._kas_subagent_roster: dict[str, dict[str, Any]] = {}
@@ -4025,6 +4029,36 @@ class AcpSessionHandle:
         kiro = meta.get("kiro") if isinstance(meta, dict) else None
         methods = kiro.get("extensionMethods") if isinstance(kiro, dict) else None
         return isinstance(methods, list) and METHOD_KAS_SESSION_COMPACT in methods
+
+    async def discard_unanswered_prompt(self) -> bool:
+        """Rewind KAS history to before this handle's last prompt; True when KAS did.
+
+        For a caller about to re-send a prompt that failed before any output:
+        without it KAS keeps the failed copy and the model reads both. Sends
+        nothing (False) when no row was recorded (only the KAS update branch
+        records one, so every other harness stops here), when the engine did not
+        announce checkpoints, when a turn is running, or when a later turn started
+        on this handle since that prompt, so another prompt's row is never the one
+        rewound. One shot.
+        """
+        row = self._kas_prompt_row
+        self._kas_prompt_row = None
+        caps = getattr(self._runtime, "_agent_capabilities", None)
+        meta = caps.get("_meta") if isinstance(caps, dict) else None
+        kiro = meta.get("kiro") if isinstance(meta, dict) else None
+        if not (
+            row is not None
+            and row[0] == self._prompt_starts
+            and self._turn_done.is_set()
+            and isinstance(kiro, dict)
+            and kiro.get(kas_wire.CAPABILITY_CHECKPOINTS) is True
+        ):
+            return False
+        req_id = await self._send_awaited(
+            METHOD_KAS_CHECKPOINT_REVERT, {"sessionId": self._session_id, "messageId": row[1]}
+        )
+        result = getattr(await self._wait_for_response(req_id, timeout=10.0), "result", None)
+        return isinstance(result, dict) and result.get("success") is True
 
     def _settle_kas_compaction(self, result: Any) -> AcpEvent | None:
         """The compaction status a KAS compaction answer still owes, or None.
@@ -7204,6 +7238,11 @@ class AcpSessionHandle:
         if kiro is None:
             return []
         kind = kiro.get(kas_wire.FIELD_KIND)
+        if kind == kas_wire.KIND_USER_MESSAGE_ID_ASSIGNED:
+            row_id = kiro.get(kas_wire.FIELD_USER_MESSAGE_ID)
+            if isinstance(row_id, str) and row_id:
+                self._kas_prompt_row = (self._prompt_starts, row_id)
+            return []
         if kind == kas_wire.KIND_CONTEXT_USAGE:
             self._apply_kas_context_pct(kiro.get(kas_wire.FIELD_USAGE_PERCENTAGE))
             return []
@@ -7260,6 +7299,10 @@ class AcpSessionHandle:
             # backend-echoed steer text — redact before it reaches any surface.
             if kind == kas_wire.KIND_STEERING_CLEARED:
                 return [AcpEvent(kind=EVENT_STEER_CLEARED)]
+            if kind == kas_wire.KIND_STEERING_INJECTED:
+                # The steer now sits in history after the prompt; a rewind to
+                # the prompt would drop it too.
+                self._kas_prompt_row = None
             text = redact_text(str(kiro.get(kas_wire.FIELD_CONTENT) or ""))
             steer_kind = (
                 EVENT_STEER_CONSUMED

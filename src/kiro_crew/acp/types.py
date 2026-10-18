@@ -198,6 +198,16 @@ METHOD_KAS_SESSION_DELETE = "_kiro/session/delete"
 #: summary and the context does not shrink. Advertised in ``initialize``'s
 #: ``_meta.kiro.extensionMethods`` and forwarded by kiro-cli's relay.
 METHOD_KAS_SESSION_COMPACT = "_kiro/session/compact"
+#: KAS's in-place rewind to before a user message. A REQUEST with
+#: ``{"sessionId", "messageId"}`` (the id KAS reports for a prompt as a
+#: ``user_message_id_assigned`` session_info_update), answered
+#: ``{"success": bool, "affectedFiles": [...], "totalFiles": int}``. It appends a
+#: ``tombstone`` row that hides that message and everything after it from the
+#: model, and restores files that write tools in the hidden range changed. Refused
+#: while a turn runs. Not listed in ``extensionMethods``: the engine announces it
+#: as ``_meta.kiro.checkpoints``. Driven live against kiro-cli 2.32.0's relay: the
+#: model's next answer left the reverted prompt out.
+METHOD_KAS_CHECKPOINT_REVERT = "_kiro/checkpoint/revertMultiple"
 #: The STANDARD ACP evict verb, for a host that implements it. codex-acp does: it
 #: drops the session from its local map and unsubscribes the Codex thread, so the
 #: sessionId stops answering while the thread's own record survives on the Codex

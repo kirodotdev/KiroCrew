@@ -92,6 +92,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "context_window_tokens": ("function", False, "fa6cfecd5574", "acp"),
     "cwd": ("property", False, "bb418bb7ece8", "acp"),
     "defer_replay_sid_promotion": ("property", False, "a6632a57e602", "acp"),
+    "discard_unanswered_prompt": ("function", True, "a6632a57e602", "acp"),
     "disown_work_dir": ("function", False, "b60c5fea256e", "acp_lifecycle"),
     "exit_code": ("property", False, "8dc15be1dfda", "acp"),
     "get_valid_effort_levels": ("function", False, "6806e867af4e", "acp"),
