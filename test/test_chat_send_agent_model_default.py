@@ -18,6 +18,7 @@ also pin the persist-vs-not decision: the resolved default is NOT written into
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
 import unittest.mock
@@ -26,7 +27,7 @@ from pathlib import Path
 import pytest
 from test_chat_runner_coverage import _complete, _drive, _runner_state, _set_stream, _slot
 
-from kiro_crew.acp.types import EVENT_TEXT_CHUNK
+from kiro_crew.acp.types import EVENT_TEXT_CHUNK, TurnUsage
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_runner import _eager_spawn
@@ -52,12 +53,14 @@ def _load_config(tmp_path: Path, data: dict) -> KiroCrewConfig:
         return KiroCrewConfig.load()
 
 
-def _config(tmp_path: Path, *, crew_model: str = "") -> KiroCrewConfig:
-    """Global ``agent.model`` set; the crews pin nothing unless *crew_model*."""
+def _config(
+    tmp_path: Path, *, crew_model: str = "", default: str = GLOBAL_DEFAULT
+) -> KiroCrewConfig:
+    """Global ``agent.model`` is *default*; the crews pin nothing unless *crew_model*."""
     cfg = _load_config(
         tmp_path,
         {
-            "agent": {"model": GLOBAL_DEFAULT, "provider": "acp"},
+            "agent": {"model": default, "provider": "acp"},
             "agents": {
                 "default": {"kiro_agent": "kirocrew", "memory_store": "default"},
                 "researcher": {"kiro_agent": "kirocrew", "model": crew_model},
@@ -499,8 +502,8 @@ class TestLiveSessionFollowsDefaultChange:
         assert created and created[0].endswith(f"· {SLOT_PIN}")
 
     @pytest.mark.asyncio
-    async def test_no_resolved_default_still_backfills(self, tmp_path, _runner_config):
-        """With every tier deferring to the backend, the served model is kept."""
+    async def test_no_resolved_default_does_not_pin_either(self, tmp_path, _runner_config):
+        """With every tier deferring to the backend, the served model stays off the slot."""
         _runner_config(_config(tmp_path))
         state, client = _turn_state(tmp_path)
         client.client._model = SLOT_PIN
@@ -511,7 +514,7 @@ class TestLiveSessionFollowsDefaultChange:
         ):
             await _drive(state, slot)
 
-        assert slot.model == SLOT_PIN
+        assert slot.model == ""
 
     @pytest.mark.asyncio
     async def test_two_turns_across_a_default_change(self, tmp_path, _runner_config):
@@ -560,6 +563,145 @@ class TestLiveSessionFollowsDefaultChange:
         await _drive(state, slot)
 
         assert "dashboard:chat-cov-1" not in self._reset_keys(state)
+
+
+class TestInheritingSlotStaysUnpinned:
+    """A slot with no slot pin and no crew pin stays unpinned after any turn.
+
+    ``slot.model`` is persisted and re-sent as a ``set_model`` override on every
+    resume, so writing the served model there would freeze the chat on it, and the
+    chat would stop following the Settings default. That holds whatever the default
+    is, Auto included: neither backfill site may write such a slot. A pin of any
+    kind is the owner's choice and is never touched.
+    """
+
+    #: What the backend says it served: a concrete id that is none of the pins.
+    SERVED = "claude-fable-5"
+
+    @staticmethod
+    def _no_installed_pin():
+        """The installed agent file names no model, so Auto defers to the backend."""
+        return unittest.mock.patch.object(
+            KiroCrewConfig, "_resolve_agent_model", staticmethod(lambda: "")
+        )
+
+    @staticmethod
+    def _learns_mid_turn(client, model: str) -> None:
+        """The backend names *model* only once the prompt runs, on a billed turn.
+
+        Only the late backfill site, just before the usage row, can see it then.
+        """
+        client.client._model = ""
+
+        async def _events():
+            client.client._model = model
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi")
+            yield _complete(usage=TurnUsage(input_tokens=3, output_tokens=4))
+
+        client.stream = unittest.mock.MagicMock(side_effect=lambda *_a, **_k: _events())
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _usage_rows():
+        """Capture the model each usage row is written with, instead of writing it."""
+        rows: list[str] = []
+
+        async def _persist(_slot_key, model, _event, **_kwargs):
+            rows.append(model)
+
+        with unittest.mock.patch.object(chat_runner, "persist_token_record_async", _persist):
+            yield rows
+
+    @pytest.mark.asyncio
+    async def test_an_auto_chat_follows_a_later_concrete_default(self, tmp_path, _runner_config):
+        """Default Auto, one turn, then a concrete default: the next session runs it."""
+        _runner_config(_config(tmp_path, default="auto"))
+        state, client = _turn_state(tmp_path)
+        client.client._model = self.SERVED
+        slot = _slot()
+
+        with self._no_installed_pin():
+            await _drive(state, slot)
+
+        assert slot.model == ""
+
+        # The default becomes concrete; the next allocation must not be handed
+        # the model the Auto turn was served.
+        state.sessions.get_or_create.reset_mock()
+        _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi"), _complete()])
+        with unittest.mock.patch(
+            "kiro_crew.config.loader.resolve_effective_model", return_value=GLOBAL_DEFAULT
+        ):
+            await _drive(state, slot)
+
+        assert _requested(state) is None
+        assert _session_model(state) == GLOBAL_DEFAULT
+        assert slot.model == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("default", ["auto", GLOBAL_DEFAULT])
+    async def test_a_model_learned_mid_turn_does_not_pin_either(
+        self, tmp_path, _runner_config, default
+    ):
+        """The late site: the usage row names the served model, the slot stays unpinned."""
+        _runner_config(_config(tmp_path, default=default))
+        state, client = _turn_state(tmp_path)
+        self._learns_mid_turn(client, self.SERVED)
+        slot = _slot()
+
+        with self._no_installed_pin(), self._usage_rows() as rows:
+            await _drive(state, slot)
+
+        assert rows == [self.SERVED]
+        assert slot.model == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("agent", "pin"),
+        [("", SLOT_PIN), ("researcher", CREW_PIN)],
+        ids=["explicit-pick", "crewmate-child"],
+    )
+    async def test_a_pinned_slot_keeps_its_pin(self, tmp_path, _runner_config, agent, pin):
+        """A user's pick, or the crewmate model a child chat was created with, survives."""
+        cfg = _config(tmp_path, crew_model=CREW_PIN, default="auto")
+        _runner_config(cfg)
+        if agent:
+            _grant_researcher(cfg)
+        state, client = _turn_state(tmp_path)
+        client.client._model = self.SERVED
+        slot = _slot()
+        slot.agent = agent
+        slot.model = pin
+
+        with self._no_installed_pin():
+            await _drive(state, slot)
+
+        assert _requested(state) == pin
+        assert slot.model == pin
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mid_turn", [False, True], ids=["pre-turn-site", "late-site"])
+    async def test_a_crew_pin_still_backfills_an_empty_slot(
+        self, tmp_path, _runner_config, mid_turn
+    ):
+        """Out of this rule: a slot that pins nothing but whose crewmate does."""
+        cfg = _config(tmp_path, crew_model=CREW_PIN, default="auto")
+        _runner_config(cfg)
+        _grant_researcher(cfg)
+        state, client = _turn_state(tmp_path)
+        if mid_turn:
+            self._learns_mid_turn(client, self.SERVED)
+        else:
+            client.client._model = self.SERVED
+        slot = _slot()
+        slot.agent = "researcher"
+
+        with self._no_installed_pin(), self._usage_rows():
+            await _drive(state, slot)
+
+        assert _requested(state) == CREW_PIN
+        # The served id, not the pin: only the backfill writes what was served.
+        assert slot.model == self.SERVED
 
 
 class TestInheritedDefaultThreadBoundary:

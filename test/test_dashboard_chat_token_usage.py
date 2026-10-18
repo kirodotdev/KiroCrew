@@ -291,7 +291,8 @@ class TestTokenPersistenceBackfill:
     async def test_late_backfill_populates_model_for_cc_session(self, tmp_path, monkeypatch):
         """When slot.model is empty at EVENT_COMPLETE but the provider has
         learned its model (CC init event), persist_token_record receives the
-        provider model and slot.model is updated.
+        provider model. slot.model stays empty: the slot pins nothing and its
+        crew pins nothing, so it inherits and the served model is not a pin.
 
         The mock starts with an empty ``inner._model`` so the *early* backfill
         at the top of _run_chat finds nothing, then mutates ``inner._model``
@@ -370,8 +371,9 @@ class TestTokenPersistenceBackfill:
         # The backfill canonicalizes the provider's model via from_provider_id so
         # it matches the canonical-keyed dropdown: 'opus' alias -> 'opus-4.8-1m'.
         assert model == "opus-4.8-1m", "late backfill should populate canonical model"
-        # slot.model should also be updated so subsequent turns reuse it
-        assert slot.model == "opus-4.8-1m"
+        # An inheriting slot is recorded but never pinned, so it keeps following
+        # the default.
+        assert slot.model == ""
 
     @pytest.mark.asyncio
     async def test_auto_sentinel_reaches_persistence_fallback(self, tmp_path, monkeypatch):

@@ -6972,13 +6972,13 @@ async def _run_chat(
             resumed=resumed,
             _is_refusal_retry_turn=_is_refusal_retry_turn,
             _synthetic_recovery_turn=_synthetic_recovery_turn,
-            inherited_model=default_model,
+            crew_model=agent_model,
         )
         # Append-only the session's log (flag-gated, fail-soft). Written HERE rather
         # than at session acquisition, because `model` has to name what the session
         # RUNS on and that is not settled until the verdict above: a withheld pin is
-        # kept on the slot, and an unpinned slot's pin is backfilled, both after the
-        # handle exists. This is still ahead of every turn entry, and the announce
+        # kept on the slot, and an unpinned slot learns its served model, both after
+        # the handle exists. This is still ahead of every turn entry, and the announce
         # decision itself is latched inside the emitter, so a retry after the header
         # landed cannot skip it.
         #
@@ -12388,8 +12388,9 @@ async def _run_chat(
                         _canonical = _backfill_canonical_model(client, _provider_name)
                         if _canonical:
                             # Same rule as the pre-turn backfill: a slot that
-                            # inherits a default is recorded but never pinned.
-                            if not default_model:
+                            # inherits (no crew pin either) is recorded but
+                            # never pinned.
+                            if agent_model:
                                 slot.model = _canonical
                             _record_model = _canonical
                     await asyncio.shield(
@@ -15483,8 +15484,9 @@ async def _run_chat(
                             # reasons the one-shot flag alone does not cover:
                             #   - The spawn backfill (see the ``not slot.model and not
                             #     slot._active_fallback_model`` guard) writes the served
-                            #     model into an unpinned ``auto`` slot on the replay
-                            #     turn. Without ``_active_fallback_model`` set, that
+                            #     model into an empty ``slot.model`` whose crewmate
+                            #     pins a model, on the replay turn. Without
+                            #     ``_active_fallback_model`` set, that
                             #     backfill turns this TEMPORARY substitution into a
                             #     PERSISTENT pin that survives a reload — a durable
                             #     change to the user's slot caused by a transient

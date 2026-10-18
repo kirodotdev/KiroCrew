@@ -466,10 +466,11 @@ its own once the cache refreshes with a list that carries it.
   across turns. When neither the slot nor its crewmate pins a model, the turn asks
   `get_or_create` for no model and the allocation resolves the ladder itself; the turn
   reads the same resolver over the session manager's config
-  (`_inherited_default_model`) only to know which default the slot inherits. While that default is
-  non-empty, neither `slot.model` backfill site writes the provider's served model
-  into the slot; the composer chip reads it from `served_model`. The backfill still
-  runs when every tier defers to the backend. A settings change to the default
+  (`_inherited_default_model`) only to know which default the slot inherits. Neither
+  `slot.model` backfill site writes the provider's served model into such a slot,
+  whatever that default is, Auto included (every tier deferring to the backend); the
+  composer chip reads it from `served_model`. The backfill writes only a slot whose
+  crewmate pins a model. A settings change to the default
   rebuilds the provider factory but leaves live sessions alone, so the next turn of an
   inheriting slot compares its live session's allocation stamp
   (`allocation_requested_model`) with the default it inherits now. When they differ

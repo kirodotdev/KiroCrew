@@ -654,7 +654,7 @@ async def _settle_session_model(
     resumed: bool,
     _is_refusal_retry_turn: bool,
     _synthetic_recovery_turn: bool,
-    inherited_model: str = "",
+    crew_model: str = "",
 ) -> bool:
     """Settle the model a turn's session runs on before anything model-dependent.
 
@@ -662,8 +662,9 @@ async def _settle_session_model(
     from the provider, records the pinned-model verdict a fresh or reloaded session
     gives and the model it serves. True when the session withheld the slot's pin.
 
-    ``inherited_model`` is the default an unpinned slot inherits this turn
-    (``_inherited_default_model``); while it is set, nothing is backfilled.
+    ``crew_model`` is the crew's own pin for this turn. Only a slot that pins
+    nothing itself but has a crew pin is backfilled; a slot with neither pin
+    inherits the default, whatever it resolves to, and is never written.
     """
     # ── Refusal-fallback restore (agent.refusal_fallback_model) ──
     # A refusal retry swapped the live session for ONE message; at the
@@ -708,14 +709,15 @@ async def _settle_session_model(
         # hazard on the replay turn (the restore above skips that turn by
         # design, so the provider still reports the refusal candidate
         # here). An unpinned slot simply stays unpinned for the
-        # fallback's duration; the next non-fallback turn backfills as
-        # before.
+        # fallback's duration; the next non-fallback turn applies the
+        # rule below.
         #
-        # A slot that inherits a resolved default is not written either:
-        # storing the served model would turn "inherit" into a pin, and the
-        # slot would stop following a later change to the default. The chip
-        # reads the served model through ``_sync_served_model`` instead.
-        if not inherited_model:
+        # A slot that inherits (no crew pin either) is not written, whatever
+        # the default resolves to, Auto included: storing the served model
+        # would turn "inherit" into a pin, and the slot would stop following
+        # a later change to the default. The chip reads the served model
+        # through ``_sync_served_model`` instead.
+        if crew_model:
             slot.model = _backfill_canonical_model(client, provider_name) or slot.model
     elif is_new or resumed:
         # Record the verdict for BOTH answers, not only the withhold: it is
