@@ -643,9 +643,11 @@ class TestAcpClientBackendSelection:
             ),
             patch("kiro_crew.acp.client.known_kiro_cli_dirs", side_effect=_spy_dirs),
         ):
-            with pytest.raises(AcpError, match="not found"):
+            with pytest.raises(AcpError, match="not found") as raised:
                 await client._spawn()
 
+        # The structural tag the chat row reads to offer the feature-request form.
+        assert raised.value.kiro_cli_missing is True
         assert injected in os.environ["PATH"], "the test never actually changed PATH"
         # THE DEFECT: the directory set reported to the user must not be derived
         # from an environment the search never saw. Red-before, where the

@@ -35,7 +35,7 @@ import { fileURLToPath } from 'node:url'
 delete process.env.LD_LIBRARY_PATH
 
 const { openTranscriptHarness } = await import('./lib/transcript-harness.mjs')
-const { json } = await import('./lib/boot-api.mjs')
+const { routeFeatureRequestSlot, sceneChecks } = await import('./lib/feature-request-scene.mjs')
 
 const args = process.argv.slice(2)
 const FLAGS = new Set(['--expect', '--dist'])
@@ -87,44 +87,10 @@ async function main() {
   })
   const { page } = h
 
-  // Registered AFTER the harness's catch-all, so it is consulted first: the
-  // pill's three requests get real receipts, everything else falls through.
-  // The new slot's detail tracks what the gateway would have PERSISTED by then
-  // (the user row on send, the error row once the turn fails): the app re-reads
-  // the slot when the turn ends, and that read replaces the transcript.
-  let created = false
-  const frRows = []
-  await page.route('**/api/**', async route => {
-    const req = route.request()
-    const path = new URL(req.url()).pathname
-    if (path === '/api/chat/slots' && req.method() === 'POST') { created = true; return json(route, featureRequestSlot) }
-    if (path === '/api/chat/slots' && req.method() === 'GET') return json(route, created ? [featureRequestSlot, existingSlot] : [existingSlot])
-    if (path === `/api/chat/slots/${FR_SLOT}/context`) return json(route, { ok: true })
-    if (path.startsWith(`/api/chat/slots/${FR_SLOT}`)) return json(route, { ...emptyDetail, total: frRows.length, messages: frRows })
-    // The send: a 2xx JSON receipt with `ok`, which is what "the server accepted
-    // the turn" looks like on the wire. The refusal comes later, in the turn.
-    // The persisted row keeps the send's `meta` verbatim (`sendId` and the
-    // flow's `featureRequest` stamp included), as `chat_handlers.py` does: the
-    // stamp is how the transcript recognises the feature-request turn after the
-    // chat_done refresh replaces the optimistic bubble, and after a reload.
-    if (path === '/api/chat' && req.method() === 'POST') {
-      const body = req.postDataJSON()
-      frRows.push({ role: 'user', ts: Date.now() / 1000, content: body.message, meta: { ...(body.meta || {}), mid: 'u-1' } })
-      return json(route, { ok: true })
-    }
-    return route.fallback()
-  })
-
-  let failures = 0
-  const assert = (label, ok) => {
-    console.log(`${ok ? 'PASS' : 'FAIL'}: ${label}`)
-    if (!ok) failures += 1
-  }
-  const shot = async name => {
-    const file = `${OUT}/${EXPECT}-${name}.png`
-    await page.screenshot({ path: file })
-    console.log('wrote', file)
-  }
+  // The pill's three requests get real receipts (see the helper for what the
+  // persisted rows track and why the send's `meta` is kept verbatim).
+  const frRows = await routeFeatureRequestSlot(page, { existingSlot, featureRequestSlot, detail: emptyDetail })
+  const { assert, shot, failures } = sceneChecks(page, OUT, EXPECT)
 
   await h.load('dark', { selector: 'textarea[data-composer-input]', settle: 900 })
 
@@ -293,8 +259,8 @@ async function main() {
   }
 
   await h.close()
-  console.log(failures === 0 ? 'ALL ASSERTIONS PASSED' : `${failures} ASSERTION(S) FAILED`)
-  process.exit(failures === 0 ? 0 : 1)
+  console.log(failures() === 0 ? 'ALL ASSERTIONS PASSED' : `${failures()} ASSERTION(S) FAILED`)
+  process.exit(failures() === 0 ? 0 : 1)
 }
 
 main().catch(err => { console.error(err); process.exit(1) })

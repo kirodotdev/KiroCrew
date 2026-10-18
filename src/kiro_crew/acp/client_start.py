@@ -239,13 +239,15 @@ async def _spawn(self: AcpClient) -> None:
             # Pure function of the arguments, so this reproduces exactly the
             # set the resolution above walked. Still off-loop: it expands the
             # inherited PATH.
-            raise AcpError(
+            missing = AcpError(
                 await asyncio.to_thread(
                     kiro_cli_not_found_message,
                     environ=spawn_environ,
                     home=spawn_home,
                 )
             )
+            missing.kiro_cli_missing = True
+            raise missing
         # Self-heal (B): ensure the managed default agent file exists before
         # this --agent spawn, so kiro-cli registers the mode and step 4's
         # set_mode succeeds instead of faulting "Mode not found". Best-effort,

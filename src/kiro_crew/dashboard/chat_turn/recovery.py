@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         AUTH_REQUIRED_KIND,
         CONTEXT_OVERFLOW_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
+        KIRO_CLI_MISSING_KIND,
         MODEL_UNENTITLED_KIND,
         SESSION_START_FAILED_KIND,
         SUBAGENT_COMPLETION_KIND,
@@ -250,7 +251,7 @@ async def _note_cycle_failure(
 def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     """Row-level kind for a terminal ACP error, or None for a plain error row.
 
-    Six structural tags, read here without looking at the prose. Four are set
+    Seven structural tags, read here without looking at the prose. Four are set
     by ``_raise_acp_error`` from the raw frame: a model-entitlement rejection
     (``rejected_model`` / ``advertised``), a sign-in failure (``auth_required``),
     a spent plan allowance (``usage_limit``) and a context overflow
@@ -266,6 +267,9 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     ``agent_unavailable``, is set by the session start that finds no definition
     for its agent (``AcpAgentUnavailable``); its row is the app-agent refusal,
     because a retry finds the same missing definition and the prose names the fix.
+    The seventh, ``kiro_cli_missing``, is set where the kiro-cli binary is not
+    found at spawn (``AcpKiroCliMissing`` on the runtime path, ``AcpError`` on the
+    dedicated client); its row lets a feature-request chat offer the form.
     """
     unentitled = _model_unentitled_meta(exc)
     if unentitled is not None:
@@ -280,6 +284,8 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
         return {"kind": SESSION_START_FAILED_KIND}
     if getattr(exc, "agent_unavailable", False) is True:
         return {"kind": APP_AGENT_REFUSED_KIND}
+    if getattr(exc, "kiro_cli_missing", False) is True:
+        return {"kind": KIRO_CLI_MISSING_KIND}
     return None
 
 

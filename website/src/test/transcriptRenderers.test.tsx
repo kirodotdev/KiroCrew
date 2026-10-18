@@ -396,6 +396,50 @@ describe('a usage-limit error row that refuses the seeded feature-request turn o
   })
 })
 
+describe('a missing kiro-cli under the seeded feature-request turn offers the issue form too', () => {
+  // "Request a Feature" is an agent turn, so a host with no kiro-cli refuses it
+  // at session start. The backend tags that refusal `kiro_cli_missing`, and the
+  // row offers the same form the usage-limit refusal does.
+  const seedRow = msg('user', { content: 'I’d like to request a feature!', meta: { sendId: 's-fr-seed', mid: 'u-1', [FEATURE_REQUEST_ROW_META_KEY]: true } })
+  const missingRow = msg('error', {
+    content: '❌ kiro-cli not found (searched 3 directories: /a, /b, /c). Install it from https://kiro.dev/cli/, or point KIROCREW_KIRO_BIN at the binary.',
+    meta: { kind: 'kiro_cli_missing' },
+  })
+  const rows = [seedRow, missingRow]
+  const recoverable = { slot: 's1', continuable: true, interrupted: true, onContinue: () => undefined }
+
+  it('hands the card the form route with the kiro-cli copy and withholds Continue', () => {
+    const el = render(missingRow, recoverable, { index: 1, messages: rows }) as ReactElement
+    expect(el.props.featureRequestFormUrl).toBe(FEATURE_REQUEST_FORM_URL)
+    expect(el.props.kiroCliMissing).toBe(true)
+    expect(el.props.onContinue).toBeUndefined()
+    expect(featureRequestRefusalIsNewest(rows)).toBe(true)
+    expect(newestErrorOwnsRecovery(rows)).toBe(true)
+  })
+
+  it('reads the kind from the rebuilt carrier too', () => {
+    const rebuilt = msg('error', { content: missingRow.content, kind: 'kiro_cli_missing' })
+    const el = render(rebuilt, { slot: 's1' }, { index: 1, messages: [seedRow, rebuilt] }) as ReactElement
+    expect(el.props.featureRequestFormUrl).toBe(FEATURE_REQUEST_FORM_URL)
+  })
+
+  it('keeps the usage-limit copy on a usage-limit row', () => {
+    const limitRow = msg('error', { content: '❌ The monthly usage limit has been reached.', meta: { kind: 'usage_limit' } })
+    const el = render(limitRow, recoverable, { index: 1, messages: [seedRow, limitRow] }) as ReactElement
+    expect(el.props.featureRequestFormUrl).toBe(FEATURE_REQUEST_FORM_URL)
+    expect(el.props.kiroCliMissing).toBe(false)
+  })
+
+  it('leaves the row of an ordinary chat alone: no form, Resume kept', () => {
+    const typed = msg('user', { content: 'hello', meta: { sendId: 's-typed', mid: 'u-1' } })
+    const el = render(missingRow, recoverable, { index: 1, messages: [typed, missingRow] }) as ReactElement
+    expect(el.props.featureRequestFormUrl).toBeUndefined()
+    expect(el.props.kiroCliMissing).toBeUndefined()
+    expect(el.props.onContinue).toBeTypeOf('function')
+    expect(newestErrorOwnsRecovery([typed, missingRow])).toBe(false)
+  })
+})
+
 describe('a session start that failed twice in a row swaps Resume for the restart remedy', () => {
   const TIMEOUT = 'Request session/new timed out after 90s (4/4 session-injected MCP server(s) reported)'
   const failed = () => msg('error', { content: TIMEOUT, meta: { kind: 'session_start_failed' } })

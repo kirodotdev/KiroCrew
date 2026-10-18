@@ -95,6 +95,16 @@ const APP_AGENT_REFUSED_KIND = 'app_agent_refused'
 export const isAppAgentRefused = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
   m.kind === APP_AGENT_REFUSED_KIND || (m.meta as { kind?: string } | undefined)?.kind === APP_AGENT_REFUSED_KIND
 
+/** Row kind the backend stamps on the terminal error a session start leaves
+ *  when kiro-cli is not installed (`chat_utils.KIRO_CLI_MISSING_KIND`).
+ *  The prose names the install fix. A feature-request chat offers the
+ *  repository's form on this row, since that action is an agent turn and no
+ *  agent can start. Same two carriers as above. */
+const KIRO_CLI_MISSING_KIND = 'kiro_cli_missing'
+
+export const isKiroCliMissing = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
+  m.kind === KIRO_CLI_MISSING_KIND || (m.meta as { kind?: string } | undefined)?.kind === KIRO_CLI_MISSING_KIND
+
 /** Consecutive tagged session-start failures at which the card stops offering
  *  Resume and the server refuses the re-run (`session_start_repeat`). Two, not
  *  one: a single timed-out start is host weather and the first Resume is the
@@ -260,6 +270,13 @@ export interface ErrorCardProps {
    * an ordinary chat has no form to offer and keeps today's card.
    */
   featureRequestFormUrl?: string
+  /**
+   * Set beside `featureRequestFormUrl` when the row is a `kiro_cli_missing`
+   * start failure rather than a spent allowance: the same form is offered, and
+   * only the hint and the link label change, since the usage-limit copy (no
+   * monthly usage spent) does not describe a host with no kiro-cli.
+   */
+  kiroCliMissing?: boolean
   /**
    * The fix affordance for a `materialization_changed` row: open this crew
    * member's Capabilities pane, where the changed agent file is reviewed and
@@ -512,6 +529,7 @@ export const ErrorCard = memo(function ErrorCard({
   onOpenSignIn,
   unentitledElsewhere,
   featureRequestFormUrl,
+  kiroCliMissing,
   sessionStartRepeat,
   onRestartGateway,
   onOpenCapabilities,
@@ -544,7 +562,7 @@ export const ErrorCard = memo(function ErrorCard({
           {content}
         </div>
         <div className="text-[12px] leading-5 text-muted" data-testid="error-card-feature-request-hint">
-          {i18nT('pages.chat.errorCard.feature_request_form_hint')}
+          {i18nT(kiroCliMissing ? 'pages.chat.errorCard.feature_request_form_cli_missing_hint' : 'pages.chat.errorCard.feature_request_form_hint')}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <a
@@ -555,7 +573,7 @@ export const ErrorCard = memo(function ErrorCard({
             data-testid="error-card-feature-request-form"
           >
             <ExternalLink size={12} className="lucide-inline shrink-0" aria-hidden="true" />
-            {i18nT('pages.chat.errorCard.feature_request_form')}
+            {i18nT(kiroCliMissing ? 'pages.chat.errorCard.feature_request_form_cli_missing' : 'pages.chat.errorCard.feature_request_form')}
           </a>
         </div>
       </div>

@@ -11510,6 +11510,8 @@
         "sign_in_hint": "Ouvrez Paramètres → Aperçu → Connexion Kiro, reconnectez-vous, puis renvoyez votre message.",
         "feature_request_form": "Ouvrir le formulaire GitHub (ne consomme pas de quota mensuel)",
         "feature_request_form_hint": "Ton quota mensuel est épuisé — dépose plutôt ta demande sur GitHub avec ce formulaire. Ce formulaire contourne l’agent : il ouvre le formulaire d’issue GitHub que tu remplis toi-même et ne consomme rien de ton quota mensuel.",
+        "feature_request_form_cli_missing": "Déposer la demande sur GitHub",
+        "feature_request_form_cli_missing_hint": "Kiro ne peut pas répondre car kiro-cli n’est pas installé sur cet ordinateur. Dépose plutôt ta demande sur GitHub : le formulaire s’ouvre dans un nouvel onglet, et il te faut un compte GitHub.",
         "session_start_repeat_hint": "La session de l’agent n’a pas pu démarrer plusieurs fois de suite ; reprendre ne ferait que relancer le même démarrage. Redémarre le gateway depuis un terminal avec {{command}}, puis renvoie ton message.",
         "capabilities_changed": "Le fichier d’agent personnalisé de ce coéquipier a changé en dehors de Customize, donc les nouvelles discussions ne peuvent pas démarrer. Ouvre Customize, vérifie et enregistre la modification, puis démarre une nouvelle discussion.",
         "open_capabilities": "Ouvrir Customize",

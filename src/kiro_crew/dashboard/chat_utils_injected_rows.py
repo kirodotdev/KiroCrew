@@ -282,6 +282,16 @@ CONTEXT_OVERFLOW_KIND = "context_overflow"
 #: prose names the fix.
 APP_AGENT_REFUSED_KIND = "app_agent_refused"
 
+#: Row-level kind for the terminal `error` row a session start produces when the
+#: kiro-cli binary is not installed (the ``kiro_cli_missing`` tag both ACP
+#: exception families carry, set where ``kiro_cli_not_found_message`` is
+#: raised). The prose names the fix (install it, or set KIROCREW_KIRO_BIN). The
+#: kind exists for the same reason as USAGE_LIMIT_KIND: the header's "Request a
+#: Feature" action is an agent turn, so on a host with no kiro-cli it dead-ended,
+#: and the frontend offers the repository's feature-request form on this row
+#: instead. Decided from the exception's tag, never from the prose.
+KIRO_CLI_MISSING_KIND = "kiro_cli_missing"
+
 #: Structural queue-entry kinds for system injections.  Classification by kind
 #: tag — set at enqueue time — is unforgeable: a user typing the same prefix
 #: text will not have the kind tag and will correctly classify as plain input.

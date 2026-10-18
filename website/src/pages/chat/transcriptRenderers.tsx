@@ -39,7 +39,7 @@ import ConversationCard, { CARD_ROLE } from '../../cards/ConversationCard'
 import RecoveryCard, { opensTurn, resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import SkillLoadCard, { isSkillLoadRow } from './SkillLoadCard'
-import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, isAppAgentRefused, isAuthRequired, isCapabilitiesChanged, isContextOverflow, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, sessionStartFailureStreak, type FreshSessionState } from './ErrorCard'
+import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, isAppAgentRefused, isAuthRequired, isCapabilitiesChanged, isContextOverflow, isKiroCliMissing, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, sessionStartFailureStreak, type FreshSessionState } from './ErrorCard'
 import { FEATURE_REQUEST_FORM_URL, isFeatureRequestRow } from '../../prompts/featureRequest'
 import NoticeCard from './NoticeCard'
 import { resolveTransientNotice } from './transientNotice'
@@ -222,8 +222,9 @@ export function isFeatureRequestRefusal(messages: readonly ChatMessage[], index:
 }
 
 /** True when the composer's Resume would replay the feature-request refusal:
- *  the newest error row is a `usage_limit` row that `isFeatureRequestRefusal`
- *  claims, and neither an assistant row nor a turn opener (`opensTurn`) follows
+ *  the newest error row is a `usage_limit` or `kiro_cli_missing` row that
+ *  `isFeatureRequestRefusal` claims, and neither an assistant row nor a turn
+ *  opener (`opensTurn`) follows
  *  it (a later turn is the composer's business, not this row's).
  *  `newestErrorOwnsRecovery` reads it to suppress the composer's Resume and its
  *  "press Resume" hint beside a card that has just withheld Resume for the same
@@ -235,7 +236,15 @@ export function featureRequestRefusalIsNewest(messages: readonly ChatMessage[]):
     const row = messages[j]
     if (row.role === 'assistant' || opensTurn(row)) return false
   }
-  return isUsageLimit(messages[idx]) && isFeatureRequestRefusal(messages, idx)
+  return offersFeatureRequestForm(messages[idx]) && isFeatureRequestRefusal(messages, idx)
+}
+
+/** True for the error kinds where a feature-request turn cannot run at all, so
+ *  its row offers the repository's form instead of Resume: a spent allowance
+ *  (`usage_limit`) and a kiro-cli that is not installed (`kiro_cli_missing`).
+ *  The card and the composer's Resume gate both read this, so they agree. */
+function offersFeatureRequestForm(m: ChatMessage): boolean {
+  return isUsageLimit(m) || isKiroCliMissing(m)
 }
 
 /** True when the transcript's newest state is a session start that failed
@@ -632,7 +641,7 @@ export function createTranscriptRenderers(
         // today's card, Continue included. The route is a constant of the flow,
         // never read from the row: the stamp only selects it.
         const featureRequestFormUrl =
-          isUsageLimit(m) && isFeatureRequestRefusal(ctx.messages, ctx.index) ? FEATURE_REQUEST_FORM_URL : undefined
+          offersFeatureRequestForm(m) && isFeatureRequestRefusal(ctx.messages, ctx.index) ? FEATURE_REQUEST_FORM_URL : undefined
         const newest = ctx.index === lastErrorIndex(ctx.messages)
         // The same session start failed twice in a row (Resume between them
         // re-issued it): a third press would fail the same way, and the server
@@ -670,6 +679,7 @@ export function createTranscriptRenderers(
             onOpenSignIn={authRequired ? o.onOpenSignIn : undefined}
             unentitledElsewhere={unentitled}
             featureRequestFormUrl={featureRequestFormUrl}
+            kiroCliMissing={featureRequestFormUrl ? isKiroCliMissing(m) : undefined}
             onOpenCapabilities={openCapabilities}
             onOpenTurnLimit={isTurnTimeout(m) ? o.onOpenTurnLimit : undefined}
             turnLimitSlot={isTurnTimeout(m) ? o.slot : undefined}

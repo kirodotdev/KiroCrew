@@ -247,3 +247,26 @@ def test_terminal_error_meta_lets_the_actionable_kinds_outrank_a_start_failure()
     e.session_start_failed = True
     e.auth_required = True
     assert _terminal_error_meta(e) == {"kind": AUTH_REQUIRED_KIND}
+
+
+# ---- the missing kiro-cli tag ------------------------------------------------
+
+
+def test_terminal_error_meta_reads_the_kiro_cli_missing_tag_on_both_families():
+    # A host with no kiro-cli refuses every session start. Both exception
+    # families carry the tag, so the row is the same kind whichever path spawned,
+    # and the feature-request chat can offer its form instead of a dead end.
+    from kiro_crew.acp.kiro_cli_missing import AcpKiroCliMissing
+    from kiro_crew.acp.session_handle import AcpRuntimeError
+    from kiro_crew.dashboard.chat_runner import _terminal_error_meta
+    from kiro_crew.dashboard.chat_utils import KIRO_CLI_MISSING_KIND
+
+    assert _terminal_error_meta(AcpKiroCliMissing("kiro-cli not found")) == {
+        "kind": KIRO_CLI_MISSING_KIND
+    }
+    assert _terminal_error_meta(AcpRuntimeError("kiro-cli not found")) is None
+
+    client_side = AcpError("kiro-cli not found")
+    assert _terminal_error_meta(client_side) is None  # untagged: prose alone decides nothing
+    client_side.kiro_cli_missing = True
+    assert _terminal_error_meta(client_side) == {"kind": KIRO_CLI_MISSING_KIND}

@@ -131,6 +131,11 @@ class AcpError(Exception):
         # fact with ``getattr`` and both halves must spell it the same way. Only
         # the raise sites that know the method set it True.
         self.session_start_failed: bool = False
+        # Whether the kiro-cli binary was not found, so no process was spawned.
+        # The twin of ``AcpKiroCliMissing.kiro_cli_missing`` on the runtime
+        # path, read with ``getattr`` for the same reason as the tag above. Only
+        # the dedicated client's not-found raise sets it True.
+        self.kiro_cli_missing: bool = False
         # Narrow structural subtype used by the dashboard to distinguish a bad
         # current attachment from an unsupported image retained in native
         # history. Set only from the raw provider data field.

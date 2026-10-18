@@ -11510,6 +11510,8 @@
         "sign_in_hint": "Abra Configurações → Visão geral → Login do Kiro, entre novamente e reenvie sua mensagem.",
         "feature_request_form": "Abrir o formulário do GitHub (não consome uso mensal)",
         "feature_request_form_hint": "Seu uso mensal acabou — envie sua sugestão no GitHub por este formulário em vez disso. Este formulário dispensa o agente: ele abre o formulário de issue do GitHub para você preencher e não consome nada do seu uso mensal.",
+        "feature_request_form_cli_missing": "Enviar a solicitação no GitHub",
+        "feature_request_form_cli_missing_hint": "O Kiro não pode responder porque o kiro-cli não está instalado neste computador. Envie sua solicitação no GitHub: o formulário abre em uma nova aba, e você precisa de uma conta no GitHub.",
         "session_start_repeat_hint": "A sessão do agente falhou ao iniciar mais de uma vez seguida, então retomar apenas repetiria o mesmo início. Reinicie o gateway em um terminal com {{command}} e reenvie sua mensagem.",
         "capabilities_changed": "O arquivo do agente personalizado deste companheiro mudou fora do Customize, então novos chats não podem começar. Abre o Customize, revê e guarda a alteração; depois inicia um novo chat.",
         "open_capabilities": "Abrir Customize",

@@ -9,7 +9,7 @@ const clipboard = vi.hoisted(() => ({ copyCode: vi.fn<(text: string) => Promise<
 vi.mock('../utils/clipboard', async (importOriginal) => ({ ...(await importOriginal<object>()), ...clipboard }))
 
 import { ApiError } from '../api/apiError'
-import { ErrorCard, isAuthRequired, isCapabilitiesChanged, isContextOverflow, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, retryProse, sessionStartFailureStreak } from '../pages/chat/ErrorCard'
+import { ErrorCard, isAuthRequired, isCapabilitiesChanged, isContextOverflow, isKiroCliMissing, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, retryProse, sessionStartFailureStreak } from '../pages/chat/ErrorCard'
 import type { ChatMessage } from '../types'
 import { FEATURE_REQUEST_FORM_URL } from '../prompts/featureRequest'
 import { i18nT } from '../i18n/t'
@@ -363,6 +363,27 @@ describe('ErrorCard — feature request refused for a usage limit', () => {
     // The icon beside the label keeps its size when the control shrinks.
     expect(link.querySelector('svg')?.getAttribute('class') ?? '').toMatch(/\bshrink-0\b/)
     cleanup()
+  })
+
+  it('says kiro-cli is missing, not that usage ran out, on a kiro-cli refusal', () => {
+    const missing = '❌ kiro-cli not found (searched 2 directories: /a, /b). Install it from https://kiro.dev/cli/, or point KIROCREW_KIRO_BIN at the binary.'
+    render(<ErrorCard content={missing} onContinue={() => undefined} featureRequestFormUrl={FEATURE_REQUEST_FORM_URL} kiroCliMissing />)
+    const card = screen.getByTestId('error-card')
+    expect(card).toHaveTextContent('kiro-cli not found')
+    expect(screen.getByTestId('error-card-feature-request-hint')).toHaveTextContent(i18nT('pages.chat.errorCard.feature_request_form_cli_missing_hint'))
+    expect(card).not.toHaveTextContent(i18nT('pages.chat.errorCard.feature_request_form_hint'))
+    const link = screen.getByTestId('error-card-feature-request-form')
+    expect(link).toHaveAttribute('href', FEATURE_REQUEST_FORM_URL)
+    expect(link).toHaveAccessibleName(i18nT('pages.chat.errorCard.feature_request_form_cli_missing'))
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+    cleanup()
+  })
+
+  it('recognises the kiro_cli_missing kind on both the live and the rebuilt carrier', () => {
+    expect(isKiroCliMissing({ kind: 'kiro_cli_missing' })).toBe(true)
+    expect(isKiroCliMissing({ meta: { kind: 'kiro_cli_missing' } })).toBe(true)
+    expect(isKiroCliMissing({ kind: 'usage_limit' })).toBe(false)
+    expect(isKiroCliMissing({})).toBe(false)
   })
 
   it('points at the repo\'s feature_request issue template, not a blank issue', () => {

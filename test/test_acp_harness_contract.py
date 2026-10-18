@@ -321,8 +321,12 @@ async def test_a_missing_binary_aborts_the_spawn(monkeypatch, tmp_path, backend)
     # no harness may return an argv for a binary that is not there -- and narrowing
     # it to one family would leave the next host's spawn unasserted.
     monkeypatch.setattr(client_mod, "_resolve_codex_acp_bin", lambda: (None, "/nowhere"))
-    with pytest.raises(AcpRuntimeError, match="not found"):
+    with pytest.raises(AcpRuntimeError, match="not found") as raised:
         await harness_for(backend).resolve_spawn(_ctx(tmp_path))
+    # The two kiro-cli hosts tag the refusal so the chat row can offer the
+    # feature-request form; codex-acp is a different binary whose install the
+    # operator chose, and its refusal stays an untagged error row.
+    assert getattr(raised.value, "kiro_cli_missing", False) is (backend != ACP_BACKEND_CODEX)
 
 
 def test_kiro_injects_the_api_key_and_kas_strips_it(monkeypatch):

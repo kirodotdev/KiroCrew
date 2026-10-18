@@ -81,11 +81,12 @@ class KiroHarness(MembershipHarness):
         # search, and importing it at module scope would make this package part
         # of that module's import cycle.
         from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn, kiro_cli_not_found_message
+        from kiro_crew.acp.kiro_cli_missing import AcpKiroCliMissing
         from kiro_crew.acp.session_handle import AcpRuntimeError
 
         kiro_bin = await _resolve_kiro_bin_for_spawn(environ=dict(ctx.environ), home=ctx.home)
         if not kiro_bin:
-            raise AcpRuntimeError(
+            raise AcpKiroCliMissing(
                 await asyncio.to_thread(
                     kiro_cli_not_found_message, environ=dict(ctx.environ), home=ctx.home
                 )
