@@ -38,6 +38,7 @@ from kiro_crew.hooks import (
     is_unc_shape,
     safe_read_file_bytes,
     safe_read_file_bytes_nolink,
+    screen_windows_linked_ancestors,
     unc_probe_allowed,
 )
 
@@ -65,7 +66,7 @@ from kiro_crew.imaging import (  # noqa: F401 -- constants re-exported, see comm
     downscale_image_block,
 )
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
-from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
+from kiro_crew.platform_compat import is_link_or_junction
 
 logger = logging.getLogger(__name__)
 
@@ -208,11 +209,16 @@ def build_prompt_blocks(
             # candidate is not itself UNC-shaped -- only the link's target is
             # -- and is_file()/stat() below resolve every ancestor, so the
             # probe itself would traverse the link and open the SMB
-            # connection. Windows-only for the same reason as the UNC gate:
-            # on POSIX stat-ing through a symlink is harmless. Reference
-            # wiring: dashboard/handlers/themes.py::_resolve_local_source.
-            if os.name == "nt" and first_linked_ancestor(path) is not None:
-                continue
+            # connection. The shared screen rewrites a local linked prefix to
+            # its vetted target and refuses UNC, device, drive-relative and
+            # `..`-climbing targets; every probe below runs on the REWRITTEN
+            # path. Windows-only for the same reason as the UNC gate: on
+            # POSIX stat-ing through a symlink is harmless.
+            if os.name == "nt":
+                screened = screen_windows_linked_ancestors(path)
+                if screened is None:
+                    continue
+                path = screened
             # The LEAF gets the junction-aware check the walk deliberately
             # excludes: is_file() below FOLLOWS a final-component link, so a
             # leaf symlink/junction targeting a UNC share is the same probe.

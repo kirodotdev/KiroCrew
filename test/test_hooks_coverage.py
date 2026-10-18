@@ -418,6 +418,7 @@ class TestValidateFilePath:
                 # the environment through this namespace; carry the real
                 # mapping so a stub miss cannot masquerade as a product bug.
                 environ=os.environ,
+                fspath=os.fspath,
                 readlink=os.readlink,
                 path=types.SimpleNamespace(
                     expanduser=path_module.expanduser,
@@ -525,6 +526,64 @@ class TestValidateFilePath:
         got = validate_file_path(raw)
         assert got is not None
         assert _same(got, str(doc))
+
+    def _stub_ancestor(self, monkeypatch, raw, linked, destination):
+        from kiro_crew import hooks as hooks_mod
+        from kiro_crew import platform_compat
+
+        self._windows(monkeypatch, path_module=ntpath)
+        monkeypatch.setattr(
+            platform_compat,
+            "first_linked_ancestor",
+            lambda path: linked if ntpath.normcase(path) == ntpath.normcase(raw) else None,
+        )
+        monkeypatch.setattr(hooks_mod.os, "readlink", lambda _p: destination)
+
+    def test_shared_ancestor_screen_rewrites_a_local_junction_and_keeps_the_leaf(self, monkeypatch):
+        """``screen_windows_linked_ancestors`` rewrites the linked prefix and
+        does NOT follow the leaf, even when the leaf is itself a link: the
+        caller's own leaf rule judges that."""
+        from kiro_crew import platform_compat
+        from kiro_crew.hooks import screen_windows_linked_ancestors
+
+        raw = r"C:\wbr\Tasks\shot.png"
+        self._stub_ancestor(monkeypatch, raw, r"C:\wbr\Tasks", r"\\?\C:\wbr\tasks-real")
+        monkeypatch.setattr(platform_compat, "is_link_or_junction", lambda _p: True)
+
+        got = screen_windows_linked_ancestors(raw)
+
+        assert got is not None
+        assert str(got) == r"C:\wbr\tasks-real\shot.png"
+
+    @pytest.mark.parametrize(
+        "destination",
+        [
+            r"\\evil-host\share",
+            r"\\?\UNC\evil-host\share",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1",
+            r"D:relative",
+            r"\rooted-no-drive",
+        ],
+    )
+    def test_shared_ancestor_screen_refuses_untrusted_targets(self, monkeypatch, destination):
+        """UNC share, device namespace, drive-relative and root-relative targets
+        are refused by the shared screen, so every caller refuses them."""
+        from kiro_crew.hooks import screen_windows_linked_ancestors
+
+        raw = r"C:\wbr\Tasks\shot.png"
+        self._stub_ancestor(monkeypatch, raw, r"C:\wbr\Tasks", destination)
+
+        assert screen_windows_linked_ancestors(raw) is None
+
+    def test_shared_ancestor_screen_refuses_a_suffix_climbing_out_of_the_link(self, monkeypatch):
+        """A child suffix that climbs back above the link with ``..`` is refused,
+        so the rewritten path can never land above the link's target."""
+        from kiro_crew.hooks import screen_windows_linked_ancestors
+
+        raw = r"C:\wbr\Tasks\..\secret.png"
+        self._stub_ancestor(monkeypatch, raw, r"C:\wbr\Tasks", r"\\?\C:\wbr\tasks-real")
+
+        assert screen_windows_linked_ancestors(raw) is None
 
     def test_a_leaf_link_aimed_at_unc_is_refused_before_realpath(self, tmp_path, monkeypatch):
         """A leaf FILE symlink is part of this function's contract (it

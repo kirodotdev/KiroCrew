@@ -192,6 +192,7 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
         _tier_app_own_server _tier_operator_grants _tier_read_only shell_rules
         gate_tier_problems
         """.split()),
+    "safe_reads": ("screen_windows_linked_ancestors",),
     "tool_identity": ("ToolCall",),
 }
 

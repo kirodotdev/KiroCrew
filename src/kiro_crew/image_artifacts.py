@@ -50,7 +50,11 @@ from kiro_crew.artifacts import (
     ArtifactValidationError,
     get_default_store,
 )
-from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+from kiro_crew.hooks import (
+    FileTooLargeError,
+    safe_read_file_bytes_nolink,
+    screen_windows_linked_ancestors,
+)
 from kiro_crew.messaging.outbound_files import (
     is_remote_destination,
     iter_image_destinations,
@@ -58,7 +62,7 @@ from kiro_crew.messaging.outbound_files import (
     strip_url_syntax,
     unescape_md,
 )
-from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
+from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.widget_slug import derive_widget_slug
 
@@ -122,13 +126,17 @@ def _local_file(raw_path: str) -> Path | None:
     # destination is not itself UNC-shaped -- only the link's target is --
     # and is_file()/is_sensitive_path below both resolve every ancestor, so
     # the probe itself would traverse the link and open the SMB connection.
-    # Same guard as the upload-side consumer (_inspect in outbound_files);
+    # The shared screen rewrites a local linked prefix to its vetted target
+    # and refuses UNC, device, drive-relative and `..`-climbing targets; the
+    # probes below run on the REWRITTEN path, never through the link. Same
+    # screen as the upload-side consumer (_inspect in outbound_files);
     # local_destination stays lexical by contract, so each consumer screens
     # its own probes. Windows-only: on POSIX stat-ing through a symlink is
-    # harmless. Reference wiring:
-    # dashboard/handlers/themes.py::_resolve_local_source.
-    if os.name == "nt" and first_linked_ancestor(p) is not None:
-        return None
+    # harmless.
+    if os.name == "nt":
+        p = screen_windows_linked_ancestors(p)
+        if p is None:
+            return None
     # The LEAF gets the junction-aware check the walk deliberately excludes:
     # is_file() below FOLLOWS a final-component link, so a leaf
     # symlink/junction targeting a UNC share is the same probe. lstat-based,

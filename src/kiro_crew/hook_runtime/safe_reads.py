@@ -12,6 +12,7 @@ import os
 import stat as _stat
 import tempfile
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -146,6 +147,28 @@ def validate_file_path(raw: str) -> str | None:
     """
     screened = screen_file_path(raw, classify_sensitive=False)
     return screened if isinstance(screened, str) else None
+
+
+def screen_windows_linked_ancestors(path: str | os.PathLike[str]) -> Path | None:
+    r"""*path* with every linked ANCESTOR rewritten to its vetted local target.
+
+    The shared ancestor screen for the Windows user-path gates
+    (``image_artifacts``, ``acp/prompt_blocks``, ``messaging/outbound_files``,
+    ``dashboard/handlers/themes``), the same screen :func:`screen_file_path`
+    uses. Each linked ancestor's own reparse data is read without traversing
+    it; a local drive-absolute target replaces the linked prefix and the
+    result is walked again. ``None`` means refuse: a UNC share the profile does
+    not allow, a device namespace, a drive- or root-relative target, a suffix
+    that climbs out of the link with ``..``, an unreadable link, a chain or
+    depth past the caps.
+
+    The leaf is NOT followed, so each caller keeps its own leaf-link rule and
+    applies it to the returned path. Probe the RETURNED path, never the input:
+    the input still names the link, and a link swapped after this screen would
+    be traversed. Callers gate on Windows; on POSIX they do not call it.
+    """
+    screened = _screen_windows_links(os.fspath(path), follow_leaf=False)
+    return None if screened is None else Path(screened)
 
 
 def safe_read_file(path: str) -> str:

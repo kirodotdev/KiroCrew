@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib.util
 import sys
 import types
 from pathlib import Path
@@ -823,9 +824,7 @@ class TestLinkedAncestorGate:
         f = tmp_path / "shot.png"
         f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
         self._windows(monkeypatch)
-        monkeypatch.setattr(
-            image_artifacts, "first_linked_ancestor", lambda _p: str(tmp_path)
-        )
+        monkeypatch.setattr(image_artifacts, "screen_windows_linked_ancestors", lambda _p: None)
 
         def _boom_is_file(self: Path) -> bool:  # pragma: no cover
             raise AssertionError("is_file ran before the ancestor walk")
@@ -845,7 +844,7 @@ class TestLinkedAncestorGate:
         f = tmp_path / "shot.png"
         f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
         self._windows(monkeypatch)
-        monkeypatch.setattr(image_artifacts, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(image_artifacts, "screen_windows_linked_ancestors", Path)
         assert image_artifacts._local_file(str(f)) == f
 
     def test_the_walk_is_not_consulted_on_posix(
@@ -860,7 +859,7 @@ class TestLinkedAncestorGate:
         def _boom(_p: object) -> None:  # pragma: no cover
             raise AssertionError("ancestor walk ran on POSIX")
 
-        monkeypatch.setattr(image_artifacts, "first_linked_ancestor", _boom)
+        monkeypatch.setattr(image_artifacts, "screen_windows_linked_ancestors", _boom)
         f = tmp_path / "shot.png"
         f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
         assert image_artifacts._local_file(str(f)) == f
@@ -873,7 +872,7 @@ class TestLinkedAncestorGate:
         f = tmp_path / "shot.png"
         f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
         self._windows(monkeypatch)
-        monkeypatch.setattr(image_artifacts, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(image_artifacts, "screen_windows_linked_ancestors", Path)
         monkeypatch.setattr(image_artifacts, "is_link_or_junction", lambda _p: True)
 
         def _boom_is_file(self: Path) -> bool:  # pragma: no cover
@@ -881,3 +880,87 @@ class TestLinkedAncestorGate:
 
         monkeypatch.setattr(Path, "is_file", _boom_is_file)
         assert image_artifacts._local_file(str(f)) is None
+
+    def test_the_probes_run_on_the_screened_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An admitted linked prefix is rewritten, and every probe and the
+        returned path use the REWRITTEN spelling, never the linked one."""
+        real = tmp_path / "target" / "shot.png"
+        real.parent.mkdir()
+        real.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        linked = tmp_path / "Tasks" / "shot.png"  # never created: never probed
+        self._windows(monkeypatch)
+        monkeypatch.setattr(
+            image_artifacts,
+            "screen_windows_linked_ancestors",
+            lambda p: real if Path(p) == linked else None,
+        )
+        assert image_artifacts._local_file(str(linked)) == real
+
+    def test_an_ancestor_link_aimed_at_unc_is_refused_before_any_probe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        r"""The real shared screen, with only the link metadata stubbed: an
+        ancestor whose reparse target is a UNC share is refused before
+        is_file() or is_sensitive_path could follow it."""
+        import os as _os
+
+        from kiro_crew import platform_compat
+
+        linked = tmp_path / "Tasks"
+        leaf = linked / "shot.png"
+        self._windows(monkeypatch)
+        monkeypatch.setattr(
+            platform_compat,
+            "first_linked_ancestor",
+            lambda p: str(linked) if Path(p) == leaf else None,
+        )
+        monkeypatch.setattr(_os, "readlink", lambda _p: r"\\evil-host\share")
+
+        def _boom_is_file(self: Path) -> bool:  # pragma: no cover
+            raise AssertionError("is_file ran before the ancestor screen")
+
+        def _boom_sensitive(_p: str) -> bool:  # pragma: no cover
+            raise AssertionError("is_sensitive_path ran before the ancestor screen")
+
+        monkeypatch.setattr(Path, "is_file", _boom_is_file)
+        monkeypatch.setattr(image_artifacts, "is_sensitive_path", _boom_sensitive)
+        assert image_artifacts._local_file(str(leaf)) is None
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("_winapi") is None, reason="directory junctions are Windows-only"
+)
+class TestRealLocalJunctionAncestor:
+    """No stubs: a junction made with ``_winapi.CreateJunction`` on this host."""
+
+    def test_a_file_below_a_local_junction_is_admitted_at_its_target(
+        self, tmp_path: Path
+    ) -> None:
+        import os as _os
+
+        import _winapi
+
+        target = tmp_path / "workflow-takeover-tasks"
+        target.mkdir()
+        real = target / "shot.png"
+        real.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        junction = tmp_path / "Tasks"
+        _winapi.CreateJunction(str(target), str(junction))
+
+        got = image_artifacts._local_file(str(junction / "shot.png"))
+
+        assert got is not None
+        assert _os.path.samefile(got, real)
+        # Rewritten to the target, not resolved through the junction's name.
+        assert junction.name not in got.parts
+
+    def test_a_junction_leaf_is_still_refused(self, tmp_path: Path) -> None:
+        import _winapi
+
+        target = tmp_path / "target"
+        target.mkdir()
+        junction = tmp_path / "shot.png"
+        _winapi.CreateJunction(str(target), str(junction))
+        assert image_artifacts._local_file(str(junction)) is None

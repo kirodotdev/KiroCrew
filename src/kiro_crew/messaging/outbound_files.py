@@ -106,12 +106,13 @@ from kiro_crew.hooks import (
     FileTooLargeError,
     is_unc_shape,
     safe_read_file_bytes_nolink,
+    screen_windows_linked_ancestors,
     unc_probe_allowed,
 )
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
 from kiro_crew.messaging.split import iter_fence_spans
 from kiro_crew.platform import binary_content_is_flagged
-from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
+from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -1005,27 +1006,36 @@ def _inspect(
         # before the is_symlink() lstat. Lives here, not in local_destination,
         # to keep that function's documented lexical-only contract intact.
         # Windows-only for the same reason as the UNC gate: on POSIX stat-ing
-        # through a symlink is harmless. The reply matches the leaf case on
-        # purpose -- which ancestor is a link is filesystem layout the caller
-        # supplied a path to guess at. Reference wiring:
-        # dashboard/handlers/themes.py::_resolve_local_source.
-        if os.name == "nt" and first_linked_ancestor(path) is not None:
-            return Rejection(dest, REASON_SYMLINK, "symlinks are not uploaded")
+        # through a symlink is harmless. The shared screen rewrites a local
+        # linked prefix to its vetted target and refuses UNC, device,
+        # drive-relative and `..`-climbing targets. Every check below runs on
+        # the REWRITTEN ``probe``, never through the link; ``path`` stays the
+        # provenance the caller wrote. The pinned read still holds the bytes
+        # to the approved root, so a junction leading out of it is refused
+        # there. The reply matches the leaf case on purpose -- which ancestor
+        # is a link is filesystem layout the caller supplied a path to guess
+        # at.
+        probe = path
+        if os.name == "nt":
+            screened = screen_windows_linked_ancestors(path)
+            if screened is None:
+                return Rejection(dest, REASON_SYMLINK, "symlinks are not uploaded")
+            probe = screened
         # The LEAF gets the junction-aware check the walk deliberately
         # excludes. The all-platform is_symlink() refusal below is lstat-only
         # (junction-blind) and runs after is_sensitive_path, whose candidate
         # forms resolve the leaf too -- so on Windows the leaf must be
         # screened here, before the first resolving call. lstat-based, never
         # follows.
-        if os.name == "nt" and is_link_or_junction(path):
+        if os.name == "nt" and is_link_or_junction(probe):
             return Rejection(dest, REASON_SYMLINK, "symlinks are not uploaded")
-        if is_sensitive_path(str(path)):
+        if is_sensitive_path(str(probe)):
             return Rejection(dest, REASON_SENSITIVE, "reading this location is blocked")
-        if path.is_symlink():
+        if probe.is_symlink():
             # Refused rather than resolved: the bytes below must come from the
             # inode this path names, not from wherever a link points now.
             return Rejection(dest, REASON_SYMLINK, "symlinks are not uploaded")
-        if not path.is_file():
+        if not probe.is_file():
             return Rejection(dest, REASON_MISSING, "no such file")
         try:
             # Pinned to the root that admitted the path, not to the authorized
@@ -1035,7 +1045,7 @@ def _inspect(
             # its canonical spelling, so the snapshot directory itself being a
             # link moves the file out of the pin rather than the pin to it.
             data = safe_read_file_bytes_nolink(
-                str(path),
+                str(probe),
                 within_root=root.read_root if root is not None else None,
                 within_root_is_canonical=root.read_root_is_canonical if root is not None else False,
                 max_bytes=read_cap,

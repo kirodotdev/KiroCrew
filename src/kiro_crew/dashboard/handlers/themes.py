@@ -70,12 +70,12 @@ from kiro_crew.hooks import (
     FileTooLargeError,
     is_unc_shape,
     safe_read_file_bytes_nolink,
+    screen_windows_linked_ancestors,
     unc_probe_allowed,
 )
 from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.platform_compat import (
     IS_WINDOWS,
-    first_linked_ancestor,
     is_link_or_junction,
     pin_directory,
     rmtree_force,
@@ -244,10 +244,15 @@ def _resolve_local_source(path_str: str) -> tuple[Path | None, str | None]:
         # real guard is `is_sensitive_path` on the RESOLVED path below -- so
         # gating this keeps macOS installs from `/tmp` and `/var` (symlinks to
         # `/private/*`) working, which an unconditional walk would refuse.
+        # The shared screen rewrites a local linked prefix to its vetted target
+        # and refuses UNC, device, drive-relative and `..`-climbing targets;
+        # every check below runs on the REWRITTEN path, never through the link.
         # The reply matches the leaf case on purpose: which ancestor is a link
         # is filesystem layout, and the caller supplied a path to guess at it.
-        if first_linked_ancestor(p) is not None:
+        screened = screen_windows_linked_ancestors(p)
+        if screened is None:
             return None, "local path must not be a symlink"
+        p = screened
     # Root junction: `Path.is_symlink()` is False for a Windows junction, so a
     # junction as the pack ROOT would pass an islink-only check and be resolved
     # through -- the same predicate gap the copy walk closes for subdirectories.

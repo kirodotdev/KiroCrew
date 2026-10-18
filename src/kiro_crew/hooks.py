@@ -160,6 +160,7 @@ from kiro_crew.hook_runtime.safe_reads import (  # noqa: F401
     safe_read_file_bytes_with_identity,
     safe_read_prefix,
     screen_file_path,
+    screen_windows_linked_ancestors,
     stat_identity,
     validate_file_path,
 )
@@ -1187,7 +1188,12 @@ _DRIVE_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _DRIVE_PREFIX_RE = re.compile(r"^[A-Za-z]:")
 
 
-def _screen_windows_links(target: str, read_errors: list[OSError] | None = None) -> str | None:
+def _screen_windows_links(
+    target: str,
+    read_errors: list[OSError] | None = None,
+    *,
+    follow_leaf: bool = True,
+) -> str | None:
     """Replace Windows links with screened targets before ``realpath``.
 
     ``first_linked_ancestor`` walks root-first without traversing a link.
@@ -1199,6 +1205,10 @@ def _screen_windows_links(target: str, read_errors: list[OSError] | None = None)
     target could not be read. The path is refused either way; the list tells a
     caller that this refusal comes from a read that did not complete, not from
     a target the screen does not accept.
+
+    ``follow_leaf=False`` rewrites linked ancestors only and returns as soon as
+    none is left, so a caller with its own leaf-link rule applies that rule to
+    the returned path's leaf. See :func:`screen_windows_linked_ancestors`.
     """
     for _ in range(_WINDOWS_LINK_CHAIN_MAX):
         if target.count("\\") + target.count("/") > _MAX_SCREENED_PATH_DEPTH:
@@ -1226,7 +1236,7 @@ def _screen_windows_links(target: str, read_errors: list[OSError] | None = None)
             target = os.path.normpath(os.path.join(normalized, suffix))
             continue
 
-        if not platform_compat.is_link_or_junction(target):
+        if not follow_leaf or not platform_compat.is_link_or_junction(target):
             return target
         try:
             raw_target = os.readlink(target)  # lgtm[py/path-injection]

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib.util
 import os
 import sys
 import tempfile
@@ -875,11 +876,12 @@ class TestOffLoop:
         assert len(result.rejections) == 1
 
 
-#: What a linked ANCESTOR under an admitted root is refused as. Windows screens
-#: every ancestor before the first resolving call (``first_linked_ancestor``) and
-#: answers ``REASON_SYMLINK``; POSIX lets the descriptor-pinned read catch it and
+#: What a linked ANCESTOR under an admitted root, aimed at a LOCAL directory
+#: outside it, is refused as. Windows rewrites a local linked prefix to its
+#: target (``screen_windows_linked_ancestors``) and POSIX resolves through it;
+#: on both the descriptor-pinned read then finds the bytes outside the root and
 #: answers ``REASON_UNREADABLE``. Either way the bytes stay on the host.
-_LINKED_ANCESTOR_REASON = REASON_SYMLINK if os.name == "nt" else REASON_UNREADABLE
+_LINKED_ANCESTOR_REASON = REASON_UNREADABLE
 
 
 class TestBrowserSnapshotRoot:
@@ -1076,7 +1078,7 @@ class TestLinkedAncestorGate:
 
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(module, "first_linked_ancestor", lambda _p: str(tmp_path))
+        monkeypatch.setattr(module, "screen_windows_linked_ancestors", lambda _p: None)
 
         def _boom_lstat(self: Path) -> bool:  # pragma: no cover
             raise AssertionError("is_symlink ran before the ancestor walk")
@@ -1103,7 +1105,7 @@ class TestLinkedAncestorGate:
 
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(module, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(module, "screen_windows_linked_ancestors", Path)
         got = module._inspect(str(p), p, "alt", 10_000, None, None)
         assert isinstance(got, OutboundFile)
         assert got.path == str(p)
@@ -1121,7 +1123,7 @@ class TestLinkedAncestorGate:
         def _boom(_p: object) -> None:  # pragma: no cover
             raise AssertionError("ancestor walk ran on POSIX")
 
-        monkeypatch.setattr(module, "first_linked_ancestor", _boom)
+        monkeypatch.setattr(module, "screen_windows_linked_ancestors", _boom)
         p = _png(tmp_path)
         got = module._inspect(str(p), p, "alt", 10_000, None, None)
         assert isinstance(got, OutboundFile)
@@ -1157,7 +1159,7 @@ class TestLinkedAncestorGate:
 
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(module, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(module, "screen_windows_linked_ancestors", Path)
         monkeypatch.setattr(module, "is_link_or_junction", lambda _p: True)
 
         def _boom_sensitive(_p: str) -> bool:  # pragma: no cover
@@ -1168,6 +1170,108 @@ class TestLinkedAncestorGate:
         assert isinstance(got, Rejection)
         assert got.reason == REASON_SYMLINK
         assert got.detail == "symlinks are not uploaded"
+
+    def test_the_probes_run_on_the_screened_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An admitted linked prefix is rewritten: every check and the read use
+        the REWRITTEN path (the linked one is never created, so only it can
+        supply the bytes), and the result keeps the caller's spelling as
+        provenance."""
+        from kiro_crew.messaging import outbound_files as module
+
+        real = _png(tmp_path / "target")
+        linked = tmp_path / "Tasks" / real.name
+        self._windows(monkeypatch)
+        monkeypatch.setattr(
+            module,
+            "screen_windows_linked_ancestors",
+            lambda p: real if Path(p) == linked else None,
+        )
+        got = module._inspect(str(linked), linked, "alt", 10_000, None, None)
+        assert isinstance(got, OutboundFile)
+        assert got.path == str(linked)
+        assert got.data == real.read_bytes()
+
+    def test_an_ancestor_link_aimed_at_unc_is_refused_before_any_resolving_call(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The real shared screen, with only the link metadata stubbed: an
+        ancestor whose reparse target is a UNC share is refused before the
+        sensitive-path check or the leaf lstat could follow it."""
+        from kiro_crew import platform_compat
+        from kiro_crew.messaging import outbound_files as module
+
+        linked = tmp_path / "Tasks"
+        leaf = linked / "shot.png"
+        self._windows(monkeypatch)
+        monkeypatch.setattr(
+            platform_compat,
+            "first_linked_ancestor",
+            lambda p: str(linked) if Path(p) == leaf else None,
+        )
+        monkeypatch.setattr(os, "readlink", lambda _p: r"\\evil-host\share")
+
+        def _boom_lstat(self: Path) -> bool:  # pragma: no cover
+            raise AssertionError("is_symlink ran before the ancestor screen")
+
+        def _boom_sensitive(_p: str) -> bool:  # pragma: no cover
+            raise AssertionError("is_sensitive_path ran before the ancestor screen")
+
+        monkeypatch.setattr(Path, "is_symlink", _boom_lstat)
+        monkeypatch.setattr(module, "is_sensitive_path", _boom_sensitive)
+        got = module._inspect(str(leaf), leaf, "alt", 10_000, None, None)
+        assert isinstance(got, Rejection)
+        assert got.reason == REASON_SYMLINK
+        assert got.detail == "symlinks are not uploaded"
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("_winapi") is None, reason="directory junctions are Windows-only"
+)
+class TestRealLocalJunctionAncestor:
+    """No stubs: a junction made with ``_winapi.CreateJunction`` on this host."""
+
+    def test_a_file_below_a_local_junction_inside_the_root_is_uploaded(
+        self, tmp_path: Path
+    ) -> None:
+        import _winapi
+
+        target = tmp_path / "workflow-takeover-tasks"
+        real = _png(target)
+        junction = tmp_path / "Tasks"
+        _winapi.CreateJunction(str(target), str(junction))
+        through = junction / real.name
+        result = extract_local_refs(f"![x]({through})", within_root=str(tmp_path))
+        assert result.rejections == []
+        assert [f.path for f in result.files] == [str(through)]
+        assert result.files[0].data == real.read_bytes()
+
+    def test_a_local_junction_leading_out_of_the_root_is_still_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """The pinned read, not the ancestor screen, keeps the bytes in the root."""
+        import _winapi
+
+        cwd = tmp_path / "project"
+        cwd.mkdir()
+        real = _png(tmp_path / "elsewhere", "secret.png")
+        junction = cwd / "alias"
+        _winapi.CreateJunction(str(real.parent), str(junction))
+        result = extract_local_refs(f"![x]({junction / real.name})", within_root=str(cwd))
+        assert result.files == []
+        assert result.rejections[0].reason == REASON_UNREADABLE
+
+    def test_a_junction_leaf_is_still_refused(self, tmp_path: Path) -> None:
+        import _winapi
+
+        target = tmp_path / "target"
+        target.mkdir()
+        junction = tmp_path / "shot.png"
+        _winapi.CreateJunction(str(target), str(junction))
+        result = extract_local_refs(f"![x]({junction})", within_root=str(tmp_path))
+        assert result.files == []
+        assert result.rejections[0].reason == REASON_SYMLINK
 
 
 # ---------------------------------------------------------------- generators

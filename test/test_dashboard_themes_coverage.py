@@ -20,6 +20,7 @@ where the process has that capability, including privileged Windows CI runners.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import threading
@@ -1535,11 +1536,18 @@ class TestResolveLocalSourceAncestorLinks:
     `is_link_or_junction` check tests only the final component. The first
     `is_dir()` is what resolves the chain -- and on Windows resolving it is
     what authenticates to the attacker's host. These tests pin the ancestor
-    screen that has to run before that call.
+    screen that has to run before that call. The link's own reparse target is
+    stubbed to a UNC share so the refusal is the same on every host: a LOCAL
+    target is admitted on Windows (see ``TestRealLocalJunctionAncestor``).
     """
 
+    @staticmethod
+    def _aim_links_at_unc(monkeypatch):
+        """Every readlink answers a UNC share; set AFTER the links exist."""
+        monkeypatch.setattr(os, "readlink", lambda _p: r"\\evil-host\share")
+
     @requires_symlinks
-    def test_a_local_path_beneath_a_linked_ancestor_is_refused(
+    def test_a_local_path_beneath_an_ancestor_aimed_at_unc_is_refused(
         self, tmp_path, monkeypatch
     ):
         monkeypatch.setattr(th, "IS_WINDOWS", True)
@@ -1548,6 +1556,7 @@ class TestResolveLocalSourceAncestorLinks:
         (real / "theme").mkdir()
         link = tmp_path / "via"
         link.symlink_to(real, target_is_directory=True)
+        self._aim_links_at_unc(monkeypatch)
 
         # Entirely local-looking, and the LEAF is a real directory: neither the
         # UNC screen nor the leaf link check fires. Only the ancestor walk does.
@@ -1566,6 +1575,7 @@ class TestResolveLocalSourceAncestorLinks:
         (real / "theme").mkdir()
         link = tmp_path / "secretname"
         link.symlink_to(real, target_is_directory=True)
+        self._aim_links_at_unc(monkeypatch)
 
         _src, err = th._resolve_local_source(str(link / "theme"))
 
@@ -1587,13 +1597,14 @@ class TestResolveLocalSourceAncestorLinks:
         (real / "theme").mkdir()
         link = tmp_path / "via"
         link.symlink_to(real, target_is_directory=True)
+        self._aim_links_at_unc(monkeypatch)
 
         monkeypatch.setattr(th, "IS_WINDOWS", True)
 
         def _boom(_path):
             raise AssertionError("leaf probe ran before the ancestor walk")
 
-        # Patches themes' own binding only; `first_linked_ancestor` resolves the
+        # Patches themes' own binding only; the shared screen resolves the
         # predicate through platform_compat, so the walk itself still works.
         monkeypatch.setattr(th, "is_link_or_junction", _boom)
 
@@ -1638,6 +1649,39 @@ class TestResolveLocalSourceAncestorLinks:
 
         assert err is None
         assert src == nested.resolve()
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("_winapi") is None, reason="directory junctions are Windows-only"
+)
+class TestRealLocalJunctionAncestor:
+    """No stubs: a junction made with ``_winapi.CreateJunction`` on this host."""
+
+    def test_a_pack_below_a_local_junction_is_accepted(self, tmp_path):
+        import _winapi
+
+        target = tmp_path / "workflow-takeover-themes"
+        (target / "theme").mkdir(parents=True)
+        junction = tmp_path / "Themes"
+        _winapi.CreateJunction(str(target), str(junction))
+
+        src, err = th._resolve_local_source(str(junction / "theme"))
+
+        assert err is None
+        assert src == (target / "theme").resolve()
+
+    def test_a_junction_as_the_pack_root_is_still_refused(self, tmp_path):
+        import _winapi
+
+        target = tmp_path / "theme-real"
+        target.mkdir()
+        junction = tmp_path / "theme"
+        _winapi.CreateJunction(str(target), str(junction))
+
+        src, err = th._resolve_local_source(str(junction))
+
+        assert src is None
+        assert err == "local path must not be a symlink"
 
 
 class TestFirstLinkedAncestor:

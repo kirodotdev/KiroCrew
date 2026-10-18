@@ -29,10 +29,11 @@ from kiro_crew.messaging.outbound_files import (
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 
-#: A linked ANCESTOR under an admitted root: Windows screens every ancestor before
-#: the first resolving call and answers ``REASON_SYMLINK``; POSIX lets the
-#: descriptor-pinned read catch it and answers ``REASON_UNREADABLE``.
-_LINKED_ANCESTOR_REASON = REASON_SYMLINK if os.name == "nt" else REASON_UNREADABLE
+#: A linked ANCESTOR under an admitted root, aimed at a LOCAL directory outside
+#: it: Windows rewrites the local linked prefix to its target and POSIX resolves
+#: through it, so on both the descriptor-pinned read finds the bytes outside the
+#: root and answers ``REASON_UNREADABLE``.
+_LINKED_ANCESTOR_REASON = REASON_UNREADABLE
 
 
 def _png(directory: Path, name: str = "shot.png") -> Path:

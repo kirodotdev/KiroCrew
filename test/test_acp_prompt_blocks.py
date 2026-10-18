@@ -9,6 +9,7 @@ replaces. An image therefore never reached the model as vision input.
 from __future__ import annotations
 
 import base64
+import importlib.util
 import io
 import json
 import os
@@ -1616,7 +1617,7 @@ class TestLinkedAncestorGate:
         regression that probes first fails loudly instead of silently."""
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(prompt_blocks, "first_linked_ancestor", lambda _p: str(tmp_path))
+        monkeypatch.setattr(prompt_blocks, "screen_windows_linked_ancestors", lambda _p: None)
 
         def _boom(self):  # type: ignore[no-untyped-def]  # pragma: no cover
             raise AssertionError("is_file ran before the ancestor walk")
@@ -1634,7 +1635,7 @@ class TestLinkedAncestorGate:
         the guard, not to some other screen."""
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(prompt_blocks, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(prompt_blocks, "screen_windows_linked_ancestors", Path)
         blocks = build_prompt_blocks(f"see {p}")
         assert [b["type"] for b in blocks] == ["text", "image"]
 
@@ -1647,7 +1648,7 @@ class TestLinkedAncestorGate:
         def _boom(_p):  # pragma: no cover
             raise AssertionError("ancestor walk ran on POSIX")
 
-        monkeypatch.setattr(prompt_blocks, "first_linked_ancestor", _boom)
+        monkeypatch.setattr(prompt_blocks, "screen_windows_linked_ancestors", _boom)
         p = _png(tmp_path)
         blocks = build_prompt_blocks(f"see {p}")
         assert [b["type"] for b in blocks] == ["text", "image"]
@@ -1657,7 +1658,7 @@ class TestLinkedAncestorGate:
         junction-aware check -- is_file() FOLLOWS a final-component link."""
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(prompt_blocks, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(prompt_blocks, "screen_windows_linked_ancestors", Path)
         monkeypatch.setattr(prompt_blocks, "is_link_or_junction", lambda _p: True)
 
         def _boom(self):  # type: ignore[no-untyped-def]  # pragma: no cover
@@ -1665,4 +1666,73 @@ class TestLinkedAncestorGate:
 
         monkeypatch.setattr(Path, "is_file", _boom)
         blocks = build_prompt_blocks(f"see {p}")
+        assert [b["type"] for b in blocks] == ["text"]
+
+    def test_the_probes_run_on_the_screened_path(self, tmp_path, monkeypatch):
+        """An admitted linked prefix is rewritten, and the probe and the read
+        use the REWRITTEN spelling: the linked candidate below is never
+        created, so only the screened path can produce the image block."""
+        (tmp_path / "target").mkdir()
+        real = _png(tmp_path / "target")
+        linked = tmp_path / "Tasks" / real.name
+        self._windows(monkeypatch)
+        monkeypatch.setattr(
+            prompt_blocks,
+            "screen_windows_linked_ancestors",
+            lambda p: real if Path(p) == linked else None,
+        )
+        blocks = build_prompt_blocks(f"see {linked}")
+        assert [b["type"] for b in blocks] == ["text", "image"]
+
+    def test_an_ancestor_link_aimed_at_unc_is_refused_before_any_probe(
+        self, tmp_path, monkeypatch
+    ):
+        """The real shared screen, with only the link metadata stubbed: an
+        ancestor whose reparse target is a UNC share is refused before
+        is_file() could follow it."""
+        from kiro_crew import platform_compat
+
+        linked = tmp_path / "Tasks"
+        leaf = linked / "shot.png"
+        self._windows(monkeypatch)
+        monkeypatch.setattr(
+            platform_compat,
+            "first_linked_ancestor",
+            lambda p: str(linked) if Path(p) == leaf else None,
+        )
+        monkeypatch.setattr(os, "readlink", lambda _p: r"\\evil-host\share")
+
+        def _boom(self):  # type: ignore[no-untyped-def]  # pragma: no cover
+            raise AssertionError("is_file ran before the ancestor screen")
+
+        monkeypatch.setattr(Path, "is_file", _boom)
+        blocks = build_prompt_blocks(f"see {leaf}")
+        assert [b["type"] for b in blocks] == ["text"]
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("_winapi") is None, reason="directory junctions are Windows-only"
+)
+class TestRealLocalJunctionAncestor:
+    """No stubs: a junction made with ``_winapi.CreateJunction`` on this host."""
+
+    def test_an_image_below_a_local_junction_is_inlined(self, tmp_path):
+        import _winapi
+
+        target = tmp_path / "workflow-takeover-tasks"
+        target.mkdir()
+        real = _png(target)
+        junction = tmp_path / "Tasks"
+        _winapi.CreateJunction(str(target), str(junction))
+        blocks = build_prompt_blocks(f"see {junction / real.name}")
+        assert [b["type"] for b in blocks] == ["text", "image"]
+
+    def test_a_junction_leaf_is_still_not_inlined(self, tmp_path):
+        import _winapi
+
+        target = tmp_path / "target"
+        target.mkdir()
+        junction = tmp_path / "shot.png"
+        _winapi.CreateJunction(str(target), str(junction))
+        blocks = build_prompt_blocks(f"see {junction}")
         assert [b["type"] for b in blocks] == ["text"]
