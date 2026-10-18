@@ -94,7 +94,11 @@ def test_missing_extra_reports_error_and_returns_none(monkeypatch):
     orch = _orch(state=state)
     assert asyncio.run(maybe_start_whatsapp(orch)) is None
     assert state.whatsapp_connected is False
-    assert state.whatsapp_connect_error  # hint recorded
+    # Settings shows this until the next start, so it stays true after the
+    # install and carries no bare pip command (the card names the interpreter).
+    assert state.whatsapp_connect_error == (
+        "The gateway started without neonize. Restart it once neonize is installed."
+    )
 
 
 def test_missing_extra_without_state_is_still_a_noop(monkeypatch):

@@ -157,10 +157,10 @@ function statusBadge(config: WhatsAppConfigData): { text: string; textCls: strin
 const FAILED_STATES = new Set(['error', 'banned', 'logged_out'])
 
 /**
- * `connect_error`, minus the gateway's missing-dependency hint. When the SDK is
- * absent the gateway writes a log-oriented `pip install ...` line there, which
- * can name the wrong interpreter; the {@link OptionalSdkCard} explains the gap
- * with the gateway's own command instead, so the raw line is never shown.
+ * `connect_error`, minus the gateway's missing-dependency note while the SDK is
+ * still absent: the {@link OptionalSdkCard} explains that gap with the
+ * gateway's own install command. Once the SDK is installed the note stays,
+ * because it names the restart that loads it.
  */
 function gatewayError(config: WhatsAppConfigData): string {
   return config.sdk_installed === false ? '' : config.connect_error || ''

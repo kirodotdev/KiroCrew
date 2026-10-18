@@ -17539,7 +17539,7 @@
         "if_single_tenant": "falls Single-Tenant).",
         "in_the_bot_s": "In den",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "Ihre App-ID ist, senden Sie dann eine Direktnachricht an den\n              Bot — vollständige Manifest-Schritte in der Einrichtungsanleitung oben.",
-        "jwt_required": "<strong>Microsoft Teams braucht die Abhängigkeit PyJWT.</strong> Eingehende Bot-Framework-Anfragen tragen ein signiertes Token, das geprüft werden muss, deshalb startet der Kanal ohne sie nicht.",
+        "jwt_required": "<strong>Microsoft Teams braucht die Abhängigkeit PyJWT.</strong> Eingehende Bot-Framework-Anfragen tragen ein signiertes Token, das geprüft werden muss, deshalb startet der Kanal ohne sie nicht. Wenn du sie gerade installiert hast, starte das Gateway neu, um sie zu laden.",
         "leave_empty_for_a_multi_tenant_bot": "Für einen Multi-Tenant-Bot leer lassen",
         "loading_teams_config": "Teams-Konfiguration wird geladen…",
         "localhost": "localhost",

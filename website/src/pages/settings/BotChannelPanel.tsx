@@ -365,6 +365,10 @@ function StatusBadge({ config }: { config: BotChannelConfigData }) {
  */
 function connectError(spec: BotChannelSpec, config: BotChannelConfigData): string {
   if (config.connected || !config.connect_error) return ''
+  // While the SDK is missing, the OptionalSdkCard explains the failure with
+  // this gateway's own install command. The badge would only repeat it, and
+  // its "check the bot token" advice points at the wrong fix.
+  if (config.sdk_installed === false) return ''
   return i18nT('pages.settings.botChannelPanel.channel_failed_to_start', { channel: spec.name, error: config.connect_error, host: spec.host })
 }
 

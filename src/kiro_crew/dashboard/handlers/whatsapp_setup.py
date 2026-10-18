@@ -56,8 +56,8 @@ async def whatsapp_config_get(request: web.Request) -> web.Response:
             "session_folder": wa.session_folder,
             # The shared optional-SDK card's fields (see _channel_sdk_status).
             # When neonize is missing the panel shows the card -- whose command
-            # names THIS gateway's interpreter -- instead of the log-oriented
-            # MISSING_EXTRA_HINT the gateway leaves in connect_error.
+            # names THIS gateway's interpreter -- and hides the restart note
+            # (MISSING_EXTRA_STATUS) the gateway leaves in connect_error.
             "sdk_installed": sdk_installed,
             "sdk_install_supported": sdk_supported,
             "sdk_install_command": sdk_command,

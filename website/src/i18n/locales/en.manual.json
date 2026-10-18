@@ -8383,7 +8383,7 @@
       },
       "teamsPanel": {
         "active": "Active",
-        "jwt_required": "<strong>Microsoft Teams needs the PyJWT dependency.</strong> Inbound Bot Framework requests carry a signed token that has to be validated, so the channel refuses to start without it.",
+        "jwt_required": "<strong>Microsoft Teams needs the PyJWT dependency.</strong> Inbound Bot Framework requests carry a signed token that has to be validated, so the channel refuses to start without it. If you have just installed it, restart the gateway to load it.",
         "microsoft_app_id": "Microsoft App ID",
         "needs_setup": "Needs setup",
         "not_active": "Not active",

@@ -6568,15 +6568,19 @@ gateway's OWN interpreter, and empty where `_pip_install_channel_available` says
 in-place install can work. Each panel renders the shared `OptionalSdkCard`
 (`pages/settings/OptionalSdkCard.tsx`) from those fields: the command when it is
 supported, otherwise the "cannot install here" notice; `sdk_installed` absent
-(an older gateway) renders nothing. No panel shows a bare `pip install`: the Teams
-`jwt_required` notice carries no command and shows only when the card does not
-(`jwt_available` false while `find_spec` still finds a `jwt` module, or an older
-gateway), and the WhatsApp panel renders neither `connect_error` nor the
-"restart the gateway" hint while `sdk_installed` is false: the gateway leaves the
-log-oriented `MISSING_EXTRA_HINT` in `connect_error`, and a restart does nothing
-until the package is installed (that hint
-itself is unchanged for logs, doctor and the CLI setup wizard). There is no Install
-button.
+(an older gateway) renders nothing. No panel shows a bare `pip install`. When a
+channel starts without its SDK, the gateway's `connect_error` is
+`extras.missing_at_start_status(<package>)` ("The gateway started without
+<package>. Restart it once <package> is installed."): no command, and still true
+after an install, because `connect_error` keeps it until the next start while
+`sdk_installed` flips to true at once. The short pip hint (`install_hint`,
+`MISSING_EXTRA_HINT`) stays in the log line, doctor and the CLI setup wizard.
+While `sdk_installed` is false the WhatsApp and bot-channel (Feishu) panels hide
+`connect_error`, and WhatsApp also its "restart the gateway" hint, since the card
+owns that state. The Teams `jwt_required` notice carries no command, ends with the
+restart step, and shows only when the card does not (`jwt_available` false while
+`find_spec` finds a `jwt` module: PyJWT installed after the start, or a `jwt`
+module that is not PyJWT; or an older gateway). There is no Install button.
 
 Feishu capabilities: `streaming=False`, `edit=False`, `reactions=False`,
 `files_inbound=False`, `files_outbound=False`, `rich_blocks=False`,

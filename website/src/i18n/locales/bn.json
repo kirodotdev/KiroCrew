@@ -17539,7 +17539,7 @@
         "if_single_tenant": "যদি সিঙ্গল-টেন্যান্ট হয়)।",
         "in_the_bot_s": "বটের ভিতরে",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "হলো আপনার App ID, তারপর বটকে DM\n              করুন — সম্পূর্ণ ম্যানিফেস্ট ধাপগুলো উপরের সেটআপ গাইডে আছে।",
-        "jwt_required": "<strong>Microsoft Teams-এর জন্য PyJWT ডিপেনডেন্সি দরকার।</strong> ইনবাউন্ড Bot Framework অনুরোধে সাইন করা টোকেন থাকে যা যাচাই করা বাধ্যতামূলক, তাই এটি ছাড়া চ্যানেল চালু হবে না।",
+        "jwt_required": "<strong>Microsoft Teams-এর জন্য PyJWT ডিপেনডেন্সি দরকার।</strong> ইনবাউন্ড Bot Framework অনুরোধে সাইন করা টোকেন থাকে যা যাচাই করা বাধ্যতামূলক, তাই এটি ছাড়া চ্যানেল চালু হবে না। তুমি যদি এইমাত্র এটি ইনস্টল করে থাকো, তবে এটি লোড করতে গেটওয়ে রিস্টার্ট করো।",
         "leave_empty_for_a_multi_tenant_bot": "মাল্টি-টেন্যান্ট বটের জন্য খালি রাখুন",
         "loading_teams_config": "Teams কনফিগ লোড হচ্ছে…",
         "localhost": "localhost",

@@ -117,14 +117,17 @@ async def maybe_start_feishu(orch: "GatewayOrchestrator") -> "LarkClient | None"
     except ImportError as exc:
         # The one failure a user can fix without reading a log: lark-oapi is an
         # optional extra, and without it LarkClient's constructor raises here
-        # before anything else runs. Name the install command in the badge
-        # instead of leaving Settings to report a bare "not connected".
+        # before anything else runs. The badge names the missing package and
+        # the restart; the install command is the Settings card's, which names
+        # this gateway's interpreter. The log line keeps the short pip hint.
         if orch.dashboard_state is not None:
             orch.dashboard_state.feishu_connected = False
-            orch.dashboard_state.feishu_connect_error = (
-                f"lark-oapi is not installed — run: {extras.install_hint('feishu')}"
-            )
-        logger.error("Feishu channel needs the lark-oapi extra; continuing without it: %s", exc)
+            orch.dashboard_state.feishu_connect_error = extras.missing_at_start_status("lark-oapi")
+        logger.error(
+            "Feishu channel needs the lark-oapi extra (%s); continuing without it: %s",
+            extras.install_hint("feishu"),
+            exc,
+        )
         return None
     except Exception as exc:
         if orch.dashboard_state is not None:

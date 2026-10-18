@@ -163,11 +163,21 @@ class TestMaybeStartFeishu:
         # both the log and the settings badge name the install command.
         assert any("needs the lark-oapi extra" in r.getMessage() for r in caplog.records)
         assert orch.dashboard_state.feishu_connected is False
-        # Names the DEPENDENCY, not `kirocrew[feishu]`: this project is not on an
-        # index, so the extras form fails to resolve for every user.
-        assert "lark-oapi" in orch.dashboard_state.feishu_connect_error
-        assert "pip install" in orch.dashboard_state.feishu_connect_error
-        assert "kirocrew[" not in orch.dashboard_state.feishu_connect_error
+        # The badge names the dependency and the restart that loads it, and no
+        # install command: Settings' card owns that, naming this gateway's
+        # interpreter, and the badge outlives the install until the restart.
+        badge = orch.dashboard_state.feishu_connect_error
+        assert (
+            badge
+            == "The gateway started without lark-oapi. Restart it once lark-oapi is installed."
+        )
+        assert "pip" not in badge
+        # The log line keeps the short pip hint, naming the DEPENDENCY rather
+        # than `kirocrew[feishu]`: this project is not on an index.
+        log = next(
+            r.getMessage() for r in caplog.records if "needs the lark-oapi extra" in r.getMessage()
+        )
+        assert "pip install" in log and "kirocrew[" not in log
 
     @pytest.mark.asyncio
     async def test_generic_exception_swallowed(

@@ -17274,7 +17274,7 @@
         "if_single_tenant": "単一テナント場合)。",
         "in_the_bot_s": "ボットの",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "はアプリID、その後ボットにDM —\n              上のセットアップガイドに完全なマニフェストステップ。",
-        "jwt_required": "<strong>Microsoft Teams には PyJWT の依存関係が必要です。</strong>受信する Bot Framework リクエストには検証が必要な署名付きトークンが含まれるため、これがないとチャネルは起動しません。",
+        "jwt_required": "<strong>Microsoft Teams には PyJWT の依存関係が必要です。</strong>受信する Bot Framework リクエストには検証が必要な署名付きトークンが含まれるため、これがないとチャネルは起動しません。インストールしたばかりの場合は、ゲートウェイを再起動して読み込んでください。",
         "leave_empty_for_a_multi_tenant_bot": "マルチテナントボットの場合は空白のままにする",
         "loading_teams_config": "Teamsの設定を読み込み中…",
         "localhost": "localhost",

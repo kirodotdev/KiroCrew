@@ -156,12 +156,12 @@ async def maybe_start_whatsapp(orch: "GatewayOrchestrator") -> "WhatsAppClient |
         return None
     state = orch.dashboard_state
     if not neonize_available():
-        from kiro_crew.whatsapp.client import MISSING_EXTRA_HINT
+        from kiro_crew.whatsapp.client import MISSING_EXTRA_HINT, MISSING_EXTRA_STATUS
 
         logger.warning("whatsapp: %s", MISSING_EXTRA_HINT)
         if state is not None:
             state.whatsapp_connected = False
-            state.whatsapp_connect_error = MISSING_EXTRA_HINT[:120]
+            state.whatsapp_connect_error = MISSING_EXTRA_STATUS[:120]
         return None
 
     try:

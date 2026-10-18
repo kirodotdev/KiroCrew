@@ -95,6 +95,18 @@ def install_hint(extra: str) -> str:
     return "pip install " + " ".join(quote_spec(r) for r in reqs)
 
 
+def missing_at_start_status(package: str) -> str:
+    """A channel's Settings ``connect_error`` when *package* was missing at start.
+
+    Carries no install command. The panel's optional-SDK card shows the command
+    for THIS gateway's interpreter while the package is missing, and a bare
+    ``pip`` here could name another environment. The text must also stay true
+    after the user installs the package: ``connect_error`` keeps it until the
+    next start, so it names the restart that loads the package.
+    """
+    return f"The gateway started without {package}. Restart it once {package} is installed."
+
+
 def pip_install_command(extra: str) -> str:
     r"""The command that installs *extra* into THIS python, ready to paste.
 

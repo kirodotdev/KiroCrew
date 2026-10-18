@@ -17274,7 +17274,7 @@
         "if_single_tenant": "단일 테넌트인 경우).",
         "in_the_bot_s": "봇의",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "앱 ID입니다. 그다음 봇에 DM을 보내세요 —\n 전체 매니페스트 단계는 위 설정 가이드에 있습니다.",
-        "jwt_required": "<strong>Microsoft Teams에는 PyJWT 종속성이 필요합니다.</strong> 수신되는 Bot Framework 요청에는 검증해야 하는 서명된 토큰이 포함되므로 이 종속성이 없으면 채널이 시작되지 않습니다.",
+        "jwt_required": "<strong>Microsoft Teams에는 PyJWT 종속성이 필요합니다.</strong> 수신되는 Bot Framework 요청에는 검증해야 하는 서명된 토큰이 포함되므로 이 종속성이 없으면 채널이 시작되지 않습니다. 방금 설치했다면 게이트웨이를 재시작하여 불러오세요.",
         "leave_empty_for_a_multi_tenant_bot": "다중 테넌트 봇의 경우 비워 두세요",
         "loading_teams_config": "Teams 설정을 불러오는 중…",
         "localhost": "localhost",

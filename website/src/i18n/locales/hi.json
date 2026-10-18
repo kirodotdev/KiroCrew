@@ -17539,7 +17539,7 @@
         "if_single_tenant": "यदि सिंगल-टेनेंट हो)।",
         "in_the_bot_s": "बॉट के",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "आपका App ID हो, फिर बॉट को DM करें —\n              पूरे manifest चरण ऊपर दी गई सेटअप गाइड में हैं।",
-        "jwt_required": "<strong>Microsoft Teams को PyJWT डिपेंडेंसी चाहिए।</strong> इनबाउंड Bot Framework अनुरोध एक साइन किया हुआ टोकन लाते हैं जिसे वेरिफ़ाई करना ज़रूरी है, इसलिए इसके बिना चैनल शुरू नहीं होगा।",
+        "jwt_required": "<strong>Microsoft Teams को PyJWT डिपेंडेंसी चाहिए।</strong> इनबाउंड Bot Framework अनुरोध एक साइन किया हुआ टोकन लाते हैं जिसे वेरिफ़ाई करना ज़रूरी है, इसलिए इसके बिना चैनल शुरू नहीं होगा। अगर तुमने इसे अभी इंस्टॉल किया है, तो इसे लोड करने के लिए गेटवे को रीस्टार्ट करो।",
         "leave_empty_for_a_multi_tenant_bot": "मल्टी-टेनेंट बॉट के लिए खाली छोड़ें",
         "loading_teams_config": "Teams कॉन्फ़िग लोड हो रहा है…",
         "localhost": "localhost",

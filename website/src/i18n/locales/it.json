@@ -17804,7 +17804,7 @@
         "if_single_tenant": "se single-tenant).",
         "in_the_bot_s": "Nelle",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "è il tuo ID app, poi invia un messaggio diretto al\n              bot — tutti i passaggi del manifest nella guida alla configurazione sopra.",
-        "jwt_required": "<strong>Microsoft Teams richiede la dipendenza PyJWT.</strong> Le richieste in entrata del Bot Framework contengono un token firmato che va convalidato, quindi senza di essa il canale non si avvia.",
+        "jwt_required": "<strong>Microsoft Teams richiede la dipendenza PyJWT.</strong> Le richieste in entrata del Bot Framework contengono un token firmato che va convalidato, quindi senza di essa il canale non si avvia. Se l'hai appena installata, riavvia il gateway per caricarla.",
         "leave_empty_for_a_multi_tenant_bot": "Lascia vuoto per un bot multi-tenant",
         "loading_teams_config": "Caricamento della configurazione di Teams…",
         "localhost": "localhost",

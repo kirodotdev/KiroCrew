@@ -60,7 +60,7 @@ async def maybe_start_teams(orch: "GatewayOrchestrator") -> "TeamsClient | None"
 
     if not HAS_JWT:
         hint = extras.install_hint("teams")
-        msg = f"PyJWT not installed ({hint})"
+        msg = extras.missing_at_start_status("PyJWT")
         logger.error(
             "Teams channel is enabled but PyJWT is missing; inbound JWT "
             "validation is impossible. Install it with: %s. Skipping Teams.",

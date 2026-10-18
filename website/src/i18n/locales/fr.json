@@ -17804,7 +17804,7 @@
         "if_single_tenant": "si locataire unique).",
         "in_the_bot_s": "Dans la section du bot",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "est votre ID d'application, puis envoyez un message privé au\n              bot — étapes complètes du manifeste dans le guide de configuration ci-dessus.",
-        "jwt_required": "<strong>Microsoft Teams a besoin de la dépendance PyJWT.</strong> Les requêtes entrantes du Bot Framework portent un jeton signé qui doit être validé, donc le canal refuse de démarrer sans elle.",
+        "jwt_required": "<strong>Microsoft Teams a besoin de la dépendance PyJWT.</strong> Les requêtes entrantes du Bot Framework portent un jeton signé qui doit être validé, donc le canal refuse de démarrer sans elle. Si tu viens de l'installer, redémarre la passerelle pour la charger.",
         "leave_empty_for_a_multi_tenant_bot": "Laisser vide pour un bot multi-locataire",
         "loading_teams_config": "Chargement de la configuration Teams…",
         "localhost": "localhost",

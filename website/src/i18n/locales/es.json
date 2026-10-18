@@ -17804,7 +17804,7 @@
         "if_single_tenant": "si es de inquilino único).",
         "in_the_bot_s": "En la sección",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "sea tu App ID y luego envía un DM al bot: los pasos completos del manifiesto están en la guía de configuración de arriba.",
-        "jwt_required": "<strong>Microsoft Teams necesita la dependencia PyJWT.</strong> Las solicitudes entrantes de Bot Framework llevan un token firmado que hay que validar, así que el canal no se inicia sin ella.",
+        "jwt_required": "<strong>Microsoft Teams necesita la dependencia PyJWT.</strong> Las solicitudes entrantes de Bot Framework llevan un token firmado que hay que validar, así que el canal no se inicia sin ella. Si acabas de instalarla, reinicia el gateway para cargarla.",
         "leave_empty_for_a_multi_tenant_bot": "Déjalo vacío para un bot multiinquilino",
         "loading_teams_config": "Cargando la configuración de Teams…",
         "localhost": "localhost",

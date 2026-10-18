@@ -99,7 +99,9 @@ class TestMaybeStartTeams:
         orch = _orch()
         client = await maybe_start_teams(orch)
         assert client is None
-        assert "PyJWT" in orch.dashboard_state.teams_connect_error
+        assert orch.dashboard_state.teams_connect_error == (
+            "The gateway started without PyJWT. Restart it once PyJWT is installed."
+        )
 
 
 class _FakeRequest:

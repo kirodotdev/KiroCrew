@@ -40,6 +40,8 @@ logger = logging.getLogger(__name__)
 MISSING_EXTRA_HINT = (
     f"The WhatsApp channel needs its optional dependency: {extras.install_hint('whatsapp')}"
 )
+# What Settings shows for the same gap (see extras.missing_at_start_status).
+MISSING_EXTRA_STATUS = extras.missing_at_start_status("neonize")
 
 STATE_UNPAIRED = "unpaired"
 STATE_PAIRING = "pairing"

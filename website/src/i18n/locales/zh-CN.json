@@ -17274,7 +17274,7 @@
         "if_single_tenant": "若为单租户）。",
         "in_the_bot_s": "在机器人的",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "为你的应用 ID，然后私聊\n              机器人 — 完整清单步骤见上方设置指南。",
-        "jwt_required": "<strong>Microsoft Teams 需要 PyJWT 依赖。</strong>入站的 Bot Framework 请求带有必须校验的签名令牌，因此缺少该依赖时通道不会启动。",
+        "jwt_required": "<strong>Microsoft Teams 需要 PyJWT 依赖。</strong>入站的 Bot Framework 请求带有必须校验的签名令牌，因此缺少该依赖时通道不会启动。如果刚刚安装了它，请重启网关以加载它。",
         "leave_empty_for_a_multi_tenant_bot": "多租户机器人请留空",
         "loading_teams_config": "正在加载 Teams 配置…",
         "localhost": "localhost",
