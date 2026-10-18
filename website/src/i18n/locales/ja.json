@@ -4598,7 +4598,10 @@
         "your_papers": "ペーパー",
         "invalid_project_name": "ペーパー名はフォルダー名になるため、使用できるのは小文字のラテン文字（a–z）、数字（0–9）、ピリオド、ハイフン、アンダースコアのみです。先頭は英字か数字にし、64 文字以内にする必要があります。",
         "invalid_project_name_char": "「{{char}}」はペーパー名に使用できません。小文字の a–z、0–9、. -⁠ _ を使用してください。",
-        "invalid_project_name_letter": "「{{char}}」（{{script}}、{{code}}）はペーパー名に使用できません。小文字の a–z、0–9、. -⁠ _ を使用してください。"
+        "invalid_project_name_letter": "「{{char}}」（{{script}}、{{code}}）はペーパー名に使用できません。小文字の a–z、0–9、. -⁠ _ を使用してください。",
+        "rename_title_rejected": "表示できる文字で名前を入力するか、欄を空にして {{name}} の表示に戻してください。",
+        "rename_config_refused": "名前は保存されませんでした。Papyrus はこのペーパーの設定を変更できません。",
+        "rename_paper_replaced": "一覧を読み込んだ後にこのペーパーが変更されました。一覧は最新の状態になりました。もう一度 Enter キーを押して名前を保存してください。"
       },
       "preview": {
         "compile_to_see_the_pdf": "PDF を表示するようコンパイルします。",

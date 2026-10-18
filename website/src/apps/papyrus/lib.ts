@@ -318,6 +318,27 @@ export function projectErrorText(err: Error): string {
   return err.message
 }
 
+/**
+ * The banner text for a refused rename. The server's `error` is English and
+ * names internals ("settings file"), so each `PUT /title` refusal `code` maps to
+ * a translated string; anything else (a network failure, an older backend) keeps
+ * its message.
+ */
+export function renameErrorText(err: Error, name: string): string {
+  if (err instanceof PapyrusApiError) {
+    switch (err.code) {
+      case 'title_rejected':
+        // `name` is the directory: what a cleared field shows again.
+        return i18nT('apps.papyrus.page.rename_title_rejected', { name })
+      case 'project_config_refused':
+        return i18nT('apps.papyrus.page.rename_config_refused')
+      case 'project_replaced':
+        return i18nT('apps.papyrus.page.rename_paper_replaced')
+    }
+  }
+  return err.message
+}
+
 /** Read the last-open project name from localStorage (never throws). */
 export function loadLastProject(): string | null {
   try {

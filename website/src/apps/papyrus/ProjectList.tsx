@@ -15,8 +15,8 @@ import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
 import InfoTip from '../../components/InfoTip'
 import { fmtBytes, fmtDateTime } from '../../i18n/format'
-import { papyrusApi, type Project } from './api'
-import { projectErrorText, pruneSlots, PROJECTS_QUERY_KEY, projectQueryKey } from './lib'
+import { papyrusApi, PapyrusApiError, type Project } from './api'
+import { projectErrorText, pruneSlots, renameErrorText, PROJECTS_QUERY_KEY, projectQueryKey } from './lib'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
@@ -176,12 +176,14 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
       // under its old name until the window was reloaded.
       void queryClient.invalidateQueries({ queryKey: projectQueryKey(name) })
     },
-    onError: (err: Error) => {
-      setError(err.message)
-      setRenameRebind(true)
-      // A refusal for a replaced paper is cured by fresh rows: reloading gives
-      // this row the current generation, so the next Enter saves. The field keeps
-      // the draft either way.
+    onError: (err: Error, { name }) => {
+      setError(renameErrorText(err, name))
+      // Only a refusal for a replaced paper is cured by fresh rows: reloading
+      // gives this row the current generation, so the next Enter saves. Any other
+      // failure keeps the generation the field was opened with, so a paper
+      // recreated under the same name meanwhile is still refused, not renamed.
+      // The field keeps the draft either way.
+      if (err instanceof PapyrusApiError && err.code === 'project_replaced') setRenameRebind(true)
       invalidate()
     },
   })

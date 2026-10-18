@@ -4510,7 +4510,10 @@
         "your_papers": "你的论文",
         "invalid_project_name": "论文名称会用作文件夹名称，因此只能包含小写拉丁字母（a–z）、数字（0–9）、点、短横线或下划线，必须以字母或数字开头，且最多 64 个字符。",
         "invalid_project_name_char": "论文名称中不能使用“{{char}}”。只能使用小写 a–z、0–9、. -⁠ _。",
-        "invalid_project_name_letter": "论文名称中不能使用“{{char}}”（{{script}}，{{code}}）。只能使用小写 a–z、0–9、. -⁠ _。"
+        "invalid_project_name_letter": "论文名称中不能使用“{{char}}”（{{script}}，{{code}}）。只能使用小写 a–z、0–9、. -⁠ _。",
+        "rename_title_rejected": "请输入包含可见字符的名称，或清空输入框以重新显示 {{name}}。",
+        "rename_config_refused": "名称未保存：Papyrus 无法更改这篇论文的设置。",
+        "rename_paper_replaced": "列表加载后这篇论文已发生变化。列表现已更新；请再次按 Enter 保存名称。"
       },
       "preview": {
         "compile_to_see_the_pdf": "编译后即可查看 PDF。",

@@ -3187,7 +3187,10 @@
         "your_papers": "Your papers",
         "invalid_project_name": "Paper names become folder names, so they can use only lowercase Latin letters (a–z), digits (0–9), dots, hyphens and underscores, must start with a letter or digit, and can be at most 64 characters.",
         "invalid_project_name_char": "“{{char}}” can’t be used in a paper name. Use lowercase a–z, 0–9, . -⁠ _",
-        "invalid_project_name_letter": "“{{char}}” ({{script}}, {{code}}) can’t be used in a paper name. Use lowercase a–z, 0–9, . -⁠ _"
+        "invalid_project_name_letter": "“{{char}}” ({{script}}, {{code}}) can’t be used in a paper name. Use lowercase a–z, 0–9, . -⁠ _",
+        "rename_title_rejected": "Type a name with visible characters, or clear the field to show {{name}} again.",
+        "rename_config_refused": "The name wasn’t saved: Papyrus can’t change this paper’s settings.",
+        "rename_paper_replaced": "This paper changed since the list loaded. The list is up to date now; press Enter to save the name again."
       },
       "preview": {
         "compile_to_see_the_pdf": "Compile to see the PDF.",

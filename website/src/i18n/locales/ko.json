@@ -4598,7 +4598,10 @@
         "your_papers": "내 논문",
         "invalid_project_name": "논문 이름은 폴더 이름이 되므로 소문자 라틴 문자(a–z), 숫자(0–9), 마침표, 하이픈, 밑줄만 사용할 수 있습니다. 이름은 문자나 숫자로 시작해야 하며 최대 64자까지 가능합니다.",
         "invalid_project_name_char": "‘{{char}}’은(는) 논문 이름에 사용할 수 없습니다. 소문자 a–z, 0–9, . -⁠ _ 문자만 사용하세요.",
-        "invalid_project_name_letter": "‘{{char}}’({{script}}, {{code}})은(는) 논문 이름에 사용할 수 없습니다. 소문자 a–z, 0–9, . -⁠ _ 문자만 사용하세요."
+        "invalid_project_name_letter": "‘{{char}}’({{script}}, {{code}})은(는) 논문 이름에 사용할 수 없습니다. 소문자 a–z, 0–9, . -⁠ _ 문자만 사용하세요.",
+        "rename_title_rejected": "보이는 글자로 이름을 입력하거나, 입력란을 비워 {{name}}(으)로 다시 표시하세요.",
+        "rename_config_refused": "이름이 저장되지 않았습니다. Papyrus가 이 논문의 설정을 변경할 수 없습니다.",
+        "rename_paper_replaced": "목록을 불러온 뒤 이 논문이 변경되었습니다. 목록이 최신 상태로 바뀌었으니 Enter 키를 눌러 이름을 다시 저장하세요."
       },
       "preview": {
         "compile_to_see_the_pdf": "PDF를 보려면 컴파일하세요.",

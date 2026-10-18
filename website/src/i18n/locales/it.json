@@ -4674,7 +4674,10 @@
         "your_papers": "I tuoi articoli",
         "invalid_project_name": "I nomi degli articoli diventano nomi di cartella, quindi possono contenere solo lettere latine minuscole (a–z), cifre (0–9), punti, trattini e trattini bassi, devono iniziare con una lettera o una cifra e avere al massimo 64 caratteri.",
         "invalid_project_name_char": "«{{char}}» non può essere usato nel nome di un articolo. Usa lettere minuscole a–z, 0–9, . -⁠ _",
-        "invalid_project_name_letter": "«{{char}}» ({{script}}, {{code}}) non può essere usato nel nome di un articolo. Usa lettere minuscole a–z, 0–9, . -⁠ _"
+        "invalid_project_name_letter": "«{{char}}» ({{script}}, {{code}}) non può essere usato nel nome di un articolo. Usa lettere minuscole a–z, 0–9, . -⁠ _",
+        "rename_title_rejected": "Scrivi un nome con caratteri visibili, oppure svuota il campo per mostrare di nuovo {{name}}.",
+        "rename_config_refused": "Il nome non è stato salvato: Papyrus non può modificare le impostazioni di questo articolo.",
+        "rename_paper_replaced": "Questo articolo è cambiato da quando è stato caricato l’elenco. L’elenco ora è aggiornato; premi Invio per salvare di nuovo il nome."
       },
       "preview": {
         "compile_to_see_the_pdf": "Compila per vedere il PDF.",

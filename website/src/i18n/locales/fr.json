@@ -4764,7 +4764,10 @@
         "your_papers": "Vos articles",
         "invalid_project_name": "Les noms d’article servent de noms de dossier. Ils ne peuvent donc contenir que des lettres latines minuscules (a–z), des chiffres (0–9), des points, des traits d’union et des tirets bas, doivent commencer par une lettre ou un chiffre et comporter au plus 64 caractères.",
         "invalid_project_name_char": "« {{char}} » ne peut pas être utilisé dans un nom d’article. Utilise des minuscules a–z, 0–9, . -⁠ _",
-        "invalid_project_name_letter": "« {{char}} » ({{script}}, {{code}}) ne peut pas être utilisé dans un nom d’article. Utilise des minuscules a–z, 0–9, . -⁠ _"
+        "invalid_project_name_letter": "« {{char}} » ({{script}}, {{code}}) ne peut pas être utilisé dans un nom d’article. Utilise des minuscules a–z, 0–9, . -⁠ _",
+        "rename_title_rejected": "Saisis un nom avec des caractères visibles, ou vide le champ pour afficher de nouveau {{name}}.",
+        "rename_config_refused": "Le nom n’a pas été enregistré : Papyrus ne peut pas modifier les paramètres de cet article.",
+        "rename_paper_replaced": "Cet article a changé depuis le chargement de la liste. La liste est à jour ; appuie sur Entrée pour enregistrer à nouveau le nom."
       },
       "preview": {
         "compile_to_see_the_pdf": "Compilez pour voir le PDF.",

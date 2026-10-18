@@ -11,7 +11,7 @@ import userEvent from '@testing-library/user-event'
 import ProjectList from '../apps/papyrus/ProjectList'
 import { renderWithProviders } from './helpers'
 import { PROJECTS_QUERY_KEY } from '../apps/papyrus/lib'
-import { papyrusApi, type Project } from '../apps/papyrus/api'
+import { papyrusApi, PapyrusApiError, type Project } from '../apps/papyrus/api'
 
 vi.mock('../apps/papyrus/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../apps/papyrus/api')>()),
@@ -109,8 +109,26 @@ describe('the paper list', () => {
     await waitFor(() => expect(mocked.setTitle).toHaveBeenLastCalledWith('6a16ddbf', '', 'gen-6a16ddbf'))
   })
 
+  it('keeps the paper identity after a refusal that is not a replacement', async () => {
+    mocked.setTitle.mockRejectedValue(
+      new PapyrusApiError('this name has no displayable text', 400, '', 'title_rejected'),
+    )
+    const { queryClient } = mount([project('6a16ddbf', 'Before')])
+    const field = await openRename('Before')
+    await userEvent.clear(field)
+    await userEvent.type(field, '\u200b{Enter}')
+    await waitFor(() => expect(mocked.setTitle).toHaveBeenCalledTimes(1))
+    // The paper is recreated under the same name before the retry.
+    mocked.listProjects.mockResolvedValue({ projects: [{ ...project('6a16ddbf', 'Before'), generation: 'gen-replaced' }] })
+    await queryClient.invalidateQueries({ queryKey: PROJECTS_QUERY_KEY })
+    await userEvent.clear(screen.getByLabelText('Paper name'))
+    await userEvent.type(screen.getByLabelText('Paper name'), 'Fixed{Enter}')
+    // Still the generation the field was opened with: the server refuses it as replaced.
+    await waitFor(() => expect(mocked.setTitle).toHaveBeenLastCalledWith('6a16ddbf', 'Fixed', 'gen-6a16ddbf'))
+  })
+
   it('keeps the draft and the page usable when a rename fails', async () => {
-    mocked.setTitle.mockRejectedValue(new Error('rename refused'))
+    mocked.setTitle.mockRejectedValue(new PapyrusApiError('rename refused', 409, '', 'project_replaced'))
     const { queryClient } = mount([project('6a16ddbf', 'Before'), project('other', 'Other paper')])
     const loads = () => mocked.listProjects.mock.calls.length
 
@@ -127,7 +145,7 @@ describe('the paper list', () => {
     await userEvent.type(field, 'Typed with care{Enter}')
     // The save names the paper the field was opened on, not the replacement.
     expect(mocked.setTitle).toHaveBeenLastCalledWith('6a16ddbf', 'Typed with care', 'gen-6a16ddbf')
-    expect(await screen.findByText('rename refused')).toBeInTheDocument()
+    expect(await screen.findByText(/This paper changed since the list loaded/)).toBeInTheDocument()
     expect(screen.getByLabelText('Paper name')).toHaveValue('Typed with care')
     // The agent hand-off would leave the page and lose the draft.
     expect(screen.queryByRole('button', { name: /agent/i })).toBeNull()
@@ -151,6 +169,20 @@ describe('the paper list', () => {
     await userEvent.type(screen.getByLabelText('Repository URL'), 'https://example.com/r.git{Enter}')
     await waitFor(() => expect(mocked.cloneProject).toHaveBeenCalled())
     expect(within(await row('Other paper')).getByRole('button', { name: 'Rename Other paper' })).toBeDisabled()
+  })
+
+  it('shows a coded rename refusal in the user language, not the server text', async () => {
+    mocked.setTitle.mockRejectedValue(
+      new PapyrusApiError('this name has no displayable text; leave the field empty to clear it', 400, '', 'title_rejected'),
+    )
+    mount([project('6a16ddbf', 'Before')])
+    const field = await openRename('Before')
+    await userEvent.clear(field)
+    await userEvent.type(field, '\u200b{Enter}')
+    expect(
+      await screen.findByText('Type a name with visible characters, or clear the field to show 6a16ddbf again.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/no displayable text/)).toBeNull()
   })
 
   it('leaves nothing to navigate away while a rename is saving', async () => {

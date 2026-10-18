@@ -4681,7 +4681,10 @@
         "your_papers": "Ihre Papers",
         "invalid_project_name": "Paper-Namen werden zu Ordnernamen und dürfen daher nur Kleinbuchstaben des lateinischen Alphabets (a–z), Ziffern (0–9), Punkte, Bindestriche und Unterstriche enthalten, müssen mit einem Buchstaben oder einer Ziffer beginnen und dürfen höchstens 64 Zeichen lang sein.",
         "invalid_project_name_char": "„{{char}}“ kann in einem Paper-Namen nicht verwendet werden. Nutze Kleinbuchstaben a–z, 0–9, . -⁠ _",
-        "invalid_project_name_letter": "„{{char}}“ ({{script}}, {{code}}) kann in einem Paper-Namen nicht verwendet werden. Nutze Kleinbuchstaben a–z, 0–9, . -⁠ _"
+        "invalid_project_name_letter": "„{{char}}“ ({{script}}, {{code}}) kann in einem Paper-Namen nicht verwendet werden. Nutze Kleinbuchstaben a–z, 0–9, . -⁠ _",
+        "rename_title_rejected": "Gib einen Namen mit sichtbaren Zeichen ein oder leere das Feld, um wieder {{name}} anzuzeigen.",
+        "rename_config_refused": "Der Name wurde nicht gespeichert: Papyrus kann die Einstellungen dieses Papers nicht ändern.",
+        "rename_paper_replaced": "Dieses Paper hat sich seit dem Laden der Liste geändert. Die Liste ist jetzt aktuell; drücke die Eingabetaste, um den Namen erneut zu speichern."
       },
       "preview": {
         "compile_to_see_the_pdf": "Kompilieren, um das PDF zu sehen.",

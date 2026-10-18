@@ -782,6 +782,9 @@
     "components.crew.crewEditorNextDialog.shared_no": "Value in the 'Shared' column of a tool/server row in the crewmate editor, meaning this entry is NOT shared. The answer 'No' (negative), not the beginning of a longer phrase.",
     "components.crew.crewEditorNextDialog.url": "Field label in the crewmate editor's MCP server row for an HTTP/SSE server's endpoint URL. 'URL' is kept as the acronym practitioners use; do not translate or expand it.",
     "apps.papyrus.page.paper_name": "Field label for the name a paper is LISTED under. Not a filename and not the paper's directory: renaming here changes only the displayed name.",
-    "apps.papyrus.page.rename_paper": "Verb on the button that edits the name a paper is listed under. {{name}} is the paper's current displayed name."
+    "apps.papyrus.page.rename_paper": "Verb on the button that edits the name a paper is listed under. {{name}} is the paper's current displayed name.",
+    "apps.papyrus.page.rename_title_rejected": "Error banner in the Papyrus paper list after a rename was refused because the typed name had no visible characters left once invisible ones were removed. {{name}} is the paper's folder name (for example 6a16ddbf), which the list shows again when the field is cleared. 'Clear the field' means delete everything typed in it.",
+    "apps.papyrus.page.rename_config_refused": "Error banner in the Papyrus paper list after a rename could not be saved because the paper's own settings could not be written. 'Settings' means this paper's stored options, not app-wide settings.",
+    "apps.papyrus.page.rename_paper_replaced": "Error banner in the Papyrus paper list after a rename was refused because the paper was deleted and recreated under the same folder name since the list loaded. The list has already reloaded; 'Enter' is the keyboard key."
   }
 }
