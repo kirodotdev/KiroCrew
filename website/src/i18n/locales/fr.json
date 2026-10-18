@@ -17200,7 +17200,11 @@
         "custom_font_ligatures": "Activer les ligatures",
         "custom_font_ligatures_desc": "Affiche les ligatures de programmation (=>, !=, ->) lorsque la police personnalisée en possède. Le code et les diffs des messages ne sont pas affectés.",
         "translucent_panels": "Panneaux translucides",
-        "translucent_panels_desc": "Affiche la barre supérieure, la barre d’onglets, la zone de message, les puces de suggestion et les champs de recherche en verre dépoli au-dessus du contenu qui défile dessous. Désactivé, ce sont des cartes opaques."
+        "translucent_panels_desc": "Affiche la barre supérieure, la barre d’onglets, la zone de message, les puces de suggestion et les champs de recherche en verre dépoli au-dessus du contenu qui défile dessous. Désactivé, ce sont des cartes opaques.",
+        "desktop_app": "Application de bureau",
+        "keep_running_when_window_closed": "Continuer en arrière-plan après la fermeture de la fenêtre",
+        "keep_running_when_window_closed_desc": "Fermer la fenêtre masque {{productName}}, et tes sessions et tâches continuent. Désactive cette option pour que le bouton de fermeture quitte l'application. Une passerelle lancée par cette application s'arrête avec elle, et une passerelle à laquelle elle se connecte seulement continue de tourner.",
+        "keep_running_when_window_closed_save_failed": "Impossible d'enregistrer ce réglage. Rien n'a changé. Réessaie."
       },
       "importPanel": {
         "agent_data": "Données de l'agent",

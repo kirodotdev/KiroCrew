@@ -2109,6 +2109,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.keep-running-in-the-background-after-closing-the-window",
+    "label": "Keep running in the background after closing the window",
+    "labelKey": "pages.settings.displayPanel.keep_running_when_window_closed",
+    "description": "Closing the window hides Kiro Crew and keeps your sessions and jobs running. Turn this off to make the close button quit the app. A gateway this app started stops with it, and a gateway it only connects to keeps running.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    },
+    "settingId": "display.keep-running-in-the-background-after-closing-the-window"
+  },
+  {
     "id": "display.language",
     "label": "Language",
     "labelKey": "settings.display.language.label",

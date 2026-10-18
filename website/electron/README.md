@@ -340,7 +340,17 @@ Open via **Connection → Open Config File** or the tray menu.
   dashboard window and creates a blank session. It shares the running local
   gateway and authentication origin, but does not copy the current session,
   project, draft, or context.
-- Closing the window hides to tray — right-click the tray icon or Cmd+Q to quit
+- Closing the window hides it and keeps the app running, reachable from the tray
+  icon, the Dock on macOS, or a relaunch. Right-click the tray icon and choose
+  Quit, or press Cmd+Q / Ctrl+Q, to quit. To make the close button quit instead,
+  turn off **Keep running in the background after closing the window** in Settings → Display → View →
+  Desktop app. The row appears in the main window only, local or remote
+  gateway alike, because it controls that window's close button (connection
+  windows always just close).
+  The choice is the `closeAction` key (`"background"` or `"quit"`) in this
+  app's config file, read on every close (`close-action.js`). Quitting this way
+  takes the same path as the Quit menu item: a gateway the app started stops,
+  and a gateway it connected to keeps running.
 - **GPU rendering.** Hardware acceleration is on by default.
   `KIROCREW_DISABLE_GPU=1` or `--disable-gpu` turns it off for a launch
   (`disable-gpu.js`). On Windows, if the GPU process dies before the dashboard

@@ -336,6 +336,45 @@ function createIpcRegistrar({
       return detectWsl();
     });
 
+    // What the main window's close button does. Deliberately narrower than
+    // `assertLocalDashboard`, which would hide the row from a main window on a
+    // configured remote host and leave that user no way to change it. The
+    // sender must be the main window's top frame, still on its assigned
+    // dashboard origin. That trusts the main window's dashboard, local or
+    // remote, with a visible, reversible two-valued preference.
+    const assertMainWindowDashboard = (event, channel) => {
+      const refuse = (why) => {
+        log(`${channel} rejected: ${why}`);
+        throw new Error(`${channel} is restricted to the main window's dashboard`);
+      };
+      const main = windows.getMainWindow();
+      if (!main || windows.windowForWebContents(event.sender) !== main) {
+        refuse("sender is not the main window");
+      }
+      if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame) {
+        refuse("sender is not the top frame");
+      }
+      let origin = "";
+      let expected = "";
+      try {
+        origin = new URL(event.senderFrame.url).origin;
+        expected = new URL(main._mcBackendUrl).origin;
+      } catch {
+        // An unreadable URL matches nothing.
+      }
+      if (!origin || origin !== expected) {
+        refuse(`sender origin ${origin || "(unreadable)"} is not the main window's dashboard`);
+      }
+    };
+    ipcMain.handle("close-action:get", async (event) => {
+      assertMainWindowDashboard(event, "close-action:get");
+      return windows.closeAction.get();
+    });
+    ipcMain.handle("close-action:set", async (event, value) => {
+      assertMainWindowDashboard(event, "close-action:set");
+      return windows.closeAction.set(value);
+    });
+
     // Open a file the chat referenced in the user's own editor, by handing its
     // path to the OS default handler on the machine in front of them.
     //

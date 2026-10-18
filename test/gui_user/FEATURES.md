@@ -26,7 +26,7 @@ under `scenarios/` says how the lane checks it.
 
 | | Total | smoke | nightly | native-only | needs-secret | excluded |
 |---|---|---|---|---|---|---|
-| **All features** | 271 | 42 | 167 | 12 | 27 | 23 |
+| **All features** | 272 | 42 | 167 | 13 | 27 | 23 |
 | Chat sessions (`chat`) | 26 | 3 | 19 | 0 | 2 | 2 |
 | Side panel tabs (`side-panel`) | 4 | 1 | 3 | 0 | 0 | 0 |
 | Terminal panel (`terminal`) | 3 | 0 | 3 | 0 | 0 | 0 |
@@ -58,12 +58,12 @@ under `scenarios/` says how the lane checks it.
 | Popouts & embeds (`popout`) | 6 | 0 | 4 | 2 | 0 | 0 |
 | Authentication & sign-in (`auth`) | 3 | 2 | 0 | 0 | 0 | 1 |
 | Onboarding (`onboarding`) | 4 | 0 | 4 | 0 | 0 | 0 |
-| Settings (`settings`) | 48 | 12 | 29 | 3 | 0 | 4 |
+| Settings (`settings`) | 49 | 12 | 29 | 4 | 0 | 4 |
 | Themes (`themes`) | 3 | 0 | 2 | 0 | 1 | 0 |
 | Security & governance (`security`) | 10 | 1 | 9 | 0 | 0 | 0 |
 | Developer tools (`developer`) | 12 | 0 | 12 | 0 | 0 | 0 |
 
-Priorities: P0 10 · P1 37 · P2 162 · P3 62. Deduped from 387 raw records.
+Priorities: P0 10 · P1 37 · P2 162 · P3 63. Deduped from 387 raw records.
 
 ## Chat sessions (`chat`)
 
@@ -461,6 +461,7 @@ Features the lane cannot drive on its target. Listed so the gap is a decision, n
 | native-only | `popout-terminal-window` | popout | Pop the terminal out and re-dock it | Requires a second window and a PTY; Electron-first, so native-only. Degradable: load /popout/terminal directly and assert the frame. Moved the feature-map popout-terminal record from the chat bucket (docked terminal is … |
 | native-only | `settings-chat-toggle-prevent-sleep` | settings | Toggle Prevent sleep while running | Toggle persistence is web-testable (degradable), but the actual sleep-inhibit effect needs Electron. |
 | native-only | `settings-developer-run-local-gateway-toggle` | settings | Toggle Run a local gateway | Desktop-app-only section; not degradable to web because it is hidden without Electron. |
+| native-only | `settings-display-keep-running-when-closed-toggle` | settings | Toggle Keep running in the background after closing the window | Desktop-app-only section; not degradable to web because it is hidden without Electron, and the behaviour is the native window close. |
 | native-only | `settings-notifications-background-chat-finished` | settings | Toggle Notify when a background chat finishes | Toggle persistence is web-testable (degradable), but OS notification delivery needs Electron and window focus state. |
 | needs-secret | `chat-mcp-oauth-banner-sign-in` | chat | Complete MCP OAuth from the chat banner | Requires a real OAuth provider account. |
 | needs-secret | `standalone-source-provider-review` | chat | Source-provider review | Fetching PR state requires a real source-provider token. |

@@ -16642,7 +16642,11 @@
         "custom_font_ligatures": "합자 사용",
         "custom_font_ligatures_desc": "사용자 지정 글꼴에 합자가 있으면 프로그래밍 합자(=>, !=, ->)를 렌더링합니다. 메시지의 코드와 diff는 영향을 받지 않습니다.",
         "translucent_panels": "반투명 패널",
-        "translucent_panels_desc": "상단 바, 탭 바, 메시지 입력란, 제안 칩, 검색란을 아래로 스크롤되는 내용이 비치는 반투명 유리로 표시합니다. 끄면 불투명한 카드가 됩니다."
+        "translucent_panels_desc": "상단 바, 탭 바, 메시지 입력란, 제안 칩, 검색란을 아래로 스크롤되는 내용이 비치는 반투명 유리로 표시합니다. 끄면 불투명한 카드가 됩니다.",
+        "desktop_app": "데스크톱 앱",
+        "keep_running_when_window_closed": "창을 닫아도 앱을 백그라운드에서 계속 실행",
+        "keep_running_when_window_closed_desc": "창을 닫으면 {{productName}}이(가) 숨겨지고 세션과 작업은 계속 실행됩니다. 이 옵션을 끄면 닫기 버튼이 앱을 종료합니다. 이 앱이 시작한 게이트웨이는 함께 중지되고, 연결만 된 게이트웨이는 계속 실행됩니다.",
+        "keep_running_when_window_closed_save_failed": "이 설정을 저장하지 못했습니다. 아무것도 변경되지 않았습니다. 다시 시도하세요."
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",

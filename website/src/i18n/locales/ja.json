@@ -16642,7 +16642,11 @@
         "custom_font_ligatures": "合字を有効にする",
         "custom_font_ligatures_desc": "カスタムフォントに合字がある場合、プログラミング用の合字（=>、!=、->）を表示します。メッセージ内のコードや差分には影響しません。",
         "translucent_panels": "半透明パネル",
-        "translucent_panels_desc": "上部バー、タブバー、メッセージ欄、提案チップ、検索欄を、下を流れる内容が透けるすりガラスとして表示します。オフのときは不透明なカードになります。"
+        "translucent_panels_desc": "上部バー、タブバー、メッセージ欄、提案チップ、検索欄を、下を流れる内容が透けるすりガラスとして表示します。オフのときは不透明なカードになります。",
+        "desktop_app": "デスクトップアプリ",
+        "keep_running_when_window_closed": "ウィンドウを閉じてもアプリをバックグラウンドで実行し続ける",
+        "keep_running_when_window_closed_desc": "ウィンドウを閉じると {{productName}} は非表示になり、セッションとジョブは実行を続けます。オフにすると、閉じるボタンでアプリが終了します。このアプリが起動したゲートウェイは一緒に停止し、接続しているだけのゲートウェイは実行を続けます。",
+        "keep_running_when_window_closed_save_failed": "この設定を保存できませんでした。何も変更されていません。もう一度お試しください。"
       },
       "importPanel": {
         "agent_data": "エージェントデータ",

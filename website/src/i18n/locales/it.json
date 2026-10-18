@@ -17200,7 +17200,11 @@
         "custom_font_ligatures": "Abilita le legature",
         "custom_font_ligatures_desc": "Mostra le legature di programmazione (=>, !=, ->) quando il carattere personalizzato le ha. Il codice e i diff nei messaggi non sono interessati.",
         "translucent_panels": "Pannelli traslucidi",
-        "translucent_panels_desc": "Mostra la barra superiore, la barra delle schede, la casella del messaggio, i chip dei suggerimenti e i campi di ricerca come vetro smerigliato sopra il contenuto che scorre sotto. Disattivato, sono schede opache."
+        "translucent_panels_desc": "Mostra la barra superiore, la barra delle schede, la casella del messaggio, i chip dei suggerimenti e i campi di ricerca come vetro smerigliato sopra il contenuto che scorre sotto. Disattivato, sono schede opache.",
+        "desktop_app": "App desktop",
+        "keep_running_when_window_closed": "Continua in background dopo la chiusura della finestra",
+        "keep_running_when_window_closed_desc": "Chiudendo la finestra, {{productName}} viene nascosto e le sessioni e i lavori pianificati continuano. Disattiva l'opzione perché il pulsante di chiusura chiuda completamente l'app. Un gateway avviato da questa app si arresta con essa, mentre un gateway a cui si connette soltanto continua a funzionare.",
+        "keep_running_when_window_closed_save_failed": "Impossibile salvare questa impostazione. Non è cambiato nulla. Riprova."
       },
       "importPanel": {
         "agent_data": "Dati dell'agente",

@@ -17200,7 +17200,11 @@
         "custom_font_ligatures": "Ativar ligaduras",
         "custom_font_ligatures_desc": "Renderiza as ligaduras de programação (=>, !=, ->) quando a fonte personalizada as tem. O código e os diffs nas mensagens não são afetados.",
         "translucent_panels": "Painéis translúcidos",
-        "translucent_panels_desc": "Mostra a barra superior, a barra de abas, a caixa de mensagem, os chips de sugestão e os campos de busca como vidro fosco sobre o conteúdo que rola por baixo. Desligado, são cartões sólidos."
+        "translucent_panels_desc": "Mostra a barra superior, a barra de abas, a caixa de mensagem, os chips de sugestão e os campos de busca como vidro fosco sobre o conteúdo que rola por baixo. Desligado, são cartões sólidos.",
+        "desktop_app": "Aplicativo para desktop",
+        "keep_running_when_window_closed": "Manter o aplicativo em execução em segundo plano ao fechar a janela",
+        "keep_running_when_window_closed_desc": "Fechar a janela oculta o {{productName}}, e suas sessões e tarefas continuam em execução. Desative para que o botão de fechar encerre o aplicativo. Um gateway iniciado por este aplicativo para junto com ele, e um gateway ao qual ele apenas se conecta continua em execução.",
+        "keep_running_when_window_closed_save_failed": "Não foi possível salvar esta configuração. Nada foi alterado. Tente novamente."
       },
       "importPanel": {
         "agent_data": "Dados do agente",

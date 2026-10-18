@@ -16921,7 +16921,11 @@
         "custom_font_ligatures": "Ligaturen aktivieren",
         "custom_font_ligatures_desc": "Programmierligaturen (=>, !=, ->) rendern, wenn die benutzerdefinierte Schrift sie hat. Code und Diffs in Nachrichten sind nicht betroffen.",
         "translucent_panels": "Durchscheinende Flächen",
-        "translucent_panels_desc": "Zeigt obere Leiste, Tableiste, Nachrichtenfeld, Vorschlags-Chips und Suchfelder als Milchglas über dem Inhalt, der darunter scrollt. Ausgeschaltet sind sie undurchsichtige Karten."
+        "translucent_panels_desc": "Zeigt obere Leiste, Tableiste, Nachrichtenfeld, Vorschlags-Chips und Suchfelder als Milchglas über dem Inhalt, der darunter scrollt. Ausgeschaltet sind sie undurchsichtige Karten.",
+        "desktop_app": "Desktop-App",
+        "keep_running_when_window_closed": "Nach dem Schließen des Fensters im Hintergrund weiterlaufen",
+        "keep_running_when_window_closed_desc": "Beim Schließen des Fensters wird {{productName}} ausgeblendet, und deine Sitzungen und Jobs laufen weiter. Schalte dies aus, damit die Schließen-Schaltfläche die App beendet. Ein von dieser App gestartetes Gateway wird mit ihr beendet, ein Gateway, mit dem sie nur verbunden ist, läuft weiter.",
+        "keep_running_when_window_closed_save_failed": "Diese Einstellung konnte nicht gespeichert werden. Es wurde nichts geändert. Versuch es erneut."
       },
       "importPanel": {
         "agent_data": "Agenten-Daten",

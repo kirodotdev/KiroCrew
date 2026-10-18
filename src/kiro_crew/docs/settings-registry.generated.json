@@ -1250,6 +1250,13 @@
       "hint": "Chat bubbles or CLI-style line-by-line output"
     },
     {
+      "id": "display.keep-running-in-the-background-after-closing-the-window",
+      "label": "Keep running in the background after closing the window",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.keep-running-in-the-background-after-closing-the-window",
+      "description": "Closing the window hides Kiro Crew and keeps your sessions and jobs running. Turn this off to make the close button quit the app. A gateway this app started stops with it, and a gateway it only connects to keeps running."
+    },
+    {
       "id": "display.language",
       "label": "Language",
       "tab": "display",

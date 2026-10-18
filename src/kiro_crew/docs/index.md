@@ -83,7 +83,7 @@ documented by their own in-panel help.
 | Import / Export | Bringing data in from another AI agent, and backing up or restoring Kiro Crew configuration | [Snapshot and restore](snapshot-and-restore.md) |
 | Agent Harness | Which agent new sessions start | — |
 | Chat | Composer behaviour, queued messages, feature tips | [Feature Tips](feature-tips.md) |
-| Display | Theme, language, and layout | — |
+| Display | Theme, language, and layout; in the desktop app, whether closing the window keeps the app running or quits it | — |
 | Voice | Speech-to-text and spoken replies | [Configuration](configuration.md) |
 | Notifications | Where a proactive message is delivered | — |
 | Shortcuts | Keyboard bindings | — |

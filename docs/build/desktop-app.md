@@ -1212,7 +1212,9 @@ it).
   `%LOCALAPPDATA%\Kiro-Cli` — so an already-running gateway does not depend on
   inheriting an installer-updated `PATH`.
 - [`window-lifecycle.js`](../../website/electron/window-lifecycle.js) hides the
-  app to the tray on window close; the composition root delegates quit-time
+  app to the tray on window close, or quits through the same path as the Quit
+  menu item when the user chose that (`closeAction` in the app's own config,
+  decided by [`close-action.js`](../../website/electron/close-action.js)); the composition root delegates quit-time
   gateway teardown to the supervisor, which performs the graceful shutdown and
   signal escalation contract. On POSIX,
   [`gateway-stop.js`](../../website/electron/gateway-stop.js) lists the child's
