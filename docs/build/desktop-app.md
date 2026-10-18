@@ -1093,16 +1093,27 @@ unit-testable without mocking globals.
 The supervisor keeps every piece of gateway state in its own closure — the
 child, its ownership classification, the start-failure record, the liveness
 monitor and the update handoff — together with the spawn site, the port
-occupancy and identity decisions, the connect flow and recovery. It composes
-five owners under `runtime/gateway/` and hands each only the host modules and
-state getters it reads: `launch-preflight.js` (which backend binary to run,
+occupancy and identity probes, the launch and connect flows, and the choice of
+liveness recovery. It composes eleven owners under `runtime/gateway/` and hands
+each only the host modules and state getters it reads, plus a setter for each
+state slot it changes: `launch-preflight.js` (which backend binary to run,
 whether the bundle is complete, the project directory, the AppImage sandbox
 advice, the launchd `PATH`, and whether the app can relaunch itself),
 `port-holders.js` (the lsof/ps/netstat probes, trusted Windows gateway
 commands, the incumbent snapshot and exit wait, and force-stop),
 `family-takeover.js` (quitting the other release family's app),
-`token-sources.js` (the local-secret mint and the SSH token fetch), and
-`remote-crew-prompt.js` (the failure dialog's remote-crew form).
+`token-sources.js` (the local-secret mint and the SSH token fetch),
+`remote-crew-prompt.js` (the failure dialog's remote-crew form), `home-lock.js`
+(whether a pid holds this data folder's `gateway.lock`, the CLI's pid-pinned
+stop and its `gateway-pid` lock probe), `holder-decision.js` (what a launch does
+about a gateway already on its port), `successor-handoff.js` (restarting the
+app through a successor that must serve first, whether the failure dialog may
+offer Start Local Gateway, and the HTTP identity, responder and readiness
+probes), `failure-dialog.js` (the gateway-failure and restart-required dialogs
+and the reveal before them and the token prompt), `shutdown.js` (the
+graceful, pre-update and tree-kill stops), and `reconnect.js` (the liveness
+recoveries that reconnect to an external or adopted gateway instead of killing
+it).
 
 - Ensures `KIROCREW_HOME` (default `~/.kiro/crew`, overridable via the
   `KIROCREW_HOME` env var) exists, then spawns the backend with

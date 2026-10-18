@@ -31,6 +31,19 @@ const {
   winDragReserveForZoom,
 } = require("../runtime/window/chrome");
 
+// The gateway supervisor's source: the runtime/gateway/ owners that define code
+// these pins read, then the facade, as one text because the pins hold over all of
+// it.
+const SUPERVISOR_FILES = [
+  "runtime/gateway/home-lock.js",
+  "runtime/gateway/successor-handoff.js",
+  "runtime/gateway/failure-dialog.js",
+  "runtime/gateway/holder-decision.js",
+  "runtime/gateway/shutdown.js",
+  "runtime/gateway/reconnect.js",
+  "gateway-supervisor.js",
+];
+
 function validOptions(overrides = {}) {
   return {
     electron: {},
@@ -57,8 +70,9 @@ describe("every token-bearing navigation stays on the configured origin", () => 
   // every existing user's unsent drafts, and the configured string is compared by
   // exact equality in several places. This scans the SOURCE rather than one call
   // path, so a site added later reddens too.
-  const SUPERVISOR = fs
-    .readFileSync(path.join(__dirname, "..", "gateway-supervisor.js"), "utf8")
+  const SUPERVISOR = SUPERVISOR_FILES
+    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .join("\n")
     .replace(/\r\n/g, "\n");
 
   /** Lines composing a credential onto a base, with the 4 lines before each. */
@@ -128,10 +142,9 @@ describe("every token-bearing navigation stays on the configured origin", () => 
     // The boot navigation is the one token-bearing site outside this module, and
     // it addresses the URL it was configured with -- so the first document the
     // user sees is already on the origin every later navigation uses.
-    const supervisor = fs.readFileSync(
-      path.join(__dirname, "..", "gateway-supervisor.js"),
-      "utf8",
-    );
+    const supervisor = SUPERVISOR_FILES
+      .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+      .join("\n");
     assert.equal(
       /loopbackOrigin|tokenOrigin/.test(supervisor),
       false,

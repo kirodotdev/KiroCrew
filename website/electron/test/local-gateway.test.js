@@ -9,6 +9,19 @@ const {
   classifyStartFailure,
 } = require("../local-gateway");
 
+// The gateway supervisor's source: the runtime/gateway/ owners that define code
+// these pins read, then the facade, as one text because the pins hold over all of
+// it.
+const SUPERVISOR_FILES = [
+  "runtime/gateway/home-lock.js",
+  "runtime/gateway/successor-handoff.js",
+  "runtime/gateway/failure-dialog.js",
+  "runtime/gateway/holder-decision.js",
+  "runtime/gateway/shutdown.js",
+  "runtime/gateway/reconnect.js",
+  "gateway-supervisor.js",
+];
+
 /** Minimal electron-store stand-in: the two methods these helpers use. */
 function fakeStore(initial = {}) {
   const data = { ...initial };
@@ -172,10 +185,9 @@ test("classifyStartFailure: a plain spawn failure and a timeout stay distinct", 
 test("client-only: the failure dialog derives its log pane from that one bit", () => {
   // Source-level pin. The log pane is exactly the client-only condition, so a
   // second flag for it would be a duplicate spelling that can drift.
-  const source = fs.readFileSync(
-    path.join(__dirname, "..", "gateway-supervisor.js"),
-    "utf8",
-  );
+  const source = SUPERVISOR_FILES
+    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .join("\n");
   assert.match(source, /const showLog = !localGatewayOff;/);
   assert.doesNotMatch(source, /showLog:/);
 });
@@ -188,10 +200,9 @@ test("client-only: the local-start offer routes through a re-exec on a crew's po
   // gateway on -> no offer; client-only on this launch's own port -> offer, start
   // in place; client-only on a crew's port -> offer while a re-exec is
   // possible; noRetry -> no offer.
-  const source = fs.readFileSync(
-    path.join(__dirname, "..", "gateway-supervisor.js"),
-    "utf8",
-  );
+  const source = SUPERVISOR_FILES
+    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .join("\n");
   assert.match(source, /const enableButton = offerLocalStart && !noRetry/);
   assert.match(source, /offerLocalStart: canOfferLocalStart\(localGatewayOff, remoteTarget\)/);
   // One named gate, so the two questions -- may we offer it, and what does it do

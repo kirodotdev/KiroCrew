@@ -14,6 +14,19 @@ const {
 } = require("../gateway-stop");
 const { listenerSecretPath } = require("../local-token");
 
+// The gateway supervisor's source: the runtime/gateway/ owners that define code
+// these pins read, then the facade, as one text because the pins hold over all of
+// it.
+const SUPERVISOR_FILES = [
+  "runtime/gateway/home-lock.js",
+  "runtime/gateway/successor-handoff.js",
+  "runtime/gateway/failure-dialog.js",
+  "runtime/gateway/holder-decision.js",
+  "runtime/gateway/shutdown.js",
+  "runtime/gateway/reconnect.js",
+  "gateway-supervisor.js",
+];
+
 // Helper: temp KIROCREW_HOME containing a .local_secret file.
 function tmpHomeWithSecret(secret) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gw-stop-"));
@@ -441,10 +454,9 @@ test("wedge recovery kills the gateway TREE, not just the wedged pid", () => {
   // Source-asserted at the supervisor ownership boundary. The requirement is
   // that the wedge kill go through a tree-scoped path on win32, not that it use
   // any particular helper name.
-  const supervisor = fs.readFileSync(
-    path.join(__dirname, "..", "gateway-supervisor.js"),
-    "utf8",
-  );
+  const supervisor = SUPERVISOR_FILES
+    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .join("\n");
   const marker = "liveness: backend unresponsive — force-killing wedged gateway";
   const at = supervisor.indexOf(marker);
   assert.notStrictEqual(
@@ -491,10 +503,9 @@ test("the gateway supervisor bounds the shutdown tree kill to the hard deadline"
   // Rather than pre-empting the kill (which would defeat its purpose by killing
   // the parent alone and orphaning the tree it exists to reap), the call site
   // passes TIGHTER timeouts so the whole tree kill provably completes first.
-  const supervisor = fs.readFileSync(
-    path.join(__dirname, "..", "gateway-supervisor.js"),
-    "utf8",
-  );
+  const supervisor = SUPERVISOR_FILES
+    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .join("\n");
   const start = supervisor.indexOf("function killGatewayTreeOnWindowsBounded");
   assert.notStrictEqual(
     start,

@@ -49,10 +49,16 @@ test("runtime gateway owners take every host dependency from the supervisor", ()
   const ownerDir = path.join(__dirname, "..", "runtime", "gateway");
   const owners = fs.readdirSync(ownerDir).filter((name) => name.endsWith(".js")).sort();
   assert.deepStrictEqual(owners, [
+    "failure-dialog.js",
     "family-takeover.js",
+    "holder-decision.js",
+    "home-lock.js",
     "launch-preflight.js",
     "port-holders.js",
+    "reconnect.js",
     "remote-crew-prompt.js",
+    "shutdown.js",
+    "successor-handoff.js",
     "token-sources.js",
   ]);
   const facade = fs.readFileSync(MODULE_PATH, "utf8");

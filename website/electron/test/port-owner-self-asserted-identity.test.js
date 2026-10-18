@@ -28,7 +28,19 @@ function code(file) {
     .replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
 
-const SUPERVISOR = code("gateway-supervisor.js");
+// The gateway supervisor's source: the runtime/gateway/ owners that define code
+// these pins read, then the facade, as one text because the pins hold over all of
+// it.
+const SUPERVISOR_FILES = [
+  "runtime/gateway/home-lock.js",
+  "runtime/gateway/successor-handoff.js",
+  "runtime/gateway/failure-dialog.js",
+  "runtime/gateway/holder-decision.js",
+  "runtime/gateway/shutdown.js",
+  "runtime/gateway/reconnect.js",
+  "gateway-supervisor.js",
+];
+const SUPERVISOR = SUPERVISOR_FILES.map(code).join("\n");
 const STOP = code("gateway-stop.js");
 
 const OCCUPANCY_PROBE = "probeGatewayPortBinding";

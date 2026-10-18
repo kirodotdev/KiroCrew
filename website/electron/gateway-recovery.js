@@ -442,10 +442,10 @@ function unrecoverableGatewayDialog({
  * remote-tunnel setup reconnects on every screen lock/unlock — see #6373).
  * The splash and dashboard load fine into a background, minimized, or hidden
  * window; a window the user hid to tray stays hidden until THEY reopen it.
- * The escalation rule lives in main.js: silent while self-healing, but any
- * state that needs input (token prompt, failure dialog, the terminal
- * unrecoverable-gateway dialog) does a full reveal via revealForUserDecision
- * at the point it is reached.
+ * The escalation rule lives in the gateway supervisor: silent while
+ * self-healing, but any state that needs input (token prompt, failure dialog,
+ * the terminal unrecoverable-gateway dialog) does a full reveal via
+ * revealForUserDecision (runtime/gateway/failure-dialog.js) where it is reached.
  *
  * @param {object} win  BrowserWindow-like: show().
  * @param {object} [o]

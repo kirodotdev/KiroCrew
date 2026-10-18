@@ -14,6 +14,19 @@ const {
   GATEWAY_UTF8_ENV,
 } = require("../gateway-env");
 
+// The gateway supervisor's source: the runtime/gateway/ owners that define code
+// these pins read, then the facade, as one text because the pins hold over all of
+// it.
+const SUPERVISOR_FILES = [
+  "runtime/gateway/home-lock.js",
+  "runtime/gateway/successor-handoff.js",
+  "runtime/gateway/failure-dialog.js",
+  "runtime/gateway/holder-decision.js",
+  "runtime/gateway/shutdown.js",
+  "runtime/gateway/reconnect.js",
+  "gateway-supervisor.js",
+];
+
 for (const [platform, inheritedEncoding] of [
   ["win32", "cp1252"],
   ["darwin", "ascii"],
@@ -326,7 +339,9 @@ test("a staged record whose node_bin or version could leave the staged tree is n
 });
 
 test("the owned gateway spawn exports the bundled kiro-cli directory after probing it", () => {
-  const supervisor = fs.readFileSync(path.join(__dirname, "..", "gateway-supervisor.js"), "utf8");
+  const supervisor = SUPERVISOR_FILES
+    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .join("\n");
   assert.match(
     supervisor,
     /env:\s*buildGatewayEnvironment\(\{[\s\S]*?bundledKiroCliEnvironment\(fs, path, processObj\.resourcesPath, \{[\s\S]*?spawnSync: defaultSpawnSync,[\s\S]*?log: glog,[\s\S]*?\}\)/,
@@ -334,10 +349,9 @@ test("the owned gateway spawn exports the bundled kiro-cli directory after probi
 });
 
 test("the one desktop gateway spawn uses the hardened environment builder", () => {
-  const supervisor = fs.readFileSync(
-    path.join(__dirname, "..", "gateway-supervisor.js"),
-    "utf8",
-  );
+  const supervisor = SUPERVISOR_FILES
+    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .join("\n");
   const gatewaySpawns = [...supervisor.matchAll(/spawn\(spawnBin, spawnArgs,/g)];
 
   assert.equal(gatewaySpawns.length, 1, "expected one owned gateway spawn boundary");

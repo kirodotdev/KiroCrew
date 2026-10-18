@@ -56,7 +56,7 @@ and each facade composes cohesive owners under `runtime/<area>/`:
 
 | Facade (what `main.js` and `ipc-registrar.js` require) | Runtime owners it composes | What stays in the facade |
 |---|---|---|
-| `gateway-supervisor.js` (`createGatewaySupervisor`) | `runtime/gateway/launch-preflight.js` (backend binary, bundle completeness, project dir, sandbox-profile advice, launchd `PATH`, relaunch target) · `port-holders.js` (lsof/ps/netstat probes, trusted Windows gateway commands, incumbent snapshot and exit wait, force-stop) · `family-takeover.js` (quitting the other release family's app) · `token-sources.js` (the local-secret mint and the SSH token fetch) · `remote-crew-prompt.js` (the Add / Edit Remote Crew form) | All gateway state (child, ownership, start failure, liveness monitor, update handoff), the spawn site and its environment, every port occupancy and identity decision, the connect flow, the failure dialog, liveness recovery and shutdown |
+| `gateway-supervisor.js` (`createGatewaySupervisor`) | `runtime/gateway/launch-preflight.js` (backend binary, bundle completeness, project dir, sandbox-profile advice, launchd `PATH`, relaunch target) · `port-holders.js` (lsof/ps/netstat probes, trusted Windows gateway commands, incumbent snapshot and exit wait, force-stop) · `family-takeover.js` (quitting the other release family's app) · `token-sources.js` (the local-secret mint and the SSH token fetch) · `remote-crew-prompt.js` (the Add / Edit Remote Crew form) · `home-lock.js` (whether a pid holds this data folder's `gateway.lock`, the CLI's pid-pinned stop, the `gateway-pid` lock probe) · `holder-decision.js` (what a launch does about a gateway already on its port: adopt, wait out a drain, warn about an older bundled one, stop and restart a stuck one, refuse one it cannot attribute) · `successor-handoff.js` (restarting through a successor copy that must serve before this one exits, whether the failure dialog may offer Start Local Gateway, the `/api/health`, any-responder and `/api/ready` probes) · `failure-dialog.js` (the gateway-failure window and its installing auto-retry, the restart-required dialog, the reveal before the token prompt and both dialogs) · `shutdown.js` (the graceful and pre-update stops, the bounded and the wedge tree kills) · `reconnect.js` (the liveness recoveries that wait instead of killing: an external gateway, an adopted one) | All gateway state (child, ownership, start failure, liveness monitor, update handoff) and the getters and setters owners reach it through, the spawn site and its environment, the port occupancy and identity probes every decision reads, the launch and connect flows and their failure wording, the liveness monitor, and the choice of recovery with the kill-and-respawn of its own child |
 | `window-lifecycle.js` (`createWindowLifecycle`) | `runtime/window/chrome.js` (traffic lights, title-bar overlay, native theme, zoom, focus-mode chrome) · `prompts.js` (New Connection Window port prompt, Rename Window) · `session-security.js` (session permission policy, microphone and screen-recording recovery dialogs) · `linux-captions.js` (frameless Linux caption controls) · `browser-panels.js` (per-window native browser panels and their agent command channel) | Window creation and state restore, the drag band, fullscreen handling, close-to-tray and every show path, the tray, the remote-host prompt, the menu, window-control admission, and the browser IPC routing |
 | `auto-update.js` (`initAutoUpdate` and 16 policy exports) | `runtime/update/state-reporter.js` (channel, lane pair, lifecycle pushes, replayable info) · `feed-lane.js` (electron-updater discovery, download, staged install) · `managed-lane.js` (the marker-driven check and apply commands) | Channel and feed policy (`KNOWN_CHANNELS`, `channelHasLane`, `channelForVersion`, `buildFeedBase`, `manualDownloadUrl`), the update-policy flags, the `EXTERNALLY-MANAGED` marker reader and its caps, the narrowed marker-command `PATH`, the install-shape probes, and the gates that choose a lane |
 | `crash-collector.js` (`armCrashCollector`, `collectCrashReports`, `crashNoticeSummary`) | `runtime/crash/ownership.js` · `artifact-parsers.js` · `candidates.js` · `persistence.js` · `scan.js` | The export surface and `crashNoticeSummary`, the one renderer-facing view |
@@ -68,7 +68,10 @@ Three rules keep this layout safe to change:
   also read source text, so a pinned construct moves only together with its pin,
   and the pin reads the file that defines it: the facade for most, a runtime
   owner for a few (the managed lane's pinned shell, the browser panels' view
-  wiring).
+  wiring). Gateway-supervisor pins that hold over every site at once, and pins
+  on code a `runtime/gateway/` owner defines, read those owners and then the
+  facade as one text, named once per test in `SUPERVISOR_FILES`; an owner that
+  takes more of the facade's code joins those lists.
 - A runtime owner never requires Electron, the facade, or `fs`/`os`/`path`/
   `http`/`child_process` where its facade injects them, and never resolves a
   path from its own `__dirname`: the Electron directory (`loading.html`, the
@@ -84,7 +87,10 @@ Three rules keep this layout safe to change:
 New main-process code goes to the runtime owner whose entry above names its
 responsibility, not to the facade: a new lsof/ps/netstat or process-identity
 probe goes to `runtime/gateway/port-holders.js`, a launch precondition to
-`launch-preflight.js`, native window chrome to `runtime/window/chrome.js`, an
+`launch-preflight.js`, a new verdict about a gateway already on the port to
+`holder-decision.js`, a new kind of stop to `shutdown.js`, a failure-dialog
+control to `failure-dialog.js`, native window chrome to
+`runtime/window/chrome.js`, an
 update lane's step to `feed-lane.js` or `managed-lane.js`, and a crash-artifact
 rule to its owner under `runtime/crash/`. A facade grows only in its "What stays
 in the facade" column, and a responsibility no owner names gets a new file under

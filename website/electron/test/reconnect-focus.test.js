@@ -31,6 +31,19 @@ const {
   HIDE_REASSERT_MS,
 } = require("../hide-to-tray");
 
+// The gateway supervisor's source: the runtime/gateway/ owners that define code
+// these pins read, then the facade, as one text because the pins hold over all of
+// it.
+const SUPERVISOR_FILES = [
+  "runtime/gateway/home-lock.js",
+  "runtime/gateway/successor-handoff.js",
+  "runtime/gateway/failure-dialog.js",
+  "runtime/gateway/holder-decision.js",
+  "runtime/gateway/shutdown.js",
+  "runtime/gateway/reconnect.js",
+  "gateway-supervisor.js",
+];
+
 function fakeWin() {
   const calls = [];
   return {
@@ -75,10 +88,9 @@ describe("gateway supervisor wiring (source pins)", () => {
     path.join(__dirname, "..", "ipc-registrar.js"),
     "utf8",
   );
-  const SUPERVISOR_JS = fs.readFileSync(
-    path.join(__dirname, "..", "gateway-supervisor.js"),
-    "utf8",
-  );
+  const SUPERVISOR_JS = SUPERVISOR_FILES
+    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .join("\n");
 
   // Supervisor-owned functions are nested one level inside the factory. Their
   // closing brace is therefore the first one at two-space indentation.

@@ -1623,8 +1623,9 @@ spawn-run and spawn poll, `_artifact`, the no-socket arm of
 and `restart` use, so the answer does not depend on the listener socket: it
 names a draining gateway that has released its socket but still holds the lock.
 The desktop app runs it during liveness and adopt-time drain recovery when its
-socket lookup names no incumbent (see `website/electron/gateway-supervisor.js`,
-`probeLockHolderPid`). It sends no signal, starts nothing and takes no lock.
+socket lookup names no incumbent (see
+`website/electron/runtime/gateway/home-lock.js`, `probeLockHolderPid`). It
+sends no signal, starts nothing and takes no lock.
 
 | stdout | exit | meaning | desktop verdict |
 |---|---|---|---|

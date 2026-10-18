@@ -142,7 +142,6 @@
 2820 test/test_subagent_turn_resilience.py
 2460 test/test_taskq_runner_adapter.py
 5831 test/test_vector_memory.py
-2944 website/electron/gateway-supervisor.js
 2169 website/src/apps/command-bar/CommandBarOverlay.test.tsx
 2145 website/src/apps/design-tweak/DesignTweakPage.tsx
 2208 website/src/apps/issue-radar/api.ts

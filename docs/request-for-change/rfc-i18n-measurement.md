@@ -242,7 +242,7 @@ exists, so the blast radius is unmeasured.
 served, and injected into the LLM prompt only. Native menus
 (`website/electron/app-menu.js`), tray (`createTray` in
 `website/electron/window-lifecycle.js`), and dialogs (`resolveGatewayConflict`
-in `website/electron/gateway-supervisor.js` and
+in `website/electron/runtime/gateway/holder-decision.js` and
 `offerRelocationIfUnupdatable` in `website/electron/main.js`) are hardcoded, as
 are update notifications (the `notifyUpdateFound` callback in `registerUpdater`
 in `website/electron/ipc-registrar.js`).

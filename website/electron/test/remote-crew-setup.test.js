@@ -19,6 +19,19 @@ const SUPERVISOR_PATH = path.join(__dirname, "..", "gateway-supervisor.js");
 const { createGatewaySupervisor } = require(SUPERVISOR_PATH);
 const { createWindowLifecycle } = require("../window-lifecycle");
 
+// The gateway supervisor's source: the runtime/gateway/ owners that define code
+// these pins read, then the facade, as one text because the pins hold over all of
+// it.
+const SUPERVISOR_FILES = [
+  "runtime/gateway/home-lock.js",
+  "runtime/gateway/successor-handoff.js",
+  "runtime/gateway/failure-dialog.js",
+  "runtime/gateway/holder-decision.js",
+  "runtime/gateway/shutdown.js",
+  "runtime/gateway/reconnect.js",
+  "gateway-supervisor.js",
+];
+
 function fakeStore(initial = {}) {
   const data = { ...initial };
   return {
@@ -177,7 +190,9 @@ test("saveRemoteCrewConfig writes nothing when the form is refused", () => {
 });
 
 test("the failure dialog offers the crew form and retries once it is saved", () => {
-  const source = fs.readFileSync(SUPERVISOR_PATH, "utf8");
+  const source = SUPERVISOR_FILES
+    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .join("\n");
 
   assert.match(
     source,
