@@ -49,6 +49,11 @@ ACCT = "9" * 12
 #: ``[^\s"',;)\]}]+``, so what the value CONTAINS is not what these tests measure;
 #: only that it is a value and that the delimiter after it survives.
 SESSION_TOKEN = "session-token-" + "x" * 12
+#: GitHub token shapes, ASSEMBLED and low-entropy for the same reason.
+GH_TOKEN = "ghp" + "_" + "x" * 36
+GH_PAT = "github" + "_pat_" + "x" * 30
+#: A stand-in for a bare secret access key: no prefix, no ``name=`` beside it.
+BARE_SECRET = "bare-secret-" + "y" * 28
 
 
 def _load(name: str, path: Path):
@@ -186,6 +191,16 @@ class TestJsonModeKeepsTheDocumentParseable:
 
         assert redact.main(["--mode", "json", str(path)]) == 1
 
+    def test_the_refusal_does_not_print_the_key_it_refuses(self, tmp_path: Path, capsys) -> None:
+        """The diagnostic reaches a public job log, and the key IS the credential."""
+        path = tmp_path / "weird.json"
+        path.write_text(json.dumps({GH_TOKEN: "value"}), encoding="utf-8")
+
+        assert redact.main(["--mode", "json", str(path)]) == 1
+
+        captured = capsys.readouterr()
+        assert GH_TOKEN not in captured.err + captured.out
+
 
 class TestTextMode:
     def test_a_plain_log_line_is_redacted(self, tmp_path: Path) -> None:
@@ -221,6 +236,94 @@ class TestTextMode:
         assert redact.main(["--mode", "text", str(path)]) == 0
 
         assert path.read_text(encoding="utf-8") == "env: AWS_SESSION_TOKEN=[REDACTED]; next\n"
+
+    @pytest.mark.parametrize("token", (GH_TOKEN, GH_PAT))
+    def test_a_github_token_is_redacted(self, tmp_path: Path, token: str) -> None:
+        path = tmp_path / "body.md"
+        path.write_text(f"token {token}, then prose.\n", encoding="utf-8")
+
+        assert redact.main(["--mode", "text", str(path)]) == 0
+
+        assert path.read_text(encoding="utf-8") == "token [REDACTED-GH-TOKEN], then prose.\n"
+
+
+class TestRedactEnv:
+    """``--redact-env`` matches an inherited credential VALUE that no shape rule sees."""
+
+    def test_a_bare_value_is_redacted_in_text_mode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_SECRET", BARE_SECRET)
+        path = tmp_path / "body.md"
+        path.write_text(f"the key is {BARE_SECRET}.\n", encoding="utf-8")
+
+        assert redact.main(["--mode", "text", "--redact-env", "FAKE_SECRET", str(path)]) == 0
+
+        assert path.read_text(encoding="utf-8") == "the key is [REDACTED-CREDENTIAL].\n"
+
+    def test_a_bare_value_is_redacted_inside_a_json_string(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_SECRET", BARE_SECRET)
+        path = tmp_path / "report.json"
+        path.write_text(json.dumps({"why": f"saw {BARE_SECRET}"}), encoding="utf-8")
+
+        assert redact.main(["--mode", "json", "--redact-env", "FAKE_SECRET", str(path)]) == 0
+
+        assert json.loads(path.read_text(encoding="utf-8")) == {"why": "saw [REDACTED-CREDENTIAL]"}
+
+    def test_the_value_is_matched_before_a_shape_rule_can_split_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 12-digit run between ``/`` and ``+`` is an account-id match on its own."""
+        value = "tokenpart/" + ACCT + "+tokenrest"
+        monkeypatch.setenv("FAKE_TOKEN", value)
+        path = tmp_path / "body.md"
+        path.write_text(f"{value}\n", encoding="utf-8")
+
+        assert redact.main(["--mode", "text", "--redact-env", "FAKE_TOKEN", str(path)]) == 0
+
+        assert path.read_text(encoding="utf-8") == "[REDACTED-CREDENTIAL]\n"
+
+    def test_a_value_in_an_assignment_keeps_its_exact_marker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The assignment rule must not cut an earlier marker to ``[REDACTED]]``."""
+        text = f"aws_secret_access_key={BARE_SECRET} and aws_session_token={KEY_ID}"
+
+        assert redact.redact_text(text, (BARE_SECRET,)) == (
+            "aws_secret_access_key=[REDACTED-CREDENTIAL] "
+            "and aws_session_token=[REDACTED-AWS-KEY-ID]"
+        )
+
+    @pytest.mark.parametrize("value", ("[redacted-abcdef", "[REDACTED-abc", "[REDACTEDabc"))
+    def test_only_a_whole_marker_is_left_alone(self, value: str) -> None:
+        """A value merely STARTING like a marker is still a value, and is redacted."""
+        assert redact.redact_text(f"aws_session_token={value}") == ("aws_session_token=[REDACTED]")
+
+    @pytest.mark.parametrize("value", (None, "", "short-value"))
+    def test_an_unset_or_short_value_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str | None
+    ) -> None:
+        if value is None:
+            monkeypatch.delenv("FAKE_SECRET", raising=False)
+        else:
+            monkeypatch.setenv("FAKE_SECRET", value)
+        path = tmp_path / "body.md"
+        path.write_text("a short-value stays.\n", encoding="utf-8")
+
+        assert redact.main(["--mode", "text", "--redact-env", "FAKE_SECRET", str(path)]) == 0
+
+        assert path.read_text(encoding="utf-8") == "a short-value stays.\n"
+
+    def test_the_flag_is_refused_with_drop_changed_fields(self, tmp_path: Path) -> None:
+        path = tmp_path / "corpus.json"
+        path.write_text("[]", encoding="utf-8")
+
+        with pytest.raises(SystemExit) as caught:
+            redact.main(["--mode", "json", "--drop-changed-fields", "--redact-env", "X", str(path)])
+
+        assert caught.value.code == 2
 
 
 class TestTheChangedSignal:
@@ -281,6 +384,8 @@ class TestTheMarkerSpellings:
             (ARN, "[REDACTED-ARN]"),
             (ACCT, "[REDACTED-ACCT]"),
             ("aws_secret_access_key=abcdef", "[REDACTED]"),
+            (GH_TOKEN, "[REDACTED-GH-TOKEN]"),
+            (GH_PAT, "[REDACTED-GH-TOKEN]"),
         ],
     )
     def test_the_marker_is_spelled_exactly_as_the_seed_path_greps_for_it(
@@ -291,6 +396,9 @@ class TestTheMarkerSpellings:
     def test_every_prefixed_marker_matches_the_seed_path_pattern(self) -> None:
         redacted = redact.redact_text(f"{KEY_ID} {ARN} {ACCT}")
         assert redacted.count("[REDACTED-") == 3
+
+    def test_the_exact_value_marker_is_spelled_as_the_lanes_grep_for_it(self) -> None:
+        assert redact.redact_text(BARE_SECRET, (BARE_SECRET,)) == "[REDACTED-CREDENTIAL]"
 
 
 class TestTheReportStillFolds:

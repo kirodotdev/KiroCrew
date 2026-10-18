@@ -67,6 +67,12 @@ Two modes, because the two file shapes cannot share one mechanism.
     a scrub may do. The flag is refused outright with ``--mode text``, which has no
     rows to reason about.
 
+``--redact-env NAME`` (a modifier on either mode, repeatable)
+    Also replaces the exact value of environment variable ``NAME``. A bare AWS
+    secret access key has no prefix and no ``name=`` beside it, so no shape rule
+    can see it; matching the inherited value itself can. This is what the reviewer
+    lanes need to move off their copied scrub (#10037).
+
 Callers branch on whether anything CHANGED -- a redacted row names a placeholder
 instead of the operation that was refused, so the lane withholds it rather than
 passing that off as a finding -- so the answer is reported two ways: a
@@ -93,6 +99,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -122,9 +129,10 @@ _ACCOUNT_RE = re.compile(r"\b[0-9]{12}\b")
 #: still matches. The value is bounded by the delimiters that END a value, so a
 #: match cannot swallow the punctuation that follows it.
 _SECRET_ASSIGN_RE = re.compile(
-    r"(aws_secret_access_key|aws_session_token|x-amz-security-token)"
-    r"[\"']?\s*[:=]\s*[\"']?"
-    r"[^\s\"',;)\]}]+",
+    r"(aws_secret_access_key|aws_session_token|x-amz-security-token)" r"[\"']?\s*[:=]\s*[\"']?"
+    # A value that is already a marker is left alone, so an earlier rule's
+    # ``[REDACTED-...]`` is not cut to ``[REDACTED]]`` by this one.
+    r"(?!(?-i:\[REDACTED(?:-[A-Z-]+)?\]))[^\s\"',;)\]}]+",
     re.IGNORECASE,
 )
 
@@ -138,10 +146,27 @@ _SECRET_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: GitHub token shapes: the prefixed classic tokens (``ghp_``, ``gho_``, ``ghu_``,
+#: ``ghs_``, ``ghr_``) and fine-grained ``github_pat_`` tokens. Every reviewer lane
+#: runs beside a ``GITHUB_TOKEN``, so the first-principles lanes' copied scrub
+#: carried these rules; they live here so a lane moving onto this script keeps them.
+_GH_TOKEN_RES = (
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+)
+
 #: The marker a redacted secret VALUE carries. Deliberately the same spelling the
 #: assignment rule produces, so the two rules cannot be told apart downstream by
 #: a reader who only has the published text.
 _SECRET_MARKER = "[REDACTED]"
+
+#: The marker an exact credential VALUE carries (see ``--redact-env``).
+_CREDENTIAL_MARKER = "[REDACTED-CREDENTIAL]"
+
+#: The shortest value ``--redact-env`` will match literally. An empty or very short
+#: value would match at nearly every position and carpet the file with the marker;
+#: every real AWS credential value is far longer than this.
+_MIN_LITERAL_LEN = 16
 
 
 class RedactError(Exception):
@@ -158,21 +183,31 @@ class ClassifiedFieldShaped(RedactError):
     """
 
 
-def redact_text(text: str) -> str:
+def redact_text(text: str, literals: tuple[str, ...] = ()) -> str:
     """Every rule, in the order that keeps the earlier ones' output intact.
+
+    Exact credential values (*literals*) go first: a shape rule that rewrote part
+    of a value -- a 12-digit run between a session token's ``/`` and ``+`` is an
+    account-id match -- would leave the rest of that value unmatched and published.
 
     The ARN rule runs before the account rule because an ARN CONTAINS an account
     id: reversing them would rewrite the account id first and leave an ARN the
     ARN rule cannot recognise, publishing the partition, service, region and
     resource path around a redacted middle.
     """
+    for literal in literals:
+        text = text.replace(literal, _CREDENTIAL_MARKER)
+    for pattern in _GH_TOKEN_RES:
+        text = pattern.sub("[REDACTED-GH-TOKEN]", text)
     text = _KEY_ID_RE.sub("[REDACTED-AWS-KEY-ID]", text)
     text = _ARN_RE.sub("[REDACTED-ARN]", text)
     text = _ACCOUNT_RE.sub("[REDACTED-ACCT]", text)
     return _SECRET_ASSIGN_RE.sub(lambda m: f"{m.group(1)}={_SECRET_MARKER}", text)
 
 
-def _redact_json_value(value: Any, *, key: str | None = None) -> tuple[Any, bool]:
+def _redact_json_value(
+    value: Any, *, key: str | None = None, literals: tuple[str, ...] = ()
+) -> tuple[Any, bool]:
     """Walk the document, rewriting string content and nothing else.
 
     Returns the value and whether this subtree changed. The traversal is
@@ -182,7 +217,7 @@ def _redact_json_value(value: Any, *, key: str | None = None) -> tuple[Any, bool
     if isinstance(value, str):
         if key is not None and _SECRET_KEY_RE.match(key):
             return _SECRET_MARKER, value != _SECRET_MARKER
-        redacted = redact_text(value)
+        redacted = redact_text(value, literals)
         return redacted, redacted != value
     if isinstance(value, dict):
         out: dict[str, Any] = {}
@@ -195,17 +230,19 @@ def _redact_json_value(value: Any, *, key: str | None = None) -> tuple[Any, bool
             # therefore refused, not redacted: these documents' keys are the
             # harness's own field names, so a match means the document is not
             # the shape this scrub was pointed at.
-            if isinstance(name, str) and redact_text(name) != name:
+            if isinstance(name, str) and redact_text(name, literals) != name:
                 raise RedactError(
-                    f"the object key {name!r} carries a credential shape. "
+                    # The key itself is NOT quoted: this message reaches a public
+                    # job log, and the key is the credential being refused.
+                    "an object key carries a credential shape. "
                     "A key names a field the consumer reads, so redacting it would "
                     "change the document's schema. Refusing to rewrite it."
                 )
-            out[name], child_changed = _redact_json_value(child, key=name)
+            out[name], child_changed = _redact_json_value(child, key=name, literals=literals)
             changed = changed or child_changed
         return out, changed
     if isinstance(value, list):
-        results = [_redact_json_value(item) for item in value]
+        results = [_redact_json_value(item, literals=literals) for item in value]
         return [item for item, _ in results], any(flag for _, flag in results)
     # int, float, bool and None carry no text to redact, and a number that merely
     # LOOKS like an account id is still a number: rewriting it to a bare token is
@@ -213,7 +250,7 @@ def _redact_json_value(value: Any, *, key: str | None = None) -> tuple[Any, bool
     return value, False
 
 
-def redact_json_text(text: str) -> tuple[str, bool]:
+def redact_json_text(text: str, literals: tuple[str, ...] = ()) -> tuple[str, bool]:
     """Redact a JSON document, guaranteeing the result is still JSON.
 
     The guarantee comes from the round trip: the redaction happens on decoded
@@ -225,7 +262,7 @@ def redact_json_text(text: str) -> tuple[str, bool]:
         document = json.loads(text)
     except json.JSONDecodeError as exc:
         raise RedactError(f"the file is not valid JSON, so it cannot be redacted as JSON: {exc}")
-    redacted, changed = _redact_json_value(document)
+    redacted, changed = _redact_json_value(document, literals=literals)
     return json.dumps(redacted, indent=2, ensure_ascii=False) + "\n", changed
 
 
@@ -357,7 +394,13 @@ def drop_changed_fields(text: str) -> tuple[str, int]:
     return json.dumps(out, indent=2, ensure_ascii=False) + "\n", removed
 
 
-def redact_file(path: Path, mode: str, *, drop_changed_fields_only: bool = False) -> bool:
+def redact_file(
+    path: Path,
+    mode: str,
+    *,
+    drop_changed_fields_only: bool = False,
+    literals: tuple[str, ...] = (),
+) -> bool:
     """Rewrite one file in place. Returns whether anything changed."""
     try:
         original = path.read_text(encoding="utf-8")
@@ -373,9 +416,9 @@ def redact_file(path: Path, mode: str, *, drop_changed_fields_only: bool = False
         # JSON. Only a removed field changes what anybody reads.
         changed = removed > 0
     elif mode == "json":
-        rewritten, changed = redact_json_text(original)
+        rewritten, changed = redact_json_text(original, literals)
     else:
-        rewritten = redact_text(original)
+        rewritten = redact_text(original, literals)
         changed = rewritten != original
     if rewritten != original:
         try:
@@ -415,8 +458,37 @@ def main(argv: list[str] | None = None) -> int:
         help="exit 10 when at least one file was redacted, for a caller that "
         "withholds a redacted file rather than publishing it.",
     )
+    parser.add_argument(
+        "--redact-env",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="also replace the exact VALUE of environment variable NAME with "
+        f"{_CREDENTIAL_MARKER}. Repeatable. Unset or values shorter than "
+        f"{_MIN_LITERAL_LEN} characters are skipped. Takes the variable's NAME so the "
+        "value never appears on a command line.",
+    )
     parser.add_argument("paths", nargs="+", type=Path, help="files to rewrite in place")
     parsed = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+
+    if parsed.redact_env and parsed.drop_changed_fields:
+        # Not supported, not dangerous: drop mode decides which fields to remove
+        # from the shape rules alone, and no caller needs exact values there. A
+        # refusal says so instead of silently ignoring the flag.
+        parser.error("--redact-env cannot be combined with --drop-changed-fields.")
+
+    # Longest first, so a value that contains another value is replaced whole.
+    literals = tuple(
+        sorted(
+            {
+                value
+                for name in parsed.redact_env
+                if len(value := os.environ.get(name, "")) >= _MIN_LITERAL_LEN
+            },
+            key=len,
+            reverse=True,
+        )
+    )
 
     if parsed.drop_changed_fields and parsed.mode != "json":
         # Argparse's own exit 2, not a RedactError: nothing was read, so no file is
@@ -430,7 +502,10 @@ def main(argv: list[str] | None = None) -> int:
     for path in parsed.paths:
         try:
             changed = redact_file(
-                path, parsed.mode, drop_changed_fields_only=parsed.drop_changed_fields
+                path,
+                parsed.mode,
+                drop_changed_fields_only=parsed.drop_changed_fields,
+                literals=literals,
             )
         except ClassifiedFieldShaped as exc:
             # Its own code, BEFORE the base class: the file is UNCHANGED and no
