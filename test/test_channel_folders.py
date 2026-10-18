@@ -27,7 +27,15 @@ from channel_folders_helpers import (  # noqa: F401 -- the fixture is requested 
 )
 
 from kiro_crew.config.paths import config_dir
-from kiro_crew.dashboard import channel_folders, channel_slots, chat_folders
+from kiro_crew.dashboard import (
+    channel_folders,
+    channel_slots,
+    chat_folders,
+    chat_folders_icons,
+    chat_folders_paths,
+    chat_folders_records,
+    chat_folders_routes,
+)
 from kiro_crew.dashboard.chat_utils import effective_session_key
 
 
@@ -400,7 +408,9 @@ class TestEnsureChannelFolder:
         not serialized against the others.
         """
         offenders: list[str] = []
-        for mod in (channel_folders, chat_folders):
+        # chat_folders is a facade: its folder routes and records live in its owners.
+        owners = (chat_folders_icons, chat_folders_paths, chat_folders_records, chat_folders_routes)
+        for mod in (channel_folders, chat_folders, *owners):
             tree = ast.parse(inspect.getsource(mod))
             for node in ast.walk(tree):
                 if (

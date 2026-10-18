@@ -396,7 +396,7 @@ resolves it without creating it (the doctor's census uses that).
 
 The CLI (`cli.py:main()`) auto-detects and sets the env var at startup.
 
-## Folder steering directories (`dashboard/chat_folders.py`)
+## Folder steering directories (`dashboard/chat_folders_paths.py`)
 
 A chat folder record in `folders.json` may carry an optional `steering_dirs`
 list of absolute (or `~`-prefixed) directories, alongside its existing
@@ -406,7 +406,7 @@ steering (`manual`, `auto` and `fileMatch` files are skipped), in addition to gl
 steering. The key is omitted when empty (like `color`/`tags`), so "absent means
 none" is the single on-disk representation and a PATCH with `[]` clears it.
 
-- **Validation** (`dashboard/chat_folders.py` `_validate_steering_dirs`) checks
+- **Validation** (`dashboard/chat_folders_paths.py` `_validate_steering_dirs`) checks
   each entry: at most `MAX_FOLDER_STEERING_DIR_LEN` (4096) characters before and
   after canonicalization; a UNC path refused before resolution; refused outright
   on a platform without a pinned tree walk (`pinned_fs.supports_pinned_tree_walk`);

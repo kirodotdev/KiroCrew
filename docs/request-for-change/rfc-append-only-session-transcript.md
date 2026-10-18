@@ -34,7 +34,7 @@ numbers, because every line reference taken from a checkout 962 commits behind h
 moved.
 
 - **The hot path re-serializes the whole window to record a one-row state change.**
-  `src/kiro_crew/dashboard/chat_persistence.py::_save_slot_to_history` keeps a frozen
+  `src/kiro_crew/dashboard/chat_persistence_parts/save_transaction.py::_save_slot_to_history` keeps a frozen
   prefix of `slot._disk_older_count` lines verbatim and rewrites the in-memory window.
   The module says so itself, twice, in capitals — "re-serializes the WHOLE in-memory
   window on every flush" — and sets

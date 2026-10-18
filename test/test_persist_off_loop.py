@@ -542,6 +542,10 @@ def test_no_startup_restore_read_runs_on_the_event_loop() -> None:
     """
     targets = [
         _src_root() / "dashboard" / "chat_persistence.py",
+        _src_root() / "dashboard" / "chat_persistence_parts" / "member_store.py",
+        _src_root() / "dashboard" / "chat_persistence_parts" / "restore_drivers.py",
+        _src_root() / "dashboard" / "chat_persistence_parts" / "save_transaction.py",
+        _src_root() / "dashboard" / "chat_persistence_parts" / "slot_builders.py",
         _src_root() / "dashboard" / "handlers" / "sessions.py",
         _src_root() / "dashboard" / "handlers" / "sessions_parts" / "usage_scrape.py",
         _src_root() / "dashboard" / "handlers" / "sessions_parts" / "app_scope.py",

@@ -87,7 +87,7 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/dashboard/chat_fork.py", "read_messages_chained_full"),
         # ``selection.recent`` -- a mirror selection field, not a transcript read.
         ("kiro_crew/dashboard/chat_mirror.py", "recent"),
-        ("kiro_crew/dashboard/chat_persistence.py", "read_messages_chained"),
+        ("kiro_crew/dashboard/chat_persistence_parts/slot_builders.py", "read_messages_chained"),
         ("kiro_crew/dashboard/chat_rewind.py", "read_messages_chained"),
         ("kiro_crew/dashboard/chat_slack.py", "recent"),
         # The decisions hooks composed into chat_runner: the same read it made.

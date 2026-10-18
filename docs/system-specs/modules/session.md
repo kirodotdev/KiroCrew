@@ -726,7 +726,7 @@ when done. See [acp-client.md](acp-client.md) for `AcpRuntime` /
 `AcpSessionHandle`.
 
 **Cheapest-model bg tasks**: the categorical/classification background tasks
-(folder-icon `chat_folders.py`, link-summary `chat_nav.py`, session title
+(folder-icon `chat_folders_icons.py`, link-summary `chat_nav.py`, session title
 `chat_title.py`, session-summary `handlers/sessions_parts/summaries.py`, STT endpointing
 `stt_stream.py`, and the lesson-contradiction check `dashboard/handlers/cron_lesson_supersede.py`,
 plus tips generation) express a `"auto"` model preference and pass it to a

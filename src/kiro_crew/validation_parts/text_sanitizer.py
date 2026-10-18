@@ -40,7 +40,7 @@ _HIDDEN_CATEGORIES = frozenset(
 
 # The ONLY format characters allowed through. Each has a real text-shaping job
 # that scripts and emoji sequences cannot express without it, so removing them
-# corrupts user content (``dashboard/chat_folders.py`` treats U+200D as a
+# corrupts user content (``dashboard/chat_folders_icons.py`` treats U+200D as a
 # meaningful emoji modifier, and ``test_validation.TestStripHiddenUnicode`` pins
 # ZWNJ/ZWJ survival here).
 #

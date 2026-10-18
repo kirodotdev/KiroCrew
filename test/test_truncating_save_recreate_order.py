@@ -56,6 +56,22 @@ def _owner_paths() -> list[Path]:
     return owners
 
 
+def _part_paths() -> list[Path]:
+    """The parts composed onto chat_persistence, which hold its save and restore code."""
+    parts = sorted(
+        Path(chat_persistence.__file__).with_name("chat_persistence_parts").glob("[!_]*.py")
+    )
+    assert parts, "no chat_persistence_parts module found beside chat_persistence.py"
+    return parts
+
+
+def _save_transaction_path() -> Path:
+    """The part holding ``save_slot_off_loop`` and ``_save_slot_to_history``."""
+    return Path(chat_persistence.__file__).with_name("chat_persistence_parts") / (
+        "save_transaction.py"
+    )
+
+
 def _handler_source() -> str:
     """chat_handlers.py and its chat_api owners, as one text."""
     return "\n".join(
@@ -420,7 +436,7 @@ def test_the_fence_read_and_the_registration_share_one_synchronous_block() -> No
     fence goes up after the read and before the write becomes visible, which is
     the window this whole ordering exists to remove.
     """
-    source = Path(chat_persistence.__file__).read_text(encoding="utf-8")
+    source = _save_transaction_path().read_text(encoding="utf-8")
     lines = source.splitlines()
     start = next(i for i, line in enumerate(lines) if 'getattr(slot, "is_closing", False)' in line)
     end = next(i for i in range(start, len(lines)) if "_register_guarded_write(save)" in lines[i])
@@ -562,7 +578,7 @@ def test_only_the_handover_drain_opts_out_of_the_fence() -> None:
     flag = "issued_by_the_retraction=True"
     hits = []
     modules = (handlers, chat_persistence, chat_regenerate, chat_rewind)
-    for path in [*(Path(module.__file__) for module in modules), *_owner_paths()]:
+    for path in [*(Path(module.__file__) for module in modules), *_owner_paths(), *_part_paths()]:
         source = path.read_text(encoding="utf-8")
         hits.extend([path.name] * source.count(flag))
 
@@ -968,7 +984,7 @@ def test_a_recreate_won_refusal_keeps_the_write_owed() -> None:
     The other retryable refusals in this function already call the helper whose
     docstring states exactly this; the recreate-won guard must join them.
     """
-    source = Path(chat_persistence.__file__).read_text(encoding="utf-8")
+    source = _save_transaction_path().read_text(encoding="utf-8")
     lines = source.splitlines()
 
     guard_at = next(

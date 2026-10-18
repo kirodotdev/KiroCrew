@@ -2261,7 +2261,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/registry_pipeline/store_art.py",
         # Internal persistence / indexing (the on-disk or in-memory copy), whose
         # user-visible surface is already covered by a registered sink.
-        "dashboard/chat_folders.py",
+        "dashboard/chat_folders_icons.py",
         "dashboard/chat_fork.py",
         # Inbound: the receiving half of the session transfer. An arrived bundle's
         # title, origin label and rows are scrubbed before they become a slot, its
@@ -2311,7 +2311,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_turn/turn_spec_hooks.py",
         "dashboard/chat_turn/turn_stats.py",
         "dashboard/chat_nav.py",
-        "dashboard/chat_persistence.py",
+        "dashboard/chat_persistence_parts/member_store.py",
+        "dashboard/chat_persistence_parts/restore_drivers.py",
+        "dashboard/chat_persistence_parts/slot_builders.py",
         # The row projection and the restore-time title check, composed into that
         # facade: the same internal persisted copy, no output of their own.
         "dashboard/slot_persistence/message_entries.py",

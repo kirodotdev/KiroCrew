@@ -6,7 +6,7 @@ map, the restore config, the open-tab snapshot and its key screen, the committed
 agent choice, the delete-during-read witness, the app-owned channel-row screen and
 the recent-session key map. The MCP-app claim recovery pairs its spool read with
 the in-memory apply that follows a build. The drivers, the prefetch helpers and the
-slot builders stay in ``chat_persistence``.
+slot builders stay in ``chat_persistence_parts``.
 
 New restore-time reads and screens belong here.
 """

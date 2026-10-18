@@ -955,9 +955,10 @@ class TestPlacement:
             assert called & savers == set(), stem
 
     def test_the_orchestration_stays_on_the_facade(self) -> None:
-        """Gates key these by the facade's path or read its text, so the code itself
-        stays here: the save transaction, its on-loop entry point, the restore
-        drivers and slot builders, the prefetch reads and the member assignment."""
+        """These run on the facade's globals and report it as their module, while their
+        text lives in the parts ``_facade_compose`` composes here: the save transaction,
+        its on-loop entry point, the restore drivers and slot builders, the prefetch
+        reads and the member assignment."""
         stays = {
             "_save_slot_to_history",
             "save_slot_off_loop",

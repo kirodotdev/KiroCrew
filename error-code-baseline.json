@@ -109,7 +109,10 @@
       "missing_code": 1
     },
     "dashboard/chat_folders.py": {
-      "missing_code": 19
+      "missing_code": 9
+    },
+    "dashboard/chat_folders_routes.py": {
+      "missing_code": 10
     },
     "dashboard/chat_mirror.py": {
       "missing_code": 6

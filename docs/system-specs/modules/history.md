@@ -929,16 +929,23 @@ authorization are still checked. Async restore prefetches this record off-loop a
 the transcript and applies the resulting name on the event loop.
 
 **Where the code lives.** `chat_persistence.py` is the facade every caller imports
-from. It keeps the orchestration: the save transaction `_save_slot_to_history`
-(snapshot, refusals, the transcript lock, the atomic replace and the witness
-stamping) with its on-loop entry point `save_slot_off_loop`; the restore drivers
-and slot builders (`restore_open_slots`, `restore_recent_sessions`, their async
-twins, `_rehydrate_slot_from_history`, `_apply_recent_session` and the prefetch
-reads they share); the reasoning-effort allowlist; the persisted-entry memo
-`_build_message_entry` with its bounds; the private member-store assignment; and
-the request-side retired-mode coercion (`_coerce_requested_mode`). The rules those
-consult live in `dashboard/slot_persistence/`, and each file names the work that
-belongs in it. Only the newest `EAGER_WINDOW_RESTORES` open tabs are built with
+from, and the one namespace the orchestration runs on. It keeps the reasoning-effort
+allowlist, the persisted-entry memo `_build_message_entry` with its bounds, the
+request-side retired-mode coercion (`_coerce_requested_mode`) and the history
+prefix. The orchestration's text lives in `dashboard/chat_persistence_parts/`,
+composed onto the facade by `kiro_crew._facade_compose.compose`, so each function
+runs on the facade's globals and reports the facade as its module:
+`save_transaction.py` (the save transaction `_save_slot_to_history` -- snapshot,
+refusals, the transcript lock, the atomic replace and the witness stamping -- with
+its on-loop entry point `save_slot_off_loop`, the shutdown save and the wait for
+unwinding turns), `restore_drivers.py` (`restore_open_slots`,
+`restore_recent_sessions` and their async twins, with the open-tab plan, budget,
+tail and reports), `slot_builders.py` (`_rehydrate_slot_from_history`,
+`_apply_recent_session`, the open-tab slot build, the deferred window load and the
+prefetch reads they share) and `member_store.py` (the private member-store
+assignment). New orchestration goes to the part of its responsibility. The rules
+those consult live in `dashboard/slot_persistence/`, and each file names the work
+that belongs in it. Only the newest `EAGER_WINDOW_RESTORES` open tabs are built with
 their transcript window loaded; every later tab that only a person drives (its own
 dashboard origin, no linked, app, remote or creator binding, not a member or crew-bound
 worker tab, not driven by a loop, and no unsettled local turn or held notes) is built
@@ -1019,16 +1026,22 @@ learn-cron-dashboard):
 - `turn_marker.py` -- the turn-in-flight marker's validation and reconcile. New
   rules about a turn a restart did not see finish.
 
-The orchestration stays in the facade because gates key the restore builders, the
-prefetch reads, the async drivers, `save_slot_off_loop` and the recreate-won guard
-to `chat_persistence.py`, and test fixtures reset its process state there. Every
-project name the facade bound is still importable from it, and the owners read
-every name a test rebinds on it through it at call time;
+The orchestration runs on the facade's globals because tests patch its names there
+and test fixtures reset its process state there; the gates that read its text (the
+off-loop restore reads, the fence-to-registration order and the recreate-won guard of
+the save, the transcript plumbing list, the member-store vouch) read the part that
+holds it. Every project name the facade bound is still importable from it, and the
+owners read every name a test rebinds on it through it at call time;
 `test/test_chat_persistence_composition_contract.py` pins both, plus the bytes a
 save writes. It also pins the placement rules: the package holds exactly the composed
 owner modules and its `__init__` imports nothing; each name lives in exactly one owner;
 no owner imports another owner or the facade's rebound names, and owners reach the
 facade as a module at call time; the facade imports every owner last.
+`test/test_chat_persistence_parts_composition_contract.py` pins the parts: each
+composed function and method runs on the facade's globals and reports it as its
+module, every global one reads is bound on the facade, nothing but the facade imports a
+part, no part binds the facade's process state, async functions sit only in parts
+the off-loop gate reads, and only the save transaction dispatches a save.
 
 `_save_slot_to_history` persists dashboard chat slots. It models the session
 file as a **frozen prefix + live window** so on-disk history is never

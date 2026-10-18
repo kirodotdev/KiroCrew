@@ -100,7 +100,7 @@ def _folder_sample_titles(state: DashboardState) -> dict[str, list[str]]:
     """Newest session titles per folder id — the only real topical grounding.
 
     A chat folder carries no description: ``name`` is its single descriptive
-    field (see the create literal in ``chat_folders.py``), which is far too thin
+    field (see the create literal in ``chat_folders_records.py``), which is far too thin
     for a model to file "Fix the render gate flake" under "Kiro Crew › i18n".
     The titles already filed in a folder ARE its description, and
     ``list_sessions()`` yields title + folder_id newest-first in the one scan the

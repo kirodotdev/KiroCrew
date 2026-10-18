@@ -131,11 +131,18 @@ def test_what_is_saved_never_depends_on_the_allow_list() -> None:
     import inspect
     import pkgutil
 
-    from kiro_crew.dashboard import chat_persistence, chat_runner, chat_turn, slot_persistence
+    from kiro_crew.dashboard import (
+        chat_persistence,
+        chat_persistence_parts,
+        chat_runner,
+        chat_turn,
+        slot_persistence,
+    )
 
-    # The save-side row projection is composed into chat_persistence from these,
-    # and the runner's turn helpers into chat_runner from the chat_turn owners.
-    packages = (slot_persistence, chat_turn)
+    # The save-side row projection and the save and restore code are composed into
+    # chat_persistence from these, and the runner's turn helpers into chat_runner
+    # from the chat_turn owners.
+    packages = (slot_persistence, chat_persistence_parts, chat_turn)
     owners = [
         importlib.import_module(f"{package.__name__}.{info.name}")
         for package in packages

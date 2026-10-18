@@ -1182,11 +1182,19 @@ class TestEveryRetentionPointIsBounded:
     def test_each_retention_site_uses_the_bounded_helper(self) -> None:
         # Source guard over the sites that retain transcript data in the slot:
         # the two rehydrate appends, the variant attach, and the regenerate stash.
+        import importlib
         import inspect
+        import pkgutil
 
-        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard import chat_persistence_parts, chat_runner
 
-        persistence = inspect.getsource(chat_persistence)
+        # The two rehydrate appends run on the facade from its composed parts.
+        parts = [
+            importlib.import_module(f"{chat_persistence_parts.__name__}.{info.name}")
+            for info in pkgutil.iter_modules(chat_persistence_parts.__path__)
+        ]
+        assert parts, "the part scan found no module, so it is measuring nothing"
+        persistence = "".join(inspect.getsource(module) for module in (chat_persistence, *parts))
         assert 'meta=(m["meta"] if' not in persistence
         assert persistence.count('with_bounded_redaction_records(m["meta"])') == 2
         assert "with_bounded_redaction_records(" in inspect.getsource(

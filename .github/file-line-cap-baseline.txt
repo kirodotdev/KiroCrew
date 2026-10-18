@@ -35,8 +35,6 @@
 2260 src/kiro_crew/crew_log/session_tree_projection.py
 3161 src/kiro_crew/cron_script.py
 2643 src/kiro_crew/dashboard/change_cards.py
-3398 src/kiro_crew/dashboard/chat_folders.py
-3617 src/kiro_crew/dashboard/chat_persistence.py
 18473 src/kiro_crew/dashboard/chat_runner.py
 2283 src/kiro_crew/dashboard/chat_tags.py
 4097 src/kiro_crew/dashboard/handlers/_shared.py
