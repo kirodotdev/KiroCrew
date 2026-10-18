@@ -8,6 +8,7 @@ import { renderWithProviders, createTestStore } from './helpers'
 import InstanceTabBar from '../components/InstanceTabBar'
 import EmbeddedHostBridge from '../components/EmbeddedHostBridge'
 import type { HostModel } from '../store/instancesSlice'
+import { noteHostOrigin } from '../lib/hostRelay'
 
 // Embedded panes never hit the instances API; mock it to a no-op so the import
 // is inert and any accidental call is observable.
@@ -30,11 +31,17 @@ const model = (over: Partial<HostModel> = {}): HostModel => ({
   ...over,
 })
 
+// The hub that embeds this pane. The origin its model came from is the only
+// postMessage target a pane relay may use (see lib/hostRelay.ts).
+const HUB = 'http://127.0.0.1:7777'
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(isEmbeddedPane).mockReturnValue(true)
+  noteHostOrigin(HUB)
 })
 afterEach(() => {
+  noteHostOrigin(null)
   document.documentElement.classList.remove('embedded-mac-inset')
   document.documentElement.classList.remove('embedded-win-inset')
 })
@@ -56,14 +63,14 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     await userEvent.click(cloud)
     expect(post).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'mc-switch-instance', id: 'cd-1' }),
-      '*',
+      HUB,
     )
 
     await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
     await userEvent.click(screen.getByRole('menuitemradio', { name: /Local/ }))
     expect(post).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'mc-switch-instance', id: null }),
-      '*',
+      HUB,
     )
   })
 
@@ -151,7 +158,7 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     await userEvent.click(await screen.findByTestId('crew-stable-order-toggle'))
     expect(post).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'mc-set-stable-order', on: true }),
-      '*',
+      HUB,
     )
   })
 
@@ -195,8 +202,85 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     await userEvent.click(await screen.findByTestId('crew-pin-cd-1'))
     expect(post).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'mc-set-crew-pin', id: 'cd-1' }),
-      '*',
+      HUB,
     )
+  })
+})
+
+// #21822: every relay the embedded tab bar sends up goes ONLY to
+// the hub's exact origin. With no known hub origin nothing is sent at all.
+describe('EmbeddedInstanceTabBar relay targetOrigin', () => {
+  // Fire all three relays: switch, pin toggle, stable-order toggle.
+  const fireAll = async () => {
+    const store = createTestStore({
+      instances: { warm: {}, activeId: null, mru: [], unread: {}, host: model({ activeId: null }) },
+    })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    await userEvent.click(screen.getByRole('button', { name: /Switch crew/i }))
+    await userEvent.click(await screen.findByTestId('crew-pin-cd-1'))
+    await userEvent.click(await screen.findByTestId('crew-stable-order-toggle'))
+    await userEvent.click(screen.getByRole('menuitemradio', { name: /Cloud One/ }))
+  }
+
+  it('posts each of the three message types to the exact hub origin, never "*"', async () => {
+    const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    await fireAll()
+    const types = post.mock.calls.map(c => (c[0] as { type: string }).type)
+    expect(types).toEqual(expect.arrayContaining(['mc-set-crew-pin', 'mc-set-stable-order', 'mc-switch-instance']))
+    for (const call of post.mock.calls) expect(call[1]).toBe(HUB)
+  })
+
+  it.each([
+    ['no hub origin known', null],
+    ['a model from a non-loopback framer', 'https://evil.example'],
+    ['a model from an opaque origin', 'null'],
+  ])('sends nothing with %s', async (_label, origin) => {
+    noteHostOrigin(origin)
+    const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    await fireAll()
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('sends nothing when not embedded (no parent frame)', async () => {
+    vi.mocked(isEmbeddedPane).mockReturnValue(false)
+    const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const store = createTestStore({
+      instances: { warm: {}, activeId: null, mru: [], unread: {}, host: model({ activeId: null }) },
+    })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    // The top-level bar renders the local switcher; any interaction stays local.
+    const btn = screen.queryByRole('button', { name: /Switch crew/i })
+    if (btn) await userEvent.click(btn)
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['the hub', HUB, HUB],
+    ['a non-loopback framer', 'https://evil.example', null],
+  ])('through the bridge: relays go to the model sender only when it is %s', async (_label, origin, want) => {
+    noteHostOrigin(null)
+    const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const store = createTestStore()
+    renderWithProviders(<><EmbeddedHostBridge /><InstanceTabBar variant="inline" /></>, { store })
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', { source: window.parent, origin, data: { type: 'mc-host-model', ...model({ activeId: null }) } }),
+      )
+    })
+    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    post.mockClear()
+    await userEvent.click(screen.getByRole('menuitemradio', { name: /Cloud One/ }))
+    if (want === null) expect(post).not.toHaveBeenCalled()
+    else expect(post).toHaveBeenCalledWith(expect.objectContaining({ type: 'mc-switch-instance', id: 'cd-1' }), want)
+  })
+
+  it('InstanceTabBar.tsx and useInstanceShortcuts.ts hold no wildcard postMessage', () => {
+    const here = dirname(fileURLToPath(import.meta.url))
+    for (const rel of ['../components/InstanceTabBar.tsx', '../hooks/useInstanceShortcuts.ts']) {
+      const src = readFileSync(join(here, rel), 'utf8')
+      expect(src).not.toMatch(/postMessage\([^)]*,\s*['"]\*['"]\s*\)/)
+      expect(src).not.toMatch(/wildcard-postmessage/)
+    }
   })
 })
 

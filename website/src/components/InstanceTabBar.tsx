@@ -48,6 +48,7 @@ import {
 } from './ui/dropdown-menu'
 
 import { i18nT } from '../i18n/t'
+import { postToHost } from '../lib/hostRelay'
 import { fmtDuration as fmtDurationParts, fmtUnit, fmtNumber } from '../i18n/format'
 /**
  * Crews that get a switcher entry: sticky connect intent (`was_connected`,
@@ -1166,15 +1167,13 @@ function Switcher({
 function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
   const host = useAppSelector(s => s.instances.host)
   const onSelect = useCallback((id: string | null) => {
-    // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-    window.parent?.postMessage({ type: 'mc-switch-instance', v: 1, id }, '*')
+    postToHost({ type: 'mc-switch-instance', v: 1, id })
   }, [])
   // The pins live on the parent (one shared set across every pane); this pane
   // cannot write the parent's store from its own iframe realm, so it relays the
   // toggle up and lets the parent re-broadcast the model back down.
   const onTogglePin = useCallback((id: string) => {
-    // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-    window.parent?.postMessage({ type: 'mc-set-crew-pin', v: 1, id }, '*')
+    postToHost({ type: 'mc-set-crew-pin', v: 1, id })
   }, [])
   // The stable-order preference also lives on the parent (one shared value across
   // every pane). This pane cannot write the parent's store from its own iframe
@@ -1183,8 +1182,7 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
   // reads as "order by the default and do not offer the toggle at all".
   const hostStableOrder = host?.stableOrder ?? null
   const onToggleStableOrder = useCallback(() => {
-    // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-    window.parent?.postMessage({ type: 'mc-set-stable-order', v: 1, on: !hostStableOrder }, '*')
+    postToHost({ type: 'mc-set-stable-order', v: 1, on: !hostStableOrder })
   }, [hostStableOrder])
   const entries = useMemo<SwitcherEntry[]>(() => {
     if (!host) return []

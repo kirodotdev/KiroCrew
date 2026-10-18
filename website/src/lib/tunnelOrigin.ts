@@ -62,6 +62,23 @@ export function isEmbeddableLoopbackOrigin(protocol: string, host: string): bool
 }
 
 /**
+ * Pane side: true if *origin* (a bare `scheme://host[:port]`, no path) is a
+ * parent the pane can be embedded under -- the same set
+ * `isEmbeddableLoopbackOrigin` admits. This is the set of exact postMessage
+ * targets a pane may relay to; anything else (a non-loopback framer, `null`,
+ * a URL with a path) is refused.
+ */
+export function isEmbeddableHubOrigin(origin: string): boolean {
+  if (typeof origin !== 'string') return false
+  try {
+    const u = new URL(origin)
+    return u.origin === origin && isEmbeddableLoopbackOrigin(u.protocol, u.hostname)
+  } catch {
+    return false
+  }
+}
+
+/**
  * Resolve a validated message origin to one of our warm instance ids.
  *
  * @param origin   the untrusted `event.origin`

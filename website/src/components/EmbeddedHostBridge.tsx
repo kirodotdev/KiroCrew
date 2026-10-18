@@ -22,6 +22,7 @@ import { setHostModel, type HostModel } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
 import { setFocusModeEnabled } from '../hooks/useFocusMode'
 import { noteClipboardRelayHost, PANE_CLIPBOARD_VERSION } from '../lib/paneClipboardRelay'
+import { noteHostOrigin } from '../lib/hostRelay'
 
 const MAC_INSET_CLASS = 'embedded-mac-inset'
 const WIN_INSET_CLASS = 'embedded-win-inset'
@@ -177,6 +178,9 @@ export default function EmbeddedHostBridge() {
       const model = parseHostModel(e.data)
       if (!model) return
       dispatch(setHostModel(model))
+      // Where the tab bar's switch / pin / stable-order relays go: exactly the
+      // origin this model came from, never '*'.
+      noteHostOrigin(e.origin)
       // Whether this host performs image copies for us, and where to ask. Read
       // off the raw payload: it is a pane-side capability, not header state.
       noteClipboardRelayHost(

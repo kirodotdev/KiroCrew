@@ -42,6 +42,7 @@ import { isEmbeddedPane } from '../lib/embedded'
 import { isElectron } from '../lib/electron'
 import { visibleInstanceTabs } from '../components/InstanceTabBar'
 import { useSelectInstance } from './useSelectInstance'
+import { postToHost } from '../lib/hostRelay'
 import { IS_MAC, SHORTCUTS_ENABLED_KEY, INSTANCE_SHORTCUTS } from './useKeyboardShortcuts'
 
 /** Highest digit the chord claims — exactly the advertised registry entries. */
@@ -98,8 +99,7 @@ export function useInstanceShortcuts() {
       if (!host) return false
       const id = idx === 0 ? null : host.tabs[idx - 1]?.id
       if (idx !== 0 && !id) return false
-      // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-      window.parent?.postMessage({ type: 'mc-switch-instance', v: 1, id }, '*')
+      postToHost({ type: 'mc-switch-instance', v: 1, id })
       return true
     },
     [host],

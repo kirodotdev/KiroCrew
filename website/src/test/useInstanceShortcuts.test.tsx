@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { waitFor } from '@testing-library/react'
 import { act } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -24,6 +24,7 @@ vi.mock('../api/client', () => {
 import { api, ApiError } from '../api/client'
 vi.mock('../lib/embedded', () => ({ isEmbeddedPane: vi.fn(() => false) }))
 import { isEmbeddedPane } from '../lib/embedded'
+import { noteHostOrigin } from '../lib/hostRelay'
 // The chord is Electron-only (browsers reserve ⌘/Ctrl+digit for tab switching).
 // Top-level tests run with the shell mocked as Electron; the non-Electron
 // embedded path is covered via host.electron=false (relayed flag).
@@ -232,8 +233,13 @@ describe('useInstanceShortcuts — top-level (Electron)', () => {
 })
 
 describe('useInstanceShortcuts — embedded pane (relay)', () => {
+  const HUB = 'http://127.0.0.1:7777'
   beforeEach(() => {
     vi.mocked(isEmbeddedPane).mockReturnValue(true)
+    noteHostOrigin(HUB)
+  })
+  afterEach(() => {
+    noteHostOrigin(null)
   })
 
   it('relays the chord to the parent via mc-switch-instance (same channel as the click path)', () => {
@@ -246,12 +252,25 @@ describe('useInstanceShortcuts — embedded pane (relay)', () => {
     expect(api.listInstances).not.toHaveBeenCalled()
 
     const ev1 = pressDigit(1)
-    expect(post).toHaveBeenCalledWith(expect.objectContaining({ type: 'mc-switch-instance', id: null }), '*')
+    expect(post).toHaveBeenCalledWith(expect.objectContaining({ type: 'mc-switch-instance', id: null }), HUB)
     expect(ev1.defaultPrevented).toBe(true)
 
     const ev2 = pressDigit(2)
-    expect(post).toHaveBeenCalledWith(expect.objectContaining({ type: 'mc-switch-instance', id: 'cd-1' }), '*')
+    expect(post).toHaveBeenCalledWith(expect.objectContaining({ type: 'mc-switch-instance', id: 'cd-1' }), HUB)
     expect(ev2.defaultPrevented).toBe(true)
+    post.mockRestore()
+  })
+
+  it('sends nothing when the hub origin is unknown (fail closed, never \'*\')', () => {
+    noteHostOrigin(null)
+    const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const store = createTestStore({
+      instances: { warm: {}, activeId: null, mru: [], unread: {}, host: hostModel() },
+    })
+    renderHookWithProviders(() => useInstanceShortcuts(), { store })
+
+    pressDigit(2)
+    expect(post).not.toHaveBeenCalled()
     post.mockRestore()
   })
 
