@@ -131,7 +131,6 @@
 2267 test/test_chat_mode_security.py
 10498 test/test_cli.py
 2744 test/test_cli_server_more_coverage.py
-2288 test/test_cloud_source.py
 2260 test/test_config_live.py
 2868 test/test_connections_mint.py
 2226 test/test_context_composition_contract.py
@@ -142,7 +141,6 @@
 2247 test/test_cron_secret_env.py
 3175 test/test_dashboard_approval.py
 2718 test/test_dashboard_server_composition_contract.py
-2286 test/test_dashboard_templates.py
 2478 test/test_dashboard_updates_coverage.py
 11203 test/test_denied_commands_security.py
 2194 test/test_deploy_web_handlers.py
@@ -158,7 +156,6 @@
 2809 test/test_history_consolidation_retry.py
 2547 test/test_history_locking_remediation.py
 4353 test/test_hooks.py
-2400 test/test_host_isolation_floor.py
 2374 test/test_issue_radar_crew_routes.py
 3557 test/test_issue_radar_crew_runtime.py
 2162 test/test_issue_radar_routes_coverage.py
@@ -200,7 +197,6 @@
 2396 test/test_skill_trust_store.py
 3082 test/test_skills.py
 2824 test/test_slack_gateway_coverage.py
-2303 test/test_slack_gateway_cron_exec_coverage.py
 2650 test/test_slack_handler_composition_contract.py
 2629 test/test_slack_handler_coverage.py
 2730 test/test_slack_options_lifecycle.py

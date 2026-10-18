@@ -42,7 +42,7 @@ def _load_root_conftest():
     ``from conftest import ...`` inside ``test/`` binds to ``test/conftest.py``
     (prepend import mode puts this directory on ``sys.path`` first), so the
     rootdir file has to be loaded by path. Same idiom as
-    ``test_host_isolation_floor.py``; the fixtures it defines are inert here
+    ``host_isolation_floor_helpers.py``; the fixtures it defines are inert here
     because nothing in this namespace collects them.
     """
     spec = importlib.util.spec_from_file_location("_kirocrew_annotations_conftest", _ROOT_CONFTEST)

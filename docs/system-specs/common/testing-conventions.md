@@ -3800,7 +3800,7 @@ assertion for the host fact it depends on before reading the test for a bug.
   base). The eleventh pass, on macOS, met the same leak from the other side and carries
   the fix in [#14388](https://github.com/kirodotdev/KiroCrew/pull/14388): a rootdir
   conftest floor that hands the next test the two globals it inherited, pinned in
-  `test_host_isolation_floor.py`. This pass adds only the witness the diagnosis needed:
+  `test_host_isolation_floor_restores.py`. This pass adds only the witness the diagnosis needed:
   the revoke tests' status assertions now carry the response body, so the next 409 names
   its branch in the failure instead of `assert 409 == 200`.
 What was flagged and read before being left alone. `slow`/`heavy_cpu` was dominated by the

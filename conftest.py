@@ -1302,7 +1302,7 @@ def _scrub_inherited_preload_env(_floor_monkeypatch):
     those steps would delete the restored host value and leak the scrub into the
     next test. ``test_name_grant.py::TestInheritedHostEnvironment``
     pins exactly that same-key case, and
-    ``test_host_isolation_floor.py::TestInheritedShellEnvironmentIsScrubbed`` drives
+    ``test_host_isolation_floor_restores.py::TestInheritedShellEnvironmentIsScrubbed`` drives
     one real cycle of this fixture directly.
 
     The deliberate AMBIGUOUS_ENV tests lose nothing: they construct their entries
