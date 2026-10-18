@@ -1694,6 +1694,7 @@
     },
     "designCritique": {
       "askLayer": {
+        "answer_failed_ask_again_below": "जवाब नहीं मिल सका — नीचे फिर से पूछो",
         "ask": "पूछें",
         "ask_about_this": "इस बारे में पूछें",
         "close": "बंद करें",

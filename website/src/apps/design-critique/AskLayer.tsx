@@ -74,7 +74,7 @@ export default function AskLayer(p: Props) {
                   ? <div style={{ ...S.askAnswer, marginTop: t.q ? '4px' : 0 }}>
                       {/* No hand-off: the Ask composer below holds an unsaved draft
                           question, and it is the retry surface for this thread. */}
-                      <ErrorNotice variant="inline" message={t.a} />
+                      <ErrorNotice variant="inline" title={i18nT('apps.designCritique.askLayer.answer_failed_ask_again_below')} messagePlacement="below" message={t.a} />
                     </div>
                   : <div style={{ ...S.askAnswer, marginTop: t.q ? '4px' : 0, color: 'var(--text)' }}>{t.a}</div>}
             </div>

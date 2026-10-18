@@ -129,6 +129,17 @@ describe('AskLayer an existing annotation', () => {
     expect(screen.queryByText(/Thinking/i)).not.toBeInTheDocument()
   })
 
+  it('says the composer below is the retry, beside the unchanged failure text', () => {
+    const failed = ask({
+      turns: [{ t: 1, q: 'zzz q', a: 'zzz it broke', pending: false, failed: true }],
+    })
+    mount({ asks: [failed], openAskId: 'zzz-ask-1' })
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('Answer failed — ask again below')
+    // The message stays the raw failure text: it is the error journal's key.
+    expect(alert).toHaveTextContent('zzz it broke')
+  })
+
   it('sends a follow-up rather than a new annotation', async () => {
     const { props } = mount({
       asks: [ask({ turns: [{ t: 1, q: 'zzz q', a: 'zzz a', pending: false }] })],

@@ -1741,6 +1741,7 @@
     },
     "designCritique": {
       "askLayer": {
+        "answer_failed_ask_again_below": "Risposta non riuscita — chiedi di nuovo qui sotto",
         "ask": "Chiedi",
         "ask_about_this": "Fai una domanda",
         "close": "Chiudi",

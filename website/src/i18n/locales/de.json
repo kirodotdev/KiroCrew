@@ -1783,6 +1783,7 @@
     },
     "designCritique": {
       "askLayer": {
+        "answer_failed_ask_again_below": "Antwort fehlgeschlagen — frag unten noch mal",
         "ask": "Fragen",
         "ask_about_this": "Dazu fragen",
         "close": "Schließen",

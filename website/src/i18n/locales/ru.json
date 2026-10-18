@@ -1788,6 +1788,7 @@
     },
     "designCritique": {
       "askLayer": {
+        "answer_failed_ask_again_below": "Не удалось ответить — спроси ещё раз ниже",
         "ask": "Спросить",
         "ask_about_this": "Спросить об этом",
         "close": "Закрыть",

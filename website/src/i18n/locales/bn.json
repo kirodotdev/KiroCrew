@@ -1694,6 +1694,7 @@
     },
     "designCritique": {
       "askLayer": {
+        "answer_failed_ask_again_below": "উত্তর দেওয়া যায়নি — নিচে আবার জিজ্ঞেস করো",
         "ask": "জিজ্ঞাসা",
         "ask_about_this": "এটি সম্পর্কে জিজ্ঞাসা করুন",
         "close": "বন্ধ করুন",

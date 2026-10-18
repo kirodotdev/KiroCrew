@@ -1831,6 +1831,7 @@
     },
     "designCritique": {
       "askLayer": {
+        "answer_failed_ask_again_below": "La réponse a échoué — repose ta question ci-dessous",
         "ask": "Demander",
         "ask_about_this": "Poser une question",
         "close": "Fermer",

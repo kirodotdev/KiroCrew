@@ -1530,6 +1530,9 @@
       }
     },
     "designCritique": {
+      "askLayer": {
+        "answer_failed_ask_again_below": "Answer failed — ask again below"
+      },
       "constants": {
         "blocked_figma_app_missing_hint": "Open the file in Figma desktop and try again, or export the frames as PNGs and drop them here.",
         "blocked_figma_app_missing_say": "I can’t reach Figma — the desktop app isn’t running, or I don’t have the Figma tools available.",
