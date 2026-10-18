@@ -59,37 +59,46 @@ which is what lets a client treat "no evidence" as a reason of its own to refuse
 payload whose witness is not a mapping is refused here, like every other field this
 module cannot read.
 
-HOW THIS MAPS ONTO THE CREW LOG (read this before re-hosting that client -- it is
-why the shape above is what it is, and it is recorded here so the mapping is not
-rediscovered):
+HOW THIS MAPS ONTO ITS TWO CLIENTS (it is why the shape above is what it is, and it
+is recorded here so the mapping is not rediscovered):
 
-    | this module      | crew_log                        | member eventlog |
-    |------------------|---------------------------------|-----------------|
-    | store            | ``unit`` = (kind, unit_id)      | slug            |
-    | key              | fold ``name``                   | projection key  |
-    | state_version    | per fold (``_Fold.state_version``) | per definition  |
-    | watermark        | ``last_seq``                    | ``observed_seq``|
-    | state            | ``state``                       | cell state      |
-    | identity block   | ``origin``, ``first_seq``       | (client's own)  |
-    | ``witness``      | ``prefix_sha``/``prefix_records`` | (see below) |
+    | this module    | crew_log session fold               | member eventlog           |
+    |----------------|-------------------------------------|---------------------------|
+    | store          | ``unit`` = (kind, unit_id)          | slug                      |
+    | key            | fold ``name``                       | projection key            |
+    | state_version  | per fold (``_Fold.state_version``)  | per definition            |
+    | watermark      | ``last_seq``                        | ``observed_seq``          |
+    | state          | ``state``                           | cell state                |
+    | identity block | ``unit``, ``origin``, ``first_seq`` | ``origin``, ``first_seq`` |
+    | ``witness``    | ``seq``, ``prefix_sha``,            | ``seq``, ``prefix_sha``,  |
+    |                | ``prefix_records``                  | ``prefix_records``        |
+
+A crew_log slot fold differs in four cells: its block also names its slot, units and
+marks; its watermark is the kernel ordinal, the newest unit's ordinal base plus the
+witness's ``seq``; its state rides JSON-encoded under ``state_json``; and its witness
+is ``seq`` + ``prefix_cuts`` wherever the newest unit states a cut count, the digest
+form otherwise.
 
 ``crew_log.checkpoint`` enforces four admission conditions beyond the three-field
-key, and they split cleanly along that line. ``origin`` (a unit recreated under the
-same id restarts its seqs) and ``first_seq`` (retention dropped whole segments off
-the front) are both known before the fold and are pure equality, so they are
-identity-block entries. The prefix digest is not: it is recomputed against the live
-file, because a line damaged AFTER it was folded is skipped by a cold fold while a
-savepoint keeps the value that line contributed -- so the digest it was written with
-travels in the ``witness`` and ``admit`` hashes the file again to compare. Its
-fourth, ``seq > handle.last_seq`` (the log is shorter than the savepoint), reads live
-state and needs nothing stored, so it is ``admit`` alone.
+key, and they split cleanly between the identity block and the witness. ``origin``
+(a unit recreated under the same id restarts its seqs) and ``first_seq`` (retention
+dropped whole segments off the front) are both known before the fold and are pure
+equality, so they are identity-block entries, beside the ``unit`` that catches a
+payload copied from another unit's directory. The prefix condition is ``admit``'s: a
+line damaged AFTER it was folded is skipped by a cold fold while a savepoint keeps
+the value that line contributed, so the evidence the savepoint was written with --
+the unit's cut count, or a digest of the consumed records -- travels in the
+``witness``, and ``admit`` takes a fresh reading of the live log to compare. Its
+fourth, ``seq > handle.last_seq`` (the log is shorter than the savepoint), compares
+the ``seq`` the witness carries with the live log, so it is ``admit``'s too.
 
 The member log needs the prefix condition too, for the same reason and not a
 borrowed one: ``MemberLog.last_seq`` documents that a damaged committed line is
-skipped on load, "so a reader loses that line and not the file". The moment its fold
-is persisted, a resumed fold and a cold fold can disagree about a damaged log.
-``raw_prefix_digest`` and ``raw_records_through`` are on ``CrewLog`` itself rather
-than being kind-specific, so one mechanism serves both clients.
+skipped on load, "so a reader loses that line and not the file", and its fold is
+persisted, so without the condition a resumed fold and a cold fold could disagree
+about a damaged log. It admits through the crew log's own ``prefix_admit`` with a
+digest witness: ``raw_prefix_digest`` and ``raw_records_through`` are on ``CrewLog``
+itself rather than being kind-specific, so one mechanism serves both clients.
 
 The kernel owns no path. A concrete store is handed its directory by the client, so
 where savepoints live stays the client's decision -- and for both clients above that

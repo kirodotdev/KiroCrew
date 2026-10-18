@@ -12,7 +12,7 @@ nothing for the overlap.
 The registry never reads inside an event. It needs exactly one number from each --
 the ``seq`` that orders the log -- and it takes that from a reader the client
 supplies, so a carrier type stays in the package that owns it (contract: the kernel
-imports no domain's event type). Two readers cover the shapes in this codebase:
+imports no domain's event type). The kernel ships two readers:
 :func:`mapping_seq` for a carrier subscripted like a mapping, which is the member
 log's ``Event`` TypedDict and the default, and :func:`attribute_seq` for one
 holding it as a field, which is the crew log's ``Entry`` dataclass.
@@ -20,7 +20,8 @@ holding it as a field, which is the crew log's ``Entry`` dataclass.
 ``mapping_seq`` is the default rather than a required argument because it is what
 every present caller of a TypedDict envelope wants, and a required argument would
 make each construction site restate it. A client whose carrier is shaped otherwise
-passes its own reader and the kernel needs no change.
+passes its own reader, and the kernel needs no change: the crew log's slot folds
+pass one that reads the ordinal they wrap each entry in.
 """
 
 from __future__ import annotations
@@ -105,7 +106,7 @@ class ProjectionRegistry:
         with self._lock:
             defns = list(self._defns.values())
             states = [defn.init() for defn in defns]
-            last_seq = -1
+            last_seq = EMPTY_WATERMARK
             for ev in events:
                 last_seq = self._seq_of(ev)
                 for i, defn in enumerate(defns):
@@ -268,7 +269,7 @@ class ProjectionRegistry:
             for key, defn in defns:
                 cell = self._cells.get((key, store))
                 if cell is None:
-                    cell = _Cell(defn.init(), -1)
+                    cell = _Cell(defn.init(), EMPTY_WATERMARK)
                     self._cells[(key, store)] = cell
                 if seq <= cell.observed_seq:
                     # Replay / stale event: already folded.
@@ -317,21 +318,21 @@ class ProjectionRegistry:
     def observed_floor(self, store: str) -> int:
         """The lowest seq EVERY registered unit has already folded for *store*.
 
-        ``-1`` when any registered unit has no cell yet: such a cell folds from
-        ``init()`` over whatever it is first driven with, so a caller must
-        :meth:`prime` it rather than drive a range at it, and a floor would
-        invite exactly that. A client that primes at load therefore has a cell
-        missing only before its first read.
+        :data:`EMPTY_WATERMARK` when no unit is registered, or when any registered
+        unit has no cell yet: such a cell folds from ``init()`` over whatever it is
+        first driven with, so a caller must :meth:`prime` it rather than drive a
+        range at it, and a floor would invite exactly that. A client that primes at
+        load therefore has a cell missing only before its first read.
         """
         with self._lock:
             floor: int | None = None
             for key in self._defns:
                 cell = self._cells.get((key, store))
                 if cell is None:
-                    return -1
+                    return EMPTY_WATERMARK
                 if floor is None or cell.observed_seq < floor:
                     floor = cell.observed_seq
-            return -1 if floor is None else floor
+            return EMPTY_WATERMARK if floor is None else floor
 
     # ---- snapshot ---------------------------------------------------------
     def snapshot(self, store: str) -> dict:
@@ -339,7 +340,7 @@ class ProjectionRegistry:
         with self._lock:
             defns = list(self._defns.items())
             values: dict[str, dict] = {}
-            as_of = -1
+            as_of = EMPTY_WATERMARK
             for key, defn in defns:
                 cell = self._cells.get((key, store))
                 if cell is None:
