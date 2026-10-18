@@ -591,6 +591,8 @@ class TelegramRenderer(Renderer):
         # extraction has no approved root and uploads stay off.
         self._uploads_allowed = bool(uploads_allowed)
         self._upload_root = ""
+        # The session's own scratch directory, set only beside a valid root.
+        self._scratch_root = ""
 
     async def on_steer_consumed(self, summary: str = "") -> None:
         """Seal the pre-steer segment at the driver's structured boundary."""

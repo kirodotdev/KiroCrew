@@ -244,7 +244,12 @@ async def _run_turn(
         # Read defensively: an absent cwd must mean "no uploads", never a dead
         # turn — this capability may not add a failure mode to the path that
         # answers the user's message.
-        renderer.authorize_upload_root(getattr(provider, "cwd", ""))
+        # The runtime's own `$KIROCREW_SCRATCH` goes beside it, read the same
+        # defensive way: that is where the agent is told to stage screenshots.
+        renderer.authorize_upload_root(
+            getattr(provider, "cwd", ""),
+            scratch_root=str(getattr(provider, "work_scratch_dir", None) or ""),
+        )
         # Feeds the turn footer's context gauge. Read off the provider rather
         # than passed at construction, because the provider does not exist
         # until the session is acquired.

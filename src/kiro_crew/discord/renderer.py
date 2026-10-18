@@ -684,6 +684,9 @@ class DiscordRenderer(Renderer):
         # the cold start (spawning/handshaking a session) is time the user waited.
         self._t0 = self._now()
         self._upload_root = upload_root if os.path.isabs(upload_root) else ""
+        # The session's own scratch directory, set only by the dispatcher beside
+        # a valid root (``authorize_upload_root``).
+        self._scratch_root = ""
         self._uploads_allowed = uploads_allowed
         self._buf: list[str] = []
         self._segment_uploads_safe = True
@@ -1323,9 +1326,18 @@ class DiscordRenderer(Renderer):
                 self._shown = graded
                 self._record_sent(graded)
 
-    def authorize_upload_root(self, root: str) -> None:
-        """Authorize the provider's resolved cwd; invalid roots disable uploads."""
+    def authorize_upload_root(self, root: str, scratch_root: str = "") -> None:
+        """Authorize the provider's resolved cwd; invalid roots disable uploads.
+
+        *scratch_root* is the session's own ``$KIROCREW_SCRATCH`` directory. It
+        is admitted only beside a valid cwd, and extraction re-checks that it is
+        one allocation under the managed scratch root
+        (``outbound_files.session_scratch_root``) before it counts.
+        """
         self._upload_root = root if os.path.isabs(root) else ""
+        self._scratch_root = (
+            scratch_root if self._upload_root and os.path.isabs(scratch_root) else ""
+        )
 
     def _uploads_enabled(self) -> bool:
         """Require transport capability, an unrestricted session, and a trusted root."""
@@ -1339,7 +1351,10 @@ class DiscordRenderer(Renderer):
         """Extract each sealed segment once, off-loop and fail-soft."""
         try:
             result = await extract_local_refs_off_loop(
-                text, within_root=self._upload_root, limits=_UPLOAD_LIMITS
+                text,
+                within_root=self._upload_root,
+                limits=_UPLOAD_LIMITS,
+                scratch_root=self._scratch_root,
             )
         except Exception:
             logger.warning("discord: outbound file extraction failed", exc_info=True)

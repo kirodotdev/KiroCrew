@@ -101,6 +101,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from kiro_crew.agent_scratch import scratch_root as managed_scratch_root
 from kiro_crew.browser_cli.snapshots import snapshot_dir
 from kiro_crew.hooks import (
     FileTooLargeError,
@@ -877,10 +878,6 @@ def session_scratch_root(scratch_root: str) -> ApprovedRoot | None:
     """
     if not scratch_root or not os.path.isabs(scratch_root):
         return None
-    # Imported here: agent_scratch pulls in the config layer, which this
-    # transport-agnostic module otherwise has no reason to load at import time.
-    from kiro_crew.agent_scratch import scratch_root as managed_scratch_root
-
     lexical = os.path.abspath(scratch_root)
     path = Path(lexical)
     try:

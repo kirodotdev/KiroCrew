@@ -8,8 +8,8 @@ the upload fails. Each function here whose first parameter is ``self`` is bound 
 which keeps the renderer's state, so ``self.<name>(...)`` calls and instance and class
 patches reach it as they reach a method defined in the class body. They read
 ``_chat_id``, ``_client``, ``_session_key``, ``_thread_id``, ``_upload_root``,
-``_uploads_allowed`` and ``capabilities``, and write ``_upload_root``. New upload work
-goes here.
+``_scratch_root``, ``_uploads_allowed`` and ``capabilities``, and write ``_upload_root``
+and ``_scratch_root``. New upload work goes here.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ _UPLOAD_LIMITS = ExtractLimits(
 _MAX_REJECTION_LINES = 3
 
 
-def authorize_upload_root(self: TelegramRenderer, root: object) -> None:
+def authorize_upload_root(self: TelegramRenderer, root: object, scratch_root: object = "") -> None:
     """Authorize the provider's resolved cwd as extraction's approved root.
 
     Anything that is not an ABSOLUTE STRING PATH disables uploads rather than
@@ -59,11 +59,20 @@ def authorize_upload_root(self: TelegramRenderer, root: object) -> None:
     reference against — it refuses a path lexically outside the root before
     any metadata probe — so a value it cannot evaluate must be no root at all,
     not a root it guesses at.
+
+    *scratch_root* is the session's own ``$KIROCREW_SCRATCH`` directory. It is
+    admitted only beside a valid cwd, and extraction re-checks that it is one
+    allocation under the managed scratch root
+    (``outbound_files.session_scratch_root``) before it counts.
     """
     if isinstance(root, str) and os.path.isabs(root):
         self._upload_root = root
+        self._scratch_root = (
+            scratch_root if isinstance(scratch_root, str) and os.path.isabs(scratch_root) else ""
+        )
         return
     self._upload_root = ""
+    self._scratch_root = ""
     if root:
         # A non-empty root we cannot trust is worth a line: it is the
         # difference between "this instance has no provider cwd" and "the cwd
@@ -86,7 +95,10 @@ async def _extract_uploads(self: TelegramRenderer, text: str) -> tuple[str, list
     """
     try:
         result = await extract_local_refs_off_loop(
-            text, within_root=self._upload_root, limits=_UPLOAD_LIMITS
+            text,
+            within_root=self._upload_root,
+            limits=_UPLOAD_LIMITS,
+            scratch_root=self._scratch_root,
         )
     except Exception:
         logger.warning("telegram: outbound file extraction failed", exc_info=True)

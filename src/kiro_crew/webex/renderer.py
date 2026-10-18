@@ -288,6 +288,8 @@ class WebexRenderer(Renderer):
         # file is not disclosed beyond the allow-list, and a trusted root.
         self._uploads_allowed = uploads_allowed
         self._upload_root = ""
+        # The session's own scratch directory, set only beside a valid root.
+        self._scratch_root = ""
         self._started = False
         self._finalized = False
 
@@ -654,14 +656,22 @@ class WebexRenderer(Renderer):
         body = split_options_trailer(raw, hide_partial=True)[0]
         return strip_control_comments(body, hide_partial=True).strip()
 
-    def authorize_upload_root(self, root: str) -> None:
+    def authorize_upload_root(self, root: str, scratch_root: str = "") -> None:
         """Authorize the provider's resolved cwd as the upload root.
 
         A non-absolute root disables uploads rather than widening to the whole
         filesystem: extraction confines reads to this directory, so an unusable
         value must fail closed.
+
+        *scratch_root* is the session's own ``$KIROCREW_SCRATCH`` directory. It
+        is admitted only beside a valid cwd, and extraction re-checks that it is
+        one allocation under the managed scratch root
+        (``outbound_files.session_scratch_root``) before it counts.
         """
         self._upload_root = root if os.path.isabs(root) else ""
+        self._scratch_root = (
+            scratch_root if self._upload_root and os.path.isabs(scratch_root) else ""
+        )
 
     def _uploads_enabled(self) -> bool:
         """Whether local files in the reply may be uploaded.
@@ -686,7 +696,10 @@ class WebexRenderer(Renderer):
         """
         try:
             result = await extract_local_refs_off_loop(
-                text, within_root=self._upload_root, limits=_UPLOAD_LIMITS
+                text,
+                within_root=self._upload_root,
+                limits=_UPLOAD_LIMITS,
+                scratch_root=self._scratch_root,
             )
         except Exception:
             logger.warning("Webex: outbound file extraction failed", exc_info=True)

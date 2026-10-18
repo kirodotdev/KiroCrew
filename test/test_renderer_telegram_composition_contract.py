@@ -116,7 +116,10 @@ BASE_MEMBERS = {
     "_stream_live_locked": ("coroutine", "(self, *, force: 'bool') -> 'None'"),
     "_seal_without_rich": ("coroutine", "(self, text: 'str') -> 'tuple[str, str, int | None]'"),
     "attach_context_client": ("function", "(self, client: 'Any') -> 'None'"),
-    "authorize_upload_root": ("function", "(self, root: 'object') -> 'None'"),
+    "authorize_upload_root": (
+        "function",
+        "(self, root: 'object', scratch_root: 'object' = '') -> 'None'",
+    ),
     "_uploads_enabled": ("function", "(self) -> 'bool'"),
     "_extract_uploads": ("coroutine", "(self, text: 'str') -> 'tuple[str, list[OutboundFile]]'"),
     "_append_rejections": (

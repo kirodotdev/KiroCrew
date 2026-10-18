@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import re
 import time
 from typing import TYPE_CHECKING, Any, cast
@@ -160,16 +159,6 @@ def _transport_error_text(exc: BaseException) -> str:
     if is_user_worded_failure(exc):
         return f"❌ {_redacted_error_detail(exc)}"
     return _TRANSPORT_ERROR_TEXT
-
-
-def _own_scratch_dir(provider: object) -> str:
-    """The ``$KIROCREW_SCRATCH`` directory the provider's runtime exposes, or ``""``.
-
-    Read through ``getattr`` and kept only as a real path, so a provider without
-    scratch (or a test double) contributes no root rather than a bogus one.
-    """
-    value = getattr(provider, "work_scratch_dir", None)
-    return str(value) if isinstance(value, (str, os.PathLike)) else ""
 
 
 async def _refresh_dashboard_tab(session_key: str) -> None:
@@ -665,8 +654,12 @@ async def handle_message_transport(
         # provider's own resolved cwd, which is what bounds extraction to files
         # the session may read. Mirrors the Discord dispatcher. The runtime's own
         # `$KIROCREW_SCRATCH` goes beside it: that is where the agent is told to
-        # stage screenshots, and it is never under the cwd.
-        renderer.authorize_upload_root(client.cwd, scratch_root=_own_scratch_dir(client))
+        # stage screenshots, and it is never under the cwd. Read defensively, like
+        # the other channels: a client without it must cost the scratch root,
+        # never the turn.
+        renderer.authorize_upload_root(
+            client.cwd, scratch_root=str(getattr(client, "work_scratch_dir", None) or "")
+        )
         # Expire AGAIN, now that the turn is serialized. The pass above (just
         # before the turn machinery) runs before `get_or_create` waits its turn,
         # so two messages arriving together both clear the control while it is

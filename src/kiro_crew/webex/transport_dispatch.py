@@ -757,9 +757,12 @@ class WebexDispatcher:
                     # works in. Read through the pipeline's hook rather than from
                     # the session map up here: on the FIRST turn of a generation no
                     # session exists yet, so reading it early leaves uploads off
-                    # for exactly that turn. Without a root they stay off.
+                    # for exactly that turn. Without a root they stay off. The
+                    # runtime's own `$KIROCREW_SCRATCH` goes beside it: that is
+                    # where the agent is told to stage screenshots.
                     bind_provider=lambda p: renderer.authorize_upload_root(
-                        getattr(p, "cwd", "") or ""
+                        getattr(p, "cwd", "") or "",
+                        scratch_root=str(getattr(p, "work_scratch_dir", None) or ""),
                     ),
                     persist=lambda user_text, reply, is_new: self._persist_turn(
                         session_key, user_text, reply, is_new, agent

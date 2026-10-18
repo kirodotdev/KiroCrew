@@ -827,7 +827,14 @@ class DiscordDispatcher:
 
         async def _prepare(provider: Any, prompt: str) -> str:
             renderer = built[0]
-            renderer.authorize_upload_root(provider.cwd)
+            # The runtime's own `$KIROCREW_SCRATCH` goes beside the cwd: that is
+            # where the agent is told to stage screenshots, and it is never under
+            # the cwd. Read defensively, because this hook runs on every turn and a
+            # missing value must cost the scratch root, never the answer.
+            renderer.authorize_upload_root(
+                provider.cwd,
+                scratch_root=str(getattr(provider, "work_scratch_dir", None) or ""),
+            )
             # The turn footer's context chip reads usage off the session provider,
             # which only exists once the session is acquired. Unbound, the chip
             # cannot render at all and the footer silently ships without the one

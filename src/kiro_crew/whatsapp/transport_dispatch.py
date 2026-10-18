@@ -483,6 +483,7 @@ class WhatsAppDispatcher:
             # Resolved at delivery time: the shared pipeline acquires the
             # provider inside the turn, so its cwd is not known here yet.
             upload_root=lambda: self._provider_cwd(session_key),
+            scratch_root=lambda: self._provider_scratch_dir(session_key),
         )
         user_text = inbound.text
         if unprompted:
@@ -607,6 +608,18 @@ class WhatsAppDispatcher:
         except Exception:  # noqa: BLE001
             return ""
         return str(getattr(provider, "cwd", "") or "")
+
+    def _provider_scratch_dir(self, session_key: str) -> str:
+        """The acquired provider's runtime ``$KIROCREW_SCRATCH``, or "" when unknown.
+
+        Where the agent is told to stage screenshots; admitted only beside the
+        cwd root, so empty just leaves the cwd as the one tree.
+        """
+        try:
+            provider = self.sessions.get_provider(session_key)
+        except Exception:  # noqa: BLE001
+            return ""
+        return str(getattr(provider, "work_scratch_dir", None) or "")
 
     async def _handle_busy(self, inbound: InboundMessage, session_key: str) -> None:
         if not self.sessions.is_busy(session_key):

@@ -832,6 +832,12 @@ class TeamsDispatcher:
                         )
                     ),
                     notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
+                    # The runtime's own `$KIROCREW_SCRATCH`, where the agent is
+                    # told to stage screenshots, admitted beside the cwd root.
+                    # Only the live provider knows it, so it is bound here.
+                    bind_provider=lambda p: renderer.authorize_scratch_root(
+                        str(getattr(p, "work_scratch_dir", None) or "")
+                    ),
                     audit_caller=f"teams:{email}",
                     after_persist=_surface_new_session,
                 ),

@@ -211,8 +211,14 @@ def plan_uploads(text: str, *, within_root: str) -> UploadPlan:
     return _plan_from(result)
 
 
-async def plan_uploads_off_loop(text: str, *, within_root: str) -> UploadPlan:
+async def plan_uploads_off_loop(
+    text: str, *, within_root: str, scratch_root: str = ""
+) -> UploadPlan:
     """:func:`plan_uploads` with both blocking halves moved off the event loop.
+
+    *scratch_root* is the session's own ``$KIROCREW_SCRATCH`` directory, admitted
+    beside *within_root* only as ``outbound_files.session_scratch_root`` allows;
+    empty adds nothing.
 
     Two hops, each through the contract that owns it: the shared
     :func:`extract_local_refs_off_loop` for the filesystem work, then a thread for
@@ -221,7 +227,7 @@ async def plan_uploads_off_loop(text: str, *, within_root: str) -> UploadPlan:
     """
     try:
         result = await extract_local_refs_off_loop(
-            text, within_root=within_root, limits=whatsapp_limits()
+            text, within_root=within_root, limits=whatsapp_limits(), scratch_root=scratch_root
         )
     except Exception:
         logger.warning("whatsapp: outbound file planning failed", exc_info=True)

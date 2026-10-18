@@ -320,7 +320,7 @@ class TestDisplaySafety:
         from kiro_crew.whatsapp import turn_renderer as module
         from kiro_crew.whatsapp.files import UploadPlan
 
-        async def fake_plan(text, *, within_root):
+        async def fake_plan(text, *, within_root, scratch_root=""):
             return UploadPlan(
                 text="",
                 files=[OutboundFile(path="/tmp/c.png", data=b"x", alt=SPLIT_KEY, mime="image/png")],

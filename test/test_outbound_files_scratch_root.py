@@ -276,13 +276,3 @@ class TestSlackWiring:
         renderer = self._renderer()
         renderer.authorize_upload_root("relative/cwd", scratch_root=str(mine))  # type: ignore[attr-defined]
         assert renderer._upload_root == "" and renderer._scratch_root == ""  # type: ignore[attr-defined]
-
-    def test_the_dispatcher_reads_the_runtimes_scratch_dir(self, tmp_path: Path) -> None:
-        from types import SimpleNamespace
-
-        from kiro_crew.slack.transport_dispatch import _own_scratch_dir
-
-        assert _own_scratch_dir(SimpleNamespace(work_scratch_dir=tmp_path)) == str(tmp_path)
-        assert _own_scratch_dir(SimpleNamespace(work_scratch_dir=None)) == ""
-        assert _own_scratch_dir(SimpleNamespace()) == ""
-        assert _own_scratch_dir(SimpleNamespace(work_scratch_dir=object())) == ""
