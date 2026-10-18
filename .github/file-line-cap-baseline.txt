@@ -57,8 +57,6 @@
 2128 src/kiro_crew/history_projection.py
 2038 src/kiro_crew/history_search.py
 2007 src/kiro_crew/knowledge/ingestion.py
-3928 src/kiro_crew/llm_helpers.py
-3951 src/kiro_crew/mcp_cron.py
 2129 src/kiro_crew/members.py
 2440 src/kiro_crew/name_grant.py
 2646 src/kiro_crew/pinned_fs.py

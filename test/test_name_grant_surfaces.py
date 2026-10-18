@@ -194,6 +194,7 @@ class TestLoopSafetyPins:
             slack_handler,
             *slack_owners,
             llm_helpers,
+            *map(importlib.import_module, llm_helpers._OWNERS),
             slack_dispatch,
             discord_dispatch,
             *discord_owners,

@@ -3717,7 +3717,7 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
 - `dashboard/handlers_system.py` — `GET /api/governance/channels`.
 - `dashboard/handlers/security_governance_policy.py` — `GET /api/governance/policy`
   (posture-only serialization), served through `dashboard/handlers/security.py`.
-- chokepoints: `sandbox.py`, `mcp_cron.py`, `subagent_parts/agent_policy.py`, `mcp_core.py`,
+- chokepoints: `sandbox.py`, `mcp_cron_vet.py`, `subagent_parts/agent_policy.py`, `mcp_core.py`,
   plus the audit-only seam `computer_use/gate.py` (not a governance chokepoint:
   `require_computer_use` always proceeds and audits, and `apply_observation_ceiling`
   passes the payload through).
