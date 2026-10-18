@@ -86,6 +86,12 @@ BUCKET_CAP = _BUCKET_CAP
 # which servers are broken, and a 64-name line answers that worse than eight.
 _SUMMARY_NAME_CAP = 8
 
+#: The failure reason the session-open mount check records for a server the
+#: harness was handed but never started. The chat MCP panel prints it after
+#: "Failed to start in this session:", so it carries only the next step, and no
+#: colon of its own.
+NOT_MOUNTED_REASON = "check the server's command, then start a new session"
+
 _ACTION_INITIALIZED = "mcp_server_initialized"
 _ACTION_INIT_FAILURE = "mcp_server_init_failure"
 _ACTION_OAUTH = "mcp_oauth_request"
@@ -570,6 +576,10 @@ class McpSessionReport:
     #: failed bucket lists. Set by :meth:`record_pruned_omitted`; counted and said
     #: in the payload and the summary like :attr:`no_tools_omitted`.
     pruned_omitted: int = 0
+    #: Bumped by every :meth:`begin_session`, so a session-open mount check
+    #: (:mod:`kiro_crew.acp.mcp_mount_check`) started for one attempt can tell
+    #: that the report has moved on to another and write nothing.
+    generation: int = 0
     _ready: list[str] = field(default_factory=list)
     _failed: list[str] = field(default_factory=list)
     _awaiting_auth: list[str] = field(default_factory=list)
@@ -604,6 +614,7 @@ class McpSessionReport:
         self.no_tools = ()
         self.no_tools_omitted = 0
         self.pruned_omitted = 0
+        self.generation += 1
         self._started = True
         self._ready.clear()
         self._failed.clear()
@@ -662,6 +673,33 @@ class McpSessionReport:
         return self._record(
             _ACTION_INIT_FAILURE, clean, sanitize_sink_text(str(reason or ""), _ERROR_CAP)
         )
+
+    def has_reported(self, name: Any) -> bool:
+        """True when *name* is in any bucket: it sent a frame of its own."""
+        clean = sanitize_sink_text(str(name or ""), _NAME_CAP)
+        return any(clean in b for b in (self._ready, self._failed, self._awaiting_auth))
+
+    def record_not_mounted(self, names: Any) -> list[str]:
+        """Record servers the harness never started, as the mount check found them.
+
+        Each lands in the FAILED bucket with :data:`NOT_MOUNTED_REASON`, so every
+        reader of that bucket (the MCP panel, :meth:`problem_summary`) shows it
+        with no new field. A server that already reported, in any bucket, is
+        left alone: its own frame is better evidence than the broker's silence.
+        Returns the names recorded.
+        """
+        recorded: list[str] = []
+        for raw in names if isinstance(names, (list, tuple)) else ():
+            if not isinstance(raw, str):
+                continue
+            name = sanitize_sink_text(raw, _NAME_CAP)
+            if not name or name in recorded:
+                continue
+            if any(name in b for b in (self._ready, self._failed, self._awaiting_auth)):
+                continue
+            if self._record(_ACTION_INIT_FAILURE, name, NOT_MOUNTED_REASON):
+                recorded.append(name)
+        return recorded
 
     def record_pruned_omitted(self, count: Any) -> bool:
         """Record how many pruned servers were past the cap and are not listed.

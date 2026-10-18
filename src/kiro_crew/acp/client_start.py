@@ -76,6 +76,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_POD_HOME_REMAP,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
+    ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_CLIENT_CAPABILITIES,
     KIRO_CLI_CLIENT_APPLICATION,
     METHOD_INITIALIZE,
@@ -1055,6 +1056,12 @@ async def _initialize_session(self: AcpClient) -> None:
         await asyncio.to_thread(require_unchanged_derived_spec, sent_snapshot)
     except DerivedSpecStale as exc:
         raise AcpError(str(exc)) from exc
+
+    # The session exists and has consumed its array, by whichever route. For a
+    # session-array harness, watch in the background for a broker stub it never
+    # started (goose drops one silently). Never blocks or fails the start.
+    if self.backend in ACP_BACKENDS_SESSION_MCP_ARRAY:
+        self._start_mount_check()
 
     # 4. Activate agent via set_mode -- kiro only. claude-agent-acp does handle
     #    session/set_mode, but its modeIds are permission modes (default,

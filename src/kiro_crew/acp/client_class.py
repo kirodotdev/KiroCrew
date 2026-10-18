@@ -375,6 +375,10 @@ class AcpClient:
         #: session attempt and must not reach the report. See
         #: ``_begin_session_report``.
         self._mcp_report_frame_floor = 0
+        #: The array the last session attempt sent, and when, for the session-open
+        #: mount check. Set by ``_begin_session_report``; see ``_start_mount_check``.
+        self._mcp_mount_servers: list[Any] = []
+        self._mcp_mount_opened_at: float | None = None
         #: Elements the last array build left out as unstartable, recorded on the
         #: report by ``_begin_session_report``. See ``_prune_unstartable_mcp``.
         self._mcp_pruned: tuple[PrunedServer, ...] = ()
@@ -729,6 +733,7 @@ class AcpClient:
     _mcp_timeout_progress = _client_mcp_array._mcp_timeout_progress
     pop_pending_oauth_requests = _client_mcp_array.pop_pending_oauth_requests
     _begin_session_report = _client_mcp_array._begin_session_report
+    _start_mount_check = _client_mcp_array._start_mount_check
     _prune_unstartable_mcp = _client_mcp_array._prune_unstartable_mcp
     mcp_session_report = _client_mcp_array.mcp_session_report
     _placed_mcp_server_names = _client_mcp_array._placed_mcp_server_names

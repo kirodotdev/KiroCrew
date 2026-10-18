@@ -99,8 +99,8 @@ A connection-private backend (a stub that could not pool) outlives nothing: when
 |---|---|
 | `gatewayd.py` | `run_gatewayd` (bootstrap, task wiring, shutdown order) and the lifecycle identity it publishes (`_OWNER_PID`, `_OWN_START_TIME`); the shutdown drain's write accounting (`_counted_stub_write`, `_has_outstanding_work`); `_acquire_backend`, the spawn transaction; `main` |
 | `daemon/connection.py` | `_handle_connection` (first frame, Register, bridge) and `_teardown_connection` |
-| `daemon/control.py` | the one-shot control frames: `_pong_payload`, `_apply_claim`, `_apply_abort`, `_apply_set_spawn_capacity`, `_apply_stand_down` |
-| `daemon/identity.py` | the peer principal gate, `_StubConn` and `_CONN_INDEX`, the token bindings, register-time identity, `recaller`, `_resolve_peer_identity` |
+| `daemon/control.py` | the one-shot control frames: `_pong_payload`, `_apply_claim`, `_apply_abort`, `_apply_set_spawn_capacity`, `_apply_stand_down`, `_session_mounts_reply` |
+| `daemon/identity.py` | the peer principal gate, `_StubConn` and `_CONN_INDEX`, the token bindings, register-time identity, `recaller`, `_resolve_peer_identity`, the session mount ledger (`_record_session_mount`, `_session_mounts`) |
 | `daemon/admission_protocol.py` | the negotiated wait, `_await_answering_pings` and its `_MAX_PENDING_*` bounds, the rejection classes and `_reply_rejected` |
 | `daemon/replacement.py` | the transparent respawn and its tool-set validation ([backend replacement](mcp-gateway-backend-replacement.md)) |
 | `daemon/launch.py` | target resolution under launch approval and the declared-env projection |

@@ -10,6 +10,8 @@ gateway can answer instead.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Collection, Optional
@@ -24,6 +26,7 @@ from kiro_crew.mcp_gateway.daemon.audit import (
     _audit_peer_identity_resolved,
     _audit_recaller_rejected,
 )
+from kiro_crew.mcp_gateway.mount_query import MOUNT_NAME_CAP, MOUNT_SERVERS_CAP
 from kiro_crew.mcp_gateway.pool import PoolKey
 from kiro_crew.peer_resolve import resolve_peer_identity
 
@@ -260,6 +263,115 @@ def _token_caller(
 def _token_is_unbound(token: str) -> bool:
     """True when *token* is present and no claim has named it at all."""
     return bool(token) and token not in _TOKEN_BINDINGS
+
+
+#: Cap on sessions the mount ledger remembers, and on server names per session.
+#: Same order as :data:`_MAX_TOKEN_BINDINGS`, for the same reason: one entry per
+#: live-ish ACP session, oldest dropped first.
+_MAX_MOUNT_SESSIONS = 512
+_MAX_MOUNTS_PER_SESSION = MOUNT_SERVERS_CAP
+#: Longest server name kept. A name is config-derived and comes off a frame the
+#: registrant writes, so it is bounded before it is held. The reader cuts its
+#: roster to the same cap, which is why the value is shared.
+_MOUNT_NAME_CAP = MOUNT_NAME_CAP
+
+#: sha256(``stub_session_token``) -> ``{server_name: wall time of its latest
+#: register}`` for every stub that registered carrying that token, first-seen
+#: order. The time lets a reader count only the registrations of the harness
+#: process it is asking about, since a token survives a respawn. A session that registered
+#: more names than the cap is in :data:`_SESSION_MOUNTS_OVERFLOWED`, and its list
+#: is then not a complete answer. The session-open mount check
+#: (``acp.mcp_mount_check``) reads it through the ``session-mounts`` control frame
+#: to tell a session-array element the harness started from one it silently
+#: dropped. Keyed by a digest, not the token: the token is a bearer name for a
+#: session's identity, and this table has no use for the value itself.
+_SESSION_MOUNTS: "OrderedDict[str, dict[str, float]]" = OrderedDict()
+#: Keys of :data:`_SESSION_MOUNTS` whose list hit the per-session cap and dropped
+#: a name. Bounded with it: a key leaves this set when it leaves the ledger.
+_SESSION_MOUNTS_OVERFLOWED: set[str] = set()
+
+#: When this daemon's ledger began (wall clock). A session opened before it began
+#: may have had stubs register with a daemon that is gone, so the reader treats
+#: the ledger as unable to answer for such a session.
+_MOUNT_LEDGER_SINCE = time.time()
+
+#: Key -> wall time the ledger evicted it to stay within
+#: :data:`_MAX_MOUNT_SESSIONS`, oldest first. A session evicted after the time a
+#: reader asks about may have lost names, so its list cannot prove absence; one
+#: evicted earlier lost only registrations the reader does not count anyway.
+#: Bounded at :data:`_MAX_EVICTED_KEYS`. A key forgotten past that bound would
+#: need that many evictions between its stubs' registers and the reader's first
+#: query, which touches the entry and makes it the newest.
+_SESSION_MOUNTS_EVICTED: "OrderedDict[str, float]" = OrderedDict()
+_MAX_EVICTED_KEYS = 8 * 512
+
+
+def _mount_key(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()
+
+
+def _record_session_mount(register: dict[str, Any]) -> None:
+    """Note that a stub carrying a session token reached the daemon.
+
+    Called for every register frame from a peer the uid gate admitted, BEFORE the
+    frame is validated: a stub whose register is then refused still proves its
+    harness started it, which is the only fact this ledger records. A stub that
+    falls back to direct exec registers first too, so it is counted as well.
+    """
+    token = register.get("stub_session_token")
+    name = register.get("server_name")
+    if not isinstance(token, str) or not token or not isinstance(name, str) or not name:
+        return
+    name = name[:_MOUNT_NAME_CAP]
+    key = _mount_key(token)
+    names = _SESSION_MOUNTS.pop(key, None) or {}
+    if name in names or len(names) < _MAX_MOUNTS_PER_SESSION:
+        # The latest registration wins: a token outlives a respawned harness
+        # process, and only a stub of the CURRENT process proves it started.
+        names[name] = time.time()
+    else:
+        _SESSION_MOUNTS_OVERFLOWED.add(key)
+    _store_mount_entry(key, names)
+
+
+def _store_mount_entry(key: str, names: dict[str, float]) -> None:
+    """Put *key* last (newest) and evict past the cap, noting each evicted key."""
+    _SESSION_MOUNTS[key] = names
+    while len(_SESSION_MOUNTS) > _MAX_MOUNT_SESSIONS:
+        evicted, _ = _SESSION_MOUNTS.popitem(last=False)
+        _SESSION_MOUNTS_OVERFLOWED.discard(evicted)
+        _SESSION_MOUNTS_EVICTED.pop(evicted, None)
+        _SESSION_MOUNTS_EVICTED[evicted] = time.time()
+        while len(_SESSION_MOUNTS_EVICTED) > _MAX_EVICTED_KEYS:
+            _SESSION_MOUNTS_EVICTED.popitem(last=False)
+
+
+def _session_mounts(token: str, after: float = 0.0) -> list[str]:
+    """Server names that registered under *token* at or after *after*, or ``[]``.
+
+    A read that also TOUCHES the entry: it becomes the newest, created empty when
+    absent, so a session a reader is watching is the last one the cap evicts.
+    Only the gateway that minted a token and that token's stubs can name it.
+    """
+    if not token:
+        return []
+    key = _mount_key(token)
+    names = _SESSION_MOUNTS.pop(key, None) or {}
+    _store_mount_entry(key, names)
+    return [name for name, seen in names.items() if seen >= after]
+
+
+def _session_mounts_complete(token: str, after: float = 0.0) -> bool:
+    """False when *token*'s list may have lost a name registered at or after *after*.
+
+    Either the list hit its cap, or the ledger evicted this session at or after
+    *after*. Such a list cannot prove a server absent.
+    """
+    if not token:
+        return True
+    key = _mount_key(token)
+    evicted_at = _SESSION_MOUNTS_EVICTED.get(key)
+    return key not in _SESSION_MOUNTS_OVERFLOWED and (evicted_at is None or evicted_at < after)
 
 
 def _conn_index_discard(conn: _StubConn) -> None:

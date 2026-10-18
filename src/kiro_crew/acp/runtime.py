@@ -77,6 +77,7 @@ from kiro_crew.acp.kas_transport import (
     METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
 )
 from kiro_crew.acp.launch import LaunchRequest, LaunchTools, launch
+from kiro_crew.acp.mcp_mount_check import schedule_mount_check
 from kiro_crew.acp.mcp_ref_guard import (
     warn_remote_header_secret_refs,
     warn_unresolved_server_refs,
@@ -152,6 +153,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
     ACP_BACKENDS_SERIAL_SESSION_STARTS,
+    ACP_BACKENDS_SESSION_MCP_ARRAY,
     MCP_ROSTER_COMPLETE_NOTE,
     METHOD_AGENT_SWITCHED,
     METHOD_KAS_MCP_RESET_SERVER,
@@ -7575,6 +7577,8 @@ class AcpRuntime:
         # cost, not the runtime's, and the adaptive controller reads these
         # samples for its ``start_latency`` / ``timeouts`` signals.
         start_t0 = time.monotonic()
+        # Wall time the request went out, for the session-open mount check.
+        request_sent_at = time.time()
         try:
             resp = await self._send_and_await(METHOD_SESSION_NEW, params, timeout=budget)
             session_id = str(resp.get("sessionId") or "")
@@ -7620,6 +7624,7 @@ class AcpRuntime:
                 memory_mode=memory_mode,
                 session_key=session_key,
                 member_dispatch_mounted=member_mounted,
+                request_sent_at=request_sent_at,
             )
             if collector is None:
                 permit.release()
@@ -7653,6 +7658,7 @@ class AcpRuntime:
             payload_snapshot=payload_snapshot,
             session_key=session_key,
             member_dispatch_mounted=member_mounted,
+            request_sent_at=request_sent_at,
         )
 
     def _collect_late_start(
@@ -7679,6 +7685,7 @@ class AcpRuntime:
         memory_mode: str = "persistent",
         session_key: str = "",
         member_dispatch_mounted: bool = False,
+        request_sent_at: float | None = None,
     ) -> StartCollector | None:
         """Hand a timed-out ``session/new`` to a :class:`StartCollector`.
 
@@ -7764,6 +7771,7 @@ class AcpRuntime:
                     payload_snapshot=payload_snapshot,
                     session_key=session_key,
                     member_dispatch_mounted=member_dispatch_mounted,
+                    request_sent_at=request_sent_at,
                 )
                 # A declining (or raising) adopter answers False and the
                 # collector performs the one teardown.
@@ -7848,6 +7856,36 @@ class AcpRuntime:
         except Exception:
             logger.debug("remote-header guard: evaluation failed", exc_info=True)
 
+    def _start_mount_check(
+        self,
+        handle: Any,
+        servers: Any,
+        session_id: str,
+        session_key: str,
+        request_sent_at: float | None = None,
+    ) -> None:
+        """Start the session-open mount check, as ``AcpClient`` does.
+
+        Only for ``ACP_BACKENDS_SESSION_MCP_ARRAY``; a background task that never
+        blocks or fails the session (:mod:`kiro_crew.acp.mcp_mount_check`). It
+        records nothing for a session that has left ``_session_queues``.
+        *request_sent_at* is when the ``session/new`` or ``session/load`` went out,
+        a late-adopted start included; without it the check's own start time
+        stands in.
+        """
+        if self._acp_backend not in ACP_BACKENDS_SESSION_MCP_ARRAY:
+            return
+        schedule_mount_check(
+            handle.mcp_session_report(),
+            servers,
+            socket_path=self._mcp_gateway_socket,
+            backend=self._acp_backend,
+            session_id=session_id,
+            session_key=session_key,
+            opened_at=request_sent_at,
+            alive=lambda: session_id in self._session_queues,
+        )
+
     async def _finish_create_session(
         self,
         session_id: str,
@@ -7872,6 +7910,7 @@ class AcpRuntime:
         memory_mode: str = "persistent",
         session_key: str = "",
         member_dispatch_mounted: bool = False,
+        request_sent_at: float | None = None,
     ) -> AcpSessionHandle:
         """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -7950,6 +7989,7 @@ class AcpRuntime:
         # already in hand: the watchdog's remote_flat scan finds the in-flight
         # tool's own server process by it. In-memory, so no scheduling point.
         handle.record_mcp_launches(ref_spec, mcp_servers)
+        self._start_mount_check(handle, mcp_servers, session_id, session_key, request_sent_at)
 
         mode_switched = False
         staged_before_switch = 0
@@ -8478,6 +8518,7 @@ class AcpRuntime:
             # staging in _reader_loop, closed by _finish_session_init; see
             # docs/system-specs/modules/acp-client.md "loading a session
             # triggers MCP re-initialization") — so it gets the same budget.
+            request_sent_at = time.time()
             resp = await self._send_and_await(METHOD_SESSION_LOAD, load_params, timeout=budget)
 
             # A genuine resume echoes "modes" in the response (same signal AcpClient
@@ -8558,6 +8599,7 @@ class AcpRuntime:
         self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, wire_servers)
         # Mirrors create_session: load re-declares the servers, so re-record them.
         handle.record_mcp_launches(ref_spec, wire_servers)
+        self._start_mount_check(handle, wire_servers, resume_sid, session_key, request_sent_at)
 
         mode_switched = False
         staged_before_switch = 0

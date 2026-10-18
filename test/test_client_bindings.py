@@ -231,6 +231,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_share_sibling_settings_seed": ("function", False, "0b50a902117a", "client_claude_seed"),
     "_snapshot_process_tree": ("function", True, "b60c5fea256e", "client_lifecycle"),
     "_spawn": ("function", True, "b60c5fea256e", "client_start"),
+    "_start_mount_check": ("function", False, "b60c5fea256e", "client_mcp_array"),
     "_speaks_steering_request": ("property", False, "a6632a57e602", "client_class"),
     "_stdin_write_lock": ("function", False, "fd738ff11600", "client_transport"),
     "_steer_echo_event": ("function", False, "e64128661dfa", "client_turn_control"),

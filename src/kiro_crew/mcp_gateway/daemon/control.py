@@ -1,7 +1,8 @@
 """The one-shot control frames served on the uid-gated socket.
 
 ``ping`` (the pong the manager's adoption gate reads), ``stats``, ``claim``,
-``abort``, ``set-spawn-capacity``, ``stand-down`` and ``app-call`` each arrive as
+``abort``, ``set-spawn-capacity``, ``stand-down``, ``session-mounts`` and
+``app-call`` each arrive as
 the first frame of their own connection, get one reply, and end it. Trust basis
 for all of them is the owner-only endpoint that authenticates Register.
 """
@@ -9,11 +10,13 @@ for all of them is the owner-only endpoint that authenticates Register.
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 from typing import TYPE_CHECKING, Any, Optional
 
 from kiro_crew.code_fingerprint import code_fingerprint
 from kiro_crew.mcp_gateway.admission import Admission
+from kiro_crew.mcp_gateway.daemon import identity as _identity
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.daemon.audit import _audit_caller_claimed, _audit_stand_down
 from kiro_crew.mcp_gateway.daemon.identity import (
@@ -21,6 +24,8 @@ from kiro_crew.mcp_gateway.daemon.identity import (
     _bind_token,
     _caller_from_register,
     _pid_live_tenants,
+    _session_mounts,
+    _session_mounts_complete,
 )
 from kiro_crew.mcp_gateway.daemon.launch import resolvable_target_stems
 from kiro_crew.mcp_gateway.daemon.wire import _write_json_line
@@ -56,6 +61,32 @@ def _pong_payload() -> dict[str, Any]:
         # signal this pid pins the signal on the process that ANSWERED, not on
         # whatever holds the number by the time the signal is sent.
         "start_time": facade._OWN_START_TIME,
+    }
+
+
+def _session_mounts_reply(frame: dict[str, Any]) -> dict[str, Any]:
+    """Answer ``session-mounts``: which stubs registered under one session token.
+
+    Read-only. The asker must already hold the token, which only the gateway that
+    minted it and the stubs it was handed to do, so the reply tells it nothing it
+    could not have known. ``since`` is when this daemon's ledger began, so a
+    session opened before a daemon restart is not read as having mounted nothing.
+    """
+    token = frame.get("stub_session_token")
+    if not isinstance(token, str) or not token:
+        return {"type": "session-mounts-rejected", "reason": "missing stub_session_token"}
+    after = frame.get("after", 0.0)
+    if isinstance(after, bool) or not isinstance(after, (int, float)) or not math.isfinite(after):
+        after = 0.0
+    return {
+        "type": "session-mounts",
+        # Only registrations at or after ``after``: the token outlives a
+        # respawned harness, and a stub of an earlier process proves nothing.
+        "servers": _session_mounts(token, float(after)),
+        # False when the list may have lost a name that counts (its cap, or this
+        # session's own eviction after ``after``): it then cannot prove absence.
+        "complete": _session_mounts_complete(token, float(after)),
+        "since": _identity._MOUNT_LEDGER_SINCE,
     }
 
 
@@ -551,6 +582,12 @@ async def _serve_control_frame(
     # one it cannot use is answered ``spawn-capacity-rejected``, never raised —
     # an exception escaping here drops this connection with no reply at all.
     # Trust basis: same uid-gated 0700 socket as Register/Claim/Abort.
+    # Session-open mount check (``acp.mcp_mount_check``): which of one session's
+    # broker stubs reached this daemon. Read-only; same uid-gated socket.
+    if register.get("type") == "session-mounts":
+        await _write_json_line(writer, _session_mounts_reply(register))
+        return True
+
     if register.get("type") == "set-spawn-capacity":
         await _write_json_line(writer, _apply_set_spawn_capacity(register, admission))
         return True

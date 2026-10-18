@@ -47,6 +47,7 @@ from kiro_crew.mcp_gateway.daemon.identity import (
     _apply_recaller,
     _conn_index_discard,
     _peer_admitted,
+    _record_session_mount,
     _resolve_register_identity,
     _StubConn,
 )
@@ -161,6 +162,10 @@ async def _handle_connection(
             register.get("type"),
         )
         return
+
+    # Before validation: a stub whose register is refused below was still started
+    # by its harness, and that is all the session-open mount check asks.
+    _record_session_mount(register)
 
     try:
         pool_key = PoolKey.from_register(register)

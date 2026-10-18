@@ -9,7 +9,8 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_capability_projection_gaps``,
-``_loaded_capability_template``, ``_mcp_pruned``, ``_mcp_pruned_names``,
+``_loaded_capability_template``, ``_mcp_mount_opened_at``, ``_mcp_mount_servers``,
+``_mcp_pruned``, ``_mcp_pruned_names``,
 ``_mcp_pruned_omitted``, ``_mcp_report_frame_floor``, ``_member_dispatch_mounted``,
 ``_pending_oauth_requests``, ``_pi_mcp_handoff``, ``_session_agent_spec``,
 ``_session_harness_deny_rules``, ``_session_mcp_cache``,
@@ -18,7 +19,8 @@ Instance fields written: ``_capability_projection_gaps``,
 ``_spec_zero_tools``.
 
 Instance fields read: ``_agent``, ``_channel_id``, ``_claude_inline_settings``,
-``_claude_local_settings_excluded``, ``_mcp_gateway_overlay``, ``_mcp_notifications``,
+``_claude_local_settings_excluded``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``,
+``_mcp_notifications``,
 ``_mcp_ref_spec``, ``_mcp_report``, ``_native_skill_projection``,
 ``_opencode_config_mcp_servers``, ``_opencode_denies_in_force``, ``_pi_gate_nonce``,
 ``_pi_mcp_server_names``, ``_session_id``, ``_session_key``, ``_side_read_only``,
@@ -29,9 +31,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING, Any, Collection
 
 from kiro_crew import acp_tool_gate
+from kiro_crew.acp.mcp_mount_check import schedule_mount_check
 from kiro_crew.acp.mcp_ref_guard import warn_remote_header_secret_refs, warn_unresolved_server_refs
 from kiro_crew.acp.mcp_session_report import BUCKET_CAP as MCP_REPORT_BUCKET_CAP
 from kiro_crew.acp.mcp_session_report import ERROR_CAP as MCP_REPORT_ERROR_CAP
@@ -1053,6 +1057,10 @@ def _begin_session_report(self: AcpClient, servers: Any) -> None:
     """
     self._mcp_report_frame_floor = len(self._mcp_notifications)
     self._mcp_report.begin_session(servers)
+    # What the session-open mount check compares against, once the session
+    # exists (:meth:`_start_mount_check`), and when this attempt went out.
+    self._mcp_mount_servers = servers if isinstance(servers, list) else []
+    self._mcp_mount_opened_at = time.time()
     # AFTER the clear: a server the array build left out is this attempt's own
     # failure, and recording it first would erase it.
     pruned, self._mcp_pruned = getattr(self, "_mcp_pruned", ()), ()
@@ -1110,6 +1118,29 @@ async def _prune_unstartable_mcp(self: AcpClient, servers: list[Any]) -> list[An
     self._mcp_pruned = retained
     self._mcp_pruned_omitted = omitted
     return kept
+
+
+def _start_mount_check(self: AcpClient) -> None:
+    """Start the session-open mount check for the array this session consumed.
+
+    Only for ``ACP_BACKENDS_SESSION_MCP_ARRAY``, after the session exists, as a
+    background task (:mod:`kiro_crew.acp.mcp_mount_check`): it never blocks or
+    fails the start, and the kiro path gains no call (harness-parity H13).
+    """
+    if self.backend not in ACP_BACKENDS_SESSION_MCP_ARRAY or not self._session_id:
+        return
+    session_id = self._session_id
+    schedule_mount_check(
+        self._mcp_report,
+        getattr(self, "_mcp_mount_servers", None) or [],
+        socket_path=self._mcp_gateway_socket,
+        backend=self.backend,
+        session_id=self._session_id,
+        session_key=self._session_key or "",
+        opened_at=getattr(self, "_mcp_mount_opened_at", None),
+        # A reset or a new session clears or replaces the id: nothing is owed then.
+        alive=lambda: self._session_id == session_id,
+    )
 
 
 def mcp_session_report(self: AcpClient) -> McpSessionReport:

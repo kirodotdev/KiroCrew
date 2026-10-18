@@ -2720,6 +2720,24 @@ session-start timeout's progress and hide the servers that never reported for it
 Both holders are bounded (`_INIT_NOTIFICATION_BUFFER_LIMIT`) and claim by the
 session id inside the frame, so no frame can reach two sessions.
 
+**Session-open mount check.** A harness in `ACP_BACKENDS_SESSION_MCP_ARRAY` can drop
+an array element it cannot start and still create the session (goose 1.50.1,
+`goose/mcp-stdio-dropped-live.jsonl`). After `session/new` or `session/load` on
+such a harness, both composers (`AcpClient._start_mount_check` and
+`AcpRuntime._start_mount_check`) start `acp/mcp_mount_check.py` as a background
+task. It asks gatewayd's `session-mounts` frame, for up to `MOUNT_WINDOW_SECS`
+(30 s), which of the session's broker stubs registered under its stub token. A stub
+still absent when the window closes gets a WARNING line, an SEL event
+(`mcp_session_mount_missing`: backend, session id, server names; never the token,
+an env value or a command line) and a FAILED row on the report with
+`NOT_MOUNTED_REASON`. Nothing is recorded before the window closes, so a stub not
+seen yet reads as not reported, never as missing. A broker that cannot prove
+absence records nothing and logs at INFO: no socket, an older daemon, a ledger
+that began after this session opened or evicted this session's entry since, or more stubs than
+`MOUNT_SERVERS_CAP`. A session closed inside the window gets nothing. Only broker
+stubs are checked: an element the harness execs directly never reaches the
+broker. `test_acp_mcp_mount_check.py` pins it.
+
 **What the progress suffix counts, and says it counts.** The roster
 `_mcp_init_progress` (and the dedicated client's `_mcp_timeout_progress`) reports
 against is the `mcpServers` array the session put ON THE WIRE — on kiro-cli the
