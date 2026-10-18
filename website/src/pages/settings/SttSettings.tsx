@@ -80,6 +80,8 @@ interface SttConfig {
   submit_on_release?: boolean
   slide_to_send?: boolean
   dictation_panel?: boolean
+  /** End a message holding dictated words with a note telling the agent so. Off by default. */
+  dictation_note?: boolean
   transcribe_region?: string
   transcribe_profile?: string
   /** Amazon Transcribe custom vocabulary name; '' for none. */
@@ -1595,6 +1597,8 @@ export default function SttSettings({ cardIndex }: {
           <SettingsToggle label={i18nT('pages.settings.sttSettings.slide_to_send')} hint={i18nT('pages.settings.sttSettings.slide_to_send_desc')} checked={!!stt.slide_to_send} onChange={v => set({ slide_to_send: v })} disabled={saving || !!stt.submit_on_release} configKey="stt.slide_to_send" />
 
           <SettingsToggle label={i18nT('pages.settings.sttSettings.dictation_panel')} hint={i18nT('pages.settings.sttSettings.show_an_animated_panel_while_recording_instead_of')} checked={stt.dictation_panel !== false} onChange={v => set({ dictation_panel: v })} disabled={saving} />
+
+          <SettingsToggle label={i18nT('pages.settings.sttSettings.dictation_note')} hint={i18nT('pages.settings.sttSettings.dictation_note_desc')} checked={!!stt.dictation_note} onChange={v => set({ dictation_note: v })} disabled={saving} configKey="stt.dictation_note" />
 
           {/* The thread picker is the local provider's alone: the others run their
               recogniser somewhere this setting cannot reach. Its options come from
