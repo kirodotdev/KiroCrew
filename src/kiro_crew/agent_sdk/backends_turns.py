@@ -260,9 +260,12 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # ``contextUsagePercentage`` read 21.99 -> 30.40 -> 38.82, and the next ordinary
 # turn read 30.47. The one metadata frame right after ``completed`` read 81.03.
 #
-# claude is a member with no committed compaction capture: the one claude capture
-# (``test/fixtures/acp_frames/claude/session.jsonl``) is a single turn with no
-# ``/compact`` in it.
+# claude is a member on a LIVE capture against claude-agent-acp 0.93.0:
+# ``test/fixtures/acp_frames/claude/compact-live.jsonl``. After two ordinary turns
+# (``used`` 31164), the ``/compact`` turn is one ``tool_call`` stamped
+# ``_meta.claudeCode.toolName: compact``, completed inside the same
+# ``session/prompt`` with ``rawOutput`` ``preTokens`` 31164 -> ``postTokens`` 4257,
+# then ``end_turn`` with no status frame. The next ordinary turn read 25931.
 #
 # deepseek is the one non-member:
 # :data:`ACP_BACKENDS_CONTEXT_RECYCLE` carries the consequence, because deepseek
