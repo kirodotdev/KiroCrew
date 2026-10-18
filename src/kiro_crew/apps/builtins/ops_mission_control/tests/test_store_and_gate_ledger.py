@@ -43,6 +43,78 @@ class TestLedgerGitMerge(_HomeIsolated):
         self.assertEqual(len(entries), 1, "one lesson must read as one entry")
         self.assertEqual(ledger.stats()["total"], 1)
 
+    def test_hygiene_counts_and_compacts_duplicate_lines(self):
+        """``deduped`` counts the raw lines a merge left behind, and the pass rewrites them away.
+
+        The read already collapses duplicate ids, so counting duplicates among the READ
+        entries always found none: the pass reported ``deduped: 0`` and left the merged
+        lines on disk (and in the synced repo) until some unrelated change forced a rewrite.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger
+        from kiro_crew.apps.builtins.ops_mission_control.backend.models import LedgerEntry
+
+        ledger.upsert(LedgerEntry.create(pattern="shared lesson", fix="the fix"))
+        ledger.upsert(LedgerEntry.create(pattern="second lesson", fix="another fix"))
+        self._duplicate_every_line()
+        path = ledger.ledger_path()
+
+        def lines() -> list[str]:
+            return [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+        self.assertEqual(len(lines()), 4)
+
+        summary = ledger.hygiene()
+
+        self.assertEqual(summary["deduped"], 2, "two duplicate lines were collapsed")
+        self.assertEqual(summary["before"], 2)
+        self.assertEqual(summary["after"], 2)
+        self.assertEqual(summary["pruned"], 0)
+        self.assertEqual(len(lines()), 2, "the file is compacted to one line per id")
+        self.assertEqual(len({json.loads(ln)["entry_id"] for ln in lines()}), 2)
+
+        again = ledger.hygiene()
+        self.assertEqual(again["deduped"], 0, "a compacted file has nothing left to dedupe")
+
+    def test_hygiene_compaction_keeps_the_merged_counters(self):
+        """The rewrite writes the reconciled entry, so neither branch's counters are lost."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger
+        from kiro_crew.apps.builtins.ops_mission_control.backend.models import LedgerEntry
+
+        entry = LedgerEntry.create(pattern="shared lesson", fix="the fix", fingerprints=["fp-a"])
+        ours = entry.to_dict()
+        ours.update(use_count=5, miss_count=0)
+        theirs = dict(entry.to_dict())
+        theirs.update(use_count=1, miss_count=3, fingerprints=["fp-b"])
+        path = ledger.ledger_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(ours, sort_keys=True) + "\n" + json.dumps(theirs, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        summary = ledger.hygiene()
+
+        self.assertEqual(summary["deduped"], 1)
+        on_disk = [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln]
+        self.assertEqual(len(on_disk), 1)
+        self.assertEqual(on_disk[0]["use_count"], 5)
+        self.assertEqual(on_disk[0]["miss_count"], 3)
+        self.assertEqual(sorted(on_disk[0]["fingerprints"]), ["fp-a", "fp-b"])
+
+    def test_hygiene_does_not_count_a_malformed_line_as_a_duplicate(self):
+        """A skipped line is damage, not a duplicate, and alone does not force a rewrite."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger
+        from kiro_crew.apps.builtins.ops_mission_control.backend.models import LedgerEntry
+
+        ledger.upsert(LedgerEntry.create(pattern="p", fix="f"))
+        with ledger.ledger_path().open("a", encoding="utf-8") as handle:
+            handle.write("{ not json\n\n")
+
+        summary = ledger.hygiene()
+
+        self.assertEqual(summary["deduped"], 0)
+        self.assertIn("{ not json", ledger.ledger_path().read_text(encoding="utf-8"))
+
     def test_reconcile_unions_provider_keys_not_only_fingerprints(self):
         """A git merge must not drop one branch's provider identities.
 
@@ -287,7 +359,9 @@ class TestLedger(_HomeIsolated):
 
         ledger.upsert(models.LedgerEntry.create(pattern="p", fix="f", fingerprints=["a"]))
         refuse = mock.Mock(side_effect=PermissionError(13, "Permission denied"))
-        with mock.patch.object(ledger, "read_entries_for_update", refuse):
+        # The innermost strict read: ``read_entries_for_update`` wraps it and ``hygiene``
+        # calls it directly for its duplicate-line count, so one patch covers every mutator.
+        with mock.patch.object(ledger, "_read_counted_for_update", refuse):
             with self.assertRaises(OSError):
                 ledger.hygiene()
             with self.assertRaises(OSError):

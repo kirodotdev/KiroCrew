@@ -213,8 +213,8 @@ def read_entries() -> list[LedgerEntry]:
 def read_entries_for_update() -> list[LedgerEntry]:
     """The mutation-path read: same parse and reconcile, but ``OSError`` PROPAGATES.
 
-    Every locked read → mutate → ``_write_all`` in this module must start here, not at
-    ``read_entries``. The lenient read answers a failed open with ``[]``, and each of
+    Every locked read → mutate → ``_write_all`` in this module must start here (or at
+    ``_read_counted_for_update``, which this wraps), not at ``read_entries``. The lenient read answers a failed open with ``[]``, and each of
     those callers then rewrites the file from what it read — so a transient read fault
     became a silent full truncation of the team's shared ledger (``hygiene``), a
     ``404`` claiming an entry never existed while it is still on disk (``remove``), or
@@ -227,11 +227,23 @@ def read_entries_for_update() -> list[LedgerEntry]:
     the broken line is repair. A failed OPEN says nothing about the content at all —
     there is no partial result to preserve, only a file this process cannot see.
     """
+    return _read_counted_for_update()[0]
+
+
+def _read_counted_for_update() -> tuple[list[LedgerEntry], int]:
+    """``read_entries_for_update`` plus how many duplicate lines the read collapsed.
+
+    The count is valid lines minus unique ids: the lines a git merge left behind that
+    ``_reconcile`` folded into an earlier one. A malformed line is skipped and not counted,
+    because it is damage rather than a duplicate. ``hygiene`` needs the count, since every
+    id it sees after this read is already unique.
+    """
     path = ledger_path()
     if not path.exists():
-        return []
+        return [], 0
     ordered: list[str] = []
     by_id: dict[str, LedgerEntry] = {}
+    collapsed = 0
     with path.open("r", encoding="utf-8") as handle:
         for line_no, line in enumerate(handle, start=1):
             line = line.strip()
@@ -248,7 +260,8 @@ def read_entries_for_update() -> list[LedgerEntry]:
                 by_id[entry.entry_id] = entry
             else:
                 by_id[entry.entry_id] = _reconcile(prior, entry)
-    return [by_id[eid] for eid in ordered]
+                collapsed += 1
+    return [by_id[eid] for eid in ordered], collapsed
 
 
 def _confidence_rank(confidence: str) -> int:
@@ -648,7 +661,7 @@ def hygiene(*, now: datetime | None = None) -> dict[str, int]:
 
     The whole read → dedupe/decay/demote/prune → ``_write_all`` runs under ``_LedgerLock``.
     ``_write_all`` overwrites the file, so a ``POST /ledger`` (``upsert``) or a ``record_use``
-    landing between this pass's ``read_entries_for_update`` and its write would be silently
+    landing between this pass's ``_read_counted_for_update`` and its write would be silently
     erased — the ledger analogue of the incident-index race, and the write half of the peek/ack
     lesson: a rewrite from a stale snapshot drops everything appended since the snapshot.
     """
@@ -658,31 +671,12 @@ def hygiene(*, now: datetime | None = None) -> dict[str, int]:
 
 def _hygiene_locked(now: datetime | None) -> dict[str, int]:
     current = now or datetime.now(timezone.utc)
-    entries = read_entries_for_update()
-    before = len(entries)
-
-    # Dedupe by content-addressed id, merging fingerprints and keeping the
-    # highest use_count. Duplicates arrive via git-synced ledgers.
-    merged: dict[str, LedgerEntry] = {}
-    for entry in entries:
-        seen = merged.get(entry.entry_id)
-        if seen is None:
-            merged[entry.entry_id] = entry
-            continue
-        seen.fingerprints = list(dict.fromkeys([*seen.fingerprints, *entry.fingerprints]))
-        seen.use_count = max(seen.use_count, entry.use_count)
-        # Same max-wins rule as ``_reconcile``, and load-bearing HERE too: this is the
-        # pass that rewrites the file, so a dedupe that dropped the higher miss_count
-        # would make the nightly cron the thing that erases the team's counter-evidence.
-        seen.miss_count = max(seen.miss_count, entry.miss_count)
-        seen.last_miss = max(seen.last_miss, entry.last_miss)
-        seen.decayed_at_miss_count = max(seen.decayed_at_miss_count, entry.decayed_at_miss_count)
-        if entry.trust == TRUST_VERIFIED:
-            seen.trust = TRUST_VERIFIED
-        if entry.last_used > seen.last_used:
-            seen.last_used = entry.last_used
-    deduped = list(merged.values())
-    dupes_removed = before - len(deduped)
+    # Dedupe by content-addressed id. Duplicates arrive via git-synced ledgers, and the
+    # read already merged them with ``_reconcile``, the one merge algebra (its max on
+    # ``miss_count`` is what keeps this rewrite from erasing a teammate's counter-evidence).
+    # What is left here is to count the collapsed lines and rewrite the file without them.
+    deduped, dupes_removed = _read_counted_for_update()
+    before = len(deduped)
 
     # Decay confidence for entries unused past the window.
     cutoff = current - timedelta(days=DECAY_AFTER_DAYS)

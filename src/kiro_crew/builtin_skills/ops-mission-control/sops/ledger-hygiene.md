@@ -35,7 +35,9 @@ as the tool takes them.
    It returns `{"summary": {"deduped": N, "decayed": N, "demoted": N, "pruned": N}, ...}`
    and performs four things deterministically, so no judgement is needed here:
    - **Dedupe** by content-addressed id, merging fingerprints and keeping the
-     highest use count. Duplicates arrive when two people learn the same lesson.
+     highest use count. Duplicates arrive when two people learn the same lesson and a
+     git merge keeps both lines. `deduped` is the number of duplicate lines collapsed,
+     and a non-zero count rewrites the file with one line per entry.
    - **Decay** confidence one step for entries unused past the decay window. An
      entry nobody has needed in three months should not still claim `high`.
    - **Demote** confidence one step for entries whose `miss_count` has outgrown their
