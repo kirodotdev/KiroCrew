@@ -1144,7 +1144,7 @@ class TestPersistsResultToConversationLog:
         # unlocked read_messages probe at the inject layer. The inject path must
         # delegate to append_if_absent and not do its own log-persist.
         # (append_if_absent's own skip-on-duplicate behavior is covered by
-        # test_history_locking_remediation::TestAppendIfAbsent.)
+        # test_history_locking_remediation_locked_section::TestAppendIfAbsent.)
         state = _make_state()
         job = _make_job(job_id="job2", name="my-cron")
         _inject(state, job, "the result")

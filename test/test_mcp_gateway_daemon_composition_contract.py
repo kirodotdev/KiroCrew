@@ -57,7 +57,7 @@ from kiro_crew.platform_compat import (
 from kiro_crew.testing.wait import async_wait_until, finished
 
 #: This module names the daemon's spawn and declared-env seams, so it opts out of
-#: the suite-wide launch-approval stand-in (``test_mcp_launch_approval.py`` checks
+#: the suite-wide launch-approval stand-in (``test_mcp_launch_approval_gateway.py`` checks
 #: that every such module chooses). Nothing here spawns a backend.
 ENFORCE_LAUNCH_APPROVAL = True
 

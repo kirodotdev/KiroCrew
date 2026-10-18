@@ -159,7 +159,6 @@
 3102 test/test_handlers_memory_coverage.py
 2261 test/test_handlers_messaging_coverage.py
 2809 test/test_history_consolidation_retry.py
-2547 test/test_history_locking_remediation.py
 4353 test/test_hooks.py
 2400 test/test_host_isolation_floor.py
 2374 test/test_issue_radar_crew_routes.py
@@ -169,7 +168,6 @@
 4427 test/test_job_sdk.py
 2377 test/test_kas_agents.py
 2409 test/test_knowledge_handlers_coverage.py
-2549 test/test_lesson_write_outcome.py
 2631 test/test_llm_pool.py
 2248 test/test_markdown_link_parentheses.py
 7022 test/test_mcp_discovery.py
@@ -177,7 +175,6 @@
 2271 test/test_mcp_gateway_rewriter_fingerprint.py
 3224 test/test_mcp_gateway_stub_session_token.py
 2449 test/test_mcp_gatewayd_coverage.py
-2543 test/test_mcp_launch_approval.py
 3249 test/test_member_essential_context.py
 2405 test/test_monitor_controller.py
 2096 test/test_monitor_directive_apply.py
@@ -202,7 +199,6 @@
 2398 test/test_session_ledger_projection.py
 7444 test/test_session_storage.py
 6415 test/test_session_transfer.py
-2548 test/test_session_usage.py
 2185 test/test_side.py
 2396 test/test_skill_trust_store.py
 3082 test/test_skills.py
