@@ -384,6 +384,32 @@ With nothing set, code channels go into a **Code channels** sidebar folder, crea
 time one is needed and set to run `kirocrew-conductor`. To use another folder, pick it, or
 choose **New folder…** in the folder list to create one there.
 
+### Choosing each code channel's agent
+
+A new code channel starts on the default agent: the **Agent** set here, else the default
+folder's own default agent, else `kirocrew-conductor`. To run a channel on a different
+agent, use either of these in the channel:
+
+- **The picker in the first message.** The message Kiro Crew posts when a channel opens has
+  an **Agent for this channel** menu, set to the agent the channel runs. Pick another one
+  and the channel's session switches to it. The message then shows the new agent and who
+  picked it.
+- **`/<command> agent <name>`.** Switches the channel to `<name>`. If no agent has that
+  name, the reply lists the agents you can pick. `/<command> agent` with no name shows the
+  channel's current agent and the list. In a code channel this command switches only that
+  channel. Anywhere else it works as before (see [Slash Commands](#slash-commands)).
+
+Both list every agent a code channel can run: your own agents, `kirocrew-conductor` and the
+coding agents. Agents that can't run a channel are left out: `kirocrew-lite` (no tools),
+`kirocrew-guest`, the dashboard manager and the background heartbeat agent. This is the
+same list the **Agent** menu above shows. Model and reasoning effort stay as the channel
+started with them; only the agent changes.
+
+If a turn is running when you pick, nothing changes and you get a message asking you to
+try again when the turn ends. Only the owner can change a channel's agent. Anyone else gets
+a message only they can see, and nothing changes. Each change, and each refused one, is
+recorded in the security event log.
+
 ---
 
 ## Reusing the App in Another Workspace
@@ -521,7 +547,7 @@ The slash command name is configurable via `slack.command` in config (default: `
 | `/<command> dashboard 2h` | Dashboard link with custom duration (cap 20h) |
 | `/<command> yolo` | Toggle auto-approve all tool calls |
 | `/<command> agent` | Show agent selector dropdown |
-| `/<command> agent <name>` | Switch to a named agent |
+| `/<command> agent <name>` | Switch to a named agent (in a code channel: switch that channel's agent) |
 | `/<command> voice` | Configure TTS voice settings |
 | `/<command> config` | Manage tracked channels (owner-only; multi-user access is disabled) |
 | `/<command> users` | Report that multi-user access is disabled |

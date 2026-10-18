@@ -166,6 +166,11 @@ async def dispatch(payload: dict) -> None:
             resources=action_id,
             error="unauthorized user",
         )
+        from kiro_crew.slack.code_channels import agent_picker
+
+        if action_id == agent_picker.AGENT_SELECT_ACTION_ID:
+            # Slack Code's agent picker records each change decision as its own.
+            agent_picker.audit_refused_pick(payload, "unauthorized user")
         if _orch and _orch.slack and channel and user_id:
             try:
                 await _orch.slack.post_ephemeral(
@@ -197,6 +202,20 @@ async def dispatch(payload: dict) -> None:
             logger.info("slack code channel archive dropped: denied by channels governance policy")
             return
         if await handle_archive_click(_orch, payload):
+            return
+
+    # ── Slack Code channel: the kickoff's agent picker ──
+    # Same shape: answered there while slack.code_channels is on (owner-only,
+    # SEL-audited, switched through the dashboard's agent-switch path).
+    from kiro_crew.slack.code_channels.agent_picker import AGENT_SELECT_ACTION_ID, handle_select
+
+    if action_id == AGENT_SELECT_ACTION_ID:
+        if not await channel_inbound_permitted("slack"):
+            logger.info(
+                "slack code channel agent pick dropped: denied by channels governance policy"
+            )
+            return
+        if await handle_select(_orch, payload):
             return
 
     # ── OPTIONS Send / legacy choice buttons ──

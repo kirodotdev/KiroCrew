@@ -12,6 +12,8 @@ Three parts, each in its own module, wired here:
   Socket Mode.
 * :mod:`.wrapup` -- the wrap-up summary with its Archive button, and the
   archive that follows a click.
+* :mod:`.agent_picker` -- the kickoff's agent picker and ``/kirocrew agent``,
+  which switch the channel's session through the dashboard's agent switch.
 
 Everything here is inert while the code-channel gate
 (:func:`.binding.code_channels_on`) is shut: the hooks fire only for a bound
