@@ -80,7 +80,7 @@ exist, is what stops phase 3 from shipping a record that renders as SSH.
       `website/src/utils/remoteCrew.ts`, keyed by method, carrying the badge
       label key, the hint key and which addressing field the card should print
 - [ ] Replace `connectionTypeLabel` and `connectionTypeHint`
-      (`website/src/pages/settings/RemoteCrewPanel.tsx`) with lookups through it,
+      (`website/src/pages/settings/RemoteCrewPanelCrewRow.tsx`) with lookups through it,
       so an unmapped method renders visibly unmapped instead of inheriting the
       SSH label and the SSH hint
 - [ ] Replace the card's `ssm_target`-or-`ssh_host` target expression with the

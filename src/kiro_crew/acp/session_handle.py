@@ -4995,7 +4995,11 @@ class AcpSessionHandle:
                         # on ``code``, so setting it cannot change any other
                         # path's outcome.
                         try:
-                            _raise_acp_error(msg.error, self._advertised_model_ids())
+                            _raise_acp_error(
+                                msg.error,
+                                self._advertised_model_ids(),
+                                backend=self._runtime.acp_backend,
+                            )
                         except AcpError as _exc:
                             if getattr(_exc, "code", None) is None:
                                 _exc.code = _jsonrpc_error_code(msg.error)
@@ -5589,7 +5593,11 @@ class AcpSessionHandle:
                         # AcpPromptBusy when the backend reports a concurrent
                         # in-flight prompt. Advertised ids feed the entitlement
                         # discriminator (see _wait_for_response).
-                        _raise_acp_error(msg.error, self._advertised_model_ids())
+                        _raise_acp_error(
+                            msg.error,
+                            self._advertised_model_ids(),
+                            backend=self._runtime.acp_backend,
+                        )
                     result = msg.result or {}
                     reason = ""
                     if isinstance(result, dict):

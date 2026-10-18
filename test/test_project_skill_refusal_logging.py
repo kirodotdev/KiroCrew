@@ -1,8 +1,10 @@
 """A project whose skills cannot load says why, instead of failing silently.
 
-Covers the two silent refusals behind an empty project-skills list: a platform
-without the no-follow directory-descriptor walk (Windows), and a path component
-the walk refuses on POSIX (a symlinked directory, a file, a permission denial).
+Covers the silent refusals behind a project skill that never loads: a platform
+without the no-follow directory-descriptor walk (Windows); a path component the
+walk refuses on POSIX (a symlinked ``.kiro/skills`` directory, a file, a
+permission denial); and a linked entry directly under a real ``.kiro/skills``,
+which the no-follow walk skips and, without this warning, drops without a word.
 """
 
 from __future__ import annotations
@@ -22,6 +24,10 @@ _LOGGER = "kiro_crew.skills"
 def _isolated(tmp_path, _floor_monkeypatch):
     _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     skill_trust.reset_cache_for_tests()
+    # Both the chain-refusal and the linked-entry warnings dedup through the one
+    # _CHAIN_REFUSALS_WARNED set. It is a mirror-routed name (the skills facade
+    # re-binds it), so it must be reset THROUGH the facade -- a direct owner patch
+    # would let the facade's undo leak into the family (test_facade_mirror_guards).
     _floor_monkeypatch.setattr(skills_mod, "_CHAIN_REFUSALS_WARNED", set())
     yield
     skill_trust.reset_cache_for_tests()
@@ -158,3 +164,174 @@ class TestChainRefusal:
         assert fd is not None
         skills_mod.os.close(fd)
         assert _warnings(caplog) == []
+
+
+@pytest.mark.skipif(
+    not skill_trust.project_skill_traversal_supported(),
+    reason="the confined walk only runs with no-follow directory-descriptor traversal",
+)
+class TestLinkedSkillEntry:
+    """A linked entry directly under a real ``.kiro/skills`` is named, not dropped."""
+
+    def _linked_skill_project(self, tmp_path):
+        """A real ``.kiro/skills`` with one real skill and one linked skill dir."""
+        project = tmp_path / "proj"
+        skills_dir = project / ".kiro" / "skills"
+        _skill(skills_dir, name="realskill")
+        target = project / ".agents" / "dsop"
+        _skill(target.parent, name="dsop")  # creates .agents/dsop/SKILL.md
+        try:
+            (skills_dir / "dsop").symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+        return project, skills_dir
+
+    def _entry_hits(self, caplog):
+        return [m for m in _warnings(caplog) if "linked entr" in m]
+
+    def test_warns_once_per_project_root_and_still_loads_real_skills(self, tmp_path, caplog):
+        project, skills_dir = self._linked_skill_project(tmp_path)
+
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+            first = skills_mod._iter_skill_files(skills_dir, confine_to=(str(project),))
+            second = skills_mod._iter_skill_files(skills_dir, confine_to=(str(project),))
+
+        # The real skill still loads; the linked one is skipped (not followed).
+        assert [name for name, _ in first] == ["realskill"]
+        assert first == second
+
+        hits = self._entry_hits(caplog)
+        assert len(hits) == 1, _warnings(caplog)
+        assert str(skills_dir / "dsop") in hits[0]
+        assert "replace each link with a real directory" in hits[0]
+
+    def test_several_links_are_all_named_in_one_warning(self, tmp_path, caplog):
+        """Every skipped top-level link is named in the single per-root WARNING."""
+        project = tmp_path / "proj"
+        skills_dir = project / ".kiro" / "skills"
+        _skill(skills_dir, name="realskill")
+        agents = project / ".agents"
+        for name in ("alpha", "beta", "gamma"):
+            _skill(agents, name=name)
+        try:
+            for name in ("alpha", "beta", "gamma"):
+                (skills_dir / name).symlink_to(agents / name, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+            loaded = skills_mod._iter_skill_files(skills_dir, confine_to=(str(project),))
+
+        assert [name for name, _ in loaded] == ["realskill"]
+        hits = self._entry_hits(caplog)
+        assert len(hits) == 1, _warnings(caplog)
+        for name in ("alpha", "beta", "gamma"):
+            assert str(skills_dir / name) in hits[0]
+
+    def test_a_linked_plain_file_is_named_generically(self, tmp_path, caplog):
+        """A top-level symlink to a FILE is a skipped linked entry, named the same way."""
+        project = tmp_path / "proj"
+        skills_dir = project / ".kiro" / "skills"
+        _skill(skills_dir, name="realskill")
+        real_file = project / ".agents" / "shared-skill-md"
+        real_file.parent.mkdir(parents=True)
+        real_file.write_text("x", encoding="utf-8")
+        try:
+            (skills_dir / "linked.md").symlink_to(real_file)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+            skills_mod._iter_skill_files(skills_dir, confine_to=(str(project),))
+
+        hits = self._entry_hits(caplog)
+        assert len(hits) == 1, _warnings(caplog)
+        # The message must NOT claim the entry is a directory.
+        assert "linked entr" in hits[0] and "linked skill directory" not in hits[0]
+
+    def test_a_dangling_link_is_still_named(self, tmp_path, caplog):
+        """A dangling top-level link is skipped and named from its own lstat (no resolution)."""
+        project = tmp_path / "proj"
+        skills_dir = project / ".kiro" / "skills"
+        _skill(skills_dir, name="realskill")
+        try:
+            (skills_dir / "gone").symlink_to(
+                project / ".agents" / "missing", target_is_directory=True
+            )
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+            skills_mod._iter_skill_files(skills_dir, confine_to=(str(project),))
+
+        assert len(self._entry_hits(caplog)) == 1, _warnings(caplog)
+
+    def test_a_linked_subdir_inside_a_loaded_skill_stays_quiet(self, tmp_path, caplog):
+        """A skill's own internal link (myskill/references -> shared) is not a lost skill."""
+        project = tmp_path / "proj"
+        skills_dir = project / ".kiro" / "skills"
+        _skill(skills_dir, name="myskill")
+        shared = project / ".agents" / "shared-docs"
+        shared.mkdir(parents=True)
+        (shared / "note.md").write_text("x", encoding="utf-8")
+        try:
+            (skills_dir / "myskill" / "references").symlink_to(shared, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+            loaded = skills_mod._iter_skill_files(skills_dir, confine_to=(str(project),))
+
+        assert [name for name, _ in loaded] == ["myskill"]
+        assert self._entry_hits(caplog) == []
+
+    def test_a_dot_link_stays_quiet(self, tmp_path, caplog):
+        project = tmp_path / "proj"
+        skills_dir = project / ".kiro" / "skills"
+        _skill(skills_dir, name="realskill")
+        target = project / ".agents" / "dsop"
+        _skill(target.parent, name="dsop")
+        try:
+            (skills_dir / ".hidden").symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+            skills_mod._iter_skill_files(skills_dir, confine_to=(str(project),))
+
+        assert self._entry_hits(caplog) == []
+
+    def test_a_real_only_tree_stays_quiet(self, tmp_path, caplog):
+        project = tmp_path / "proj"
+        skills_dir = project / ".kiro" / "skills"
+        _skill(skills_dir, name="realskill")
+
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+            skills_mod._iter_skill_files(skills_dir, confine_to=(str(project),))
+
+        assert self._entry_hits(caplog) == []
+
+    def test_a_nested_linked_skill_md_does_not_load(self, tmp_path, caplog):
+        """A real nested skill dir whose own SKILL.md is a symlink does not load.
+
+        The warn-only change names a linked TOP-level child; a file-level link
+        deeper in the tree is out of its scope. This pins only the load outcome
+        (the walk keeps regular SKILL.md files, not links), not the logging.
+        """
+        project = tmp_path / "proj"
+        skills_dir = project / ".kiro" / "skills"
+        _skill(skills_dir, name="realskill")
+        (skills_dir / "nested").mkdir()
+        real_md = project / ".agents" / "nested-skill-md"
+        real_md.parent.mkdir(parents=True)
+        real_md.write_text("name: nested\n", encoding="utf-8")
+        try:
+            (skills_dir / "nested" / "SKILL.md").symlink_to(real_md)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+            loaded = skills_mod._iter_skill_files(skills_dir, confine_to=(str(project),))
+
+        # The nested skill with the linked SKILL.md does not load.
+        assert [name for name, _ in loaded] == ["realskill"]

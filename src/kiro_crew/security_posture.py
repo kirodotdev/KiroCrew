@@ -1082,7 +1082,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Telegram rendered-form seal",
-        "telegram/renderer.py",
+        "telegram/renderer_display.py",
         "Every text this channel posts, scanned against the form Telegram RENDERS "
         "rather than the bytes sent. The TurnDriver's stream scan runs before this "
         "renderer introduces any markup, so it cannot see a credential the markup "
@@ -2151,6 +2151,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/client_turn_control.py",
         "acp/client_usage.py",
         "acp/transport_errors.py",
+        # Split out of transport_errors to keep that file under the line cap; its
+        # redact_text call scrubs a compaction-failure reason for the SAME
+        # compaction notice, whose display sink is already registered, so it is
+        # not an egress boundary of its own.
+        "acp/compaction_errors.py",
         # Redacts the tool title in the auto-rejected-permission WARNING (a
         # gate-side log line) and defers user-facing display to the routed
         # permission event, whose sinks are already registered.

@@ -159,6 +159,59 @@ class TestProjectGitEndpoint:
         assert data["repoRoot"] == os.path.realpath(str(repo))
 
     @pytest.mark.asyncio
+    async def test_repo_root_project_is_reported_as_the_root(self, repo, mock_sel):
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get("/api/project/git", params={"path": str(repo)})
+            data = await resp.json()
+        assert data["isRepoRoot"] is True
+
+    @pytest.mark.asyncio
+    async def test_plain_folder_inside_a_repo_is_not_the_root(self, repo, mock_sel):
+        """A folder with no ``.git`` of its own, under a repo rooted higher up.
+
+        It is "in git" (``repo`` is true, so the branch chip and Git panel still
+        work), but it is not a worktree source: ``isRepoRoot`` is what tells the
+        worktree surfaces apart from those.
+        """
+        plain = repo / "notes"
+        plain.mkdir()
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get("/api/project/git", params={"path": str(plain)})
+            data = await resp.json()
+        assert data["repo"] is True
+        assert data["repoRoot"] == os.path.realpath(str(repo))
+        assert data["isRepoRoot"] is False
+
+    @pytest.mark.asyncio
+    async def test_plain_non_git_folder_is_never_a_repo_root(self, tmp_path, mock_sel):
+        """A plain folder is never reported as a worktree source.
+
+        tmp_path can sit under an unrelated repo on some hosts, so either answer
+        shape is accepted: no repository at all, or a repository rooted above.
+        """
+        plain = tmp_path / "plain-project"
+        plain.mkdir()
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get("/api/project/git", params={"path": str(plain)})
+            data = await resp.json()
+        assert resp.status == 200
+        assert data.get("isRepoRoot") is not True
+        if data["repo"] is False:
+            assert "isRepoRoot" not in data
+
+    @pytest.mark.asyncio
+    async def test_is_repo_root_compares_real_paths_not_redacted_ones(
+        self, repo, mock_sel, as_not_darwin
+    ):
+        """The echoed paths may be masked; the root test must not depend on them."""
+        with patch("kiro_crew.dashboard.handlers.files.redact", return_value="masked"):
+            async with TestClient(TestServer(_make_app(str(repo)))) as client:
+                resp = await client.get("/api/project/git", params={"path": str(repo)})
+                data = await resp.json()
+        assert data["repoRoot"] == "masked"
+        assert data["isRepoRoot"] is True
+
+    @pytest.mark.asyncio
     async def test_non_repo_reports_repo_false(self, tmp_path, mock_sel):
         plain = tmp_path / "plain"
         plain.mkdir()

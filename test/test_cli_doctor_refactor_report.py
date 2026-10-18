@@ -242,6 +242,11 @@ class _Host:
         # marker goes on the family that defines it. The real section reads the
         # host's process table, which no frozen report can pin.
         mp.setattr(resources, "_doctor_acp_runtimes", self._marker("_doctor_acp_runtimes"))
+        import kiro_crew.doctor_checks.workload as workload
+
+        # Same reason: added after the move. The real section walks the host's
+        # ledger stores, which no frozen report can pin.
+        mp.setattr(workload, "_doctor_ledger_backlog", self._marker("_doctor_ledger_backlog"))
         mp.setitem(sys.modules, "faiss", None)
         mp.setitem(sys.modules, "amazon_transcribe", None)
         mp.setitem(sys.modules, "amazon_transcribe.client", None)
@@ -420,6 +425,7 @@ Configuration
   <<_doctor_cron_health>>
   <<_doctor_task_store>>
   <<_doctor_overload_resilience>>
+  <<_doctor_ledger_backlog>>
   <<doctor_dead_paths>>
 
 MCP Tools
@@ -600,6 +606,7 @@ Configuration
   <<_doctor_cron_health>>
   <<_doctor_task_store>>
   <<_doctor_overload_resilience>>
+  <<_doctor_ledger_backlog>>
   <<doctor_dead_paths>>
 
 MCP Tools

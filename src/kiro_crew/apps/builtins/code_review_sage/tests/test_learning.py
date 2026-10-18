@@ -279,8 +279,9 @@ class TestCandidateLockSpansProcesses(unittest.TestCase):
         import subprocess
         import sys
 
-        # Each child stages one learning; a process-local lock would let the two
-        # read the same "before" text and the last atomic write would drop one.
+        # Each child stages one learning of its own and one shared lesson. A
+        # process-local lock would let two read the same "before" text and the
+        # last atomic write would drop an entry or a sighting of the shared one.
         prog = (
             "import sys; sys.path.insert(0, %r)\n"
             "from pathlib import Path\n"
@@ -288,20 +289,35 @@ class TestCandidateLockSpansProcesses(unittest.TestCase):
             "L.stage_learning({'id': sys.argv[2], 'title': sys.argv[2],\n"
             "                  'body': 'b', 'multiplicity': 1},\n"
             "                 'fix_introduce', Path(sys.argv[1]))\n"
+            "L.stage_learning({'title': 'Shared lesson', 'impact': 'high',\n"
+            "                  'guidance': 'g'}, 'fix_introduce', Path(sys.argv[1]))\n"
         ) % str(Path(L.__file__).parent.parent)
 
-        procs = [
-            subprocess.Popen([sys.executable, "-c", prog, str(self.root), f"L{i}"],
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            for i in range(6)
-        ]
+        procs: list[subprocess.Popen] = []
+
+        def _reap():
+            # Registered before the first spawn, so a timeout, a failed assertion
+            # or a launch error never leaves a child writing into the temp root.
+            for pr in procs:
+                if pr.poll() is None:
+                    pr.kill()
+                pr.communicate(timeout=30)
+
+        self.addCleanup(_reap)
+        for i in range(6):
+            procs.append(subprocess.Popen(
+                [sys.executable, "-c", prog, str(self.root), f"L{i}"], cwd=self.root,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE))
         for pr in procs:
             out, err = pr.communicate(timeout=60)
             self.assertEqual(pr.returncode, 0, err.decode()[-400:])
 
-        staged = {str(e.get("title")) for e in L.list_candidate(self.root)}
-        self.assertEqual(staged, {f"L{i}" for i in range(6)},
+        entries = L.list_candidate(self.root)
+        staged = {str(e.get("title")) for e in entries}
+        self.assertEqual(staged, {f"L{i}" for i in range(6)} | {"Shared lesson"},
                          "every process's learning must survive")
+        shared = [e["seen"] for e in entries if e["title"] == "Shared lesson"]
+        self.assertEqual(shared, [6], "every process's sighting must be counted")
 
 
 class TestGuardedCandidateReads(unittest.TestCase):

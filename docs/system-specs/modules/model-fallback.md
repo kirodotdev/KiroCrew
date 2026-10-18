@@ -3,7 +3,7 @@
 `agent.fallback_model` controls an optional retry after an active model exhausts
 its transient-error budget before activity begins. The implementation is
 Kiro Crew-side: `llm_helpers.advance_fallback_candidate` changes the model through
-the substitute `set_model` seam, and `test/test_llm_helpers.py` pins that a
+the substitute `set_model` seam, and `test/test_llm_helpers_fallback_chain.py` pins that a
 successful swap is observable before it is recorded.
 
 On the ACP provider that seam is `AcpProvider.set_model`, so every fallback swap
@@ -64,12 +64,12 @@ walked/active records all carry the advertised spelling of the candidate
 bookkeeping. `TestSetModelWitness`,
 `TestAdvanceFallbackCandidateAutoPrimary`,
 `TestAdvanceFallbackCandidateNamespacedChain`, and `TestFallbackState` in
-`test/test_llm_helpers.py` cover no-op handling, marker-seeded primary
+`test/test_llm_helpers_fallback_chain.py` cover no-op handling, marker-seeded primary
 selection, advertised-model filtering, spelling folds, and chain progress.
 
 `FallbackState.should_retry_active` owns the per-candidate retry allowance, and
 `fallback_rewound_transient_budget` derives the dashboard counter from the same
-allowance. The pinning tests in `test/test_llm_helpers.py` and
+allowance. The pinning tests in `test/test_llm_helpers_fallback_restore.py` and
 `TestRunChatModelFallback` in `test/test_dashboard_chat.py` prevent the three
 surfaces from granting different candidate budgets.
 
@@ -124,7 +124,7 @@ fallback selection from becoming a persistent user pin.
 `TestRunChatModelFallback` in `test/test_dashboard_chat.py` and
 `TestSlotProbeWrapsSharedRestoreBody` in `test/test_dashboard_chat_model_pick.py`,
 together with the restore tests in
-`test/test_llm_helpers.py`, pin the stale-record, explicit-pick, and backfill
+`test/test_llm_helpers_fallback_restore.py`, pin the stale-record, explicit-pick, and backfill
 invariants.
 
 ## Refusal fallback (`agent.refusal_fallback_model`)
@@ -339,8 +339,9 @@ sub-agents) keep the terminal refusal behavior.
 
 ## Tests
 
-`test/test_llm_helpers.py` covers chain derivation, candidate selection, retry
-state, story handling, and unattended restore. `test/test_dashboard_chat.py`
+`test/test_llm_helpers_fallback_chain.py` and
+`test/test_llm_helpers_fallback_restore.py` cover chain derivation, candidate
+selection, retry state, story handling, and unattended restore. `test/test_dashboard_chat.py`
 covers dashboard fallback and slot restore. `test/test_subagent_turn_resilience.py`
 and `test/test_cron_gateway_integration_llm.py` cover sub-agent and gateway wiring.
 `test/test_config_loader_agent_section.py`, `test/test_role_models.py`, and

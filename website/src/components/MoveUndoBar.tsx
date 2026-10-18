@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { CornerDownRight } from 'lucide-react'
+import { ArrowUpDown, CornerDownRight } from 'lucide-react'
 
 import FolderGlyph from './FolderGlyph'
 import { i18nT } from '../i18n/t'
@@ -44,7 +44,14 @@ export type MovedItem = {
 }
 
 type Props = {
-  moved: MovedItem
+  /** The folder move this bar names. Absent when `message` says what happened instead. */
+  moved?: MovedItem
+  /** A sentence shown in place of the destination, for an undo offer that is
+   *  not a folder move (the sidebar's "Sorted by hand" after a drop that
+   *  switched the sort). Same bar, clock and ⌘Z. */
+  message?: string
+  /** Prefix for the bar's test ids; the session-move ids by default. */
+  testId?: string
   onUndo: () => void
   /** Reports whether the pointer is over the bar or focus is inside it, so the
    *  owner can suspend the expiry deadline rather than pull the button out from
@@ -143,6 +150,8 @@ type Props = {
  */
 export default function MoveUndoBar({
   moved,
+  message,
+  testId = 'session-move-undo',
   onUndo,
   onHoldChange,
   compact = false,
@@ -181,7 +190,7 @@ export default function MoveUndoBar({
       exit={{ height: 0, opacity: 0 }}
       transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
       className="shrink-0 overflow-hidden"
-      data-testid="session-move-undo"
+      data-testid={testId}
       onMouseEnter={() => { hovered.current = true; reportHold() }}
       onMouseLeave={() => { hovered.current = false; reportHold() }}
       onFocusCapture={() => { focused.current = true; reportHold() }}
@@ -190,19 +199,22 @@ export default function MoveUndoBar({
       {/* role=status: the whole row is the announcement, so the destination and
           the undo affordance are read together without a duplicate sr-only copy. */}
       <div className="flex items-center gap-1.5 border-t border-border bg-accent-subtle px-2.5 py-1.5" role="status" aria-live="polite">
-        <CornerDownRight size={12} className="shrink-0 text-accent" />
+        {moved ? <CornerDownRight size={12} className="shrink-0 text-accent" /> : <ArrowUpDown size={12} className="shrink-0 text-accent" />}
         {/* title carries the full sentence, so the compact row is still readable
             on hover when the prefix and the shortcut are dropped. */}
         <span
           className="flex min-w-0 flex-1 items-center gap-1 text-[12px] text-text"
-          title={moved.toFolderName === null
-            ? `${i18nT('components.sessionMoveUndoBar.removed_from_folder')} — ${moved.itemTitle}`
-            : `${i18nT('components.sessionMoveUndoBar.moved_to')} ${moved.toFolderName} — ${moved.itemTitle}`}
+          title={!moved ? message
+            : moved.toFolderName === null
+              ? `${i18nT('components.sessionMoveUndoBar.removed_from_folder')} — ${moved.itemTitle}`
+              : `${i18nT('components.sessionMoveUndoBar.moved_to')} ${moved.toFolderName} — ${moved.itemTitle}`}
         >
           {/* The root case is its own sentence, not "Moved to <noun>": the sidebar
               calls this "remove from folder" on its own drop zone, and "Unfiled"
               is Artifacts vocabulary this surface never shows. */}
-          {moved.toFolderName === null ? (
+          {!moved ? (
+            <span className="truncate font-medium text-text-strong">{message}</span>
+          ) : moved.toFolderName === null ? (
             <span className="truncate font-medium text-text-strong">{i18nT('components.sessionMoveUndoBar.removed_from_folder')}</span>
           ) : (
             <>
@@ -215,7 +227,7 @@ export default function MoveUndoBar({
               visible row for surfaces where the moved item disappears on drop
               (the library card leaves the current view; a sidebar row merely
               relocates). Punctuation-joined, so no new catalog string. */}
-          {showItemTitle && (
+          {showItemTitle && moved && (
             <span className="truncate text-muted" data-testid="session-move-undo-item">— {moved.itemTitle}</span>
           )}
         </span>
@@ -225,7 +237,7 @@ export default function MoveUndoBar({
             costs no capability. */}
         <button
           type="button"
-          data-testid="session-move-undo-button"
+          data-testid={`${testId}-button`}
           onClick={onUndo}
           title={`${i18nT('components.sessionMoveUndoBar.undo')} ${platformShortcut('Cmd+Z')}`}
           aria-keyshortcuts={isMac ? 'Meta+Z' : 'Control+Z'}
@@ -245,7 +257,7 @@ export default function MoveUndoBar({
           deadline that has stopped. */}
       <motion.div
         aria-hidden
-        data-testid="session-move-undo-countdown"
+        data-testid={`${testId}-countdown`}
         className="h-[2px] origin-left bg-accent"
         initial={{ scaleX: 1 }}
         animate={{ scaleX: paused ? remainingMs / MOVE_UNDO_MS : 0 }}

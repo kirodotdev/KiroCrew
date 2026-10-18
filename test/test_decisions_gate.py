@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -37,6 +39,7 @@ from kiro_crew.decisions import gate as gate_mod
 from kiro_crew.decisions import log as log_mod
 from kiro_crew.decisions.gate import DECISION_POINT_NAMES, decide, in_bucket, is_enabled
 from kiro_crew.decisions.types import Answer, Choice, Noul, Score
+from kiro_crew.testing.wait import async_wait_until
 
 # ---------------------------------------------------------------------------
 # Fixtures and doubles
@@ -1227,6 +1230,125 @@ class TestLoggingCannotCostTheResult:
         answers, handed_off = asyncio.run(_drive())
         assert answers is not None, "a log that never lands must not cost the answers"
         assert handed_off, "the row never reached the append, so nothing was stalled"
+
+    def test_a_row_committed_after_the_grace_is_reported_unknown_and_logged(
+        self, install_impl, log_home, monkeypatch, caplog
+    ):
+        """The receipt stays ``None``, and one warning names the point, the row and the wait.
+
+        The append is held until ``decide`` has returned, with a zero grace, so the
+        grace always runs out first: nothing here races a clock. The held append
+        still runs to its end afterwards, which is the case a reader of the receipt
+        alone cannot see.
+        """
+        import threading
+
+        install_impl(_RecordingOracle())
+        release = threading.Event()
+        landed = threading.Event()
+        real_append = log_mod.append
+
+        def _late(row, *, commit_event=None):
+            release.wait(_STALLED_APPEND_CEILING_SECS)
+            try:
+                return real_append(row, commit_event=commit_event)
+            finally:
+                landed.set()
+
+        monkeypatch.setattr(gate_mod, "_LOG_BUDGET_SECS", 0)
+        monkeypatch.setattr(gate_mod, "_LOG_COMMIT_GRACE_SECS", 0)
+        monkeypatch.setattr(log_mod, "append", _late)
+        receipt: dict = {}
+
+        async def _drive():
+            try:
+                return await decide(
+                    POINT,
+                    "hi",
+                    QUESTIONS,
+                    config=_config(),
+                    extra={"verdict_id": "v-late"},
+                    receipt=receipt,
+                )
+            finally:
+                release.set()
+                await async_wait_until(landed.is_set)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.decisions.gate"):
+            answers = asyncio.run(_drive())
+
+        assert answers is not None
+        assert receipt["row_written"] is None, "a commit nobody observed is unknown, not refused"
+        warnings = [r for r in caplog.records if "commit unconfirmed" in r.getMessage()]
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert POINT in message and "v-late" in message
+        assert re.search(r"after \d+\.\d{3}s", message), message
+        assert [row.get("verdict_id") for row in log_home()] == ["v-late"]
+
+    @pytest.mark.parametrize("committed", [True, False], ids=["committed", "refused"])
+    def test_an_outcome_the_grace_observes_is_definite_and_silent(
+        self, install_impl, log_home, monkeypatch, caplog, committed
+    ):
+        """A commit or a refusal seen inside the grace is that value, and logs nothing.
+
+        The append starts only once the grace wait has begun, so its outcome is
+        always seen by the grace and never by the write budget. A refused append
+        returns while the grace is still parked on the commit signal, so the
+        refused case reads the finished append, not the signal.
+        """
+        import threading
+
+        install_impl(_RecordingOracle())
+        grace_started = threading.Event()
+        commit_events: list[threading.Event] = []
+        real_append = log_mod.append
+
+        class _GraceEvent(threading.Event):
+            def __init__(self):
+                super().__init__()
+                commit_events.append(self)
+
+            def wait(self, timeout=None):
+                if timeout and not self.is_set():
+                    grace_started.set()
+                return super().wait(timeout)
+
+        class _Threading(SimpleNamespace):
+            """``threading`` with ``Event`` swapped; every other name is the real one."""
+
+            def __getattr__(self, name):
+                return getattr(threading, name)
+
+        def _after_grace_starts(row, *, commit_event=None):
+            assert grace_started.wait(_STALLED_APPEND_CEILING_SECS), "no grace wait began"
+            if not committed:
+                return False
+            return real_append(row, commit_event=commit_event)
+
+        monkeypatch.setattr(gate_mod, "_LOG_BUDGET_SECS", 0)
+        monkeypatch.setattr(gate_mod, "_LOG_COMMIT_GRACE_SECS", _STALLED_APPEND_CEILING_SECS)
+        monkeypatch.setattr(gate_mod, "threading", _Threading(Event=_GraceEvent))
+        monkeypatch.setattr(log_mod, "append", _after_grace_starts)
+        receipt: dict = {}
+
+        async def _drive():
+            try:
+                return await decide(POINT, "hi", QUESTIONS, config=_config(), receipt=receipt)
+            finally:
+                # A refusal leaves the grace's own wait parked on the commit signal.
+                # Setting it once the receipt is settled ends that worker thread.
+                for event in commit_events:
+                    event.set()
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.decisions.gate"):
+            answers = asyncio.run(_drive())
+
+        assert answers is not None
+        assert receipt["row_written"] is committed
+        assert not [r for r in caplog.records if "commit unconfirmed" in r.getMessage()]
+        assert len(commit_events) == 1, "the receipt path made exactly one commit signal"
+        assert len(log_home()) == 1
 
     def test_no_provider_message_reaches_the_application_log(self, install_impl, log_home, caplog):
         """Not the row and not the logger: a provider can quote the request back."""

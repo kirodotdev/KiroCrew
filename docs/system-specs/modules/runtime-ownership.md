@@ -520,6 +520,15 @@ file. Folding those
 into the same `False` a real failure gets would publish one WARNING per stale pid
 per tick for the gateway's life — a steady state reported as a fault.
 
+The same rule sets the level of the two per-pass summaries. The dead-direction
+line (`runtime_reconcile owned_dead=... forgotten=...`) is WARNING only when the
+pass retracted a record or a retraction it owed failed, and the hook's
+`Runtime reconcile: unowned_alive=...` line is WARNING only when the pass killed,
+would have killed or retracted something. A reading made only of permanently
+withheld unowned pids and `not-mine` records repeats every tick, so both lines
+drop to DEBUG; the `session.runtime_reconcile` counter still carries every field
+on every pass.
+
 ### Platform scope
 
 The kernel side of the unowned direction is Linux-only. It reads

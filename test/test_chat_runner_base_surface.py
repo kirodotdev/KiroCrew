@@ -151,11 +151,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("_clear_fallback_sticky_state", "function", "(slot: 'Any', client: 'Any') -> 'None'"),
         ("_configured_refusal_fallback", "function", "() -> 'str'"),
         (
-            "_default_session_model",
-            "function",
-            "(cfg: \"'KiroCrewConfig | None'\", slot: \"'_ChatSlot'\", agent_model: 'str') -> 'str'",
-        ),
-        (
             "_fallback_swap_for_turn",
             "async function",
             "(slot: 'Any', client: 'Any') -> 'str | None'",
@@ -686,13 +681,16 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(slot: '_ChatSlot', blocked_links: 'list[dict]', redactions: 'list[dict] | None' = None) -> 'dict | None'",
         ),
         ("_SEGMENT_RAW_MAX_CHARS", "value", "int"),
-        ("_accumulate_segment_raw", "function", "(slot: '_ChatSlot', text: 'str') -> 'None'"),
+        (
+            "_accumulate_segment_raw",
+            "function",
+            "(slot: '_ChatSlot', text: 'str', shown: 'str', removed: 'Iterable[tuple[str, str]]') -> 'None'",
+        ),
         (
             "_redact_segment",
             "function",
             "(slot: '_ChatSlot', text: 'str') -> 'tuple[str, list[dict], list[dict]]'",
         ),
-        ("_CREDENTIAL_TAG_RE", "value", "Pattern"),
         (
             "_redact_segment_text",
             "function",

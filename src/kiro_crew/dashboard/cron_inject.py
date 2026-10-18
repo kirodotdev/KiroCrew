@@ -7,6 +7,7 @@ gateway.py and dashboard.handlers.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 from typing import TYPE_CHECKING, Any
@@ -15,7 +16,7 @@ from kiro_crew.dashboard.chat_persistence import (
     _restore_dismissed_source_links,
     _validate_turn_timeout_secs,
 )
-from kiro_crew.dashboard.chat_utils import redact_display_content
+from kiro_crew.dashboard.chat_utils import CRON_NOTIFICATION_KIND, redact_display_content
 from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
 from kiro_crew.dashboard.state import (
     DashboardState,
@@ -629,6 +630,29 @@ def _bind_cron_slot(
     if minted:
         persist_cron_chat_folder(state, job, slot)
     return slot
+
+
+def queue_cron_notification(slot: Any, wrapped: str, label: str) -> str:
+    """Queue *wrapped* behind *slot*'s running turn and draw its card; return the queue id.
+
+    The one writer of the ``queued`` card both cron injectors draw for a
+    notification that waits: a cron's ``send_message`` to its origin session
+    (``handlers.messaging.api_send_message``) and a script cron's result
+    (``GatewayOrchestrator._deliver_script_result``). The card names its entry in
+    ``meta.queueId``, the key the dashboard's queue reducers match
+    (``website/src/store/chat/queue.ts``: the drain's ``queue_pop``, cancel, edit
+    and the slot-detail hydration), so the drain takes the card down when the
+    notification starts its turn. The JSON ``cls`` carries ``cronLabel`` for the
+    card's label and ``queue_id`` for ``chat_utils._edit_queued_by_id``.
+    """
+    queue_id = slot.queue_append(wrapped, kind=CRON_NOTIFICATION_KIND)
+    slot.append(
+        "queued",
+        wrapped,
+        json.dumps({"cronLabel": label, "queue_id": queue_id}),
+        meta={"queueId": queue_id},
+    )
+    return queue_id
 
 
 def inject_cron_result_to_dashboard(

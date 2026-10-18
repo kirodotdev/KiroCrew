@@ -51,7 +51,7 @@ function inputs(rows: Slot[], over: InputOverrides = {}): SidebarRowInputs {
     rows,
     local: {
       folderOf: {}, pinned: new Set(), pinnedRank: new Map(), unread: new Set(), running: new Set(), recent: new Set(),
-      searchRanks: null,
+      searchRanks: null, manualRank: new Map(), drawnIndex: new Map(),
       ...over.local,
     },
     filters: {
@@ -74,7 +74,8 @@ const NO_BOOST = { idlePct: [], activePct: [], hoverPct: [], mutedColors: [] }
 const SHELL: RowShell = {
   connected: true, mode: undefined, isMobile: false, colorMode: 'tint', defaultAgent: 'kirocrew',
   installedAgents: [], memoryRows: [], tagById: {}, paletteColors: [], boost: NO_BOOST, boostFor: () => NO_BOOST, recentTintCount: 3,
-  dragInFlight: false, activeDraggedKey: null, activeDraggedPinnedIndex: -1, guideOnRowControl: false,
+  dragInFlight: false, activeDraggedKey: null, activeDraggedPinnedIndex: -1, activeDraggedDrawnIndex: -1, manualSort: false,
+  guideOnRowControl: false,
 }
 
 function scene(over: Partial<Omit<RowScene, 'local'>> & { local?: Partial<RowScene['local']> } = {}): RowScene {
@@ -98,6 +99,7 @@ const keys = (rows: Slot[]) => rows.map(s => s.peer_id ? `${s.peer_id}:${s.key}`
 const FULL_LOCAL: SidebarRowInputs['local'] = {
   folderOf: { k: 'F1' }, pinned: new Set(['k']), pinnedRank: new Map([['k', 0]]), unread: new Set(['k']),
   running: new Set(['k']), recent: new Set(['k']), searchRanks: null,
+  manualRank: new Map([['k', 0]]), drawnIndex: new Map([['k', 0]]),
 }
 const FULL_SCENE_LOCAL: RowScene['local'] = {
   recentRank: new Map([['k', 1]]), subagentCounts: { k: 2 }, subagentApprovalCounts: { k: 1 }, poppedOut: new Set(['k']),

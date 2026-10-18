@@ -1530,15 +1530,10 @@ does not migrate it or grant access to that member's member store.
 session on a crew starts with, highest tier first: the crew's own `model`, the
 bound kiro agent's pinned model (skipped for the built-in `kirocrew` agent), the
 global `agent.model`, then the installed agent file's model. A per-session pick
-outranks all four and is not considered there. A bound template whose `model` is
-`auto` is NOT treated alike everywhere. The chip (`resolve_effective_model`)
-collapses it through `normalize_agent_model` and shows the global. The session
-layer (`session._session_model` -> `_model_fallback`) defers to the provider for
-ANY nonempty template value, `auto` included, so it returns `None`. The factory
-(`acp_effective_model`) then reads the template pin, collapses `auto` to `""`, and
-sends no model, which leaves kiro-cli's own resolution in charge rather than the
-global. That precedence is unchanged for ordinary named templates. No template
-follows the global default through these resolvers.
+outranks all four and is not considered there. The session layer
+(`session._session_model`, run by `get_or_create` for a caller that names no model)
+answers through the same function, so a bound template whose `model` is `auto`
+inherits the global on the chip and in the session alike.
 
 The loader is defensive about hand-edited config: a non-string `model` or
 `triggers` collapses to `""`, an unknown `reasoning_effort` collapses to inherit,
@@ -1846,7 +1841,11 @@ never in the chat. Each pick writes the crew record (`approval_mode`, `model`,
 the open thread follows at once. `approval_mode` is `""` until the user picks one, and while it is `""` the
 thread opens in `trust` (`_seed_member_approval` seeds the slot from `mode or
 "trust"`); picking `Normal` is what opens it without trust, and `trust_reads` /
-`trust` are applied as stored. A stored choice is applied as stored, a grant already on the slot is
+`trust` are applied as stored. `POST /api/agents` takes the same optional
+`approval_mode` (one of `MEMBER_APPROVAL_MODES`, else 400
+`invalid_approval_mode` before any write) and stores it in the create's own
+write, so a caller that must never leave a new crewmate in `trust` pins it there
+instead of in a later PUT. A stored choice is applied as stored, a grant already on the slot is
 kept, and the seed runs once per in-memory slot (`_member_approval_seeded`).
 YOLO is never a crewmate setting: it is process-global.
 The permission PUT is compare-and-set: the profile sends

@@ -47,7 +47,7 @@ export const PATH_TOKEN_RE = /(^|[\s])\.{1,2}\/\S*$/
  * tells a path apart from an abbreviation or a sentence's final full stop, so
  * "e.g." and "done." never open a menu. `~/` is deliberately absent: the search
  * roots this completes against are project-scoped and bare `$HOME` is not one of
- * them (see `api_file_search` in `handlers/files.py`).
+ * them (see `api_file_search` in `dashboard/file_api/search.py`).
  */
 export function matchPathToken(before: string): string | null {
   const m = before.match(/(^|[\s])((?:\.\/|(?:\.\.\/)+)\S*)$/)

@@ -313,6 +313,12 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "_MAX_PINNED_ORDER_BODY_BYTES",
         _BOUNDED_EXPLICIT,
     ),
+    # The manual session order carries one bounded list of slot keys (a seed's
+    # keys or a move's seat), sized from the same store ceilings.
+    "chat_manual_order.py::api_chat_manual_order": (
+        "_MAX_MANUAL_ORDER_BODY_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
     # ---- tranche 3 ----
     # chat_handlers.py and its chat_api owners: control-field slot mutations take
     # the cap; the sites that carry a chat message, queued-edit text, follow-up

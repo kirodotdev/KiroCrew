@@ -105,7 +105,7 @@ _BASE_NAMES = frozenset("""
         FileTooLargeError HOOK_CONTINUATION_RECOVERY_PREFIX HOOK_EVENT_AGENT_SPAWN
         HOOK_EVENT_POST_TOOL_USE HOOK_EVENT_PRE_TOOL_USE HOOK_EVENT_STOP
         HOOK_EVENT_USER_PROMPT_SUBMIT HOOK_HALTED_RECOVERY_PREFIX HUMAN_TURN_META_KEY
-        InfraError KiroCrewConfig L1_TOOL_CALL LLMEvent MAX_BLOCKED_LINKS_PER_MESSAGE
+        InfraError KiroCrewConfig L1_TOOL_CALL LLMEvent
         MAX_PROMPT_BYTES MCP_APP_MESSAGE_KIND MODEL_UNENTITLED_KIND MONITOR_WAKE_PREFIX
         MonitorCompletionHook NATIVE_SUBAGENT_DONE_RESULT_CAP NATIVE_SUBAGENT_DONE_TRUNC_MARKER
         NATIVE_SUBAGENT_OUTPUT_HARD NATIVE_SUBAGENT_OUTPUT_TAIL NATIVE_SUBAGENT_TERMINAL_KEEP
@@ -139,7 +139,7 @@ _BASE_NAMES = frozenset("""
         UnknownMemoryStore ValidationError WAIT_REASON_INPUT _ACTIVITY_NO_REPLY_CONTINUE_MSG
         _AppAgentNotLoaded _BATCH_REJECT_CLEARED_BY _BLOCKED_SLASH_COMMANDS _BUSY_RECOVER_MSG
         _COMPACTION_CONTINUE_MSG _COMPACTION_FAILED_RETRIES _COMPACT_FAIL_REASON_MAX_CHARS
-        _CONN_RECOVER_MSG _CONTEXT_FRAME_CONTRACT _CREDENTIAL_HINT_CLASSES _CREDENTIAL_TAG_RE
+        _CONN_RECOVER_MSG _CONTEXT_FRAME_CONTRACT _CREDENTIAL_HINT_CLASSES
         _ChatSlot _DIRECTIVE_NOT_APPLIED_FALLBACK _DIRECTIVE_NOT_APPLIED_OUTCOMES
         _DIRECTIVE_SHAPED_RE _EAGER_SPAWN_BACKOFF_BASE_SECS _EAGER_SPAWN_BACKOFF_MAX_SECS
         _EAGER_SPAWN_DEBOUNCE_SECS _EAGER_SPAWN_ERROR_DETAIL_MAX_CHARS _EAGER_SPAWN_FAILURE_CAP
@@ -174,7 +174,7 @@ _BASE_NAMES = frozenset("""
         _clip_card_error _configured_refusal_fallback _connections_managed_mcp_names
         _consume_pending_reset _context_usage_payload _credential_tool_hint_for _crew_log_class
         _crew_log_lineage _crew_log_model _crew_log_workspace _current_turn_carries_image_ref
-        _decisions_strip_meta _default_session_model _deliver_cross_surface_reply
+        _decisions_strip_meta _deliver_cross_surface_reply
         _deliver_cross_surface_user_message _deliver_linked_slack_message _dequeue_next_message
         _dequeue_next_system_message _detach_appended_context _directive_recovery_instruction
         _discard_stale_decision _drain_session_init_oauth_requests _drop_stale_admissions

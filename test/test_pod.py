@@ -6398,7 +6398,7 @@ class TestUpVerb:
         monkeypatch.setattr(rt, "is_active", lambda cfg, n: False)
         monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp(returncode=0))
         monkeypatch.setattr(pod_cli, "_wait_healthy", lambda cfg, n, p, tries=0, **_kw: -1)
-        monkeypatch.setattr(rt, "recent_journal", lambda cfg, n, ln=30: "ImportError: boom")
+        monkeypatch.setattr(rt, "recent_journal", lambda cfg, n, ln=30, **_kw: "ImportError: boom")
         monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
         with pytest.raises(SystemExit):
             pod_cli._up(

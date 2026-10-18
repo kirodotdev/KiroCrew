@@ -531,6 +531,9 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
         # a new generation, so its current credential is the correct one and the
         # health wait must accept it rather than wait it out for the whole budget.
         superseded_credential = ""
+        # Where this start's log output begins, taken beside `start_pod`. None
+        # on the already-active path, which reports the tail as it stands.
+        journal_since: dict[str, int] | None = None
         # Set only where `start_pod` actually returned success, so it records what
         # THIS invocation did rather than what a probe inferred about the unit. The
         # failed-wait cleanup keys on it because that cleanup can delete a home.
@@ -604,6 +607,7 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
                 # the top of `_up` because the port is only final once allocation
                 # has run, and the credential is keyed by port.
                 superseded_credential = rt.published_credential(cfg, name, port)
+                journal_since = rt.journal_mark(cfg, name)
                 cp = rt.start_pod(cfg, name)
                 if cp.returncode != 0:
                     _audit(
@@ -676,7 +680,7 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
             # during the health wait, and the stop below would then act on the
             # REPLACEMENT pod. Holding the lock across the whole boot transaction
             # means the pod stopped here can only be the one we started.
-            tail = rt.recent_journal(cfg, name, 30)
+            tail = rt.recent_journal(cfg, name, 30, since=journal_since)
             print(tail, file=sys.stderr)
             # Attribution must be read BEFORE stop_pod tears the unit down:
             # after the stop, unit_state cannot tell a slow boot from a dead

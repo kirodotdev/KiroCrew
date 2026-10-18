@@ -2157,14 +2157,16 @@ class CredentialMatch(NamedTuple):
     value: str
 
 
-def redact_credentials_with_records(text: str) -> tuple[str, list[str], list[CredentialMatch]]:
+def redact_credentials_with_records(
+    text: str, *, defer_token_param: bool = False
+) -> tuple[str, list[str], list[CredentialMatch]]:
     """:func:`redact_credentials`, plus one :class:`CredentialMatch` per tag written.
 
-    The cleaned text and warnings are byte-identical to ``redact_credentials``;
-    both share one plan, so the records cannot describe a redaction the text
-    does not contain.
+    The cleaned text and warnings are byte-identical to ``redact_credentials``
+    with the same ``defer_token_param``; both share one plan, so the records
+    cannot describe a redaction the text does not contain.
     """
-    spans, warnings, rules = _credential_redaction_plan(text)
+    spans, warnings, rules = _credential_redaction_plan(text, defer_token_param=defer_token_param)
     if not spans:
         return text, warnings, []
     matches: list[CredentialMatch] = []

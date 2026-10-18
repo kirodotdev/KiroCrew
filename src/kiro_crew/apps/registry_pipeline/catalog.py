@@ -628,11 +628,25 @@ async def _append_external_registry_apps(
         kept.append(entry)
     if not kept:
         return rows, set()
+    # Snapshot the index's version BEFORE the merge, which takes ``version`` from
+    # the app's own app.json -- and for an installed app that file is read from
+    # its persistent checkout, i.e. the tree that was installed, so it names the
+    # installed version until that checkout moves. The index is then the only
+    # listing input that has seen the registry's newer release.
+    index_versions = [e.get("version") for e in kept]
     resolved = await asyncio.gather(
         *[_resolve_manifest(e) for e in kept],
         return_exceptions=True,
     )
     kept = [r if isinstance(r, dict) else kept[i] for i, r in enumerate(resolved)]
+    for row, index_version in zip(kept, index_versions, strict=True):
+        # The index may only RAISE the version: a manifest fetched from the remote
+        # tip can be ahead of a lagging index, and that answer stands. An index
+        # value `_version_newer` cannot parse is never newer, so it is ignored.
+        if isinstance(index_version, str) and _version_newer(
+            index_version, row.get("version") or "0"
+        ):
+            row["version"] = index_version
     detected = await _detect_installed_probe(kept, installed_map)
     rows.extend(kept)
     return rows, detected

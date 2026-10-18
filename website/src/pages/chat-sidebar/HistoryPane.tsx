@@ -26,8 +26,11 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
   const { clearClosedSessionsWithConfirm, collapsedHistoryGroups, connected, defaultAgent,
     deleteHistorySessionWithConfirm, dispatch, folderSortMode, folders, history, historyDragging,
     historyFilter, historyHasMore, historyHeight, historyOpen, historyResize, historySearchResults,
-    openHistoryPane, selectInstance, setCollapsedHistoryGroups, setHistoryFilter, setHistoryOpen, sortKey,
+    openHistoryPane, selectInstance, setCollapsedHistoryGroups, setHistoryFilter, setHistoryOpen, sortKey: listSortKey,
     tintAgents } = shell
+  // Older sessions have no place in the manual order (it orders the open ones),
+  // so under Manual this pane keeps its own newest-first order and date groups.
+  const sortKey = listSortKey === 'manual' ? 'date-desc' : listSortKey
   return (
     <>
       {historyOpen ? (

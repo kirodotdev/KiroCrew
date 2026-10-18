@@ -25,6 +25,7 @@ import {
   COPY_COMMAND,
   CUT_COMMAND,
   DELETE_CHARACTER_COMMAND,
+  DELETE_WORD_COMMAND,
   type EditorState,
   type ElementNode,
   type LexicalEditor,
@@ -47,7 +48,9 @@ import { INPUT_TYPO } from './PasteHighlightLayer'
 import { MacLineEdgePlugin } from './composerLineEdge'
 import { createImeLatch } from '../hooks/useImeGuard'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
+import { BACKSPACE_KEY, DELETE_KEY } from './domDeleteKeys'
 import type { ComposerControl, ComposerSelection } from './composerControl'
+import type { MentionKeyMods } from './chat-input/props'
 import { livePromptHistoryCursor, stepPromptHistory, type PromptHistoryCursor, type PromptHistoryItem } from './composerPromptHistory'
 import {
   isRawPasteChord,
@@ -123,6 +126,14 @@ interface LexicalComposerInputProps {
    *  Fired by the editor only from an EMPTY composer, so it cannot shadow
    *  ordinary caret movement or the ↑/↓ history recall below. */
   onEditLastRequest?: () => void
+  /** Delete a staged `@mention` as one atomic unit on Backspace/Delete, so a
+   *  hand-edit can never leave a half-reference the chip then silently
+   *  unstages (#18186). This is the SAME `mentionKeyEdit` the textarea composer
+   *  receives as `onMentionKey`: given the flat text, the flat selection
+   *  [selStart, selEnd), the key and its modifiers, it returns the whole-value
+   *  result of removing the touched mention(s) whole, or null when the edit
+   *  touches no staged mention (then the editor's own delete runs). */
+  onMentionKey?: (text: string, selStart: number, selEnd: number, key: string, mods: MentionKeyMods) => { value: string; caret: number } | null
 }
 
 function appendPlainText(text: string, append: (node: ReturnType<typeof $createTextNode> | ReturnType<typeof $createLineBreakNode>) => void) {
@@ -287,6 +298,52 @@ function $applyListMarkerBackspace(endUndoBurst?: () => void): boolean {
   return true
 }
 
+// Delete a staged `@mention` as one atomic unit on Backspace/Delete, the way
+// the textarea composer does (#18186). `onMentionKey` is the SHARED
+// textarea handler (`mentionKeyEdit`): the editor hands it the flat text and
+// the flat selection — the same (text, selStart, selEnd) model it already
+// uses — and gets back either null (no staged mention touched; the browser's
+// own delete runs) or the whole-value result of removing the mention whole.
+// Reusing that one function means the two composers can never disagree about
+// where a mention is or how far a delete reaches (plain, Shift, word-delete,
+// and overlapping-selection cases all come from the shared logic). The result
+// is always a pure deletion, so the removed span is exactly
+// [caret, caret + (text.length - value.length)); applying it as a range
+// `removeText()` (the same shape as the list-edit appliers) is one undo step
+// and leaves any paste-token chips untouched.
+function $applyMentionKeyEdit(
+  onMentionKey: NonNullable<LexicalComposerInputProps['onMentionKey']>,
+  key: 'Backspace' | 'Delete',
+  mods: MentionKeyMods,
+  endUndoBurst?: () => void,
+): boolean {
+  // Range selections only. A node selection (a focused paste-token chip) is a
+  // whole-node delete that `deleteSelectedNode` already owns.
+  const selection = $canonicalSelection()
+  if (!selection) return false
+  const isRange = $isRangeSelection($getSelection())
+  if (!isRange) return false
+  const text = $getRoot().getTextContent()
+  const result = onMentionKey(text, selection.start, selection.end, key, mods)
+  if (!result) return false
+  // `mentionKeyEdit` only ever removes a contiguous span (it never inserts), so
+  // the deletion is [caret, caret + removedLength) with caret = span start.
+  const removed = text.length - result.value.length
+  if (removed <= 0) return false
+  // Close the host's coalescing typing burst BEFORE the edit (as
+  // `$applyListMarkerBackspace` does), so this structural delete gets its own
+  // undo step: without it a short mention deleted within the typing-burst
+  // window merges into the current typing snapshot, and one Ctrl+Z would undo
+  // both the mention and the text typed just before it.
+  endUndoBurst?.()
+  const range = $createRangeSelection()
+  $setPointAtOffset(range.anchor, result.caret)
+  $setPointAtOffset(range.focus, result.caret + removed)
+  $setSelection(range)
+  range.removeText()
+  return true
+}
+
 function ComposerControlPlugin({
   controlRef,
   onReady,
@@ -419,10 +476,15 @@ function InteractionPlugin({
   sendOnEnter,
   showFullPastes,
   onEndUndoBurst,
-}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onOptimizeChord' | 'onUploadFiles' | 'sentMessages' | 'historyScope' | 'onEditLastRequest' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes' | 'onEndUndoBurst'>) {
+  onMentionKey,
+}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onOptimizeChord' | 'onUploadFiles' | 'sentMessages' | 'historyScope' | 'onEditLastRequest' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes' | 'onEndUndoBurst' | 'onMentionKey'>) {
   const [editor] = useLexicalComposerContext()
   const endUndoBurstRef = useRef(onEndUndoBurst)
   endUndoBurstRef.current = onEndUndoBurst
+  // Kept in a ref so a new `onMentionKey` identity each render does not
+  // re-register the whole command block; the handler reads the live value.
+  const onMentionKeyRef = useRef(onMentionKey)
+  onMentionKeyRef.current = onMentionKey
   const blocksRef = useRef(blocks)
   const rawPasteRef = useRef(false)
   const historyCursorRef = useRef<PromptHistoryCursor | null>(null)
@@ -549,6 +611,66 @@ function InteractionPlugin({
     }
     const unregisterBackspace = editor.registerCommand(KEY_BACKSPACE_COMMAND, deleteSelectedNode, COMMAND_PRIORITY_HIGH)
     const unregisterDelete = editor.registerCommand(KEY_DELETE_COMMAND, deleteSelectedNode, COMMAND_PRIORITY_HIGH)
+    // Atomic staged-mention delete (#18186), the twin of the textarea's
+    // `onMentionKey` keydown path. Registered AFTER `deleteSelectedNode` at the
+    // same priority: that handler claims a focused paste-token chip (a node
+    // selection) and returns false otherwise, so this one only ever runs for a
+    // range selection — the two never contend. A null result from the shared
+    // handler (no staged mention touched) falls through to Lexical's default
+    // delete.
+    //
+    // Registered on the two DELETE_* commands Lexical 0.50.0 actually dispatches
+    // for a delete, NOT on KEY_BACKSPACE/KEY_DELETE. The plain-text plugin's
+    // KEY_BACKSPACE/KEY_DELETE handlers only forward to DELETE_CHARACTER_COMMAND,
+    // and a word-delete chord (Alt/Ctrl+Backspace/Delete) is dispatched as
+    // DELETE_WORD_COMMAND and never reaches KEY_BACKSPACE/KEY_DELETE at all — so
+    // the old KEY_* registrations missed the word delete and left a half
+    // reference. DELETE_CHARACTER_COMMAND is the single chokepoint for every
+    // plain, Shift+Delete, soft-keyboard (beforeinput) and macOS Ctrl+H/Ctrl+D
+    // delete, so dropping the KEY_* registrations loses no case the mention
+    // handler used to cover. DELETE_LINE_COMMAND (Cmd+Backspace) is left alone:
+    // `mentionKeyEdit` returns null for meta on purpose, so the native
+    // line delete runs.
+    //
+    // These commands carry an `isBackward` boolean payload, not a KeyboardEvent;
+    // the shared handler reads a key + modifier set, so the key is derived from
+    // the direction and the modifiers are synthesized: none for the character
+    // command, and the word-delete chord's modifier (Alt on macOS, Ctrl
+    // elsewhere) for the word command, so `mentionKeyEdit`'s `wordDelete` branch
+    // runs. Both are guarded with `!editor.isComposing()`, as the list-marker
+    // handler is, so an IME commit delete is left to the browser.
+    const applyMentionDelete = (isBackward: boolean, mods: MentionKeyMods): boolean => {
+      const onMentionKey = onMentionKeyRef.current
+      if (!onMentionKey) return false
+      // The DOM key name the shared handler compares against. `isBackward` is the
+      // DELETE_*_COMMAND payload: backward is the Backspace direction, forward the
+      // Delete direction. The two key names come from the machine-only
+      // `domDeleteKeys` module (KeyboardEvent.key protocol values, never UI copy).
+      const key = isBackward ? BACKSPACE_KEY : DELETE_KEY
+      // End the host's coalescing typing burst first, so a short mention
+      // deleted within the typing-burst window gets its own undo step and
+      // Ctrl+Z restores only the mention, not the text typed just before it —
+      // the same guard `$applyListMarkerBackspace` already applies.
+      return $applyMentionKeyEdit(onMentionKey, key, mods, () => endUndoBurstRef.current?.())
+    }
+    const unregisterMentionCharacter = editor.registerCommand(
+      DELETE_CHARACTER_COMMAND,
+      (isBackward: boolean) =>
+        !editor.isComposing() &&
+        applyMentionDelete(isBackward, {
+          meta: false, ctrl: false, alt: false, shift: false,
+        }),
+      COMMAND_PRIORITY_HIGH,
+    )
+    const unregisterMentionWord = editor.registerCommand(
+      DELETE_WORD_COMMAND,
+      (isBackward: boolean) =>
+        !editor.isComposing() &&
+        applyMentionDelete(isBackward, {
+          meta: false, ctrl: !IS_MAC, alt: IS_MAC, shift: false,
+        }),
+      COMMAND_PRIORITY_HIGH,
+    )
     const unregisterEnter = editor.registerCommand(
       KEY_ENTER_COMMAND,
       (event) => {
@@ -683,6 +805,8 @@ function InteractionPlugin({
       unregisterCut()
       unregisterBackspace()
       unregisterDelete()
+      unregisterMentionCharacter()
+      unregisterMentionWord()
       unregisterEnter()
       unregisterLineBreak()
       unregisterParagraph()
@@ -725,6 +849,7 @@ export default function LexicalComposerInput({
   sentMessages,
   historyScope,
   onEditLastRequest,
+  onMentionKey,
 }: LexicalComposerInputProps) {
   const initialValueRef = useRef({ value, blocks })
   const lastEmittedRef = useRef({ value, blocks })
@@ -801,6 +926,7 @@ export default function LexicalComposerInput({
           readOnly={readOnly}
           sendOnEnter={sendOnEnter}
           onEndUndoBurst={onEndUndoBurst}
+          onMentionKey={onMentionKey}
         />
       </div>
     </LexicalComposer>

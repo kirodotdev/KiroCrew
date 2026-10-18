@@ -143,8 +143,9 @@ class TestEmptyAccountsAreNotMaterialized:
         )
 
     @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
-    def test_a_populated_map_is_still_announced_as_deprecated(self, caplog):
+    def test_a_populated_map_is_still_announced_as_deprecated(self, monkeypatch, caplog):
         """The notice keeps firing for the operator who does have a token to move."""
+        monkeypatch.setattr(validation, "_REPORTED_DEPRECATED_FIELDS", set())
         data = {"agent": {"provider": "acp"}, "telegram": {"accounts": dict(_ACCOUNTS_RAW)}}
         with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
             validation.validate_config_data(data)
@@ -156,6 +157,8 @@ class TestEmptyAccountsAreNotMaterialized:
         ]
         assert len(notices) == 1
         assert "telegram.bot_token" in notices[0]
+        retained = repr(validation._REPORTED_DEPRECATED_FIELDS)
+        assert all(account["bot_token"] not in retained for account in _ACCOUNTS_RAW.values())
 
 
 class TestWithdrawalIsAnnounced:

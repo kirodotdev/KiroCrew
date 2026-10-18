@@ -150,8 +150,9 @@ describe('chat sidebar — sort-and-filter menu announces the checked row (#1417
     // The session-sort rows carry no test ids, so find them by their visible
     // labels among the menuitemradios. Exactly the active sort is checked.
     const radios = getAllByRole('menuitemradio')
-    // Nine mutually exclusive rows in all: six session sorts + three folder orders.
-    expect(radios.length).toBe(9)
+    // Ten mutually exclusive rows in all: seven session sorts (Manual among
+    // them) + three folder orders.
+    expect(radios.length).toBe(10)
     const checked = radios.filter(r => r.getAttribute('aria-checked') === 'true')
     // One per group: the active session sort and the (default) custom folder order.
     expect(checked.length).toBe(2)

@@ -7,7 +7,7 @@
  * ships (issue #9406); `SessionTabStrip.test.tsx` pins the same gesture on the
  * sidebar session strip.
  *
- * Four contracts, each of which a plausible refactor breaks silently:
+ * Five contracts, each of which a plausible refactor breaks silently:
  *
  * 1. A middle-click on a file tab closes THAT tab — routed through the strip's
  *    existing close path (`usePanelTabs.closeTab`), not a second close.
@@ -17,6 +17,10 @@
  *    into a focused input; `preventDefault()` is the guarantee that it does not.
  * 4. It does not fall through to tab SELECTION, and a right-button aux click is
  *    ignored entirely — only button 1 closes.
+ * 5. The middle-button MOUSEDOWN is cancelled on every chip. Chromium on Windows
+ *    enters autoscroll from that mousedown when the chip's group is scrollable
+ *    (the active chip always makes its own group scrollable by 1px), and then
+ *    `auxclick` never fires, so contracts 1-4 never get a chance to run.
  *
  * Bodies are stubbed as in `sidePanelLeadingTab.test.tsx`; only the strip is
  * driven. The strip model is exposed through a harness so a case can open the
@@ -154,5 +158,46 @@ describe('SidePanel tab middle-click-to-close', () => {
     expect(before).toContain('files')
     auxClick(fileTab('Files'), 1)
     expect(ctl!.tabs.map(t => t.id)).toEqual(before)
+  })
+
+  // Contract 5 (#9406 reopened): the middle-button MOUSEDOWN is cancelled.
+  // Chromium on Windows starts middle-click autoscroll from that mousedown's
+  // default action when the chip sits in a scroll container, and once it does
+  // no `auxclick` reaches the page, so the close above never runs. The auxclick
+  // cases cannot see that: they dispatch auxclick directly. jsdom has no layout
+  // and no autoscroll, so this pins the cancellation, not autoscroll itself; the
+  // end-to-end check is a Windows desktop build with a file tab active.
+  describe('middle-button mousedown (autoscroll guard)', () => {
+    const mouseDown = (el: HTMLElement, button: number): MouseEvent => {
+      const ev = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button })
+      fireEvent(el, ev)
+      return ev
+    }
+
+    it('cancels a middle-button mousedown on the ACTIVE file tab, the state that autoscrolled', () => {
+      renderPanel()
+      act(() => {
+        ctl!.openFile('/srv/one.md', 'one', SLOT)
+        ctl!.setActive('file:/srv/one.md')
+      })
+      expect(mouseDown(fileTab('one\\.md'), 1).defaultPrevented).toBe(true)
+    })
+
+    it('cancels it on an inactive file tab and on a pinned view too', () => {
+      renderPanel()
+      act(() => {
+        ctl!.openFile('/srv/one.md', 'one', SLOT)
+        ctl!.openFile('/srv/two.md', 'two', SLOT)
+        ctl!.setActive('file:/srv/two.md')
+      })
+      expect(mouseDown(fileTab('one\\.md'), 1).defaultPrevented).toBe(true)
+      expect(mouseDown(fileTab('Files'), 1).defaultPrevented).toBe(true)
+    })
+
+    it('leaves the primary-button mousedown alone (reorder drag and focus stay intact)', () => {
+      renderPanel()
+      act(() => { ctl!.openFile('/srv/one.md', 'one', SLOT) })
+      expect(mouseDown(fileTab('one\\.md'), 0).defaultPrevented).toBe(false)
+    })
   })
 })

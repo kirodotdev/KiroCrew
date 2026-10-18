@@ -338,7 +338,7 @@ describe('the real generator', () => {
     for (const l of guidable as (AutoLoc & { placements: { parent_ids: string[] }[] })[]) {
       for (const p of l.placements) expect(p.parent_ids.some((id) => id.startsWith('settings.tab.security') || id === 'settings.tab.computer-use' || id === 'settings.tab.secrets')).toBe(false)
     }
-    for (const st of stamps) expect(st.rel).not.toMatch(/^src\/pages\/settings\/(?:SecurityPanel|ComputerUsePanel|SecretsPanel)\.tsx$/)
+    for (const st of stamps) expect(st.rel).not.toMatch(/^src\/pages\/settings\/(?:SecurityPanel[A-Za-z]*|ComputerUsePanel|SecretsPanel)\.tsx$/)
     expect(GUIDE_CAUTION_IDS.length).toBeGreaterThan(0)
     expect(GUIDE_DENY_IDS.every((id) => !GUIDE_CAUTION_IDS.includes(id))).toBe(true)
   })

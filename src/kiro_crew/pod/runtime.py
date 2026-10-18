@@ -965,18 +965,33 @@ def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
     return state, restarts
 
 
-def recent_journal(cfg: PodConfig, name: str, lines: int = 30) -> str:
+def journal_mark(cfg: PodConfig, name: str) -> dict[str, int] | None:
+    """Mark where the next start's log output begins (Windows only).
+
+    On Windows the wrapper appends every boot to the same log files, so
+    ``recent_journal(..., since=mark)`` keeps an earlier start's lines out of
+    this start's failure report. Elsewhere returns None.
+    """
+    if IS_WINDOWS:
+        return win_backend.journal_mark(cfg, name)
+    return None
+
+
+def recent_journal(
+    cfg: PodConfig, name: str, lines: int = 30, since: dict[str, int] | None = None
+) -> str:
     """Tail the pod's log — surface a boot failure's real cause.
 
     launchd has no journal, so on macOS this tails the files the pod's plist
     routes stdout/stderr to. Task Scheduler has none either, so on Windows this
     tails the files the generated ``.cmd`` wrapper redirects into. Same
-    contract, different mechanism.
+    contract, different mechanism. *since* is a ``journal_mark`` and only the
+    Windows backend reads it.
     """
     if IS_MACOS:
         return launchd.recent_journal(cfg, name, lines=lines)
     if IS_WINDOWS:
-        return win_backend.recent_journal(cfg, name, lines=lines)
+        return win_backend.recent_journal(cfg, name, lines=lines, since=since)
     # journalctl is a sibling of systemctl, not routed through it — gate it too,
     # or this one call still raises a bare FileNotFoundError off-Linux.
     require_systemd()

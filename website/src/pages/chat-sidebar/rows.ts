@@ -23,7 +23,7 @@ import type { ChatTag } from '../../types'
 import type { GuideStepPlan } from '../../guide/guideActions'
 import type { PaletteBoost } from '../../utils/sessionColors'
 import { isChatPageSurface } from '../../utils/channelOrigin'
-import { compareBySort, comparePinnedThenSort, lastActivityEpoch, slotActivityTs, type SortKey } from '../chat/sessionOrder'
+import { compareBySort, compareManual, comparePinnedThenSort, lastActivityEpoch, slotActivityTs, type SortKey } from '../chat/sessionOrder'
 import { crewOf } from '../../hooks/useInstanceSessions'
 import { isWithinRecentWindow } from '../recentWindow'
 import { splitStaleSlots, type StaleSplit } from '../staleCollapse'
@@ -59,6 +59,11 @@ export interface LocalRowIndex {
   recent: ReadonlySet<string>
   /** The backend's relevance order while a content search is active, else null. */
   searchRanks: ReadonlyMap<string, number> | null
+  /** Place in the manual order (sort "Manual"), drawn below the pinned section. */
+  manualRank: ReadonlyMap<string, number>
+  /** Each unpinned row's position in the order it is drawn in now, whatever the
+   *  sort: where a manual drop's insertion line goes. */
+  drawnIndex: ReadonlyMap<string, number>
 }
 
 export interface SidebarRowFilters {
@@ -191,10 +196,13 @@ export interface RowShell {
   boostFor: (hex: string) => PaletteBoost
   recentTintCount: number
   /** A dnd-kit drag is in flight, the raw LOCAL key of a dragged session (only local
-   *  rows can be dragged), and that session's pinned rank. */
+   *  rows can be dragged), and that session's pinned rank and drawn position. */
   dragInFlight: boolean
   activeDraggedKey: string | null
   activeDraggedPinnedIndex: number
+  activeDraggedDrawnIndex: number
+  /** The sort is Manual: unpinned local rows show their drag handle. */
+  manualSort: boolean
   /** A guide step points at the open row's action group (`sessions.row-*`):
    *  the open row keeps that group shown with no pointer on it. */
   guideOnRowControl: boolean
@@ -267,6 +275,12 @@ export interface SessionRowView {
   renameValue: string
   revealFlash: 'flash' | 'fade' | null
   pinnedOrderIndex: number
+  /** While a drag is in flight, an unpinned row's position in the order drawn now
+   *  (-1 for a pinned or peer row, and for every row at rest): a manual drop's
+   *  insertion line compares it with the dragged row's. */
+  drawnOrderIndex: number
+  /** Drop and Alt+Arrow reorder this row: off for a peer row and while a search
+   *  ranks the list. The pinned and the manual order both read it. */
   pinnedReorderEnabled: boolean
   /** A LOCAL row whose surface this page does not render (a crew member's own DM
    *  thread, admitted to the conductor lane as a creator anchor) opens here instead
@@ -447,6 +461,7 @@ function makeLaneOrder(
   pinned: ReadonlySet<string>,
   pinnedRank: ReadonlyMap<string, number>,
   isPinned: SidebarRows['isPinned'],
+  manualRank: ReadonlyMap<string, number>,
 ): SidebarRows['laneOrder'] {
   // Search relevance, not the sort: pinning is a reachability promise for browsing,
   // not a ranking hint inside explicit search results. A peer row is never ranked,
@@ -463,6 +478,14 @@ function makeLaneOrder(
     const bPinned = isPinned(b)
     if (aPinned !== bPinned) return aPinned ? -1 : 1
     if (aPinned && bPinned) return comparePinnedThenSort(a, b, sortKey, pinned, pinnedRank)
+    if (sortKey === 'manual') {
+      // Manual places are LOCAL, so a peer row, which no drag can place, sits
+      // after the local rows instead of floating above them as unplaced.
+      const aLocal = localKeyOf(a)
+      const bLocal = localKeyOf(b)
+      if ((aLocal === null) !== (bLocal === null)) return aLocal === null ? 1 : -1
+      return compareManual(a, b, slot => (localKeyOf(slot) === null ? undefined : manualRank.get(slot.key)))
+    }
     return compareBySort(a, b, sortKey)
   }
 }
@@ -723,6 +746,7 @@ interface ViewModel {
   unread: ReadonlySet<string>
   isRunning: (slot: Slot) => boolean
   searchRanks: ReadonlyMap<string, number> | null
+  drawnIndex: ReadonlyMap<string, number>
 }
 
 /** The active row. A peer row is active only for the crew window open on its own
@@ -766,7 +790,7 @@ function makeViews(model: ViewModel): SidebarRows['views'] {
 export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRows | null): SidebarRows {
   const prev = previous ? memosOf.get(previous) : undefined
   const { rows, local, filters, clears, crewGroups, sortKey, clock, frozen } = inputs
-  const { folderOf: slotFolders, pinned, pinnedRank, unread, running, recent, searchRanks } = local
+  const { folderOf: slotFolders, pinned, pinnedRank, unread, running, recent, searchRanks, manualRank, drawnIndex } = local
   const { tags, search, status, folders: folderFilter } = filters
   // Read here, outside every compute: the drag freeze is the one place a build reads
   // the previous one's output.
@@ -779,8 +803,8 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
   const isPinned = isPinnedMemo.value
   const isRunning = isRunningMemo.value
 
-  const laneOrder = reuse(prev?.laneOrder, [searchRanks, sortKey, pinned, pinnedRank], () =>
-    makeLaneOrder(searchRanks, sortKey, pinned, pinnedRank, isPinned))
+  const laneOrder = reuse(prev?.laneOrder, [searchRanks, sortKey, pinned, pinnedRank, manualRank], () =>
+    makeLaneOrder(searchRanks, sortKey, pinned, pinnedRank, isPinned, manualRank))
   const statusMatches = reuse(prev?.statusMatches, [unread, running, recent, status.recentWindowMs, clock], () =>
     makeStatusMatches(unread, isRunning, recent, status.recentWindowMs, clock))
   const isRowStatusHidden = reuse(prev?.isRowStatusHidden, [status.hidden, statusMatches.value], () =>
@@ -848,7 +872,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
     isPinned,
     isRunning,
     staleSplit: makeStaleSplit(listNarrowed, sortKey, clock),
-    views: makeViews({ pinned, pinnedRank, unread, isRunning, searchRanks }),
+    views: makeViews({ pinned, pinnedRank, unread, isRunning, searchRanks, drawnIndex }),
   }
   memosOf.set(result, {
     folderOf: folderOfMemo, isPinned: isPinnedMemo, isRunning: isRunningMemo,
@@ -898,6 +922,11 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
     // A pinned rank is a LOCAL ordering: a peer row sits outside the pinned band and
     // refuses keyboard reorder, so a key collision cannot rewrite the local pin order.
     pinnedOrderIndex: local === null ? -1 : (model.pinnedRank.get(local) ?? -1),
+    // Only while a drag is in flight, the one time the insertion line reads it: a
+    // new row shifts every row's position, so carried at rest it would re-render
+    // every row on every insertion (the displacement window exists to prevent
+    // that). A drag start already re-renders every row through the shell.
+    drawnOrderIndex: local === null || !scene.drag ? -1 : (model.drawnIndex.get(local) ?? -1),
     pinnedReorderEnabled: !model.searchRanks && local !== null,
     opensElsewhere: opensElsewhereOf(slot),
     shell: scene.shell,
@@ -921,7 +950,7 @@ const VIEW_FIELDS: Record<keyof SessionRowView, true> = {
   folderConductor: true,
   isActive: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
   subagentCount: true, subagentApprovalCount: true, digitBadge: true, isRenaming: true, renamingHere: true,
-  renameValue: true, revealFlash: true, pinnedOrderIndex: true, pinnedReorderEnabled: true,
+  renameValue: true, revealFlash: true, pinnedOrderIndex: true, drawnOrderIndex: true, pinnedReorderEnabled: true,
   opensElsewhere: true, shell: true,
 }
 const VIEW_KEYS = Object.keys(VIEW_FIELDS) as (keyof SessionRowView)[]

@@ -100,7 +100,8 @@ class AllocationDeps:
     session_provider_type: Callable[[], Callable[[Any, Any], LLMProvider]]
     unlink_session_queue: Callable[[Any], None]
     unlink_queued_temp_paths: Callable[[dict[str, Any]], None]
-    session_model: Callable[[Any, str | None, str | None], str | None]
+    # (cfg, agent, crew_agent, *, app_name, session_key, backend_override)
+    session_model: Callable[..., str | None]
     load_config: Callable[[], Any]
     resolve_crew_identity: Callable[[Any, str | None, str | None], str]
     load_watchdog_settings: Callable[[str], object]

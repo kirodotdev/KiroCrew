@@ -38,6 +38,14 @@ export interface FollowUpCardProps {
    * server's own repo check remains the backstop.
    */
   projectIsRepo?: boolean
+  /**
+   * The root of the git repository the project directory sits INSIDE, when the
+   * directory is not that root itself (a plain folder under a repo checked out
+   * higher up). A worktree would branch the whole enclosing repository, which
+   * the server refuses unless another session is scoped to that root, so the
+   * card treats it like no repository: the primary action is a plain new chat.
+   */
+  enclosingRepoRoot?: string
 }
 
 /**
@@ -61,6 +69,7 @@ function FollowUpCard({
   onSkip,
   projectDir,
   projectIsRepo,
+  enclosingRepoRoot,
 }: FollowUpCardProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Index of the item whose session is being opened, so only that row shows a
@@ -68,10 +77,12 @@ function FollowUpCard({
   // open two chats.
   const [busyIndex, setBusyIndex] = useState<number | null>(null)
   const [errors, setErrors] = useState<Record<number, string>>({})
-  // A project that is not a git repo is the same dead end for a worktree as no
-  // project: the server can only refuse it with "Not a git repository". Both
-  // cases swap the worktree action for a plain new chat.
-  const notRepo = !!projectDir && projectIsRepo === false
+  // A project that is not a git repo, or is only a folder inside one, gets no
+  // worktree action: the server refuses the first outright and the second
+  // unless another session is scoped to the enclosing root. Both swap the
+  // worktree action for a plain new chat, as a session with no project does.
+  const insideRepo = !!projectDir && !!enclosingRepoRoot
+  const notRepo = !!projectDir && (projectIsRepo === false || insideRepo)
   const canWorktree = !!projectDir && !notRepo
 
   // Errors are keyed by array index, and Skip REMOVES an item — which shifts
@@ -153,9 +164,11 @@ function FollowUpCard({
                   onClick={() => startSession(item, index)}
                   disabled={busy || busyIndex !== null}
                   title={
-                    notRepo
-                      ? i18nT('components.followUpCard.open_new_chat_in_project', { path: projectDir })
-                      : i18nT('components.followUpCard.open_new_chat')
+                    insideRepo
+                      ? i18nT('components.followUpCard.open_new_chat_inside_repo', { path: projectDir, root: enclosingRepoRoot })
+                      : notRepo
+                        ? i18nT('components.followUpCard.open_new_chat_in_project', { path: projectDir })
+                        : i18nT('components.followUpCard.open_new_chat')
                   }
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-accent text-accent-fg hover:bg-accent-hover border-none"
                 >

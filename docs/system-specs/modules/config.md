@@ -1475,7 +1475,10 @@ keys`. Three exclusions from that warning are named in code:
 
 A deprecated field is announced only when it holds something: `null` and an
 empty map, list or string carry nothing to migrate, so `validation` stays
-silent on them (`False` and `0` are chosen values and are still announced). A
+silent on them (`False` and `0` are chosen values and are still announced). For
+each populated field, `validation` warns once per process for each distinct
+`repr(value)`. It stores only a SHA-256 digest of that representation in the
+warning registry, so configured credentials do not stay there as raw text. A
 schema entry that is marked `deprecated=True` therefore accepts that an empty
 value of its type gets no notice; a field for which `""` or `[]` is itself a
 meaningful choice must not rely on the deprecation notice to surface that
@@ -3038,7 +3041,7 @@ class DashboardConfig:
     theme_color: str = ""          # color-theme slug (e.g. "kiro", "emerald", "monokai"); empty = unset
     language: str = ""             # dashboard UI language, BCP-47 (e.g. "en", "zh-CN"); empty = auto-detect from the browser. See "Dashboard UI language" below.
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
-    session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
+    session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title), "manual" (the person's own drag order). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
     onboarded: bool = False         # whether the "Choose your look" onboarding modal was completed
     import_onboarded: bool = False  # whether foreign-agent import was completed or skipped
     terminal: dict                  # the built-in Terminal tab: shell ("" = $SHELL), max_sessions (12, server-wide ceiling), cwd ("" = $HOME), reuse_current (false; true = Run-in-terminal focuses the selected terminal and copies the command, never runs it), completion.enabled (true). PATCH-able via /api/config/kirocrew
@@ -3631,6 +3634,27 @@ A choice made in another browser, the default included, is never overwritten,
 even if it lands between this browser's read and write. The local key is removed
 when skipped, saved, or refused as already stored; any other carry-over failure
 keeps it for the next load. Settle-time invalidation draws the stored value.
+
+`manual` is the person's own order. The order itself is not config: it lives in
+the pinned order's store (`dashboard/pinned_session_order.py`), as a second file,
+`chat_manual_order.json`, in the same fenced `pinned-order` directory, and reaches
+the browser on every slot row as `manual_rank` / `manual_rev`. Under `manual`,
+pinned rows stay on top in their own order, unpinned rows show a drag handle and
+no date headers, and a session with no place (a new one) shows above the placed
+ones. A drop between two unpinned rows of one container, in any sort, switches
+this key to `manual`, writes the order, and offers "Sorted by hand" with Undo;
+under `manual`, Alt+Arrow on a focused unpinned row moves it the same way. A drop
+on a folder files the session and changes neither. Every write is one operation of `POST /api/chat/manual-order`:
+the first drag (or picking Manual with nothing saved) seeds the order on screen
+and lands only while nothing is saved; a later drag moves one row next to
+another; and the undo of a first drag clears the order only at the revision that
+drag wrote. Undo, or a drop whose write does not take, also puts the previous
+sort back. Picking another sort keeps the order, so picking Manual again
+restores it. Only the person's own browser
+writes it: the one writer refuses a caller whose origin is not `dashboard` (an
+agent or crew member, which reaches the gateway with `X-Internal-Secret`) and an
+app or member principal; no MCP tool writes it. A build without `manual` reads
+the key as `date-desc` and never touches the second file.
 
 ### Interactive model picker visibility
 

@@ -16,6 +16,7 @@ import stat as stat_module  # noqa: F401
 import time
 import uuid
 import weakref
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (  # noqa: F401
@@ -255,11 +256,12 @@ from kiro_crew.dashboard.chat_turn.mcp_session import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_turn.model_fallback import (  # noqa: F401
     _agent_fallback_chain,
+    _app_allocation_kwargs,
     _backfill_canonical_model,
     _clear_fallback_sticky_state,
     _configured_refusal_fallback,
-    _default_session_model,
     _fallback_swap_for_turn,
+    _inherited_default_model,
     _probe_fallback_restore_for_slot,
     _probe_fallback_restore_for_slot_locked,
     _refusal_fallback_swap,
@@ -339,8 +341,10 @@ from kiro_crew.dashboard.chat_turn.segment_flush import (
     _append_command_reply,
     _cleared_segment_text,
     _flush_segment,
+    _redact_delta,
     _redact_segment,
     _reflow_label_and_audit,
+    _reset_segment_copy,
     _segment_row_meta,
 )
 from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
@@ -701,6 +705,8 @@ from kiro_crew.recovery.ladder import (
 from kiro_crew.repeat_loop import RepeatLoopTracker
 from kiro_crew.safety_override import safety_override  # noqa: F401
 from kiro_crew.security import (
+    EXFILTRATION_REDACTION_TAG_PREFIX,
+    REDACTED_CREDENTIAL_TAG,
     StreamRedactor,
     is_sensitive_path,
     oauth_url_contains_credential,
@@ -713,7 +719,6 @@ from kiro_crew.security import (
     sanitized_oauth_endpoint_display,
 )
 from kiro_crew.security.credential_sources import credential_records
-from kiro_crew.security.exfil import MAX_BLOCKED_LINKS_PER_MESSAGE
 from kiro_crew.security.readonly_bash import (
     command_invokes_git,
     is_read_only_bash,
@@ -1511,15 +1516,10 @@ async def _eager_spawn(
             # nobody's crew, so "" is its honest alias.
             crew_alias = slot.agent or ""
             agent_model = ""
-            # Same default-model resolve as the real turn — the two MUST agree,
-            # or the first message would silently reuse a pre-warmed session
-            # running a different model than the chip promised.
-            loaded_cfg: KiroCrewConfig | None = None
             resolved_ok = False
             try:
                 # Migration writes apply a delta to a fresh document, preserving other settings.
                 cfg = await asyncio.to_thread(KiroCrewConfig.load)
-                loaded_cfg = cfg
                 bindings = await asyncio.to_thread(
                     functools.partial(resolve_session_agent_bindings, agent_kind=_bound[5]),
                     resolve_agent_bindings,
@@ -1665,13 +1665,7 @@ async def _eager_spawn(
             ):
                 logger.info("Eager spawn: %s left to first turn (tool-search replay)", session_key)
                 return
-            # Off the loop: the resolve globs and reads agent JSON (see
-            # _default_session_model). It converts every resolver error,
-            # StopIteration included, to "" inside the worker.
-            default_model = await asyncio.to_thread(
-                _default_session_model, loaded_cfg, slot, agent_model
-            )
-            # Agent recovery and default-model resolution both await. A real
+            # Agent recovery awaits. A real
             # turn or a slot mutation may therefore have landed after the
             # initial gate. Nothing is registered yet, so simply stand down;
             # the current owner will allocate from its current bindings.
@@ -1738,7 +1732,6 @@ async def _eager_spawn(
                     kiro_agent=kiro_agent,
                     crew_alias=crew_alias,
                     agent_model=agent_model,
-                    default_model=default_model,
                     allow_resume=allow_resume,
                     _bound=_bound,
                     start_priority=start_priority,
@@ -1789,7 +1782,6 @@ async def _spawn_admitted_prefetch(
     kiro_agent: str | None,
     crew_alias: str,
     agent_model: str,
-    default_model: str,
     allow_resume: bool,
     _bound: tuple,
     start_priority: StartPriority,
@@ -1827,7 +1819,10 @@ async def _spawn_admitted_prefetch(
         # which case the speculative session/load runs here and the
         # resumed=True observation is armed for the real turn. See
         # get_or_create's docstring.
-        _requested_model = slot.model or agent_model or default_model or ""
+        # A slot or crew pin is the caller's own selection; with neither, the
+        # allocation resolves the default-model ladder itself, exactly as it
+        # will for the first real turn.
+        _requested_model = slot.model or agent_model or ""
         try:
             _, is_new, resumed = await sessions.get_or_create(
                 session_key,
@@ -1844,6 +1839,7 @@ async def _spawn_admitted_prefetch(
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,
                 start_priority=start_priority,
+                **_app_allocation_kwargs(slot),
             )
         except (SpeculativeResumeRefused, SessionClosingError, SessionEndingError):
             # A refusal, a gateway shutdown, or a key being ended: no agent
@@ -4681,9 +4677,9 @@ async def _run_chat(
     # Rolling-buffer redactor for the live chat_chunk wire stream. Per-chunk
     # redaction misses a credential split across streaming boundaries;
     # this withholds the trailing credential-class run until it is confirmed safe
-    # so raw fragments never reach WS/SSE consumers. assistant_text (the source
-    # for the final _flush_segment redaction) is accumulated independently and is
-    # unaffected. Reset per segment via _flush_text_stream / _wsred.reset().
+    # so raw fragments never reach WS/SSE consumers. assistant_text and the
+    # slot's raw segment copy (what _flush_segment redacts as one text and
+    # saves) are accumulated independently and are unaffected. Reset per segment via _flush_text_stream / _wsred.reset().
     # Deliberately NOT an owner-view seam: this wire stream fans to every
     # connected dashboard client, owner or not, and the finalized text is
     # redacted before it is appended, so the owner's credential-redaction switch
@@ -4743,14 +4739,14 @@ async def _run_chat(
         # leaves it in ``assistant_text``, so a cancel landing after it (a late
         # Stop, the turn ceiling's task cancel) must not save it a second time.
         if turn.assistant_text and not turn._reply_flushed:
-            # Same glued-marker repair as _flush_segment: the interrupted body is
-            # the same accumulated text, and it is rendered by the same grammar.
-            body = _reflow_label_and_audit(slot, turn.assistant_text)
             slot.purge_chunks()
+            # Same glued-marker repair and whole-text redaction as
+            # _flush_segment (both inside _redact_segment): the interrupted body
+            # is the same accumulated text, rendered by the same grammar.
             # Records come out of the same pass for the reason _redact_segment
             # gives: after this line only the placeholder exists, so an
             # interrupted reply would otherwise lose what it explains for good.
-            _redacted, _blocked, _redactions = _redact_segment(slot, body)
+            _redacted, _blocked, _redactions = _redact_segment(slot, turn.assistant_text)
             _note_reply_row(
                 slot,
                 slot.append(
@@ -5412,7 +5408,7 @@ async def _run_chat(
     _turn_started = time.monotonic()
     # A credential in this turn's reply is traced only to this turn's tools.
     slot.credential_evidence.clear()
-    slot.segment_raw_text = ""
+    _reset_segment_copy(slot)
     slot.segment_message_id = ""
     # session_id -> {started, done, agent, task} for native kiro-cli subagents,
     # reconciled from `_kiro.dev/subagent/list_update` (one card per sub-agent).
@@ -6430,14 +6426,22 @@ async def _run_chat(
             "activity_event", {"slot": slot.key, "kind": "status", "text": "Creating session…"}
         )
         slot.model = _normalize_model(slot.model or "") or ""
-        # The model a slot that pins nothing STARTS on, kept OUT of `slot.model`
-        # — see _default_session_model for why persisting it would change what an
-        # empty slot.model means. Off the loop: the resolve globs and reads agent
-        # JSON; the helper converts every resolver error, StopIteration included,
-        # to "" inside the worker, so nothing un-deliverable reaches the Future.
-        default_model = await asyncio.to_thread(
-            _default_session_model, loaded_cfg, slot, agent_model
-        )
+        # The default a slot that pins nothing inherits, kept OUT of `slot.model`:
+        # that field is persisted and re-sent as a `set_model` override on every
+        # resume, so an empty value means "inherit" and the slot follows a later
+        # change to `agent.model` or to the agent's pin. Read from the session
+        # layer's own resolver (see _inherited_default_model) only to tell
+        # whether the live session still runs it; the allocation below is asked
+        # for no model and resolves the ladder itself.
+        default_model = ""
+        if not slot.model and not agent_model:
+            default_model = await _inherited_default_model(
+                state.sessions,
+                slot,
+                session_key,
+                agent=kiro_agent or slot.agent or None,
+                crew_agent=crew_alias,
+            )
         # Commit a pending session_set_model pick before get_or_create reads
         # slot.model. The pick's authorization is re-checked in the same
         # synchronous step as the write; when the model changed, queue a reset
@@ -6515,15 +6519,16 @@ async def _run_chat(
             if _mirror_link is not None and _mirror_resumes
             else ""
         )
-        # The model this turn SELECTS for the session, resolved through the same
-        # tiers the composer chip reads: the slot's own pin, then the crew's pin,
-        # then the resolved default. Selection is not transmission -- the provider
+        # The model this turn SELECTS for the session: the slot's own pin, then the
+        # crew's pin. With neither, the turn selects nothing and the allocation
+        # resolves the default-model ladder itself (the allocation's stamp then
+        # names what it chose). Selection is not transmission -- the provider
         # withholds a model this account cannot run rather than sending it -- so
         # this names what was chosen, not what reached the backend. Bound to a
         # local because two consumers must not diverge: the provider call below,
         # which decides whether to send it, and the crew log's `session/opened`,
         # which records the choice.
-        _requested_model = slot.model or agent_model or default_model or ""
+        _requested_model = slot.model or agent_model or ""
         _allocation_kwargs: dict[str, Any] = dict(
             agent=kiro_agent or slot.agent or None,
             # Same canonical crew identity as the eager-spawn path — the two
@@ -6538,6 +6543,7 @@ async def _run_chat(
             channel_id=_provider_channel_id or None,
             reasoning_effort_override=slot.reasoning_effort or None,
             start_priority=_turn_priority,
+            **_app_allocation_kwargs(slot),
         )
 
         def _release_dispatch_lock() -> None:
@@ -8495,11 +8501,10 @@ async def _run_chat(
                 # would have granted can never apply. Every other pass still runs
                 # per delta; the live wire goes through `_wsred`, which never
                 # exempts; with the empty default prefix set nothing changes.
-                safe_chunk, _ = redact_exfiltration_urls(event.text)
-                safe_chunk, _ = redact_credentials(safe_chunk, defer_token_param=True)
+                safe_chunk, _removed = _redact_delta(event.text)
                 if event.message_id:
                     slot.segment_message_id = event.message_id
-                _accumulate_segment_raw(slot, event.text)
+                _accumulate_segment_raw(slot, event.text, safe_chunk, _removed)
                 turn.assistant_text += safe_chunk
                 if event.control_notice:
                     # A backend control notice that arrived as assistant text

@@ -274,6 +274,13 @@ export default [
       // Key glyphs / key-cap names only (⌘ ⇧ ⌥ / Ctrl Win Alt) — a machine
       // grammar the OS parses, not translatable copy. Same rationale as above.
       'src/apps/mochi/src/shared/shortcut.ts',
+      // Two DOM `KeyboardEvent.key` protocol values ('Backspace'/'Delete') the
+      // composer's atomic @mention delete compares against (#18186) — physical
+      // key names, never rendered copy. Same key-name do-not-translate rationale
+      // as `shortcut.ts` above; the module is export-only (imports nothing, no DOM
+      // or render path), so the filename IS the boundary and its consumer
+      // `LexicalComposerInput.tsx` stays fully covered.
+      'src/components/domDeleteKeys.ts',
       // CSS text injected through <style>; a stylesheet is not translatable copy.
       'src/apps/spec-builder/inlineStyles.ts',
       // Inline `style.cssText` declarations for the fixed auth banners in

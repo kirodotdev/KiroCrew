@@ -143,6 +143,49 @@ async def _raise_via_dispatch(error: dict, models: list[dict] | None = None) -> 
     return ei.value
 
 
+async def _raise_on_backend(error: dict, backend: str, driver) -> BaseException:
+    """Drive *error* through a handle whose runtime reports *backend*.
+
+    The shared handle is the path every dashboard chat takes, so this is where
+    the throttle wording's backend dependency has to be exercised: the two
+    raise sites must forward ``self._runtime.acp_backend``.
+    """
+    h = _handle()
+    h._runtime.acp_backend = backend
+    h._queue.put_nowait(JsonRpcMessage(id=7, error=error))
+    if driver is _raise_via_wait:
+        with pytest.raises(AcpError) as ei:
+            await h._wait_for_response(7, timeout=5.0)
+    else:
+        with pytest.raises(AcpError) as ei:
+            async for _ev in h._dispatch_events(7, timeout=5.0):
+                pass
+    return ei.value
+
+
+class TestThrottleWordingThroughTheSharedHandle:
+    """The throttle subject is chosen from the backend the handle forwards. A
+    Claude seat runs on the shared ``AcpSessionHandle``; if the raise sites drop
+    the backend, its throttle reads "Bedrock" (the empty-string kiro id is the
+    default) and the whole fix is undone on the path that matters most.
+    """
+
+    _THROTTLE = {"code": -32603, "message": "Internal error", "data": "ThrottlingException"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_non_kiro_runtime_says_the_model_provider(self, driver):
+        msg = str(await _raise_on_backend(self._THROTTLE, "claude", driver))
+        assert "Bedrock" not in msg
+        assert "The model provider is throttling requests" in msg
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_kiro_runtime_still_says_bedrock(self, driver):
+        msg = str(await _raise_on_backend(self._THROTTLE, "", driver))
+        assert "Bedrock is throttling requests" in msg
+
+
 class TestNoRawDictInUserFacingError:
     """Both handle raise sites must format, never dump the JSON-RPC dict."""
 

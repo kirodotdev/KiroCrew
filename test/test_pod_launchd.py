@@ -622,7 +622,7 @@ def test_up_failure_cleanup_stops_the_pod_inside_the_mutex(cfg, monkeypatch, tmp
     monkeypatch.setattr(rt, "pin_checkout", lambda c, n, co: None)
     monkeypatch.setattr(rt, "is_active", lambda c, n: False)
     monkeypatch.setattr(rt, "start_pod", lambda c, n: _cp())
-    monkeypatch.setattr(rt, "recent_journal", lambda c, n, lines: "")
+    monkeypatch.setattr(rt, "recent_journal", lambda c, n, lines, **_kw: "")
     monkeypatch.setattr(rt, "stop_pod", lambda c, n: (events.append("stop"), _cp())[1])
     monkeypatch.setattr(pod_cli, "_wait_healthy", lambda c, n, p, tries=0, **_kw: -1)  # boot failed
     monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)

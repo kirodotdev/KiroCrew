@@ -310,3 +310,44 @@ class TestFirstGreetingOwed:
             status, _ = await _post(body, cfg, installed=("kirocrew",))
         assert status == 200
         assert marked == []
+
+
+class TestApprovalModeOnCreate:
+    """``approval_mode`` on the create is written in the create's one write.
+
+    An unset mode opens the crewmate's thread in trust
+    (``MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE``), so a caller that pins a tighter
+    mode must never leave a record that exists, even briefly, without it.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["normal", "trust_reads", "trust"])
+    async def test_a_pinned_mode_lands_in_the_single_create_write(self, mode):
+        cfg = _fake_config()
+        status, _ = await _post(
+            {"name": "scout", "kiro_agent": "kirocrew", "approval_mode": mode},
+            cfg,
+            installed=("kirocrew",),
+        )
+        assert status == 200
+        assert cfg.saved == [True]
+        assert cfg.written["doc"]["agents"]["scout"]["approval_mode"] == mode
+
+    @pytest.mark.asyncio
+    async def test_an_absent_mode_stays_unset(self):
+        cfg = _fake_config()
+        status, _ = await _post({"name": "scout", "kiro_agent": "kirocrew"}, cfg)
+        assert status == 200
+        assert cfg.written["doc"]["agents"]["scout"].get("approval_mode", "") == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["yolo", "", "Normal", None, 1, ["normal"]])
+    async def test_an_unknown_mode_is_refused_before_any_write(self, bad):
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "scout", "kiro_agent": "kirocrew", "approval_mode": bad}, cfg
+        )
+        assert status == 400
+        assert data["code"] == "invalid_approval_mode"
+        assert cfg.saved == []
+        assert cfg.agents == {}

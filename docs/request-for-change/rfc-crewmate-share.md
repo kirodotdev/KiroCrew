@@ -1,6 +1,6 @@
 ---
 title: Share one crewmate — a `.crewmate` bundle app and the `propose_crewmate` owner card
-status: draft
+status: accepted
 author: gjjnn
 created: 2026-10-17
 last-audited: 2026-10-17
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Share one crewmate — a `.crewmate` bundle app and the `propose_crewmate` owner card
 
-- Status: draft. A proposal, not a description of what the code does. Every "exists" claim cites a symbol verified against `origin/main` at `8892889b91`.
+- Status: accepted. [#21508](https://github.com/kirodotdev/KiroCrew/pull/21508) was merged on 2026-10-17 by the maintainer iamwhatever, who records the acceptance here. Nothing built. A proposal, not a description of what the code does. Every "exists" claim cites a symbol verified against `origin/main` at `8892889b91`.
 - Author: gjjnn
 - Builds on: [rfc-mate-owned-agent-config.md](rfc-mate-owned-agent-config.md) (draft). Its per-mate file `~/.kiro/mates/agents/<id>.json` is the agent part of the bundle below. That RFC lists "a shared/importable crewmate-definition format" as a non-goal (§4); this RFC is that separate effort.
 - Follows: [TENETS.md](../../TENETS.md) tenet 8, "Everything is an app", and [rfc-everything-is-an-app.md](rfc-everything-is-an-app.md).
@@ -236,7 +236,7 @@ No new field is added to the card record.
 
 ### 5.7 Dependency on the mate-owned config RFC
 
-`agent.json` and plan step 2 use the per-mate file of [rfc-mate-owned-agent-config.md](rfc-mate-owned-agent-config.md). This RFC moves to `accepted` only after that one does. If that RFC is rejected, the fallback is the existing template path: `agent.json` is written as a crew-named template with `O_EXCL` and `sanitize_agent_config_governance`, exactly as `_install_agent_templates` in `portability.py` writes a bundled template, and the new record's `kiro_agent` names it. The bundle format does not change under the fallback, because `agent.json` is already the custom-agent schema.
+`agent.json` and plan step 2 use the per-mate file of [rfc-mate-owned-agent-config.md](rfc-mate-owned-agent-config.md). Plan step 2 waits on that one: until its per-mate file, or the template fallback below, is built, `propose_crewmate` refuses a bundle whose `agent.json` carries any `mcpServers` or `skills` entry, so a crewmate imported before then has neither. If that RFC is rejected, the fallback is the existing template path: `agent.json` is written as a crew-named template with `O_EXCL` and `sanitize_agent_config_governance`, exactly as `_install_agent_templates` in `portability.py` writes a bundled template, and the new record's `kiro_agent` names it. The bundle format does not change under the fallback, because `agent.json` is already the custom-agent schema.
 
 ## 6. Migration plan
 
@@ -249,7 +249,7 @@ Exit criteria:
 
 ### Phase 1 — `propose_crewmate` and the `crewmate.import` card in core
 
-Blocked on: the mate-owned config RFC step 3 (the per-mate file and its in-place edit path), because plan step 2 writes that file. Accepting that RFC is a precondition for accepting this one (§5.7).
+Plan step 2 is blocked on the mate-owned config RFC step 3 (the per-mate file and its in-place edit path), because that step writes that file. Until it lands, Phase 1 ships without step 2 and refuses a bundle carrying `mcpServers` or `skills` (§5.7).
 
 Exit criteria:
 - An app without `permissions.proposeCrewmate` has no `ctx.crewmate`.
@@ -257,6 +257,7 @@ Exit criteria:
 - A press on the card creates exactly one member with a fresh `member_id`, an empty memory store, its own workspace and `approval_mode: "normal"`.
 - `POST /api/agents` accepts `approval_mode` and writes it in the create; a test that fails every step after the create finds the member in `normal`, never `trust`.
 - A bundle with `allowedTools`, `autoApprove`, a non-placeholder MCP secret, page HTML or an unknown key is refused before a card exists.
+- Until plan step 2 can write the agent part (§5.7), a bundle with any `mcpServers` or `skills` entry is refused before a card exists.
 - A direct call from an app token to any plan route answers 403.
 - A failed later step leaves the card `partial` with a working undo.
 - Crons land paused.
@@ -276,6 +277,8 @@ Exit criteria:
 - An app without `proposeCrewmateExport` has no `ctx.crewmate.propose_export`.
 
 ### Phase 3 — the Crewmate Share app
+
+Blocked on: plan step 2 (mate-owned config RFC step 3, or the §5.7 template fallback), because the round trip below carries MCP server keys.
 
 Exit criteria:
 - Export of a crewmate and import of the file on a second install yield a crewmate with the same name, description, avatar, rules, goals and MCP server keys, and none of the sender's memory or approval settings.

@@ -307,6 +307,13 @@ def test_classify_raises_err_from_a_matching_pattern_on_the_last_row(mod):
     assert mod._classify(entries, err_res(mod))[0] == "ERR"
 
 
+def test_classify_raises_err_from_the_neutral_throttle_wording(mod):
+    # A non-kiro harness words a throttle "The model provider is throttling
+    # requests.", so the ERR matcher must catch it as well as the Bedrock form.
+    entries = [json.loads(row("assistant", "The model provider is throttling requests."))]
+    assert mod._classify(entries, err_res(mod))[0] == "ERR"
+
+
 def test_classify_keeps_a_sticky_report_under_later_heartbeats(mod):
     entries = [
         json.loads(row("assistant", "BLOCKED: a ruling is owed")),

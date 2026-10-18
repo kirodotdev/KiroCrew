@@ -104,6 +104,8 @@ legacy metadata do not override a canonical execution.
 | `slack/transport_dispatch.py` | `handle_message_transport()` — full new-path dispatch wiring the three layers together |
 | `telegram/transport_dispatch.py` + `telegram/dispatch/` | `TelegramDispatcher` and the owners it is composed from — see [Telegram's dispatcher composition](#telegrams-dispatcher-composition) |
 | `discord/transport_dispatch.py` + `discord/transport_dispatch_*.py` | `DiscordDispatcher` and the owners it is composed from — see [Discord's dispatcher composition](#discords-dispatcher-composition) |
+| `telegram/renderer.py` + `telegram/renderer_*.py` | `TelegramRenderer`, `TelegramApprovalDecider` and the owners the renderer is composed from — see [Telegram's renderer and client composition](#telegrams-renderer-and-client-composition) |
+| `telegram/client.py` + `telegram/client_*.py` | `TelegramClient` (Bot API over aiohttp, long polling) and the owners it is composed from — see [Telegram's renderer and client composition](#telegrams-renderer-and-client-composition) |
 
 ## Layer 1 — `MessagingTransport` (`transport.py`)
 
@@ -3219,7 +3221,7 @@ The rescue also runs **only when the user row is confirmed on disk** (`_logged_u
 
 This is why the rescue never writes the user row itself. The receipt append always precedes streaming, so any turn with text worth rescuing has already attempted it, leaving only "confirmed written" and "unknowable" — there is no reachable state in which the rescue both has text and must recover the question.
 
-**This is the only rescue in the codebase, and that is deliberate — because Slack is the only renderer that can say WHICH bytes the user retained, not because it is the only one that emits mid-turn.** Several renderers the shared `drive_turn` pipeline serves do send during a turn: `telegram/renderer.py` live-edits the current segment per chunk (`_stream_live`), `wecom/renderer.py` pushes stream frames from `on_text_chunk` (`_push`), and `webex/renderer.py` rides the buffer tail on a status frame. None of them yields a per-append record of acknowledged output — those frames are throttled, replaced wholesale, or truncated — so on those channels there is no honest ledger to rescue from, and persisting produced-but-undelivered text would record an undelivered reply as a completed turn, which `weixin/turn_renderer._send` documents and `test_weixin_dispatch.py::test_delivery_failure_is_not_recorded_as_success` guards. `capabilities.streaming`/`edit` cannot be used to tell the cases apart either, because `transport.py` marks both aspirational and explicitly unenforced.
+**This is the only rescue in the codebase, and that is deliberate — because Slack is the only renderer that can say WHICH bytes the user retained, not because it is the only one that emits mid-turn.** Several renderers the shared `drive_turn` pipeline serves do send during a turn: `telegram/renderer_live.py` live-edits the current segment per chunk (`_stream_live`), `wecom/renderer.py` pushes stream frames from `on_text_chunk` (`_push`), and `webex/renderer.py` rides the buffer tail on a status frame. None of them yields a per-append record of acknowledged output — those frames are throttled, replaced wholesale, or truncated — so on those channels there is no honest ledger to rescue from, and persisting produced-but-undelivered text would record an undelivered reply as a completed turn, which `weixin/turn_renderer._send` documents and `test_weixin_dispatch.py::test_delivery_failure_is_not_recorded_as_success` guards. `capabilities.streaming`/`edit` cannot be used to tell the cases apart either, because `transport.py` marks both aspirational and explicitly unenforced.
 
 ### Two Slack features are deliberately NOT the reference
 
@@ -3432,7 +3434,7 @@ answer is not permission: a raised evaluation and a `Decision` without
 - **Session resume has ONE controller and routing machine, not one per channel**: `SessionResumeController` is the only consumer of `ResumeSurface`; it owns eligibility/search delegation, the picker registry, access audit, transcript existence, both conflict checks around the awaited UI settlement, expectation-before-success ordering, the atomic inbound claim, dashboard push, and the final audit. Dashboard keys are the default eligibility. A resume-capable channel passes only its canonical native key; the controller applies one exact-bucket policy with its own `SessionMap`. Discord, Telegram and Teams include generations in the current private conversation's exact durable bucket, resolving irreversible filename folds through `SessionMap.channel_key_for_stem`; only a mapped generation with a real history row is eligible. A zero-turn generation holds no work to recover and creates no picker row. Explicit `new` still records and flushes a monotonic generation floor on every DM channel, so a restart cannot seed the prior generation and append the next message to old history. Other users, agents, shared conversations and channels remain excluded. `SessionBinder` owns routing, refusal settlement, and release. Discord and Teams supply address and owner identity, their widgets/cards and exact copy/display redaction, callback parsing, and channel-local replay. The machine is where a mistake routes somebody's transcript into someone else's chat, and its hazard is timing: between the durable record read and the live session-map read a binding can appear, vanish or move, so ONE call returns ONE `RoutingDecision` — where the message runs, the refusal that stops it, and the settlement owed once that refusal is delivered. Two resolver calls with an await between them let the binding change in the gap and the routing check fall through to the conversation's own session, silently. A second copy of either transaction is not a maintenance cost, it is a second chance to get it wrong.
 - **There is ONE auto-approve grant, and a channel does not get its own**: every surface that can arm it — the dashboard toggle, `/yolo` on seven channels, and Teams' approval card — goes through `safety_override` via `messaging.commands.run_yolo_command`. A channel-local trusted set is a second grant with its own lifetime, its own audit trail and its own answer to "is YOLO on?", and it has to reimplement the expiry, renewal and auditing the shared helper already owns. Slack's `is_slack_session_trusted` predates this and is the one exception; a new channel follows the seven. It also follows that a control which arms the grant must NAME its blast radius: Teams' button says "Approve + auto-approve", not "Trust session", because the effect reaches every surface until the grant expires.
 - **A model-authored label is never interpreted as a command**: an `[OPTIONS:]` chip re-dispatches with `interpret_commands=False`, exactly like a drained queue payload. Display redaction does not strip a leading `/`, so with interpretation on a model that emitted `[OPTIONS: /dashboard | cancel]` renders a chip whose single tap mints a dashboard login credential.
-- **An option button is bound to the session that posted it**: Discord and Telegram encode `opt:<index>:<tag>`, where `session_provenance_tag` is a stable 12-hex SHA-256 digest of the posting session key. The raw key never reaches client-visible callback data. A press is checked before busy handling and again after idle/daily rotation; a mismatch or an untagged legacy button fails closed. A valid press against a busy session is refused rather than queued or steered, because those paths retain only bare text and would replay the choice with no tag to validate.
+- **An option button is bound to the session that posted it**: Discord and Telegram encode `opt:<index>:<tag>`, where `session_provenance_tag` is a stable 12-hex SHA-256 digest of the posting session key. The raw key never reaches client-visible callback data. A press is checked before busy handling and again after idle/daily rotation; a mismatch or an untagged legacy button fails closed. A valid press against a busy session is refused rather than queued or steered, because those paths retain only bare text and would replay the choice with no tag to validate. Teams holds the same invariant without a wire tag: the chip's label is read from the renderer of the session that posted it, and the label turn runs only if the conversation's current target is that session — checked before the chips are settled, again after resume routing, and again after idle/daily rotation. A valid chip against a busy session is refused for the same reason as on Discord. A chip posted by the native session and pressed after a `/sessions` bind is refused rather than run in the dashboard session.
 - **Attachment ingest belongs to the frame that awaits the turn**: download after the busy check, in the dispatcher, and unlink in that frame's `finally`. Ingesting at arrival and unlinking there leaves a QUEUED message's prompt naming files that were deleted minutes before the drained turn read them, and the encoder skips a missing path silently. It follows that an attachment-bearing message is never steered (a steer carries text only) and never read as a command (the caption lives in `text`); the queue entry carries RAW descriptors and the drained turn re-ingests them.
 - **An outbound refusal is never budget-dropped**: when extraction has already CUT a reference's markup, its refusal line is the only surviving trace of the file, so it is appended unconditionally and the caller chunks. Trading the line for staying inside one message is the one outcome that leaves the user with neither the picture nor a reason.
 - **A permanently undeliverable route is dropped, a transient failure is not**: `TeamsSendError` carries the Connector status and only `403`/`404` retire the persisted `serviceUrl`. Keeping a dead route turns every later cron result and mirror leg into a red badge nothing can clear; dropping one on a hiccup makes an outage look permanent.
@@ -3988,6 +3990,52 @@ owner. Owners log under the facade's logger name, and the facade imports every o
 it loads. `test/test_telegram_transport_dispatch_composition_contract.py` pins the
 surface, the patch reach (the rebound set is derived from the tests) and these placement
 rules.
+
+### Telegram's renderer and client composition
+
+`TelegramRenderer` and `TelegramClient` are each one class composed from owners, the
+same way `TelegramDispatcher` is. `telegram/renderer.py` and `telegram/client.py` stay
+the only import path and patch surface: each binds the names its own code reads and
+`kiro_crew._facade_mirror` serves the rest from the owners and carries a patch of
+any of its names (`_APPROVAL_TIMEOUT_S`, `_EDIT_THROTTLE_S`, `extract_local_refs_off_loop`,
+`get_recorder`, `data_home`, `_ALBUM_WINDOW_S`, ...) to every owner that reads it, so
+moved code runs byte for byte as it did in one module. New work of an owner's kind goes
+to that owner:
+
+| Owner | Holds |
+|---|---|
+| `renderer_display.py` | `_display_safe` (the display-form redaction pass of the "Telegram rendered-form seal" sink), the UTF-16 length, cut and chunking, the `[OPTIONS:]`, steer-marker and horizontal-rule strips, and the shrunk budget a re-split falls back to |
+| `renderer_tables.py` | GFM table structure: the separator row, cells, table and prose blocks, the row split |
+| `renderer_approval.py` | `TelegramApprovalDecider` and `on_prompt_choice`, the approval prompt it arms |
+| `renderer_status.py` | the typing indicator, stall marks, tool footer, compaction note, reasoning budget and turn footer |
+| `renderer_live.py` | chunk intake, steer-marker rotation, the steer chip, the `[OPTIONS:]` hold-back and the throttled live frame |
+| `renderer_uploads.py` | the upload root, outbound image extraction, the refusal lines and the picture send |
+| `client_http.py` | one Bot API round trip: endpoint and proxy resolution, the session, `_api` / `_api_multipart` / `_api_request` with the 429 back-off, `_record_api_duration` |
+| `client_polling.py` | the `getUpdates` loop and its back-off, and the durable cursor (`_load_offset` through `_persist_offset`) |
+| `client_albums.py` | album (media group) coalescing |
+
+`renderer.py` keeps the renderer's state and construction, rotation (`_rotate_on_length`,
+`on_steer_consumed`), the credential-aware splitters (`_split_markdown*`), every sealing
+path, the markdown translations (`_md_to_telegram_html`, `_strip_md` and the
+`TELEGRAM_FALLBACK_*` names they apply), the inline keyboard (the "Telegram rendered
+widget text" sink) and finalization, because repository guards read them in that file:
+`test_split_credential_boundary.py`, `test_telegram_parity.py`'s raw-translator check
+and `test_markdown_link_parentheses.py`'s one-name-per-pattern check. `client.py` keeps
+the client's state, its Bot API methods, the update parse, handler dispatch and
+tracking, the Bot API limits, the reaction set and the tag-safe HTML cap.
+
+An owner's function whose first parameter is `self` (annotated with the class under
+`TYPE_CHECKING`) is bound as the class attribute of the same name, so instance and
+class patches, `inspect.getsource` and every `self.<name>(...)` call reach it as they
+reach a method defined in the class body. Such a function's `__qualname__` is its bare
+name and its `__module__` the owner's, as in the dispatcher; nothing keys behaviour on
+either. It needs nothing only a class body gives (`super()`, `__class__`, a mangled
+`__name`), and an owner never imports its facade except under `TYPE_CHECKING`. Owners
+log under their facade's logger name (`kiro_crew.telegram.renderer` or
+`kiro_crew.telegram.client`), which the facade itself binds by that literal name.
+`test/test_renderer_telegram_composition_contract.py` and
+`test/test_client_telegram_composition_contract.py` pin the owner sets, the bindings,
+the placement rules and the logger names.
 
 ### Telegram session resume
 

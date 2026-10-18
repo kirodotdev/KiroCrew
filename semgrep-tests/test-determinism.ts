@@ -4,8 +4,16 @@
 async function promiseSleeps() {
   // ruleid: kirocrew.test-promise-sleep
   await new Promise((r) => setTimeout(r, 50));
+  // ruleid: kirocrew.test-promise-sleep
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 50);
+  });
+  // ruleid: kirocrew.test-promise-sleep
+  await new Promise(r => { setTimeout(r, 20); });
   // ok: kirocrew.test-promise-sleep
   await new Promise((r) => setTimeout(r, 0));
+  // ok: kirocrew.test-promise-sleep
+  await new Promise((r) => { setTimeout(r, 0); });
 }
 
 async function playwright(page: any, expect: any) {

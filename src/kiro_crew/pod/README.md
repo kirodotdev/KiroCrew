@@ -433,6 +433,10 @@ Task Scheduler, and `kiro_crew.pod.windows` states the five consequences:
   two backends serialise, then re-enters `kirocrew pod _run <name>`. Boot logic
   stays in Python; the wrapper is data. A pod-plane path containing a double
   quote or a newline is refused at `pod up`, because cmd.exe cannot express it.
+  The wrapper appends every boot to the same `pod.out.log` / `pod.err.log`, so a
+  failed `pod up` marks their size before it starts the task and shows only what
+  this start wrote. An earlier start's `FATAL` stays in `pod logs`, not in this
+  start's failure report.
 - **No restart policy.** A crashed pod stays down, which removes launchd's
   restart-loop hazard entirely (a terminal refusal keeps its honest exit code —
   no exit-0 translation) but means the crash signal has to be recorded: the
