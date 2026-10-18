@@ -2404,9 +2404,7 @@ def main(argv):
         if bot_comments is not None:
             merged_verdicts.update(design_lane_verdicts(bot_comments, head_sha, marker_bindings))
         concerns_eval = {
-            "unanswered": unanswered_concern_lanes(
-                merged_verdicts, disposition_records, head_sha
-            ),
+            "unanswered": unanswered_concern_lanes(merged_verdicts, disposition_records, head_sha),
             "head_sha": head_sha,
         }
     # A second sample at ONE head replaces the first in the lane's slot, so the
