@@ -30,7 +30,6 @@
 3182 src/kiro_crew/apps/builtins/dev_fleet/worktree_ops.py
 2802 src/kiro_crew/apps/builtins/md_notebook/server.py
 2449 src/kiro_crew/apps/builtins/spec_builder/backend/repository.py
-4665 src/kiro_crew/apps/manager.py
 5184 src/kiro_crew/apps/routes.py
 2093 src/kiro_crew/autonudge.py
 2317 src/kiro_crew/browser_cli/install.py

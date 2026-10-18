@@ -430,8 +430,8 @@ def _app_declared_server_names() -> frozenset[str]:
       forever. Ownership therefore requires installed AND enabled.
     * ABSENT ``enabled`` FIELD ⇒ ENABLED. This matches ``apps.manager``'s own
       parse exactly -- ``InstalledApp.from_dict`` reads
-      ``bool(data.get("enabled", True))`` (manager.py:170) over a dataclass whose
-      default is ``enabled: bool = True`` (manager.py:114). A legacy record
+      ``bool(data.get("enabled", True))`` (manager_records.py) over a dataclass whose
+      default is ``enabled: bool = True`` (``InstalledApp.enabled``). A legacy record
       written before the field existed is treated as enabled everywhere else in
       the tree, and disagreeing here would delete the live bridges of an app the
       rest of the system considers running.

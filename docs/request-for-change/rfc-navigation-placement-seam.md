@@ -35,7 +35,7 @@ commits behind had moved:
   `src/kiro_crew/apps/manifest_sections.py::UISidebar` declares `section: str = "Apps"` and
   `order: int = 10`, is a field of `UIConfig` (`UIConfig.sidebar`), round-trips
   through `to_dict`/`from_dict`, and the `ui` key is described in
-  `src/kiro_crew/apps/manager.py`. A grep for `ui.sidebar` across `website/src`
+  `src/kiro_crew/apps/manager_builtins.py`. A grep for `ui.sidebar` across `website/src`
   returns **zero hits**, and the object returned by
   `website/src/appNav.ts::appNavTarget` carries neither `section` nor `order`. The
   manifest promises placement control that the frontend silently discards.

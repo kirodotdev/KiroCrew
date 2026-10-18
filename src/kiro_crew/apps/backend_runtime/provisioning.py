@@ -547,7 +547,7 @@ def provision_app_deps(app_name: str, root: Path) -> str:
         # there - an app pointing data/ at another app's tree would have
         # this provisioning swap attacker-chosen dependencies into the
         # victim's dir (the same shape the uninstall purge refuses in
-        # manager.py). The gateway creates data/ as a real directory, so a
+        # manager_uninstall.py). The gateway creates data/ as a real directory, so a
         # link is never legitimate: refuse before touching anything through
         # it.
         if platform_compat.is_link_or_junction(deps_parent):

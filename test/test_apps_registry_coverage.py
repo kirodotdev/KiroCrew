@@ -416,7 +416,7 @@ class TestRunAppBuild:
     ):
         """A hooks value the manifest view drops is a hook that never loads.
 
-        ``manager.py`` hands the hook loaders
+        ``manager_lookup.py`` hands the hook loaders
         ``AppManifest.from_json_file(...).to_dict()``, and
         ``BackendConfig.from_dict`` drops a non-object ``hooks`` — so for a
         manifest like this one NOTHING is imported into the gateway, and the gate

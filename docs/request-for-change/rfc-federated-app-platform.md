@@ -560,7 +560,7 @@ The following modules are **kept** and enhanced:
 
 | Module | Current Purpose | Enhancement |
 |--------|----------------|-------------|
-| `apps/manager.py` | Install/uninstall/enable/disable | Add bundle download + hash verification |
+| `apps/manager_install.py`, `manager_uninstall.py`, `manager_activation.py` | Install/uninstall/enable/disable | Add bundle download + hash verification |
 | `apps/registry_pipeline/indexes.py`, `caches.py` | Registry fetch + cache | Add `bundleUrl`, `bundleHash` fields |
 | `apps/bridges.py` | Register agents/skills/crons | No change needed |
 | `apps/scaffold.py` | `kirocrew app init` | Add `--with-ui` flag, Vite config generation |

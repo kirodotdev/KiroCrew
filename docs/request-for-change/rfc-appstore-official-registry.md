@@ -54,7 +54,7 @@ release. Two concrete gaps:
    the Discover page, and no schema version on the store's presentation layer,
    so we cannot change *how the App Store page looks or works* without shipping
    a new client. (The only `schemaVersion` in `apps/` is on the installed-app
-   record in `manager.py`, unrelated to the catalog or the store UI.)
+   record in `manager_records.py`, unrelated to the catalog or the store UI.)
 
 ### Goals
 

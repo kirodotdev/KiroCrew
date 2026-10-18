@@ -193,12 +193,12 @@ The provenance check is load-bearing, not decoration. `register_external_app` ta
 "builtin"`, and it never runs `_validate_source_path`. Without the check, a self-managed app
 could persist a manifest declaring `id: "command-bar"` and take over the gesture WHILE Command
 Bar itself was disabled. `origin` is stamped by `discover_builtin_apps()` and reaches
-`InstalledApp(origin="builtin")` in `apps/manager.py`, which is why it is the field to trust.
+`InstalledApp(origin="builtin")` in `apps/manager_builtins.py`, which is why it is the field to trust.
 
 Manifest data from a third party is untrusted input, so a bad declaration is warned about and
 skipped with a plain `console.warn` — never through the seam-collision helper, which throws in
 dev and test. Installed (non-builtin) apps declaring `ui.overlays` are refused at install time
-in `apps/manager.py`.
+in `apps/manager_tree.py`.
 
 A builtin must not declare both `ui.overlays` and `ui.entry`: an app with an entry is
 downgraded to `local` origin on restart, and would then be refused its own slot. A test pins

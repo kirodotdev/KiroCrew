@@ -416,7 +416,7 @@ than a failed install. Phase 2 changes where the overview renders and must keep
 
 One gap is worth naming because this RFC makes it load-bearing: the compatibility
 contract is one-directional. `minKiroCrewVersion` is a floor an app declares about
-the gateway, checked only at install and update (`apps/manager.py:281`,
+the gateway, checked only at install and update (`_check_min_version` in `apps/manager_tree.py`,
 `apps/routes.py:503`, `install_from_registry` (`apps/registry_pipeline/install.py`)) and never at enable or boot, and it
 fails **open** on a malformed value (`apps/version.py:32-33`). The platform
 declares no version for its own app-facing surface, so withdrawing a seam carries

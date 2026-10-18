@@ -806,7 +806,7 @@ Wired sites:
   never hardcodes or interprets any credential path/content — the bytes are
   only hashed. Read through `safe_context_call` (fallback `[]`), so a
   pre-method companion adapter degrades to no-watcher instead of raising.
-- `apps/manager.py` — builtin discovery + orphan detection merge
+- `apps/manager_builtins.py` — builtin discovery + orphan detection merge
   `current_context().apps_loader` sources.
 - `apps/registry_pipeline/sources.py` / `apps/routes.py` — clone-sandbox-mode decision routes
   through `current_context().registry` (`_context_clone_sandbox_mode`).
@@ -1501,7 +1501,7 @@ Current reserved surface:
 |---|---|---|
 | `embeddings` (whole slot) | the public embedding runtime is the bundled in-process llama.cpp model — there is no HTTP embed path to source a model/endpoint/signature from | `embeddings.register_embedding_backend()` |
 | `package_manager` (whole slot) | external-tool install hints (ffmpeg, faiss, the `voice-aws` extra) are inline brew/winget/pip text in `doctor_checks/features.py`, not a single plan-resolution point | `CapabilityManager` for registry-backed MCP/skill/agent installs |
-| `feature_apps` (whole slot) | bundled apps are discovered via `AppsLoader` and registered by `apps/manager.py`; the tuple is a provenance record only | `AppsLoader.manifest_sources()` / `bundled_app_names()` |
+| `feature_apps` (whole slot) | bundled apps are discovered via `AppsLoader` and registered by `apps/manager_builtins.py`; the tuple is a provenance record only | `AppsLoader.manifest_sources()` / `bundled_app_names()` |
 | `AgentRuntime.managed_mcp_servers` | the agent config is built from the `agent._MANAGED_MCP_SERVERS` global directly | `McpToolingProvider.extra_mcp_servers()` (wired, ADD-only) |
 | `IdentityProvider.whoami` / `.issuer` | nothing in the core displays the principal or branches on the issuer | return them in the wired `status()` payload |
 

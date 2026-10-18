@@ -906,8 +906,8 @@ async def test_absent_enabled_field_counts_as_enabled(tmp_path):
     """A legacy record with no ``enabled`` field is ENABLED, matching the manager.
 
     ``InstalledApp.from_dict`` reads ``bool(data.get("enabled", True))``
-    (manager.py:170) over a dataclass defaulting to ``enabled: bool = True``
-    (manager.py:114), so every other reader in the tree treats such a record as
+    (manager_records.py) over a dataclass defaulting to ``enabled: bool = True``
+    (``InstalledApp.enabled``), so every other reader in the tree treats such a record as
     running. Disagreeing here would delete the live bridges of an app the rest of
     the system considers enabled.
 

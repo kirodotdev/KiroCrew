@@ -1726,7 +1726,7 @@ def register_routes(app: web.Application) -> None:
     # that is accepted: the only thing that drops it is ``forget_app_hooks`` on
     # uninstall (``apps/hook_reconcile.py``), and this app cannot be uninstalled —
     # it is a builtin registered ``lifecycle="locked"``, which ``uninstall_app``
-    # refuses (``apps/manager.py``). So an uninstall+reinstall-without-restart that
+    # refuses (``apps/manager_uninstall.py``). So an uninstall+reinstall-without-restart that
     # would strand the hook cannot happen for ``auto_improvement``.
     try:
         register_disable = getattr(teardown, "register_app_disable_hook", None)

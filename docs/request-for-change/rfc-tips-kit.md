@@ -84,7 +84,7 @@ So the engine already has: activity-adjacent personalization, a consent-respecti
 flowchart TB
     subgraph signals [Local activity signals]
         hist[(memory/history/*.md<br/>daily summaries)]
-        installed[(installed apps<br/>apps/manager.py)]
+        installed[(installed apps<br/>apps/manager_lookup.py)]
         crons[(existing cron jobs<br/>cron.py)]
         cfg[(current config<br/>settings)]
     end
@@ -158,7 +158,7 @@ The three executable kinds are **prepare-then-confirm**: the card click opens a 
 
 | Kind | Side effect? | Confirm UI | Backend seam |
 |------|--------------|-----------|--------------|
-| `app_install` | yes | App detail / install sheet, prefilled with the registry entry | `apps/manager.py::install_app(source)` |
+| `app_install` | yes | App detail / install sheet, prefilled with the registry entry | `apps/manager_install.py::install_app(source)` |
 | `setting_toggle` | yes | Settings row focused + the proposed value shown as a diff | existing authenticated config PUT (allowlist-validated) |
 | `cron_create` | yes | Cron composer prefilled with name/schedule/message | `cron.py::CronService.create(...)` |
 | `feature_tip` | no | none — navigates (`route`) or pre-fills a `cta_prompt` | none (today's `tipActionRoute` path) |

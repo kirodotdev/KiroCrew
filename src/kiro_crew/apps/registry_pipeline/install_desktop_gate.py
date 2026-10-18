@@ -93,7 +93,7 @@ def _requirements_owned_by_the_runtime(
     as is and an entry that never appeared is refused there.
 
     Answers from the TYPED manifest, which is what decides what actually loads:
-    ``manager.py`` hands the loaders ``AppManifest.from_json_file(...).to_dict()``,
+    ``manager_lookup.py`` hands the loaders ``AppManifest.from_json_file(...).to_dict()``,
     so a declaration ``BackendConfig.from_dict`` normalizes away is a hook the
     loaders never see either, and ``bridges.py`` reads ``manifest.mcpServers`` from
     the same typed object. *installed* is the tree the entry-point shape is

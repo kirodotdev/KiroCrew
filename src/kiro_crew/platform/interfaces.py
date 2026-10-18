@@ -2010,7 +2010,7 @@ class FeatureApp(Protocol):
 
     Populating ``PlatformContext.feature_apps`` has NO effect: bundled apps are
     discovered through ``AppsLoader.manifest_sources()`` / ``bundled_app_names()``
-    and registered by ``apps/manager.py``. Neither ``manifest_path`` nor
+    and registered by ``apps/manager_builtins.py``. Neither ``manifest_path`` nor
     ``register`` is ever called; the tuple is a provenance record only.
 
     **Bundle apps through ``AppsLoader`` instead** — the live seam.

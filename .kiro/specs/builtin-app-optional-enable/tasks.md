@@ -1,6 +1,6 @@
 # Implementation Plan: Builtin App Optional Enable
 
-Status: implemented in `src/kiro_crew/apps/manager.py` and the dashboard app navigation/store surfaces.
+Status: implemented in `src/kiro_crew/apps/manager_builtins.py` and the dashboard app navigation/store surfaces.
 
 ## Overview
 

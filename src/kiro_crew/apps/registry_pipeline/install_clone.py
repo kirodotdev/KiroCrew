@@ -432,7 +432,7 @@ async def _clone_build_app_locked(
     # artifact.
     # The typed view, built ONCE: the admission gate below and the build's
     # desktop gate must judge the same normalized manifest the runtime later
-    # loads from (`manager.py` hands the hook loaders
+    # loads from (`manager_lookup.py` hands the hook loaders
     # `AppManifest.from_json_file(...).to_dict()`), so a second, differently
     # normalized reading of these bytes is exactly the disagreement to avoid.
     cloned_app_manifest = AppManifest.from_dict(cloned_manifest)

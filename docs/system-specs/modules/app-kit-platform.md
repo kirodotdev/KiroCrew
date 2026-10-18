@@ -1494,7 +1494,7 @@ update correctness depends on it is broken, and the fix is an idempotent
 `onInstall` (a registry update re-runs it), not a new call site added quietly.
 
 Writers: `apps/routes.py::handle_uninstall_app`, `_deregister_crons_with_retry`,
-`_run_lifecycle_script`; `apps/manager.py::uninstall_app`.
+`_run_lifecycle_script`; `apps/manager_uninstall.py::uninstall_app`.
 
 ## 11. Dependencies are reference-counted, and only sole ownership is removable
 
@@ -1548,7 +1548,7 @@ Writers: `apps/dependency_ledger.py`, `apps/dependencies.py`;
 
 Separately from capability resolution, `apps/backend_runtime/provisioning.py::provision_app_deps`
 serializes each app's Python dependency install with `data/.kirocrew-deps.lock`.
-The installer and the data-preserving uninstall path in `apps/manager.py` both
+The installer and the data-preserving uninstall path in `apps/manager_uninstall.py` both
 first create that lock with `O_CREAT | O_EXCL`. Only `FileExistsError`
 permits reopening the existing file, without creation or truncation flags.
 Both opens retain `O_RDWR`, `O_NOFOLLOW` where supported, and the same pinned
@@ -1650,7 +1650,7 @@ republishes (each publish re-fetches; the content-digest revision changes
 with it), so it is a trust-scale indicator, not a live metric. Absence means
 "unknown" and renders nothing — never zero.
 
-Writers: `apps/manager.py` (`_BUILTIN_APPS`, `_DEFAULT_ON_BUILTINS`,
+Writers: `apps/manager_builtins.py` (`_BUILTIN_APPS`, `_DEFAULT_ON_BUILTINS`,
 `_DEFAULT_ON_BACKFILL`, `register_builtin_apps`, `backfill_default_on_builtins`),
 `agent.py::run_first_run_setup`, `apps/discovery.py::discover_builtin_apps`,
 `apps/registry_pipeline/catalog.py::_apply_trust_fields`;
@@ -3550,7 +3550,7 @@ Imports only point down this order: `subprocess_env`, `git_targets`, `caches`,
 `registry.py`. There is no cycle, and no owner imports the facade. The facade imports
 every owner at its own import, so an owner's `from ... import` bindings are taken
 once, as the one-module registry took them. `registry.py` re-exports every name an
-owner holds, one hop, so `routes.py`, `manager.py`, `execution.py`, the dashboard
+owner holds, one hop, so `routes.py`, `manager_records.py`, `execution.py`, the dashboard
 security handler and the platform defaults keep one import path.
 
 Every patch seam stays on the facade. A write to `registry.<name>` reaches every
@@ -3613,7 +3613,7 @@ Imports only point down this order: `tracking`, `probe`, `pidfile`, `ports`,
 facade imports every owner at its own import, so an owner's `from ... import`
 bindings are taken once, as the one-module backend took them. `backend.py`
 re-exports every name an owner holds, one hop, so `routes.py`, `teardown.py`,
-`hooks_integration.py`, `bridges.py`, `manager.py`, `interpreter.py`,
+`hooks_integration.py`, `bridges.py`, `manager_uninstall.py`, `interpreter.py`,
 `cli_commands.py`, `member_memory_auth.py`, `platform_compat.py`, `runtime_reconcile.py`
 and the dashboard server keep one import path.
 
@@ -3714,8 +3714,8 @@ the gate turns the tree away before any copy into the app directory is made.
 With a preserved `data/` awaiting, the shipped entry is replaced by the
 directory that is put back, and the same source installs.
 
-Writers: `apps/manager.py::install_app`, `update_app`,
-`copy_app_tree_as_installed`, `_remove_any_shape`, `gateway_data_dir_obstruction`;
+Writers: `apps/manager_install.py::install_app`, `update_app`,
+`apps/manager_tree.py::copy_app_tree_as_installed`, `_remove_any_shape`, `gateway_data_dir_obstruction`;
 `apps/registry.py::_run_app_build`,
 `apps/registry_pipeline/install.py::install_from_registry` (the refusal's two
 call sites). Tests:
@@ -3913,6 +3913,47 @@ read under `manifest_containment.py`; and `NON_EGRESS_REDACTION_MODULES` names
 Writers: `apps/manifest.py`, `apps/manifest_names.py`, `apps/manifest_containment.py`,
 `apps/manifest_sections.py`, `apps/manifest_contributes.py`, `apps/job_sdk.py`,
 `apps/job_sdk_records.py`, `apps/job_sdk_returns.py`.
+
+## 27. The app manager is composed by lifecycle owner
+
+The app manager (`apps/manager.py`) is one import path over sibling owner modules.
+Its behaviour is specified in the sections above that name it. This section records
+which module owns which part, so a change lands in its owner.
+
+| Module under `src/kiro_crew/apps/` | Owns |
+|---|---|
+| `manager.py` | The facade: the only import path and patch surface. It defines nothing and installs `kiro_crew._facade_mirror` over the owners below |
+| `manager_records.py` | Where an app lives (`apps_dir`, `app_dir`, `app_data_dir`), its `installed.json` record (`InstalledApp`, `_read_installed`, `_write_installed`), the approved `permissions.api` / `permissions.events` set, the update-in-flight fencing every grant read checks (`staged_app_grants`), `AppResult` and `get_app_manifest` |
+| `manager_tree.py` | Validating a source directory (`_validate_source_path`, `_check_min_version`), the copy (`_copy_app_tree`, `copy_app_tree_as_installed`), the preserved-`data/` rules (`gateway_data_dir_obstruction`, `_owned_data_dir`), `_remove_any_shape` and `InstalledTreeRefused` |
+| `manager_install.py` | `install_app`, `update_app`, the per-app `app_lifecycle_lock` and the scoped `registry_source_repository` |
+| `manager_activation.py` | `enable_app`, `disable_app` and the governance check every activation passes (`_app_activation_denied`) |
+| `manager_builtins.py` | `register_builtin_apps` and the definitions it reads, the default-on backfill, `resolve_mcp_backend_url`, orphan detection with its cache, and the migrated-builtin cleanup |
+| `manager_external.py` | `register_external_app`, the record of a self-managed app |
+| `manager_uninstall.py` | `uninstall_app` and the `agent.apps_trusted` grant it drops and restores (`trust_grant_removal_blocked`, `_drop_trust_grant`, `_restore_trust_grant`) |
+| `manager_lookup.py` | `list_apps`, `get_app`, the enablement reads (`app_enabled_state`, `is_app_enabled`, `app_disabled`), the source and provenance setters, and which installed app owns an agent (`owning_app_for_agent`, `app_command_agent_refusal`, `missing_agent_reason`) |
+
+Imports only point down, in the facade's `_OWNERS` order: records, tree, install,
+activation, builtins, external, uninstall, lookup. No owner imports the facade, and
+each import of `bridges`, `registry`, `backend`, `dev_mode` or `routes` stays inside
+the function that needs it, because those modules import the manager at their own
+import.
+
+Every patch seam stays on the facade. It installs `kiro_crew._facade_mirror`, so a
+write to `manager.<name>` reaches every owner that binds the name (the owner that
+defines it and each owner that imports it), and a read is served by the defining
+owner. The two globals rebound at run time each live in one owner with their writers:
+`_tree_swap_seq` in `manager_records.py` and `_orphaned_builtins_cache` in
+`manager_builtins.py`, where `test/integration/test_boot_smoke.py` keys it. Every owner
+logs as `kiro_crew.apps.manager`, and `InstalledTreeRefused` keeps
+`kiro_crew.apps.manager` as its `__module__`, so a traceback names the path callers
+import. `test/test_manager_facade.py` pins the owner set, every name the one-module
+file bound resolving to its owner's object, the logger, the type-checking groups and
+that nothing outside the family imports an owner; `test/test_facade_mirror_guards.py`
+holds the facade to the mirror contract.
+
+Writers: `apps/manager.py`, `apps/manager_records.py`, `apps/manager_tree.py`,
+`apps/manager_install.py`, `apps/manager_activation.py`, `apps/manager_builtins.py`,
+`apps/manager_external.py`, `apps/manager_uninstall.py`, `apps/manager_lookup.py`.
 
 ## Windows stale-backend cleanup capacity
 

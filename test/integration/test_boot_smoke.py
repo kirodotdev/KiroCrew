@@ -467,7 +467,7 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     # entry is never returned for a different home.
     ("kiro_crew.agent_discovery", "_LIST_AGENTS_CACHE"): "keyed cache",
     ("kiro_crew.apps.dev_mode", "_dev_apps_cache"): "keyed cache",
-    ("kiro_crew.apps.manager", "_orphaned_builtins_cache"): "keyed cache",
+    ("kiro_crew.apps.manager_builtins", "_orphaned_builtins_cache"): "keyed cache",
     ("kiro_crew.autonudge", "_MAINTENANCE_LOCKS"): "keyed cache",
     ("kiro_crew.dashboard.handlers.mcp", "_mcp_probe_cache"): "keyed cache",
     ("kiro_crew.dashboard.handlers.mcp", "_mcp_probe_ts"): "keyed cache",

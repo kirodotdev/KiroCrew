@@ -1161,7 +1161,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # `displayName`, read from the app-writable `app.json` the same way.
     # A session whose agent has no spec left names the app that declares it,
     # from that app's own source specs in its app-writable root.
-    "kiro_crew/apps/manager.py": [
+    "kiro_crew/apps/manager_lookup.py": [
         ("app_agent_owner", "unknown"),
         ("app_command_agent_label", "unknown"),
         ("list_apps_command_agent", "unknown"),
@@ -1199,7 +1199,7 @@ _EXPECTED_PROJECT_FILES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("agent_project_shadow", "unknown"),
         ("markdown_spec_lookup", "unknown"),
     ],
-    # No ``kiro_crew/apps/manager.py`` entry: the app-command guard scans the
+    # No ``kiro_crew/apps/manager_lookup.py`` entry: the app-command guard scans the
     # checkout through ``acp.managed_agent_shadow.project_claims_agent_name``,
     # the screened recursive walk, not through these roster helpers.
     # No ``kiro_crew/agent_discovery.py`` entry on purpose. The two in-module

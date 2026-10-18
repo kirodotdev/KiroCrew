@@ -135,7 +135,7 @@ external compiler, so two functions own every filesystem decision:
   app supports. `store.is_reparse_link` is the shared answer (used here and by
   `gitops`'s attributes guard) so the two cannot drift on which link types they
   cover; `os.path.isjunction` is 3.12+ and always `False` off Windows, resolved
-  once via `getattr` the same way `apps/manager.py` does.
+  once via `getattr` the same way `apps/manager_tree.py` does.
 
   The strictness is load-bearing. A check of the form
   `resolved != base_resolved and base_resolved not in resolved.parents` would let
