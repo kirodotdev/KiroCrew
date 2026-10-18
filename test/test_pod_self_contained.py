@@ -205,7 +205,7 @@ def test_host_scoped_verbs_are_refused(verb):
 
 
 def test_app_is_refused_because_it_rewrites_the_host_agent_registry(unpinned_agent_spec_home):
-    """`apps/bridges.py` symlinks app agents into `Path.home()/.kiro/agents` and
+    """`apps/bridges_agents.py` symlinks app agents into `Path.home()/.kiro/agents` and
     edits `~/.kiro/settings/mcp.json` — the HOST registry. A pod install/uninstall
     would replace or delete symlinks the live gateway depends on."""
     from kiro_crew.apps import bridges

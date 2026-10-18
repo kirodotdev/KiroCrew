@@ -425,7 +425,7 @@ def _declined_foreign_spec_write(path: Path) -> bool:
     Checked HERE, at the primitive those derived writers share, rather than in
     each writer: a new materialization path that reaches this primitive is
     covered the day it is added, and such a writer cannot forget the check. It
-    is NOT every spec write in the tree — ``apps/bridges.py`` renders app agent
+    is NOT every spec write in the tree — ``apps/bridges_agents.py`` renders app agent
     specs into the same directory through :func:`atomic_write`, a different
     primitive this guard never sees; that writer, the auto_improvement runner's
     self-registration call this function themselves, under

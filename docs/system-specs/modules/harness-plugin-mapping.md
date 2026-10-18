@@ -47,7 +47,7 @@ field exists but a foreign process has to be alive to fill it.
 ## 2. What Kiro Crew already has
 
 The mapping targets, from this tree (`src/kiro_crew/apps/manifest.py`, consumed at
-`src/kiro_crew/apps/bridges.py`):
+the `kiro_crew.apps.bridges` owners):
 
 | Target | `app.json` field | Consumer |
 |---|---|---|

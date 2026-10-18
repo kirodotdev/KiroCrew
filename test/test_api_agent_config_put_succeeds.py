@@ -398,7 +398,7 @@ async def test_agent_config_write_holds_the_mcp_transaction_lock(tmp_path):
     assert all(held for _p, held, _f in spec_writes), (
         "the agent-spec write ran OUTSIDE the MCP transaction lock"
     )
-    # bridges.py does whole-file read-modify-writes of THIS SAME file under its
+    # bridges_mcp.py does whole-file read-modify-writes of THIS SAME file under its
     # own flock (kirocrew.lock), which the transaction lock does not cover: a
     # concurrent app enable and this PUT would each write the whole file and the
     # last atomic rename would silently discard the other side. Assert the file

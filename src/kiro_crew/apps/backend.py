@@ -418,7 +418,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # Module-style entry point (e.g. "kiro_crew.apps.builtins.<name>"):
     # used by built-in apps that live inside the KiroCrew package itself.
     # The shape test is the shared `is_module_style_entry_point` -- the same
-    # predicate `bridges.py` and the install-time desktop gate answer from,
+    # predicate `bridges_mcp.py` and the install-time desktop gate answer from,
     # so what this spawn provisions and what those sites assume it provisions
     # cannot drift.
     is_module_entry = is_module_style_entry_point(entry_point, root)

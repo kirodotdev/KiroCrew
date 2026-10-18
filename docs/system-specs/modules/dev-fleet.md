@@ -2203,8 +2203,8 @@ stages no top-level `skills/` tree.
 Skills are registered as symlinks into `~/.kiro/crew/skills/` via the app bridge at
 two lifecycle points:
 
-1. **On enable** — `register_app()` in `bridges.py` creates namespaced + flat symlinks
-2. **On gateway startup** — `reconcile_app_skills()` in `bridges.py` (called from
+1. **On enable** — `register_app()` in `bridges_register.py` creates namespaced + flat symlinks
+2. **On gateway startup** — `reconcile_app_skills()` in `bridges_skills.py` (called from
    `start_enabled_app_backends()`) ensures manifest-declared skills are linked for
    already-enabled apps, creating missing symlinks and removing stale ones for skills
    dropped from the manifest since the last registration

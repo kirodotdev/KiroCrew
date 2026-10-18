@@ -3,7 +3,7 @@
 ``manifest.py`` owns the answer to "does the runtime install this app's root
 ``requirements.txt`` out of process?": the module-style entry-point test, the
 stdio-server test, and their union. Two provisioners (``backend.py`` at spawn,
-``bridges.py`` at registration) and the install-time desktop gate in
+``bridges_mcp.py`` at registration) and the install-time desktop gate in
 ``registry_pipeline/install_desktop_gate.py`` all decide from those same names. The cross-pin
 tests below fail the moment any of the three re-spells a condition inline, because a copy that
 drifts is exactly how a gate ends up waiving what the runtime does not provision.
@@ -100,7 +100,7 @@ class TestRuntimeProvisionsRequirements:
         An install-time answer that counted such an entry would waive an app
         whose dependencies land beside a process that can never import them, so
         the predicate counts it as no consumer; a stdio server beside it, which
-        bridges.py provisions for and launches as Python, is one."""
+        bridges_mcp.py provisions for and launches as Python, is one."""
         (tmp_path / entry).write_text("", encoding="utf-8")
         assert (
             spawn_launches_entry_point_as_python(_manifest(backend={"entryPoint": entry}), tmp_path)
@@ -181,7 +181,7 @@ class TestRuntimeProvisionsRequirements:
     def test_a_declared_file_the_spawn_would_refuse_is_not_provisioned_at_spawn(self, tmp_path):
         """``_start_app_backend_body`` returns before ``provision_app_deps`` when
         the entry is not a regular file inside the root, so the backend
-        provisioner never runs for it -- only a stdio server, which bridges.py
+        provisioner never runs for it -- only a stdio server, which bridges_mcp.py
         provisions for at registration without any such requirement, can still
         make the union true."""
         stdio = {"tool": {"command": "python3", "args": ["srv.py"]}}
@@ -196,7 +196,7 @@ class TestRuntimeProvisionsRequirements:
         assert not runtime_provisions_requirements(
             _manifest(backend={"entryPoint": "my_pkg.server", "type": "asgi"}), tmp_path
         )
-        # Not even when a stdio server is declared beside it: bridges.py returns
+        # Not even when a stdio server is declared beside it: bridges_mcp.py returns
         # before provisioning on the same module-style test.
         assert not runtime_provisions_requirements(
             _manifest(backend={"entryPoint": "my_pkg.server"}, mcpServers=stdio), tmp_path

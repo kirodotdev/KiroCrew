@@ -431,7 +431,7 @@ they can: throttling. That breaks your app, not just its polling.
 
 Put install-wide schedules in the `crons` array of `app.json`. The gateway
 reconciles that array through `register_app_crons_with_service`
-(`src/kiro_crew/apps/bridges.py`) at enable and gateway startup. Registration is
+(`src/kiro_crew/apps/bridges_crons.py`) at enable and gateway startup. Registration is
 add-if-absent under one store lock, keyed by cron name.
 
 A schedule derived from user configuration may instead use `ctx.cron` / CronSDK;

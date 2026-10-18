@@ -57,7 +57,7 @@ def _requirements_owned_by_the_runtime(
     This is the RUNTIME'S OWN condition, not an approximation of it: the
     out-of-process half is :func:`runtime_provisions_requirements`, the predicate
     both provisioners themselves call (``apps/backend.py`` at the spawn of a
-    FILE-style ``backend.entryPoint``, ``apps/bridges.py`` at the registration of
+    FILE-style ``backend.entryPoint``, ``apps/bridges_mcp.py`` at the registration of
     a stdio ``mcpServers`` entry), so a shape they refuse -- a module-style,
     dotted entry point, which executes trusted package code and never has an
     app-dir requirements file installed for it -- fails here too instead of
@@ -74,7 +74,7 @@ def _requirements_owned_by_the_runtime(
     "app"``), which no manifest field carries and which decides whether either
     provisioner ever RUNS for this app: ``install_from_registry`` registers a
     self-managed app from its manifest alone -- no source is copied into the app
-    directory, ``bridges.py`` skips every registration for it, and the app
+    directory, ``bridges_register.py`` skips every registration for it, and the app
     launches itself -- so the runtime never sees its ``requirements.txt``. On a
     source install the build step's ``pip install -r`` was the only thing that
     installed that file, and that step is exactly what the bundled interpreter
@@ -95,7 +95,7 @@ def _requirements_owned_by_the_runtime(
     Answers from the TYPED manifest, which is what decides what actually loads:
     ``manager_lookup.py`` hands the loaders ``AppManifest.from_json_file(...).to_dict()``,
     so a declaration ``BackendConfig.from_dict`` normalizes away is a hook the
-    loaders never see either, and ``bridges.py`` reads ``manifest.mcpServers`` from
+    loaders never see either, and ``bridges_mcp.py`` reads ``manifest.mcpServers`` from
     the same typed object. *installed* is the tree the entry-point shape is
     judged against -- the copy ``install_app`` would produce from *source*, the
     checkout, which the spawn later resolves the same name under; *source* is
@@ -113,7 +113,7 @@ def _requirements_owned_by_the_runtime(
     # stops resolving once the tree stands elsewhere -- is missing HERE exactly
     # as it is missing where the spawn looks, and the predicate answers as the
     # spawn would: no file-style entry, so only a stdio server, which
-    # `bridges.py` provisions for on its own, can be the reason to waive.
+    # `bridges_mcp.py` provisions for on its own, can be the reason to waive.
     if runtime_provisions_requirements(manifest, installed):
         return True
     if final:

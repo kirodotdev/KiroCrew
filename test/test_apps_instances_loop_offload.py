@@ -403,7 +403,12 @@ def test_no_direct_apps_walk_in_async_frames(module: Any, banned_names: set[str]
     (``manager.list_apps()``) are matched, so re-importing the function under a
     module prefix does not evade the gate."""
     offenders: list[str] = []
-    for owner, call in _calls_in_async_frames(_module_tree(module)):
+    # A mirrored facade's code lives in its owners: scan the facade and each one.
+    family = (module, *(sys.modules[name] for name in getattr(module, "_OWNERS", ())))
+    frames = [
+        (part, *found) for part in family for found in _calls_in_async_frames(_module_tree(part))
+    ]
+    for part, owner, call in frames:
         func = call.func
         name = ""
         if isinstance(func, ast.Name) and func.id in banned_names:
@@ -411,7 +416,7 @@ def test_no_direct_apps_walk_in_async_frames(module: Any, banned_names: set[str]
         elif isinstance(func, ast.Attribute) and func.attr in banned_names:
             name = func.attr
         if name:
-            offenders.append(f"{module.__name__}:{owner}:{call.lineno} calls {name}()")
+            offenders.append(f"{part.__name__}:{owner}:{call.lineno} calls {name}()")
     assert not offenders, "direct apps-dir walk on the event loop:\n" + "\n".join(offenders)
 
 

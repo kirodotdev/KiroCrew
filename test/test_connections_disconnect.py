@@ -1915,7 +1915,7 @@ def test_the_mirror_strip_serializes_against_the_agent_files_own_lock(
 
     ``_purge_server_config`` does not only write mcp.json scopes: it strips the
     entry from ``<agents>/kirocrew.json`` too (``_remove_from_agent_file``), and
-    that file has a SECOND independent writer -- ``apps/bridges.py`` does
+    that file has a SECOND independent writer -- ``apps/bridges_mcp.py`` does
     whole-file read-modify-writes of it under ``bridges._mcp_lock``
     (``kirocrew.lock``). The MCP transaction lock the purge runs under is a
     DIFFERENT sidecar (``settings/mcp.lock``), so it excludes nothing here: an

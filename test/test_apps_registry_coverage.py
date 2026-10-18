@@ -267,7 +267,7 @@ class TestRunAppBuild:
     async def test_a_stdio_server_still_waives_beside_a_shell_entry_point(
         self, tmp_path, monkeypatch, bundled_interpreter
     ):
-        """The stdio server is a consumer the deps reach (``bridges.py`` provisions
+        """The stdio server is a consumer the deps reach (``bridges_mcp.py`` provisions
         for it at registration and launches it as Python), so it waives the file
         beside a shell entry exactly as it does beside an entry the spawn would
         refuse."""
@@ -439,7 +439,7 @@ class TestRunAppBuild:
     ):
         """The waiver is the runtime's OWN condition, not the entry point.
 
-        ``bridges.py::_maybe_provision_backendless_deps`` provisions a root
+        ``bridges_mcp.py::_maybe_provision_backendless_deps`` provisions a root
         requirements.txt for an app whose only Python is a stdio ``mcpServers``
         entry — the same ``pip install --target`` into the app's deps dir, so the
         same out-of-process consumer. Refusing it while waiving the entry-point
@@ -461,7 +461,7 @@ class TestRunAppBuild:
         self, tmp_path, monkeypatch, bundled_interpreter
     ):
         """A ``url`` server is remote: nothing spawns for it, so the runtime
-        provisions nothing (``bridges.py`` counts only entries WITHOUT ``url``),
+        provisions nothing (``bridges_mcp.py`` counts only entries WITHOUT ``url``),
         and the gate must agree — refused, like any requirements.txt with no
         consumer."""
         (tmp_path / "requirements.txt").write_text("mcp\n", encoding="utf-8")
@@ -502,7 +502,7 @@ class TestRunAppBuild:
 
         A dotted, extensionless ``backend.entryPoint`` with no file of that name
         runs as ``python -m`` from trusted package code; ``backend.py`` skips
-        ``provision_app_deps`` for it and ``bridges.py`` returns before provisioning
+        ``provision_app_deps`` for it and ``bridges_mcp.py`` returns before provisioning
         (trust boundary: an app-dir requirements file must never load ahead of a
         trusted module). Waiving on the entry point's mere presence would report a
         successful install whose dependencies land nowhere -- the same silent-broken
@@ -531,7 +531,7 @@ class TestRunAppBuild:
 
         A registry entry with ``resources: "app"`` is registered from its manifest
         alone: ``install_from_registry`` copies no source into the app directory,
-        ``bridges.py`` skips every registration for it, and the app launches
+        ``bridges_register.py`` skips every registration for it, and the app launches
         itself. On a source install the build step's ``pip install -r`` was the
         only thing that installed its requirements.txt, and that step is what the
         bundled interpreter cannot run -- so the very manifest that waives for a
@@ -791,7 +791,7 @@ class TestRunAppBuild:
         preserved previous one, so an entry file that exists here under either is
         stale or missing there -- the backend provisioner is no reason to waive,
         in either pass. The copy itself (the gate judges a real copy)
-        decides; a stdio server beside it, which `bridges.py` provisions for on
+        decides; a stdio server beside it, which `bridges_mcp.py` provisions for on
         its own, still can."""
         monkeypatch.setattr(registry, "preserved_data_awaits", lambda name: True)  # an update
         (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
@@ -1446,7 +1446,7 @@ class TestRunAppBuild:
     async def test_a_stdio_server_still_waives_beside_an_entry_the_spawn_would_refuse(
         self, tmp_path, monkeypatch, bundled_interpreter
     ):
-        """bridges.py provisions at registration for a stdio server whenever the
+        """bridges_mcp.py provisions at registration for a stdio server whenever the
         entry point is absent or file-style, with no existence requirement of its
         own -- the server is the consumer it provisions for -- so the file is
         installed and read even though the backend spawn would refuse."""

@@ -904,7 +904,7 @@ pass, so gatewayd refuses the changed expansion and the next boot retries. A
 changed command, argument or declared env text is still refused.
 Both halves of the fingerprint fold exactly three gateway-computed spellings
 (`hashing.install_aliases`), each in the ONE slot the gateway's own writer
-(`apps/bridges.py`) emits it in: `sys.executable` (what the rewriter substitutes
+(`apps/bridges_mcp.py`) emits it in: `sys.executable` (what the rewriter substitutes
 for a manifest's bare `python3` and for the `kirocrew` host CLI) folds only as
 the command, the absolute path of the `deps_boot` shim folds only as an argument
 (`hashing.launch_token_bytes`, which takes the slot's role from the caller), and

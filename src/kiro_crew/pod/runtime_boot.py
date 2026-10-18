@@ -218,7 +218,7 @@ def pod_context(cfg: PodConfig, name: str) -> tuple[Path, dict[str, str]]:
 #
 # Deliberately EXCLUDED, with the reason each is host-scoped, not pod-scoped:
 #   setup, update  — rewrite the install and the ~/.local/bin launcher
-#   app            — `apps/bridges.py` edits `~/.kiro/settings/mcp.json`, the
+#   app            — `apps/bridges_mcp.py` edits `~/.kiro/settings/mcp.json`, the
 #                    HOST registry, which is NOT covered by KIROCREW_HOME or
 #                    KIRO_HOME. (The app agent JSONs it symlinks now follow
 #                    `kiro_agents_dir()`, so those land under the pod's own

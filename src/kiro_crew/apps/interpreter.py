@@ -1,7 +1,7 @@
 """Shared interpreter resolution for app spawn paths.
 
 One policy, two consumers. The app BACKEND launcher (``backend.py``) and the
-app stdio MCP SERVER registration (``bridges.py``) both spawn Python processes
+app stdio MCP SERVER registration (``bridges_mcp.py``) both spawn Python processes
 on an app's behalf, and both must refuse to trust a bare ``python3``: a bare
 name is resolved through PATH at spawn time, which is not guaranteed to exist
 (some hosts ship only a versioned interpreter, so ``execvp("python3")`` raises

@@ -903,7 +903,7 @@ def _tier_app_own_server(facts: GateFacts, tier: GateTier) -> ToolHookResult | N
     """A FIRST-PARTY (builtin) app agent calling its OWN app-scoped MCP server.
 
     That is intra-app, not a host surface. A builtin app's declared server is
-    registered under the ``<app>:<server>`` key (see ``apps/bridges.py``) and IS the
+    registered under the ``<app>:<server>`` key (see ``apps/bridges_mcp.py``) and IS the
     gateway's own shipped code, so it only touches the app's own data -- never
     fs/network/exec/exfil on the host. Once a shipped app agent stopped
     pre-authorizing tools (no template ``allowedTools``, the "no template
@@ -932,7 +932,7 @@ def _tier_app_own_server(facts: GateFacts, tier: GateTier) -> ToolHookResult | N
     per-app special-casing.
 
     ``_app_owns_mcp_server`` only proves the NAME is ``<app>:``-prefixed;
-    ``_own_mcp_servers`` (bridges.py) injects app servers into the agent by reading
+    ``_own_mcp_servers`` (bridges_agents.py) injects app servers into the agent by reading
     that prefix from the MUTABLE global MCP config, so a ``<app>:evil`` entry that
     landed there (not declared by the app) would otherwise be trusted. The server
     must be DECLARED in the app's SHIPPED manifest

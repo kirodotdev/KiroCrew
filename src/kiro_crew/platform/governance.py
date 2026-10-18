@@ -397,7 +397,7 @@ def _is_owner_written(name: str, spec: Mapping[str, object], third_party: Contai
       ``honour_owner_written=False``, because an enumeration of app sources is a
       list that goes stale (manifest servers, the shipped agent spec's own keys, the
       per-agent policy's keys -- each found after the previous one was covered).
-    * An APP's namespaced server. ``apps/bridges.py`` keys those ``<app>:<server>``
+    * An APP's namespaced server. ``apps/bridges_mcp.py`` keys those ``<app>:<server>``
       and grants them from the manifest rather than from any user choice. Any ``:``
       in the name is treated as that shape: an owner who really used one keeps
       getting approval cards, which is the behaviour that shipped before this key
@@ -449,7 +449,7 @@ def strip_ungoverned_auto_approve(
     per-agent MCP policy, a managed server spec, or an imported config from
     another tool — and each fix that covered only the reported source left the
     others open. Both writers of an agent config (the host's ``install_agent``
-    and app-agent materialization in ``apps/bridges.py``) run their final server
+    and app-agent materialization in ``apps/bridges_agents.py``) run their final server
     map through here, so a new source is covered the moment it lands in that map
     rather than needing its own patch.
 

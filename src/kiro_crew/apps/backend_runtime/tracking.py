@@ -324,7 +324,7 @@ def get_app_backend_port(app_name: str) -> int | None:
 def health_reconcile_lock() -> Any:
     """The serialization every writer of an app's MCP + agent state must hold.
 
-    Exported for ``apps/bridges.py``, which acquires it around its mcp.json and agent
+    Exported for ``apps/bridges_mcp_config.py``, which acquires it around its mcp.json and agent
     materialization so a lifecycle registration and a health transition cannot interleave
     their decisions. Held re-entrantly: the health path already owns it before it calls
     into those writers.

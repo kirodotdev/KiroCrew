@@ -1039,7 +1039,7 @@ class AppManifest:
 # import path. Exactly two paths do it, and each decides from the typed
 # manifest plus the app root. The predicates below ARE that decision, imported
 # by both provisioners (``backend.py`` at the spawn of a backend entry point,
-# ``bridges.py`` at the registration of a stdio ``mcpServers`` entry) and by
+# ``bridges_mcp.py`` at the registration of a stdio ``mcpServers`` entry) and by
 # the install-time desktop gate that mirrors them, so the three sites cannot
 # drift: ``test_apps_provisioning_predicate.py`` pins each site to these names.
 
@@ -1121,7 +1121,7 @@ def has_stdio_mcp_server(manifest: AppManifest) -> bool:
     A ``url`` server is remote and spawns nothing on the app's behalf. A stdio
     server is a process the gateway launches, and its Python imports resolve
     from the app's provisioned deps tree, which is why its presence is what
-    makes ``bridges.py`` provision at registration.
+    makes ``bridges_mcp.py`` provision at registration.
     """
     return any(
         isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values()
@@ -1171,7 +1171,7 @@ def runtime_provisions_requirements(manifest: AppManifest, app_root: Path) -> bo
       spawned with the deps installed beside it and no way to import them, so it
       counts here as no consumer. Never for a module-style entry, which executes
       trusted package code;
-    - ``bridges.py`` provisions at the registration of a stdio ``mcpServers``
+    - ``bridges_mcp.py`` provisions at the registration of a stdio ``mcpServers``
       entry for an app whose entry point is absent or file-style -- the same
       module-style exclusion, and no existence requirement of its own: the
       stdio server is the consumer it provisions for, and the one that can still

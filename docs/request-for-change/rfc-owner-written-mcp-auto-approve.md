@@ -58,7 +58,7 @@ inferring it from "no spec declared this". Two sources are not the owner and are
 excluded from the honoured path, which leaves them on the strict floor exactly as
 before:
 
-- An app's own server. `apps/bridges.py` keys the ones it registers into the
+- An app's own server. `apps/bridges_mcp.py` keys the ones it registers into the
   shared config `<app>:<server>` and grants them from the manifest, not from any
   choice the owner made, so honouring one would let a third party exempt its own
   tools from the approval gate with no card. Any `:` in a server name is read as

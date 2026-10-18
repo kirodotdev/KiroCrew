@@ -153,7 +153,7 @@ _MCP_DEFERRED_UNINSTALL_CONCURRENCY = 8
 # cancelled mid-wave) but never exceeds this, bounding request latency.
 _MCP_DEFERRED_UNINSTALL_MAX_BUDGET = 300
 
-# File-based lock for mcp.json — shared with bridges.py so that app
+# File-based lock for mcp.json — shared with bridges_mcp_config.py so that app
 # registration and dashboard MCP handlers coordinate properly.
 # Uses fcntl.flock on a sidecar .lock file (works cross-process too).
 _MCP_LOCK_PATH = _GLOBAL_MCP_JSON.with_suffix(".lock")
@@ -243,7 +243,7 @@ class _McpFileLock:
 
 
 def _get_mcp_lock() -> _McpFileLock:
-    """Return an MCP config file lock (compatible with bridges.py)."""
+    """Return an MCP config file lock (compatible with bridges_mcp_config.py)."""
     return _McpFileLock()
 
 
@@ -312,7 +312,7 @@ def _get_mcp_lock_sync() -> _McpFileLockSync:
 # config, B then re-adds the same server from a preserved spec — leaving config
 # pointing at a removed package. This coarse async mutex spans BOTH phases so
 # apply calls are fully serialized; the narrower file lock is retained inside for
-# cross-process coordination with bridges.py. Loop-bound via the shared
+# cross-process coordination with bridges_mcp_config.py. Loop-bound via the shared
 # LoopBoundLock.
 _apply_lock = LoopBoundLock()
 
@@ -2880,7 +2880,7 @@ def _remove_from_agent_file(path: Path, name: str, *, preferred: str | None = No
     Read AND write under THIS FILE's own sidecar lock (``bridges._mcp_lock``,
     ``<path>.lock``), which the MCP transaction lock every caller already holds
     does NOT cover: that one guards ``~/.kiro/settings/mcp.lock``, while
-    ``apps/bridges.py`` does whole-file read-modify-writes of this same rendered
+    ``apps/bridges_mcp.py`` does whole-file read-modify-writes of this same rendered
     file under ``~/.kiro/agents/kirocrew.lock`` (app enable/disable, MCP
     (de)registration). Unlocked, an app registration that read the file BEFORE
     this delete and wrote its whole map back AFTER resurrects the entry — and a
@@ -3262,7 +3262,7 @@ async def api_mcp_apply(request: web.Request) -> web.Response:
     spec after another removed its package, leaving config pointing at a removed
     package. ``_get_apply_lock`` (a process-wide async mutex spanning BOTH phases)
     closes that; the narrower file lock is retained inside ``_do_mcp_apply`` for
-    cross-process coordination with bridges.py.
+    cross-process coordination with bridges_mcp_config.py.
     """
     # Body-scope import, like the sibling gates in this package
     # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``

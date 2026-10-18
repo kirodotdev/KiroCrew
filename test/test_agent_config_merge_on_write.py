@@ -1,7 +1,7 @@
 """Merge-on-write semantics for the agent-config PUT.
 
 ``PUT /api/agent/config`` persists a whole-file snapshot the client read earlier,
-and ``apps/bridges.py::_register_mcp_servers`` writes app MCP bridges into that
+and ``apps/bridges_mcp.py::_register_mcp_servers`` writes app MCP bridges into that
 same file under its own flock. A registration landing between the client's read
 and its PUT was therefore silently clobbered.
 
@@ -303,7 +303,7 @@ async def test_app_bridge_registered_during_the_lock_wait_survives_the_put(tmp_p
     @contextlib.asynccontextmanager
     async def _registering_lock():
         # An app enable lands here: whole-file RMW of the installed spec, the
-        # shape apps/bridges.py::_register_mcp_servers performs under its flock.
+        # shape apps/bridges_mcp.py::_register_mcp_servers performs under its flock.
         data = json.loads(installed.read_text(encoding="utf-8"))
         data.setdefault("mcpServers", {})["demo:notes"] = {"command": "notes-mcp"}
         installed.write_text(json.dumps(data), encoding="utf-8")
@@ -350,7 +350,7 @@ async def test_app_deregistered_during_the_put_is_not_resurrected(tmp_path):
     @contextlib.contextmanager
     def _deregistering_lock(*, exclusive: bool = True, target=None):  # noqa: ANN001
         # An app disable commits here: the same whole-file RMW
-        # apps/bridges.py::_deregister_mcp_servers performs under this flock.
+        # apps/bridges_mcp.py::_deregister_mcp_servers performs under this flock.
         data = json.loads(installed.read_text(encoding="utf-8"))
         data.get("mcpServers", {}).pop("demo:notes", None)
         installed.write_text(json.dumps(data), encoding="utf-8")

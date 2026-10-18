@@ -395,7 +395,7 @@ def _app_owns_mcp_server(mcp_server_name: str, app: str) -> bool:
     """True when *mcp_server_name* is *app*'s OWN app-scoped MCP server.
 
     App-declared MCP servers are registered under the ``<app>:<server>`` key
-    (``apps/bridges.py`` ``_own_mcp_servers``), so the owning app is the segment
+    (``apps/bridges_agents.py`` ``_own_mcp_servers``), so the owning app is the segment
     before the first ``:``.  ``mcp_server_name`` is the trusted, NON-model-authored
     identity from ``_meta.kiro.mcpServerName`` (``AcpEvent.mcp_server_name``) —
     NOT the LLM-authored display title — so a forged shell/host title cannot spoof

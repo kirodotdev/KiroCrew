@@ -109,7 +109,7 @@ definitions — returns eleven, at `e6b06685e`:
 | Field | Declared | Status |
 |---|---|---|
 | `jobFamilies` | `src/kiro_crew/apps/manifest.py:1010` | Parsed, serialized, echoed to the client. No consumer. |
-| `sops` | `manifest.py:976` | `bridges.register_app` (`bridges.py:2324-2410`) registers MCP servers, agents, skills, crons. There is no `_register_sops`. Declaring `sops` copies nothing. |
+| `sops` | `manifest.py:976` | `bridges.register_app` (`apps/bridges_register.py`) registers MCP servers, agents, skills, crons. There is no `_register_sops`. Declaring `sops` copies nothing. |
 | `backend.routes` | `manifest.py:386` | No reader. `apps/routes.py:2336` still carries a comment describing it. The prefix is hardcoded at `apps/route_registry.py:122`. |
 | `permissions.mcpTools` | `manifest.py:442` | Declarative only. `check_tool_permission` (`apps/permissions.py:71`) has no non-test caller. |
 | `permissions.network` | `manifest.py:444` | Not enforced. An app makes outbound calls regardless. |

@@ -106,7 +106,7 @@ class TestDeploySkillsCopyNotSymlink:
         """Existing links are detached and replaced with copies.
 
         Through the junction-aware pair, not ``is_symlink()`` / ``unlink()``:
-        ``<home>/skills/<name>`` is also published by ``apps/bridges.py`` via
+        ``<home>/skills/<name>`` is also published by ``apps/bridges_skills.py`` via
         ``symlink_or_junction``, a directory JUNCTION on unelevated Windows,
         which ``is_symlink()`` reports as a plain directory.
         """

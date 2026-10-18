@@ -83,7 +83,7 @@ def _locked_file(path: Path, mode: str) -> Iterator[Any]:
     # read-only handle fails with EACCES, which platform_compat.file_lock
     # swallows (best-effort), silently degrading the reader's lock to a no-op
     # and letting a concurrent _save race the read (same fix as
-    # apps/bridges.py:_mcp_lock). The shared/exclusive decision keys off the
+    # apps/bridges_mcp_config.py:_mcp_lock). The shared/exclusive decision keys off the
     # ORIGINAL mode so a reader still requests a shared lock.
     exclusive = "w" in mode or "+" in mode
     if mode == "r":

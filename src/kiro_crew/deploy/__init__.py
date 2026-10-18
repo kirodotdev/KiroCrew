@@ -48,7 +48,7 @@ def _register_core_skills() -> None:
         link = target / skill_dir.name
 
         # Migration: if an existing entry is a LINK (from older versions, or
-        # an app whose skill shares this name -- apps/bridges.py publishes
+        # an app whose skill shares this name -- apps/bridges_skills.py publishes
         # ``<home>/skills/<skill>`` through ``symlink_or_junction``, which is
         # a directory JUNCTION on unelevated Windows), detach it and replace
         # it with a fresh copy regardless of target match. Link-first, and

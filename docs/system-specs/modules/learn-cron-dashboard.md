@@ -758,7 +758,7 @@ configuration before it is useful). The contract, end to end:
 - **Persist**: `_register_crons()` carries `enabled` through the app's
   `app-crons.json`. A legacy `app-crons.json` without the key registers
   **active** (default `true` — behavior unchanged for existing apps).
-- **Register**: `register_app_crons_with_service()` (`apps/bridges.py`)
+- **Register**: `register_app_crons_with_service()` (`apps/bridges_crons.py`)
   threads `enabled` to `CronSDK.add_job_async(enabled=...)` (`apps/cron_sdk.py`),
   which forwards it to `CronService.add_job_async(enabled=...)`. A disabled cron is
   **created paused** — `enabled=False` + `user_paused=True`, mirroring

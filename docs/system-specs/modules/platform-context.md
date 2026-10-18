@@ -1200,7 +1200,7 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   async apply mutex (`_get_apply_lock`, spanning BOTH phases) so two concurrent
   applies cannot interleave (one re-adding a server from a preserved spec after
   another removed its package); the narrower file lock is retained inside for
-  cross-process coordination with `bridges.py`;
+  cross-process coordination with `bridges_mcp_config.py`;
 
   > **Uninstall ordering & the crash window.** Package-first ordering (chosen
   > for the concurrent-re-add TOCTOU fix above) flips the partial-failure

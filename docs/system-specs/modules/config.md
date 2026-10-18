@@ -1992,7 +1992,7 @@ common hot path — no `_app`, or already resolved):
    re-resolve *still* misses, the spec was never materialized even though the
    source is intact, so **re-register this app's resources from source** —
    `await loop.run_in_executor(subprocess_executor(), register_app, slot._app)`
-   (`register_app`, `apps/bridges.py`, registers the app's MCP servers BEFORE its
+   (`register_app`, `apps/bridges_register.py`, registers the app's MCP servers BEFORE its
    agents and publishes the snapshot synchronously; imported via a **local** import
    inside the function to avoid the top-level `apps`↔`dashboard` cycle, mirroring
    `dashboard/server_runtime/app_platform.py`'s local import of `reconcile_enabled_app_resources`. `register_app`
@@ -2045,7 +2045,7 @@ speculative-resume refusal, or a capability refusal raised before any process ra
 selection write, or admission step spawned no agent and is logged without
 counting. Pinned by `test/test_eager_spawn_start_backoff.py`.
 
-`register_app` (`apps/bridges.py`) backs the from-source recovery with a **visible
+`register_app` (`apps/bridges_register.py`) backs the from-source recovery with a **visible
 error**: when a manifest declares agents but `_register_agents` materializes none
 (source missing or unreadable) it appends a `"registered 0 of N declared
 agent(s)"` entry to `result.errors` — which `reconcile_enabled_app_resources`

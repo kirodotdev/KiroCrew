@@ -4500,7 +4500,7 @@ _SHARED_KIRO_PATHS: tuple[tuple[str, str, str], ...] = (
     ("kiro_crew.agent", "_CC_MCP_JSON", ".claude.json"),
     ("kiro_crew.agent", "_DEFAULT_KIRO_HOOKS_DIR", ".kiro/hooks"),
     ("kiro_crew.learn", "_DEFAULT_DIR", ".kiro/crew"),
-    ("kiro_crew.apps.bridges", "_LEGACY_SHARED_MCP_PATH", ".kiro/settings/mcp.json"),
+    ("kiro_crew.apps.bridges_mcp", "_LEGACY_SHARED_MCP_PATH", ".kiro/settings/mcp.json"),
     ("kiro_crew.dashboard.handlers.mcp", "_GLOBAL_MCP_JSON", ".kiro/settings/mcp.json"),
     # A DERIVED sibling (`_GLOBAL_MCP_JSON.with_suffix(".lock")`), and it has to move
     # WITH its json or the pair is worse than either alone: `_McpFileLockSync.__enter__`

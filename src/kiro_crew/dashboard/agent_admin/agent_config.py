@@ -384,7 +384,7 @@ async def api_agent_config(request: web.Request) -> web.Response:
             #    api_mcp_gateway_set_stub holds it across its own offload.
             # 3. ``bridges._mcp_lock(target=installed_path)``
             #    (~/.kiro/agents/kirocrew.lock) is the FILE lock. The transaction
-            #    lock does not cover it: apps/bridges.py does whole-file
+            #    lock does not cover it: apps/bridges_mcp.py does whole-file
             #    read-modify-writes of THIS SAME file under that separate flock
             #    (app enable/disable, MCP (de)registration). Holding only the
             #    transaction lock leaves a concurrent app enable and this PUT

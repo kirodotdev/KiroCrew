@@ -26,7 +26,7 @@ event loop.
   window and the whole gateway (chat, timers, heartbeats) stalls with it. Inline
   is not an option either — ``CronService._file_lock``'s structural guard
   rejects a store-lock acquisition on a thread with a live loop. On-loop sync
-  callers must use ``*_async``. No in-tree caller is affected; ``bridges.py``
+  callers must use ``*_async``. No in-tree caller is affected; ``bridges_crons.py``
   and ``hooks_integration.py`` use the async variants exclusively.
 * ``remove_all`` removes every owned job in ONE atomic
   ``CronService.remove_jobs_by_owner`` transaction (not a per-id loop, and not
@@ -233,7 +233,7 @@ class CronSDK:
 
         A rejected payload never lands in the cron service's in-memory state.
         Safe even if a future caller reaches a mutator without the upstream
-        ``bridges.py`` vetting; legitimate callers (which already vet and skip
+        ``bridges_crons.py`` vetting; legitimate callers (which already vet and skip
         bad entries) are unaffected. command/script are NOT executed here — at
         fire time the gateway routes them through the OS-level sandbox
         (``cron_script.run_command_sandboxed`` / ``run_script_sandboxed``). The
@@ -279,7 +279,7 @@ class CronSDK:
             # resolve_script_path rejects a missing or sensitive file, and any
             # path outside ~/.kiro/crew/crons/ or this app's own bundle, by
             # raising. Emit a SEL denied audit on that path too, mirroring
-            # bridges.py, so every denial is audited. `app_root` is what makes a
+            # bridges_crons.py, so every denial is audited. `app_root` is what makes a
             # bundle-relative spec ("job.py:run", the only spelling an app can
             # write without knowing the install location) resolve next to the
             # app instead of against the gateway process's CWD.

@@ -346,7 +346,7 @@ class TestDeployManagedReplacement:
 class TestDeployLinkMigrationIsJunctionAware:
     """The migration branch of ``_register_core_skills`` detaches a LINK at
     ``<home>/skills/<name>`` before copying. That name is also published by
-    ``apps/bridges.py`` through ``platform_compat.symlink_or_junction`` -- a
+    ``apps/bridges_skills.py`` through ``platform_compat.symlink_or_junction`` -- a
     directory JUNCTION on unelevated Windows -- and a junction answers False to
     ``is_symlink()``. With the old ``is_symlink()`` test a live junction reached
     the ``exists()`` branch, where ``rmtree_force`` refused it (stdlib rmtree does

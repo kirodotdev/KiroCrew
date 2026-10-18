@@ -53,9 +53,9 @@ DECLARED_SITES = frozenset(
         ("apps/backend_runtime/provisioning.py", "_pinned_remove_entry"),
         ("apps/backend_runtime/provisioning.py", "_provision_app_deps_locked"),
         ("apps/backend_runtime/provisioning.py", "provision_app_deps"),
-        ("apps/bridges.py", "_deregister_skills"),
-        ("apps/bridges.py", "_register_skills"),
-        ("apps/bridges.py", "reconcile_app_skills"),
+        ("apps/bridges_skills.py", "_deregister_skills"),
+        ("apps/bridges_skills.py", "_register_skills"),
+        ("apps/bridges_skills.py", "reconcile_app_skills"),
         (
             "apps/builtins/auto_improvement/backend/clone_setup.py",
             "_prune_unsafe_clone_retirements",

@@ -562,7 +562,7 @@ The following modules are **kept** and enhanced:
 |--------|----------------|-------------|
 | `apps/manager_install.py`, `manager_uninstall.py`, `manager_activation.py` | Install/uninstall/enable/disable | Add bundle download + hash verification |
 | `apps/registry_pipeline/indexes.py`, `caches.py` | Registry fetch + cache | Add `bundleUrl`, `bundleHash` fields |
-| `apps/bridges.py` | Register agents/skills/crons | No change needed |
+| `apps/bridges_agents.py`, `bridges_skills.py`, `bridges_crons.py` | Register agents/skills/crons | No change needed |
 | `apps/scaffold.py` | `kirocrew app init` | Add `--with-ui` flag, Vite config generation |
 | `apps/routes.py` | REST API for app management | Add bundle serving endpoint |
 | `frontend/src/pages/AppsPage.tsx` | App Store UI | Add Browse tab with registry integration |

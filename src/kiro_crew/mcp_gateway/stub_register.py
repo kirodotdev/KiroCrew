@@ -276,7 +276,7 @@ def _pool_binary_identity(command: str, target_args: list[str]) -> tuple[str, st
     """
     base = _binary_version(command)
     # Two ways a target runs Kiro Crew's own code: one of the reserved
-    # subcommands, or the gateway interpreter pinned by ``apps/bridges.py``
+    # subcommands, or the gateway interpreter pinned by ``apps/bridges_mcp.py``
     # with ``-m kiro_crew...`` / the deps_boot shim in argv
     # (``hashing.runs_install_code``). The second needs the fold here too: with
     # the versioned directory gone from ``command_args_hash``, this token is

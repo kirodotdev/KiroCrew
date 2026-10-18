@@ -175,7 +175,7 @@ def _merge_unowned_servers(
     """Re-add ``mcpServers`` entries the submitting client does not own.
 
     MERGE-ON-WRITE. This PUT persists a whole-file snapshot the client read
-    earlier, and ``apps/bridges.py::_register_mcp_servers`` writes app MCP
+    earlier, and ``apps/bridges_mcp.py::_register_mcp_servers`` writes app MCP
     bridges into that same file under its own flock. Without the merge, a
     registration landing between the client's read and its PUT is silently
     clobbered and the app's tools stop resolving with nothing logged anywhere.

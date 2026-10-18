@@ -507,7 +507,7 @@ class TestBothWritePointsConsultTheCeiling:
     Auto-approve is the only path that never reaches `hooks.on_tool_call`, so a
     list written without consulting the ceiling is a set of tools the ceiling
     cannot refuse. Closing that in app-agent materialization
-    (`apps/bridges.py`) left the OTHER writer — the host agent's shared-MCP sync
+    (`apps/bridges_agents.py`) left the OTHER writer — the host agent's shared-MCP sync
     in `agent.py` — appending every user-installed server's `@ref` unconditionally,
     so on a governed host the primary agent kept the whole bypass. These pin that
     both writers route through `governance.may_skip_gate`.
@@ -533,8 +533,12 @@ class TestBothWritePointsConsultTheCeiling:
         # reading review comments: the first two rounds fixed the two writers that
         # had been REPORTED and left the dashboard enable paths and doctor's
         # auto-fix — the most common way a grant is created — wide open.
+        # The bridges facade's code lives in its owners: read the facade with each.
+        bridges_src = "\n".join(
+            inspect.getsource(m) for m in (bridges, *map(importlib.import_module, bridges._OWNERS))
+        )
         for mod in (bridges, mcp_handler, cli_doctor):
-            src = inspect.getsource(mod)
+            src = bridges_src if mod is bridges else inspect.getsource(mod)
             assert "may_skip_gate" in src, f"{mod.__name__} must use the shared predicate"
             assert "_BUILTIN_TOOL_SCOPES" not in src, (
                 f"{mod.__name__} re-declares the builtin tool→scope map; it belongs to "
@@ -889,7 +893,7 @@ class TestOnlyTheOwnersOwnAutoApproveIsHonoured:
         return dict(gov.strip_ungoverned_auto_approve(servers, audit=False))
 
     def test_an_apps_own_server_is_not_the_owner(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """``apps/bridges.py`` keys an app's own servers ``<app>:<server>``."""
+        """``apps/bridges_mcp.py`` keys an app's own servers ``<app>:<server>``."""
         out = self._honoured(
             monkeypatch, {"weather:api": {"command": "w", "autoApprove": ["write_all"]}}
         )
@@ -1170,8 +1174,13 @@ class TestEveryWriterRevokesAStaleGrant:
         assert "may_skip_gate" in inspect.getsource(
             agent._may_auto_approve
         ), "kiro_crew.agent must consult the ceiling"
+        # The bridges facade's code lives in its owners: read the facade with each.
+        bridges_src = "\n".join(
+            inspect.getsource(m) for m in (bridges, *map(importlib.import_module, bridges._OWNERS))
+        )
         sources = [(agent.__name__, agent_src)] + [
-            (mod.__name__, inspect.getsource(mod)) for mod in (cli_doctor, bridges, mcp_handler)
+            (mod.__name__, bridges_src if mod is bridges else inspect.getsource(mod))
+            for mod in (cli_doctor, bridges, mcp_handler)
         ]
         for name, src in sources:
             assert "may_skip_gate" in src, f"{name} must consult the ceiling"

@@ -735,8 +735,8 @@ are enumerated in one table by
 `test_the_app_namespace_region_decides_every_axis_it_claims_to`, so a change to
 any of them has to come through it.
 
-Writer: `apps/bridges.py::_apply_agent_mcp_policy`, `_mcp_json_path`,
-`_scrub_legacy_shared_mcp`;
+Writer: `apps/bridges_agents.py::_apply_agent_mcp_policy`, `apps/bridges_mcp_config.py::_mcp_json_path`,
+`apps/bridges_mcp.py::_scrub_legacy_shared_mcp`;
 `dashboard/agent_admin/app_mcp_ownership.py::_merge_unowned_servers` and
 `_drop_unbacked_app_entries` for the PUT side.
 
@@ -803,7 +803,7 @@ The prior file is snapshotted BEFORE the replace (the write path unlinks a legac
 symlink first, so reading afterwards would find nothing). An unreadable prior file
 means "nothing to preserve", never "abort the refresh".
 
-Writer: `apps/bridges.py::_register_agents`, `_preserve_user_agent_edits`,
+Writer: `apps/bridges_agents.py::_register_agents`, `_preserve_user_agent_edits`,
 `_read_agent_config`.
 
 ## 4. A generated prompt is pinned through the app's policy
@@ -817,7 +817,7 @@ that the path exists, and writes it into the materialized agent JSON. The app
 renders the file into its own data dir and points the policy at it; re-rendering
 plus `refresh_app_agents` is what makes a settings change take effect.
 
-Writer: `apps/bridges.py::_apply_agent_prompt`. Consumer side is the app's own
+Writer: `apps/bridges_agents.py::_apply_agent_prompt`. Consumer side is the app's own
 policy builder.
 
 ## 5. Builtin resource paths resolve against the PACKAGE dir
@@ -837,7 +837,7 @@ Builtin package dirs use **underscores** where the app name uses hyphens
 hyphenated builtin and fell back to the data home, reproducing the exact silent
 miss this function exists to prevent.
 
-Writer: `apps/bridges.py::_app_resource_root`.
+Writer: `apps/bridges_sources.py::_app_resource_root`.
 
 ### 5.1 Resource-path containment is host-independent and flavour-explicit
 
@@ -949,7 +949,7 @@ app source rather than reproducing it, since `copytree` cannot preserve one as a
 link and copying through it would duplicate the target's bytes (the multi-GB-walk
 failure mode) or expose a sensitive location.
 
-Writer: `apps/bridges.py::_register_skills`, `_deregister_skills`,
+Writer: `apps/bridges_skills.py::_register_skills`, `_deregister_skills`,
 `reconcile_app_skills`. Shim: `platform_compat.symlink_or_junction` / `is_link_or_junction` /
 `unlink_link_or_junction`.
 
@@ -999,7 +999,7 @@ at boot, making on-disk state a function of the current manifests instead of of
 install history. Idempotent: agent configs are refreshed field-wise (§3), and
 skills/crons/MCP registration overwrite in place.
 
-Writer: `apps/bridges.py::reconcile_enabled_app_resources`.
+Writer: `apps/bridges_register.py::reconcile_enabled_app_resources`.
 
 Enablement also decides which of an app's **`kirocrew-core` tools are advertised**.
 The four built-in apps reached through that server — Issue Radar, Dev Fleet, Ops
@@ -3241,7 +3241,7 @@ state that is no longer on disk, so nothing retries. **The scrub also re-materia
   check, so only a status on a response the opener RETURNED can be healthy — in practice a
   2xx, which is what the manifest reference asks a `healthCheck` route for.
 - **Every writer of an app's MCP and agent state shares one serialization.** Two
-  independent families write it: the lifecycle paths in `apps/bridges.py` (enable,
+  independent families write it: the lifecycle paths of `kiro_crew.apps.bridges` (enable,
   update, boot reconcile) and the backend's health watch. Unserialized they interleave
   their DECISIONS — each performing a correct read-modify-write, with the stale one
   landing last — so `_register_mcp_servers`, `_deregister_mcp_servers` and
@@ -3613,7 +3613,7 @@ Imports only point down this order: `tracking`, `probe`, `pidfile`, `ports`,
 facade imports every owner at its own import, so an owner's `from ... import`
 bindings are taken once, as the one-module backend took them. `backend.py`
 re-exports every name an owner holds, one hop, so `routes.py`, `teardown.py`,
-`hooks_integration.py`, `bridges.py`, `manager_uninstall.py`, `interpreter.py`,
+`hooks_integration.py`, `bridges_mcp_config.py`, `bridges_mcp.py`, `manager_uninstall.py`, `interpreter.py`,
 `cli_commands.py`, `member_memory_auth.py`, `platform_compat_wintree.py`, `runtime_reconcile.py`
 and the dashboard server keep one import path.
 
@@ -3955,6 +3955,45 @@ holds the facade to the mirror contract.
 Writers: `apps/manager.py`, `apps/manager_records.py`, `apps/manager_tree.py`,
 `apps/manager_install.py`, `apps/manager_activation.py`, `apps/manager_builtins.py`,
 `apps/manager_external.py`, `apps/manager_uninstall.py`, `apps/manager_lookup.py`.
+
+## 28. The app registration bridges are composed by resource owner
+
+The registration bridges (`apps/bridges.py`) are one import path over sibling owner
+modules. Their behaviour is specified in the sections above that name them. This section
+records which module owns which part, so a change lands in its owner.
+
+| Module under `src/kiro_crew/apps/` | Owns |
+|---|---|
+| `bridges.py` | The facade: the only import path and patch surface. It defines nothing and installs `kiro_crew._facade_mirror` over the owners below |
+| `bridges_sources.py` | Which manifest and root an app's executable resources register from (`_registration_source`, `_app_resource_root`), the shared execution decision (`_registration_denied`), namespaced resource and link names, and the kiro-cli agents directory (`KIRO_AGENTS_DIR`, `_kiro_agents_dir`) and Kiro Crew skills directory (`app_skills_dir`) the bridges write into |
+| `bridges_mcp_config.py` | Kiro Crew's own agent config (`kirocrew.json`): its path (`_mcp_json_path`), the cross-process lock (`_mcp_lock`), the unlocked reads and writes made under it, and the writer serialization against backend health transitions (`_health_reconcile_guard`) |
+| `bridges_agents.py` | Materializing an app's agents: the app MCP policy (`_apply_agent_mcp_policy`, `_apply_agent_prompt`), host-managed MCP references, user edits carried across a refresh, shipped agent templates, `_register_agents` / `_deregister_agents` and `purge_uninstalled_agent_residue` |
+| `bridges_skills.py` | `_register_skills`, `_deregister_skills` and the startup `reconcile_app_skills` |
+| `bridges_crons.py` | The app cron manifest (`load_app_cron_defs`), the manifest digest and the resync of a changed job, `register_app_crons_with_service`, deregistration, and the execution-driven disarm and reconcile passes |
+| `bridges_mcp.py` | Registering an app's MCP servers: `resolve_stdio_command` and its interpreter and launch-target rules, the `kirocrew` host-CLI pin, the live backend port rewrite, the unresolvable-command and secret-reference warnings, backendless deps provisioning, `_register_mcp_servers` / `_deregister_mcp_servers`, re-registration and scrub, and the legacy shared `mcp.json` scrub |
+| `bridges_register.py` | `register_app` / `deregister_app` with `RegistrationResult`, `refresh_app_agents`, the manifest-upgrade prune, `reconcile_enabled_app_resources`, and dropping the session resume pointers an app's conversations held (`discard_app_session_pointers`) |
+
+Imports only point down, in the facade's `_OWNERS` order: sources, mcp_config, agents,
+skills, crons, mcp, register. No owner imports the facade; owners import the app manager
+through `kiro_crew.apps.manager`, and each import of `agent`, `backend`, `mcp_cron` or the
+gateway rewriter stays inside the function that needs it.
+
+Every patch seam stays on the facade. It installs `kiro_crew._facade_mirror`, so a
+write to `bridges.<name>` reaches every owner that binds the name, and a read is served
+by the defining owner. Two names keep a single holder on purpose: `KIRO_AGENTS_DIR`
+lives in `bridges_sources.py` beside its one reader, and `_LEGACY_SHARED_MCP_PATH` in
+`bridges_mcp.py` beside its scrubber, where the root conftest's `_SHARED_KIRO_PATHS`
+pins it. Every owner logs as `kiro_crew.apps.bridges`, the logger name `caplog` and the
+lock diagnostics key on. `test/test_bridges_facade.py` pins the owner set, every name
+the one-module file bound resolving to its owner's object, the logger, the type-checking
+groups and that nothing outside the family imports an owner;
+`test/test_facade_mirror_guards.py` holds the facade to the mirror contract. The tests
+that read the bridges' source as one module (`test_app_mcp_scoping.py`,
+`test_apps_instances_loop_offload.py`) read the facade joined with its owners.
+
+Writers: `apps/bridges.py`, `apps/bridges_sources.py`, `apps/bridges_mcp_config.py`,
+`apps/bridges_agents.py`, `apps/bridges_skills.py`, `apps/bridges_crons.py`,
+`apps/bridges_mcp.py`, `apps/bridges_register.py`.
 
 ## Windows stale-backend cleanup capacity
 

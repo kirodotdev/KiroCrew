@@ -1019,7 +1019,7 @@ _CRON_WRITES = frozenset(
 #: structural reason. An exemption is a visible, reviewable line on purpose --
 #: adding one should feel like a claim someone can check, because it is.
 _EXEMPT_READ_DECIDE_WRITE: dict[tuple[str, str], str] = {
-    ("src/kiro_crew/apps/bridges.py", "register_app_crons_with_service"): (
+    ("src/kiro_crew/apps/bridges_crons.py", "register_app_crons_with_service"): (
         "An empty read makes every definition look ABSENT, so the add is still "
         "attempted and refuses at the write. The degraded read biases TOWARD the "
         "write rather than around it, so the refusal cannot be skipped."
