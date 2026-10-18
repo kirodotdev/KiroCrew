@@ -1234,6 +1234,64 @@ class TestTheTempResidueReport:
         assert "addCleanup" in message
         assert _root._TMP_PER_TEST_ENV in message
 
+    def test_it_names_the_test_tempfile_was_serving_when_it_made_each_entry(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Session teardown can only blame the LAST test a worker ran; the creator is
+        what names the culprit in the one CI run that leaks."""
+        creators = {
+            "tmpduring": ("test/test_a.py::test_leaks", True, ""),
+            "tmpafter": ("test/test_b.py::test_left_a_thread", False, "Thread-7 (late)"),
+            "tmplater": ("test/test_c.py::test_innocent", True, "Thread-7 (late)"),
+            "tmpearly": ("", False, ""),
+        }
+        message = _root._tmp_residue_report(
+            tmp_path,
+            ["tmpduring", "tmpafter", "tmplater", "tmpearly", "tmpchild"],
+            per_test=False,
+            creators=creators,
+        )
+
+        assert "tmpduring  <- made by tempfile during test/test_a.py::test_leaks\n" in message
+        assert (
+            "tmpafter  <- made by tempfile on thread 'Thread-7 (late)' after "
+            "test/test_b.py::test_left_a_thread finished: a thread or callback it left running"
+        ) in message
+        # A thread an EARLIER test left running can create during a later one; naming
+        # the thread is what keeps the later test from taking the blame.
+        assert (
+            "tmplater  <- made by tempfile on thread 'Thread-7 (late)' during "
+            "test/test_c.py::test_innocent"
+        ) in message
+        assert "tmpearly  <- made by tempfile before the first test" in message
+        assert "tmpchild  <- not made by tempfile in this worker: a child process" in message
+
+    def test_per_test_mode_lists_names_without_a_creator(self, tmp_path: pathlib.Path) -> None:
+        message = _root._tmp_residue_report(
+            tmp_path, ["test_guilty/tmpleaked"], per_test=True, creators={}
+        )
+
+        assert "    test_guilty/tmpleaked\n" in message
+        assert "<-" not in message
+
+    @pytest.mark.skipif(
+        bool(os.environ.get("KIROCREW_TMP_PER_TEST")),
+        reason="per-test diagnostic mode gives each test its own base, which is not recorded",
+    )
+    def test_the_audit_hook_records_a_bare_temp_entry_against_the_running_test(
+        self, request: pytest.FixtureRequest
+    ) -> None:
+        live = TestNoMetricIsEmittedAtImport._live_root_conftest(request.config)
+        made_dir = pathlib.Path(tempfile.mkdtemp())
+        fd, made_file = tempfile.mkstemp()
+        os.close(fd)
+        try:
+            for name in (made_dir.name, pathlib.Path(made_file).name):
+                assert live._TMP_CREATORS.get(name) == (request.node.nodeid, True, "")
+        finally:
+            made_dir.rmdir()
+            os.unlink(made_file)
+
     def test_a_third_party_or_by_design_entry_is_not_residue(self, tmp_path: pathlib.Path) -> None:
         """A guard that cries wolf gets deleted, and then it protects nothing.
 
