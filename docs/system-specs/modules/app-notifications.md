@@ -400,7 +400,7 @@ root and voids the pane's own blur. The banner's blank deck
 shells, its "+N more in your inbox" pill and the feed's controls card, stack
 edges and first-note-from-a-channel prompt (its own accent-tinted pane under
 the row, since a pane has one radius) are the same primitive. Every pane also
-carries `notif-material`, the index.css hook that solidifies it to the card
+carries `notif-material`, the `website/src/styles/liquid-glass.css` hook that solidifies it to the card
 color where backdrop-filter is unsupported and the selector the sheet's
 background-press verdict keys on. The
 card's `body` prop replaces the two-line clamp: the feed passes the full

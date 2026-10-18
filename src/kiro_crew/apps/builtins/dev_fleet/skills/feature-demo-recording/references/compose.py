@@ -142,7 +142,7 @@ def main() -> int:
     b = read_json_input(args.brand) if args.brand else {}
 
     # Defaults are the product's DEFAULT colour theme, kiro-dark, copied from
-    # website/src/index.css (the [data-theme="kiro-dark"] block). Not a look chosen
+    # website/src/styles/theme-palettes.css (the [data-theme="kiro-dark"] block). Not a look chosen
     # here: useTheme.tsx sets DEFAULT_COLOR_THEME = "kiro", so these are the colours
     # a viewer already sees in the product, and the capture is recorded on the same
     # theme so a slide and the dashboard behind it are the same product.

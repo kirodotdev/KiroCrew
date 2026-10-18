@@ -12,10 +12,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, act } from '@testing-library/react'
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
 import { renderWithProviders } from './helpers'
+import { readIndexCss } from './indexCssSource'
 import { FOCUS_INSET, focusModeEnabled, setFocusModeEnabled, __resetFocusMode } from '../hooks/useFocusMode'
 import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, TOPBAR_FOCUS_Z, TOPBAR_Z, useThemeDecorSlot } from '../lib/themeDecorLayer'
 
@@ -69,10 +67,7 @@ const setWindowWidth = (w: number) => {
   Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: w })
 }
 
-const cssSource = () => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  return readFileSync(join(here, '..', 'index.css'), 'utf8')
-}
+const cssSource = () => readIndexCss()
 
 describe('focus mode — shared session state', () => {
   beforeEach(() => { __resetFocusMode(); localStorage.clear() })

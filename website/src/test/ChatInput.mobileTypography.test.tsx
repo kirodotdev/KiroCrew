@@ -1,11 +1,10 @@
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { screen } from '@testing-library/react'
 import ChatInput from '../components/ChatInput'
 import { renderWithProviders } from './helpers'
+import { readIndexCss } from './indexCssSource'
 
-const INDEX_CSS = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf-8')
+const INDEX_CSS = readIndexCss()
 
 describe('mobile composer typography', () => {
   it('floors the textarea and paste mirror at 16px on coarse pointers', () => {

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { readIndexCss } from './indexCssSource'
 
-const raw = () => readFile(join(__dirname, '..', 'index.css'), 'utf8')
+const raw = async () => readIndexCss()
 // Strip CSS comments before matching: the rules below are explained in prose that
 // quotes the very selectors being asserted, and a raw-text match hits the comment.
 const css = async () => (await raw()).replace(/\/\*[\s\S]*?\*\//g, '')

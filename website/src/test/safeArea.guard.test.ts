@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
+import { readIndexCss } from './indexCssSource'
 
 /**
  * Safe-area regression guard.
@@ -355,7 +356,7 @@ describe('fixed surfaces inset themselves from the safe area', () => {
         .toContain('var(--safe-area-top, env(safe-area-inset-top))')
     }
 
-    const indexCss = readFileSync(join(SRC, 'index.css'), 'utf8')
+    const indexCss = readIndexCss()
     // The stylesheet half: 0 by default, env() re-enabled only when the app is
     // the window. Both declarations must survive for the gate to mean anything.
     expect(indexCss).toMatch(/--safe-area-top:\s*0px/)

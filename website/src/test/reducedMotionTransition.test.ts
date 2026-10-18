@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { readIndexCss } from './indexCssSource'
 
 /**
  * The reduced-motion transition rule must not MANUFACTURE transitions.
@@ -34,7 +35,7 @@ import { describe, expect, it } from 'vitest'
  * rather than what the stylesheet does. Comments are stripped first so every
  * assertion reads real declarations only.
  */
-const CSS = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf-8')
+const CSS = readIndexCss()
   .replace(/\/\*[\s\S]*?\*\//g, ' ')
 
 /** The `prefers-reduced-motion` block that targets the universal selector. */

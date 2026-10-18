@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach } from 'vitest'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { installPageZoomSuppression } from '../utils/pageZoom'
+import { readIndexCss } from './indexCssSource'
 
 // The dashboard is an application shell, not a zoomable document: pinching it
 // magnifies a `position: fixed` / `h-dvh` layout that then has no scroll axis to
@@ -16,7 +17,7 @@ import { installPageZoomSuppression } from '../utils/pageZoom'
 
 const root = join(__dirname, '..', '..')
 const html = () => readFile(join(root, 'index.html'), 'utf8')
-const css = () => readFile(join(root, 'src', 'index.css'), 'utf8')
+const css = async () => readIndexCss()
 
 describe('page zoom is off on the touch shell', () => {
   it('declares the viewport as non-scalable', async () => {

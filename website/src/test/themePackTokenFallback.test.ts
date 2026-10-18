@@ -1,8 +1,7 @@
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { describe, it, expect } from 'vitest'
 import { DESIGNED_TOKEN_FALLBACKS, buildCustomThemeCss } from '../hooks/themeCss'
 import type { CustomThemeData } from '../hooks/useTheme'
+import { readIndexCss } from './indexCssSource'
 
 /**
  * `variables.json` requires only `--bg`, `--text` and `--accent`, so a valid pack
@@ -414,7 +413,7 @@ describe('buildCustomThemeCss — tokens a pack omits are derived, not inherited
   })
 
   describe('the designed fallback set matches index.css', () => {
-    const sheet = readFileSync(resolve(__dirname, '../index.css'), 'utf-8')
+    const sheet = readIndexCss()
     // The FULL selector list, not a prefix: `:root,[data-theme="dark"]` and
     // `[data-theme="light"]` each also open an earlier shadows-only rule, and
     // matching that one would read eleven `undefined`s as agreement.

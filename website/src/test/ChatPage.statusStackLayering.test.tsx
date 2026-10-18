@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { readIndexCss } from './indexCssSource'
 
 /**
  * The composer dock is one positioned box floating over the bottom of the
@@ -116,11 +117,11 @@ describe('composer dock layering', () => {
     expect(STACK![1]).toMatch(/\bdock-inert\b/)
     expect(STACK![1]).not.toMatch(/\bpointer-events-auto\b/)
     expect(CHAT_PAGE).toMatch(/<div ref=\{inputAreaRef\} className="relative z-\d+ dock-inert">/)
-    expect(SRC('index.css')).toMatch(/\.dock-inert\{pointer-events:none\}\.dock-inert>\*\{pointer-events:auto\}/)
+    expect(readIndexCss()).toMatch(/\.dock-inert\{pointer-events:none\}\.dock-inert>\*\{pointer-events:auto\}/)
     // The stack is a scroll box: while it overflows its cap, its own scrollbar
     // must be a hit target, and a scrollbar belongs to the box, not a child. The
     // band observer marks the crossing and the stylesheet lifts the pass-through.
-    expect(SRC('index.css')).toMatch(/\.dock-inert\[data-overflowing="true"\]\{pointer-events:auto\}/)
+    expect(readIndexCss()).toMatch(/\.dock-inert\[data-overflowing="true"\]\{pointer-events:auto\}/)
     expect(SRC('pages/chat/useChatPageTranscriptController.tsx')).toMatch(/el\.dataset\.overflowing = el\.scrollHeight > el\.clientHeight \? 'true' : 'false'/)
   })
 })

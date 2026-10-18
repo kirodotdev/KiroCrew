@@ -1,9 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 
 import { SettingsButtonGroup } from '../components/settings'
+import { readIndexCss } from './indexCssSource'
 
 /**
  * SettingsButtonGroup as a segmented control.
@@ -79,7 +78,7 @@ describe('SettingsButtonGroup — segmented control', () => {
   // light theme ever gave --bg-elevated its own value, `bg-bg-accent` would be
   // a preference; while they are identical, it is a requirement.
   it('is built on the token identity that made the old track invisible', () => {
-    const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf-8')
+    const css = readIndexCss()
     // Rule-wise, not line-wise: the light themes share one comma-separated
     // selector list, so splitting on `[data-theme=` tears a single rule apart.
     const rules = [...css.matchAll(/([^{}]*)\{([^{}]*)\}/g)]

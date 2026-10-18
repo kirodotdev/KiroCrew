@@ -196,8 +196,9 @@ loads later wins — today that is the core, and every variable its default bloc
 also sets silently overrides the edition's. Nothing errors: the picker shows
 the theme, the palette stays stock.
 
-The built-in themes never hit this because their blocks live in `index.css`
-itself, after the default block — same sheet, later, wins.
+The built-in themes never hit this because their blocks live in
+`src/styles/theme-palettes.css`, which `index.css` imports after the default
+block in `src/styles/design-tokens.css` — same sheet, later, wins.
 
 Prescription: prefix the edition's theme selectors with `html`, which wins on
 specificity regardless of load order:
@@ -450,7 +451,7 @@ is **not announced**, so an interactive or gap-sized decoration degrades silentl
 through `registerTopBarWidgets` instead.
 
 **Rung thresholds are locale-measured.** The container-query breakpoints in
-`.topbar`'s ladder (`src/index.css`) are the measured content width of each
+`.topbar`'s ladder (`src/styles/shell-chrome.css`) are the measured content width of each
 readout tier plus a margin, taken through
 `website/capture/topbar-search-variants.tsx`. The base rungs are measured in one
 locale; the update-pill shift (below) is measured across every shipped locale. A
@@ -463,7 +464,7 @@ folds built-ins wherever the container rungs still leave the group overflowing.
 
 **Width budget for both top-bar seams.** The header is a three-track grid whose
 side groups are pure remainder (`minmax(0,1fr)`, no floor) — see `.topbar` in
-`src/index.css`. The actions group therefore does NOT grow to fit its contents;
+`src/styles/shell-chrome.css`. The actions group therefore does NOT grow to fit its contents;
 it gets what the window leaves after the centred search, and its built-in
 readouts give that space back through container-query rungs. Registered widgets do
 not participate in those rungs, and registered capsule segments only in the

@@ -78,7 +78,7 @@ const ALLOWLIST: ReadonlyArray<{ file: string; match: string; reason: string }> 
       + 'Horizontal, inside a fixed-width shrink-0 slot, so no size change and no reflow.',
   },
   {
-    file: 'src/index.css',
+    file: 'src/styles/scrollbars-and-touch-hit.css',
     match: '.btn-sweep:hover::after',
     reason:
       'Send-button shine: translates a ::after gradient overlay ACROSS the button. The overlay is '

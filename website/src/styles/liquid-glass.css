@@ -1,0 +1,433 @@
+/* ── Liquid-glass design system ──
+ * Two composable classes for any surface that should look like Apple-style
+ * liquid glass — file chips, sidebar, chat input, follow-up bar, etc.
+ *
+ * Usage:
+ *   <div className="glass-surface ...">         — flat glass (good for tooltips, popovers)
+ *   <div className="glass-surface glass-refract ..."> — glass with inner light refraction
+ *
+ * The two classes split because .glass-refract sets position:relative + ::before,
+ * which would clash on absolutely-positioned wrappers. Use .glass-surface alone there.
+ */
+.glass-surface {
+  /* Light mode default: faint dark tint, white top highlight, soft shadow */
+  background: linear-gradient(135deg,
+    rgba(0, 0, 0, 0.05),
+    rgba(0, 0, 0, 0.02));
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 1px 2px rgba(0, 0, 0, 0.05);
+  transition: background 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+.glass-surface:not(.glass-static):hover {
+  background: linear-gradient(135deg,
+    rgba(0, 0, 0, 0.08),
+    rgba(0, 0, 0, 0.04));
+  border-color: rgba(0, 0, 0, 0.14);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+[data-mode="dark"] .glass-surface {
+  background: linear-gradient(135deg,
+    rgba(255, 255, 255, 0.08),
+    rgba(255, 255, 255, 0.03));
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 1px 3px rgba(0, 0, 0, 0.15);
+}
+[data-mode="dark"] .glass-surface:not(.glass-static):hover {
+  background: linear-gradient(135deg,
+    rgba(255, 255, 255, 0.12),
+    rgba(255, 255, 255, 0.05));
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+/* Refraction add-on — inner light highlight via ::before. Compose with .glass-surface.
+ * Sets position:relative on the host, so don't apply this to elements that are themselves
+ * absolutely-positioned (use .glass-surface alone in that case). */
+.glass-refract {
+  position: relative;
+  overflow: hidden;
+}
+.glass-refract::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg,
+    rgba(255, 255, 255, 0.35) 0%,
+    transparent 45%);
+  pointer-events: none;
+}
+[data-mode="dark"] .glass-refract::before {
+  background: linear-gradient(180deg,
+    rgba(255, 255, 255, 0.03) 0%,
+    transparent 50%);
+}
+.glass-refract > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Settings icon tiles (SidePanelLayout `tile`): the coloured rounded square
+ * behind each Settings section icon, as macOS / iOS System Settings draw them.
+ * Fixed hues by design -- a tile is an identity mark for its section, and the
+ * same section must look the same in every theme -- with a light polarity that
+ * is a shade deeper so a white glyph keeps contrast on a white list. */
+:root {
+  --tile-fg: #fff;
+  --tile-gray: #8e8e93; --tile-blue: #0a84ff; --tile-green: #30d158; --tile-indigo: #5e5ce6;
+  --tile-orange: #ff9f0a; --tile-pink: #ff375f; --tile-purple: #bf5af2; --tile-red: #ff453a;
+  --tile-teal: #40c8e0;
+}
+[data-mode="light"] {
+  --tile-gray: #8e8e93; --tile-blue: #007aff; --tile-green: #34c759; --tile-indigo: #5856d6;
+  --tile-orange: #ff9500; --tile-pink: #ff2d55; --tile-purple: #af52de; --tile-red: #ff3b30;
+  --tile-teal: #32ade6;
+}
+
+/* Crewmate goal marks (CrewGoals `goalColor`): the numbered dot that ties a
+ * milestone to the goals it serves. A muted, dusty palette -- periwinkle,
+ * mauve, clay, sea glass, rose -- that reads as identity, not status, so it
+ * stays clear of the ok green and warn yellow. Dark mode lifts each hue;
+ * light mode deepens it so the dot holds against a white card. */
+:root {
+  --goal-1: #9aa8f5; --goal-2: #c6a3d9; --goal-3: #e3a283; --goal-4: #86c3c0; --goal-5: #e79fb4;
+}
+[data-mode="light"] {
+  --goal-1: #5867c9; --goal-2: #8e62a8; --goal-3: #b8674a; --goal-4: #3d8784; --goal-5: #b65a77;
+}
+
+/* Liquid Glass tint (components/ui/liquid-glass.tsx): the fill laid over the
+ * blurred backdrop of the composer and the mobile settings search capsule. Read
+ * from data-mode polarity like the pane shadow: light themes get a milky
+ * white so the glass reads as a lit pane, dark themes a translucent near-black
+ * so it reads as smoked glass — both keep --text legible on top. The light tint
+ * is a cool light GREY, not white: on a white page a white fill leaves the top /
+ * bottom light bands nothing to stand out from, and the grey is what makes the
+ * pane read as glass rather than a lighter card. --glass-band is the color of
+ * those two bands: near-white on the light grey, a faint white on smoked glass.
+ * The pane draws NO ring: its top and bottom are the light bands, its left and
+ * right are a 1px --glass-edge line (dark on a light page, light on smoked
+ * glass), and nothing runs around the corners — as in the reference material,
+ * two lit edges set against thin dark sides. Each lit band is backed by
+ * --glass-hairline, a half-pixel dark sliver just OUTSIDE the top and bottom
+ * edges (the reference's bands sit on a very thin dark line). --glass-edge is
+ * also the hairline for a DIVIDER inside a pane (the approval bar meeting the
+ * composer, the split chip's seam). None of these tokens has a focus form: a
+ * focused pane is the same glass as a resting one (maintainer decision -- the
+ * earlier brighter focus tint composited to ~70 over the dark page against a
+ * resting ~28 and read as a pale slab, and a side-line / shadow step read as a
+ * second material; the caret is the focus indicator on the composer). The light
+ * tint is a neutral grey, not a bluish one, at 45%: the blue cast read as dirt
+ * on a white page.
+ *
+ * The tint comes in FIVE thicknesses (components/Glass.tsx `thickness`, issue
+ * #16299): `--glass-tint-ultrathin` … `--glass-tint-ultrathick`, one ladder on
+ * which blur (owned by Glass.tsx: 2 / 4 / 8 / 14 / 28px) and tint move together.
+ * `thin` is the pre-ladder recipe and the default. Each step's colour is chosen
+ * so a pane over the plain page keeps the SAME overall colour as thin (light:
+ * #f8f8f8 over white): `c = page + (c_thin - page) * (a_thin / a)` per channel,
+ * anchored on `--bg` (#12141a) in dark and on white in light. `--glass-tint`
+ * itself is the step the host wears (`.glass-<step>` below, `thin` on :root), and
+ * the modifier steps further down mix INTO `--glass-tint-step`, the host's own
+ * plain step tint, so an accent chip on a thick pane is a thick accent.
+ * `--glass-band-plain` is the band's own plain value for the same reason: the
+ * hue modifiers mix into it and set `--glass-band`, so the lit edges of a
+ * tinted pane are lit in the pane's hue. A white band on a purple pane read as
+ * a white frame around it, not as light (issue #18314). */
+:root {
+  --glass-tint-ultrathin: rgba(34, 33, 37, 0.30);
+  --glass-tint-thin: rgba(30, 30, 34, 0.40);
+  --glass-tint-regular: rgba(28, 28, 32, 0.50);
+  --glass-tint-thick: rgba(26, 27, 31, 0.60);
+  --glass-tint-ultrathick: rgba(24, 25, 30, 0.78);
+  --glass-tint-step: var(--glass-tint-thin);
+  --glass-tint: var(--glass-tint-thin);
+  --glass-band-plain: rgba(255, 255, 255, 0.22); --glass-band: var(--glass-band-plain); --glass-edge: rgba(255, 255, 255, 0.14); --glass-hairline: rgba(0, 0, 0, 0.50);
+}
+[data-mode="light"] {
+  --glass-tint-ultrathin: rgba(236, 236, 236, 0.35);
+  --glass-tint-thin: rgba(240, 240, 240, 0.45);
+  --glass-tint-regular: rgba(243, 243, 243, 0.55);
+  --glass-tint-thick: rgba(245, 245, 245, 0.65);
+  --glass-tint-ultrathick: rgba(247, 247, 247, 0.82);
+  --glass-band-plain: rgba(255, 255, 255, 1); --glass-band: var(--glass-band-plain); --glass-edge: rgba(0, 0, 0, 0.24); --glass-hairline: rgba(0, 0, 0, 0.20);
+}
+/* The step a pane wears, set on the host by Glass.tsx. Both tokens are set so a
+ * modifier below (also on the host) can mix into `--glass-tint-step` while
+ * replacing `--glass-tint`: a property may read a sibling on the same element,
+ * never itself. */
+.glass-ultrathin { --glass-tint-step: var(--glass-tint-ultrathin); --glass-tint: var(--glass-tint-ultrathin); }
+.glass-thin { --glass-tint-step: var(--glass-tint-thin); --glass-tint: var(--glass-tint-thin); }
+.glass-regular { --glass-tint-step: var(--glass-tint-regular); --glass-tint: var(--glass-tint-regular); }
+.glass-thick { --glass-tint-step: var(--glass-tint-thick); --glass-tint: var(--glass-tint-thick); }
+.glass-ultrathick { --glass-tint-step: var(--glass-tint-ultrathick); --glass-tint: var(--glass-tint-ultrathick); }
+
+/* Tint steps for a Liquid Glass pane (components/Glass.tsx). Every surface in
+ * the composer dock — the composer, the follow-up chips, the tip / suggestion /
+ * question cards, the memory chip, the jump-to-bottom button, the status bars
+ * and queue cards above the box — is the SAME primitive rendered as its own
+ * element, so there is no CSS copy of the
+ * material. What a call site says is only WHICH tint step its pane is on:
+ * `glass-accent` (a picked chip, an attached card, a progress bar) and
+ * `glass-warn` (the incognito chip, a queued message) and `glass-danger` (the
+ * top-bar readout capsule while the gateway is offline) mix a hue INTO the glass
+ * tint so the pane stays a glass, and
+ * `glass-hover` brightens an interactive pane a step on hover, as the old chip
+ * border-color change did, and `glass-faded` thins the tint to 55% for a pane
+ * that recedes (a silenced notification row, the edges of a collapsed stack,
+ * the blank shells behind a banner deck). Recession is a TINT step and never
+ * `opacity` on the host: an ancestor with opacity < 1 is a backdrop root, so
+ * the pane's own backdrop-filter layers would have nothing to sample and the
+ * glass would turn into a flat, unblurred wash. Each step is a `--glass-tint` swap on the host: the
+ * primitive's frost box reads the token, so the pane repaints without a rule
+ * of its own. The mix is computed ON THE HOST from `--glass-tint-step` -- the
+ * plain tint of the thickness the host wears (set by `.glass-<step>` above,
+ * `thin` on :root) -- so the hue lands on the pane's own thickness, and a
+ * property reads a sibling token rather than itself. These rules follow the
+ * step classes so that, at equal specificity, the modifier's `--glass-tint`
+ * wins on a host carrying both.
+ *
+ * A HUE modifier also tints the light bands: the same hue at the same share,
+ * mixed into `--glass-band-plain` (the polarity's plain band) and set as
+ * `--glass-band`, which the primitive paints as the 1px crisp core and the
+ * specular gradient along the top and bottom edges. Light through tinted
+ * glass carries the tint; a band left pure white framed an accent pane in a
+ * white line in light mode and washed its edge grey in dark (issue #18314).
+ * The neutral steps (`glass-hover`, `glass-faded`) leave the band alone. */
+.glass-accent { --glass-tint: color-mix(in srgb, var(--accent) 14%, var(--glass-tint-step)); --glass-band: color-mix(in srgb, var(--accent) 14%, var(--glass-band-plain)); }
+.glass-faded { --glass-tint: color-mix(in srgb, var(--glass-tint-step) 55%, transparent); }
+.glass-warn { --glass-tint: color-mix(in srgb, var(--warn) 12%, var(--glass-tint-step)); --glass-band: color-mix(in srgb, var(--warn) 12%, var(--glass-band-plain)); }
+.glass-danger { --glass-tint: color-mix(in srgb, var(--danger) 12%, var(--glass-tint-step)); --glass-band: color-mix(in srgb, var(--danger) 12%, var(--glass-band-plain)); }
+.glass-hover:hover { --glass-tint: color-mix(in srgb, var(--text) 8%, var(--glass-tint-step)); }
+
+/* Warn-hued text on a `glass-warn` pane (the queued-message card, the memory
+ * mode chip): the same `--warn-text` token the `text-warn-text` utility paints
+ * on `bg-warn-subtle` / `bg-warn/N` fills (see the token's note next to
+ * `--shadow-float`; issues #19920, #20071). glassWarnTextContrast.test.ts
+ * measures every light palette against it and refuses a `glass-warn` pane or a
+ * warn-tinted fill that still paints plain `text-warn`. */
+.glass-warn-fg { color: var(--warn-text); }
+
+/* The context shelf (agent, project, branch, model chips) sits BELOW the glass
+ * pane, on the bare transcript, and the dock floats over content, so a chip
+ * label read against whatever scrolled under it. The shelf stands on a scrim:
+ * nothing at the pane's bottom edge, the page colour (`--bg`) solid 6px below
+ * it, so the chips sit on plain page and the glass above them stays glass. The
+ * ramp is that short on purpose: a 60% ramp left the strip's top third
+ * see-through, and a message bubble's edge scrolling under it showed as a
+ * faint line a few pixels below the pane -- read as a reflection of the pane's
+ * own bottom edge. 6px covers the pane's hairline and the start of its shadow
+ * (which paints OVER this layer, see below) and nothing else. It is a `::before` at `z-index: -1` in the dock's
+ * input-area stacking context (ComposerDockView's `relative z-10 dock-inert` wrapper),
+ * NOT in one of the shelf's own: that puts the fade BEHIND the pane and its
+ * `.glass-shadow`, so the shadow falls onto the solid strip the way it fell
+ * onto the page, instead of being whitened out part-way down and leaving a
+ * bright band under the pane that reads as a reflection. It still paints above
+ * the transcript (the dock root is above the scroller) and below the chips,
+ * spanning the whole dock width, so the fade has no visible side edge, and
+ * stops where the dock root stops — short of the scroller's reserved scrollbar
+ * column, so the thumb stays uncovered down to the page's bottom edge. The
+ * shelf is deliberately NOT positioned: the `::before` takes that same wrapper
+ * as its containing block, and ChatInput hands it the shelf's border-box
+ * height as `--glass-shelf-h` so it can start at the pane's bottom edge; the
+ * extra 4px is the input-area's own bottom padding below the shelf. */
+.glass-shelf::before { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: calc(var(--glass-shelf-h, 32px) + 4px); background: linear-gradient(to bottom, transparent, var(--bg) 6px); z-index: -1; pointer-events: none; }
+
+/* Neutral rest shadow for EVERY glass pane — the session composer, the mobile
+ * Settings capsule, the tip / suggestion / question cards. Offset-free spread,
+ * and the SAME shadow whether or not a control inside the pane has focus: the
+ * material does not change on focus at all -- no accent glow, no brighter
+ * tint, no darker side lines, no deeper shadow (maintainer decision; each of
+ * those was tried and each read as a second, whiter box on the transcript).
+ * The focus indicator on the composer is the caret; on a glass button it is
+ * the app's own `:focus-visible` ring. The composer's old accent halo and its
+ * accent wrapper border are gone.
+ * Where the material is solidified (the three fallback blocks at the end of
+ * this file, and the user's Reduce-glass-transparency switch) none of these
+ * layers paint; a solid pane wears the app's 1px --border outline like every
+ * card did before the glass -- one token, the same on the composer and on a
+ * chip, unchanged on focus. */
+.glass-shadow { box-shadow: 0 0 18px rgba(0, 0, 0, 0.06); transition: box-shadow 0.18s ease; }
+[data-mode="dark"] .glass-shadow { box-shadow: 0 0 18px rgba(0, 0, 0, 0.30); }
+/* A pending approval swaps the pane's shadow for the warm glow. */
+.glass-shadow.approval-glow { box-shadow: var(--approval-shadow); }
+
+/* The composer dock's two wrapper boxes (ComposerDockView.tsx) span the pane but hold
+   nothing of their own: every child is its own content column. The wrappers
+   pass input through and each child catches it, so the empty width beside the
+   column, and the scrollbar gutter, reach the transcript underneath. One rule
+   rather than a class per child, so a bar added to the dock later is covered.
+   The status stack is itself a scroll box (`max-h-[50svh] overflow-y-auto`):
+   while it overflows, its own scrollbar has to be a hit target, and a
+   scrollbar belongs to the box, not to a child, so the dock's measure marks
+   the overflowing stack (`data-overflowing`, useChatPageTranscriptController.tsx) and it catches input
+   as a whole for exactly that stretch. */
+.dock-inert{pointer-events:none}.dock-inert>*{pointer-events:auto}
+.dock-inert[data-overflowing="true"]{pointer-events:auto}
+
+/* File-diff chips (FileChangeChips.tsx): flatter edge — no top highlight or
+ * refraction, just a hairline border. Composes with .glass-surface (keeps the
+ * themed background + blur). Placed after the .glass-surface rules so it wins on
+ * equal specificity; mirrored per-theme to override the dark/light glass shadows. */
+.file-chip {
+  border-color: rgba(0, 0, 0, 0.06);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+.file-chip:not(.glass-static):hover {
+  border-color: rgba(0, 0, 0, 0.10);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+[data-mode="dark"] .file-chip {
+  border-color: rgba(255, 255, 255, 0.05);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+[data-mode="dark"] .file-chip:not(.glass-static):hover {
+  border-color: rgba(255, 255, 255, 0.09);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+/* ── No-backdrop-filter fallback (issue #1817) ──
+ * Every glass surface gets ALL of its real opacity from backdrop-filter: the
+ * background tints are 3-8% alpha (.glass-surface) or a transparent color-mix
+ * (.topbar-glass, .notif-material). Where the engine does not support the
+ * property — older Chromium/Electron builds where it was flag-gated, or Linux
+ * builds compiled without it — the blur declaration is dropped at parse time
+ * and only the near-invisible tint remains, i.e. a transparent panel
+ * (issue #1817, Linux AppImage).
+ *
+ * Mirror of the prefers-reduced-transparency fallback below so there is ONE
+ * degradation story: solid themed background, borders/shadows untouched so
+ * panels stay delimited. !important is required — the dark-theme and :hover
+ * glass rules outrank these selectors on specificity, and Tailwind hover
+ * utilities outrank .notif-material — and it matches the a11y overrides,
+ * which stay later in source order so they still win when both apply.
+ * Test BOTH prefixes: Electron/Chromium historically supported one or the
+ * other. Scoped to the glass classes: platforms with working backdrop-filter
+ * never match this query and keep the glass look. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .topbar-glass,.glass-surface{ background:var(--bg) !important }
+  /* The Liquid Glass pane (components/ui/liquid-glass.tsx) solidifies to the
+     elevated surface and drops its effect layers, so the composer and the
+     Settings capsule keep an opaque, delimited box. */
+  .liquid-glass{ background:var(--bg-elevated) !important }
+  .liquid-glass{ outline:1px solid var(--border) !important; outline-offset:-1px }
+  .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:2px !important }
+  /* The solid fill above is the host's own background (the tint layer is
+     hidden with the rest), so the picked chip and the incognito chip re-assert
+     their hue on the solid surface. */
+  .liquid-glass.glass-accent{ background:color-mix(in srgb, var(--accent) 14%, var(--bg-elevated)) !important }
+  .liquid-glass.glass-warn{ background:color-mix(in srgb, var(--warn) 12%, var(--bg-elevated)) !important }
+  .liquid-glass.glass-danger{ background:color-mix(in srgb, var(--danger) 12%, var(--bg-elevated)) !important }
+  .liquid-glass>[data-liquid-glass-layer]{ display:none !important }
+  /* Floating notification panes (the banner, the bell popover's rows) sit OVER
+     page content, so they solidify to the card color, not the page background.
+     They are Glass panes too, so this rule follows `.liquid-glass` and wins. */
+  .notif-material{ background:var(--card) !important }
+}
+
+/* ── TIER1 a11y: reduced motion / transparency / contrast ── */
+@media (prefers-reduced-motion: reduce){
+  /* 0s, NOT the widely-copied 0.01ms. `transition-property` defaults to `all`,
+     so a NON-ZERO duration on `*` MANUFACTURES a transition on every animatable
+     property of every element — including elements that declare none. A
+     transition samples the OLD value on its first frame, so from then on the
+     USED value trails the SPECIFIED value by one frame.
+
+     That cost the chat transcript its stability. The virtualizer writes a
+     spacer height in the SAME commit that mounts a row, so with a manufactured
+     height transition the new row and the space still reserved for it both
+     counted for one frame: `scrollHeight` jumped by that row's own height
+     (measured 160-2228px) and Chromium's scroll anchoring — the scroller is
+     `overflow-anchor:auto`, the spacers are `none` — shoved `scrollTop` by up
+     to 602px before releasing it the next frame. Users reported it as the
+     transcript "jumping between two locations" and as a mid-transcript
+     "gravity well" that rubber-bands a reader back. A frame-resolution probe
+     measured 0 such events with motion enabled and 4-6 per scroll gesture
+     under reduce, and neutralising ONLY `.vc-spacer-skeleton`'s transition
+     took it to 0 with reduce still on.
+
+     A combined duration of 0s means no transition starts, so `transitionend`
+     never fires. Nothing here depends on that: PinnedPrompt owns the app's
+     only `transitionend` listener and it returns before installing one under
+     reduced motion. The repo's own screenshot harnesses already freeze motion
+     with `transition-duration: 0s !important`.
+
+     The index.css `animation-duration:0.01ms` rule is NOT the same hazard and
+     stays as it is: `animation-name` defaults to `none`, so a duration alone
+     cannot create an animation where none was declared. */
+  *,*::before,*::after{ transition-duration:0s !important; scroll-behavior:auto !important }
+}
+/* Solidified panes get one hairline of --border (an outline, so nothing shifts):
+   the material's edges -- side lines, bands, hairlines -- live in the hidden
+   layers, so a solid pane has no edge of its own, and on a light page a white
+   card on a white page simply vanished (the follow-up chips read as bare text).
+   The same --border token every card wore before the glass, on the composer
+   and on a chip alike, unchanged on focus-within (a pane does not change on
+   focus in any mode; the caret is the indicator).
+   The pane outline is `!important`, so the app's keyboard ring (`:focus-visible`
+   in @layer base) would lose to it on the glass BUTTONS -- the follow-up chips,
+   the memory chip, the jump-to-bottom pill -- and a Tabbed chip would paint
+   like an unfocused one; each solid block therefore re-asserts that same
+   global ring on `.liquid-glass:focus-visible`. It is the app's existing ring,
+   not a glass cue: in glass mode those buttons already wear it. The same lines
+   are in the @supports-not block above and the mirror block below. */
+@media (prefers-reduced-transparency: reduce){
+  .topbar-glass,.glass-surface{ backdrop-filter:none !important; -webkit-backdrop-filter:none !important }
+  .topbar-glass,.glass-surface{ background:var(--bg) !important }
+  .liquid-glass{ background:var(--bg-elevated) !important }
+  .liquid-glass{ outline:1px solid var(--border) !important; outline-offset:-1px }
+  .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:2px !important }
+  .liquid-glass.glass-accent{ background:color-mix(in srgb, var(--accent) 14%, var(--bg-elevated)) !important }
+  .liquid-glass.glass-warn{ background:color-mix(in srgb, var(--warn) 12%, var(--bg-elevated)) !important }
+  .liquid-glass.glass-danger{ background:color-mix(in srgb, var(--danger) 12%, var(--bg-elevated)) !important }
+  .liquid-glass>[data-liquid-glass-layer]{ display:none !important }
+}
+/* The same rules, on the user's own switch (Settings -> Display -> View ->
+   "Translucent panels", opt-in: `data-reduce-transparency="on"` is the DEFAULT, set by
+   utils/liquidGlass.ts and by the index.html bootstrap until the user turns
+   the glass on, so a fresh browser renders solid cards). A media query
+   and an attribute cannot share one selector, so the block above is mirrored
+   line for line here; ChatInput.liquidGlass.test.tsx pins that the two bodies
+   are identical, so a rule added to one cannot be forgotten in the other. The
+   mirror is wrapped in `@media not (prefers-contrast: more)`: its prefixed
+   selectors outrank the contrast block's, and a user with both would otherwise
+   lose the high-contrast --text pane edge to the weaker --border one. */
+@media not (prefers-contrast: more){
+  html[data-reduce-transparency="on"] .topbar-glass,html[data-reduce-transparency="on"] .glass-surface{ backdrop-filter:none !important; -webkit-backdrop-filter:none !important }
+  html[data-reduce-transparency="on"] .topbar-glass,html[data-reduce-transparency="on"] .glass-surface{ background:var(--bg) !important }
+  html[data-reduce-transparency="on"] .liquid-glass{ background:var(--bg-elevated) !important }
+  html[data-reduce-transparency="on"] .liquid-glass{ outline:1px solid var(--border) !important; outline-offset:-1px }
+  html[data-reduce-transparency="on"] .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:2px !important }
+  html[data-reduce-transparency="on"] .liquid-glass.glass-accent{ background:color-mix(in srgb, var(--accent) 14%, var(--bg-elevated)) !important }
+  html[data-reduce-transparency="on"] .liquid-glass.glass-warn{ background:color-mix(in srgb, var(--warn) 12%, var(--bg-elevated)) !important }
+  html[data-reduce-transparency="on"] .liquid-glass.glass-danger{ background:color-mix(in srgb, var(--danger) 12%, var(--bg-elevated)) !important }
+  html[data-reduce-transparency="on"] .liquid-glass>[data-liquid-glass-layer]{ display:none !important }
+}
+@media (prefers-contrast: more){
+  .glass-surface,.topbar-glass{ background:var(--bg) !important; border:1px solid var(--text) !important }
+  .liquid-glass{ background:var(--bg-elevated) !important }
+  /* The material draws no edge, so contrast mode gives every pane one (an
+     outline: no layout shift). The picked chip and the incognito chip keep their
+     own color, or the pane edge erases the only property that tells them apart. */
+  .liquid-glass{ outline:1px solid var(--text) !important; outline-offset:-1px }
+  .liquid-glass.glass-accent{ outline-color:var(--accent) !important }
+  .liquid-glass.glass-warn{ outline-color:var(--warn) !important }
+  .liquid-glass.glass-danger{ outline-color:var(--danger) !important }
+  /* The pane outline above is !important, so it would beat the base-layer
+     :focus-visible ring on the chips / memory chip / jump button, which are
+     glass buttons; keyboard focus re-asserts the ring inside the same block. */
+  .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:2px !important }
+  :root{ --glass-edge:var(--text) }
+  .liquid-glass>[data-liquid-glass-layer]{ display:none !important }
+}
+

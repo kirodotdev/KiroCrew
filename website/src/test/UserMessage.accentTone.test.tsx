@@ -15,16 +15,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render } from '@testing-library/react'
 import React from 'react'
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { dirname, resolve } from 'node:path'
 import UserMessage from '../pages/chat/UserMessage'
 import { mergeRenderers, resolveRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import type { ChatMessage } from '../types'
+import { readIndexCss } from './indexCssSource'
 
-const HERE = dirname(fileURLToPath(import.meta.url))
-const INDEX_CSS = readFileSync(resolve(HERE, '..', 'index.css'), 'utf8')
+const INDEX_CSS = readIndexCss()
 
 const bubbleOf = (container: HTMLElement) => container.querySelector('.message-bubble.msg-content') as HTMLElement
 

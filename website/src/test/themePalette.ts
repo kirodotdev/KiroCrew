@@ -27,10 +27,9 @@
  * scrollbarThumbContrast.test.ts anchors the fix with a banner-prefixed theme,
  * alongside the compound-list case.
  */
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readIndexCss } from './indexCssSource'
 
-export const CSS = readFileSync(resolve(__dirname, '../index.css'), 'utf8')
+export const CSS = readIndexCss()
 
 /** Top-level rules, in document order: `[selector list] { decls }`. Comments are
  *  stripped first so a section banner on the line above a block cannot be swept

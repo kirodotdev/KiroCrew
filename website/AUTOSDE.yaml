@@ -71,7 +71,7 @@ custom-rules:
     rule: |
       Use CSS custom property design tokens instead of hardcoded Tailwind color classes. Hardcoded colors break dark/light theme switching.
 
-      Use the semantic tokens defined in `index.css` and mapped in `src/tailwind-theme.css`:
+      Use the semantic tokens defined in `src/styles/design-tokens.css` and mapped in `src/tailwind-theme.css`:
       - `bg-[var(--bg)]`, `bg-[var(--card)]` instead of `bg-gray-900`
       - `text-[var(--text)]`, `text-[var(--muted)]` instead of `text-gray-400`
       - `border-[var(--border)]` instead of `border-gray-700`
@@ -441,7 +441,7 @@ custom-rules:
       - Layout animations (`layout` prop)
       - Spring physics and gesture-driven motion
 
-      Existing CSS keyframe animations defined in `src/index.css` (`animate-rise`,
+      Existing CSS keyframe animations defined in `src/index.css` and its `src/styles/` partials (`animate-rise`,
       `animate-shimmer` and the others there) are grandfathered, as is CSS animation
       inside an `iframe` `srcdoc` document, where Framer Motion cannot run.
 

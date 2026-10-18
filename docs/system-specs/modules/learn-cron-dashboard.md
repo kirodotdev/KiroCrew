@@ -4680,7 +4680,7 @@ external changes immediately.
 
 React 18 + TypeScript + Vite 8 + Redux Toolkit + React Router v7 + Tailwind CSS 4 + DOMPurify. Source in `website/`, builds to `src/kiro_crew/static/dist/`.
 
-**Styling** — Tailwind CSS 4, configured in CSS: `website/src/tailwind-theme.css` bridges every utility to a runtime token (`--color-accent: var(--accent)`, …) and declares the variants and safe-area utilities; `website/src/index.css` imports it, lists the `@source` scan and defines the CSS custom properties (design tokens) for dark/light themes. `@custom-variant dark ([data-theme="dark"] …)` drives the Tailwind `dark:` variant off the `data-theme` attribute. Tailwind utility classes used throughout components (no separate CSS files per component). Compiled by `@tailwindcss/vite`; no PostCSS. Theme toggle smoothly crossfades via `transition: background-color .25s, color .25s` on `body`.
+**Styling** — Tailwind CSS 4, configured in CSS: `website/src/tailwind-theme.css` bridges every utility to a runtime token (`--color-accent: var(--accent)`, …) and declares the variants and safe-area utilities; `website/src/index.css` imports it, lists the `@source` scan, holds the `@layer base` element defaults and imports every other rule from the `website/src/styles/` partials in cascade order (one `@import` per partial; the import order is the cascade order); `website/src/styles/design-tokens.css` and `website/src/styles/theme-palettes.css` define the CSS custom properties (design tokens) for dark/light themes. `@custom-variant dark ([data-theme="dark"] …)` drives the Tailwind `dark:` variant off the `data-theme` attribute. Tailwind utility classes used throughout components (no separate CSS files per component). Compiled by `@tailwindcss/vite`; no PostCSS. Theme toggle smoothly crossfades via `transition: background-color .25s, color .25s` on `body`.
 
 **Design tokens** — All colors use CSS custom properties mapped in `website/src/tailwind-theme.css`:
 - Core: `--bg`, `--card`, `--text`, `--muted`, `--border`, `--accent` (amber/orange)
@@ -4689,7 +4689,7 @@ React 18 + TypeScript + Vite 8 + Redux Toolkit + React Router v7 + Tailwind CSS 
 - Clarify: `--clarify` / `--clarify-subtle` (amber) — used for task refine Q&A box
 - Diff: `--diff-add/del/hunk/meta` — theme-aware diff colors for MarkdownRenderer
 
-**CSS utilities** — Defined in `index.css`, used across components:
+**CSS utilities** — Defined in the `website/src/styles/` partials (`shell-chrome.css`, `focus-and-state-cues.css`, `scrollbars-and-touch-hit.css`, `chat-transcript.css`), used across components:
 - `.topbar-glass` — frosted glass effect (`backdrop-filter: blur(12px) saturate(1.4)`) on topbar
 - `.scroll-shadow` — gradient mask fade at top/bottom of scrollable panels
 - `.table-striped` — alternating row backgrounds via `nth-child(even)`
@@ -4798,7 +4798,7 @@ through the debounce; the reader's row, captured render-phase before the cold
 owner's estimate spacer committed, is paid back in the re-render that follows.
 Unmounted rows retain only their own width's measurements.
 
-**Syntax highlighting** — `highlight.js` (tree-shaken: js/ts/py/bash/json/yaml/html/css/sql/rust/java/md). An edition can add languages through the highlighting-languages data module (see [extension seams](../../../website/docs/extension-seams.md#highlighting-languages-a-data-module-not-a-registrar)). Custom One Dark / One Light theme in `index.css` using design tokens. `hljs.highlight()` for known languages, `hljs.highlightAuto()` for unknown. Output sanitized via DOMPurify.
+**Syntax highlighting** — `highlight.js` (tree-shaken: js/ts/py/bash/json/yaml/html/css/sql/rust/java/md). An edition can add languages through the highlighting-languages data module (see [extension seams](../../../website/docs/extension-seams.md#highlighting-languages-a-data-module-not-a-registrar)). Custom One Dark / One Light theme in `website/src/styles/focus-and-state-cues.css` using design tokens. `hljs.highlight()` for known languages, `hljs.highlightAuto()` for unknown. Output sanitized via DOMPurify.
 
 **Pierre worker cache identity**: a same-origin worker takes its CSP from its own cached response header, so every worker URL carries the build identity: `workerUrlWithBuildKey` (`website/src/utils/workerCacheKey.ts`) appends `?v=__APP_VERSION__` at each construction site (`pierre/PierreImpl.tsx`, `pierre/diffOffThread.ts`, `utils/highlightClient.ts`). The gateway serves worker scripts under a short-lived cache policy rather than the year-long `immutable` of an ordinary hashed chunk (`_asset_cache_control` in `dashboard/server.py`), and the per-build query makes a distinct cache key, so a browser leaves behind a worker it holds under `immutable` from an older build instead of replaying that build's headers. Vite's content hashing is untouched: only a query suffix is added, and the request obtains the current headers without clearing cookies, drafts, or other cached assets. The gateway policy and bounded WASM engine are unchanged; JavaScript `unsafe-eval` remains disallowed.
 

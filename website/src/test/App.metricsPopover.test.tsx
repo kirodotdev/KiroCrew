@@ -19,6 +19,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { compile } from '@tailwindcss/node'
 import { renderWithProviders } from './helpers'
+import { readIndexCss } from './indexCssSource'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => null }))
@@ -604,7 +605,7 @@ describe('top-bar metrics control — collapsed band opens a popover', () => {
 describe('collapsed-band metrics glyph against theme accent overrides', () => {
   const WEBSITE = join(__dirname, '..', '..')
   const source = readFileSync(join(WEBSITE, 'src', 'shell', 'topbar', 'metricsReadout.tsx'), 'utf8')
-  const indexCss = readFileSync(join(WEBSITE, 'src', 'index.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+  const indexCss = readIndexCss().replace(/\/\*[\s\S]*?\*\//g, '')
 
   it('mutes the unpinned glyph with a rule no theme `.text-accent` override can beat', async () => {
     const overrides = indexCss.match(/\[data-theme="[^"]+"\]\s+\.text-accent\{color:[^}]*\}/g) ?? []

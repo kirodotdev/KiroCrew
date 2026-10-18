@@ -15,14 +15,13 @@
  *   5. it pulses with the shared `animate-pulse` utility, which the global
  *      reduced-motion reset leaves on its solid frame.
  */
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { readIndexCss } from './indexCssSource'
 import { sseSubagentQueued, sseSubagentSpawn } from '../store/chatSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 
@@ -229,7 +228,7 @@ describe('chat sidebar — live dot on the session name', () => {
 })
 
 describe('chat sidebar — live dot styling', () => {
-  const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf-8')
+  const css = readIndexCss()
 
   it('is an accent disc that claims none of the row chrome', () => {
     const rule = /\.session-live-dot\{([^}]*)\}/.exec(css)

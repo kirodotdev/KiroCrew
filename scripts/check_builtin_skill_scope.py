@@ -53,7 +53,7 @@ it could not read ships the one file nobody scanned.
 ## Known limit, on purpose
 
 Repository paths OUTSIDE the four classes are not caught -- ``website/src/
-index.css`` and ``docs/system-specs/...`` are as checkout-only as
+styles/theme-palettes.css`` and ``docs/system-specs/...`` are as checkout-only as
 ``src/kiro_crew/``, and ``theme-pack-authoring`` legitimately cites the first one
 today. Widening the set means fixing those references in the same breath, which is
 a content change with its own argument to make; this gate covers the four shapes

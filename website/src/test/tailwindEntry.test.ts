@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { readIndexCss } from './indexCssSource'
 
 /**
  * The shape of the Tailwind entry in `src/index.css` is load-bearing, and the
@@ -27,11 +28,14 @@ const css = readFileSync(join(__dirname, '..', 'index.css'), 'utf8')
  *  not read as the import itself. (Not for the `@source` globs: `**\/*` inside
  *  their quoted strings looks like a comment opener to this regex.) */
 const directives = css.replace(/\/\*[\s\S]*?\*\//g, '')
+/** The same over the whole stylesheet, the entry with every partial spliced in:
+ *  a stock import in a partial is the same defect as one in the entry. */
+const sheetDirectives = readIndexCss().replace(/\/\*[\s\S]*?\*\//g, '')
 
 describe('Tailwind entry (src/index.css)', () => {
   it('emits the utilities unlayered, never through the stock `@import "tailwindcss"`', () => {
-    expect(directives).not.toMatch(/@import\s+["']tailwindcss["']/)
-    expect(directives).not.toMatch(/@import\s+["']tailwindcss\/utilities(?:\.css)?["']/)
+    expect(sheetDirectives).not.toMatch(/@import\s+["']tailwindcss["']/)
+    expect(sheetDirectives).not.toMatch(/@import\s+["']tailwindcss\/utilities(?:\.css)?["']/)
     expect(directives).toMatch(/^@tailwind utilities source\(none\);$/m)
   })
 

@@ -18,10 +18,9 @@
  * computed representation to read even if it did.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readIndexCss } from './indexCssSource'
 
-const CSS = readFileSync(resolve(__dirname, '../index.css'), 'utf8')
+const CSS = readIndexCss()
 
 /** Every class whose thumb is revealed ONLY by `:hover` — the pattern's members. */
 const HOVER_ONLY = [...CSS.matchAll(/\.([a-zA-Z0-9_-]+):hover::-webkit-scrollbar-thumb\{/g)].map(m => m[1])

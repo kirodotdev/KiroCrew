@@ -1175,7 +1175,7 @@ newest attempt), so the panel reads each turn's `ordinal`, `phase`, `blocks` and
 carries neither billing nor a whole-window estimate, because a per-turn "what was
 sent" view mixed with cumulative window occupancy and billing read as one quantity
 when it was three. Fills come from the
-`--ctx-cat-*` theme tokens (`website/src/index.css`), so the bands stay legible
+`--ctx-cat-*` theme tokens (`website/src/styles/design-tokens.css`), so the bands stay legible
 in light and dark themes alike.
 `handlers/telemetry.py::api_context_trace`
 serves it as `GET /api/telemetry/context-trace?slot=<session key>` (`400` when

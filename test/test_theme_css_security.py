@@ -351,7 +351,14 @@ class TestAllowlistParity:
         documented exclusion set above.
         """
         css_path = Path(__file__).resolve().parents[1] / "website" / "src" / "index.css"
-        css = css_path.read_text(encoding="utf-8")
+        # The theme blocks live in the styles/*.css partials index.css imports;
+        # each partial is spliced in at its @import line, in cascade order.
+        css = re.sub(
+            r'^@import "\./(styles/[\w-]+\.css)";\n',
+            lambda m: (css_path.parent / m.group(1)).read_text(encoding="utf-8"),
+            css_path.read_text(encoding="utf-8"),
+            flags=re.M,
+        )
         blocks = re.findall(r'\[data-theme="[^"]+"\]\s*\{(.*?)\}', css, flags=re.DOTALL)
         assert blocks, "no [data-theme] blocks parsed out of index.css"
         set_vars: set[str] = set()

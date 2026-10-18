@@ -148,7 +148,6 @@
 2208 website/src/apps/issue-radar/api.ts
 2592 website/src/apps/md-notebook/MdNotebookPage.tsx
 2567 website/src/apps/mochi/src/renderer/ChatPanel.tsx
-4065 website/src/index.css
 2125 website/src/pages/AppDetailPage.tsx
 2117 website/src/pages/chat/SidePanel.tsx
 2026 website/src/pages/connections/ConnectionsPage.tsx

@@ -98,7 +98,7 @@ text label, keeps `HOVER_NONE_ACTION_BTN_CLS` / `HOVER_NONE_ACTIONS_ROW_CLS` and
 square, and an always-visible icon control takes `mc-touch-hit` (next entry).
 
 **An always-visible icon control gets its 44px from `mc-touch-hit`, not from padding.** The
-`mc-touch-hit` / `mc-touch-hit-y` / `mc-touch-hit-end` classes (`index.css`, the block after
+`mc-touch-hit` / `mc-touch-hit-y` / `mc-touch-hit-end` classes (`src/styles/scrollbars-and-touch-hit.css`, the block after
 the `.scrollbar-overlay` coarse rule) add an invisible `::after` that extends only the hit
 area to 44px on each axis where the control is smaller, so drawn size and layout do not
 change; use them on header, top-bar and row kebabs, toggles and split-button segments (`-y`
@@ -129,7 +129,7 @@ Pinching magnifies a `position: fixed` / `h-dvh` layout whose scrollers are all
 visual viewport: topbar, composer and drawer leave at once and only a second pinch
 brings them back. Three mechanisms enforce it because no single one covers every
 engine — `maximum-scale=1, user-scalable=no` in `index.html` (Blink, Gecko), a root
-`html { touch-action: pan-x pan-y }` under `@media (pointer: coarse)` in `index.css`
+`html { touch-action: pan-x pan-y }` under `@media (pointer: coarse)` in `src/styles/highlights-and-page-zoom.css`
 (Blink's pinch and double-tap paths), and cancelling Safari's `gesturestart` in
 `utils/pageZoom.ts` (WebKit has ignored the viewport zoom keys for user gestures
 since iOS 10). Pointer-fine devices are untouched: ctrl+wheel and the trackpad pinch
@@ -283,7 +283,7 @@ gesture:
 | centre (`minmax(0,1fr)`) | `pages/chat/page/SessionsSidebarChrome.tsx` through `pages/chat/page/MobileTopBar.tsx`, by `createPortal` into `#mobile-topbar-slot` | sessions toggle, then ONE control that is the session title with the menu chevron flush after it (`ChatHeaderMenu` `triggerLabel`); Rename and Regenerate title are items of that menu (`SessionActionsMenu` `onRename` / `onAutoTitle`), and it leads with "New chat in {folder}" (`ChatHeaderMenu` `newSessionHere`), which opens a sibling session in the on-screen session's folder with that folder's agent and project, and Rename swaps in the shared title editor. That menu leaves out its pop-out / focus-popped-out rows here (`omitPopout`): the trailing ⋯ menu is the phone's window menu and carries them, and the same row in two adjacent menus read as two different actions. Nothing else: the inline row's `InboundLinkChip` would be a third control, so a two-way link's actions are read from the session menu's Linked surfaces section |
 | trailing (`auto`, `.tb-trail`) | `shell/topbar/shellHeader.tsx`, plus the same `MobileTopBar`'s portal into `#mobile-topbar-trail-slot` | exactly two: the bell, then the page's overflow menu (update when pending, pop out or focus the popped-out window, activity panel, split view). The update row reads `<status> — Open update settings`: a menu row is read as an action, and the row only navigates to Settings › About, so it names that outcome instead of implying a download or restart. The update row is a lazy chunk inside its own `ErrorBoundary`, so a chunk that fails to load costs the row, not the page (a rejection would otherwise reach the route boundary); the fallback is an inline `ErrorNotice` plus its `ErrorNoticeMenuItem` hand-off (`errors-use-error-notice`), never `null`, because this menu is the update's only phone home and a silent gap would hide the failure |
 
-That is the `topbar-single` header variant (`index.css`), applied only while
+That is the `topbar-single` header variant (`src/styles/shell-chrome.css`), applied only while
 `isMobile && isChat`. **Its side cells are plain flex divs, not `.tb-left` /
 `.tb-right`.** Those two are inline-size containers for the collapse ladders, and
 a size container in an `auto` track has no content size to give, so it collapses

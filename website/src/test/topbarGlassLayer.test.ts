@@ -19,13 +19,11 @@
  * Refs #7967
  */
 import { describe, expect, it } from 'vitest'
-import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { readIndexCss } from './indexCssSource'
 
-const read = (f: string) => readFile(join(__dirname, '..', f), 'utf8')
 // Strip comments before matching: the rule is explained in prose that quotes the
 // very declarations being asserted, so a raw-text match would hit the comment.
-const css = async () => (await read('index.css')).replace(/\/\*[\s\S]*?\*\//g, '')
+const css = async () => readIndexCss().replace(/\/\*[\s\S]*?\*\//g, '')
 
 // Anchor on the declaration only the base rule carries; `.topbar-glass` also
 // appears in a dozen platform-scoped and focus-mode rules that must not match.

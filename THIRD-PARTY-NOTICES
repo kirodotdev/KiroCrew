@@ -10765,7 +10765,7 @@ limitations under the License.
 
 Built-in dashboard themes whose colors are taken from another project's
 palette. No source code is copied; the palette values are reproduced in
-`website/src/index.css`, and the original's license asks that its notice
+`website/src/styles/theme-palettes.css`, and the original's license asks that its notice
 travel with them.
 
 ### Nu Disco Theme by Danny Banks
@@ -10773,7 +10773,7 @@ travel with them.
 - License: MIT
 - Homepage: https://github.com/dbanksdesign/nu-disco-vscode-theme
 - Used in: the `nu-disco-dark` and `nu-disco-light` blocks of
-  `website/src/index.css` (the "Nu Disco" built-in theme).
+  `website/src/styles/theme-palettes.css` (the "Nu Disco" built-in theme).
 
 ```
 MIT License

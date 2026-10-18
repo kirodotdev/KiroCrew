@@ -19,15 +19,11 @@
  * cannot satisfy the first assertion while line numbers stay accurate for the
  * second.
  */
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
-
 import { describe, it, expect } from 'vitest'
-
-const INDEX_CSS_PATH = join(__dirname, '..', 'index.css')
+import { readIndexCss, whereInIndexCss } from './indexCssSource'
 
 /** Comment bodies replaced by spaces: inert to matching, line-preserving. */
-const ACTIVE_CSS = readFileSync(INDEX_CSS_PATH, 'utf8').replace(
+const ACTIVE_CSS = readIndexCss().replace(
   /\/\*[\s\S]*?\*\//g,
   (comment) => comment.replace(/[^\n]/g, ' '),
 )
@@ -54,7 +50,7 @@ describe('keyboard focus ring', () => {
     const offenders = ACTIVE_CSS.split('\n')
       .map((line, i) => ({ line, n: i + 1 }))
       .filter(({ line }) => /:focus(?![-\w])/.test(line))
-      .map(({ line, n }) => `index.css:${n}: ${line.trim()}`)
+      .map(({ line, n }) => `${whereInIndexCss(n)}: ${line.trim()}`)
 
     expect(
       offenders,

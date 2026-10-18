@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { readIndexCss } from './indexCssSource'
 
 const read = (f: string) => readFile(join(__dirname, '..', f), 'utf8')
 // Strip CSS comments before matching: the rule is explained in prose that quotes
 // the very declarations being asserted, and a raw-text match hits the comment.
-const css = async () => (await read('index.css')).replace(/\/\*[\s\S]*?\*\//g, '')
+const css = async () => readIndexCss().replace(/\/\*[\s\S]*?\*\//g, '')
 // `.tb-right{` also occurs as a substring of the shared `.tb-left,.tb-right{...}`
 // rule, whose `overflow:hidden` this gutter exists to live with. An unanchored
 // match reads the wrong rule, so anchor on the declaration only this one carries.

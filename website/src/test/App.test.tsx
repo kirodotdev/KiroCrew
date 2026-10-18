@@ -8,6 +8,7 @@ import { MOBILE_BREAKPOINT } from '../hooks/useIsMobile'
 import { join } from 'node:path'
 import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
+import { readIndexCss } from './indexCssSource'
 import App, { NavBadge } from '../App'
 import { sseConnected, sseDisconnected, markSlotUnread } from '../store/dashboardSlice'
 import { openActivityPanel, sseSubagentQueued } from '../store/chatSlice'
@@ -31,7 +32,7 @@ const searchWidth = (w: number) => Math.min(480, Math.max(240, w * 0.22))
  *  jsdom applies no CSS, so these read the rule text rather than computed style,
  *  which would pass against an empty rule. */
 function topbarCss(): string {
-  return readFileSync(join(__dirname, '..', 'index.css'), 'utf8')
+  return readIndexCss()
 }
 /** The three declared tracks of the header grid, whitespace-normalised. */
 function topbarTracks(): { sides: string[]; search: string } {

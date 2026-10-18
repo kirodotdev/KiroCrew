@@ -1,0 +1,480 @@
+/* ── Streaming highlight (shimmer sweep on trailing words) ── */
+.streaming-glow{background:linear-gradient(90deg,transparent 0%,var(--accent-glow) 40%,var(--accent-glow) 100%);border-radius:2px;padding:0 8px 0 2px;margin:0 -2px;position:relative;overflow:hidden}
+/* Animates transform (compositable) rather than background-position, which repaints every
+   frame. The layer stays the size of the box: the gradient is transparent across its outer
+   quarters, so a 25% translate never carries anything visible past the box edge and no
+   clipping is needed -- which matters because this is an inline span that can wrap.
+   `alternate` reverses each cycle so the loop has no restart jump. */
+.streaming-glow::before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(90deg,transparent 25%,color-mix(in srgb,var(--accent) 50%,transparent) 50%,transparent 75%);will-change:transform;animation:stream-sweep 2.5s ease-in-out infinite alternate;-webkit-mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%);mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%)}
+@keyframes stream-sweep{0%{transform:translateX(-25%)}100%{transform:translateX(25%)}}
+
+/* ── Streaming caret ──
+   Blinking cursor appended after a streaming assistant message. Rendered
+   whenever the message is streaming, independent of the smooth-stream buffer
+   state, so the response never looks frozen during a token pause (network
+   jitter, model thinking between tokens) — the caret keeps blinking even when
+   no new text is arriving and the per-word fade has gone idle. Vertical bar in
+   the accent colour, sized to the surrounding text. */
+.streaming-caret{display:inline-block;width:2px;height:1.05em;margin-left:1px;vertical-align:text-bottom;border-radius:1px;background:var(--accent);animation:caret-blink 1.1s step-end infinite}
+@keyframes caret-blink{0%,50%{opacity:1}50.01%,100%{opacity:0}}
+@media (prefers-reduced-motion:reduce){
+  .streaming-caret{animation:none;opacity:.9}
+}
+
+/* ── Tool-pill entrance fade ──
+   ToolCallLine's container uses `.ft-block-reveal` for a smooth opacity
+   fade-in on mount. Reuses the existing `ft-fade` keyframe (no new keyframe);
+*/
+.ft-block-reveal{animation:ft-fade .6s ease-in-out both}
+@media (prefers-reduced-motion:reduce){
+  .ft-block-reveal{animation:none}
+}
+
+/* ── Prompt-optimize overlay ──
+   Frosted scrim shown over the composer while a prompt is being optimized.
+   Tints with --card + backdrop-blur so the input frosts underneath instead of
+   being hidden behind an opaque grey slab, and picks up the accent so it reads
+   as a first-class app surface in every theme (light/dark/monokai/custom). */
+.optimize-overlay{background:color-mix(in srgb,var(--card) 62%,transparent);animation:ft-fade .25s ease-out both}
+.optimize-overlay-pill{background:color-mix(in srgb,var(--accent) 12%,var(--card));border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);box-shadow:0 8px 24px var(--accent-glow),0 1px 3px rgba(0,0,0,.12)}
+@media (prefers-reduced-motion:reduce){
+  .optimize-overlay{animation:none}
+}
+
+/* ── Per-char streaming reveal ──
+   `.ft-word` spans are injected by rehypeStreamingReveal around each character
+   of the streaming EDGE, each carrying `--ft-o` = an opacity derived from that
+   char's distance to the tip (revealOpacity). The reveal is therefore driven
+   by a POSITIONAL opacity, not a mount-triggered keyframe: react-markdown
+   remounts edge spans whenever a markdown token completes, and a mount
+   animation re-fired on every such remount → the visible "flashing" bug. A
+   remounted span now re-appears at the identical `--ft-o`, so it cannot
+   re-fade; only the tip advancing changes a char's opacity. The short
+   transition smooths that per-frame climb for spans that persist across frames
+   (a fresh mount paints its value directly, with no transition → no flash).
+   `.ft-anim-smooth` (MarkdownRenderer's root) scopes this to smooth mode; it
+   reverts to plain text when streaming ends. */
+@keyframes ft-fade{from{opacity:0}to{opacity:1}}
+.ft-word{white-space:pre-wrap;opacity:1}
+.ft-anim-smooth .ft-word{opacity:var(--ft-o,1);transition:opacity .25s linear}
+/* Reveal-edge settle. `--ft-o` above is positional, so a stream that pauses
+   mid-turn or has finished leaves its last REVEAL_FADE_CHARS characters pinned
+   below full opacity with nothing to advance the tip. MarkdownRenderer adds
+   `.ft-idle` after REVEAL_IDLE_SETTLE_MS of unchanged content; this overrides
+   the edge to 1 and the transition on the rule above animates that settle. The
+   reduced-motion block below still wins on `transition` (not redeclared here),
+   so that path snaps instead of animating. */
+.ft-anim-smooth.ft-idle .ft-word{opacity:1}
+/* NOTE: `.ft-anim-smooth.ft-idle .ft-word` above is (0,3,0) and out-specifies
+   this block's (0,2,0) on `opacity`. Harmless today -- both declare 1, and the
+   settle rule does not redeclare `transition`, so `transition:none` still wins
+   here. If you ever change the opacity below, change the settle rule too. */
+@media (prefers-reduced-motion:reduce){
+  .ft-anim-smooth .ft-word{opacity:1;transition:none}
+}
+
+/* ── Streaming block: height grow (code/diff) ──
+   SmoothResize wraps streaming code/diff blocks and eases their height as new
+   lines arrive instead of snapping. The block's own 8px margin is relocated
+   onto the `.ft-resize` wrapper (and zeroed on the child) so overflow:hidden
+   during the height animation doesn't swallow inter-block spacing. */
+.msg-content .ft-resize{margin:8px 0}
+.msg-content .ft-resize .code-block,.msg-content .ft-resize .diff-block{margin:0}
+@media (prefers-reduced-motion:reduce){
+  .ft-resize{transition:none!important}
+}
+
+/* Update card: indeterminate download segment sweeps across the track.
+   translateX is relative to the segment's own width (w-1/4 of the track), so
+   -100%..400% covers off-left to off-right for a 25% segment. */
+@keyframes progress-indeterminate{0%{transform:translateX(-100%)}100%{transform:translateX(400%)}}
+.progress-indeterminate{animation:progress-indeterminate 1.2s ease-in-out infinite}
+
+/* ── Chat footer icon carousel (cascade-swap-bounce) ──
+   Two layers per slot cross-fade and trade places; slots cascade .25s apart.
+   The animation sits on the persistent `.lyr` wrapper rather than the icon itself,
+   because the carousel re-samples which icon a layer shows every beat — animating
+   the icon would restart its animation on each swap (see chat/ChatFooter). */
+.csb4{display:flex;gap:5px;padding:2px 0}
+.csb4 .slot{position:relative;width:14px;height:14px}
+.csb4 .slot .lyr{position:absolute;inset:0;display:block;color:var(--accent)}
+.csb4 .slot .lyr>svg,.csb4 .slot .lyr>img{display:block;width:100%;height:100%;overflow:visible}
+.csb4 .slot .lyr:nth-child(1){animation:csb-a 2.8s ease-in-out infinite both}
+.csb4 .slot .lyr:nth-child(2){animation:csb-b 2.8s ease-in-out infinite both}
+.csb4 .slot:nth-child(2) .lyr{animation-delay:.25s}
+.csb4 .slot:nth-child(3) .lyr{animation-delay:.5s}
+.csb4 .slot:nth-child(4) .lyr{animation-delay:.75s}
+@keyframes csb-a{0%,30%{opacity:1;transform:translateY(0) scale(1)}38%{opacity:0;transform:translateY(-3px) scale(.6)}45%,82%{opacity:0;transform:translateY(3px) scale(.6)}90%,100%{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes csb-b{0%,30%{opacity:0;transform:translateY(3px) scale(.6)}38%{opacity:0;transform:translateY(3px) scale(.6)}45%{opacity:1;transform:translateY(-2px) scale(1)}55%{opacity:1;transform:translateY(0) scale(1)}82%{opacity:1;transform:translateY(0) scale(1)}90%{opacity:0;transform:translateY(-3px) scale(.6)}100%{opacity:0;transform:translateY(3px) scale(.6)}}
+
+/* ── Typing dots (components/chat/TypingDots) ──
+   The crewmate typing bubble's "a reply is being typed" glyph: three bouncing
+   dots in `currentColor`, so the host paints them with its text colour (the
+   bubble sets `text-muted`), sized to sit on one text line inside the bubble.
+   The resting style IS the reduced-motion style: the global reduced-motion rule
+   in index.css ends every animation on its first frame, which leaves a dot at
+   its base opacity. */
+.typing-dots{display:inline-flex;align-items:center;gap:5px;padding:0 3px;line-height:0}
+.typing-dots>span{display:block;width:8px;height:8px;border-radius:9999px;background:currentColor;opacity:.6;animation:typing-dot 1.3s ease-in-out infinite both}
+.typing-dots>span:nth-child(2){animation-delay:.18s}
+.typing-dots>span:nth-child(3){animation-delay:.36s}
+@keyframes typing-dot{0%,60%,100%{transform:translateY(0);opacity:.6}30%{transform:translateY(-3px);opacity:1}}
+
+/* ── The ghost-pose loader icons ──
+   These are the DEFAULT loader artwork for every theme (see ChatFooter's
+   DEFAULT_ICONS); a theme replaces them through the themeBranding `loaderIcons`
+   seam. They are brand ASSETS rendered as <img> (the use-lucide-icons brand-mark
+   exception requires that), so they are themed from here rather than by editing
+   the art. This is the pattern a new theme follows: register the artwork, then
+   style it. */
+.csb4 .lyr>.kp{width:100%;height:100%;object-fit:contain}
+/* The outline is a REAL vector stroke baked into each pose asset (black, scaled
+   per-viewBox so all 8 render at the same 1px), not a CSS effect. Chained
+   drop-shadows were tried first and rejected: each pass shadows the *result* of
+   the previous one, so the weight compounds and reads as a soft, heavy band
+   rather than a line. A stroke with paint-order:stroke sits outside the
+   silhouette and stays crisp at any size.
+   The stroke is in the shared asset, so it applies on both palettes — on the
+   dark surface a black edge against a near-black background is imperceptible,
+   which is why no dark-theme override is needed. */
+/* The file-drop chomper (ChatDropOverlay, `.chat-drop-art`) has no baked stroke,
+   so light modes give it a 1px dark edge here. useTheme writes data-mode on
+   <html>, so installed palettes are covered and dark modes render unchanged.
+   Only an edition theme's own CSS can override it: chat-drop-art is not an
+   overrides.css hook, so the pack scoper drops rules that target it. */
+[data-mode="light"] .chat-drop-art{filter:drop-shadow(0 0 1px #000)}
+@property --glow-strength{syntax:'<number>';inherits:false;initial-value:0}
+@keyframes approval-glow{0%,100%{--glow-strength:0}50%{--glow-strength:1}}
+.approval-glow{--glow-strength:0;--approval-shadow:0 0 0 1.5px color-mix(in srgb, var(--warn) calc(var(--glow-strength) * 55%), transparent),0 0 14px 1px color-mix(in srgb, var(--warn) calc(var(--glow-strength) * 40%), transparent);animation:approval-glow 2.5s ease-in-out infinite;box-shadow:var(--approval-shadow)}
+/* Reduced motion: index.css's global rule cuts every animation to one 0.01ms
+   run, which parks the pulse at its 0% keyframe and leaves --approval-shadow
+   fully transparent — a pending approval then showed NO glow, and the glass
+   dock that hands its shadow slot to this variable showed no shadow either.
+   A steady mid-pulse ring says "waiting" without moving. */
+@media (prefers-reduced-motion:reduce){.approval-glow{animation:none;--glow-strength:.6}}
+@keyframes shimmer{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+.animate-shimmer{animation:shimmer 2s ease-in-out infinite}
+@keyframes hourglass-flip{
+  0%,40%{transform:rotate(0deg)}
+  50%,90%{transform:rotate(180deg)}
+  100%{transform:rotate(360deg)}
+}
+
+/* ── Custom font ligatures ──
+   The "Custom" Font Family option sets --font-body to the user's installed
+   family app-wide (useZoom), so chat prose, the composer, and sidebar session
+   and folder names pick it up by inheritance — no per-surface font-family rule
+   is needed, and a Nerd Font's glyphs render from the family alone. This turns
+   on ligatures app-wide ONLY while Custom is active AND the "Enable ligatures"
+   toggle is on (html[data-font-family="custom"][data-custom-ligatures="on"], both
+   set by useZoom), so a programming font (Fira Code, Cascadia Code, …) shows its
+   ligatures on demand without changing how the built-in Sans/Mono presets render.
+   Code and diffs inside messages keep --mono via the more-specific rules below
+   AND reset ligatures to normal, so a custom font never turns on calt ligatures
+   in code that did not have them. */
+html[data-font-family="custom"][data-custom-ligatures="on"] body{font-variant-ligatures:common-ligatures contextual}
+/* OFF must be explicit `none`, not the absence of the rule above: contextual
+   (calt) and common (liga) ligatures are ON by default in CSS, so a font like
+   JetBrains Mono keeps rendering =>/!=/-> under the initial `normal` value —
+   only `none` actually turns them off. */
+html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-ligatures:none}
+/* Also cover Pierre's .code-block / .diff-block hosts: their lines are not
+   always <pre>, so without these selectors the OFF rule's `none` would leak
+   into rendered code and diffs by inheritance. */
+.msg-content code,.msg-content pre,.msg-content .code-block,.msg-content .diff-block{font-variant-ligatures:normal}
+
+/* ── Code in messages ── */
+.msg-content code{font-family:var(--mono);font-size:.9em}
+.msg-content :not(pre)>code{background:rgba(0,0,0,.15);padding:.15em .4em;border-radius:4px;overflow-wrap:break-word;word-break:break-all}
+[data-mode="light"] .msg-content :not(pre)>code{background:rgba(0,0,0,.06)}
+/* Kiro theme: inline code = neutral elevated surface (Prey/750) + light-purple text (Figma 3906:185658) */
+[data-theme="kiro-dark"] .msg-content :not(pre)>code{background:#28242e;color:#c19aff}
+[data-theme="kiro-light"] .msg-content :not(pre)>code{background:var(--bg-hover);color:#723acc}
+/* Inline-code CHIPS (MarkdownRenderer): a chip's colour says what its click does. A chip whose
+   click navigates (`navigate`: a confirmed path, a session, an autolinked work item or a span
+   inside a link) wears the accent, the colour links wear; a chip that only copies (`copy`)
+   wears the NEUTRAL text colour, plus its dotted underline and copy cursor (set by the
+   component). Two values, because these two rules are the attribute's only consumer and two
+   kinds are all they tell apart. Neutral, not the Kiro inline-code purple above: on these
+   themes that purple and the accent are two near-identical purples, and a reader takes both
+   for the same kind of chip — "link-coloured = navigates, neutral = copies" has to hold on
+   every theme, and on the others inline code already inherits the text colour. The two Kiro
+   rules above set `color` at specificity (0,2,2), and the utilities are emitted unlayered, so
+   the `text-accent` utility (0,1,0) the actionable chips carry lost to them: every chip
+   painted in the code colour. Both chip states therefore get their own rule here, at (0,3,2),
+   keyed on the `data-chip-action` the renderer sets (raw HTML cannot: InlineCode drops any
+   inbound one). Kiro dark uses Purple/300, the same step-up message links take below. A span
+   that is no chip at all (an image-only raw span) keeps the theme's purple. */
+[data-theme="kiro-dark"] .msg-content :not(pre)>code[data-chip-action="copy"]{color:var(--text)}
+[data-theme="kiro-light"] .msg-content :not(pre)>code[data-chip-action="copy"]{color:var(--text)}
+[data-theme="kiro-dark"] .msg-content :not(pre)>code[data-chip-action="navigate"]{color:#b07fff}
+[data-theme="kiro-light"] .msg-content :not(pre)>code[data-chip-action="navigate"]{color:var(--accent)}
+/* Kiro dark: brighten message links — #8e48ff (=accent, same as the button fill) reads dull as thin
+   text on the dark bg, so step up to Purple/300 for equal perceived vibrancy. Scoped to Kiro. */
+[data-theme="kiro-dark"] .msg-content a{color:#b07fff;text-decoration-color:rgba(176,127,255,.45)}
+/* Kiro dark: accent FOREGROUND (icons, spinners, accent text) reads dull/blue as thin strokes at
+   #8e48ff, so brighten the text-accent utility to Purple/300. Fills (bg-accent, e.g. buttons) are a
+   separate utility and stay #8e48ff. More-specific rules (e.g. .nav-active .text-accent) still win. */
+[data-theme="kiro-dark"] .text-accent{color:#b07fff}
+/* Kiro theme: selected nav item + session row = neutral surface (Prey/700) with purple text/icon,
+   not a purple-tinted fill (Figma SessionTitle 2010:46988). Hover stays --bg-hover (Prey/750). */
+[data-theme="kiro-dark"] .nav-active,[data-theme="kiro-dark"] .session-row.session-active,[data-theme="kiro-dark"] .list-selected{background:#352f3d;color:#c19aff;border-color:#4a464f}
+[data-theme="kiro-dark"] .nav-active .text-accent{color:#c19aff}
+[data-theme="kiro-light"] .nav-active,[data-theme="kiro-light"] .session-row.session-active,[data-theme="kiro-light"] .list-selected{background:#d8d2e0;color:#723acc;border-color:#c4bcd0}
+[data-theme="kiro-light"] .nav-active .text-accent{color:#723acc}
+/* Kiro light: the canvas is white and the app shell steps back. --bg is #ffffff so the chat
+   transcript and every page read as the primary surface; the nav rail and the list cards (the
+   sessions list and the Crew Members roster, both built from components/listShell) take --panel
+   (#fafafa) instead of the elevated white they use elsewhere, which is the only thing separating
+   them from the canvas — a white card on a white page has no edge but its border.
+   The user bubble is a borderless bg-card fill, so on a white canvas it needs a tint or it
+   disappears entirely; --bg-hover (#f0f0f0) keeps it in the same grey family as the shell. The
+   edit-mode box that replaces a bubble in place carries the same hook, so editing does not flip
+   the surface back to white under the caret.
+   Because --card equals --bg here, ANY borderless bg-card on the page is invisible in this theme.
+   The convention (website/docs/theming-contract.md, "A card must carry its own edge") is that a
+   card on --bg draws a border/ring/shadow; the surfaces that deliberately do not are the hooks
+   below, and src/test/kiroLightShellHooks.test.ts pins that list.
+   Scoped to kiro-light: in every other theme --panel is the page colour, not a shell colour. */
+[data-theme="kiro-light"] .focus-chrome-rail,[data-theme="kiro-light"] .sidebar-inner{background-color:var(--panel)}
+[data-theme="kiro-light"] .user-bubble{background-color:var(--bg-hover)}
+/* Crewmate bubble (`crewmateBubbleClass`, a crewmate's chat, #17839): filled with the theme's
+   `--bg-hover`, the one neutral step every theme keeps above the page. Its CONTENTS paint with
+   the same tokens — kiro-light's inline-code patch is `var(--bg-hover)` (rule above), every
+   `hover:bg-bg-hover` control, a `bg-card` / `bg-bg-elevated` card — so on this fill they would
+   vanish (Design review on #17918). The bubble therefore scopes those surface tokens one step off
+   its fill for its subtree; `--crewmate-fill` is snapshotted on the PARENT first because the rule
+   that re-points `--bg-hover` would already see the new value. */
+:has(>.message-bubble.crewmate-bubble){--crewmate-fill:var(--bg-hover)}
+.message-bubble.crewmate-bubble{
+  background-color:var(--crewmate-fill);
+  --bg-hover:color-mix(in srgb,var(--text) 10%,var(--crewmate-fill));
+  --bg-elevated:color-mix(in srgb,var(--text) 6%,var(--crewmate-fill));
+  --card:color-mix(in srgb,var(--text) 6%,var(--crewmate-fill));
+  --bg:var(--crewmate-fill);
+}
+/* Kiro dark paints inline code with the LITERAL #28242e, which is kiro-dark's --bg-hover — the
+   fill — so the token scope above cannot reach it; same step off the fill, by hand. (0,3,2) beats
+   the (0,2,2) literal rule. */
+[data-theme="kiro-dark"] .message-bubble.crewmate-bubble :not(pre)>code{background:var(--bg-hover)}
+/* Accent-filled user bubble (`tone="accent"` on UserMessage; a crewmate's chat, #17839). The
+   bubble is `--accent` with `--accent-fg` text, and everything drawn INSIDE it was styled for the
+   neutral surface: inline code, link pills, the sent quote card (`text-muted` excerpt, `bg-accent`
+   bar, `border-border`, `hover:bg-bg-hover`), and whatever user-message rendering gains later.
+   Rather than re-pointing those one selector at a time (Design review on #17918: anything not on
+   the list keeps neutral colours on the fill), the bubble REDEFINES the theme tokens for its
+   subtree: utilities compile to `var(--text)` etc. (tailwind-theme.css, `@theme inline`), so
+   every descendant inherits colours derived from `--accent-fg` with no per-element rule and no
+   specificity argument. `--accent` itself is re-pointed (a quote bar or chip on the fill must
+   not paint accent-on-accent), so the fill reads `--bubble-accent`, snapshotted from the outer
+   accent on the bubble's PARENT: a custom property declared in the same rule that redefines
+   `--accent` would already see the redefined value.
+   Specificity (0,3,0) on purpose: it beats the kiro-light `.user-bubble` tint (0,2,0) and the
+   Kiro code rules (0,2,2); the chip rules are (0,3,2) but now say `color:var(--text)` /
+   `var(--accent)`, which resolve to the redefined tokens anyway. The two Kiro-dark literals
+   (`#b07fff` links / code, `#28242e` code bg) are the one thing tokens cannot reach, hence the
+   two code / link rules that stay.
+   CLI mode (`data-ui="cli"`) draws this bubble neutral, like every other user bubble.
+   cli-mode.css paints user bubbles with `var(--bg-elevated)` and `var(--text)` under
+   `!important`; read on this element, those are the redefined tokens below, a 15%-black patch
+   and accent-fg text (`#000` on `#222222` in gruvbox-dark). So every rule that
+   starts with the hook carries `:where(:root:not([data-ui="cli"]))`: `:where()` adds no
+   specificity, so chat mode's cascade is unchanged. The `--bubble-accent` snapshot needs no
+   guard, because nothing reads it in CLI mode. */
+:has(>.msg-content.user-bubble.user-bubble-accent){--bubble-accent:var(--accent)}
+:where(:root:not([data-ui="cli"])) .msg-content.user-bubble.user-bubble-accent{
+  --text:var(--accent-fg);--text-strong:var(--accent-fg);--card-fg:var(--accent-fg);
+  /* Text and strokes are accent-fg mixes; SURFACES are translucent black. A lighter patch
+     (accent-fg mixed in) would pull the fill toward the text colour and cost contrast where it
+     is scarcest (white at 88% on a 14%-white-over-#8e48ff card measured 3.2:1); a darker patch
+     moves the fill away from light text and barely dents dark text on a light accent. 90%, not
+     the ~78% a neutral surface's muted would be: that was 4.1:1 on kiro's accent. */
+  --muted:color-mix(in srgb,var(--accent-fg) 90%,transparent);
+  --muted-strong:color-mix(in srgb,var(--accent-fg) 72%,transparent);
+  --accent:var(--accent-fg);--accent-hover:var(--accent-fg);
+  --accent-subtle:rgba(0,0,0,.18);
+  --border:color-mix(in srgb,var(--accent-fg) 45%,transparent);
+  --border-strong:color-mix(in srgb,var(--accent-fg) 60%,transparent);
+  --bg:rgba(0,0,0,.12);--bg-elevated:rgba(0,0,0,.15);--bg-hover:rgba(0,0,0,.18);--card:rgba(0,0,0,.12);
+  background-color:var(--bubble-accent);color:var(--accent-fg);
+}
+:where(:root:not([data-ui="cli"])) .msg-content.user-bubble.user-bubble-accent :not(pre)>code{background:var(--bg-hover);color:var(--accent-fg)}
+/* A link keeps a link SIGNAL once its colour is the body colour: a solid underline (UX review on
+   #17918: white-on-accent with the colour cue gone read as a label). The two link pills
+   (`.mc-md-ref-chip` in MarkdownRenderer, `LinkChip` in LinkPreview: `bg-accent/10` +
+   `border-border/60`, label `no-underline`) read the redefined tokens for their patch and
+   outline and get their label's underline back here. */
+:where(:root:not([data-ui="cli"])) .msg-content.user-bubble.user-bubble-accent a{color:var(--accent-fg);text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--accent-fg) 75%,transparent);text-underline-offset:2px}
+:where(:root:not([data-ui="cli"])) .msg-content.user-bubble.user-bubble-accent span.group:has(>a){background:var(--bg-hover);border-color:var(--border)}
+:where(:root:not([data-ui="cli"])) .msg-content.user-bubble.user-bubble-accent span.group>a.no-underline{text-decoration:underline}
+:where(:root:not([data-ui="cli"])) .msg-content.user-bubble.user-bubble-accent .text-accent{color:var(--accent-fg)}
+/* Kiro theme: lift unselected nav labels + section headers to Prey/300 (#c1bec6, ~9.8:1) per the
+   Figma settings-panel guideline (was Prey/400 #938f9b ~5.7:1). Inactive icons inherit this color
+   (they only carry opacity-70), lifting them from ~3.4:1 to ~5.6:1. Active items keep .nav-active. */
+[data-theme="kiro-dark"] .nav-item:not(.nav-active),[data-theme="kiro-dark"] .nav-section{color:#c1bec6}
+/* Kiro theme: lift the chat-header session title and the "Sessions" panel title from muted grey to
+   primary text (var(--text) = Prey/200 #dcdadf in dark) — titles were dim at ~5.7:1; now ~9-10:1. */
+[data-theme="kiro-dark"] .session-header-title,[data-theme="kiro-light"] .session-header-title,
+[data-theme="kiro-dark"] .sessions-panel-title,[data-theme="kiro-light"] .sessions-panel-title{color:var(--text)}
+/* Kiro dark: panel resize-handle highlight is a thin line, so match it to the brightened thin-accent
+   (#B07FFF) rather than the #8E48FF fill it inherits from bg-accent. Only applies while dragging-hover. */
+[data-theme="kiro-dark"] .group\/drag:hover .resize-accent{background-color:#b07fff}
+/* Kiro dark: the queued-message card used to take the Figma "Waiting for input"
+   snackbar's olive here. It is a Glass pane on the warn tint step now
+   (components/QueueStack.tsx, `glass-warn`), and a background on the host
+   would paint UNDER the glass layers and solidify them, so no theme override. */
+/* Kiro theme: the session agent-label is intentionally NOT tinted — it is metadata, not a link, and
+   the purple tint made every row's agent name compete with the session title for attention. It keeps
+   the row's neutral grey (`text-muted`), leaving purple to carry meaning: the running-state accent on
+   the last-message subtitle, and `--aim` on package-sourced agents. */
+.msg-content pre{background:rgba(0,0,0,.15);border-radius:var(--radius-sm);padding:10px 12px;overflow-x:auto;margin:4px 0;font-size:0.8125rem;font-family:var(--mono);line-height:1.5}
+[data-mode="light"] .msg-content pre{background:rgba(0,0,0,.04)}
+/* Reset pre inside new code/diff block components */
+.msg-content .code-block>pre{background:transparent;border-radius:0;margin:0}
+/* The staged stand-in must be the SAME HEIGHT as the Pierre surface it stands in
+   for, or the swap moves the reader's scroll position (pierreStaging.ts states
+   that invariant; PlainCodeFallback.tsx carries the measured geometry). The rule
+   above sets line-height:1.5, 10px vertical padding and a 4px margin on every
+   transcript `pre`, and its `.code-block>pre` reset MISSES the staged stand-in
+   because that element sits inside `.pierre-surface`, not directly under the
+   block. Measured: 4px of padding surplus plus 8px of unreset margin = 12px
+   per code block, so a row with three of them dropped 36px when its chunks
+   resolved. Restore Pierre's measured box here, where the conflict is
+   visible: no margin, 8px top/bottom, 20px per line. */
+.msg-content .pierre-plain{margin:0;padding-top:8px;padding-bottom:8px;line-height:20px}
+.msg-content .diff-block>pre{padding:0}
+.msg-content .diff-block,.msg-content .code-block{margin:8px 0}
+
+/* Pierre surfaces (@pierre/diffs). One hook for every code/diff render:
+   the library reads these custom properties, so the theme pack's mono face
+   (--mono resolves through --theme-font-mono) and the app's code size apply
+   to all Pierre surfaces at once. */
+/* Pierre surfaces (@pierre/diffs). One hook for every code/diff render:
+   the library reads these custom properties, so the theme pack's mono face
+   (--mono resolves through --theme-font-mono) and the app's code size apply
+   to all Pierre surfaces at once. */
+.pierre-surface{
+  --diffs-font-family:var(--mono);
+  --diffs-header-font-family:var(--mono);
+  --diffs-font-size:13px;
+}
+/* Pin Pierre's canvas to the app theme's surface token. Must target the HOST
+   element from the outer tree: the Shiki theme injects --diffs-*-bg in a
+   `:host` rule inside the shadow root, which beats values merely INHERITED
+   from .pierre-surface — but outer-tree rules matching the host element beat
+   `:host` rules. Every derived tint (context rows, separators, add/del
+   washes) is color-mixed from the canvas, so the surface follows theme packs
+   while token colors stay with the Shiki theme pair in src/pierre/config.ts. */
+.pierre-surface diffs-container{
+  --diffs-light-bg:var(--bg);
+  --diffs-dark-bg:var(--bg);
+  background-color:var(--bg);
+}
+/* Inline value cells (tool details / tool-request inputs) sit on their own
+   row surface: fully transparent so the host row's background shows through.
+   Pierre drops the `className` prop on the floor, so the class must live on a
+   WRAPPER element (hence the descendant selector); declared last to win the
+   tie with the base host rule above. */
+.pierre-transparent diffs-container{
+  --diffs-light-bg:transparent;
+  --diffs-dark-bg:transparent;
+  background-color:transparent;
+}
+/* Chat diff blocks slot patch-level controls into Pierre's header metadata
+   area. The shadow template puts the slot AFTER the +/- counts; the metadata
+   row is a flex container and slotted nodes are light DOM, so ordering the
+   slotted element first keeps the counts pinned to the right edge no matter
+   how many buttons a block carries. */
+.diff-block [slot='header-metadata']{order:-1}
+/* Same flip for the file-change rows below a message: Open + diffstat cells
+   sit left of Pierre's own +/- counts, which stay rightmost. */
+.fcc-row [slot='header-metadata']{order:-1}
+/* Workspace tree (@pierre/trees): map the dashboard theme tokens onto the
+   tree's override properties so it follows every theme pack, not the
+   library's default palette. */
+.pierre-tree,
+.pierre-tree file-tree-container,
+file-tree-container{
+  --trees-bg-override:var(--bg);
+  background-color:var(--bg);
+  --trees-bg-muted-override:var(--bg-elevated);
+  --trees-fg-override:var(--text);
+  --trees-fg-muted-override:var(--muted);
+  --trees-border-color-override:var(--border);
+  --trees-accent-override:var(--accent);
+  --trees-selected-bg-override:var(--bg-hover);
+  --trees-selected-fg-override:var(--text-strong);
+  --trees-selected-focused-border-color-override:var(--accent);
+  --trees-focus-ring-color-override:var(--accent);
+  --trees-search-bg-override:var(--bg-elevated);
+  --trees-search-fg-override:var(--text);
+  --trees-input-bg-override:var(--bg-elevated);
+  --trees-indent-guide-bg-override:var(--border);
+  --trees-scrollbar-thumb-override:var(--muted);
+  --trees-font-family-override:var(--font-body);
+  --trees-font-size-override:12.5px;
+  --trees-padding-inline-override:0px;
+  --trees-git-added-color-override:var(--diff-add-text);
+  --trees-git-deleted-color-override:var(--diff-del-text);
+  --trees-git-modified-color-override:var(--warn);
+  --trees-git-untracked-color-override:var(--info);
+  --trees-git-renamed-color-override:var(--accent);
+  --trees-git-ignored-color-override:var(--muted);
+  --trees-status-added-override:var(--diff-add-text);
+  --trees-status-deleted-override:var(--diff-del-text);
+  --trees-status-modified-override:var(--warn);
+  --trees-status-untracked-override:var(--info);
+  --trees-status-renamed-override:var(--accent);
+  --trees-status-ignored-override:var(--muted);
+}
+
+/* Auto-sizing message-edit bubble. A hidden::after mirror, fed by
+   the data-replicated-value attribute, drives the single grid track so the
+   overlapping <textarea> grows with its own content in BOTH dimensions —
+   matching the read-only bubble's width for any message length, capped by the
+   bubble's max-width. No JS measurement, no hardcoded width. The textarea and
+   the mirror must share identical font + wrapping so their line breaks agree. */
+.edit-grow{display:grid}
+.edit-grow::after{content:attr(data-replicated-value) " ";visibility:hidden}
+.edit-grow>textarea,.edit-grow::after{grid-area:1/1;font:inherit;line-height:inherit;letter-spacing:inherit;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
+.edit-grow>textarea{width:100%;min-width:0}
+
+/* Pinned-prompt stand-in. While a user prompt is pinned, its transcript row is
+   `visibility: hidden` (ChatTranscriptView's row wrapper, VirtualTranscript, ChatMessageList)
+   and the PinnedPrompt card is drawn in its place — but the card copies only the
+   BUBBLE, and the row also carries the message's action strip (copy, copy link,
+   pin, edit, timestamp). Visibility is inherited, so a `visible` descendant of the
+   hidden row is drawn and clickable: this re-shows the strip in its own place,
+   directly under the card, which folds down the bubble's remaining height and so
+   never covers it. Shown outright rather than behind the strip's hover reveal
+   (`opacity-0` + `group-hover/msg:opacity-100`): the card lives in an overlay
+   that is a sibling of the scroller, so hovering it can never be a hover of this
+   row, and a hover-only strip under a card is one the reader has to find by
+   pointing at a blank gap. Before this rule a prompt taller than the viewport had
+   no action strip at all — its bottom is only on screen once its top is above the
+   fold, i.e. once the whole row is hidden. Pinned by
+   src/test/UserMessage.pinnedStandinActions.test.tsx, which reads this rule.
+   Keyed on the `folding` VALUE, not the bare marker. The hosts write that value
+   while the strip is still UNCOVERED — some of it below the card's resting
+   bottom, on screen (usePinnedPrompt measures the strip's own rect). That is the
+   whole fold and the strip's own height of scroll after it: the card reaches its
+   clamp while the strip, hanging under the bubble, is still sliding under it, so
+   a value keyed on the fold alone dropped the strip out from under the pointer
+   for those last pixels and left the band blank. Once the strip is under the
+   card or behind the header, a strip left `visible` would be invisible yet
+   focusable — Tab through the transcript stopping on controls nobody can see,
+   each stop scrolling the transcript away from the position the pin exists to
+   hold. With the marker empty the strip inherits the row's `hidden` again and is
+   neither drawn nor in the tab order.
+   Edit is the one control left out (`data-message-edit`), for any marker value:
+   it swaps the bubble for a textarea + Cancel/Send tree that is not part of the
+   strip, so it would open inside the hidden row where nothing can see, focus or
+   dismiss it. `display:none` rather than `visibility:hidden` so the strip closes
+   the gap; it returns as soon as the row is no longer the stand-in.
+   The re-show matches the strip only as a direct child of UserMessage's
+   `data-role="user"` root, the one place it is rendered: structural scoping, so
+   the sanitizer's `data-message-*` reservation (MarkdownRenderer) is not the only
+   guard keeping a marker minted inside a message body off this paint path. */
+[data-pinned-standin="folding"] [data-role="user"] > [data-message-actions]{visibility:visible;opacity:1}
+[data-pinned-standin] [data-message-edit]{display:none}
+

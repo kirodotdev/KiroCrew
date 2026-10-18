@@ -2894,12 +2894,12 @@ The transcript retains its delivery metadata for identity and recovery. `--bg-ho
 highcontrast-light and everforest-light (the bubble would vanish), while
 `--bg-hover` sits above the page in every shipped theme; in forced-colors mode
 the gray bubble draws a border instead. The `.crewmate-bubble` rule in
-`index.css` also scopes the surface tokens the reply's contents paint with
+`website/src/styles/chat-transcript.css` also scopes the surface tokens the reply's contents paint with
 (`--bg-hover`, `--bg-elevated`, `--card`) one step off the fill for its subtree
 — kiro-light's inline-code patch IS `var(--bg-hover)`, and so is every
 `hover:bg-bg-hover` control, so on the bare fill they would vanish; kiro-dark's
 literal code patch gets the same step by one scoped rule. Inside the accent bubble the
-`user-bubble-accent` hook in `index.css` REDEFINES the theme tokens for the
+`user-bubble-accent` hook in `website/src/styles/chat-transcript.css` REDEFINES the theme tokens for the
 subtree (`--text`, `--muted`, `--accent`, `--border`, the `--bg*` surfaces, …)
 as values derived from `--accent-fg` — text and strokes as `--accent-fg` mixes,
 surfaces as translucent black so a patch darkens the fill rather than pulling

@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { resolve, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { readIndexCss } from './indexCssSource'
 
 /**
  * CLI mode draws the crewmate chat's accent user bubble neutral, like every
@@ -22,7 +20,7 @@ const HOOK = '.msg-content.user-bubble.user-bubble-accent'
 const GUARD = ':where(:root:not([data-ui="cli"]))'
 const SNAPSHOT = `:has(>${HOOK})`
 
-const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../index.css'), 'utf-8')
+const css = readIndexCss()
 
 /** Split a selector list on its top-level commas (not the ones inside `:has(…)` or `[…]`). */
 function splitSelectorList(list: string): string[] {

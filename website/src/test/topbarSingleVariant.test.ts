@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { readIndexCss } from './indexCssSource'
 
-const css = async () => (await readFile(join(__dirname, '..', 'index.css'), 'utf8')).replace(/\/\*[\s\S]*?\*\//g, '')
+const css = async () => readIndexCss().replace(/\/\*[\s\S]*?\*\//g, '')
 const app = async () => (await Promise.all(['App.tsx', 'shell/appShell.tsx', 'shell/topbar/shellHeader.tsx', 'shell/nav/navRail.tsx', 'shell/nav/navRow.tsx'].map(f => readFile(join(__dirname, '..', f), 'utf8')))).join('\n')
 
 // The phone chat page's `topbar-single` header variant gives the CENTRE cell the

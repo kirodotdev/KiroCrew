@@ -88,8 +88,9 @@ REJECTED (install fails), so do not invent variables; the allowlist is
 `_THEME_CSS_VARS` in `kiro_crew/dashboard/theme_validate.py`.
 
 - To clone a built-in theme's palette, transcribe its block from
-  `website/src/index.css` (e.g. `[data-theme="kiro-dark"]`), keeping only
-  allowlisted vars.
+  `website/src/styles/theme-palettes.css` (e.g. `[data-theme="kiro-dark"]`;
+  the default `dark` / `light` blocks are in
+  `website/src/styles/design-tokens.css`), keeping only allowlisted vars.
 - `--accent-fg` and the four `--json-*` highlight colors (`--json-key`,
   `--json-str`, `--json-num`, `--json-bool`) are allowlisted — set them directly
   in `variables.json` like any other palette entry. No overrides.css workaround

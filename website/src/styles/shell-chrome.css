@@ -1,0 +1,550 @@
+/* ── Top-bar pill buttons ── */
+.top-bar-pill{
+  display:inline-flex;align-items:center;gap:0.375rem;
+  padding:5px 10px;border-radius:var(--radius-sm,0.5rem);
+  font-size:13px;font-weight:500;
+  border:1px solid var(--border);
+  cursor:pointer;transition:all .15s ease;
+  color:var(--muted)}
+.top-bar-pill:hover{border-color:var(--border-strong)}
+
+/* ── Topbar layout: search first, sides take the remainder ──
+   THREE tracks. The search width is a function of the WINDOW only
+   (`clamp(240px, 22vw, 480px)`); the two side groups split whatever is left.
+   Because both side tracks are the same `minmax(0,1fr)`, they are always equal,
+   so the search is exactly window-centred by construction — no measurement, no
+   ResizeObserver, no absolutely-positioned overlay to keep clear of.
+
+   Desktop windows keep these tracks and the container rungs below. The measured
+   ladder (`tb-measured`, at the end of this section) adds folds wherever those
+   rungs leave a group's contents overflowing.
+
+   The side tracks deliberately have NO floor: they are pure remainder, and each
+   group re-lays-out its own contents against the width it was handed
+   (`container-type: inline-size` below). Content never pushes back on the track,
+   which is why the search can no longer be squeezed out of existence.
+
+   The invariant that replaces the per-track floor is a property of the search
+   width function: for every desktop width, (W - 48 - clamp(240,22vw,480)) / 2
+   must stay above a group's icons-only width. Pinned by
+   test/App.test.tsx (searchWidth).
+
+   The 22vw factor is not a taste call. It is solved backwards from the rung
+   thresholds below: the widest readout tier needs 518px and its rung fires at
+   530px, so keeping the live readings at 1440 (the modal desktop width) requires
+   the side track to clear 531, hence a centre track no wider than 330 there. The
+   48px is the header's own `pl-3 pr-3` plus the two 12px track gaps -- chrome the
+   side tracks never get, and omitting it from the arithmetic is what first put
+   this factor 2vw too high.
+
+   A wider centre buys a bigger inert trigger by evicting live data, which is the
+   priority inversion this change exists to remove -- and above 1400px it would
+   also make the search WIDER than the layout it replaces, which reserved a
+   mirrored gutter and left the trigger 376px at 1440.
+
+   Centred in the header's CONTENT BOX, which is the window centre only when the
+   header's padding is symmetric. It is not on a frameless Electron window: the
+   macOS traffic lights and the Windows caption overlay are cleared with
+   `padding-left:84px` / `padding-right:142px` below, so the centre shifts by half
+   that inset. That is deliberate -- the inset is occupied by native controls, so
+   centring in the space the row can actually use is what reads as centred -- but
+   it means "window-centred" holds only for the plain browser dashboard.  */
+.topbar{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) clamp(240px, 22vw, 480px) minmax(0,1fr);
+  align-items:center;
+  gap:12px}
+/* Mobile: the centre track holds the trigger in its icon-only form rather than
+   the full-width one, sized `auto` so the track costs only the icon. The side
+   tracks stay the same `minmax(0,1fr)` pair as on desktop, so the trigger is
+   window-centred at every width -- one placement for the control instead of a
+   jump to the left edge at 767px, which read as the button having been shoved
+   there under width pressure.
+
+   It stays a grid child of its own -- NOT a third sibling inside the actions
+   group, which would put three action controls in one horizontal row
+   (website/AUTOSDE.yaml max-two-buttons-per-row) -- and that also keeps the
+   three tracks matched to three children, so the actions group cannot land in
+   the centre track by auto-placement. */
+@media (max-width:767px){
+  .topbar{grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
+}
+/* Phone chat page (`topbar-single`, App.tsx): the header is the ONE bar for
+   shell and conversation, so its centre cell is the chat page's title slot and
+   has to take every pixel the side cells leave -- the opposite of the
+   window-centred search above, where the sides split the remainder. Hence
+   `auto minmax(0,1fr) auto`, and no gap: the leading cell is empty in the
+   single-crew case, and a gap after an empty cell would push the sessions
+   toggle off the 16px page gutter the rest of the app lines up on.
+
+   The side cells here are a plain flex div / `.tb-trail`, deliberately NOT the
+   `.tb-left` / `.tb-right` groups: those are inline-size containers, and a size
+   container in an `auto` track has no content size to give, so it collapses to
+   its padding and clips its contents (the measurement is recorded in
+   test/topbarMenuButtonNarrow.test.ts). The single bar has no collapse ladder
+   -- the readout capsule is not rendered on it -- so it needs no containers.
+   `.tb-trail` keeps `.tb-right`'s padding/negative-margin pair for the same
+   reason `.tb-right` has it: the bell badge overhangs its button by 4px, and
+   the header's own overflow would otherwise square it off. */
+@media (max-width:767px){
+  .topbar.topbar-single{grid-template-columns:auto minmax(0,1fr) auto;gap:0}
+  .topbar.topbar-single .tb-trail{padding:6px 6px 0 0;margin:-6px -6px 0 0}
+}
+
+/* Each side group is a size-query container. Inline-size containment also stops
+   the group contributing its content width to the track it sits in, which is
+   exactly the semantics wanted here: the track is sized by the window, and the
+   contents adapt to it. */
+.tb-left,.tb-right{container-type:inline-size;min-width:0;display:flex;align-items:center;overflow:hidden}
+.tb-left > .tb-measure,.tb-right > .tb-measure{display:contents}
+.tb-left{justify-content:flex-start;gap:.5rem}
+/* The actions group ends flush with the header's own padding edge, and the
+   notification bell's unread badge is deliberately offset 4px past the button's
+   top-right corner (`-top-1 -right-1` in shellHeader.tsx). `overflow:hidden` clipped
+   exactly that overhang, squaring the badge's right edge off and cutting into a
+   two-digit count.
+   The padding reserves the overhang INSIDE the clip box (which is the padding
+   box), and the equal negative margin puts the outer box back where it was, so
+   the bell does not move, the header does not change height, and the group's
+   CONTENT box -- what the @container ladder below queries -- keeps the width the
+   track gives it. Deliberately NOT `overflow-clip-margin`: WebKit does not
+   implement it, so on every iOS browser that spelling would leave the badge
+   clipped exactly as before. The reserve is 2px MORE than the badge's 4px offset,
+   not equal to it: a flush 4px left the badge body exactly on the clip boundary,
+   so sub-pixel rounding and the badge's glow shadow still squared its top and
+   right edges. The 2px slack clears the box; keep both values equal, and only as
+   large as needed, since more lets real content escape into the header's padding. */
+.tb-right{justify-content:flex-end;gap:.375rem;padding:6px 6px 0 0;margin:-6px -6px 0 0}
+
+/* Both side tracks are `minmax(0,1fr)` at EVERY width, and that is load-bearing
+   for the containment above, not just for centring. A side track sized `auto`
+   asks its item for a content size, and an inline-size container has none to
+   give: when the narrow rule made the identity track `auto`, the track collapsed
+   to that group's own padding -- 16px measured, `16px 28px 298px` for the three
+   tracks -- and `overflow:hidden` clipped the 36px menu button down to an 8px
+   sliver, leaving a phone with no visible route to the nav at all. Only the
+   centre track, whose item is not a size container, may be `auto`. Pinned by
+   test/topbarMenuButtonNarrow.test.ts. */
+
+/* The collapse ladder. Each rung is keyed off the GROUP's own width, so it
+   responds to the space actually handed to it rather than to a viewport
+   breakpoint that cannot know what the group currently holds (usage pill
+   present or not, resource posture firing, extension segments registered).
+   Rungs drop cheapest-first: metric numbers, then the credit counter, then the
+   feedback labels, then the readouts entirely. These rungs stay live on desktop;
+   the measured `.tbl-N` / `.tbr-N` ladders at the end of this section fold more
+   wherever contents still overflow. The readout rungs (the capsule's included)
+   and the Back/Forward rung target elements that render only on the desktop
+   layout; on a phone only the identity group's crew-name and active-chip rungs
+   have anything to hide. */
+/* Thresholds are the MEASURED content width of the rung above, plus a small
+   margin: the rung must fire before the group gets narrower than its contents,
+   because flex children would otherwise absorb the difference by squeezing their
+   own text. Measured in capture/topbar-search-variants.tsx — full 518px, without
+   the metric numbers 382px, without the credit counter 330px, icons-only 139px. */
+@container (max-width:530px){ .tb-drop-metrics{display:none} }
+@container (max-width:392px){ .tb-drop-usage{display:none} }
+@container (max-width:340px){ .tb-drop-feedback{display:none} }
+/* The update pill shifts the ladder. The pill is a conditional sibling of the
+   ladder (present only while an update exists) and it never shrinks, so while
+   it is mounted the group's fixed content is wider by the pill's footprint and
+   each rung has to fire that much earlier. `tb-has-update` is set on the group
+   by App.tsx alongside mounting the pill.
+
+   The footprint has TWO bases, keyed on the SAME viewport gate as the pill's
+   own label (`hidden sm:inline`, 640px):
+   - ≥640px the label shows, and the shift clears the pill's widest steady form
+     ACROSS EVERY SHIPPED LOCALE, measured in capture/topbar-search-variants.tsx
+     (?update=on&updatelabel=…): de downloading_percent
+     "Wird heruntergeladen 100 %" 201.7px + the group's 6px gap = 208. One
+     static shift for all locales deliberately over-reserves for the narrower
+     ones (an English pill is ~134px, so its readouts yield ~68px early) —
+     a rung cannot key on the active language, and early is recoverable while
+     the squeeze band is not. The dev-only en-XA pseudolocale is excluded from
+     the budget; the segments' nowrap backstop degrades it to a clean
+     leading-edge clip.
+   - <640px the pill is icon-only (34px measured + 6px gap = 40) and the ladder
+     takes NO shift at all: the group's base terminal rung below (200px) is the
+     only rung that fires there. A shifted rung once lived here at 240px, and
+     because a phone hands the right group ≤240px ROUTINELY, it blanked the
+     CPU/MEM/DSK and credits readouts the entire time an update was pending
+     (issue #7698) — trading a 40px squeeze band for the whole capsule. In the
+     200–240px band with the pill mounted the segments' nowrap backstop
+     degrades to a leading-edge clip instead, which is the recoverable harm.
+     The named readout rungs likewise need no <640 form: their elements render
+     only on the desktop layout, which never exists below the 768px form
+     switch.
+
+   Without the ≥640px shift, the band between the base rung and the true
+   content width kept the readouts while the content no longer fit, and flex
+   squeeze wrapped them into two clipped lines inside the h-7 capsule. */
+@media (min-width:640px){
+  @container (max-width:738px){ .tb-has-update .tb-drop-metrics{display:none} }
+  @container (max-width:600px){ .tb-has-update .tb-drop-usage{display:none} }
+  @container (max-width:548px){ .tb-has-update .tb-drop-feedback{display:none} }
+  @container (max-width:408px){ .tb-has-update .tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer]){display:none} }
+}
+/* Terminal rung: the capsule keeps only its first child, the connection dot.
+   The rungs above name the built-in readouts one by one, but the capsule is also
+   an extension slot (`getCapsuleSegments`) whose registered segments cannot be
+   enumerated here, so the floorless track needs one rung that bounds the group
+   whatever it holds. Structural rather than by class for exactly that reason:
+   every non-layer child that has a non-layer sibling before it. The capsule is
+   a Liquid Glass host (components/Glass.tsx) whose effect layers are its FIRST
+   children (`data-liquid-glass-layer`), so a plain `:first-child` would keep a
+   layer and hide the dot; skipping the layers on both sides of `~` keeps the
+   first segment whatever the layer count. Budget documented in
+   docs/extension-seams.md. */
+@container (max-width:200px){ .tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer]){display:none} }
+/* The counterpart: a form that exists ONLY on the narrow rungs (e.g. the metric
+   readout's icon stand-in). Both forms ship in the DOM because the rung is a
+   container query — no JS branch here can observe the group's own width. With
+   the update pill the metrics rung fires at 738px, so the stand-in must stay
+   visible through the shifted band; the descendant selector out-specifies the
+   base hide rule. `block` matches what preflight gives the SVG, so the rule
+   stays inert if the button ever stops blockifying its flex children. */
+/* Probe for the metrics rung, read by shell/topbar/metricsReadout.tsx to decide whether clicking the
+   metrics control should toggle the inline readings or open the popover. It
+   carries `.tb-drop-metrics` so every rung above -- base and update-shifted --
+   applies to it unchanged; keeping it out of flow at 0x0 means it can never
+   consume the budget those rungs are measured against. */
+.tb-metrics-probe{position:absolute;width:0;height:0;overflow:hidden;pointer-events:none}
+@container (min-width:531px){ .tb-narrow-only{display:none} }
+@media (min-width:640px){
+  @container (min-width:531px) and (max-width:738px){ .tb-has-update .tb-narrow-only{display:block} }
+}
+
+/* The identity group's own rung. The group holds the nav button (phone only) plus
+   the crew switcher -- active-crew chip, the pinned chips, then the dropdown --
+   and the dropdown TRAILS the chips, so it is the control that leaves the clip
+   box first when the group runs out of room. Losing it would leave a phone with
+   no way to switch crews at all.
+   Measured in the group's own CONTENT box, which is what a container query reads
+   and is 16px narrower than its track on a phone (`px-2` on the group): nav
+   button + gap + a `Local` chip + gap + dropdown = 139px, so the rung fires just
+   above that. Dropping the chip NAMES buys ~43px each and keeps every chip, its
+   state icon and its unread badge on screen; each chip carries the crew name in
+   `aria-label`/`title`, so nothing becomes unreachable.
+   Scoped to `.tb-left` because the chip markup is shared with the full-width
+   strip bar, which is not in this group and has room for its labels.
+   Deliberately NOT `display:none` on the chip row: the dropdown's aggregate
+   unread badge counts a pinned crew only when its chip is measured as cut off,
+   and a display:none row measures as zero-width chips at offset zero -- read as
+   "on screen", which would silently swallow their unread. */
+@container (max-width:152px){ .tb-left .tb-drop-crew-name{display:none} }
+/* The route-history arrows drop before either chip rung fires: they are the one
+   redundant control in the group (⌘/Ctrl+←/→, the mouse buttons and browser
+   chrome all reach the same history), while the crew chips are the identity of
+   the tab. Two 28px buttons = 56px on top of the 139px chip cluster the 152px
+   rung protects, so this rung fires 56px above it. Under a plain browser
+   dashboard with no remote instances the group holds only the arrows and never
+   comes near the rung. */
+@container (max-width:208px){ .tb-left .tb-drop-navhistory{display:none} }
+/* Terminal rung for the identity group, the counterpart of the capsule's
+   dot-only one: below this the active-crew chip goes too and the group keeps just
+   the nav button and the dropdown -- which still names the crew on screen, with a
+   radio check on its row. The threshold is the WIDEST icons-only form, not the
+   narrowest: an icon-only chip is 30px bare but ~56px carrying an unread badge,
+   so bounding it at the bare width would let a badge push the dropdown out at
+   exactly the moment there is unread to reach. 36 + 8 + 56 + 4 + 24 = 128.
+   The pinned chip row is left in the flow rather than hidden, for the
+   measurement reason above: `min-width:0` lets it shrink to nothing on its own,
+   and shrinking (unlike `display:none`) is what its own measurement reads as cut
+   off, so those crews' unread rolls into the aggregate badge. */
+@container (max-width:128px){ .tb-left .tb-crew-active-chip{display:none} }
+
+/* Desktop (`tb-measured`, set by App.tsx whenever the desktop form is rendered).
+   The tracks and size containers are the ones above, so the search stays on the
+   header's centre line and the container rungs still respond to each group's
+   width. The `.tbl-N` (identity) and `.tbr-N` (actions) classes add folds at the
+   lowest level whose contents fit, so an item no fixed threshold counted (a
+   prerelease chip, an update pill, a longer locale) collapses something in its
+   own group instead of clipping. The measured level never sits below the last
+   step the container rungs have folded, so the two ladders fold in one order.
+   The hook reads each group's contents through
+   its `.tb-measure` wrapper, which gets a max-content flex box only for the read.
+   The actions group's last rung folds the update pill to its icon, so no built-in
+   item can push the bell out. The group aligns `safe` to its end: if it still
+   overflows there (an extension widget past its budget), it clips from its far
+   end, the bell first, so its first item, the connection dot, goes last.
+
+   Pinned crews still give way first, as they do on a phone: the chip row adds
+   nothing to the identity group's measured width (`width:0`), grows into whatever
+   room the group has spare up to its natural width, and its own clipped-chip
+   measurement takes over from there. Every wrapper between the group and the
+   row (`.instance-tab-bar-inline`, `.tb-crew-grow`) grows to pass that room down.
+   The crews list's error notice (`.tb-crew-notice`) gives way the same way, so a
+   failing list is truncated rather than collapsing the rest of the group.
+   Its floor is its own max-content, so the hand-off's label never wraps in that
+   calculation, and only its message (`.tb-crew-notice-msg`) can shrink inside
+   it: with `width:0` the message adds nothing to that max-content, so the floor
+   is the warning icon, the gaps and the unwrapped hand-off button, which stay
+   whole and in view at every width unless the group holds something no rung can
+   hide (a clipped hand-off would still take keyboard focus). Its 4px end margin, part of that floor, keeps the hand-off's
+   focus ring (2px outline plus 2px offset) inside the group's clip when the
+   notice ends flush with the group. The message grows into the notice's spare
+   room up to its own text (`max-width:max-content`), so it holds no blank width
+   beyond its own text; a clamped line can still end short of the hand-off,
+   because the clamp breaks between words. While it shows, the switcher's own wrapper is
+   flattened (`display:contents`) so the pinned row, the dropdown and the notice
+   are siblings in one flex line: the notice follows the dropdown directly instead
+   of trailing an empty grown wrapper. The notice grows first (`flex-grow:100`
+   against the row's 1), up to its 320px cap, so the failure stays readable; the
+   pinned row takes what is left, and its cut chips stay in the dropdown. An even
+   split squeezes the message out at mid widths and leaves only a clipped
+   hand-off link. (`flex-grow:0` on that wrapper would keep the notice in
+   place but starve the row, which only grows THROUGH that wrapper, so every
+   pinned chip would measure as cut at any width.) Nothing reads that
+   wrapper's box -- the row is its own offsetParent and the menu anchors to its
+   trigger -- so flattening it costs no measurement.
+   Rung tbl-2 hides the chip names, and with them the 5ch floor a connected chip
+   keeps for a readable name (`min-w-[calc(5ch+…)]` in InstanceTabBar.tsx), so
+   the chips go icon-only instead of holding blank width.
+
+   The metrics fetch failure (`.tb-metrics-notice`) keeps its natural width, since
+   its text is short and fixed, and the actions ladder makes room for it like any
+   other item. Rung tbr-5 folds it to its warning and hand-off icons with the
+   capsule's readouts: the message is hidden visually (the sr-only property set),
+   so the alert still reads the failure to assistive tech, and the hand-off label
+   collapses (`font-size:0`), so the button keeps its name and title. Rung tbr-2
+   leaves it whole, because a bare icon there would have no visible name on
+   keyboard focus. */
+@media (min-width:768px){
+  .topbar.tb-measured > .tb-right{justify-content:safe flex-end}
+  .topbar.tb-measured .tb-left .instance-tab-bar-inline,.topbar.tb-measured .tb-left .tb-crew-grow{flex:1 1 auto}
+  .topbar.tb-measured .tb-left .crew-chip-row{width:0;flex:1 1 auto;max-width:max-content}
+  .topbar.tb-measured .tb-left .tb-crew-notice{width:0;flex:100 1 auto;min-width:max-content;margin-right:4px}
+  .topbar.tb-measured .tb-left .tb-crew-notice-msg{width:0;flex:1 1 auto;max-width:max-content}
+  .topbar.tb-measured .tb-left .tb-crew-grow:has(> .tb-crew-notice) > .tb-crew-grow{display:contents}
+  .tb-measured.tbl-1 .tb-left .tb-drop-navhistory{display:none}
+  .tb-measured.tbl-2 .tb-left .tb-drop-crew-name{display:none}
+  .tb-measured.tbl-2 .tb-left .crew-chip-row > *{min-width:auto}
+  .tb-measured.tbl-3 .tb-left .tb-crew-active-chip{display:none}
+  .tb-measured.tbr-1 .tb-right .tb-narrow-only{display:block}
+  .tb-measured.tbr-1 .tb-right .tb-drop-metrics{display:none}
+  .tb-measured.tbr-2 .tb-right .tb-drop-feedback-label{display:none}
+  .tb-measured.tbr-3 .tb-right .tb-drop-usage{display:none}
+  .tb-measured.tbr-4 .tb-right .tb-drop-feedback{display:none}
+  .tb-measured.tbr-5 .tb-right .tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer]){display:none}
+  .tb-measured.tbr-5 .tb-right .tb-metrics-notice button{font-size:0;gap:0}
+  .tb-measured.tbr-5 .tb-right .tb-metrics-notice-msg{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0}
+  .tb-measured.tbr-6 .tb-right .tb-drop-update-label{display:none}
+}
+
+/* ── Topbar glass ── */
+.topbar-glass{
+  background:color-mix(in srgb, var(--chrome) 74%, transparent);
+  backdrop-filter:blur(18px) saturate(1.8);
+  -webkit-backdrop-filter:blur(18px) saturate(1.8);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
+  /* Own compositing layer, for the blur above.
+
+     The two readout groups inside this header carry `container-type:
+     inline-size`, which implies layout containment. When a capsule segment
+     mounts or unmounts inside one -- the metrics readout's frame arriving, the
+     update pill shifting the ladder -- the strip it vacated has to be
+     re-sampled through the blur, and damage from a contained subtree did not
+     always reach a backdrop sharing a layer with the content under it. The old
+     blurred pixels stayed put: the reporter's "has something left in the
+     background". Promotion is the same remedy #7931 applied to the sandbox-doc
+     frames, and it is why the notification popover portals to <body> to escape
+     this containing block rather than living in it.
+
+     Two spellings on purpose, because focus mode drives this element's
+     `transform` from an INLINE style (see the header in shellHeader.tsx) which wins over
+     this rule -- so `translateZ(0)` is absent for exactly the case that animates
+     hardest. `backface-visibility` promotes on its own and nothing writes it, so
+     the glass keeps its layer while sliding. Neither declaration is visible to
+     the container queries, which measure `.tb-left`/`.tb-right`, not the header. */
+  transform:translateZ(0);
+  backface-visibility:hidden;
+  transition:background-color .25s ease}
+
+/* ── Frameless Electron window (macOS) ──
+   The SPA header row doubles as the title bar; the native traffic lights are
+   inset at the window's top-left (electron/main.js trafficLightPositionForZoom),
+   sitting over the header. Inset the header content clear of them. Keep 84px
+   in sync with TRAFFIC_LIGHT_INSET_PX in src/lib/electron.ts. */
+.mac-electron header.topbar-glass{padding-left:84px}
+/* Fullscreen: AppKit hides the traffic lights, so the clearance inset drops
+   and the branding sits flush left again (back to the header's own pl-5). */
+.mac-electron.mac-fullscreen header.topbar-glass{padding-left:1.25rem}
+
+/* ── Frameless Electron window (Windows) ──
+   titleBarOverlay places native caption controls (min/max/close) in a 138px
+   overlay strip at the top-right of the window. Inset the header's right side
+   so interactive elements (bell, settings, actions) stay clear of the overlay,
+   and mark the header as a drag region so the integrated menu row still moves
+   the window — with an explicit no-drag opt-out for every interactive control,
+   including the titlebar app-menu triggers below.
+   Keep 142px in sync with WIN_CAPTION_RESERVE_CSS_PX in
+   electron/runtime/window/chrome.js (the 138px overlay plus 4px clearance). The reserve is ZOOM-AWARE: the native
+   caption buttons are a fixed native width (DIPs), but a CSS-px padding is
+   multiplied by page zoom when painted, so a static 142 CSS px shrinks to
+   142*zoom DIP on screen and stops clearing the buttons below 100% zoom (the
+   bell slides under Minimize — the reported bug). The main process computes the
+   CSS-px reserve that paints to a constant 142 DIP (142/zoom) and sets it on
+   <html> as --mc-win-caption-reserve, next to where it scales the overlay
+   height — see pushWinCaptionReserve in runtime/window/chrome.js. The 142px
+   fallback here covers the first paint before that runs and non-Electron
+   contexts (a plain browser tab, jsdom in tests), preserving the previous
+   static layout there. One custom property keeps all four
+   `.win-electron`/`.embedded-win-inset` reserve rules below in lock-step. */
+/* Default the custom property on :root so it always resolves to the static
+   142px before the main process pushes the live zoom-aware value (and in
+   non-Electron contexts). It MUST be :root, not `.win-electron`: the main
+   process sets the live value inline on <html> (= :root), but `.win-electron`
+   sits on the inner shell <div> (App.tsx), so a default declared there would
+   re-set the property ON that div and shadow the inherited <html> value for
+   the whole header subtree — the reserve would stay a static 142px and the
+   zoom fix would never take effect. On :root the inline <html> style overrides
+   it (inline beats stylesheet) and every descendant — the header AND the
+   host-rendered strip in InstancesViewport, which renders OUTSIDE the shell
+   div — inherits the live value. Declaring the default here also lets the
+   padding rules use the plain `var(--mc-win-caption-reserve)` reference without
+   repeating the fallback: a bare custom-property reference round-trips through
+   every CSSOM (happy-dom drops a `var()` whose comma fallback it cannot parse),
+   while a defaulted property keeps the first-paint value correct. */
+:root{--mc-win-caption-reserve:142px}
+.win-electron header.topbar-glass{
+  padding-right:var(--mc-win-caption-reserve);
+  -webkit-app-region:drag;
+}
+.win-electron header.topbar-glass button,
+.win-electron header.topbar-glass a,
+.win-electron header.topbar-glass input,
+.win-electron header.topbar-glass [role="button"],
+.win-electron .win-titlebar-menu{
+  -webkit-app-region:no-drag;
+}
+.win-titlebar-menu-item{
+  border:0;
+  background:transparent;
+  font-family:inherit;
+  cursor:default;
+  transition:background-color .12s ease,color .12s ease;
+}
+
+/* ── Frameless Electron window (Linux) ──
+   The main process injects a caption-control cluster (min/max/close, three
+   36px buttons) at the window's top-right (#electron-linux-controls in
+   electron/main.js). Inset the header's right side so interactive elements
+   stay clear of it. Keep 108px in sync with LINUX_CAPTION_CONTROLS_WIDTH in
+   src/lib/electron.ts. Applied only when the window is actually frameless
+   (runtime decision — see isLinuxFramelessElectron). */
+.linux-electron header.topbar-glass{padding-right:112px}
+
+/* ── Focus mode: the same caption reserve, for the surface at that corner ──
+   The insets above all hang off the DOCKED header, and focus mode takes it out
+   of flow (App.tsx makes it an absolute overlay), so the content row reaches y=0
+   with nothing clearing the caption band. The controls stay painted there on
+   both platforms — only macOS hides its own with the chrome, so only macOS needs
+   no reserve. Keep the widths in sync with the two header rules above. */
+body.mc-focus-mode .win-electron .focus-caption-reserve{padding-right:var(--mc-win-caption-reserve)}
+body.mc-focus-mode .linux-electron .focus-caption-reserve{padding-right:112px}
+/* Embedded remote pane (option B): the pane is a separate document loaded in an
+   iframe, so its SPA can't see Electron — `isMacElectron` is false inside it and
+   the `.mac-electron` rule never applies. The parent relays whether it is a
+   non-fullscreen macOS Electron window; the embedded bridge toggles
+   `.embedded-mac-inset` on <html> so the pane's now-topmost header insets clear
+   of the parent window's native traffic lights.
+   Keep 84px in sync with TRAFFIC_LIGHT_INSET_PX in src/lib/electron.ts. */
+.embedded-mac-inset header.topbar-glass{padding-left:84px}
+/* Windows counterpart: the parent relays whether it is a Windows Electron
+   frameless window (`winInset` in mc-host-model); the bridge toggles
+   `.embedded-win-inset` on <html> so the pane's now-topmost header insets its
+   RIGHT side clear of the parent window's native caption buttons.
+   Keep 142px in sync with WIN_CAPTION_RESERVE_CSS_PX in
+   electron/runtime/window/chrome.js and with the `.win-electron` rule above. Deliberately NO -webkit-app-region:drag
+   here: draggable regions are only collected from the host document, never
+   from a cross-origin iframe (see InstancesViewport), and the host's drag
+   strips already clip at the caption zone. */
+.embedded-win-inset header.topbar-glass{padding-right:var(--mc-win-caption-reserve)}
+/* Focus mode inside an embedded pane under a Windows frameless host: same
+   caption reserve as the local `.win-electron` rule further up — focus mode
+   takes the pane's header out of flow, so the peeked surface at that corner
+   must clear the caption band too. `.mc-focus-mode` (the body class) instead
+   of `body.mc-focus-mode` because `.embedded-win-inset` sits on <html>, the
+   body's parent. Keep 142px in sync as above. */
+.embedded-win-inset .mc-focus-mode .focus-caption-reserve{padding-right:var(--mc-win-caption-reserve)}
+/* The injected #electron-drag-bar (electron/main.js) marks the top 42px as a
+   window drag region and only exempts native controls (button/a/input/
+   [role="button"]/[tabindex]). The side panel's tab strip lives in that zone
+   and its chips are divs — punch the whole strip out of the drag region so
+   chips are clickable, hoverable, and drag-reorderable. Ignored in browsers. */
+.side-panel-strip,.side-panel-strip *{-webkit-app-region:no-drag}
+
+/* Focus-mode edge triggers. 10px is deliberately tight: a wider strip opened the
+   chrome on pointer travel that was merely passing near the edge, and overshooting
+   a 10px target is cheap because the edge-slam path (the mouseout handler in
+   shell/focus/focusChrome.ts)
+   opens the overlay anyway when the pointer exits the window through that edge.
+
+   The size is CONSTANT. An earlier version shrank the strip to 8px on reveal so it
+   would stop covering the top of the revealed header's controls, and that produced
+   a hover feedback loop: the strip resized out from under a stationary pointer,
+   which fired mouseleave, which started the close grace, which closed the chrome,
+   which grew the strip back under the pointer, which re-opened it — flickering
+   indefinitely without the user moving the mouse. Anything that changes the hit
+   target under a resting pointer can oscillate like that, so the strip is instead
+   COVERED by the chrome it summons (z-61 against the chrome's z-62): while the
+   chrome is up, hover and clicks land on the header or rail, which keeps them open
+   through their own surface handlers, and nothing resizes. */
+.focus-peek-top{height:10px}
+.focus-peek-rail{width:10px}
+
+/* no-drag only while the chrome is HIDDEN. While it is shown the drag surface is
+   the header (Windows/Linux, below) or the .host-drag-strip gap strips (macOS,
+   App.tsx), and a no-drag strip laid over the band's top 10px could only subtract
+   from it. Hidden, the injected drag bar is collapsed to 0 anyway, so this is a
+   backstop rather than load-bearing. */
+body.mc-focus-mode:not(.mc-focus-chrome) .focus-peek-top{-webkit-app-region:no-drag}
+body.mc-focus-mode:not(.mc-focus-rail) .focus-peek-rail{-webkit-app-region:no-drag}
+
+/* The revealed header is a window-drag surface in its empty regions on Windows
+   and frameless Linux, where the class-driven region resolves reliably. macOS is
+   deliberately EXCLUDED (:not below): every drag mechanism attached to the shell
+   — this class-toggled rule on the transformed header, a full-width mount strip,
+   in-shell gap strips — failed to register with the native window on the desktop
+   app, so macOS drag is carried entirely by .host-drag-strip elements rendered
+   OUTSIDE the shell (see the pane-stack strips in App.tsx), and a transformed
+   drag-marked header must not exist in the document to interfere. */
+body.mc-focus-mode.mc-focus-chrome .win-electron header.topbar-glass,
+body.mc-focus-mode.mc-focus-chrome .linux-electron header.topbar-glass{-webkit-app-region:drag}
+
+/* Focus mode: the peeked chrome FLOATS over content instead of sitting above a
+   flat background, which is a different rendering problem from the docked case.
+   .topbar-glass is `color-mix(in srgb, var(--chrome) 74%, transparent)` — 26%
+   see-through. Docked there is nothing behind it but --bg, so that reads as a
+   tint; as an overlay the transcript shows straight through the blur and the
+   header's own text becomes hard to read. Opaque while floating.
+   The reduced-transparency / high-contrast fallbacks in liquid-glass.css force an
+   opaque background with !important, so they still win — the same answer. */
+body.mc-focus-mode header.topbar-glass{background:var(--chrome)}
+
+/* The drop shadows are gated on the surface actually being ON SCREEN. Both the
+   header and the rail stay MOUNTED and slide out of view, so an always-on shadow
+   keeps painting its tail into the content: this shadow reaches 28px past the
+   box, and a header translated up by its own 42px leaves that tail sitting over
+   the top of the transcript as a permanent smudge. */
+body.mc-focus-mode.mc-focus-chrome header.topbar-glass{
+  box-shadow:0 10px 28px -10px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.10)}
+body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
+  box-shadow:0 10px 28px -10px rgba(0,0,0,.5)}
+
+/* Draggable title-bar strips laid over a remote-instance pane. The pane is a
+   cross-origin iframe, so the host's injected #electron-drag-bar can't reach
+   into it and the blanket marks the whole iframe no-drag — the pane's header
+   can't move the window. InstancesViewport renders these strips (positioned by
+   the gaps the pane reports) AFTER the iframe, so they re-add a drag region in
+   the pane header's control-free gaps. pointer-events:none so the strip never
+   intercepts a click; app-region drag is honored regardless. Ignored in
+   browsers (no native window). */
+.host-drag-strip{position:absolute;top:0;height:42px;-webkit-app-region:drag;pointer-events:none;z-index:2}
+
+/* Scrollbar-free scroll container (used by the side panel tab strip — the
+   strip scrolls horizontally but a visible scrollbar under the chips reads
+   as clutter). Referenced before Tailwind ever defined it; real rules here. */
+.scrollbar-none{scrollbar-width:none;-ms-overflow-style:none}
+.scrollbar-none::-webkit-scrollbar{display:none}
+

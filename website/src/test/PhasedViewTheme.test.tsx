@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import PhasedView from '../pages/aidlc/PhasedView'
 import type { TaskDetail } from '../types'
+import { readIndexCss } from './indexCssSource'
 
 const task = (index: number, title: string, status: string): TaskDetail => ({
   index, title, description: '', status, error: '', result: '', attempts: 1,
@@ -37,7 +38,7 @@ function sourceOf(rel: string): string {
 
 /** Custom properties defined by at least one theme block in index.css. */
 function definedTokens(): Set<string> {
-  const css = sourceOf('index.css')
+  const css = readIndexCss()
   return new Set(Array.from(css.matchAll(/(--[a-z0-9-]+)\s*:/g), (m) => m[1]))
 }
 

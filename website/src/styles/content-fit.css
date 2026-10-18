@@ -1,0 +1,252 @@
+/* ── Mono-family compensation ─────────────────────────────────────────────
+   JetBrains Mono is ~20% wider than Space Grotesk at the same size, so chrome
+   sized against the default family can overflow once a user picks Mono in
+   Settings -> Display (or lands in CLI mode, which auto-resolves to mono).
+   `useZoom` publishes the RESOLVED family as html[data-font-family].
+
+   The nav rail's community row is the tight case: it has to fit two links, a
+   GitHub mark and the Discord icon inside a 236px rail. Measured label widths
+   for "Star us" + "Report issue" at 12px against its budget:
+
+     tracking      mono labels   slack
+     normal            136.8     -9.0  (truncates: "Report is…")
+     -0.03em           130.0     -1.8
+     -0.05em           125.4     +6.0  <- this rule, with the spacing below
+     -0.06em           123.1          (visibly condensed)
+
+   Two spacing overrides ride along, because mono and sans want OPPOSITE
+   treatment and a single set of numbers cannot serve both.
+
+   MEASURED glyph metrics at 12px (fontTools, the shipped Google Fonts files):
+
+                        advance   ink    sidebearing
+     Space Grotesk  S    7.36     6.19      0.58
+     JetBrains Mono S    7.20     5.47      0.86
+     Space Grotesk  ·    2.24     1.63      0.30
+     JetBrains Mono ·    7.20     1.99      2.60
+
+   The two capitals are effectively identical, so the mark gap is the SAME for
+   both families (ml-1.5 = 6px on the element) — an earlier version of this rule
+   tightened sans to 2px on the false premise that its "S" had more sidebearing
+   than mono's. It does not; it has slightly less.
+
+   The middot is where they genuinely differ, and it is the only gap this rule
+   still overrides:
+
+   * gap 3px on mono vs 5px on sans. Mono's middot carries 2.6px of built-in
+     space either side, sans's carries 0.3px, so equal CSS values would render
+     as very unequal optical gaps. Targeting ~5.5px of visible space either side
+     of the dot ink yields 2.9px for mono and 5.2px for sans.
+   * word-spacing -2.5px (mono only) — fixes "Star us" looking looser than it
+     should. Mono's space character is a full 7.2px cell, over 3x Space
+     Grotesk's 2.24px, so the gap INSIDE each label dominated the gaps BETWEEN
+     the labels and the row read as four floating words. Pulling it to 4.7px
+     restores the hierarchy (space inside a label < gap around the separator)
+     while staying wider than sans.
+
+   word-spacing is also what PAYS for the wider gaps on mono: it recovers 5px
+   across the pair's two spaces, leaving ~6px of slack.
+
+   Scoped to mono ON PURPOSE: sans has ~13px of slack and needs no tightening,
+   and applying letter/word-spacing there would make this row inconsistent with
+   every other label in the app (everything else inherits letter-spacing:normal
+   from body). Do not promote any of this to an unscoped rule. */
+html[data-font-family="mono"] .rail-community-links{ letter-spacing:-0.05em; word-spacing:-2.5px; gap:3px }
+
+/* OpenDyslexicMono (data-font-family="opendyslexic" in CLI mode) is measured
+   ~22% wider than JetBrains Mono at 12px (advance 8.784 vs 7.20 for capital 'S'
+   from fontTools on the shipped .woff2). The rail budget above therefore has
+   less slack under opendyslexic than under mono, and the "Report issue" button
+   may truncate to an ellipsis on very narrow rails.
+   No opendyslexic-specific tightening rule is applied: -0.05em / -2.5px are
+   metrically tuned for JetBrains Mono's advance and would misfire on
+   OpenDyslexicMono, and negative tracking on a legibility font actively fights
+   the readability properties a user picking OpenDyslexic came for. The
+   button's `text-ellipsis` on `Report issue` handles overflow gracefully;
+   a dedicated rule can be added later if visual QA shows truncation matters. */
+
+/* ── OpenDyslexic nav-rail vertical compensation ─────────────────────────
+   OpenDyslexic's taller x-height (cap-height/UPM ~0.78 vs Space Grotesk's
+   ~0.72) increases each nav-item's painted height by ~8%. On a rail with
+   ~12 items, the cumulative growth pushes the bottom-pinned section
+   (Agent Capabilities, Settings, community row) below the rail's overflow
+   boundary.
+
+   Tighten the vertical padding from py-2 (8px) to 6px on nav items when
+   opendyslexic is active. The 2px reduction per item × ~12 items = ~24px
+   recovered — enough to keep the bottom section visible without reducing
+   font size or fighting the accessibility intent.
+
+   The selector matches every `.nav-item`, not just the expanded-rail ones.
+   That is deliberate: the collapsed rail is icon-only (the label span is
+   guarded by `!collapsed &&` in NavItem), so the 2px trim on each side
+   has no visible or functional effect there — the rail's collapsed width
+   is fixed at RAIL_W_COLLAPSED and its items have no text budget to
+   protect. The resulting min touch target under OpenDyslexic remains
+   ~44px tall (6px padding + ~22px x-height glyph + 6px padding + row gap),
+   well above WCAG SC 2.5.8's 24px floor. */
+html[data-font-family="opendyslexic"] .nav-item {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+/* Cut-edge rule on the pinned-crew chip row. The row is a single nowrap line with
+   overflow:hidden so the trailing dropdown stays against the last chip (see
+   InstanceTabBar.CrewChipRow), which means the chip at the boundary is cut rather
+   than dropped, and that cut needs saying.
+
+   It is said with a 1px rule AT the boundary, not with an alpha fade ACROSS the
+   last pixels. A chip's unread badge is its trailing element, so any cut reaches
+   the badge first: a fade there does not soften an edge, it dissolves the count —
+   an 18px ramp is wider than the 16px badge, so at the rungs where the crew name
+   has already collapsed the whole glyph goes. Nothing about the count is lost to
+   the cut either way: it is already rolled into the dropdown trigger's aggregate
+   badge, whose roll-up counts exactly the crews whose chips measured as cut.
+
+   `::after` so the rule takes no layout: the row is sized from the space the
+   trigger leaves, and an in-flow 1px would feed its own clip measurement. */
+.crew-chip-row[data-cut='true']::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  right: 0;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+
+/* Reserve a transcript image's EXACT display box before its bytes decode.
+   The loaded layout follows the replaced-element min/max rules, which
+   BACK-PROPAGATE a max-height cap into the width (a tall screenshot capped at
+   60vh also narrows). Neither width/height attributes nor a bare aspect-ratio
+   reproduce that transfer: with either, max-height clamps the height while the
+   width stays at max-width, leaving the image letterboxed centered inside a
+   full-width border band. Spelling the native resolution out here — rather
+   than as a per-image inline style string — keeps the CSS in the stylesheet
+   (the i18n gate reads inline template literals as copy) and leaves the
+   component passing only NUMBERS via the two custom properties below.
+   --mc-img-cap comes from the mode class; the intrinsic size comes from the
+   learned natural dimensions. */
+.mc-img-reserve {
+  --mc-img-cap: 60vh;
+  width: min(
+    calc(var(--mc-img-w) * 1px),
+    calc(var(--mc-img-cap) * (var(--mc-img-w) / var(--mc-img-h)))
+  );
+  height: auto;
+  aspect-ratio: var(--mc-img-w) / var(--mc-img-h);
+}
+.mc-img-reserve-compact { --mc-img-cap: 180px; }
+
+/* Skeleton chat rows painted INSIDE the virtualizer's spacers. A spacer is the
+ * reserved height of rows that are not mounted (yet): while a pagination walk
+ * lands pages or the reader outruns mounting, the viewport can sit over pure
+ * spacer — which used to read as "all text vanished, only background left".
+ * Rounded bars in alternating widths read as chat rows at a glance. Colors ride
+ * the theme's muted foreground at low alpha, so every palette keeps contrast.
+ *
+ * DELIBERATELY STATIC. The first version pulsed opacity, and a spacer is
+ * routinely 20k+ px tall: animating opacity promotes the whole spacer into a
+ * compositor layer of that size, which on a phone GPU costs more than the
+ * long tasks the skeleton exists to paper over. `contain` fences the paint so
+ * the spacer can never invalidate its neighbors. */
+.vc-spacer-skeleton {
+  --vc-skel-bar: color-mix(in oklab, var(--fg, #888) 9%, transparent);
+  background-image:
+    linear-gradient(to bottom, var(--vc-skel-bar) 0 22px, transparent 22px 102px),
+    linear-gradient(to bottom, var(--vc-skel-bar) 0 22px, transparent 22px 102px),
+    linear-gradient(to bottom, var(--vc-skel-bar) 0 22px, transparent 22px 102px);
+  background-repeat: repeat-y;
+  /* One 102px tile per layer = three bars of alternating width per cycle. */
+  background-size: 62% 102px, 84% 102px, 44% 102px;
+  background-position: 24px 12px, 24px 46px, 24px 80px;
+  contain: layout paint style;
+}
+
+:root {
+  /* Unfocused split-view panes: opacity of the background-coloured overlay
+     PaneDim lays over them (0 = no dimming). Ghostty dims unfocused splits at
+     0.3 of background; a chat pane is mostly empty background, on which the
+     overlay is invisible, so only its text carries the cue and it needs more
+     to read at a glance. 0.4 was chosen by eye on the dogfood build. */
+  --pane-dim-opacity: 0.4;
+}
+
+/* Tables borrow the transcript's unused gutters, not the viewport's width.
+   The pane width arrives as the inherited `--chat-pane-width` property that
+   TranscriptScrollShell publishes on `.chat-container` (PANE_WIDTH_PROPERTY),
+   so the scroller never becomes a containing block that could trap
+   McpAppFrame's in-place `position: fixed` full-screen sheet. The measure
+   farm lives inside this same scroller, so off-screen rows inherit identical
+   column widths and heights. Hosts that do
+   not publish the property fall back to ordinary markdown sizing. */
+/* Only top-level assistant tables may escape the reading column, and only
+   from a surfaceless bubble: a host that draws the reply as its own framed
+   card (a crewmate's chat, AssistantMessage's `bubbleClassName` →
+   `data-bordered`; a fill counts as much as a border) keeps its table inside
+   the card. The
+   intervening div is rehypeStableRootKeys' display:contents wrapper;
+   quoted/list tables and formatted code cards retain their own bounds. */
+.chat-container .chat-message-body:has([data-role="assistant"] > .message-bubble:not([data-bordered]) > [data-image-scope] > div > .markdown-table),
+.chat-container [data-role="assistant"] > .message-bubble:not([data-bordered]):has(> [data-image-scope] > div > .markdown-table) {
+  overflow: visible;
+}
+.chat-container [data-role="assistant"] > .message-bubble:not([data-bordered]):has(> [data-image-scope] > div > .markdown-table) {
+  /* Preserve the bubble's margin containment and raw-view height measurement
+     while allowing its table to paint into the surrounding gutters. */
+  display: flow-root;
+}
+.chat-container [data-role="assistant"] > .message-bubble:not([data-bordered]) > [data-image-scope] > div > .markdown-table[data-expanded] {
+  /* Only once the reader presses the table's Expand toggle (MarkdownTable's
+     `data-expanded`): by default a table keeps the reading column's width,
+     like the prose around it. Stop 40px short of each pane edge: the band TurnNavigationMinimap needs
+     free beside the content column (MIN_GUTTER_PX, a px constant — so px here,
+     not rem, or a browser's smaller root font would shrink the clearance under
+     the band) and paints its 28px button into, 8px in from the edge. Keeping
+     every breakout table out of that band on both sides lets the rail stay
+     static while tables scroll past: no per-table yield, no scrollbar
+     toggling, no width-bucket flips. The 100% floor keeps the row's own px-4
+     gutters on panes too narrow to break out; the negative margin centres the
+     wider box on the column. The table's inner wrapper still owns horizontal
+     scroll. */
+  width: max(100%, calc(var(--chat-pane-width, 100%) - 80px));
+  margin-inline: min(0px, calc((100% - (var(--chat-pane-width, 100%) - 80px)) / 2));
+}
+
+/* Overflow cue for a horizontally-clipped markdown table. The scroller carries
+   data-overflow=left|right|both (MarkdownTable.tsx, from useScrollEdges) and a
+   mask-image fades its CONTENT to transparent at whichever edge still hides
+   content — surface-independent (reads over the bg-bg-elevated header, the bg
+   body, or a card host alike), unlike a painted from-bg overlay. 24px feather,
+   matching the app's other scroll-edge fades (ThinkingBlock/ChatInput). A clear
+   edge stays opaque. The gradients live here, in the stylesheet, rather than as
+   inline-style strings in the .tsx. */
+.markdown-table .overflow-x-auto[data-overflow="left"] {
+  mask-image: linear-gradient(to right, transparent, black 24px);
+  -webkit-mask-image: linear-gradient(to right, transparent, black 24px);
+}
+.markdown-table .overflow-x-auto[data-overflow="right"] {
+  mask-image: linear-gradient(to right, black calc(100% - 24px), transparent);
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 24px), transparent);
+}
+.markdown-table .overflow-x-auto[data-overflow="both"] {
+  mask-image: linear-gradient(to right, transparent, black 24px, black calc(100% - 24px), transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, black 24px, black calc(100% - 24px), transparent);
+}
+
+/* The Expand toggle shows on a top-level table in an unbordered transcript
+   bubble (the breakout rule above the overflow cue), on a viewport wide enough that the pane can
+   outgrow the reading column (below ~880px the pane minus the rail band is no
+   wider than the column). The gate is the viewport, not the pane: a narrow
+   split pane on a wide screen still shows it, and there expanding is a no-op. The utilities are
+   emitted unlayered at the top of index.css, so at equal specificity this
+   later rule beats the button's own `flex`. */
+.markdown-table-expand {
+  display: none;
+}
+@media (min-width: 880px) {
+  .chat-container [data-role="assistant"] > .message-bubble:not([data-bordered]) > [data-image-scope] > div > .markdown-table .markdown-table-expand {
+    display: flex;
+  }
+}

@@ -8,13 +8,14 @@ import ChatMessageList from '../app-sdk/ChatMessageList'
 import AssistantMessage from '../pages/chat/AssistantMessage'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import TranscriptScrollShell, { PANE_WIDTH_PROPERTY } from '../pages/chat/TranscriptScrollShell'
+import { readIndexCss } from './indexCssSource'
 
 const TABLE = '| Signal | Value |\n| --- | --- |\n| `sample.daily.messages` | 42 |'
 // The CSS matches the renderer's stable root wrapper, not all descendant
 // tables: nested list/quote tables and formatted code cards must stay local.
 const TABLE_SELECTOR = '[data-role="assistant"] > .message-bubble:not([data-bordered]) > [data-image-scope] > div > .markdown-table'
 const here = dirname(fileURLToPath(import.meta.url))
-const css = readFileSync(resolve(here, '../index.css'), 'utf8')
+const css = readIndexCss()
 
 // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings),
 // so the pins read the page and those owners.

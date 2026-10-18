@@ -17,9 +17,10 @@ import { describe, it, expect } from 'vitest'
 import { readFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readIndexCss } from './indexCssSource'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const css = () => readFile(join(__dirname, '..', 'index.css'), 'utf8')
+const css = async () => readIndexCss()
 const tsx = () => readFile(join(__dirname, '..', 'components', 'InstanceTabBar.tsx'), 'utf8')
 
 describe('crew chip row cut edge', () => {

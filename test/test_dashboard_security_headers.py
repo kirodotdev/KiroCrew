@@ -367,15 +367,37 @@ class TestApplySecurityHeaders:
             # python-only checkout (sdist/wheel test run): nothing to compare.
             return
         remote_font = re.compile(r"https?://[^\s\"')]*fonts[^\s\"')]*", re.IGNORECASE)
+
+        def source(path: Path) -> str:
+            # index.css splices its styles/*.css partials in at their @import lines.
+            return re.sub(
+                r'^@import "\./(styles/[\w-]+\.css)";\n',
+                lambda m: (path.parent / m.group(1)).read_text(encoding="utf-8"),
+                path.read_text(encoding="utf-8"),
+                flags=re.M,
+            )
+
         for path in (index_html, index_css):
-            hits = remote_font.findall(path.read_text(encoding="utf-8"))
+            hits = remote_font.findall(source(path))
             assert not hits, (path.name, hits)
 
-        css = index_css.read_text(encoding="utf-8")
-        declared = re.findall(r"url\('(\./assets/fonts/[^']+\.woff2)'\)", css)
+        # Each face's url() is relative to the stylesheet that declares it: the
+        # entry spells ./assets/fonts/..., a styles/ partial ../assets/fonts/....
+        partials = re.findall(
+            r'^@import "\./(styles/[\w-]+\.css)";$', index_css.read_text(encoding="utf-8"), re.M
+        )
+        found = [
+            (sheet, url)
+            for sheet in (index_css, *(index_css.parent / p for p in partials))
+            for url in re.findall(
+                r"url\('((?:\./|\.\./)assets/fonts/[^']+\.woff2)'\)",
+                sheet.read_text(encoding="utf-8"),
+            )
+        ]
+        declared = [url for _, url in found]
         assert any("space-grotesk" in u for u in declared), declared
         assert any("jetbrains-mono" in u for u in declared), declared
-        missing = [u for u in declared if not (index_css.parent / u).is_file()]
+        missing = [u for sheet, u in found if not (sheet.parent / u).is_file()]
         assert not missing, missing
         for family_dir in ("space-grotesk", "jetbrains-mono"):
             assert (website / "public" / "fonts" / family_dir / "OFL.txt").is_file(), family_dir

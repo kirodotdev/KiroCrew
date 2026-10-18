@@ -49,8 +49,8 @@ MISSING = object()
 #: The frame injects every name in ``website/src/lib/widgetSrcdoc.ts`` THEME_VAR_NAMES,
 #: so the harness does too: a page that reads one this dict omits would fall back to
 #: its own hard-coded hex and screenshot a colour the product never serves. Values are
-#: the product's own -- the dark set from ``website/src/index.css`` ``:root``, the light
-#: set from ``LIGHT_CANVAS_FALLBACK_VARS``.
+#: the product's own -- the dark set from ``website/src/styles/design-tokens.css``
+#: ``:root``, the light set from ``LIGHT_CANVAS_FALLBACK_VARS``.
 THEMES: dict[str, dict[str, str]] = {
     "dark": {
         "--bg": "#12141a",

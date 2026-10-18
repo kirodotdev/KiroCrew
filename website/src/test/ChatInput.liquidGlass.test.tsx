@@ -17,9 +17,10 @@ vi.mock('@radix-ui/react-popover', async () => await import('./__mocks__/@radix-
 import { screen } from '@testing-library/react'
 import ChatInput from '../components/ChatInput'
 import { createTestStore, renderWithProviders } from './helpers'
+import { readIndexCss } from './indexCssSource'
 import type { RootState } from '../store'
 
-const INDEX_CSS = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf-8')
+const INDEX_CSS = readIndexCss()
 const CHAT_INPUT_SRC = readFileSync(resolve(process.cwd(), 'src/components/ChatInput.tsx'), 'utf-8')
 // The composer's owners under chat-input/ carry its markup too: a focus form must
 // not come back through any of them.

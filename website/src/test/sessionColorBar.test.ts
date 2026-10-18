@@ -16,8 +16,7 @@
  * silently breaks for any theme pack shipping a different radius.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readIndexCss } from './indexCssSource'
 
 /** Declarations of the first rule whose selector matches, `{}`-block aware.
  *
@@ -33,7 +32,7 @@ function declarationsFor(css: string, selector: string): string {
 }
 
 describe('session row — colour bar geometry', () => {
-  const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf-8')
+  const css = readIndexCss()
 
   // Both the plain bar and the bar-plus-gradient decoration draw the same bar,
   // so both must agree about where it sits; a fix applied to one only would show

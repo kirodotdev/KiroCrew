@@ -88,7 +88,7 @@ runtime scoper still removes the pin, so the preference is protected either way.
 ## File-drop artwork contrast
 
 `ChatDropOverlay` renders its transparent file-chomper image with the stable
-class `chat-drop-art` and paints no inline colour. `website/src/index.css`
+class `chat-drop-art` and paints no inline colour. `website/src/styles/chat-transcript.css`
 (next to the loader-ghost block) gives that class a 1px black silhouette
 shadow (`drop-shadow`) under `[data-mode="light"]`, the resolved mode
 `useTheme` writes on `<html>`, so it applies to installed light palettes too.

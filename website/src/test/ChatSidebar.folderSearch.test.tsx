@@ -16,14 +16,13 @@
  * mock resolves `chatFolders()` to `[]`, so an on-mount refetch would empty the
  * tree and let a "the folder is visible" assertion pass for the wrong reason.
  */
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { readIndexCss } from './indexCssSource'
 import { requestFolderReveal, requestSlotReveal } from '../store/chatSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 
@@ -668,7 +667,7 @@ describe('chat sidebar — revealing a folder in the BOARD lane', () => {
    * already on screen. Reading the rule back turns that into a real check.
    */
   function revealFlashCompanions(): string[] {
-    const css = readFileSync(join(__dirname, '..', 'index.css'), 'utf8')
+    const css = readIndexCss()
     const rule = css.match(/^([^\n{]*\.session-reveal-flash[^\n{]*)\{outline:2px solid var\(--accent\)/m)?.[1]
     expect(rule, 'index.css must declare the reveal outline').toBeDefined()
     return rule!.split(',')

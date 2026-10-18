@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
+import { readIndexCss } from './indexCssSource'
 import InstanceTabBar from '../components/InstanceTabBar'
 import EmbeddedHostBridge from '../components/EmbeddedHostBridge'
 import type { HostModel } from '../store/instancesSlice'
@@ -341,7 +342,7 @@ describe('EmbeddedHostBridge (option B relay)', () => {
     // everywhere, and the 142px default lives on :root (NOT on .win-electron,
     // which sits on the inner shell div and would shadow the inline <html>
     // value for the header subtree). */
-    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'index.css'), 'utf8')
+    const css = readIndexCss()
     const reserveRule = /padding-right:var\(--mc-win-caption-reserve\)/g
     const rootDefault = css.match(/:root\{--mc-win-caption-reserve:142px\}/)
     const localHeader = css.match(/\.win-electron header\.topbar-glass\{\s*padding-right:var\(--mc-win-caption-reserve\)/)

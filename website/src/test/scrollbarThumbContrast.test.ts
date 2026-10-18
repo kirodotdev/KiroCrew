@@ -193,7 +193,12 @@ describe('every theme-token scrollbar thumb clears 3:1 non-text contrast in ever
     // (`'--scrollbar': 'rgba(...)'`) rather than as CSS declarations.
     const PAINTS =
       /::-webkit-scrollbar-thumb|scrollbar-color\s*:|--trees-scrollbar-thumb-override|--scrollbar['"]?\s*:/
-    const SCANNED = ['index.css', 'apps/file-explorer/styles.ts']
+    const SCANNED = [
+      'index.css',
+      'styles/chat-transcript.css',
+      'styles/scrollbars-and-touch-hit.css',
+      'apps/file-explorer/styles.ts',
+    ]
     const OUT_OF_SCOPE = [
       // Alpha thumbs on Mochi's own token system -- see the header's SCOPE note.
       'apps/mochi/avatar.html',

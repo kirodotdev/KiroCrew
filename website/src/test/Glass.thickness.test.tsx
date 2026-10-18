@@ -26,8 +26,9 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { DEFAULT_GLASS_THICKNESS, GLASS_THICKNESS, GLASS_THICKNESSES, Glass, type GlassThickness } from '../components/Glass'
 import { resetDisplacementMapCache } from '../components/ui/liquid-glass'
+import { readIndexCss } from './indexCssSource'
 
-const INDEX_CSS = readFileSync(resolve(__dirname, '../index.css'), 'utf8')
+const INDEX_CSS = readIndexCss()
 const GLASS_SRC = readFileSync(resolve(__dirname, '../components/Glass.tsx'), 'utf8')
 
 type Rgba = [number, number, number, number]

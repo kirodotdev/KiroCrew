@@ -18,10 +18,8 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, act, fireEvent } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
 import { createTestStore } from './helpers'
+import { readIndexCss } from './indexCssSource'
 
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../components/DiffPanel', () => ({ default: () => null }))
@@ -73,10 +71,7 @@ function renderPanel() {
   )
 }
 
-const cssSource = () => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  return readFileSync(join(here, '..', 'index.css'), 'utf8')
-}
+const cssSource = () => readIndexCss()
 
 describe('side panel browser-tab strip', () => {
   it('marks the active chip with side-tab-active + the body background, not inactive ones', () => {

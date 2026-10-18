@@ -438,8 +438,9 @@ container tolerates it.
 
 ## Script fonts: keep the aliases first
 
-`index.css` declares `@font-face` aliases carrying `unicode-range` for Han,
-Kana, Hangul, Devanagari and Bengali, collects them into `--script-fallbacks` and
+`src/styles/font-faces.css` declares `@font-face` aliases carrying `unicode-range`
+for Han, Kana, Hangul, Devanagari and Bengali; `src/styles/design-tokens.css`
+collects them into `--script-fallbacks` and
 `--script-fallbacks-mono`, and puts **that token first** in `--font-body` and
 `--mono`. The range restriction is what makes this safe: the aliases are never
 consulted for Latin or general punctuation, so they cannot change Latin metrics

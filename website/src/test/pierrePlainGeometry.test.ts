@@ -19,8 +19,9 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { readIndexCss } from './indexCssSource'
 
-const css = readFileSync(join(__dirname, '..', 'index.css'), 'utf8')
+const css = readIndexCss()
 const fallback = readFileSync(join(__dirname, '..', 'pierre', 'PlainCodeFallback.tsx'), 'utf8')
 
 describe('staged code stand-in matches Pierre geometry', () => {

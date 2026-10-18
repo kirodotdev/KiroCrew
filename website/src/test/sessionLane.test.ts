@@ -1,7 +1,6 @@
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { describe, it, expect } from 'vitest'
 import { SESSION_LANES, inferLane, type LaneSlotFields } from '../pages/chat/sessionLane'
+import { readIndexCss } from './indexCssSource'
 
 /** The two properties the board depends on, asserted directly rather than
  *  inferred from the rule list: a card that matches no lane vanishes, and a card
@@ -151,9 +150,7 @@ describe('SESSION_LANES', () => {
     // accent dot renders transparent and its label silently inherits. That is
     // invisible to a type-check and to every behavioural test, and it shipped
     // once -- the idle lane used `--text-muted`, which is defined nowhere.
-    // Resolved from the vitest root (website/), since import.meta.url is not a
-    // file: URL under this config.
-    const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf-8')
+    const css = readIndexCss()
     const defined = new Set(
       [...css.matchAll(/(--[a-z0-9-]+)\s*:/gi)].map(m => m[1].toLowerCase()),
     )

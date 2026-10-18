@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { readIndexCss } from './indexCssSource'
 
 /**
  * A phone keyboard used to hide the caret you were typing at.
@@ -37,7 +38,7 @@ const CHAT_PAGE = [
 ].join('\n')
 const SUBAGENT_BAR = readFileSync(resolve(__dirname, '../pages/chat/SubagentProgressBar.tsx'), 'utf8')
 const QUEUE_STACK = readFileSync(resolve(__dirname, '../components/QueueStack.tsx'), 'utf8')
-const INDEX_CSS = readFileSync(resolve(__dirname, '../index.css'), 'utf8')
+const INDEX_CSS = readIndexCss()
 const INDEX_HTML = readFileSync(resolve(__dirname, '../../index.html'), 'utf8')
 
 /** The title-row overlay: `absolute top-0 … ${editingTitle ? 'z-[47]' : 'z-[45]'}`. */

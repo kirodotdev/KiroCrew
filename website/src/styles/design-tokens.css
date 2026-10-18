@@ -1,0 +1,246 @@
+/* ── Design tokens ── */
+/* Shared across all themes */
+:root {
+  /* Top safe-area inset, consumed by the safe-area utilities in
+     tailwind-theme.css (p-safe / top-safe / top-safe-offset-* / top-safe-or-*).
+     0 by default: in
+     any in-browser context the UA's own chrome sits between the status bar /
+     display cutout and the page, so a non-zero top env() there is spurious —
+     Android WebView browsers (e.g. corporate wrappers) report the cutout
+     height even with their URL bar on screen, which painted a dead band above
+     the app header. Only when the app IS the window (installed PWA) does the
+     viewport really extend under the cutout, and display-mode is exactly that
+     signal — the @media block after this rule re-enables env() there.
+     Bottom/left/right stay bare env() in those utilities — those insets are real
+     in-browser. Declared INSIDE this first :root block deliberately:
+     src/i18n/scriptFonts.test.ts reads the stylesheet's first :root body for the
+     script-fallback tokens, so a separate leading block would shadow it. */
+  --safe-area-top: 0px;
+  /* Single source of truth for the script fallbacks. Every declaration of
+     --font-body / --mono — here, in theme-palettes.css, and the ones built in
+     hooks/useTheme.tsx and hooks/useZoom.ts — references these by name instead of
+     repeating the list. Regional Han aliases are NOT in the untagged default:
+     a leading Simplified Chinese face would force Japanese (and other untagged
+     CJK) through the wrong glyph forms. html:lang(zh-CN/ja/ko) below swap
+     isolated regional faces for that UI language. A bare :lang(zh) is avoided
+     — it also matches zh-TW/zh-HK. They lead each stack; unicode-range is what
+     makes leading safe. 'KC Straight Quotes' leads every sans variant for the
+     same reason, fixing the straight-quote glyph (#6374) in every UI language.
+     It is sans-only: the mono stacks resolve to JetBrains Mono, whose straight
+     quotes are already correct. */
+  --script-fallbacks:'KC Straight Quotes','KC Kana Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Kana Mono Fallback','KC Kana Fallback','KC Hangul Mono Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  /* An installed theme pack fills --theme-font-sans / --theme-font-mono with its
+     own faces (see hooks/themeCss.ts). Reading them here means code surfaces
+     follow a pack's monospace face without the user having to switch the whole UI
+     to monospace, and the pack's proportional face is already in place on first
+     paint rather than swapping in when the preference effect runs. Unfilled, each
+     var() falls back to the built-in stack. */
+  --font-body:var(--theme-font-sans, var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif);
+  --mono:var(--theme-font-mono, var(--script-fallbacks-mono),'JetBrains Mono',ui-monospace,SFMono-Regular,monospace);
+  --radius-sm:6px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;
+}
+/* The standalone/fullscreen half of the --safe-area-top gate declared above:
+   only when the app is the window does the top env() inset describe a region
+   this viewport actually occupies. */
+@media (display-mode: standalone), (display-mode: fullscreen) {
+  :root { --safe-area-top: env(safe-area-inset-top, 0px); }
+}
+html:lang(zh-CN) {
+  /* Isolated Simplified aliases for Chinese UI. Not :lang(zh): that also
+     matches zh-TW / zh-HK / zh-Hant. Document-level only — :root/--font-body
+     and useZoom already resolve var(--script-fallbacks) on <html>.
+     'KC Han Fallback' draws neither kana nor Hangul, so the kana/Hangul-only
+     aliases follow it: Japanese and Korean CONTENT under a Chinese UI (#13085)
+     otherwise falls to the OS cascade and renders as tofu. They carry no Han
+     range, so they never override the leading Simplified Han face. */
+  --script-fallbacks:'KC Straight Quotes','KC Han Fallback','KC Kana Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Han Mono Fallback','KC Han Fallback','KC Kana Mono Fallback','KC Kana Fallback','KC Hangul Mono Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+}
+html:lang(ja) {
+  /* Never retain the SC aliases here. If no named Japanese face is installed,
+     falling through lets the browser use its lang-aware Japanese fallback.
+     'KC Japanese Fallback' covers kana but NOT Hangul, so the Hangul-only alias
+     follows it: Korean content under a Japanese UI (#13085) would otherwise be
+     tofu. No Han range on it, so the leading Japanese face still wins Han. */
+  --script-fallbacks:'KC Straight Quotes','KC Japanese Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Japanese Mono Fallback','KC Japanese Fallback','KC Hangul Mono Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+}
+html:lang(ko) {
+  /* Never retain the SC or JP aliases here. Neither draws Hangul, so leaving one
+     in front only delays resolution to the browser's lang-aware Korean fallback.
+     'KC Korean Fallback' covers Hangul but NOT kana, so the kana-only alias
+     follows it: Japanese content under a Korean UI (#13085) would otherwise be
+     tofu. No Han range on it, so the leading Korean face still wins Han. */
+  --script-fallbacks:'KC Straight Quotes','KC Korean Fallback','KC Kana Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Korean Mono Fallback','KC Korean Fallback','KC Kana Mono Fallback','KC Kana Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+}
+/* Dark theme shadows */
+:root,[data-theme="dark"],[data-theme="monokai-dark"],[data-theme="solarized-dark"],[data-theme="amber-dark"],[data-theme="nord-dark"],[data-theme="dracula-dark"],[data-theme="rosepine-dark"],[data-theme="catppuccin-dark"],[data-theme="tokyonight-dark"],[data-theme="gruvbox-dark"],[data-theme="ice-dark"]{
+  --shadow-sm:0 1px 2px rgba(0,0,0,.2);
+  --shadow-md:0 4px 12px rgba(0,0,0,.25),0 0 0 1px rgba(255,255,255,.03);
+  --shadow-lg:0 12px 28px rgba(0,0,0,.35);
+}
+
+/* Context-breakdown ramp. Eight discrete steps mixed from the existing
+   foreground/surface tokens rather than invented hex, so the ramp tracks every
+   theme and its polarity. Rank 0 is the largest block; --ctx-fgN is the inverse
+   mix so a label stays legible at either end. --ctx-hatch marks the portion of
+   the window Kiro Crew did not inject, which is an estimate. */
+:root{
+  --ctx-k1:color-mix(in srgb, var(--text) 60%, var(--card));
+  --ctx-k2:color-mix(in srgb, var(--text) 54%, var(--card));
+  --ctx-k3:color-mix(in srgb, var(--text) 49%, var(--card));
+  --ctx-k4:color-mix(in srgb, var(--text) 43%, var(--card));
+  --ctx-k5:color-mix(in srgb, var(--text) 38%, var(--card));
+  --ctx-k6:color-mix(in srgb, var(--text) 33%, var(--card));
+  --ctx-k7:color-mix(in srgb, var(--text) 27%, var(--card));
+  --ctx-k8:color-mix(in srgb, var(--text) 22%, var(--card));
+  /* A label sits on a fill that is N% --text mixed into --card, so the readable
+     choice is the OPPOSITE endpoint, not another mid-mix: a mid-mix on a mid-mix
+     has almost no contrast. Steps at or above ~45% text take --card; the lighter
+     steps take --text. Because every fill is the same "text into card" mix, this
+     mapping holds in both theme polarities. */
+  --ctx-fg1:var(--card);
+  --ctx-fg2:var(--card);
+  --ctx-fg3:var(--card);
+  --ctx-fg4:var(--text);
+  --ctx-fg5:var(--text);
+  --ctx-fg6:var(--text);
+  --ctx-fg7:var(--text);
+  --ctx-fg8:var(--text);
+  --ctx-user-fg:var(--accent-fg, var(--bg));
+  --ctx-hatch:repeating-linear-gradient(135deg, color-mix(in srgb, var(--text) 9%, var(--card)) 0 5px, color-mix(in srgb, var(--text) 20%, var(--card)) 5px 10px);
+  /* Per-SOURCE hues for the Session Breakdown tree's node composition traces.
+     Unlike the size-ranked grey ramp above (one block per row, length is the
+     signal), the tree stacks many sources in one short bar per node compared
+     ACROSS nodes, so hue is the data channel. Each hue is mixed 26% into the
+     surface so it reads as a calm instrument trace on any theme (light or dark,
+     any accent) rather than a saturated slop-gradient; the long-tail unknown
+     sources fall to a neutral mute. */
+  --ctx-src-skill:color-mix(in srgb, #00c48f 74%, var(--card));
+  --ctx-src-memory:color-mix(in srgb, #4aa8ff 74%, var(--card));
+  --ctx-src-history:color-mix(in srgb, #f2c14e 74%, var(--card));
+  --ctx-src-lessons:color-mix(in srgb, #ff9d5c 74%, var(--card));
+  --ctx-src-sys:color-mix(in srgb, #43c9bd 74%, var(--card));
+  --ctx-src-skillidx:color-mix(in srgb, #8f7bff 74%, var(--card));
+  --ctx-src-tool:color-mix(in srgb, #b98cff 74%, var(--card));
+  --ctx-src-mute:color-mix(in srgb, var(--text) 30%, var(--card));
+  /* The Context Breakdown chart stacks five plain-language categories; the
+     user's message rides the accent, memory reuses its source hue so the tree
+     and the chart agree, and rules / skills get hues of their own, mixed into
+     the surface like the sources above. */
+  --ctx-cat-message:var(--accent);
+  --ctx-cat-memory:var(--ctx-src-memory);
+  --ctx-cat-rules:color-mix(in srgb, #9266cc 74%, var(--card));
+  --ctx-cat-skills:color-mix(in srgb, #d9a12b 74%, var(--card));
+  --ctx-cat-other:var(--ctx-src-mute);
+  /* Terminal ANSI hues with no semantic equivalent. The other fourteen entries
+     are derived from --bg / --text / --danger / --ok / --warn / --info, which
+     every theme already defines; only magenta and cyan need a value of their
+     own. A theme may override these two through the normal cascade. Plain hex on
+     purpose: the value is handed straight to xterm, which cannot parse a CSS
+     colour function. */
+  --term-magenta:#c678dd;
+  --term-cyan:#56b6c2;
+}
+/* Stronger shadows for some dark themes */
+[data-theme="monokai-dark"],[data-theme="solarized-dark"],[data-theme="nord-dark"],[data-theme="dracula-dark"],[data-theme="rosepine-dark"],[data-theme="catppuccin-dark"],[data-theme="tokyonight-dark"],[data-theme="gruvbox-dark"],[data-theme="ice-dark"]{
+  --shadow-sm:0 1px 2px rgba(0,0,0,.3);
+  --shadow-md:0 4px 12px rgba(0,0,0,.35),0 0 0 1px rgba(255,255,255,.02);
+  --shadow-lg:0 12px 28px rgba(0,0,0,.45);
+}
+/* Light theme shadows */
+[data-theme="light"],[data-theme="monokai-light"],[data-theme="solarized-light"],[data-theme="amber-light"],[data-theme="nord-light"],[data-theme="dracula-light"],[data-theme="rosepine-light"],[data-theme="catppuccin-light"],[data-theme="tokyonight-light"],[data-theme="gruvbox-light"],[data-theme="ice-light"]{
+  --search-highlight:rgba(255,167,38,.35);--search-highlight-current:rgba(255,120,0,.7);--search-highlight-current-border:rgba(0,0,0,.8);
+  --shadow-sm:0 1px 2px rgba(0,0,0,.06);
+  --shadow-md:0 4px 12px rgba(0,0,0,.08),0 0 0 1px rgba(0,0,0,.04);
+  --shadow-lg:0 12px 28px rgba(0,0,0,.12);
+}
+/* Internal token, outside the [data-theme] blocks so packs cannot set it.
+   --shadow-lg alone reads flat over near-black chat; light mode keeps it. */
+:root{--shadow-float:0 0 0 1px rgba(0,0,0,.4),0 24px 64px -8px rgba(0,0,0,.7),0 8px 24px rgba(0,0,0,.45)}
+[data-mode="light"]{--shadow-float:var(--shadow-lg)}
+/* Warn-hued TEXT on a warn-tinted fill (`bg-warn-subtle`, `bg-warn/N`,
+   `glass-warn`): the `text-warn-text` utility and `.glass-warn-fg`. Dark
+   palettes keep the plain `--warn` hue. In light palettes `--warn` on its own
+   10-30% tint falls below the 4.5:1 text floor (1.9:1 in rosepine-light, 4.2:1
+   in `light`; issues #19920, #20071), so the text keeps half the hue and
+   darkens the rest toward black: still amber-brown, so the warning cue
+   survives. The share is set by the strongest tint paired in the source
+   (`bg-warn/30`): 50% clears it at 5.4:1 in the worst light palette
+   (rosepine-light), 60% would drop it to 4.15:1.
+   Internal, derived, outside the [data-theme] blocks so packs cannot set it;
+   glassWarnTextContrast.test.ts reads the share from this rule and measures
+   every tint the source pairs with it in every light palette. */
+:root{--warn-text:var(--warn);}
+[data-mode="light"]{--warn-text:color-mix(in srgb, var(--warn) 50%, #000);}
+/* Ok- and danger-hued TEXT on its own tint (`bg-ok-subtle`, `bg-ok/N`,
+   `bg-danger-subtle`, `bg-danger/N`): the `text-ok-text` and
+   `text-danger-text` utilities, the same shape as `--warn-text`. In light
+   palettes the plain hue on its 5-25% tint falls below 4.5:1 (ok 1.97:1 in
+   amoled-light, danger 2.37:1 in tokyonight-light), so the text keeps part of
+   the hue and darkens the rest toward black: still green and red. Each share
+   is the most hue that still clears the strongest tint the source pairs with
+   it, so the text stays as coloured as the floor allows. Danger keeps 55%
+   (`bg-danger/25` on hover: 4.82:1 in tokyonight-light; 60% would be
+   4.35:1). Ok keeps 60% (`bg-ok/20`: 4.56:1 in amoled-light; 61% would be
+   4.45:1). Info (`text-info-text` on `bg-info-subtle`, `bg-info/N`) reads
+   1.69:1 plain in amoled-light and keeps 58% (`bg-info/15`: 4.53:1 in
+   amoled-light; 59% would be 4.41:1). statusTextContrast.test.ts reads every
+   share from this rule and measures every paired tint in every light palette. */
+:root{--ok-text:var(--ok);--danger-text:var(--danger);--info-text:var(--info);}
+[data-mode="light"]{--ok-text:color-mix(in srgb, var(--ok) 60%, #000);--danger-text:color-mix(in srgb, var(--danger) 55%, #000);--info-text:color-mix(in srgb, var(--info) 58%, #000);}
+:root,[data-theme="dark"],[data-theme="amber-dark"]{
+  --search-highlight:rgba(255,167,38,.45);--search-highlight-current:rgba(255,120,0,.85);--search-highlight-current-border:rgba(255,255,255,.9);
+  --bg:#12141a;--bg-accent:#14161d;--bg-elevated:#1a1d25;--bg-hover:#262a35;
+  --card:#181b22;--card-fg:#f4f4f5;--card-hl:rgba(255,255,255,.05);
+  --panel:#12141a;--panel-strong:#1a1d25;
+  --chrome:rgba(18,20,26,.95);
+  --text:#e4e4e7;--text-strong:#fafafa;--muted:#7f7f88;--muted-fg:#fff;--muted-strong:#52525b;
+  --border:#27272a;--border-strong:#3f3f46;--border-hover:#52525b;
+  --accent:#00d492;--accent-fg:#000;--accent-hover:#34d399;--accent-subtle:rgba(4,117,88,.2);
+  --accent-glow:rgba(4,117,88,.35);--ring:#10b981;
+  --ok:#22c55e;--ok-fg:#000;--ok-subtle:rgba(34,197,94,.12);
+  --warn:#eab308;--warn-fg:#000;--warn-subtle:rgba(234,179,8,.12);
+  --danger:#ef4444;--danger-fg:#000;--danger-subtle:rgba(239,68,68,.12);
+  --info:#0891b2;--info-fg:#000;
+  --aim:#a78bfa;--aim-fg:#000;--aim-subtle:rgba(167,139,250,.15);
+  --clarify:#eab308;--clarify-subtle:rgba(234,179,8,.08);
+  --diff-add:rgba(46,160,67,.15);--diff-add-text:#7ee787;
+  --diff-del:rgba(248,81,73,.15);--diff-del-text:#ffa198;
+  --diff-hunk:rgba(4,117,88,.2);--diff-hunk-text:#6ee7b7;
+  --diff-meta-text:#e6edf3;
+  --json-key:#9CDCFE;--json-str:#CE9178;--json-num:#B5CEA8;--json-bool:#569CD6;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.2);
+  --shadow-md:0 4px 12px rgba(0,0,0,.25),0 0 0 1px rgba(255,255,255,.03);
+  --shadow-lg:0 12px 28px rgba(0,0,0,.35);
+  color-scheme:dark;
+}
+[data-theme="light"],[data-theme="amber-light"]{
+  --search-highlight:rgba(255,167,38,.35);--search-highlight-current:rgba(255,120,0,.7);--search-highlight-current-border:rgba(0,0,0,.8);
+  --bg:#fafafa;--bg-accent:#f5f5f5;--bg-elevated:#ffffff;--bg-hover:#f0f0f0;
+  --card:#ffffff;--card-fg:#18181b;--card-hl:rgba(0,0,0,.03);
+  --panel:#fafafa;--panel-strong:#f5f5f5;
+  --chrome:rgba(250,250,250,.95);
+  --text:#3f3f46;--text-strong:#18181b;--muted:#71717a;--muted-fg:#fff;--muted-strong:#52525b;
+  --border:#e4e4e7;--border-strong:#d4d4d8;--border-hover:#a1a1aa;
+  --accent:#047558;--accent-fg:#fff;--accent-hover:#059669;--accent-subtle:rgba(4,117,88,.12);
+  --accent-glow:rgba(4,117,88,.18);--ring:#047558;
+  --ok:#16a34a;--ok-fg:#000;--ok-subtle:rgba(22,163,74,.1);
+  --warn:#a16207;--warn-fg:#fff;--warn-subtle:rgba(161,98,7,.1);
+  --danger:#dc2626;--danger-fg:#fff;--danger-subtle:rgba(220,38,38,.1);
+  --info:#0891b2;--info-fg:#000;
+  --aim:#7c3aed;--aim-fg:#fff;--aim-subtle:rgba(124,58,237,.12);
+  --clarify:#a16207;--clarify-subtle:rgba(161,98,7,.06);
+  --diff-add:rgba(22,163,74,.12);--diff-add-text:#1a7f37;
+  --diff-del:rgba(220,38,38,.12);--diff-del-text:#cf222e;
+  --diff-hunk:rgba(4,117,88,.12);--diff-hunk-text:#065f46;
+  --diff-meta-text:#1f2328;
+  --json-key:#001080;--json-str:#A31515;--json-num:#098658;--json-bool:#0000FF;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.06);
+  --shadow-md:0 4px 12px rgba(0,0,0,.08),0 0 0 1px rgba(0,0,0,.04);
+  --shadow-lg:0 12px 28px rgba(0,0,0,.12);
+  color-scheme:light;
+}
+

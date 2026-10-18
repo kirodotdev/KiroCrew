@@ -12,11 +12,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import SidePanelLayout, { type SidePanelTab } from '../components/SidePanelLayout'
+import { readIndexCss } from './indexCssSource'
 
 let mobile = true
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => mobile }))
 
-const INDEX_CSS = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf-8')
+const INDEX_CSS = readIndexCss()
 
 const TABS: SidePanelTab[] = [
   { key: 'chat', label: 'Chat', icon: <svg data-testid="chat-icon" />, tile: 'var(--tile-green)' },

@@ -39,14 +39,14 @@
  * leading unicode-ranged alias is deterministic regardless of what follows it.
  */
 
-import { readFileSync } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 import { basename, join, relative } from 'node:path'
 
 import { describe, it, expect } from 'vitest'
+import { readIndexCss } from '../test/indexCssSource'
 
 const SRC = join(__dirname, '..')
-const INDEX_CSS = readFileSync(join(SRC, 'index.css'), 'utf8')
+const INDEX_CSS = readIndexCss()
 
 /** Region-specific Han aliases must never share an active token. */
 const SC_ALIASES = [

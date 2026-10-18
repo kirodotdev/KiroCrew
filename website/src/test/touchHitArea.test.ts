@@ -10,10 +10,9 @@
  * left/right against its width).
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readIndexCss } from './indexCssSource'
 
-const CSS = readFileSync(resolve(__dirname, '../index.css'), 'utf8')
+const CSS = readIndexCss()
 
 /** The `@layer components { @media (pointer: coarse) { ... } }` block that owns the classes. */
 const BLOCK = /@layer components \{\n {2}@media \(pointer: coarse\) \{\n([\s\S]*?)\n {2}\}\n\}/.exec(CSS)
