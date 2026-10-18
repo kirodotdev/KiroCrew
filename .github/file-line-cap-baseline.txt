@@ -134,9 +134,7 @@
 2288 test/test_cloud_source.py
 2260 test/test_config_live.py
 2868 test/test_connections_mint.py
-2226 test/test_context_composition_contract.py
 6406 test/test_crew_log_emit.py
-2202 test/test_crew_log_fold_eager.py
 2195 test/test_crew_turn_proxy.py
 3125 test/test_cron_script.py
 2247 test/test_cron_secret_env.py
@@ -183,7 +181,6 @@
 2725 test/test_plugin_import.py
 8519 test/test_pod.py
 3225 test/test_portability.py
-2215 test/test_publish_sync.py
 2147 test/test_recovery_l1_chat_runner.py
 3193 test/test_sandbox_absent_ceiling_seal.py
 12647 test/test_security.py
@@ -206,7 +203,6 @@
 2390 test/test_slack_transport_dispatch.py
 3265 test/test_snapshot.py
 2641 test/test_spawn_audit.py
-2211 test/test_stt_engine.py
 3093 test/test_subagent.py
 3616 test/test_subagent_panel_durable_replay.py
 3177 test/test_subagent_scale.py

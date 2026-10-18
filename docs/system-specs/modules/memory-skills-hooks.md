@@ -6365,7 +6365,7 @@ At module scope an owner imports only its sibling owners and type-checking-only
 names; any other Kiro Crew import is function-local. An owner defines no async function
 and never reads `__file__`: those stay on the facade. Owners read every name callers
 rebind on `kiro_crew.context` through it at call time, so a patch there still
-reaches the moved code; `test/test_context_composition_contract.py` derives that set
+reaches the moved code; `test/test_context_composition_contract_facade.py` derives that set
 from the tests and pins it.
 
 Assembles all sources into prompts:

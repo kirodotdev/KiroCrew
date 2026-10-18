@@ -5444,7 +5444,7 @@ Two rules close it:
 
 ### A frozen list of a surface other branches keep growing
 
-`test/test_context_composition_contract.py` pins the full signature of
+`test/test_context_composition_contract_facade.py` pins the full signature of
 `ContextBuilder.build_message` as a string. A refactor branch recorded the list; a
 feature branch cut from an older base added one keyword. Each was green alone; on main
 together they were red on every platform and every later pull request inherited it.

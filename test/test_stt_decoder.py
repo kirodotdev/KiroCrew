@@ -68,7 +68,7 @@ def _serve(monkeypatch, body: bytes) -> None:
 
     Patched at the shared streamer rather than at ``urlopen`` so the test states
     which seam it stands in for; the streamer's own pin enforcement has its own
-    coverage in ``test_stt_engine.py``. Substituted on ``decoder``'s OWN global,
+    coverage in ``test_stt_engine_download.py``. Substituted on ``decoder``'s OWN global,
     which is the name the fetch reads -- a from-import means patching the defining
     module would not be seen here.
     """
