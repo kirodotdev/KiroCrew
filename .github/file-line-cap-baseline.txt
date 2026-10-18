@@ -19,7 +19,6 @@
 6697 src/kiro_crew/agent.py
 2265 src/kiro_crew/agent_discovery.py
 2259 src/kiro_crew/apps/builtins/auto_improvement/spine/agent_runner.py
-2879 src/kiro_crew/apps/builtins/aws_control/crew/runtime/container/sidecar/backup.py
 2683 src/kiro_crew/apps/builtins/code_review_sage/backend/routes.py
 2802 src/kiro_crew/apps/builtins/md_notebook/server.py
 2449 src/kiro_crew/apps/builtins/spec_builder/backend/repository.py

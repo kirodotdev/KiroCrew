@@ -10,7 +10,10 @@ Three parts, and the seam between them is the object key:
 
 * :mod:`container.sidecar.store` -- the bucket, as ``put`` and ``get`` and nothing else.
 * :mod:`container.sidecar.backup` -- one cycle: what must be durable, copied from one
-  descriptor per object with no staged duplicate and nothing skipped for its size.
+  descriptor per object with no staged duplicate and nothing skipped for its size. Its
+  owners hold what no test patches through it: :mod:`container.sidecar.backup_record` (the
+  plan and the result), :mod:`container.sidecar.backup_durable` (snapshots and what the
+  bucket already holds) and :mod:`container.sidecar.backup_commit` (the authority phase).
 * :mod:`container.sidecar.restore` -- the two authority files, back on disk before the
   backend starts, validated so bytes it would silently ignore refuse the boot instead.
 

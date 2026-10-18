@@ -2314,6 +2314,17 @@ in no committed generation. The loss is bounded by that window rather than total
 deployment driver is expected to serialize stop before start; where it cannot, this is the
 residual.
 
+The cycle is `container/sidecar/backup.py`, the module the sidecar's entrypoint and the
+container suite import. It keeps the enumeration, the data phase and `run_cycle` -- the code
+that reads the names the suite patches on that module -- and three sibling owners hold the
+rest: `backup_record.py` (the plan and result records and their sample caps),
+`backup_durable.py` (snapshots, fingerprints, the lifetime state map, the reads through a
+snapshot's descriptor and the drain-window gate) and `backup_commit.py` (the authority phase,
+the transcript index and the incarnation fence). New work goes to the owner of its
+responsibility. The module forwards nothing: a patch of `backup.<name>` reaches only code that
+reads the name from `backup.py`, so a function that reads a patched name stays there or reads
+it as `backup.<name>` at call time, and `test/test_backup_sidecar_facade.py` pins that.
+
 ### The front layer
 
 Two customer routes and nothing else. Everything is classified once, on the path
