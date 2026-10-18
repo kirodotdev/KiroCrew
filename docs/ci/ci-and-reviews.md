@@ -3068,6 +3068,33 @@ exact head is not a re-roll. A *transient* failure needs none of this: such a ru
 marks its own check-run `[scope-floor:unsettled]`, sets no per-head floor, and clears
 on a re-run.
 
+### Keeping a confirmed row
+
+A confirmed row lives only in the lane's comment, so the next run has to find it
+again from a fresh model call. To keep it, save the comment's confirmed-rows JSON
+to a file and append it to the committed corpus:
+
+```
+python3 scripts/scope_candidates.py harvest --rows rows.json --surface gh-read \
+    --corpus src/kiro_crew/builtin_skills/security-conductor/golden-paths.json
+```
+
+Commit the result in its own pull request. The rules:
+
+- Only confirmed rows qualify. A candidate that stayed allowed is not evidence
+  that it is a golden path, and the rows file never holds one.
+- A person approves each row by reviewing that pull request. The script only
+  writes a file.
+- Rows are appended, never rewritten or removed. The denial differential judges
+  each row on its own, so a new row can add a block and never remove one.
+- A row already in the corpus is skipped, by the same `(kind, command, platform)`
+  key `validate` uses. Exit `3` means every row was already there. On later runs
+  `validate` drops the kept row, and the denial differential checks it instead.
+- `--surface` fills the corpus field the ledger import needs.
+- A row holding a `[REDACTED` placeholder is refused: it names no real operation.
+- The test that pins every corpus row as allowed at `HEAD` refuses a row `main`
+  already refuses.
+
 ## `sensitive-change-review.yml`: a reasoned review record
 
 A PR that touches the sandbox, the command floor, the tool gate, secret
