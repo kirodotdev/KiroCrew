@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
+import { readPageFamily } from './pageFamily'
+
 const app = (p: string) => readFile(join(__dirname, '..', 'apps', p), 'utf8')
+// The Notes page is a split page: its facade plus the owners beside it.
+const notebookPage = () => readPageFamily('MdNotebookPage', join(__dirname, '..', 'apps', 'md-notebook'))
 
 // Both apps put a fixed-width navigator beside the pane that carries the primary
 // text, with nothing gating it on viewport width. At 390px that left the file
@@ -55,7 +59,7 @@ describe('file-explorer at phone widths', () => {
 
 describe('md-notebook at phone widths', () => {
   it('drives the existing panel toggle from the viewport', async () => {
-    const s = await app('md-notebook/MdNotebookPage.tsx')
+    const s = notebookPage()
     expect(s, 'expected a viewport hook').toContain('useIsMobile')
     expect(s, 'expected a derived visibility').toMatch(/const panelShown = isMobile \? \(narrowPanelOpen \|\| \(!activePath && !settingsOpen\)\) : panelOpen/)
     expect(s, 'the panel must render from the derived value').toMatch(/\{panelShown && \(/)
@@ -64,7 +68,7 @@ describe('md-notebook at phone widths', () => {
   })
 
   it('never writes the narrow state into the stored desktop preference', async () => {
-    const s = await app('md-notebook/MdNotebookPage.tsx')
+    const s = notebookPage()
     const fn = s.match(/const togglePanel = useCallback\([\s\S]*?\n  \}, \[[^\]]*\]\)/)
     expect(fn, 'expected togglePanel').not.toBeNull()
     // The narrow branch returns BEFORE savePref: a phone visit must not change
@@ -75,7 +79,7 @@ describe('md-notebook at phone widths', () => {
   })
 
   it('gives the open panel the full width and closes it on pick', async () => {
-    const s = await app('md-notebook/MdNotebookPage.tsx')
+    const s = notebookPage()
     expect(s, 'expected a full-width panel while narrow')
       .toMatch(/width: isMobile \? '100%' : `\$\{panelW\}px`/)
     const fn = s.match(/const openNote = useCallback\([\s\S]*?\n  \}, \[[^\]]*\]\)/)
@@ -85,7 +89,7 @@ describe('md-notebook at phone widths', () => {
   })
 
   it('does not leave the empty state pointing at a control it just hid', async () => {
-    const s = await app('md-notebook/MdNotebookPage.tsx')
+    const s = notebookPage()
     // The empty state reads "Select a note, or create one with the + button" and
     // that + lives INSIDE the drawer. Closed, it instructs an off-screen control.
     expect(s).toMatch(/const panelShown = isMobile \? \(narrowPanelOpen \|\| \(!activePath && !settingsOpen\)\) : panelOpen/)
@@ -99,7 +103,7 @@ describe('md-notebook at phone widths', () => {
   // drawer owns the pane, hidden rather than unmounted so the editor's scroll
   // and pending-save state survive a drawer round trip.
   it('takes the main column out of the pane while the drawer owns it', async () => {
-    const s = await app('md-notebook/MdNotebookPage.tsx')
+    const s = notebookPage()
     expect(s, 'the main column must be hidden, not unmounted, behind the open drawer')
       .toMatch(/<div style=\{\{ display: isMobile && panelShown \? 'none' : 'contents' \}\}>\s*\n\s*\{settingsOpen \? \(/)
   })
@@ -108,7 +112,7 @@ describe('md-notebook at phone widths', () => {
   // from the drawer left the drawer forced open (no note picked), so the page
   // rendered 0px wide with only its close button leaking over the tree.
   it('lets the drawer step aside for the Settings page it opened', async () => {
-    const s = await app('md-notebook/MdNotebookPage.tsx')
+    const s = notebookPage()
     const bar = s.match(/<SettingsBar[\s\S]*?\/>/)
     expect(bar, 'expected the SettingsBar element').not.toBeNull()
     expect(bar![0]).toContain('if (isMobile) setNarrowPanelOpen(false)')

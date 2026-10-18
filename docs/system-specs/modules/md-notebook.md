@@ -459,6 +459,14 @@ The UI is a compiled builtin surface at `website/src/apps/md-notebook/`, routed 
 only from `apps_dir()/<name>/ui/`, and builtin registration writes metadata without
 copying files there, so a package-resident builtin must compile into the frontend.
 
+The page is `website/src/apps/md-notebook/MdNotebookPage.tsx`, the route's import path,
+which renders the panel and the open note. Its state, effects and actions (the note
+buffer and its saving, the sync settings, the vault and note commands, the polls and
+search) live in `website/src/apps/md-notebook/useMdNotebookPageState.ts`, the page's one
+hook. New state or behaviour goes in the hook, or in a sibling
+`useMdNotebookPage<Part>.ts` the hook calls, and new markup in the page;
+`website/src/apps/md-notebook/MdNotebookPage.owners.test.tsx` pins that shape.
+
 Knowledge-sync calls go to the HOST API (`/api/knowledge/*`) rather than the app namespace,
 because registration needs the user's dashboard session. `/api/knowledge` is therefore
 declared in the manifest's `permissions.api`.

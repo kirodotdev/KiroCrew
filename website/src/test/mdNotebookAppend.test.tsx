@@ -8,7 +8,7 @@
  * slot; pointing one past it appended a blank line the user never typed.
  *
  * The indices asserted here are the contract `commitBlockEdit` /`splitBlockEdit`
- * in `MdNotebookPage.tsx` splice against, so `commitAppend` below mirrors that
+ * in `useMdNotebookPageState.ts` splice against, so `commitAppend` below mirrors that
  * splice to show the resulting text rather than only the index.
  */
 import { describe, it, expect, vi } from 'vitest'
@@ -44,7 +44,7 @@ async function clickAppend() {
 }
 
 /**
- * Mirrors the insertion path of `commitBlockEdit` in `MdNotebookPage.tsx`: it
+ * Mirrors the insertion path of `commitBlockEdit` in `useMdNotebookPageState.ts`: it
  * splices against the WHOLE file split on newlines, with `count === 0` for an
  * insertion (`end < start`). Frontmatter is absent here, so `fmOffset()` is 0.
  */

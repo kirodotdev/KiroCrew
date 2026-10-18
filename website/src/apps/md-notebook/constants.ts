@@ -58,7 +58,7 @@ export const LS = {
 
 /**
  * Keys that USED to hold auto-sync settings, kept only so an existing choice can
- * be migrated into the backend once (see the settings seed in MdNotebookPage).
+ * be migrated into the backend once (see the settings seed in useMdNotebookPageState).
  *
  * Auto-sync moved server-side because the backend runs the sync loop itself and
  * cannot read a browser's storage, so a value here could never be honoured — and
