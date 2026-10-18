@@ -646,7 +646,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_supervision import (  # noqa: F401
         _CREW_SLOT_PREFIX,
+        _STAND_DOWN_REASONS,
         DISMISSED_PAUSE_REASON,
+        STOOD_DOWN_PAUSE_REASON,
         _crew_for_slot_key,
         _disabling,
         _is_crew_slot_key,
@@ -654,8 +656,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _note_revocation,
         _on_slot_close_undone,
         _on_slot_closed,
+        _pause_stood_down_crew,
         _reconcile_trust,
+        _retire_stood_down_loop,
         _revoke_generation,
+        _stood_down,
         _trust_inputs,
         _wake_crew_body,
         install_app_disable_hook,
@@ -676,6 +681,10 @@ if TYPE_CHECKING:  # names it serves from outside the owner family, from their h
     from kiro_crew.apps.teardown import (  # noqa: F401
         register_slot_close_hook,
         register_slot_close_undo_hook,
+    )
+    from kiro_crew.autonudge_service.model import (  # noqa: F401
+        CONSECUTIVE_FAILURE_REASON,
+        SESSION_START_FAILURE_REASON,
     )
     from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
         rehydrate_slot_from_history_async,
