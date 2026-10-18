@@ -812,6 +812,43 @@ class TestShapeHashOverMerges(_HomeIsolated):
         self.assertEqual(summary["decayed"], 1)
         self.assertEqual(ledger.read_entries()[0].confidence, models.CONFIDENCE_MEDIUM)
 
+    def test_prune_drops_the_stalest_of_tied_entries(self):
+        """On a tie in use, trust and confidence, the prune drops the entry used longest ago.
+
+        That is the ``MAX_LEDGER_ENTRIES`` contract (least used, weakest confidence, oldest).
+        Sorting ``last_used`` ascending kept the stalest entry and pruned the freshest one.
+        Both file orders are run so the result cannot come from the sort being stable.
+        """
+        from unittest import mock
+
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger, models
+
+        now = datetime(2026, 10, 1, tzinfo=timezone.utc)
+
+        def stamped(pattern: str, days_ago: int) -> models.LedgerEntry:
+            entry = models.LedgerEntry.create(pattern=pattern, fix="f")
+            entry.last_used = (now - timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return entry
+
+        for order in ("older-first", "newer-first"):
+            with self.subTest(order=order):
+                older, newer = stamped("older", 20), stamped("newer", 2)
+                ledger._write_all([older, newer] if order == "older-first" else [newer, older])
+                with mock.patch.object(ledger, "MAX_LEDGER_ENTRIES", 1):
+                    summary = ledger.hygiene(now=now)
+                self.assertEqual(summary["pruned"], 1)
+                self.assertEqual(summary["decayed"], 0, "neither entry is past the decay window")
+                self.assertEqual([e.pattern for e in ledger.read_entries()], ["newer"])
+
+        # Recency only breaks ties: an older entry with more net uses still outranks a
+        # fresher one with none.
+        useful, fresh = stamped("useful", 20), stamped("fresh", 2)
+        useful.use_count = 3
+        ledger._write_all([fresh, useful])
+        with mock.patch.object(ledger, "MAX_LEDGER_ENTRIES", 1):
+            ledger.hygiene(now=now)
+        self.assertEqual([e.pattern for e in ledger.read_entries()], ["useful"])
+
     def test_hygiene_is_a_noop_when_clean(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend import ledger, models
 

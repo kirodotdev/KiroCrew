@@ -726,7 +726,10 @@ def _hygiene_locked(now: datetime | None) -> dict[str, int]:
                 entry.use_count,
             )
 
-    # Prune to the cap, dropping least-valuable first.
+    # Prune to the cap, dropping least-valuable first. Most recently used first, then a
+    # stable sort on value, so among entries tied on value the stalest sorts last and is
+    # the one pruned (``last_used`` is an ISO string, so it cannot be negated in the key).
+    deduped.sort(key=lambda e: e.last_used, reverse=True)
     deduped.sort(
         key=lambda e: (
             # Misses subtract from standing in the prune order. Ranked on ``-use_count``
@@ -738,7 +741,6 @@ def _hygiene_locked(now: datetime | None) -> dict[str, int]:
             -(e.use_count - e.miss_count),
             0 if e.trust == TRUST_VERIFIED else 1,
             _confidence_rank(e.confidence),
-            e.last_used,
         )
     )
     pruned = max(0, len(deduped) - MAX_LEDGER_ENTRIES)
