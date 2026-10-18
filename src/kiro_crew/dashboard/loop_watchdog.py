@@ -105,6 +105,7 @@ from __future__ import annotations
 
 import faulthandler
 import logging
+import os
 import signal
 import sys
 import threading
@@ -114,9 +115,12 @@ from collections.abc import Callable
 from kiro_crew.dashboard.stall_enrichment import collect_stall_enrichment, describe_loop_thread
 from kiro_crew.diag.threads import _parse_stat, _read_text, _task_dir
 from kiro_crew.platform_compat import (
+    MEMORY_PRESSURE_WARN,
     arm_process_alarm,
     awake_now,
     boottime_now,
+    memory_pressure_level,
+    proc_pageins_for_pid,
     process_alarm_available,
 )
 
@@ -133,6 +137,13 @@ SUSPEND_SKEW_MIN_SECS: float = 2.0
 #: paging still ends the process.
 PAGING_GRACE_MAX_SECS: float = 600.0
 
+#: The macOS grace cap, shorter than the Linux one on purpose.  The macOS
+#: page-in signal (:func:`read_loop_pageins_under_pressure`) is process-wide,
+#: not per-thread, so it cannot tell "the loop thread is paging" from "some
+#: other thread in the process is paging".  A shorter cap bounds how long a
+#: genuinely wedged loop can be kept alive by an unrelated thread's paging.
+PAGING_GRACE_MAX_SECS_MACOS: float = 120.0
+
 
 def read_thread_major_faults(native_thread_id: int | None) -> int | None:
     """Major page faults taken so far by one thread of this process.
@@ -148,6 +159,48 @@ def read_thread_major_faults(native_thread_id: int | None) -> int | None:
         return None
     major_faults = _parse_stat(stat_text).get("major_faults")
     return major_faults if isinstance(major_faults, int) else None
+
+
+def read_loop_pageins_under_pressure(
+    _native_thread_id: int | None,
+    *,
+    pressure_level: "Callable[[], int | None]" = memory_pressure_level,
+    pageins: "Callable[[int], int | None]" = proc_pageins_for_pid,
+    warn_level: int = MEMORY_PRESSURE_WARN,
+) -> int | None:
+    """macOS analogue of :func:`read_thread_major_faults` for the paging deferral.
+
+    Plugs into the same ``loop_major_faults`` hook, so :meth:`LoopStallWatchdog.
+    _defer_exit_while_paging` needs no change.  It returns the process's
+    ``ri_pageins`` count **only while the host is under memory pressure**
+    (``memory_pressure_level`` at or above WARN); otherwise it returns ``None``.
+
+    The ``None``-when-not-pressured choice is deliberate and load-bearing.  The
+    deferral acts on a *rise* between two readings, and ``None`` is already its
+    "no reading -- reset the baseline, defer nothing" path.  Returning a flat
+    ``0`` instead would manufacture a huge false rise on the first pressured poll
+    after an unpressured one (``0`` -> true count) and defer a genuinely wedged
+    loop.  So the pressure gate folds into the reader as: no pressure -> ``None``
+    -> no baseline -> no deferral.
+
+    This is also why a stall the compressor serves (pressure high, disk pageins
+    flat) still exits on the normal budget: the count does not rise, so nothing
+    defers.  The signal only ever *extends* the budget on real disk-pagein
+    progress; it can never keep a flat-pagein stall alive.
+
+    The signal is process-wide, not per-thread -- macOS exposes no public
+    per-thread page-in count -- so ``_native_thread_id`` is accepted to match
+    :func:`read_thread_major_faults`'s signature and ignored.  That coarseness
+    is bounded by the shorter :data:`PAGING_GRACE_MAX_SECS_MACOS`.
+
+    Off macOS, or on any unreadable signal, returns ``None``.  The two readers
+    are injectable so the deferral can be driven deterministically in tests
+    without ever inducing real memory pressure.
+    """
+    level = pressure_level()
+    if level is None or level < warn_level:
+        return None
+    return pageins(os.getpid())
 
 
 #: The mechanism the last :func:`_default_arm_later` armed the dump-then-exit
@@ -365,7 +418,19 @@ class LoopStallWatchdog:
             :func:`kiro_crew.dashboard.stall_enrichment.collect_stall_enrichment`.
         loop_major_faults: Reads the loop thread's major-fault count from its
             native thread id, ``None`` when unknown; injectable for tests.
-            Defaults to :func:`read_thread_major_faults`.
+            Defaults to :func:`read_thread_major_faults`.  macOS passes
+            :func:`read_loop_pageins_under_pressure` instead.
+        paging_grace_max: Longest the exit may be deferred past ``exit_after``
+            while the loop keeps paging.  ``None`` resolves to the module
+            :data:`PAGING_GRACE_MAX_SECS` at construction; macOS passes the
+            shorter :data:`PAGING_GRACE_MAX_SECS_MACOS` because its page-in
+            signal is process-wide rather than per-thread.
+        paging_log_message: The WARNING logged once per paging deferral, a
+            ``%``-format string taking silence seconds, the count delta and the
+            total budget.  ``None`` uses the Linux default, which names the loop
+            thread's major faults.  macOS passes a message that names the
+            process-wide page-in count instead and makes no claim about which
+            thread is paging or whether the loop is wedged.
         log: Logger, injectable for tests.
     """
 
@@ -387,6 +452,8 @@ class LoopStallWatchdog:
         enrich_after: float = 15.0,
         enrich: "Callable[[float], list[str]] | None" = None,
         loop_major_faults: Callable[[int | None], int | None] = read_thread_major_faults,
+        paging_grace_max: float | None = None,
+        paging_log_message: str | None = None,
         log: logging.Logger | None = None,
     ) -> None:
         self._stall_after = stall_after
@@ -412,6 +479,28 @@ class LoopStallWatchdog:
         # The kernel's id for that same thread, which names its procfs row.
         self._loop_native_thread_id: int | None = None
         self._loop_major_faults = loop_major_faults
+        # The grace cap for THIS instance, resolved from the module default at
+        # construction when not given.  Reading the module name here (not as a
+        # default-arg value, which binds once at def time) keeps a
+        # ``monkeypatch.setattr(loop_watchdog, "PAGING_GRACE_MAX_SECS", ...)``
+        # done before construction effective, and lets the macOS watchdog pass
+        # the shorter ``PAGING_GRACE_MAX_SECS_MACOS`` without a platform branch
+        # inside the hot path.
+        self._paging_grace_max = (
+            PAGING_GRACE_MAX_SECS if paging_grace_max is None else paging_grace_max
+        )
+        # The WARNING a paging deferral logs, once per silence. Parametrised
+        # because the Linux signal is the loop thread's own major-fault count
+        # (so the message can name the thread and rule out a wedge) while the
+        # macOS signal is the whole process's page-in count, which cannot tell
+        # the loop thread's paging from another thread's -- so its message must
+        # not claim the loop thread is paging or that the loop is not wedged.
+        # Takes three %-args: silence seconds, the count delta, total budget.
+        self._paging_log_message = paging_log_message or (
+            "event loop silent %.1fs while its thread is paging (%d major faults "
+            "since the last poll): the host is short of memory, not the loop "
+            "wedged, so the stall exit is deferred for up to %.0fs of silence"
+        )
         # Counts beats, so a paging deferral can tell that the loop beat after
         # it sampled and must leave the beat's fresh deadline alone.
         self._beat_generation = 0
@@ -565,9 +654,7 @@ class LoopStallWatchdog:
             return False
         # Healthy / recovered — silence is back below the first threshold.
         if self._dumped:
-            self._log.warning(
-                "event loop recovered after stall (last beat %.1fs ago)", silence
-            )
+            self._log.warning("event loop recovered after stall (last beat %.1fs ago)", silence)
         if self._enriched and not self._dumped:
             self._log.warning(
                 "event loop recovered after stall enrichment (last beat %.1fs ago)",
@@ -609,7 +696,7 @@ class LoopStallWatchdog:
             return
         if major_faults <= baseline[1]:
             return
-        remaining_budget = exit_after + PAGING_GRACE_MAX_SECS - silence
+        remaining_budget = exit_after + self._paging_grace_max - silence
         if remaining_budget <= 0:
             return
         if not self._rearm_alarm(min(exit_after, remaining_budget), unless_beat_since=generation):
@@ -617,12 +704,10 @@ class LoopStallWatchdog:
         if self._paging_logged_generation != generation:
             self._paging_logged_generation = generation
             self._log.warning(
-                "event loop silent %.1fs while its thread is paging (%d major faults "
-                "since the last poll): the host is short of memory, not the loop "
-                "wedged, so the stall exit is deferred for up to %.0fs of silence",
+                self._paging_log_message,
                 silence,
                 major_faults - baseline[1],
-                exit_after + PAGING_GRACE_MAX_SECS,
+                exit_after + self._paging_grace_max,
             )
 
     def claim_lag_enrichment(self, lag: float) -> bool:
@@ -726,9 +811,7 @@ class LoopStallWatchdog:
             except Exception:  # pragma: no cover - degrade to soft dump only
                 self._log.exception("loop watchdog failed to arm the stall alarm")
                 self._later_active = False
-        self._thread = threading.Thread(
-            target=self._run, name="loop-stall-watchdog", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="loop-stall-watchdog", daemon=True)
         self._thread.start()
         if self._exit_after is not None and self._enrich_after >= self._exit_after:
             # Not fatal — enrichment just never lands before the exit.  Flag it

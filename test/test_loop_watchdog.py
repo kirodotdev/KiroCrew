@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import os
 import signal
 import subprocess
 import sys
@@ -483,6 +484,242 @@ def test_the_fault_reader_answers_none_without_a_thread_or_off_linux(
 def test_the_fault_reader_reads_this_threads_real_procfs_row() -> None:
     count = loop_watchdog.read_thread_major_faults(threading.get_native_id())
     assert isinstance(count, int) and count >= 0
+
+
+# ── macOS page-in reader + its paging deferral ───────────────────────────────
+#
+# None of these tests induce real memory pressure. The pressure level and the
+# page-in count are injected callables, so the whole gate+delta behaviour is
+# driven deterministically. This is the safety contract: simulating the paging
+# scenario must never risk the test host under real swap.
+
+_MACOS_WARN = platform_compat.MEMORY_PRESSURE_WARN
+_MACOS_NORMAL = platform_compat.MEMORY_PRESSURE_NORMAL
+# Mirrors the message heartbeat.py passes for the macOS watchdog: it names the
+# process page-in count and makes no claim about which thread is paging.
+_MACOS_PAGING_MESSAGE = (
+    "event loop silent %.1fs while the process is paging (%d page-ins "
+    "under memory pressure since the last poll): the stall exit is "
+    "deferred for up to %.0fs of silence"
+)
+
+
+def _macos_reader(*, pressure: "Callable[[], int | None]", pageins: "Callable[[int], int | None]"):
+    """A macOS reader bound to injected pressure/pageins, matching the hook signature."""
+
+    def read(native_thread_id: int | None) -> int | None:
+        return loop_watchdog.read_loop_pageins_under_pressure(
+            native_thread_id, pressure_level=pressure, pageins=pageins, warn_level=_MACOS_WARN
+        )
+
+    return read
+
+
+def test_macos_reader_returns_none_without_pressure() -> None:
+    read = _macos_reader(pressure=lambda: _MACOS_NORMAL, pageins=lambda _p: 500)
+    assert read(None) is None
+
+
+def test_macos_reader_returns_pageins_under_pressure() -> None:
+    read = _macos_reader(pressure=lambda: _MACOS_WARN, pageins=lambda _p: 500)
+    assert read(None) == 500
+
+
+def test_macos_reader_returns_none_when_pressure_unreadable() -> None:
+    read = _macos_reader(pressure=lambda: None, pageins=lambda _p: 500)
+    assert read(None) is None
+
+
+def test_macos_reader_returns_none_when_pageins_unreadable() -> None:
+    read = _macos_reader(pressure=lambda: _MACOS_WARN, pageins=lambda _p: None)
+    assert read(None) is None
+
+
+class _MacosPagingFixture:
+    """A started watchdog wired with the macOS page-in reader and the shorter
+    macOS grace cap, stepped by hand against fake clocks and injected pressure
+    and page-in readings. No real memory pressure is ever created."""
+
+    def __init__(
+        self, *, exit_after: float = _MANAGED_BUDGET, paging_grace_max: float | None = None
+    ) -> None:
+        self.clock = _Clock()
+        self.arms: list[float] = []
+        self.pressure: int | None = _MACOS_WARN
+        self.pageins: int = 100
+        self.handler = _RecordingHandler()
+        log = logging.Logger("test.loop_watchdog.macos_paging")
+        log.addHandler(self.handler)
+        self.wd = LoopStallWatchdog(
+            stall_after=30.0,
+            exit_after=exit_after,
+            poll_interval=5.0,
+            now=self.clock,
+            suspend_clock=lambda: None,
+            dump=lambda: None,
+            arm_later=self.arms.append,
+            cancel_later=lambda: None,
+            loop_major_faults=_macos_reader(
+                pressure=lambda: self.pressure, pageins=lambda _p: self.pageins
+            ),
+            paging_grace_max=(
+                loop_watchdog.PAGING_GRACE_MAX_SECS_MACOS
+                if paging_grace_max is None
+                else paging_grace_max
+            ),
+            paging_log_message=_MACOS_PAGING_MESSAGE,
+            log=log,
+        )
+        self.wd._run = lambda: None  # type: ignore[method-assign]
+        self.wd.start()
+        self.wd.beat()
+        self.arms.clear()
+
+    def poll_at(self, silence: float, *, add_pageins: int = 0, pressure: int | None = -1) -> None:
+        self.clock.t = self.wd._last_beat + silence
+        if pressure != -1:
+            self.pressure = pressure
+        self.pageins += add_pageins
+        self.wd.check()
+
+    def paging_lines(self) -> list[str]:
+        return [m for m in self.handler.messages if "is paging" in m]
+
+
+def test_macos_pressure_and_rising_pageins_defers_and_says_so_once() -> None:
+    fx = _MacosPagingFixture()
+    try:
+        fx.poll_at(5.0, add_pageins=7)  # under two poll intervals: ignored
+        fx.poll_at(10.0)  # baseline
+        fx.poll_at(15.0, add_pageins=40)
+        fx.poll_at(20.0, add_pageins=12)
+        assert fx.arms == [_MANAGED_BUDGET, _MANAGED_BUDGET]
+        assert len(fx.paging_lines()) == 1
+        line = fx.paging_lines()[0]
+        assert "40 page-ins" in line
+        # The macOS signal is process-wide, so the message must not claim the
+        # loop thread is paging or that the loop is not wedged (Opus review).
+        assert "major faults" not in line
+        assert "its thread" not in line
+        assert "not the loop" not in line
+    finally:
+        fx.wd.stop()
+
+
+def test_macos_rising_pageins_without_pressure_never_defers() -> None:
+    fx = _MacosPagingFixture()
+    fx.pressure = _MACOS_NORMAL
+    try:
+        fx.poll_at(10.0)
+        fx.poll_at(15.0, add_pageins=40)
+        fx.poll_at(20.0, add_pageins=40)
+        assert fx.arms == []
+        assert fx.paging_lines() == []
+    finally:
+        fx.wd.stop()
+
+
+def test_macos_pressure_but_flat_pageins_exits_on_budget() -> None:
+    """The compressor case: pressure is high but disk page-ins stay flat, so the
+    count never rises, nothing defers, and the pre-armed budget stands."""
+    fx = _MacosPagingFixture()
+    try:
+        for silence in (10.0, 15.0, 20.0, 25.0, 30.0):
+            fx.poll_at(silence)  # add_pageins=0 -> flat
+        assert fx.arms == []
+        assert fx.paging_lines() == []
+    finally:
+        fx.wd.stop()
+
+
+def test_macos_pressure_clearing_mid_episode_does_not_fake_a_rise() -> None:
+    """Proves the reader returns None (not 0) without pressure: a pressured poll
+    following an unpressured one must not read as a huge page-in jump."""
+    fx = _MacosPagingFixture()
+    try:
+        fx.poll_at(10.0)  # pressured baseline, pageins=100
+        fx.poll_at(15.0, pressure=_MACOS_NORMAL, add_pageins=500)  # reader -> None
+        fx.poll_at(20.0, pressure=_MACOS_WARN)  # back under pressure, pageins=600
+        # The jump to 600 must NOT be seen as a 500 rise from a phantom 0 baseline.
+        assert fx.arms == []
+        assert fx.paging_lines() == []
+    finally:
+        fx.wd.stop()
+
+
+def test_macos_unreadable_signal_never_defers() -> None:
+    fx = _MacosPagingFixture()
+    fx.pressure = None
+    try:
+        for silence in (10.0, 15.0, 20.0, 25.0):
+            fx.poll_at(silence, add_pageins=40)
+        assert fx.arms == []
+    finally:
+        fx.wd.stop()
+
+
+def test_macos_foreground_budget_defers_nothing() -> None:
+    """A budget below stall_after is the desktop/foreground class: no deferral,
+    and the page-in reader is never even consulted."""
+    reads: list[int | None] = []
+    fx = _MacosPagingFixture(exit_after=_EXIT_BUDGET)
+    original = fx.wd._loop_major_faults
+
+    def _counting(tid: int | None) -> int | None:
+        reads.append(tid)
+        return original(tid)
+
+    fx.wd._loop_major_faults = _counting  # type: ignore[method-assign]
+    try:
+        fx.poll_at(10.0)
+        fx.poll_at(15.0, add_pageins=40)
+        fx.poll_at(20.0, add_pageins=40)
+        assert fx.arms == []
+        assert reads == []
+    finally:
+        fx.wd.stop()
+
+
+def test_macos_deferral_stops_at_the_shorter_grace_cap() -> None:
+    """The macOS cap is honored through the constructor kwarg, mirroring the
+    Linux module-constant cap test but without monkeypatching a global."""
+    fx = _MacosPagingFixture(paging_grace_max=30.0)
+    try:
+        fx.poll_at(105.0)
+        fx.poll_at(110.0, add_pageins=1)  # 10s of the 90+30=120s cap left
+        assert fx.arms == [pytest.approx(10.0)]
+        fx.poll_at(125.0, add_pageins=1)  # past the cap: no re-arm
+        assert fx.arms == [pytest.approx(10.0)]
+    finally:
+        fx.wd.stop()
+
+
+def test_macos_uses_the_120s_default_grace_cap() -> None:
+    fx = _MacosPagingFixture()
+    try:
+        assert fx.wd._paging_grace_max == loop_watchdog.PAGING_GRACE_MAX_SECS_MACOS == 120.0
+    finally:
+        fx.wd.stop()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="ri_pageins is a macOS counter")
+def test_macos_pageins_reader_reads_this_processs_real_counter() -> None:
+    """Read-only ABI check: ri_pageins at offset 48 is a non-negative int for
+    our own pid, and distinct from phys_footprint (offset 72) on the same buffer.
+    Does NOT try to force a page-in (that would need real swap)."""
+    pid = os.getpid()
+    pageins = platform_compat.proc_pageins_for_pid(pid)
+    assert isinstance(pageins, int) and pageins >= 0
+    footprint = platform_compat.proc_phys_footprint_bytes_for_pid(pid)
+    assert isinstance(footprint, int) and footprint > 0
+    # A mis-sliced offset straddling the wrong field would make these collide;
+    # a live process's footprint in bytes dwarfs its page-in count.
+    assert pageins != footprint
+
+
+def test_macos_pageins_reader_is_none_off_darwin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(platform_compat, "IS_MACOS", False)
+    assert platform_compat.proc_pageins_for_pid(os.getpid()) is None
 
 
 class _FakeDumpFile:

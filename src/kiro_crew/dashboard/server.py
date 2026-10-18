@@ -147,6 +147,10 @@ from kiro_crew.dashboard.listener_guard import (  # noqa: F401
     release_site,
 )
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog  # noqa: F401
+from kiro_crew.dashboard.loop_watchdog import (  # noqa: F401
+    PAGING_GRACE_MAX_SECS_MACOS,
+    read_loop_pageins_under_pressure,
+)
 from kiro_crew.dashboard.origin import (  # noqa: F401
     AUDIT_CLAIMED_KEY,
     PROBE_PATHS,
