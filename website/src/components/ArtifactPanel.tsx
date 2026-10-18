@@ -1,24 +1,23 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Component, Copy, ExternalLink, MessageSquare, MessageSquarePlus, Send, Loader2, Maximize2, Minimize2 } from 'lucide-react'
+import { Component, Copy, ExternalLink, MessageSquare, Loader2, Maximize2, Minimize2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import DetailPanel from './DetailPanel'
 import Clickable from './Clickable'
 import SelectionToolbar, { type SelectionAction } from './SelectionToolbar'
 import { isTouchDevice } from '../utils/isTouchDevice'
-import { SendBtn } from './ui'
+import { SubmitBar } from './ArtifactSubmitBar'
 import ErrorNotice from './ErrorNotice'
 import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage } from './ArtifactBody'
 import { useFileArtifactComments } from './FileArtifactComments'
 import { useConfirm } from './ConfirmDialog'
 import { formatArtifactCommentsMessage } from './CommentOverlay'
 import { copyToClipboard } from '../utils/clipboard'
-import { safeSetItem } from '../utils/safeStorage'
-import { offlineProps } from '../utils/offline'
 import { api } from '../api/client'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { useArtifactLiveReload } from '../hooks/useArtifactLiveReload'
+import { useSentCommentIds } from '../hooks/useSentCommentIds'
 import type { Artifact } from '../types'
 
 import { i18nT } from '../i18n/t'
@@ -60,75 +59,10 @@ interface Props {
 
 const BODY_HEIGHT_STYLE: React.CSSProperties = { height: '100%', minHeight: 0 }
 
-/** Sent-to-chat comment ids for one artifact — see "submitted-to-chat
- *  tracking" in the component. A corrupt/absent entry reads as "nothing
- *  sent yet", which only ever over-counts the pending batch. */
-const readSentIds = (key: string): Set<string> => {
-  try { return new Set<string>(JSON.parse(localStorage.getItem(key) || '[]')) }
-  catch { return new Set<string>() }
-}
 // Non-fullscreen sidebar stacks below content (not beside it) and is
 // height-capped so content stays the primary region in the narrow panel.
 const STACKED_SIDEBAR_CLASS = 'w-full shrink-0 flex flex-col rounded-xl border border-border bg-card overflow-hidden'
 const STACKED_SIDEBAR_STYLE: React.CSSProperties = { maxHeight: 280, minHeight: 0 }
-
-/** Submit-to-chat bar with an optional "Add overall instruction" affordance. The
- *  free-form note is threaded through as the `extraPrompt` arg only when the
- *  toggle is open, and cleared after submit.
- *
- *  Exported so the standalone artifact page can put the SAME bar in the comments
- *  sidebar's footer, rather than growing a second one that drifts. */
-export function SubmitBar({ count, submitting, onSubmit, bleed = false, connected = true }: {
-  count: number; submitting: boolean; onSubmit: (extraPrompt?: string) => void
-  /** Bleed to the panel edges (non-fullscreen, inside the negative-margin
-   *  content wrapper). Fullscreen uses its own padding, so omit it there. */
-  bleed?: boolean
-  /** Gateway connection flag — disables Submit while offline. */
-  connected?: boolean
-}) {
-  const [extraPrompt, setExtraPrompt] = useState('')
-  const [showExtraPrompt, setShowExtraPrompt] = useState(false)
-  const extraPromptRef = useRef<HTMLTextAreaElement>(null)
-  useEffect(() => { if (showExtraPrompt) extraPromptRef.current?.focus() }, [showExtraPrompt])
-  const submit = useCallback(() => {
-    onSubmit(showExtraPrompt ? extraPrompt : undefined)
-    setExtraPrompt('')
-    setShowExtraPrompt(false)
-  }, [onSubmit, showExtraPrompt, extraPrompt])
-  return (
-    <div className={`border-t border-border bg-chrome px-3 py-2 ${bleed ? '-mb-4 -ml-4' : 'rounded-md border-x border-b'}`}>
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-[13px] text-text truncate">
-            {i18nT('components.artifactPanel.comment', { count: count })} {i18nT('components.artifactPanel.to_send_to_this_chat')}
-          </span>
-          <button
-            type="button"
-            aria-label={i18nT('components.artifactPanel.toggle_additional_instruction')}
-            title={i18nT('components.artifactPanel.overall_instruction_hint')}
-            aria-pressed={showExtraPrompt}
-            onClick={() => setShowExtraPrompt(v => !v)}
-            className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium border cursor-pointer transition-all shrink-0 ${showExtraPrompt ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
-          ><MessageSquarePlus className="lucide-inline" /> {i18nT('components.artifactPanel.add_instruction')}</button>
-        </div>
-        <SendBtn onClick={submit} disabled={submitting || !connected} {...offlineProps(connected, i18nT('utils.offline.submit_comments'), i18nT('components.artifactPanel.submit'))}>
-          {i18nT('components.artifactPanel.submit')} <Send className="lucide-inline" />
-        </SendBtn>
-      </div>
-      {showExtraPrompt && (
-        <textarea
-          ref={extraPromptRef}
-          aria-label={i18nT('components.artifactPanel.additional_instruction')}
-          placeholder={i18nT('components.artifactPanel.optional_overall_feedback_or_an_extra_instructio')}
-          value={extraPrompt}
-          onChange={e => setExtraPrompt(e.target.value)}
-          rows={2}
-          className="mt-2 w-full bg-bg-elevated border border-border rounded-md px-2.5 py-1.5 text-text text-[13px] font-body outline-hidden resize-none focus-ring leading-[18px]"
-        />
-      )}
-    </div>
-  )
-}
 
 /**
  * Side-panel Artifacts tab. Reuses the shared artifact body
@@ -202,23 +136,8 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
     layer: 'top',
   }), [confirm])
 
-  // ── submitted-to-chat tracking ──
-  // Durable artifact comments survive a chat submission (unlike the local-file
-  // pending list, which the submit clears), so without per-id tracking every
-  // Submit would re-send the whole comment history and the "N comments to send"
-  // count would never reset — the bar reads as stuck on the previous batch and
-  // newly added comments are indistinguishable inside the stale total. Sent ids
-  // are persisted per artifact (mirroring the `mc-cmt-read:` key in
-  // useFileArtifactComments) so a slot switch / remount doesn't resurrect an
-  // already-sent batch.
-  // ponytail: append-only like the read-tracking key — ids of since-deleted
-  // comments linger harmlessly (pruning against a possibly-stale comment list
-  // could resurrect sent ids); cross-window sync is on remount only; an edit
-  // to an already-sent comment does not re-queue it.
-  const sentKey = `mc-cmt-sent:${slug}`
-  const [sentIds, setSentIds] = useState<Set<string>>(() => readSentIds(sentKey))
-  // Re-read when the panel is reused for a different artifact.
-  useEffect(() => { setSentIds(readSentIds(sentKey)) }, [sentKey])
+  // ── submitted-to-chat tracking ── (shared with the standalone artifact page)
+  const { sentIds, markSent } = useSentCommentIds(slug)
   // Handed to the comment layers so each sidebar row the Submit bar counts is
   // marked; only when this host has a Submit, since otherwise there is no bar
   // for a marker to answer to.
@@ -298,12 +217,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
     Promise.resolve(verdict)
       .then(delivered => {
         if (delivered === false) return
-        setSentIds(prev => {
-          const next = new Set(prev)
-          for (const c of batch) next.add(c.id)
-          safeSetItem(sentKey, JSON.stringify([...next]))
-          return next
-        })
+        markSent(batch)
       })
       .catch(() => { /* undelivered — keep the batch pending */ })
       .finally(() => {
@@ -311,7 +225,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
         clearTimeout(submitResetTimer.current)
         submitResetTimer.current = setTimeout(() => setSubmitting(false), 400)
       })
-  }, [connected, onSubmitComments, pendingComments, slug, name, sentKey])
+  }, [connected, onSubmitComments, pendingComments, slug, name, markSent])
   useEffect(() => () => clearTimeout(submitResetTimer.current), [])
 
   // Esc closes fullscreen first, then the panel; lock body scroll while the

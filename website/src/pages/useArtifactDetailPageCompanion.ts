@@ -9,9 +9,8 @@
  * pins: React runs a component's effects in registration order, so moving one
  * is a behaviour change even when every test of the moved code still passes.
  */
-import { safeSetItem } from '../utils/safeStorage'
 import {
-  useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject,
+  useCallback, useMemo, useRef, useState, type Dispatch, type MutableRefObject,
   type SetStateAction,
 } from 'react'
 import { useMutation } from '@tanstack/react-query'
@@ -22,6 +21,7 @@ import { api } from '../api/client'
 import { sendTurn } from '../chat-core/transport/sendTurn'
 import { slotBusySteer } from '../components/chat-input/busySend'
 import { useJevAutoSend } from './chat/useJevAutoSend'
+import { useSentCommentIds } from '../hooks/useSentCommentIds'
 import { formatArtifactCommentsMessage } from '../components/CommentOverlay'
 import { pendingSubmitComments } from '../lib/commentFilter'
 import { forwardToMain, type NavIntent } from '../utils/artifactPopout'
@@ -46,13 +46,6 @@ const COMPANION_CONTEXT_MAX_AGE_S = 3600
  * Module-level so `openCompanionChat` can apply the identical rule to a freshly
  * fetched slots payload, not just the Redux snapshot.
  */
-/** Sent-to-chat comment ids for one artifact. A corrupt or absent entry reads
- *  as "nothing sent yet", which only ever over-counts the pending batch. */
-function readSentIds(key: string): Set<string> {
-  try { return new Set<string>(JSON.parse(localStorage.getItem(key) || '[]')) }
-  catch { return new Set<string>() }
-}
-
 export function pickBoundSlot(slots: ChatSlot[] | undefined, slug: string): ChatSlot | null {
   const matches = (slots ?? []).filter((x) => x.artifact === slug)
   if (matches.length <= 1) return matches[0] ?? null
@@ -303,14 +296,8 @@ export function useArtifactDetailPageCompanion({
   }, [boundSlots, createBoundSession, dispatch, setSaveError])
 
   // ── batch submit to the companion session ──
-  // Durable comments survive a submission, so without per-id tracking every
-  // press would re-send the whole history and the count would never reset. Sent
-  // ids are persisted per artifact, mirroring the `mc-cmt-read:` key, and the
-  // set is append-only: a corrupt or absent entry reads as "nothing sent yet",
-  // which only ever over-counts the pending batch.
-  const sentKey = `mc-cmt-sent:${slug}`
-  const [sentIds, setSentIds] = useState<Set<string>>(() => readSentIds(sentKey))
-  useEffect(() => { setSentIds(readSentIds(sentKey)) }, [sentKey])
+  // Sent-id tracking is shared with the chat side panel's Submit.
+  const { sentIds, markSent } = useSentCommentIds(slug)
   // Pending = forwarding-eligible AND human-authored AND not yet submitted —
   // `pendingSubmitComments`, the same composition as ArtifactPanel, because
   // this is the standalone-page twin of that Submit and both reach the same
@@ -363,12 +350,7 @@ export function useArtifactDetailPageCompanion({
         setCommentActionError(receipt.reason || i18nT('pages.artifactDetailPage.couldn_t_send_your_comments_are_still_pending'))
         return
       }
-      setSentIds(prev => {
-        const next = new Set(prev)
-        for (const c of batch) next.add(c.id)
-        safeSetItem(sentKey, JSON.stringify([...next]))
-        return next
-      })
+      markSent(batch)
       // Show the session the batch landed in; the panels are mutually exclusive,
       // so this is what replaces the chat's own sent-message echo.
       sidebarUserToggledRef.current = true
@@ -376,7 +358,7 @@ export function useArtifactDetailPageCompanion({
     } finally {
       setSubmittingComments(false)
     }
-  }, [connected, artifact, pendingComments, boundSlot, slug, sentKey, appStore, jevAutoConsented, setCommentActionError, setPanel, sidebarUserToggledRef])
+  }, [connected, artifact, pendingComments, boundSlot, slug, markSent, appStore, jevAutoConsented, setCommentActionError, setPanel, sidebarUserToggledRef])
 
   /** Full-page escape hatch — routes through sendNav so a popout forwards the
    *  intent to a main window instead of remounting the dashboard in-frame. */

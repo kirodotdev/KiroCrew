@@ -10,7 +10,7 @@ import { AlertCircle, AlertTriangle } from 'lucide-react'
 import { Btn } from '../components/ui'
 import SelectionToolbar from '../components/SelectionToolbar'
 import { CommentsSidebar } from '../components/CommentsSidebar'
-import { SubmitBar } from '../components/ArtifactPanel'
+import { SubmitBar } from '../components/ArtifactSubmitBar'
 import { ArtifactChatPanel } from '../components/ArtifactChatPanel'
 import { CommentThreadPopover } from '../components/CommentThreadPopover'
 // Artifact body renderers, extracted here so the chat side panel shares them.
@@ -474,6 +474,7 @@ export function ArtifactDetailPageBody({
                 submitting={submittingComments}
                 onSubmit={p => { void submitCommentsToChat(p) }}
                 connected={connected}
+                stacked
               />
             ) : undefined}
             pendingSubmitIds={boundSlot ? pendingCommentIds : undefined}

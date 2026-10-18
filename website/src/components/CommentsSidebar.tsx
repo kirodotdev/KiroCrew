@@ -343,10 +343,10 @@ export interface CommentsSidebarProps {
   onAskAgent?: () => void
   /** Optional batch-submit bar for the footer, so a host with a chat to send to
    *  can offer "send every pending comment as one message" from the sidebar
-   *  itself. Rendered as handed over: the bar is `ArtifactPanel`'s `SubmitBar`,
-   *  and the HOST renders it because this sidebar is one of that panel's own
-   *  children — importing it here would close an import cycle. Hosts without a
-   *  send path omit it and the footer is unchanged. */
+   *  itself. Rendered as handed over: the bar is `SubmitBar` from
+   *  `ArtifactSubmitBar`, and the HOST renders it because only the host holds
+   *  the send path and the pending batch. Hosts without a send path omit it
+   *  and the footer is unchanged. */
   submitBar?: React.ReactNode
   /** Ids of the comments `submitBar`'s count is made of, so each of those rows
    *  is marked and a reader can match the count to the rows. Hand it over with
