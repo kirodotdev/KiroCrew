@@ -271,6 +271,12 @@ async def _on_agent_switched(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | N
         )
         needs_session_reset = True
         turn.needs_session_reset = needs_session_reset
+        # The stream is broken off below with no terminal, so this
+        # turn lands, yet the reset kills a runtime that may still
+        # be mid-answer and the reloaded session may lack the
+        # prompt: a drained merge card goes back to the queue
+        # (``_merge_cards_reached_the_model`` lets a reset before a
+        # real ``end_turn`` win over landing).
         # The vetoed turn DID produce visible output (the notice
         # above) — and more importantly, tool calls completed
         # BEFORE the switch event may have had real side effects.

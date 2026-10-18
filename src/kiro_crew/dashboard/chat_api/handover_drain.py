@@ -14,6 +14,7 @@ if TYPE_CHECKING:
         _replacement_shares_transcript,
         _tighten_replacement_to_restricted_original,
         drained_to_thread,
+        load_window_off_loop,
         logger,
         restore_replacement_if_handover_did_not_land,
         save_slot_off_loop,
@@ -213,32 +214,45 @@ async def _persist_handover_tail(
     a change to what a durable metadata line MEANS for a key two slots share;
     the write stays as it is, and the loss is reported rather than silent.
     """
+
+    def _report_held_note_preparation_failure() -> None:
+        if slot._deferred_notes:
+            logger.error(
+                "Slot %s: %d held note(s) could not be flushed before the key was handed "
+                "to a concurrent recreate; they are undeliverable until the persisted "
+                "hold replays on the next restart",
+                name,
+                len(slot._deferred_notes),
+                exc_info=True,
+            )
+        else:
+            logger.error(
+                "Slot %s: preparing held notes for hand-over failed after the hold "
+                "was emptied; no held note remains to retry",
+                name,
+                exc_info=True,
+            )
+
+    tightening = None
     try:
-        tightening = _tighten_replacement_to_restricted_original(state, name, slot)
-    except UnknownMemoryStore:
-        tightening = None
-        logger.warning(
-            "Slot %s: replacement rebound twice during tightening; writing the tail "
-            "under the ratcheted line without tightening the live replacement",
-            name,
-        )
-    try:
-        slot.flush_deferred_notes()
+        # Tightening inspects ``slot.messages`` even when no note is held, so
+        # preload every pending handover window before tightening can read it.
+        await load_window_off_loop(slot)
     except Exception:
-        # The flush puts the unwritten suffix back before raising, so this count is
-        # what is still held. The hold also has a durable copy in the slot's
-        # metadata line, so these notes are re-delivered after the NEXT gateway
-        # restart rather than dying with the popped object — but nothing
-        # in THIS process will visit this slot again, so for this lifetime they
-        # are undeliverable and the log must still say so.
-        logger.error(
-            "Slot %s: %d held note(s) could not be flushed before the key was handed "
-            "to a concurrent recreate; they are undeliverable until the persisted "
-            "hold replays on the next restart",
-            name,
-            len(slot._deferred_notes),
-            exc_info=True,
-        )
+        _report_held_note_preparation_failure()
+    else:
+        try:
+            tightening = _tighten_replacement_to_restricted_original(state, name, slot)
+        except UnknownMemoryStore:
+            logger.warning(
+                "Slot %s: replacement rebound twice during tightening; writing the tail "
+                "under the ratcheted line without tightening the live replacement",
+                name,
+            )
+        try:
+            slot.flush_deferred_notes()
+        except Exception:
+            _report_held_note_preparation_failure()
     # ``_disk_window_len`` is how much of the current window the last committed save
     # covered, so the difference is exactly what has never reached disk. ``_dirty``
     # covers the other shape of unsaved state: an in-place edit to a row already

@@ -51,9 +51,11 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
     _leak_card_posted = turn._leak_card_posted
     _noticed_leak = turn._noticed_leak
     _prompt_depth = turn._prompt_depth
+    _recovering_compaction = turn._recovering_compaction
     _recovering_infra = turn._recovering_infra
     _recovering_promise = turn._recovering_promise
     _refusal_reasons = turn._refusal_reasons
+    _retrying_empty = turn._retrying_empty
     _stop_gen_turn_start = turn._stop_gen_turn_start
     _stop_reason = turn._stop_reason
     _synthetic_payload = turn._synthetic_payload
@@ -569,6 +571,17 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
             "Any raw `<invoke>` text above is that leak, not a reply.",
             "msg msg-info",
         )
+    # Whether this turn lands. The consumption record in _turn_persist_and_settle
+    # reads this, and the success record in _turn_context_usage counts the turn;
+    # both read this one answer, so they cannot disagree.
+    turn._turn_lands = (
+        _stop_reason != STOP_REASON_CANCELLED
+        and not _retrying_empty
+        and not _recovering_promise
+        and not _recovering_compaction
+        and not _noticed_leak
+        and not _recovering_infra
+    )
     # On an empty-response re-queue the turn produced nothing and will
     # immediately re-run; _turn_persist_and_settle skips persistence entirely so we don't
     # save a spurious empty turn or skew reliability metrics.

@@ -414,6 +414,9 @@ def init_session_fields(self: _ChatSlot) -> None:
     # than being silently classified as user-initiated. Deny-by-default.
     self._origin = ""
     self.forked_from = None  # parent slot key if this is a fork
+    # The parent transcript's created_at when forked: a chat later created
+    # on the parent's key after a permanent delete has another.
+    self.forked_from_created_at = ""
     self._fork_lock = asyncio.Lock()  # serialises concurrent forks on this slot
     # Serialises explicit model-pick transactions (check → mutate → live
     # switch → rollback) on this slot: picks interleaving at the set_model

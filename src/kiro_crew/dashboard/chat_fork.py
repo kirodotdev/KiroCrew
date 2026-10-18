@@ -33,6 +33,10 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.relay_archive import is_relay_archive
+from kiro_crew.dashboard.slot_buffers import (
+    MAX_FORK_PARENT_KEY_CHARS,
+    bounded_transcript_created_at,
+)
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
 from kiro_crew.dashboard.state import (
     _MAX_SLOT_MESSAGES,
@@ -552,7 +556,10 @@ def _shape_fork_child(
     push-suspended window that began at the mint, so the child's first
     ``slots`` frame already shows the folder, tags and fork title set here.
     """
-    new_slot.forked_from = effective_session_key(slot)
+    forked_from = effective_session_key(slot)
+    if len(forked_from) <= MAX_FORK_PARENT_KEY_CHARS:
+        new_slot.forked_from = forked_from
+        new_slot.forked_from_created_at = bounded_transcript_created_at(slot._disk_meta_created_at)
     new_slot.reasoning_effort = slot.reasoning_effort
     # Inherited beside the model it belongs to: the constructor takes `model` and
     # the routing choice is the other half of the same answer, so a fork of an

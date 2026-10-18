@@ -1054,6 +1054,11 @@ class ConversationLog:
     derive_messages = _history_derivation.derive_messages
     derive_messages_chained = _history_derivation.derive_messages_chained
     derive_messages_chained_with_keys = _history_derivation.derive_messages_chained_with_keys
+    derive_messages_chained_full_with_keys = (
+        _history_derivation.derive_messages_chained_full_with_keys
+    )
+    _read_messages_with_rotated_head = _history_derivation._read_messages_with_rotated_head
+    _derive_settled_chain_rows = _history_derivation._derive_settled_chain_rows
     derive_recent = _history_derivation.derive_recent
 
     # -- Reply-thread sidecar (``history_threads``).

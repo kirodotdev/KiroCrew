@@ -264,11 +264,17 @@ from kiro_crew.dashboard.chat_api.slot_model import (  # noqa: F401
     api_chat_slots_model,
 )
 from kiro_crew.dashboard.chat_api.slot_note import (  # noqa: F401
+    _UNSET,
+    NoteDelivery,
+    SourceCheckFailed,
     _discard_held_note,
+    _flush_held_notes_if_idle,
     _note_already_durable,
     _note_delivered_live,
     _persist_deferred_note_hold,
+    _same_chat_replacement,
     api_chat_slot_note,
+    deliver_note,
 )
 from kiro_crew.dashboard.chat_api.slot_settings import (  # noqa: F401
     _autocompact_txn_lock,
@@ -339,6 +345,7 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     _rehydrate_slot_title,
     _remember_reasoning_effort_for_restore,
     _restore_dismissed_source_links,
+    _restore_fork_lineage,
     _restore_model_fields,
     _restored_agent_name,
     _restored_mode,
@@ -413,6 +420,9 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     tighten_replacement_to_restricted_original as _tighten_replacement_to_restricted_original,
 )
+from kiro_crew.dashboard.chat_utils import (  # noqa: F401
+    transcripts_share_file,
+)
 from kiro_crew.dashboard.default_session_folder import (  # noqa: F401
     resolve_default_session_folder,
 )
@@ -432,12 +442,16 @@ from kiro_crew.dashboard.session_folders import (  # noqa: F401
     create_session_folder,
 )
 from kiro_crew.dashboard.slot_buffers import (  # noqa: F401
+    AWAITING_DURABLE_WRITE,
     MAX_DEFERRED_NOTE_CHARS,
     MAX_DEFERRED_NOTES,
     MAX_SOURCE_LABEL_LEN,
+    MERGED_FROM_META_KEY,
     SOURCE_LABEL_CTRL_RE,
     DeferredHoldFull,
+    DeferredHoldOutcome,
     DeferredHoldRebound,
+    NoteEvidence,
     note_hold_durable,
     persist_deferred_notes_sync,
 )
@@ -468,6 +482,7 @@ from kiro_crew.dashboard.slot_retention import (  # noqa: F401
     select_idle_slot_keys,
 )
 from kiro_crew.dashboard.state import (  # noqa: F401
+    _MAX_CONTEXT_PER_SOURCE,
     _MAX_DISMISSED_SOURCE_LINKS,
     DashboardState,
     _ChatSlot,
@@ -497,6 +512,8 @@ from kiro_crew.dashboard.turn_dispatch import (  # noqa: F401
 )
 from kiro_crew.history import (  # noqa: F401
     HUMAN_TURN_META_KEY,
+    TranscriptBusy,
+    TranscriptWithheld,
     carry_provenance,
     is_incognito_transcript,
 )
@@ -580,7 +597,8 @@ _SESSION_RELOAD_NOTICE = (
 
 
 #: Row-meta keys a REQUEST may never supply, because the gateway mints them and a
-#: surface reads them as the gateway's own claim. ``decisions_strip`` is a Jev
+#: surface reads them as the gateway's own claim. Merge-card identity and note
+#: retirement fields are server-minted for the same reason. ``decisions_strip`` is a Jev
 #: decision receipt with a verdict control attached (``decisions/points/
 #: message_steer.py``, ``website/src/pages/chat/SteerDecisionLine.tsx``), so a
 #: caller-supplied one would render a decision nobody made. ``HUMAN_TURN_META_KEY``
@@ -590,7 +608,9 @@ _SESSION_RELOAD_NOTICE = (
 #: could displace human sessions. Stripped here so the gateway re-applies it below
 #: only for a genuine human send. ``TURN_ACTOR_META_KEY`` is the gateway's record
 #: that an app sent the row, which the title counter reads (``chat_title``).
-RESERVED_ROW_META_KEYS = frozenset({"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY})
+RESERVED_ROW_META_KEYS = frozenset(
+    {"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY, MERGED_FROM_META_KEY, "noteId"}
+)
 
 #: The ``steer`` value that means "let Jev choose between the two paths" rather
 #: than naming one. A STRING beside the boolean the two manual modes send, so the
@@ -1148,7 +1168,6 @@ class ResumeOutcome(NamedTuple):
 MAX_COLOR_INDEX = 20
 
 
-_MAX_CONTEXT_PER_SOURCE = 10
 _MAX_CONTEXT_CONTENT = 40000
 # Default expiry for a note's context half: if the user never sends a follow-up
 # within 24h, the stale entry is dropped at drain rather than attaching itself to
@@ -1160,9 +1179,6 @@ _NOTE_CONTEXT_MAX_AGE = 86400
 # read back from disk), so the value lives in slot_buffers.
 _MAX_DEFERRED_NOTES = MAX_DEFERRED_NOTES
 
-# Distinguishes "key absent" from an explicit JSON null, which `body.get("maxAge")`
-# alone cannot: both yield None, so the two cannot mean different things without it.
-_UNSET = object()
 
 # Source label bounds. The label is interpolated into the
 # ``[Background context from "{source}"]`` prompt frame at drain, so disallow

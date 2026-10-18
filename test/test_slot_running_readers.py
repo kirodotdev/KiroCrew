@@ -147,7 +147,6 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/agent_switch.py", "switch_slot_agent"),
                 ("chat_api/turn_stop.py", "api_chat_slot_interrupt"),
                 ("chat_api/slot_model.py", "api_chat_slot_model"),
-                ("chat_api/slot_note.py", "api_chat_slot_note"),
                 # The project route arms a deferred reset when a start carrying
                 # the old cwd is already in flight; slot.running (the
                 # reservation) catches a cold-starting turn no provider has
@@ -163,9 +162,15 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/slot_lifecycle.py", "api_chat_slots_cleanup"),
                 ("chat_api/slot_model.py", "api_chat_slots_model"),
                 ("chat_api/continue_turn.py", "continue_slot_turn"),
+                ("chat_api/slot_note.py", "deliver_note"),
+                # A held merge card is delivered at once only to a slot no turn owns.
+                ("chat_api/slot_note.py", "_flush_held_notes_if_idle"),
                 ("chat_api/turn_stop.py", "stop_slot_turn"),
                 # Stop settlement wakes retained priority only on an unreserved slot.
                 ("chat_api/turn_stop.py", "_make_stop_resolver"),
+                # Merge-back sends its card to the parent slot that is working,
+                # because that slot's turn owns the transcript's tail.
+                ("chat_merge_back.py", "_live_parent"),
                 ("chat_rewind.py", "api_chat_slot_rewind"),
                 # The memory-ready queue drain starts a turn only on a slot no
                 # dispatch has reserved, the same guard the dispatch routes take.
