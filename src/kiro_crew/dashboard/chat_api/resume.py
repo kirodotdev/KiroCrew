@@ -869,7 +869,7 @@ async def resume_slot_from_history(
         "chat_resume",
         (history_key, _history_key_for(name), slot_transcript_key(name)),
     ):
-        return ResumeOutcome(refusal=ResumeRefusal("not found", "slot_not_found", 404))
+        return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
 
     # Boundary for the compare-and-clear below, captured BEFORE the metadata read
     # it is compared against. Everything from here to the ``clear_closed`` call is

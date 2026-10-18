@@ -19,9 +19,10 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
-from kiro_crew.dashboard import chat_folders, chat_fork, chat_slack
+from kiro_crew.dashboard import chat_folders, chat_fork, chat_handlers, chat_pins, chat_slack
 from kiro_crew.dashboard import handlers as handlers_pkg
 from kiro_crew.dashboard import slot_ownership
+from kiro_crew.dashboard.chat_api import resume as chat_resume
 from kiro_crew.dashboard.handlers import prompts_caller_gates, side
 from kiro_crew.dashboard.routes import chat as routes_chat
 from kiro_crew.dashboard.slot_ownership import slot_not_found
@@ -80,6 +81,57 @@ def test_an_app_naming_no_slot_gets_the_shared_not_found_from_the_skill_gate(
     state = SimpleNamespace(_slots={}, get_slot=lambda _name: None)
     resp = prompts_caller_gates._deny_foreign_app_skill_slot(request, state, "", "skills.read")
     assert resp is not None and _shape(resp) == _shape(slot_not_found())
+
+
+def _app_pin_request(monkeypatch: pytest.MonkeyPatch) -> tuple[web.Request, SimpleNamespace]:
+    monkeypatch.setattr(
+        chat_pins, "sel", lambda: SimpleNamespace(log_api_access=lambda **_kw: None)
+    )
+    request = _request("GET", "/api/chat/pins?slot=nope")
+    request["app"] = "some-app"
+    return request, SimpleNamespace(get_slot=lambda _name: None)
+
+
+def test_the_pin_slot_gate_answers_with_the_helper_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Swapping the module's helper for a sentinel proves the default denial is
+    # the helper's response, not a copy of its bytes.
+    request, state = _app_pin_request(monkeypatch)
+    sentinel = web.json_response({"sentinel": True}, status=404)
+    monkeypatch.setattr(chat_pins, "slot_not_found", lambda: sentinel)
+    assert chat_pins._authorize_app_slot(request, state, "nope", "chat.pins_list") is sentinel
+
+
+def test_the_pin_slot_gate_keeps_both_404_bodies(monkeypatch: pytest.MonkeyPatch) -> None:
+    request, state = _app_pin_request(monkeypatch)
+    slot_denial = chat_pins._authorize_app_slot(request, state, "nope", "chat.pins_list")
+    assert slot_denial is not None and _shape(slot_denial) == _shape(slot_not_found())
+    pin_denial = chat_pins._authorize_app_slot(
+        request, state, "nope", "chat.pins_delete", missing_code="pin_not_found"
+    )
+    pin_literal = web.json_response({"error": "not found", "code": "pin_not_found"}, status=404)
+    assert pin_denial is not None and _shape(pin_denial) == _shape(pin_literal)
+
+
+def test_the_resume_app_refusal_answers_with_the_helpers_bytes() -> None:
+    # Resume carries its refusal as data until the wire wrapper builds the
+    # response, so its one app 404 is pinned to the helper's bytes here.
+    resp = chat_resume._resume_refusal_response(chat_handlers._RESUME_APP_NOT_FOUND)
+    assert _shape(resp) == _shape(slot_not_found())
+
+
+def test_resume_spells_its_app_404_only_through_the_shared_refusal() -> None:
+    source = Path(chat_resume.__file__).read_text(encoding="utf-8")
+    hits = [
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "ResumeRefusal"
+        and any(isinstance(a, ast.Constant) and a.value == "slot_not_found" for a in node.args)
+    ]
+    assert hits == [], f"return _RESUME_APP_NOT_FOUND instead: lines {hits}"
 
 
 def _is_hand_built_slot_404(node: ast.Call) -> bool:
