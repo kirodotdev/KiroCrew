@@ -20,7 +20,6 @@ import pytest
 import sandbox_argv_helpers
 
 import kiro_crew.sandbox as sandbox_mod
-import kiro_crew.sandbox_workspace as sandbox_workspace_mod
 from kiro_crew.sandbox import (
     _CC_FILES,
     _STRICT_DIRS,
@@ -923,12 +922,12 @@ class TestDirectoryAncestorIdentities:
 
     def test_parent_descriptor_closed_when_fstat_raises(self, monkeypatch, tmp_path):
         """An ``os.fstat`` fault on a freshly opened parent closes that parent."""
-        start_fd = sandbox_workspace_mod._open_directory_descriptor(tmp_path)
+        start_fd = sandbox_mod._open_directory_descriptor(tmp_path)
         try:
             opened: list[int] = []
             closed: list[int] = []
 
-            real_open = sandbox_workspace_mod._open_directory_descriptor
+            real_open = sandbox_mod._open_directory_descriptor
 
             def tracking_open(path, **kwargs):
                 fd = real_open(path, **kwargs)
@@ -950,12 +949,14 @@ class TestDirectoryAncestorIdentities:
                 closed.append(fd)
                 return real_close(fd)
 
-            monkeypatch.setattr(sandbox_workspace_mod, "_open_directory_descriptor", tracking_open)
-            monkeypatch.setattr(sandbox_workspace_mod.os, "fstat", exploding_fstat)
-            monkeypatch.setattr(sandbox_workspace_mod.os, "close", tracking_close)
+            # Patched through the facade: it fans the name out to every owner
+            # module that binds it (sandbox_workspace and sandbox_rlimit).
+            monkeypatch.setattr(sandbox_mod, "_open_directory_descriptor", tracking_open)
+            monkeypatch.setattr(sandbox_mod.os, "fstat", exploding_fstat)
+            monkeypatch.setattr(sandbox_mod.os, "close", tracking_close)
 
             with pytest.raises(OSError):
-                sandbox_workspace_mod._directory_ancestor_identities(start_fd)
+                sandbox_mod._directory_ancestor_identities(start_fd)
 
             # The one parent descriptor that was opened must have been closed,
             # even though fstat raised before the ownership handoff.
