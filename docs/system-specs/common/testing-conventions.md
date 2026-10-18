@@ -128,7 +128,11 @@ module through any binding is the semgrep rule's), a `sys.modules` eviction with
 no restore in the same function, raw environment writes, duration bounds, literal waits
 under two seconds (the too-tight lost-run bound of class 6; a negative such as
 `assert not done.wait(0.3)` is not one), literal listener ports, fixed crew-log flush
-ceilings, crew-log removals outside `eager.paused()`, and five frontend shapes. It fails a
+ceilings, crew-log removals outside `eager.paused()`, and five frontend shapes. In a file
+the pinned semgrep reads no line of, it counts the `time` patches the semgrep rule would
+refuse as well: a file over 1,000,000 bytes, or one holding both a lambda with a bare `*`
+(`lambda a, *, b: ...`) and a parenthesized `with (a as b, ...):`, which semgrep 1.78
+cannot parse. It fails a
 change that raises any file's count above that file's count at the change's merge-base:
 `FLAKE_RATCHET_BASE` when set, the first parent of a CI merge commit, else the newer
 merge-base with `upstream/main` or `origin/main` (fetch the remote your branch was cut

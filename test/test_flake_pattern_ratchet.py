@@ -12,7 +12,10 @@ crew-log flush ceilings, unpaused removals, Event waits a test parks on an execu
 (``to_thread(<obj>.wait, ...)`` and ``run_in_executor(<any>, <obj>.wait, ...)``,
 whatever the bound, none included), and five frontend shapes (promise-sleeps
 only in the Electron tests, which the semgrep rule does not read). So no site needs
-both ``# nosemgrep`` and ``# flake-ok``. The tree already holds thousands of these, so
+both ``# nosemgrep`` and ``# flake-ok``. In a file the pinned semgrep reads no line of
+(one over its size limit, or one it cannot parse; see ``semgrep_cannot_read``), the
+``time`` patches its rule would refuse are counted too. The tree already holds
+thousands of these, so
 each file a change touches is held to its own count at the change's merge-base.
 
 * A file's count may not rise; a new file starts at zero, a deleted file passes, and
@@ -47,9 +50,11 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import io
 import os
 import re
 import subprocess
+import tokenize
 import warnings
 from collections import Counter
 from collections.abc import Callable, Iterable
@@ -284,7 +289,7 @@ def _patched_target(node: ast.Call) -> tuple[ast.AST | None, str | None]:
 #: another module's binding (``<mod>.time``), and a ``"time.<attr>"`` or
 #: ``"pkg.mod.time.<attr>"`` target string handed to ``<x>.setattr`` or ``<x>.patch``.
 #: K3 counts the clock and sleep patches that rule's patterns miss, so no site needs
-#: both markers.
+#: both markers, and, in a file semgrep reads nothing of, these as well.
 _TIME_RULE_STRING_TARGET = re.compile(r"(^|\.)time\.\w+$")
 
 
@@ -302,11 +307,14 @@ def _time_rule_refuses(module: _Module, node: ast.Call, target: ast.AST | None) 
     )
 
 
-def _k3_stdlib_clock_patch(module: _Module) -> Iterable[ast.AST]:
+def _k3_stdlib_clock_patch(module: _Module, source: str) -> Iterable[ast.AST]:
     """A patch on a stdlib clock or sleep the time rule does not refuse: ``asyncio.sleep``
     and ``datetime.datetime`` / ``date``, named directly or through another module's
-    binding (``<mod>.asyncio``, ``"pkg.mod.datetime.<attr>"``).
+    binding (``<mod>.asyncio``, ``"pkg.mod.datetime.<attr>"``). In a file semgrep cannot
+    read (:func:`semgrep_cannot_read`) the rule refuses nothing, so there the ``time``
+    patches it would refuse are counted too.
     """
+    unread = semgrep_cannot_read(module, source)
     for node in module.calls:
         name = _dotted(node.func)
         target: ast.AST | None
@@ -327,8 +335,8 @@ def _k3_stdlib_clock_patch(module: _Module) -> Iterable[ast.AST]:
             stdlib = stdlib.rsplit(".", 1)[-1]
         else:
             continue
-        if attr in _CLOCK_ATTRS.get(stdlib or "", ()) and not _time_rule_refuses(
-            module, node, target
+        if attr in _CLOCK_ATTRS.get(stdlib or "", ()) and (
+            unread or not _time_rule_refuses(module, node, target)
         ):
             yield node
 
@@ -497,6 +505,69 @@ def _k15_parked_pool_wait(module: _Module) -> Iterable[ast.AST]:
             yield node
 
 
+def _parenthesized_with_as(source: bytes, starts: list[int], node: ast.AST) -> bool:
+    """Whether *node* is ``with (a as b, ...):``: one pair of parentheses holds every
+    item and at least one binds a name. ``with (a) as b:`` and ``with (a, b):`` are not."""
+    if not isinstance(node, (ast.With, ast.AsyncWith)) or not node.body:
+        return False
+    if all(item.optional_vars is None for item in node.items):
+        return False
+    # AST columns are UTF-8 byte offsets.
+    start = starts[node.lineno - 1] + node.col_offset
+    body = starts[node.body[0].lineno - 1] + node.body[0].col_offset
+    text = source[start:body].decode("utf-8")
+    tokens = (
+        token
+        for token in tokenize.generate_tokens(io.StringIO(text).readline)
+        if token.type not in (tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT)
+    )
+    depth = 0
+    try:
+        for token in tokens:
+            if depth == 0 and token.string in ("async", "with"):
+                continue
+            if depth == 0 and token.string != "(":
+                return False
+            if token.type == tokenize.OP and token.string in ("(", "[", "{"):
+                depth += 1
+            elif token.type == tokenize.OP and token.string in (")", "]", "}"):
+                depth -= 1
+                if depth == 0:
+                    return next(tokens).string == ":"
+    except (tokenize.TokenError, StopIteration):
+        return False
+    return False
+
+
+#: semgrep's default ``--max-target-bytes``: it skips a larger file unread.
+SEMGREP_MAX_TARGET_BYTES = 1_000_000
+
+
+def semgrep_cannot_read(module: _Module, source: str) -> bool:
+    """Whether the pinned semgrep (1.78, ``.github/workflows/code-review.yml``) reads
+    no line of this file, so none of its rules refuses anything in it.
+
+    Two cases. A file over :data:`SEMGREP_MAX_TARGET_BYTES` is skipped. And a file
+    holding both a lambda with a bare ``*`` (``lambda a, *, b: ...``) and a
+    parenthesized ``with (a as b, ...):`` is a whole-file syntax error: semgrep's first
+    Python parser rejects the lambda, the one it falls back to rejects the ``with``.
+    Either shape alone parses, and so does ``lambda a, *rest, b``.
+    """
+    encoded = source.encode("utf-8")
+    if len(encoded) > SEMGREP_MAX_TARGET_BYTES:
+        return True
+    nodes = list(module.parents)
+    if not any(
+        isinstance(node, ast.Lambda) and node.args.kwonlyargs and node.args.vararg is None
+        for node in nodes
+    ):
+        return False
+    starts = [0]
+    for line in encoded.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+    return any(_parenthesized_with_as(encoded, starts, node) for node in nodes)
+
+
 #: class -> words one of which every shape of that class contains. A file holding none
 #: is not parsed: each set is deliberately broader than its detector, never narrower.
 PY_TRIGGERS: dict[str, tuple[str, ...]] = {
@@ -511,7 +582,10 @@ PY_TRIGGERS: dict[str, tuple[str, ...]] = {
     "K15-parked-pool-wait": ("to_thread", "run_in_executor"),
 }
 
-#: class -> detector. K14 also reads the source text.
+#: The classes whose detector also reads the source text.
+_READS_SOURCE = frozenset({"K3-stdlib-clock-patch", "K14-unpaused-crew-log-rmtree"})
+
+#: class -> detector.
 PY_DETECTORS: dict[str, Callable[..., Iterable[ast.AST]]] = {
     "K3-stdlib-clock-patch": _k3_stdlib_clock_patch,
     "K5-sys-modules-eviction": _k5_sys_modules_eviction,
@@ -631,7 +705,7 @@ def _python_findings(source: str) -> Iterable[tuple[str, str, bool]]:
     lines = source.splitlines()
     for klass in active:
         detector = PY_DETECTORS[klass]
-        found = detector(module, source) if klass.startswith("K14") else detector(module)
+        found = detector(module, source) if klass in _READS_SOURCE else detector(module)
         for node in found:
             span = [n for n in _excuse_lines(node) if 0 < n <= len(lines)]
             excused = any(_flake_ok(lines[n - 1]) for n in span)
@@ -962,6 +1036,65 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
     ),
 }
 
+#: Sources the pinned semgrep reads no line of, each holding one ``time`` patch.
+_UNREAD = (
+    "def test_x(monkeypatch):\n    g(lambda a, *, b: 1)\n    with (\n        open(p) as f,\n"
+    "        open(q) as h,\n    ):\n        monkeypatch.setattr(time, 'time', f)\n",
+    "def test_x(monkeypatch):\n    with (open(p) as f):\n        g(lambda *, k=1: k)\n"
+    "    monkeypatch.setattr(subject.time, 'monotonic', f)\n",
+    # A non-ASCII last item: the columns the check slices by are bytes.
+    "async def test_x():\n    async with (a() as b, c('é')):\n        g(lambda a, *, b: 1)\n"
+    "    with patch('kiro_crew.cron.time.time'):\n        pass\n",
+    "def test_x(monkeypatch):\n    monkeypatch.setattr(time, 'sleep', f)\n"
+    + "#" * SEMGREP_MAX_TARGET_BYTES
+    + "\n",
+)
+
+#: The same ``time`` patch in sources semgrep does read: a lambda with ``*rest``, or a
+#: bare ``*`` beside a ``with`` that binds outside its parentheses, binds nothing, or
+#: has no parentheses; each shape of the pair alone; a file at the size limit.
+_READ = (
+    "def test_x(monkeypatch):\n    g(lambda a, *rest, b: 1)\n    with (open(p) as f):\n"
+    "        monkeypatch.setattr(time, 'time', f)\n",
+    "def test_x(monkeypatch):\n    g(lambda a, *, b: 1)\n    with (open(p)) as f, (open(q)):\n"
+    "        pass\n    with (open(p), open(q)):\n        pass\n"
+    "    with open(p) as f, open(q) as h:\n        monkeypatch.setattr(time, 'time', f)\n",
+    "def test_x(monkeypatch):\n    g(lambda a, *, b: 1)\n    monkeypatch.setattr(time, 'time', f)\n",
+    "def test_x(monkeypatch):\n    with (open(p) as f):\n        monkeypatch.setattr(time, 'time', f)\n",
+)
+
+
+def _at_the_size_limit() -> str:
+    head = "def test_x(monkeypatch):\n    monkeypatch.setattr(time, 'sleep', f)\n"
+    return head + "#" * (SEMGREP_MAX_TARGET_BYTES - len(head) - 1) + "\n"
+
+
+def test_semgrep_cannot_read_models_the_pinned_engine() -> None:
+    """``semgrep_cannot_read`` models 1.78's parsers and size limit. A bump of the SAST
+    job's pin fails here, so whoever bumps it re-measures what the new engine skips."""
+    workflow = (repo_root() / ".github" / "workflows" / "code-review.yml").read_text(
+        encoding="utf-8"
+    )
+    pins = set(re.findall(r"semgrep==([\w.]+)", workflow))
+    assert pins == {"1.78.0"}, (
+        f"the SAST job pins semgrep {sorted(pins)}: re-measure which files it reads no "
+        "line of and update semgrep_cannot_read and SEMGREP_MAX_TARGET_BYTES to match"
+    )
+
+
+def test_k3_counts_the_time_rule_shapes_only_where_semgrep_reads_nothing() -> None:
+    """The time rule refuses these patches only in a file semgrep reads; where it
+    reads nothing, K3 counts them, so the ratchet covers what the scan cannot."""
+    for source in _UNREAD:
+        assert semgrep_cannot_read(_Module(ast.parse(source)), source), source[:120]
+        assert count_python(source)[0]["K3-stdlib-clock-patch"] == 1, source[:120]
+    limit = _at_the_size_limit()
+    assert len(limit.encode("utf-8")) == SEMGREP_MAX_TARGET_BYTES
+    for source in (*_READ, limit):
+        assert not semgrep_cannot_read(_Module(ast.parse(source)), source), source[:120]
+        assert count_python(source)[0]["K3-stdlib-clock-patch"] == 0, source[:120]
+
+
 JS_CASES: dict[str, tuple[str, tuple[str, ...], str]] = {
     "J1-electron-promise-sleep": (
         "website/electron/test/a.test.js",
@@ -1069,7 +1202,9 @@ def test_a_class_counts_only_what_its_semgrep_rule_misses() -> None:
             marks.setdefault(match.group(2), {})[index + 2] = match.group(1)
     module = _Module(ast.parse(text))
     for klass, rule in _RULE_OF.items():
-        counted = {node.lineno for node in PY_DETECTORS[klass](module)}
+        detector = PY_DETECTORS[klass]
+        found = detector(module, text) if klass in _READS_SOURCE else detector(module)
+        counted = {node.lineno for node in found}
         refused = {n for n, kind in marks.get(rule, {}).items() if kind == "ruleid"}
         missed = {n for n, kind in marks.get(rule, {}).items() if kind == "ok"}
         assert refused, f"{rule} has no refused case in its fixture"
