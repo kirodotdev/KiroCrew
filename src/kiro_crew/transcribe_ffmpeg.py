@@ -100,7 +100,7 @@ _PACKAGED_FFMPEG_ARTIFACTS: dict[str, tuple[int, str]] = decoder.PACKAGED_FFMPEG
 
 # The upstream imageio_ffmpeg platform KEYS the desktop matrix actually ships a
 # bundled decoder for. This is the maintainer-owned source of truth for WHICH
-# platforms are covered; the completeness test in test_transcribe.py maps each key
+# platforms are covered; the completeness test in test_transcribe_ffmpeg.py maps each key
 # through imageio_ffmpeg._definitions.FNAME_PER_PLATFORM to derive the authoritative
 # filename set and asserts _PACKAGED_FFMPEG_ARTIFACTS covers exactly it. Keys, not
 # filenames, so this module imports no imageio_ffmpeg at all (not a core dependency).
@@ -153,7 +153,7 @@ _SHIPPED_FFMPEG_PLATFORMS: frozenset[str] = frozenset(
 # the signature anchor, having been rewritten by signing away from the pin.
 #
 # The set is therefore exactly the macos-* members of _SHIPPED_FFMPEG_PLATFORMS, and
-# test_transcribe.py asserts that equality rather than a subset: a macOS slice added
+# test_transcribe_ffmpeg.py asserts that equality rather than a subset: a macOS slice added
 # above but forgotten here has no anchor left once signing has rewritten its bytes,
 # so a SIGNED release would refuse its own decoder.
 _SIGNER_REWRITTEN_FFMPEG_ARTIFACTS: frozenset[str] = frozenset({"ffmpeg-macos-aarch64-v7.1"})

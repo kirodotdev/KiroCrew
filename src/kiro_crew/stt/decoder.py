@@ -112,7 +112,7 @@ class DecoderArtifact:
 
 #: The pinned decoders, one per platform the desktop matrix ships (see
 #: ``transcribe._SHIPPED_FFMPEG_PLATFORMS``, which the completeness test in
-#: test_transcribe.py cross-checks against upstream's own filename table).
+#: test_transcribe_ffmpeg.py cross-checks against upstream's own filename table).
 #:
 #: Executable size and SHA-256 are the bytes the WHEEL publishes: the filename
 #: selects the platform artifact, size makes a truncated payload fail cheaply, and

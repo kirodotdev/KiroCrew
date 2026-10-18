@@ -188,7 +188,7 @@ class TestBundleCarriesDecoder:
         """The store may not offer a platform the desktop matrix does not ship.
 
         ``transcribe._SHIPPED_FFMPEG_PLATFORMS`` is the maintainer-owned set that
-        test_transcribe.py already cross-checks against upstream's own filename
+        test_transcribe_ffmpeg.py already cross-checks against upstream's own filename
         table, so tying to it means one edit (adding a build leg) cannot leave the
         store fetching bytes nothing else authenticates.
         """

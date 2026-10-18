@@ -125,7 +125,6 @@
 3299 test/test_artifacts_handlers.py
 4053 test/test_auto_research.py
 6303 test/test_aws_control_backup.py
-4193 test/test_aws_control_routes.py
 3564 test/test_browser_cli_view.py
 2475 test/test_chat_mirror.py
 2267 test/test_chat_mode_security.py
@@ -150,7 +149,6 @@
 2861 test/test_embeddings.py
 2417 test/test_ephemeral_sessions.py
 2765 test/test_fargate_launch_engine.py
-4162 test/test_gateway_appkit_endpoints.py
 4437 test/test_github_pull_request_monitor.py
 5410 test/test_governance_distribution.py
 3102 test/test_handlers_memory_coverage.py
@@ -216,7 +214,6 @@
 5921 test/test_taskrunner.py
 6082 test/test_telegram_parity.py
 8129 test/test_terminal_handler.py
-4193 test/test_transcribe.py
 5831 test/test_vector_memory.py
 2238 test/test_wheel_engine.py
 2944 website/electron/gateway-supervisor.js

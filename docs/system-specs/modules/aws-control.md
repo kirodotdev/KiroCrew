@@ -129,7 +129,7 @@ Drive objects live beneath the `artifacts/`, `drive/`, and `backup/` prefixes.
 `storage.validate_key` rejects paths that could escape a section. Folder deletion
 uses a validated, slash-anchored prefix, so it cannot target an empty section,
 the bucket root, or a sibling with a common name prefix.
-`test_aws_control_routes.py::TestDriveFolderDelete.test_delete_rejects_an_empty_path`
+`test_aws_control_routes_folders_shares.py::TestDriveFolderDelete.test_delete_rejects_an_empty_path`
 and `test_aws_control_storage.py::TestDeletePrefix.test_deletes_every_object_and_returns_the_count`
 pin that guard.
 
@@ -313,7 +313,7 @@ The share implementation is a presigned URL and a local metadata ledger only.
 URL cannot be revoked by this app before it expires; `shares.forget_share` only
 removes its ledger record. Backup objects are not shareable.
 `test_aws_control_app.py::TestBackupNotShareable.test_share_of_backup_section_is_refused_outright`
-and `test_aws_control_routes.py::TestSharesListForget.test_forget_removes_a_known_share`
+and `test_aws_control_routes_folders_shares.py::TestSharesListForget.test_forget_removes_a_known_share`
 pin those boundaries.
 
 The share ledger is CURRENT STATE, not an audit log: `shares._prune` drops every
@@ -351,7 +351,7 @@ so a throttle or a timeout is indistinguishable from a 404, which is correct whe
 refusing to mint and would mark live shares dead here. The ledger is read BEFORE
 the listing is taken, which is what makes an `observed_at` cutoff unnecessary: no
 row in hand can postdate the listing.
-`test_aws_control_routes.py::TestSharesListForget` pins the mark, the read order,
+`test_aws_control_routes_folders_shares.py::TestSharesListForget` pins the mark, the read order,
 the unmarked degradation, the logged reason, and the empty-ledger case that takes
 no listing at all.
 
@@ -796,7 +796,7 @@ value reading as off, the refusal to infer the count from `nightly` in either
 direction, a garbled count beside intact upload records still deleting nothing, the
 failure log naming the erased count in one direction and saying nothing was deleted in
 the other, the two off reasons staying distinguishable with their different audit
-outcomes, and `test_aws_control_routes.py` pins the enablement route: registration,
+outcomes, and `test_aws_control_routes_backup.py` pins the enablement route: registration,
 the write, `null` clearing it, a `bool` and a string and an out-of-range count all
 refused, a missing field refused rather than read as off, and a failed state write
 reporting the failure rather than the value. The retention suite also pins the writer

@@ -86,7 +86,7 @@ BUDGET: dict[str, int] = {
     "test/test_decisions_compaction_hook.py": 1,
     "test/test_discord_empty_turn.py": 1,
     "test/test_external_logout_detection_baseline.py": 1,
-    "test/test_gateway_appkit_endpoints.py": 1,
+    "test/test_gateway_appkit_endpoints_note.py": 1,
     "test/test_leaked_toolcall_notice.py": 5,
     "test/test_mcp_session_report.py": 1,
     "test/test_member_turn_context.py": 1,

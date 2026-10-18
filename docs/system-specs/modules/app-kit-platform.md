@@ -3827,7 +3827,7 @@ covers it. Only the JSON boolean `true` turns it on.
 
 Writers: `apps/routes.py`, `apps/proxy_auth.py`, `apps/manifest_sections.py`. Tests:
 `test/test_app_proxy_auth.py`, `test/test_app_manifest.py`,
-`test/test_gateway_appkit_endpoints.py`.
+`test/test_gateway_appkit_endpoints_signed_proxy.py`.
 
 ## 25. `platform.os` and `platform.installMode` are closed vocabularies, refused at validation
 

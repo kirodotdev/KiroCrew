@@ -14,7 +14,8 @@ the flush does not merely delay a held note -- it skips that cleanup:
 Separately, ``flush_deferred_notes`` clears its backing list before writing, so
 a raise part-way through the write loop loses every not-yet-written note.
 
-The existing flush coverage (``test_gateway_appkit_endpoints.py``,
+The existing flush coverage (``test_gateway_appkit_endpoints_note.py``,
+``test_gateway_appkit_endpoints_note_sessions.py``,
 ``test_chat_runner_coverage_queue.py``) asserts flush *ordering* only -- no test
 anywhere makes the flush, or a note write inside it, raise.
 """
