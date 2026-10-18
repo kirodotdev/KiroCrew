@@ -206,7 +206,7 @@ def _is_heartbeat_safe_tool(event: LLMEvent) -> bool:
       in ``SlackEnterpriseGate.heartbeat_safe_tools()``.
 
     A cache hit on two empty strings still counts as ``mcp_identity_trusted``
-    (``acp/_dispatch.py`` checks presence, not value), which is what a backend
+    (``acp/_dispatch_parts/permission_requests.py`` checks presence, not value), which is what a backend
     with no ``_meta.kiro`` support at all produces; every branch therefore also
     requires a non-empty ``tool_name``.
     """

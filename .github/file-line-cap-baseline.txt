@@ -15,7 +15,6 @@
 5522 conftest.py
 4119 scripts/ci/runner_watchdog.py
 2666 scripts/docs_lint.py
-4025 src/kiro_crew/acp/_dispatch.py
 2524 src/kiro_crew/acp/liveness.py
 9026 src/kiro_crew/acp/runtime.py
 8098 src/kiro_crew/acp/session_handle.py

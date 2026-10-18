@@ -35,6 +35,7 @@ import asyncio
 import json
 import pathlib
 import re
+import sys
 
 import pytest
 
@@ -312,7 +313,10 @@ class TestTheRefusalTagSurvivesDelivery:
     def test_the_transport_bound_has_one_owner(self):
         """The ACP dispatch reads this constant rather than repeating the number,
         so a change to one cannot silently orphan the other's assumption."""
-        source = pathlib.Path(_dispatch.__file__).read_text(encoding="utf-8")
+        source = "".join(
+            pathlib.Path(sys.modules[name].__file__ or "").read_text(encoding="utf-8")
+            for name in (_dispatch.__name__, *_dispatch._OWNERS)
+        )
         assert "session_directive.MAX_TOOL_RESULT_CHARS]" in source
         assert "[:8000]" not in source
         # The directive path stays far below the same bound, which is why a

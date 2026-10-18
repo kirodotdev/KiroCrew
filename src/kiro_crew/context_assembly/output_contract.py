@@ -111,7 +111,7 @@ def _build_ui_language_section(cfg: "KiroCrewConfig") -> str:
     Which FIELD carries the tool-call purpose depends on the harness: the Kiro
     backend injects a reserved ``__tool_use_purpose`` argument into every tool
     schema, while other backends' shell tool takes a ``description`` field
-    beside ``command`` (``select_tool_title`` in ``acp/_dispatch.py`` reads it
+    beside ``command`` (``select_tool_title`` in ``acp/_dispatch_parts/surfaced_text.py`` reads it
     first). The block names both, because a model on the second kind never
     sees a field called "purpose" and would otherwise miss the steer.
 

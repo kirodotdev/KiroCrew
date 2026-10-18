@@ -187,6 +187,8 @@ _SCANNED_PACKAGES = {
     "src/kiro_crew/mcp_tools/control_parts": 1,
     # The owners mirrored beside the spawn tools, mcp_tools/spawn.py.
     "src/kiro_crew/mcp_tools/spawn_parts": 2,
+    # The owners of the ACP dispatch facade, acp/_dispatch.py.
+    "src/kiro_crew/acp/_dispatch_parts": 5,
 }
 
 # Every module the issue names, then every module of the packages scanned whole,

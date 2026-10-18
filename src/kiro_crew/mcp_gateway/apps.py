@@ -423,7 +423,7 @@ def append_marker(result: dict, spool_id: str) -> dict:
 
     The marker sits at offset 0 of the first text block so it survives the
     downstream ACP per-part 4000-char truncation in
-    ``acp/_dispatch.py::_build_tool_result_event`` before the dashboard marker
+    ``acp/_dispatch_parts/tool_result_events.py::_build_tool_result_event`` before the dashboard marker
     detector (``mcp_apps_render.find_marker``) runs; an end-appended marker on a
     long first block (real cases run to tens of thousands of chars) is sliced
     off and the app never mounts. Both consumers (``find_marker`` search,
