@@ -9,13 +9,16 @@ gateway with ``X-Internal-Secret``) and every app or member principal.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard import pinned_session_order as pso
+from kiro_crew.testing.wait import await_until, default_timeout, until_parked
 
 # ── Store rules ──
 
@@ -204,6 +207,55 @@ async def test_moves_from_two_browsers_both_land(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_move_landing_during_another_moves_disk_write_waits_for_it(
+    tmp_path, monkeypatch
+) -> None:
+    """Two moves overlapping across the awaited disk write: the second waits for
+    the first to land and moves the order it left, so neither move is lost."""
+    from kiro_crew.dashboard import chat_manual_order as cmo
+
+    state = _state(tmp_path, monkeypatch)
+    loop = asyncio.get_running_loop()
+    hold = default_timeout()
+    real_save = pso.save
+    writes: list[list[str]] = []
+    first_open = asyncio.Event()
+    release = threading.Event()
+
+    def save(path, keys: list[str]) -> None:
+        writes.append(list(keys))
+        if len(writes) == 1:
+            # Hold the first move's write open on its worker thread.
+            loop.call_soon_threadsafe(first_open.set)
+            release.wait(hold)
+        real_save(path, keys)
+
+    async with TestClient(TestServer(_app(state))) as client:
+        await _post(client, {"op": "seed", "keys": ["a", "b", "c", "d"]})
+        monkeypatch.setattr(pso, "save", save)
+        first = asyncio.ensure_future(_post(client, {"op": "move", "key": "d", "after": None}))
+        try:
+            await await_until(first_open, what="the first move opening its disk write")
+            second = asyncio.ensure_future(_post(client, {"op": "move", "key": "a", "after": "c"}))
+            # The second move parks on the write lock. Without one it reads the
+            # order the first move has not landed yet, writes, and answers first.
+            parked = asyncio.ensure_future(until_parked(cmo._lock(state)))
+            await asyncio.wait({parked, second}, return_when=asyncio.FIRST_COMPLETED)
+            if parked.done():
+                parked.result()
+            else:
+                parked.cancel()
+        finally:
+            release.set()
+        answers = [await await_until(task, what="a move's answer") for task in (first, second)]
+        assert [resp.status for resp in answers] == [200, 200]
+        assert (await answers[1].json())["order"] == ["d", "b", "c", "a"]
+        assert await _ranks(client) == {"d": 0, "b": 1, "c": 2, "a": 3}
+    assert writes == [["d", "a", "b", "c"], ["d", "b", "c", "a"]]
+    assert _stored(tmp_path) == ["d", "b", "c", "a"]
+
+
+@pytest.mark.asyncio
 async def test_a_move_seats_the_new_sessions_it_was_drawn_beside(tmp_path, monkeypatch) -> None:
     state = _state(tmp_path, monkeypatch)
     async with TestClient(TestServer(_app(state))) as client:
@@ -375,6 +427,42 @@ async def test_the_writer_itself_refuses_any_caller_but_the_browser(tmp_path, mo
     browser = make_mocked_request("POST", "/api/chat/manual-order")
     assert await _write_manual_order(state, ["b", "a"], request=browser) is True
     assert _stored(tmp_path) == ["b", "a"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("op", ["seed", "move", "clear"])
+async def test_a_write_that_fails_on_disk_changes_no_rank(tmp_path, monkeypatch, op) -> None:
+    """Memory changes only after the file write lands, so the order on screen is
+    the one a restart loads: a failed write answers 500 and leaves every row's
+    manual_rank, the revision and the stored flag as they were."""
+    from kiro_crew.dashboard.chat_manual_order import ensure_manual_order_loaded
+
+    state = _state(tmp_path, monkeypatch)
+    order = state.manual_session_order
+    assert await ensure_manual_order_loaded(state)
+    async with TestClient(TestServer(_app(state))) as client:
+        if op != "seed":
+            await _post(client, {"op": "seed", "keys": ["a", "b", "c", "d"]})
+        before = (await _ranks(client), order.rev, order.stored)
+
+        def full_disk(*_args: object) -> None:
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(pso, "save", full_disk)
+        monkeypatch.setattr(pso, "clear_stored", full_disk)
+        body = {
+            "seed": {"op": "seed", "keys": ["d", "c", "b", "a"]},
+            "move": {"op": "move", "key": "d", "after": None},
+            "clear": {"op": "clear", "rev": order.rev},
+        }[op]
+        resp = await _post(client, body)
+        assert resp.status == 500
+        assert (await resp.json())["code"] == "manual_order_write_failed"
+        assert (await _ranks(client), order.rev, order.stored) == before
+    if op == "seed":
+        assert not pso.manual_store_path(tmp_path).exists()
+    else:
+        assert _stored(tmp_path) == ["a", "b", "c", "d"]
 
 
 @pytest.mark.asyncio

@@ -3639,9 +3639,10 @@ keeps it for the next load. Settle-time invalidation draws the stored value.
 the pinned order's store (`dashboard/pinned_session_order.py`), as a second file,
 `chat_manual_order.json`, in the same fenced `pinned-order` directory, and reaches
 the browser on every slot row as `manual_rank` / `manual_rev`. Under `manual`,
-pinned rows stay on top in their own order, unpinned rows show a drag handle and
-no date headers, and a session with no place (a new one) shows above the placed
-ones. A drop between two unpinned rows of one container, in any sort, switches
+pinned rows stay on top in their own order, unpinned rows show a drag handle in
+the row's left pad, outside the text column, so the agent name, title and folder
+name keep one left edge, there are no date headers, and a session with no place
+(a new one) shows above the placed ones. A drop between two unpinned rows of one container, in any sort, switches
 this key to `manual`, writes the order, and offers "Sorted by hand" with Undo;
 under `manual`, Alt+Arrow on a focused unpinned row moves it the same way. A drop
 on a folder files the session and changes neither. Every write is one operation of `POST /api/chat/manual-order`:

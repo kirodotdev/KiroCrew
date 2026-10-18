@@ -709,15 +709,28 @@ describe('the Manual sort', () => {
     expect(handleOf('n')).toBeTruthy()
   })
 
-  it('draws the handle at the row\'s leading edge, ahead of the agent name and outside its right-end group', () => {
+  it('draws the handle in the row\'s left pad, out of the text column, apart from the ⋮ menu and the right-end group', () => {
     renderSidebar([slot('a', '2026-03-01T00:00:00Z', { manual_rank: 0, manual_rev: 100 })], 'manual')
-    const row = screen.getByText('a title').closest('[data-session-row]')!
-    const handle = row.querySelector('[data-testid="session-row-drag-handle"]')!
+    const row = screen.getByText('a title').closest('[data-session-row]') as HTMLElement
+    const handle = row.querySelector('[data-testid="session-row-drag-handle"]') as HTMLElement
+    const classes = (el: Element) => el.className.split(/\s+/)
+    // A child of the row itself, out of flow, so it moves no x in the content
+    // column: the agent name, title and status line keep the folder name's left
+    // edge (docs/decisions/2026-10-09-folder-glyph-sits-on-its-connector-line.md).
+    expect(handle.parentElement).toBe(row)
+    expect(classes(handle)).toContain('absolute')
+    const column = row.querySelector('[data-session-title]')!.parentElement!
+    expect(column.contains(handle)).toBe(false)
     const meta = row.querySelector('.session-agent-label')!
-    expect(meta.firstElementChild).toBe(handle)
-    const agent = handle.nextElementSibling!
-    expect(agent.textContent).toBe('default')
-    const end = screen.getByTestId('session-row-time').parentElement!
+    expect(meta.firstElementChild!.textContent).toBe('default')
+    // Inside the row's 14px left pad: 4px in, 10px wide, so it ends where the
+    // content column starts.
+    expect(classes(row)).toContain('pl-3.5')
+    expect(classes(handle)).toEqual(expect.arrayContaining(['left-1', 'w-2.5']))
+    // Apart from the right end, which the ⋮ menu and the time group hold.
+    const menu = within(row).getByLabelText('More options').parentElement!
+    expect(menu.contains(handle)).toBe(false)
+    const end = within(row).getByTestId('session-row-time').parentElement!
     expect(end.className).toContain('ml-auto')
     expect(end.contains(handle)).toBe(false)
   })

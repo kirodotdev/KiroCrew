@@ -230,9 +230,11 @@ describe('chat sidebar — status marker leads the secondary line', () => {
   it('leaves NO absolute status gutter at the row left edge', () => {
     const { container } = renderSidebar([slot({ running: true })])
     const row = container.querySelector('.session-row') as HTMLElement
-    // The gutter was `absolute left-px w-3 h-3` with an inline `top`. Nothing may
-    // sit in that band again: the recency tint and the session-colour bar paint
-    // there, and an accent glyph over an accent stripe is invisible.
+    // The gutter was `absolute left-px w-3 h-3` with an inline `top`. No status
+    // glyph may sit in that band again: the recency tint and the session-colour
+    // bar paint there, and an accent glyph over an accent stripe is invisible.
+    // (The Manual sort's muted drag handle starts right of the widest stripe;
+    // ChatSidebar.manualOrder.test.tsx pins its place.)
     expect(row.querySelector('.absolute.left-px')).toBeNull()
     for (const el of Array.from(row.children)) {
       expect(el.className.includes('left-px')).toBe(false)

@@ -4,7 +4,7 @@
  *  (./rows) and its one `actions` object; the row's memo compares both. */
 import { useRef, useEffect, memo, useMemo, useContext } from 'react'
 import { motion } from 'framer-motion'
-import { X, Pin, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, GitFork, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Hourglass, GripHorizontal } from 'lucide-react'
+import { X, Pin, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, GitFork, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Hourglass, GripVertical } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { shallowEqual } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -1341,13 +1341,6 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
           ))}
           <div className="flex-1 min-w-0 overflow-hidden">
             <div className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
-              {/* Under Manual an unpinned row wears a drag handle at its leading
-               *  edge, ahead of the agent name: the row's right end belongs to
-               *  the ⋮ button's touch area and the hover toolbar, which would
-               *  take a press aimed at it. The whole row still drags, so the
-               *  handle only says it can. Decorative to assistive tech, which
-               *  reads the row's Alt+Arrow shortcut instead. */}
-              {manualHandle && <span className="shrink-0" data-testid="session-row-drag-handle" aria-hidden="true" title={i18nT('pages.chatSidebar.drag_to_reorder')}><GripHorizontal size={10} className="text-muted" /></span>}
               {/* Plain keyed span, deliberately unanimated: 200+ per-row
                 *  AnimatePresence trees each paid child-diffing bookkeeping on
                 *  every sidebar commit for a crossfade that fires only on the
@@ -1624,6 +1617,27 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             {/* No tag chips here: every tag renders in the meta line above as
              *  tinted `· name` text. A chip row would print each tag twice. */}
           </div>
+          {/* Under Manual an unpinned row wears a drag handle in its LEFT PAD,
+           *  out of flow, so the agent name, title and status line stay on the
+           *  content column and keep the folder name's left edge
+           *  (docs/decisions/2026-10-09-folder-glyph-sits-on-its-connector-line.md).
+           *  The box runs from 4px to 14px, so it ends where the content column
+           *  starts, and the glyph's dots start at 7px, where the recency tint's
+           *  widest stripe ends (`recencyTintShadow`); the colour bar takes only
+           *  the first 2px. Not at the right end, which belongs to the ⋮ button's
+           *  touch area and the hover toolbar: they would take a press aimed at
+           *  it. The whole row still drags, so the handle only says it can.
+           *  Decorative to assistive tech, which reads the row's Alt+Arrow
+           *  shortcut instead. */}
+          {manualHandle && (
+            <span
+              className="absolute left-1 w-2.5 top-1/2 -translate-y-1/2 flex"
+              data-testid="session-row-drag-handle"
+              aria-hidden="true"
+              title={i18nT('pages.chatSidebar.drag_to_reorder')}>
+              <GripVertical size={10} className="shrink-0 text-muted" />
+            </span>
+          )}
           {/* Hide the hover action popup (⋯ / duplicate / close) while THIS slot
            *  is being renamed: it is absolute-positioned at right-1.5 and reveals
            *  on `:focus-visible` inside the row, which a focused text input
