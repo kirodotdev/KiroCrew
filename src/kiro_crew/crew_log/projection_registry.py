@@ -517,6 +517,10 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _outline_render,
         affects=OUTLINE_TYPES,
         copy_state=_outline_copy,
+        # Rows now retain an exact ``completed`` marker. A savepoint written
+        # before that field existed would resume past the closer without ever
+        # learning it, so retire only outline's old state and refold it cold.
+        state_version=_FOLD_STATE_VERSION_BASE + 1,
     ),
     # Keyed by one SESSION and NOT advertised, for the reason stated beside
     # :data:`INTERNAL_PROJECTION_NAMES`: its one reader is the OTel export

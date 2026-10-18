@@ -12,6 +12,7 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.peer_completion import PEER_TURN_COMPLETION_INJECT_KIND
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -301,7 +302,15 @@ def is_stop_event_row(m: dict) -> bool:
 #: turn; here the question is whether a dispatch happened that got no reply,
 #: and a recovery or replay dispatch that died is exactly such a turn.
 _TURN_INJECT_KINDS: frozenset[str] = frozenset(
-    {"cron", "mcp_app", "recovery", "user_replay", "synthesis", "automation_notice"}
+    {
+        "cron",
+        "mcp_app",
+        "recovery",
+        "user_replay",
+        "synthesis",
+        "automation_notice",
+        PEER_TURN_COMPLETION_INJECT_KIND,
+    }
 )
 
 

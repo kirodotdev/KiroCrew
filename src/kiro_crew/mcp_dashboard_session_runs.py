@@ -782,7 +782,32 @@ def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
                 "neither a live session nor the crew log accounts for it)"
             )
             continue
-        mark = {"working": "\U0001f503", "queued": "\u23f8\ufe0f"}.get(status, "\U0001f4a4")
+        if status == "completion_pending":
+            status_lines.append(
+                f"  \U0001f4e8 `{target}` ({title}) — completion pending "
+                "(its turn ended; consume this session's callback, then read and "
+                "verify the child transcript before recording a verdict)"
+            )
+            continue
+        if status == "idle_unfinished":
+            status_lines.append(
+                f"  \U0001f4a4 `{target}` ({title}) — idle unfinished "
+                "(no turn is running and no completed-turn callback is pending; "
+                "decide whether its next action still needs dispatch)"
+            )
+            continue
+        if status == "stalled":
+            status_lines.append(
+                f"  \u26a0\ufe0f `{target}` ({title}) — stalled "
+                "(a turn is still in flight and session health found no progress "
+                "past its threshold; inspect before stopping or restarting)"
+            )
+            continue
+        mark = {
+            "working": "\U0001f503",
+            "queued": "\u23f8\ufe0f",
+            "idle": "\U0001f4a4",
+        }.get(status, "\u2753")
         if row.get("pending_approval"):
             status_lines.append(
                 f"  \u270b `{target}` ({title}) — {status}, "

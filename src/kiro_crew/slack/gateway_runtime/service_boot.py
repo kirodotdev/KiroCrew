@@ -951,6 +951,16 @@ async def run(self: GatewayOrchestrator) -> None:
     if approval_ready is not None:
         approval_ready.set()
 
+    # Restored peer callbacks may fold protected child logs, so start their
+    # re-attestation only after the readiness marker. Track the task on the
+    # dashboard state so its lifecycle remains visible with other dashboard work.
+    if self.dashboard_state is not None:
+        from kiro_crew.dashboard.peer_completion_delivery import recover_pending
+
+        recovery = asyncio.create_task(recover_pending(self.dashboard_state))
+        self.dashboard_state._background_tasks.add(recovery)
+        recovery.add_done_callback(self.dashboard_state._background_tasks.discard)
+
     # Protect the running tree before any update work can prune it, but
     # keep filesystem work off both the readiness path and the event loop.
     try:

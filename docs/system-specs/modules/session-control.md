@@ -169,8 +169,33 @@ that edge can exist, but is a weaker, agent-editable source. The union is the
 answer, and every row names the sources that placed it (`crew_log`, `history`,
 `live`, joined with `+`).
 
-The row's `status` separates `working` / `queued` / `idle` / `closed` / `lost` /
-`unknown`. A tree-backed row absent from the dashboard is `closed` or `lost`: the
+The row's `status` separates `working` / `queued` / `completion_pending` /
+`idle_unfinished` / `stalled` / `closed` / `lost` / `unknown`.
+`completion_pending` means the live child is idle and an attested
+`peer_session_turn_completed` pointer is still queued for the creator.
+`idle_unfinished` means the live child is idle with neither queued work nor a
+pending completed-turn pointer; idle age alone never changes it to `stalled`.
+`stalled` is reserved for a child whose turn is still running and whose shared
+`SessionHealthMonitor` classification contains positive no-progress evidence.
+A running child without that evidence remains `working`, and an open approval
+continues to report `working` with `pending_approval: true`. Existing clients
+that treated `idle` as work requiring inspection should treat
+`idle_unfinished` as that state.
+
+A completed visible child turn mints only a pointer event to the creator proved
+by crew-log lineage. Live delivery first settles asynchronous crew-log writes
+off the event loop, then verifies the exact bounded outline row carries a
+`turn/completed` marker. A later completed ordinal cannot attest an earlier
+refused turn. The event is persisted before its creator is woken. On gateway
+restart, the restored entry is untrusted and cannot pass the generic queue drain;
+`recover_pending` rechecks both lineage and exact completion before marking it
+runnable. Invalid or disproved entries are dropped; entries whose protected
+lineage or retained turn evidence is incomplete stay held and unattested. The idempotency key is protected child session ID plus
+child turn, and duplicate entries already queued or recorded are not
+minted again. The envelope directs the creator to read from the transcript
+cursor and explicitly grants no PASS, DONE, BLOCKED, or restart inference.
+
+A tree-backed row absent from the dashboard is `closed` or `lost`: the
 roster records that a session the dashboard no longer holds still existed, and
 its folded lifecycle says which fate it met. `closed` (carrying `closed_at`) is
 the DELIBERATE tab close -- the worker finished and its tab was closed

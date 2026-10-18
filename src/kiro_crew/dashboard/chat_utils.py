@@ -18,6 +18,10 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 if TYPE_CHECKING:
+    from kiro_crew.dashboard.peer_completion import (  # noqa: F401
+        PEER_TURN_COMPLETION_ATTESTED_KEY,
+        PEER_TURN_COMPLETION_KIND,
+    )
     from kiro_crew.providers.base import LLMEvent
 
 from kiro_crew import _facade_mirror

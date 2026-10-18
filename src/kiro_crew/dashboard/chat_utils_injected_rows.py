@@ -15,6 +15,10 @@ import json
 from enum import Enum
 from typing import Any
 
+from kiro_crew.dashboard.peer_completion import (
+    PEER_TURN_COMPLETION_ATTESTED_KEY,
+    PEER_TURN_COMPLETION_KIND,
+)
 from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS
 from kiro_crew.dashboard.state import (
     BUSY_RECOVERY_PREFIX,
@@ -331,6 +335,7 @@ _SYSTEM_INJECTION_KINDS = SUBAGENT_DELIVERY_KINDS | frozenset(
         CRON_NOTIFICATION_KIND,
         MCP_APP_MESSAGE_KIND,
         AUTOMATION_NOTICE_KIND,
+        PEER_TURN_COMPLETION_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
     )
 )
@@ -411,7 +416,7 @@ def is_synthetic_payload_item(item: dict) -> bool:
     payload = item.get("payload")
     if payload:
         return payload == RecoveryPayload.CONTINUATION
-    if item.get("kind") == MCP_APP_MESSAGE_KIND:
+    if item.get("kind") in (MCP_APP_MESSAGE_KIND, PEER_TURN_COMPLETION_KIND):
         return True
     return is_synthetic_recovery_item(item)
 
@@ -470,6 +475,8 @@ def releases_past_subagent_hold(item: dict) -> bool:
     does a human's steer that degraded into a queue entry
     (:data:`STEER_INTENT_META`). Every other user message waits for the wave.
     """
+    if item.get("kind") == PEER_TURN_COMPLETION_KIND:
+        return item.get(PEER_TURN_COMPLETION_ATTESTED_KEY) is True
     if is_system_injection_item(item):
         return True
     meta = item.get("meta")

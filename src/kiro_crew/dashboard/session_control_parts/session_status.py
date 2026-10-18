@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -278,6 +279,35 @@ def _pending_approval_fields(state: "DashboardState", slot: Any) -> dict[str, An
     return fields
 
 
+def _live_recovery_status(
+    state: "DashboardState",
+    slot: Any,
+    *,
+    completion_pending: bool,
+) -> str:
+    """Classify one live child without treating idle duration as a stall."""
+    if slot.running:
+        if _pending_approval_fields(state, slot):
+            return "working"
+        try:
+            from kiro_crew.dashboard import session_health
+
+            snapshot = session_health.snapshot_slot(slot)
+            health = session_health.default_monitor().classify_slot(
+                snapshot, mono_now=time.monotonic()
+            )
+            if health is not None and health.classification == session_health.HEALTH_STALLED:
+                return "stalled"
+        except Exception:
+            logger.debug("session recovery health classification failed", exc_info=True)
+        return "working"
+    if completion_pending:
+        return "completion_pending"
+    if slot._queue:
+        return "queued"
+    return "idle_unfinished"
+
+
 def _created_history_roster(
     state: "DashboardState", caller_key: str, caller_workspace: str
 ) -> tuple[dict[str, dict[str, Any]], str, int]:
@@ -352,13 +382,18 @@ async def created_session_status(
     moment it is gone. The union covers all three windows, and each row says which
     source placed it.
 
-    ``status`` per row, and the five are distinct answers a patrol acts on
-    differently:
+    ``status`` per row, and the recovery-relevant values are distinct answers:
 
-    * ``working`` — a turn is in flight. Wait.
+    * ``working`` — a turn is in flight and has recent progress. Wait.
     * ``queued`` — idle, but messages are waiting to run. Also wait, but nothing is
       happening yet, so a steer would land on nothing.
-    * ``idle`` — open and doing nothing. This is the one that needs a decision.
+    * ``completion_pending`` — the child's turn ended and its durable pointer event
+      is waiting for this creator to consume. Read and verify the child transcript.
+    * ``idle_unfinished`` — open and idle, with no completed-turn callback pending.
+      The tracked next action may still need dispatch or a creator decision.
+    * ``stalled`` — a turn is still in flight and the shared session-health monitor
+      has positive no-progress evidence past its configured threshold. Idle duration
+      alone never produces this status.
     * ``closed`` — the crew log names it, the dashboard does not hold it, and the
       log records a ``session/closed`` edge: a worker that FINISHED and closed its
       tab. Carries ``closed_at``. Ignore it; there is nothing here to message, and
@@ -501,6 +536,9 @@ async def created_session_status(
             ownership_fenced=ownership_fenced,
         )
     }
+    from kiro_crew.dashboard.peer_completion_delivery import pending_child_sessions
+
+    completion_pending_children = pending_child_sessions(caller_slot)
     for key in retained:
         slot = state.get_slot(key)
         from_tree = key in tree_children
@@ -582,7 +620,11 @@ async def created_session_status(
             {
                 "target": key,
                 "title": _bounded_status_title(slot.display_title),
-                "status": "working" if running else ("queued" if queue_depth else "idle"),
+                "status": _live_recovery_status(
+                    state,
+                    slot,
+                    completion_pending=key in completion_pending_children,
+                ),
                 "running": running,
                 "queue_depth": queue_depth,
                 **_pending_approval_fields(state, slot),

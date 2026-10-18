@@ -246,6 +246,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _created_tree_roster,
         _gone_slot_lifecycles,
         _lifecycle_is_closed,
+        _live_recovery_status,
         _pending_approval_fields,
         _summary_text,
         created_session_status,

@@ -179,6 +179,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The roster verb. Reservation state, like `read_messages` beside
                 # it and for the same reason: it reports whether a session is
                 # working so a patrol knows whether to wait.
+                # The roster helper classifies running children with shared
+                # session-health evidence before the outer verb renders them.
+                ("session_control_parts/session_status.py", "_live_recovery_status"),
                 ("session_control_parts/session_status.py", "created_session_status"),
                 ("session_control_parts/session_status.py", "read_messages"),
                 # The summary verb reports liveness beside the digest for the

@@ -848,7 +848,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_finish_queue_cycle",
             "async function",
-            "(state: 'DashboardState', slot: '_ChatSlot', *, allow_automatic_successor: 'bool' = True, drain: 'bool' = True) -> 'None'",
+            "(state: 'DashboardState', slot: '_ChatSlot', *, allow_automatic_successor: 'bool' = True, drain: 'bool' = True, child_session_id: 'str' = '', child_turn_id: 'int' = 0) -> 'None'",
         ),
         (
             "_send_chat_done",
@@ -858,7 +858,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_hand_off_queue",
             "async function",
-            "(state: 'DashboardState', slot: '_ChatSlot', *, drain: 'bool', allow_automatic_successor: 'bool', predecessor_actor: 'str' = '', predecessor_turn_id: 'str' = '') -> 'None'",
+            "(state: 'DashboardState', slot: '_ChatSlot', *, drain: 'bool', allow_automatic_successor: 'bool', predecessor_actor: 'str' = '', predecessor_turn_id: 'str' = '', child_session_id: 'str' = '', child_turn_id: 'int' = 0, successor_queue_id: 'str' = '') -> 'None'",
         ),
         (
             "_notify_autonudge_turn_end",

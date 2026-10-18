@@ -163,7 +163,7 @@ class TestLiveness:
         caller = _slot(state, "chat-1")
         _child(state, "chat-2", caller)
         row = _rows(_status(state, caller))["chat-2"]
-        assert row["status"] == "idle" and row["running"] is False
+        assert row["status"] == "idle_unfinished" and row["running"] is False
 
     def test_a_session_with_a_turn_in_flight_is_working(self, tmp_path):
         state = _make_state(tmp_path)
@@ -416,7 +416,7 @@ class TestTheDurableRoster:
         rows = _rows(_status(state, caller))
         assert list(rows) == ["chat-2"]
         assert rows["chat-2"]["source"] == "crew_log+live"
-        assert rows["chat-2"]["status"] == "idle"
+        assert rows["chat-2"]["status"] == "idle_unfinished"
 
     def test_a_live_session_the_tree_does_not_know_is_still_listed(self, tmp_path):
         """A session created before the log was on, or whose entry has not landed,
@@ -590,7 +590,7 @@ class TestTheMcpQualityCaveats:
                     {
                         "target": "chat-2",
                         "title": "worker",
-                        "status": "idle",
+                        "status": "idle_unfinished",
                         "queue_depth": 0,
                     }
                 ],
@@ -617,17 +617,23 @@ class TestTheMcpQualityCaveats:
         idle's sleep mark — the one status meaning "no decision needed" — for a
         session whose fate nothing accounts for. The two have to be
         distinguishable at a glance."""
-        idle = self._render(monkeypatch, self._one_row("idle"))
+        idle = self._render(monkeypatch, self._one_row("idle_unfinished"))
         unknown = self._render(monkeypatch, self._one_row("unknown"))
 
         idle_mark = idle.splitlines()[1].strip().split()[0]
         unknown_mark = unknown.splitlines()[1].strip().split()[0]
-        assert idle_mark == "\U0001f4a4", "the idle mark is the control for this comparison"
+        assert (
+            idle_mark == "\U0001f4a4"
+        ), "the idle-unfinished mark is the control for this comparison"
         assert unknown_mark != idle_mark
         assert "unknown" in unknown
 
+    def test_a_legacy_idle_row_keeps_the_sleep_mark(self, monkeypatch):
+        rendered = self._render(monkeypatch, self._one_row("idle"))
+        assert rendered.splitlines()[1].strip().split()[0] == "\U0001f4a4"
+
     def test_a_union_cut_is_caveated_with_its_count_under_its_own_name(self, monkeypatch):
-        payload = self._one_row("idle")
+        payload = self._one_row("idle_unfinished")
         payload["roster_omitted"] = 7
 
         rendered = self._render(monkeypatch, payload)
@@ -636,7 +642,7 @@ class TestTheMcpQualityCaveats:
         assert "transcript-metadata roster" not in rendered.lower()
 
     def test_a_retained_union_is_not_caveated(self, monkeypatch):
-        payload = self._one_row("idle")
+        payload = self._one_row("idle_unfinished")
         payload["roster_omitted"] = 0
 
         assert "more session(s)" not in self._render(monkeypatch, payload)
@@ -644,12 +650,12 @@ class TestTheMcpQualityCaveats:
     def test_an_absent_union_count_claims_no_cut(self, monkeypatch):
         """An older backend does not compute the field. Absent must read as "this
         answer does not say", never as a cut."""
-        assert "more session(s)" not in self._render(monkeypatch, self._one_row("idle"))
+        assert "more session(s)" not in self._render(monkeypatch, self._one_row("idle_unfinished"))
 
     def test_a_published_but_unreadable_union_count_is_not_silently_a_no_cut(self, monkeypatch):
         """The third state. A cut whose size will not read as a number is still a
         cut, and collapsing it into the absent case hides missing rows."""
-        payload = self._one_row("idle")
+        payload = self._one_row("idle_unfinished")
         payload["roster_omitted"] = {"rows": "many"}
 
         rendered = self._render(monkeypatch, payload)

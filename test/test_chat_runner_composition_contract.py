@@ -506,6 +506,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_responsive_protected",
         "_directive_user_origin",
         "_turn_provenance_restored",
+        "_peer_completion_turn",
         "_directive_self_wake",
         "_directive_loop_id",
         "_directive_loop_gen",

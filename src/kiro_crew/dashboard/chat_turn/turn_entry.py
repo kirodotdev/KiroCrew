@@ -104,6 +104,7 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     _synthetic_recovery_turn = turn._synthetic_recovery_turn
     _turn_actor = turn._turn_actor
     _turn_provenance_restored = turn._turn_provenance_restored
+    _peer_completion_turn = turn._peer_completion_turn
     message = turn.message
     slot = turn.slot
     state = turn.state
@@ -268,6 +269,7 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     turn._recovery_turn_id = _recovery_turn_id
     turn_exit.actor = _crew_log_actor
     turn_exit.turn_id = _recovery_turn_id
+    turn_exit.peer_completion = _peer_completion_turn
     # This turn's start priority: its cold start and the eager respawn it may arm.
     _turn_priority = _turn_start_priority(
         user_origin=_directive_user_origin,

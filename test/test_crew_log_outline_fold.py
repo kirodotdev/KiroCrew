@@ -352,6 +352,7 @@ class TestWhatARowCarries:
         row = log.row(1)
         assert row["refused"] == "stopped before it ran"
         assert row["reply"] == ""
+        assert "completed" not in row
 
     def test_a_refusal_clears_only_its_own_ordinals_answer(self) -> None:
         # The limit: the retraction is per row, so a refusal on one turn must not blank
@@ -415,9 +416,11 @@ class TestWhatARowCarries:
         log.started(1)
         log.reply(1, 1, "streamed but unsettled")
         assert log.row(1)["reply"] == ""
+        assert "completed" not in log.row(1)
         assert log.state["draft"] == "streamed but unsettled"
         log.completed(1)
         assert log.row(1)["reply"] == "streamed but unsettled"
+        assert log.row(1)["completed"] is True
 
     def test_a_retry_retracts_the_previous_attempts_answer(self) -> None:
         """Settled rule 4, the divergence from the reference implementation.
@@ -707,7 +710,12 @@ class TestWhatNeverReachesARow:
         assert before == json.dumps(
             {
                 **crew_log._outline_render(log.state),
-                "turns": [{**row, "reply": ""}],
+                "turns": [
+                    {
+                        **{key: value for key, value in row.items() if key != "completed"},
+                        "reply": "",
+                    }
+                ],
             },
             sort_keys=True,
         )
@@ -771,9 +779,9 @@ class TestTheRegistryWiring:
         assert "outline" not in crew_log._SLOT_FOLD_ROW_BYTES
         assert crew_log._FOLDS["outline"].count_rows is None
 
-    def test_the_fold_stands_at_the_unmoved_state_version(self) -> None:
-        """It is new, so it has never had a stored meaning to retire."""
-        assert crew_log._FOLDS["outline"].state_version == crew_log._FOLD_STATE_VERSION_BASE
+    def test_the_fold_bumps_for_the_completed_marker(self) -> None:
+        """Old savepoints must refold so completed turns gain the marker."""
+        assert crew_log._FOLDS["outline"].state_version == crew_log._FOLD_STATE_VERSION_BASE + 1
 
     def test_the_step_cannot_reach_the_state_it_was_handed(self) -> None:
         """``copy_state`` is spelled out, so this is what proves it deep enough.
