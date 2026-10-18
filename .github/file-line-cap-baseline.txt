@@ -225,8 +225,5 @@
 2026 website/src/pages/connections/ConnectionsPage.tsx
 2722 website/src/pages/settings/SecurityPanel.test.tsx
 2014 website/src/pages/settings/decisionsCard.test.tsx
-2259 website/src/test/AgentBackendTab.test.tsx
-2181 website/src/test/DevFleetPage.test.tsx
 2004 website/src/test/InstancesViewport.test.tsx
-2166 website/src/test/MarkdownRenderer.test.tsx
 2166 website/src/types/index.ts

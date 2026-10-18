@@ -175,7 +175,7 @@ it already owes. A harness that joins `ACP_BACKENDS_KNOWN` and decides every set
 renders a complete card with no edit to any card file, no frontend edit and no
 locale edit: labels are written once per CAPABILITY and reused by every harness.
 `test_backend_cards.py` holds the server half of that, and
-`AgentBackendTab.test.tsx`'s "renders a complete detail for a backend the panel has
+`AgentBackendTab.detailCard.test.tsx`'s "renders a complete detail for a backend the panel has
 never heard of" holds the panel half — a projection nothing renders is not a
 feature, so both halves are asserted.
 
