@@ -66,15 +66,15 @@ function makeStore(opts: { slots?: Slots; activeSlot?: string | null; unread?: s
       slots: opts.slots ?? DEFAULT_SLOTS,
       unreadSlots: opts.unread ?? [],
     },
-    chat: { ...defaults.chat, activeSlot: opts.activeSlot ?? 'chat-1' },
+    chat: { ...defaults.chat, activeSlot: opts.activeSlot === undefined ? 'chat-1' : opts.activeSlot },
   })
 }
 
-function wrap(store: ReturnType<typeof makeStore>) {
+function wrap(store: ReturnType<typeof makeStore>, path = '/embed/sessions') {
   const utils = render(
     <Provider store={store}>
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/embed/chat/chat-1']}>
+        <MemoryRouter initialEntries={[path]}>
           <EmbedTabStrip />
         </MemoryRouter>
       </QueryClientProvider>
@@ -166,6 +166,52 @@ describe('EmbedTabStrip — initial tab resolution', () => {
     seed(['chat-1'], 5)
     wrap(makeStore())
     expect(mockNavigate).not.toHaveBeenCalled()
+  })
+})
+
+function selectedTabs(): boolean[] {
+  return screen.getAllByRole('tab').map(el => el.getAttribute('aria-selected') === 'true')
+}
+
+describe('EmbedTabStrip — opened on a chat link', () => {
+  it('stays on the linked chat in a fresh window with nothing to restore', () => {
+    wrap(makeStore({ activeSlot: null }), '/embed/chat/chat-2?sid=chat-2')
+    expect(tabTitles()).toEqual(['Second Chat'])
+    expect(mockNavigate).toHaveBeenCalledWith('/embed/chat/chat-2?sid=chat-2', { replace: true })
+    expect(mockNavigate).not.toHaveBeenCalledWith('/embed/sessions', expect.anything())
+    expect(storedTabs()).toEqual(['chat-2'])
+  })
+
+  it('selects the linked chat when a restored tab already holds it', () => {
+    seed(['chat-1', 'chat-2'], 0)
+    wrap(makeStore(), '/embed/chat/chat-2')
+    expect(tabTitles()).toEqual(['First Chat', 'Second Chat'])
+    expect(selectedTabs()).toEqual([false, true])
+    expect(mockNavigate).toHaveBeenCalledWith('/embed/chat/chat-2?sid=chat-2', { replace: true })
+  })
+
+  it('turns a restored Sessions tab into the linked chat', () => {
+    seed(['chat-1', ''], 1)
+    wrap(makeStore(), '/embed/chat/chat-3')
+    expect(tabTitles()).toEqual(['First Chat', 'Third Chat'])
+    expect(selectedTabs()).toEqual([false, true])
+    expect(storedTabs()).toEqual(['chat-1', 'chat-3'])
+  })
+
+  it('adds the linked chat as a new active tab when no restored tab can take it', () => {
+    tabsWindow.__kirocrewTabs = ['chat-1']
+    wrap(makeStore(), '/embed/chat/chat-3')
+    expect(tabTitles()).toEqual(['First Chat', 'Third Chat'])
+    expect(selectedTabs()).toEqual([false, true])
+    expect(mockNavigate).toHaveBeenCalledWith('/embed/chat/chat-3?sid=chat-3', { replace: true })
+    expect(storedTabs()).toEqual(['chat-1', 'chat-3'])
+  })
+
+  it('treats /embed/chat/ with no slug as no link and restores the tabs', () => {
+    seed(['chat-1'], 0)
+    wrap(makeStore(), '/embed/chat/')
+    expect(tabTitles()).toEqual(['First Chat'])
+    expect(mockNavigate).toHaveBeenCalledWith('/embed/chat/chat-1?sid=chat-1', { replace: true })
   })
 })
 
