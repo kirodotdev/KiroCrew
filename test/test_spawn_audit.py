@@ -1722,9 +1722,9 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "service/linux.py::_systemctl",
         "service/linux.py::_write_unit_via_sudo",
         "service/macos.py::_launchctl",
-        "session_pid.py::_our_orphan_pids",
-        "session_pid.py::find_orphan_mcp_candidates",
         "session_pid.py::kill_orphan_mcps",
+        "session_pid_orphan_scan.py::_our_orphan_pids",
+        "session_pid_orphan_scan.py::find_orphan_mcp_candidates",
         # The abandoned-agent-scope reaper's two systemctl calls are gateway
         # maintenance against this install's own units, not agent work. The binary
         # comes only from platform_compat.trusted_system_bin("systemctl")'s fixed

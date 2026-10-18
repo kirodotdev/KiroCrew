@@ -1276,6 +1276,10 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
         "in a home the real gateway never writes"
     ),
     "session_pid.py": (
+        "docstring and comment reference only (no code reads): the startup sweep "
+        "names the session_pid_mappings prune it runs as its third pass"
+    ),
+    "session_pid_mappings.py": (
         "stale-file cleanup: globs session_pid_*.txt (+ .sig sidecars) for dead "
         "processes, and (age-bounded) session_token_*.sig mappings, whose "
         "token-hash filenames name no pid to probe"

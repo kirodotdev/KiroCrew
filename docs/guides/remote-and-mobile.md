@@ -212,7 +212,7 @@ What NOT to carry over:
 
 - `~/.kiro/crew/kiro_pids.txt`, `kiro_session_pids.txt`, and the
   `session_pid_<pid>.txt` / `.sig` sidecars: live PID tracking
-  (`session_pid.py`), meaningless on another host and actively misleading if
+  (`session_pid_tracking.py`), meaningless on another host and actively misleading if
   copied.
 - `~/.kiro/crew/security_events.jsonl`: the tamper-evident SEL audit chain
   (`sel.py`); it belongs to the host that wrote it.

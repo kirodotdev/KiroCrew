@@ -324,7 +324,7 @@ kinds of undeclared hole:
 | `getattr`-by-name seams whose target the core never defines — `getattr(self, "_write_claude_local_settings", None)` (`AcpClient._write_claude_local_settings`) | 2 | Silent: no permission mode, and the context window collapses from 1M to 200K |
 | Methods returning a neutral value purely so a companion can override them — `_session_mcp_servers() -> []` (`AcpClient._session_mcp_servers`) is the type case | 6 | Silent: a CC session gets **zero MCP tools**, as the docstring itself states |
 | `ClaudeCodeProvider is not None and isinstance(...)` guards against a name hard-coded to `None` (`ClaudeCodeProvider` in `session_parts/provider_probes.py`, `subagent.py:131`) | 11 sites | Statically unreachable; nine `session.py` branches and two `subagent.py` branches are dead-but-maintained |
-| Defensive attribute probes across the provider boundary (`session_pid.py` (`_collect_active_pids`) probes `_proc` and `_active_proc`, `chat_runner.py:867`, `knowledge/llm_pool.py:325`) | 4 | Duck typing in place of a type |
+| Defensive attribute probes across the provider boundary (`session_pid_tracking.py` (`_collect_active_pids`) probes `_proc` and `_active_proc`, `chat_runner.py:867`, `knowledge/llm_pool.py:325`) | 4 | Duck typing in place of a type |
 | Comment clusters naming the companion or a deleted module as the supplier of behaviour | 19 | The seam's real contract lives in prose |
 | Refusal / downgrade mechanisms, including the degrade log in `acp_backends.resolve_selected_backend()` and five capability non-memberships | 9 | — |
 | Live `_is_claude` branches inside `acp/` | 13 | — |
@@ -765,13 +765,13 @@ supervisor owns process supervision**, and `session_pid.py`'s agent-process half
 moves in.
 
 What that has to accomplish is the cycle `session_pid → acp.client → session →
-session_pid`, whose two live sites are `session_pid.py:311` and `:1888` (both a
+session_pid`, whose two live sites are `_kill_pid_tree` and `_kill_orphan_work_tree` (both a
 lazy `from kiro_crew.acp.client import _get_child_pids`). Deleting the
 `worker_pool.py:49` guard is a *consequence* of the move, not the proof it worked —
 that edge is one-way and the guard exists for standalone importability (§2.4). The
 move must therefore place two pieces of shared surface: `_get_child_pids`, or a
 PID-enumeration primitive it can be replaced by, so `session_pid.py` retains no
-`kiro_crew.acp` import at any scope; and `_kill_pid_tree` (`session_pid.py:300`)
+`kiro_crew.acp` import at any scope; and `_kill_pid_tree` (`session_pid.py`)
 plus the `_MANAGED_AGENT_MARKERS` vocabulary, both of which are consulted
 from the agent half and the work half. The non-agent sweeps gate their kill sets
 *negatively* on that marker vocabulary and consume the protected

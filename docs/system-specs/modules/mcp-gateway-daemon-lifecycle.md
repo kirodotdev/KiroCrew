@@ -93,7 +93,7 @@ A connection-private backend (a stub that could not pool) outlives nothing: when
 
 ## Where the daemon's code lives
 
-`mcp_gateway/gatewayd.py` is the daemon's executable (`python -m kiro_crew.mcp_gateway.gatewayd`, the argv `manager.py`, `daemon_control.py` and `session_pid.py` identify it by), its only import path and its one patch surface. The rules live in private owners under `mcp_gateway/daemon/`, and every name an owner defines is bound on `gatewayd` to the owner's own object, so `gatewayd.<name>`, the spelling tests, docs and comments use, still names each of them. Every public name `gatewayd` imported from the rest of the package before the owners moved out still resolves on it; an owner reads the ones marked `not a seam` from its own globals, so a patch of one here does not reach the owner.
+`mcp_gateway/gatewayd.py` is the daemon's executable (`python -m kiro_crew.mcp_gateway.gatewayd`, the argv `manager.py`, `daemon_control.py` and `session_pid_orphan_scan.py` identify it by), its only import path and its one patch surface. The rules live in private owners under `mcp_gateway/daemon/`, and every name an owner defines is bound on `gatewayd` to the owner's own object, so `gatewayd.<name>`, the spelling tests, docs and comments use, still names each of them. Every public name `gatewayd` imported from the rest of the package before the owners moved out still resolves on it; an owner reads the ones marked `not a seam` from its own globals, so a patch of one here does not reach the owner.
 
 | Owner | Holds |
 |---|---|

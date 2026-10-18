@@ -31,7 +31,7 @@ verifying once the OS recycled the pid, answering for the NEW process with
 the previous owner's session key until the next restart's orphan sweep.
 Publication records the process
 incarnation (``platform_compat.get_process_start_id`` — the same identity
-``session_pid.py`` writes into its ``<gw>:<pid>:<start_token>`` sweep
+``session_pid_tracking.py`` writes into its ``<gw>:<pid>:<start_token>`` sweep
 records) and BOTH readers refuse on a proven mismatch, while an absent
 (legacy file) token stays "unknown", never a
 mismatch. Same-uid only: this is a robustness/misattribution guard, not a
@@ -407,7 +407,7 @@ def _pid_recycled(pid: int | str, recorded_token: str) -> bool:
     different process since the mapping was published.
 
     The asymmetry here is the whole correctness argument (mirroring the
-    sweep guard around ``session_pid.py``'s ``_pid_start_token``): a
+    sweep guard around ``session_pid_tracking.py``'s ``_pid_start_token``): a
     MISMATCH proves the pid now names a DIFFERENT process, so answering
     with the mapped key would attribute the new process to the previous
     owner's session — refuse, on the strict AND the lenient path. An
@@ -444,7 +444,7 @@ def publish_session_pid(
 
     PID-recycle guard: when the live process's start token is
     readable (``platform_compat.get_process_start_id`` — the same
-    incarnation identity ``session_pid.py`` records in its
+    incarnation identity ``session_pid_tracking.py`` records in its
     ``<gw>:<pid>:<start_token>`` sweep entries), it is appended to the
     ``.txt`` as a second line and covered by the MAC, so readers can tell
     "still the process this mapping was published for" from "the OS

@@ -4590,7 +4590,7 @@ a trust root on its own; publication therefore also writes a
   owner's session key until the next restart's orphan sweep. Publication therefore
   appends the process start token
   (`platform_compat.get_process_start_id` — the same incarnation identity
-  `session_pid.py` records in its `<gw>:<pid>:<start_token>` sweep entries)
+  `session_pid_tracking.py` records in its `<gw>:<pid>:<start_token>` sweep entries)
   as a second line of the `.txt` (a line, not a colon field, because the
   session key itself contains colons). Both readers dual-parse legacy
   vs guarded forms and refuse on a PROVEN mismatch — the lenient reader
@@ -4641,7 +4641,7 @@ a trust root on its own; publication therefore also writes a
   sidecar; strict resolvers fail closed until the next turn's publish
   re-signs the mapping. Benign and self-healing — no migration step.
 - **Stale cleanup**: the orphan sweep removes `session_pid_<pid>.sig`
-  alongside its `.txt` for dead pids (`session_pid.py`). "Dead" is not
+  alongside its `.txt` for dead pids (`session_pid_mappings.py`). "Dead" is not
   `pid_exists` alone: Linux numbers threads from the pid space, so a dead
   session's pid recycled as a THREAD of an unrelated live process still
   satisfies that probe and the mapping would survive forever (observed on a
@@ -5121,8 +5121,8 @@ The Windows synchronous provider fallback uses the same exact-tree cleanup admis
 ACP teardown; its bounds and recovery procedure are in
 [platform-compat](../common/platform-compat.md#windows-session-tree-teardown).
 
-All process liveness/kill/PID-file-lock operations in `session.py`, its `session_parts/` owners and
-`session_pid.py` go through `kiro_crew.platform_compat` so KiroCrew runs natively on
+All process liveness/kill/PID-file-lock operations in `session.py`, its `session_parts/` owners,
+`session_pid.py` and its `session_pid_*.py` owners go through `kiro_crew.platform_compat` so Kiro Crew runs natively on
 Windows as well as macOS/Linux. The critical correctness reason is that
 **`os.kill(pid, 0)` is NOT a liveness probe on Windows — it terminates the process** —
 so every liveness check uses `platform_compat.pid_exists(pid)` (or the tri-state

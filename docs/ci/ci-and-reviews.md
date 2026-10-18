@@ -966,7 +966,7 @@ requiring a label or a sample hit. The lane remains advisory; a Linux simulation
 is not evidence of native APFS behavior.
 
 The native contracts in `test/test_darwin_native_provider_reap.py` and their
-`session_pid`, `session_lifecycle` (with its `session_lifecycle_parts` owners),
+`session_pid` (with its `session_pid_*.py` owners), `session_lifecycle` (with its `session_lifecycle_parts` owners),
 `session_cleanup`, and `session_pool` callers
 are explicit on-demand paths. They exercise real Darwin process identities,
 zombie-root reaping, reaped-root group recovery, escaped descendants, and three

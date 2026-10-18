@@ -583,7 +583,7 @@ itself and the injection works as described above.
   Pool workers are long-lived agent sessions the sweep cannot see via
   `_collect_active_pids`, so without a shield it would SIGKILL a *busy* worker mid-task.
   Three shields, one mechanism (`register_protected_pid` / `unregister_protected_pid` in
-  `session_pid.py`): the shared `WorkerPool` engine (`acp/worker_pool.py`) registers each
+  `session_pid_tracking.py`): the shared `WorkerPool` engine (`acp/worker_pool.py`) registers each
   worker's PID as part of the worker lifecycle and re-syncs it on every `reset()` (which
   respawns under a new PID), so any pool built on it (`workflows/agent_pool.py`) is
   protected by construction; the knowledge `LLMPool` worker (`AcpWorker`,

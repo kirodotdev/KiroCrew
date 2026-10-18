@@ -18,7 +18,7 @@ superseded-by: []
 - Status: draft. Acceptance requested from a maintainer; the status flips to `accepted` when one records it here. Step A of the rollout is on main as #15755 (reading and reclaim) and #15764 (dashboard card) and needed no record because it adds no default kill authority. Steps B and C extend what the gateway kills by default, and the First Principles lane reads that decision from the base branch, so this document lands on its own first.
 - Author: iamwhatever
 - Created: 2026-10-01
-- Related: #14510 (the reconciler's kill arm, which predates this RFC), `src/kiro_crew/runtime_reconcile.py`, `src/kiro_crew/runtime_ownership.py` (`authorize_runtime_kill`), `src/kiro_crew/session_pid.py` (`_is_untracked_managed_agent_orphan`), `src/kiro_crew/session_scope_reap.py` (`instance_slice_pids`, `reap_abandoned_agent_scopes`)
+- Related: #14510 (the reconciler's kill arm, which predates this RFC), `src/kiro_crew/runtime_reconcile.py`, `src/kiro_crew/runtime_ownership.py` (`authorize_runtime_kill`), `src/kiro_crew/session_pid_orphan_scan.py` (`_is_untracked_managed_agent_orphan`), `src/kiro_crew/session_scope_reap.py` (`instance_slice_pids`, `reap_abandoned_agent_scopes`)
 
 ## Summary
 
@@ -36,7 +36,7 @@ Three arms look at the unowned population.
 |---|---|---|---|
 | Reconciler | `runtime_reconcile.py` | pids in this install's agent cgroup slice (`instance_slice_pids`) | kills, default budget `DEFAULT_MAX_KILLS = 5` per pass |
 | Scope reaper | `session_scope_reap.py`, `reap_abandoned_agent_scopes` (every cleanup tick, through `reap_agent_scopes` in `session_parts/sweeps.py`) | whole transient scopes in the same slice | stops a scope that passes its four-part check (the module docstring of `session_scope_reap.py`) |
-| Untracked report | `session_pid.py`, `_is_untracked_managed_agent_orphan` | init-reparented runtimes with `KIROCREW_SPAWNED` and no PID-file row, POSIX only (`_our_orphan_pids` returns `[]` on Windows) | logs; since #15755 also feeds the reconciler reading and the confirmed reclaim (Linux only, `RECLAIM_PLATFORM` in `runtime_reconcile.py`) |
+| Untracked report | `session_pid_orphan_scan.py`, `_is_untracked_managed_agent_orphan` | init-reparented runtimes with `KIROCREW_SPAWNED` and no PID-file row, POSIX only (`_our_orphan_pids` returns `[]` on Windows) | logs; since #15755 also feeds the reconciler reading and the confirmed reclaim (Linux only, `RECLAIM_PLATFORM` in `runtime_reconcile.py`) |
 
 The reconciler requires five conditions before a signal: this install's spawn marker, unowned on the previous pass too, older than `DEFAULT_MIN_AGE_SECS` (300 s), an argv naming a managed harness, and `authorize_runtime_kill` allowing it. `session.reconcile_max_kills` can only lower the budget; at `0` it audits each would-be kill as `would_kill` and signals nothing.
 
@@ -67,7 +67,7 @@ Each `AcpRuntime` spawn mints a `KIROCREW_SPAWN_INSTANCE` token (`acp/runtime.py
 
 ### 1. One reclaim arm: the reconciler
 
-The reconciler in `runtime_reconcile.py` is the only code that kills an unowned runtime by pid. The report arm in `session_pid.py` stops being a separate verdict: its hits become a candidate source the reconciler reads, and its output becomes part of the reconciler's reading. It gains no signal of its own.
+The reconciler in `runtime_reconcile.py` is the only code that kills an unowned runtime by pid. The report arm in `session_pid_orphan_scan.py` stops being a separate verdict: its hits become a candidate source the reconciler reads, and its output becomes part of the reconciler's reading. It gains no signal of its own.
 
 The scope reaper (`reap_abandoned_agent_scopes`) is main's second kill arm today: it stops whole abandoned cgroup scopes on its own four-part check (no member tracked or active, every member carries our marker or descends from one inside the scope, the group leader is dead or the scope predates this gateway's boot, and the scope is past its grace floor — the module docstring of `session_scope_reap.py`). It stays a separate arm with that check, and this RFC does not change it. Decision 4's pid-level refusals do not apply to it, because its unit is a whole cgroup scope the kernel placed at spawn, not a pid. `setsid` changes a process's session and group, not its cgroup, so a live runtime's detached child or group member stays inside that runtime's scope, and condition 1 refuses the whole scope while the runtime is tracked or active. The inherited-stamp shapes Decision 4 exists for therefore never reach it as a separate candidate.
 
@@ -156,7 +156,7 @@ Step A as merged already limits a confirmed reclaim to install-stamped candidate
 
 ## Alternatives considered
 
-- Add the kill to the report arm in `session_pid.py`. Rejected: a second kill path with its own gates, the shape of the closed #12612 (Decision 1).
+- Add the kill to the report arm in `session_pid_orphan_scan.py`. Rejected: a second kill path with its own gates, the shape of the closed #12612 (Decision 1).
 - Process-scoped proof (in-memory token set). Rejected: lost on the restart that leaks cause (Decision 3).
 - Default off everywhere until a user opts in. Rejected: the reported failure is a host that runs out of memory unattended (Decision 2).
 - Trust sid or ppid as ownership. Rejected: the sid of a measured leak names a dead launcher, and both values are inherited or reparented (Decision 4).

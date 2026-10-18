@@ -459,6 +459,12 @@ class TestTheOnDemandLaneCannotBecomeAGate:
         paths = yaml.safe_load(filters)["darwin"]
         assert {
             "src/kiro_crew/session_pid.py",
+            "src/kiro_crew/session_pid_harness.py",
+            "src/kiro_crew/session_pid_mappings.py",
+            "src/kiro_crew/session_pid_orphan_kill.py",
+            "src/kiro_crew/session_pid_orphan_scan.py",
+            "src/kiro_crew/session_pid_rss.py",
+            "src/kiro_crew/session_pid_tracking.py",
             "src/kiro_crew/session_lifecycle.py",
             "src/kiro_crew/session_cleanup.py",
             "src/kiro_crew/session_pool.py",

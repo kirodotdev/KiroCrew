@@ -1017,7 +1017,10 @@ class TestPidFileRewriteIsAtomic:
         """Ratchet: every PID-file rewrite goes through the atomic chokepoint."""
         import kiro_crew.session_pid as sp
 
-        source = Path(str(sp.__file__)).read_text(encoding="utf-8")
+        source = "\n".join(
+            Path(str(sys.modules[name].__file__)).read_text(encoding="utf-8")
+            for name in (sp.__name__, *sp._OWNERS)
+        )
         assert ".write_text(" not in source, (
             "session_pid.py must rewrite PID files through _rewrite_pid_file(): "
             "Path.write_text truncates the file before writing, so a failure "

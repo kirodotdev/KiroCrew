@@ -202,8 +202,6 @@ line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	platform/default
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	platform/interfaces.py:66-90
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	security.py:50-58
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	session.py:399-400
-line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	session_pid.py:300
-line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	session_pid.py:311
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	src/kiro_crew/providers/base.py:30
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	subagent.py:131
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	types.py:596-605

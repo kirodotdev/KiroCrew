@@ -324,7 +324,7 @@ class TestPidRecycleGuard:
     keep verifying and answer with the previous owner's session key until the
     next restart's orphan sweep. Publication also records the process START
     TOKEN (``platform_compat.get_process_start_id``
-    — the same incarnation identity ``session_pid.py``'s
+    — the same incarnation identity ``session_pid_tracking.py``'s
     ``<gw>:<pid>:<start_token>`` sweep records use), the signature covers it,
     and BOTH readers refuse on a proven mismatch.
 

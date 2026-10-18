@@ -376,7 +376,7 @@ class TestAcquiringTheSharedLockDoesNotTruncateTheLockFile:
     the Windows shards.
 
     Same defect and same fix as ``work_ledger._open_lock``
-    and ``session_pid.py``'s three lock helpers.
+    and ``session_pid``'s three lock helpers.
     ``webhooks.locked`` matters doubly: it guards ``hooks.json.lock``, the SAME
     file ``register_hook`` (``mcp_tools/control.py``) locks from another
     module, so cross-process contention on it is the store's normal state.
