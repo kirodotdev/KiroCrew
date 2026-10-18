@@ -365,6 +365,14 @@ def test_pr_desktop_matrix_gates_macos_but_never_linux() -> None:
     )
 
 
+def test_desktop_matrix_does_not_request_pull_request_api_permission() -> None:
+    """Local diffing removes the job's pull-request REST permission."""
+    workflow = yaml.safe_load((WORKFLOWS / "build.yml").read_text(encoding="utf-8"))
+    permissions = workflow["jobs"]["desktop-matrix"]["permissions"]
+
+    assert permissions == {"contents": "read"}
+
+
 def test_pr_linux_desktop_artifacts_are_arch_qualified() -> None:
     """Two Linux legs both match ``runner.os == 'Linux'``.
 
