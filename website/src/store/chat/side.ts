@@ -33,8 +33,8 @@ export function queueEditBroadcastAt(slot: string, queueId: string): number {
 }
 
 export const sideReducers = {
-  sseSideResult(state: ChatState, action: PayloadAction<{ slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; is_error?: boolean; final?: boolean; steer?: boolean }>) {
-    const { slot, run_id, role, content, ts, is_error, final, steer } = action.payload
+  sseSideResult(state: ChatState, action: PayloadAction<{ slot: string; run_id: string; role: 'user' | 'assistant' | 'tool'; content: string; ts?: number; is_error?: boolean; final?: boolean; steer?: boolean; settle?: boolean; meta?: Record<string, string> }>) {
+    const { slot, run_id, role, content, ts, is_error, final, steer, settle, meta } = action.payload
     if (isUnsafeKey(slot)) return
     const tsIso = typeof ts === 'number' ? new Date(ts * 1000).toISOString() : new Date().toISOString()
     // A steer is an echo of the conversation being closed, never a request to re-open it,
@@ -111,6 +111,17 @@ export const sideReducers = {
       side.streaming = true
       return
     }
+    if (role === 'tool') {
+      // A tool attempt, drawn where it happened: the row lands at the tail, so
+      // the next text delta starts a NEW assistant row under it instead of
+      // growing the one above (see the tail check below). The turn is at work,
+      // not waiting: a tool row is output, so the thinking dots give way to the
+      // row's own spinner.
+      side.messages.push({ role: 'tool', content, ts: tsIso, run_id, ...(meta ? { meta } : {}) })
+      side.pending = false
+      side.streaming = true
+      return
+    }
     side.pending = false
     side.streaming = !final
     if (is_error) {
@@ -120,11 +131,31 @@ export const sideReducers = {
     }
     const last = side.messages[side.messages.length - 1]
     if (last?.role === 'assistant' && last.run_id === run_id && !last.is_error) {
-      if (content === last.content) return
-      last.content = content.startsWith(last.content) ? content : last.content + content
+      if (settle || final) {
+        // A settle frame and the terminal frame each carry the row's whole
+        // text as one redaction pass over the reply has it, and replace what
+        // was streamed for it even when the pass rewrote that text (so the row
+        // never shows the raw deltas and the redacted copy both). An empty one
+        // says the pass left the row no text of its own: no row.
+        if (!content) {
+          side.messages.pop()
+          return
+        }
+        last.content = content
+      } else {
+        // A delta extends the row, always: the server settles the row against
+        // exactly the deltas it sent, so two equal deltas are two, and one that
+        // happens to start with the row's text is not a replacement.
+        last.content += content
+      }
       last.ts = tsIso
       return
     }
+    // The tail is not this run's answer row: a tool row, or nothing yet.
+    // A terminal frame carries the text written after the last tool row, so
+    // an empty one says the turn ended on that tool call and has no text row
+    // to settle; a delta or a non-empty terminal frame starts the row below.
+    if ((final || settle) && !content) return
     side.messages.push({ role: 'assistant', content, ts: tsIso, run_id })
     side.lastRunId = run_id
   },

@@ -8,7 +8,7 @@ import json
 import logging
 import sys
 import time
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from typing import Any, Callable
 
 from aiohttp import WSCloseCode, WSMsgType, web
@@ -598,6 +598,8 @@ def broadcast_side_result(
     final: bool = False,
     ts: float | None = None,
     steer: bool = False,
+    settle: bool = False,
+    meta: Mapping[str, str] | None = None,
 ) -> None:
     """Broadcast a side conversation event on the dedicated side channel.
 
@@ -613,7 +615,22 @@ def broadcast_side_result(
     ``local_side_run_ids``.
 
     Set final=True on the terminal frame of a side turn so the frontend
-    can flip the streaming flag off cleanly.
+    can flip the streaming flag off cleanly. The terminal frame carries the
+    text written AFTER the turn's last tool row (the whole reply when there
+    was none) and settles the answer row the client streamed under that tool
+    row, so a tool row that split the text leaves two rows rather than one
+    duplicated one. ``settle=True`` marks the frame that closes the row ABOVE
+    a tool row with that row's whole text. The client replaces the row with a
+    ``settle`` or terminal frame even when the frame rewrites the streamed
+    text (both carry the row as one redaction pass over the whole reply has
+    it), and removes the row when such a frame is empty; a plain frame is a
+    delta that always extends the row.
+
+    ``role="tool"`` is a tool attempt drawn where it happened in the reply:
+    ``content`` is ``"🔧 <title>"`` (an input preview may follow on a second
+    line) and ``meta`` carries the call's fields. A refused attempt adds the
+    hidden ``"🚫 <title>"`` sibling with the same ``tool_call_id``, which is
+    how the shared transcript marks the 🔧 row as blocked.
 
     No payload field is persisted — sidecar-only, ephemeral.
     """
@@ -631,6 +648,15 @@ def broadcast_side_result(
         payload["final"] = True
     if steer:
         payload["steer"] = True
+    if settle:
+        payload["settle"] = True
+    if meta:
+        # A ``tool`` row's per-call fields (``tool_call_id``, ``kind``,
+        # ``purpose``, ``input_preview``). Every value is LLM-authored or
+        # LLM-derived, so each goes through the same two passes as ``content``.
+        payload["meta"] = {
+            k: redact_credentials(redact_exfiltration_urls(str(v))[0])[0] for k, v in meta.items()
+        }
     # Owner-only, matching the queue frame and `_check_slot_ownership`: side answers and
     # steer echoes are the owner's own conversation, and an app that asks the HTTP API
     # about a slot it does not own gets a 404.

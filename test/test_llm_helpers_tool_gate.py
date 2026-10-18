@@ -1125,3 +1125,138 @@ async def test_hook_based_policy_still_approves_a_read_kind_tool():
     provider = await _run_read_only(_read_only_event(), policy=ToolApprovalPolicy.HOOK_BASED)
     assert provider.approved == ["r1"]
     assert provider.rejected == []
+
+
+@pytest.mark.asyncio
+async def test_on_tool_call_reports_each_attempt_live_in_stream_order():
+    """``on_tool_call`` fires as the stream reports each attempt — an execution
+    with ``approved=True``, a refused permission request with ``approved=False``
+    — interleaved with the text deltas around it, so a caller can draw the
+    attempt where it happened in the reply. ``on_tool_gate`` cannot: it settles
+    after the attempt, once per decision."""
+    provider = _ScriptedProvider(
+        [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="first "),
+            LLMEvent(kind=EVENT_TOOL_CALL, title="Read README.md", tool_call_id="t1"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="then "),
+            LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                title=_DENIED_TITLE,
+                request_id="r2",
+                tool_call_id="t2",
+            ),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="done"),
+            LLMEvent(kind=EVENT_COMPLETE, text=""),
+        ]
+    )
+    seen: list[tuple[str, object]] = []
+
+    text = await stream_and_collect(
+        provider,  # type: ignore[arg-type]
+        "q",
+        approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
+        retry_transient=False,
+        on_chunk=lambda t: seen.append(("text", t)),
+        on_tool_call=lambda ev, approved: seen.append(
+            ("tool", (ev.title, ev.tool_call_id, approved))
+        ),
+    )
+
+    assert text == "first then done"
+    assert seen == [
+        ("text", "first "),
+        ("tool", ("Read README.md", "t1", True)),
+        ("text", "then "),
+        ("tool", (_DENIED_TITLE, "t2", False)),
+        ("text", "done"),
+    ]
+    assert provider.rejected == ["r2"]
+
+
+@pytest.mark.asyncio
+async def test_on_tool_call_is_not_fired_for_an_approved_permission_request():
+    """An approved request is followed by its own ``EVENT_TOOL_CALL``; reporting
+    the request too would draw the same attempt twice."""
+    provider = _ScriptedProvider(
+        [
+            LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                title=_BENIGN_TITLE,
+                request_id="r1",
+                tool_call_id="t1",
+                tool_kind="read",
+            ),
+            LLMEvent(kind=EVENT_TOOL_CALL, title=_BENIGN_TITLE, tool_call_id="t1"),
+            LLMEvent(kind=EVENT_COMPLETE, text=""),
+        ]
+    )
+    seen: list[tuple[str, bool]] = []
+
+    await stream_and_collect(
+        provider,  # type: ignore[arg-type]
+        "q",
+        approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
+        retry_transient=False,
+        on_tool_call=lambda ev, approved: seen.append((ev.tool_call_id, approved)),
+    )
+
+    assert provider.approved == ["r1"]
+    assert seen == [("t1", True)]
+
+
+@pytest.mark.asyncio
+async def test_on_tool_call_reports_a_refusal_after_the_tool_call_event_for_the_same_id():
+    """kiro-cli reports an attempt as a tool-call event and THEN asks permission
+    for it (``test/fixtures/acp_frames/kiro/session.jsonl``), so a refusal
+    reaches the callback for an id it already saw approved. Both are reported,
+    in stream order and with the same id, which is what lets a caller drawing
+    attempts mark the row it drew as blocked instead of drawing a second one."""
+    provider = _ScriptedProvider(
+        [
+            LLMEvent(kind=EVENT_TOOL_CALL, title=_DENIED_TITLE, tool_call_id="t1"),
+            LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                title=_DENIED_TITLE,
+                request_id="r1",
+                tool_call_id="t1",
+            ),
+            LLMEvent(kind=EVENT_COMPLETE, text=""),
+        ]
+    )
+    seen: list[tuple[str, bool]] = []
+
+    await stream_and_collect(
+        provider,  # type: ignore[arg-type]
+        "q",
+        approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
+        retry_transient=False,
+        on_tool_call=lambda ev, approved: seen.append((ev.tool_call_id, approved)),
+    )
+
+    assert provider.rejected == ["r1"]
+    assert seen == [("t1", True), ("t1", False)]
+
+
+@pytest.mark.asyncio
+async def test_a_raising_on_tool_call_does_not_fail_the_turn():
+    """Observing an attempt must never fail the turn, like every other observer."""
+    provider = _ScriptedProvider(
+        [
+            LLMEvent(kind=EVENT_TOOL_CALL, title=_BENIGN_TITLE, tool_call_id="t1"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+            LLMEvent(kind=EVENT_COMPLETE, text=""),
+        ]
+    )
+
+    def _boom(_ev, _approved):
+        raise RuntimeError("observer broke")
+
+    text = await stream_and_collect(
+        provider,  # type: ignore[arg-type]
+        "q",
+        approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
+        retry_transient=False,
+        on_tool_call=_boom,
+    )
+
+    assert text == "ok"
