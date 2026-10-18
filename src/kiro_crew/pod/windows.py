@@ -107,6 +107,7 @@ from kiro_crew.platform_compat import (
 )
 from kiro_crew.pod import _windows_job as jobs
 from kiro_crew.pod import _windows_run as runs
+from kiro_crew.pod import log_mark
 from kiro_crew.pod.config import EXIT_REFUSED_UNRECOVERABLE, PodConfig, environment_vars
 from kiro_crew.pod.unit import _kirocrew_argv as _shared_kirocrew_argv
 from kiro_crew.sandbox import apply_windows_resource_ceiling
@@ -1283,23 +1284,12 @@ def journal_mark(cfg: PodConfig, name: str) -> dict[str, int]:
     before ``start``, this mark lets ``recent_journal`` return only what the
     current start wrote. A missing file marks at 0.
     """
-    mark: dict[str, int] = {}
-    for path in log_paths(cfg, name):
-        try:
-            mark[path.name] = path.stat().st_size
-        except OSError:
-            mark[path.name] = 0
-    return mark
+    return log_mark.mark(log_paths(cfg, name))
 
 
 def _read_since(path: Path, offset: int) -> str:
     """Text appended to *path* past *offset*; the whole file if it shrank."""
-    with path.open("rb") as fh:
-        if fh.seek(0, os.SEEK_END) >= offset:
-            fh.seek(offset)
-        else:
-            fh.seek(0)
-        data = fh.read()
+    data = log_mark.read_since(path, offset)
     return data.decode(locale.getpreferredencoding(False), errors="replace")
 
 

@@ -44,6 +44,7 @@ import threading
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
+from time import time_ns
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
@@ -965,16 +966,26 @@ def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
     return state, restarts
 
 
-def journal_mark(cfg: PodConfig, name: str) -> dict[str, int] | None:
-    """Mark where the next start's log output begins (Windows only).
+# journal_mark key for the systemd backend: wall-clock microseconds since the
+# epoch, read by recent_journal as journalctl's --since bound.
+JOURNAL_SINCE_USEC = "journal_since_usec"
 
-    On Windows the wrapper appends every boot to the same log files, so
-    ``recent_journal(..., since=mark)`` keeps an earlier start's lines out of
-    this start's failure report. Elsewhere returns None.
+
+def journal_mark(cfg: PodConfig, name: str) -> dict[str, int]:
+    """Mark where the next start's log output begins.
+
+    Every backend keeps earlier starts' output: launchd and the Windows wrapper
+    append to the same log files, and the user journal keeps the unit's past
+    invocations. Taken just before ``start_pod``, the mark lets
+    ``recent_journal(..., since=mark)`` keep an earlier start's lines (an old
+    ``FATAL``) out of this start's failure report. The file backends mark byte
+    offsets; systemd marks the current time.
     """
+    if IS_MACOS:
+        return launchd.journal_mark(cfg, name)
     if IS_WINDOWS:
         return win_backend.journal_mark(cfg, name)
-    return None
+    return {JOURNAL_SINCE_USEC: time_ns() // 1000}
 
 
 def recent_journal(
@@ -985,18 +996,22 @@ def recent_journal(
     launchd has no journal, so on macOS this tails the files the pod's plist
     routes stdout/stderr to. Task Scheduler has none either, so on Windows this
     tails the files the generated ``.cmd`` wrapper redirects into. Same
-    contract, different mechanism. *since* is a ``journal_mark`` and only the
-    Windows backend reads it.
+    contract, different mechanism. *since* is a ``journal_mark``: only output
+    written after it is returned.
     """
     if IS_MACOS:
-        return launchd.recent_journal(cfg, name, lines=lines)
+        return launchd.recent_journal(cfg, name, lines=lines, since=since)
     if IS_WINDOWS:
         return win_backend.recent_journal(cfg, name, lines=lines, since=since)
     # journalctl is a sibling of systemctl, not routed through it — gate it too,
     # or this one call still raises a bare FileNotFoundError off-Linux.
     require_systemd()
+    bound: list[str] = []
+    if since is not None and JOURNAL_SINCE_USEC in since:
+        secs, usecs = divmod(since[JOURNAL_SINCE_USEC], 1_000_000)
+        bound.append(f"--since=@{secs}.{usecs:06d}")
     cp = subprocess.run(
-        ["journalctl", "--user", "-u", pod_unit(cfg, name), "-n", str(lines), "--no-pager"],
+        ["journalctl", "--user", "-u", pod_unit(cfg, name), "-n", str(lines), "--no-pager", *bound],
         capture_output=True,
         text=True,
         timeout=10,

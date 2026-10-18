@@ -607,10 +607,11 @@ def test_runtime_threads_the_journal_mark_to_the_windows_backend(cfg, monkeypatc
     assert seen == [mark]
 
 
-def test_journal_mark_is_none_off_win32(cfg, monkeypatch):
+def test_journal_mark_does_not_touch_the_windows_backend_off_win32(cfg, monkeypatch):
     monkeypatch.setattr(rt, "IS_WINDOWS", False)
+    monkeypatch.setattr(rt, "IS_MACOS", False)
     monkeypatch.setattr(win, "journal_mark", lambda c, n: pytest.fail("windows only"))
-    assert rt.journal_mark(cfg, "smoke") is None
+    assert set(rt.journal_mark(cfg, "smoke")) == {rt.JOURNAL_SINCE_USEC}
 
 
 def test_runtime_does_not_touch_the_windows_backend_off_win32(cfg, monkeypatch):
