@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 import yaml
 from ai_review_workflows_helpers import (
+    REDACTOR_PATH,
     ROOT,
     _bash,
     _child_env,
@@ -873,6 +874,7 @@ class TestOpusDiscoveryCaptureExecutes:
                 "EXEC_FILE": "" if exec_file is None else str(exec_file),
                 "HEAD": head,
                 "MAX_CANDIDATE_BYTES": "200000",
+                "REDACTOR": REDACTOR_PATH,
             }
         )
         # `bash -e`: the runner's default shell for a `run:` block without an

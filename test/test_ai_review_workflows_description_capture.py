@@ -18,6 +18,7 @@ from ai_review_workflows_helpers import (
     CAPTURE_SCRIPT,
     CAPTURE_SOURCE_LINE,
     ROOT,
+    SCRUB_CALL,
     SNAPSHOT_SCRIPT,
     SNAPSHOT_SOURCE_FRAGMENT,
     WORKFLOWS,
@@ -555,7 +556,7 @@ class TestStampIsWorkflowWrittenAndGatedOnARealVerdict:
     @pytest.mark.parametrize("name", _capture_lanes())
     def test_written_after_the_redaction_pass(self, name: str) -> None:
         lines = _workflow(name).splitlines()
-        redactions = [i for i, ln in enumerate(lines) if "perl -i -pe" in ln]
+        redactions = [i for i, ln in enumerate(lines) if SCRUB_CALL in ln]
         stamps = [i for i, ln in enumerate(lines) if STAMP_ECHO in ln]
         assert len(redactions) == 1, (name, redactions)
         assert len(stamps) == 1, (name, stamps)

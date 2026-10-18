@@ -585,7 +585,7 @@ class TestTheTwoSecurityGatesScopeOneSurface:
     _SCOPE_ONLY = frozenset(
         {
             "scripts/scope_candidates.py",  # only this lane runs it
-            "scripts/scope_redact.py",  # only this lane runs it
+            "scripts/scope_redact.py",  # its outbound scrub, which only this gate lists
             ".github/review-prompts/security-scope.md",  # only this lane has a model
             ".github/workflows/security-scope-review.yml",  # its own workflow
         }

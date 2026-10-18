@@ -796,6 +796,33 @@ jobs:
             echo "blocking=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # The outbound scrub is `scripts/scope_redact.py`, staged from the BASE
+      # commit. A redactor taken from the change under review could
+      # rewrite the scrub of its own published output. Every model step after
+      # this one is read-only, so nothing can rewrite the staged copy.
+      - name: Stage the base-owned redactor
+        id: redactor
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          always()
+          )
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -uo pipefail
+          dir="${RUNNER_TEMP:-/tmp}/scope-redact"
+          # Remove before creating: a symlink at this path would redirect the write.
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          dest="$dir/scope_redact.py"
+          git show "$BASE_SHA:scripts/scope_redact.py" > "$dest" 2>/dev/null || true
+          if [ ! -s "$dest" ]; then
+            echo "::error::scripts/scope_redact.py is missing or empty on the base commit ($BASE_SHA). Refusing to publish text no base-owned scrubber could redact."
+            exit 1
+          fi
+          echo "redactor=$dest" >> "$GITHUB_OUTPUT"
+
       # The reviewer runs agentically with AWS creds in its environment while
       # reading untrusted PR content. The read-only sandbox unshares the network
       # (blocking spawned-command exfiltration); here we additionally scrub AWS
@@ -808,9 +835,18 @@ jobs:
           && (
           always() && github.actor != 'dependabot[bot]'
           )
+        env:
+          REDACTOR: ${{ steps.redactor.outputs.redactor }}
         run: |
           if [ -f codex-review-output.md ]; then
-            perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' codex-review-output.md
+            # No redactor, or a scrub that fails, is a refusal: the file is removed so
+            # no later `always()` step can publish it raw.
+            if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ] \
+              || ! python3 "$REDACTOR" --mode text codex-review-output.md; then
+              echo "::error::the base-owned redactor could not scrub codex-review-output.md. Refusing to publish it raw."
+              rm -f codex-review-output.md
+              exit 1
+            fi
           fi
 
       # ── ADJUDICATION ────────────────────────────────────────────────────────
@@ -1205,6 +1241,7 @@ jobs:
           always() && steps.gpt_pass2.outputs.blocking == 'true'
           )
         env:
+          REDACTOR: ${{ steps.redactor.outputs.redactor }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           EXEC_FILE: ${{ steps.adjudicate.outputs.execution_file }}
           COUNT: ${{ steps.adj_input.outputs.count }}
@@ -1233,7 +1270,14 @@ jobs:
             fi
             printf '%s\n' "$out" > codex-adjudication.md
           fi
-          perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' codex-adjudication.md
+          # No redactor, or a scrub that fails, is a refusal: the file is removed so
+          # no later `always()` step can publish it raw.
+          if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ] \
+            || ! python3 "$REDACTOR" --mode text codex-adjudication.md; then
+            echo "::error::the base-owned redactor could not scrub codex-adjudication.md. Refusing to publish it raw."
+            rm -f codex-adjudication.md
+            exit 1
+          fi
 
           # Strip list/bold/backtick decoration into a PARSE BUFFER first, so a
           # footer the model bulleted still reconciles. Everything below reads
