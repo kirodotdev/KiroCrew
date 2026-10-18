@@ -83,7 +83,7 @@ def close_before_resume(log: ConversationLog, key: str) -> None:
     3.12, so a close followed at once by a resume ties there and not on Linux. The
     precondition a close-then-resume test means is "closed BEFORE the resume
     begins", so it is stated here rather than left to clock granularity, the way
-    ``test_session_control_revive._archive`` states it.
+    ``session_control_revive_helpers._archive`` states it.
     """
     meta = log.get_metadata(key)
     assert meta.get("closed"), f"{key} is not closed"

@@ -8,7 +8,7 @@ agent even when the session was created under an override).
 
 Every channel transport must write ``agent=`` on its persist writes. The
 Slack path has its own end-to-end lock in
-``test_slack_transport_dispatch.py``; this file locks the shared
+``test_slack_transport_dispatch_turn_outcomes.py``; this file locks the shared
 ``_persist_turn`` shape used by the other six channels, calling the unbound
 method with a minimal stand-in so no channel client needs to be constructed.
 """

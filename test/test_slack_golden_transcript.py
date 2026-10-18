@@ -1,7 +1,7 @@
 """Shared test harness for the messaging-transport Slack tests.
 
 Provides the recording Slack client, scripted provider, and fake session
-manager reused by ``test_slack_transport_dispatch`` and
+manager reused by ``slack_transport_dispatch_helpers`` and
 ``test_slack_transport_integration`` (imported via ``importlib``).
 
 NOTE: the upstream project also shipped a set of golden

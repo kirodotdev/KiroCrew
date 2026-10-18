@@ -8,7 +8,7 @@ owner path still works, every outcome leaves a SEL record, and GET stays open
 (its own foreign-app-slot scoping is covered elsewhere).
 
 Identity setup mirrors the skill-trust guard tests in
-``test_skill_trust_store.py`` (same helper, same denial contract).
+``test_skill_trust_store_operator_consent.py`` (same helper, same denial contract).
 """
 
 from __future__ import annotations
