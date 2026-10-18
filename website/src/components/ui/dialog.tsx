@@ -87,7 +87,8 @@ const DialogContent = React.forwardRef<
       // It does NOT cost us Escape: Radix's DismissableLayer listens with
       // `{ capture: true }`, and a capture-phase listener runs BEFORE the event
       // reaches this element, so stopping bubble propagation here cannot hide it.
-      // (Asserted end-to-end in scripts/verify-crews-dialog-select.mjs.)
+      // (Driven in a real browser by scripts/verify-crews-dialog-select.mjs, on
+      // demand only: no CI lane runs it.)
       onKeyDown={e => {
         onKeyDown?.(e)
         e.stopPropagation()

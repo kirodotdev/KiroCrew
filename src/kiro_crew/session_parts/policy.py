@@ -8,6 +8,7 @@ opt-out bucket, and the model a new session falls back to.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import TYPE_CHECKING, Protocol
 
@@ -16,13 +17,15 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_SESSION_EVICTION,
     selectable_backends,
 )
-from kiro_crew.config.loader import POOL_SIZE_MAX, normalize_agent_model
+from kiro_crew.config.loader import POOL_SIZE_MAX
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.session_compaction import COMPACT_OUTCOME_COMPACTED
 
 if TYPE_CHECKING:
     from kiro_crew.config import KiroCrewConfig
+
+logger = logging.getLogger("kiro_crew.session")
 
 
 def _resolve_allocation_crew_identity(
@@ -181,7 +184,7 @@ BACKGROUND_AGENT = "kirocrew-lite"
 # and re-measured by the gated live test on every install that has the adapter.
 # ``session/cancel`` would NOT have earned the second membership: it leaves the
 # session addressable with its context resident. A harness reaches this path by
-# demonstrating BOTH properties in ``backends.py``, never by an edit here.
+# demonstrating BOTH properties in ``agent_sdk/backends_sessions.py``, never by an edit here.
 def _bg_runtime_backends() -> frozenset[str]:
     return ACP_BACKENDS_ACP_RUNTIME & ACP_BACKENDS_SESSION_EVICTION & selectable_backends()
 
@@ -352,31 +355,25 @@ _AGENT_MODEL_CACHE_TTL = 30.0
 # Persistent session keys — never expired by idle cleanup
 _PERSISTENT_KEYS = frozenset({BACKGROUND_KEY, HEARTBEAT_KEY})
 
-# Sentinel model values that mean "let kiro-cli resolve from agent JSON".
-# When the global agent.model config is one of these, get_or_create() skips
-# the model fallback so kiro-cli's own resolution path takes over.  Extend
-# this set if more sentinel values are introduced (e.g. "default", "system").
-_SENTINEL_MODELS = frozenset({"auto"})
-
-
-def _model_fallback(per_agent_model: str, global_default: str) -> "str | None":
-    """Choose the session model when the caller supplied none.
-
-    Precedence (high → low): explicit caller model (resolved before this is
-    reached) > per-agent pin > global default. When the agent pins its own
-    model, return ``None`` so the provider factory defers to kiro's native
-    agent-JSON resolution. Otherwise return the global default — unless it is a
-    sentinel (e.g. ``"auto"``), in which case return ``None``.
-    """
-    if per_agent_model:
-        return None
-    return global_default if global_default and global_default not in _SENTINEL_MODELS else None
-
 
 def _session_model(
-    cfg: "KiroCrewConfig", agent: str | None, *, crew_agent: str | None = None
+    cfg: "KiroCrewConfig",
+    agent: str | None,
+    *,
+    crew_agent: str | None = None,
+    app_name: str = "",
+    session_key: str | None = None,
+    backend_override: str | None = None,
 ) -> "str | None":
-    """Resolve the model for a new session on *agent*, for EVERY surface.
+    """The model a new session on *agent* starts on, for EVERY surface.
+
+    The one execution-path owner of the default-model ladder. It answers
+    through :func:`resolve_effective_model`, the resolver the dashboard's model
+    chip reads, so a session and its chip cannot disagree. A caller's own model
+    (a slot pin) outranks this and is handled before it is reached; below it,
+    highest first: the crew's pin, the bound template's pin, the app's
+    ``apps.<name>.model`` (*app_name*), the global ``agent.model``, the
+    installed agent file. ``""`` and ``"auto"`` inherit at every tier.
 
     ``crew_agent`` carries the allocation's explicit member identity, including
     "" for a literal template. The empty claim excludes a same-named member's
@@ -384,26 +381,43 @@ def _session_model(
     claim, the shared identity resolver retains legacy crew-name inference for
     callers such as Slack and cron.
 
-    Returns ``None`` when nothing is pinned above the kiro layer, which leaves
-    the provider factory to resolve the template pin / global itself. A crew pin
-    is returned VERBATIM because the factory has no way to discover it: it never
-    sees the crew name.
+    Every tier is scoped to the backend that will run the session, chosen by the
+    same per-session selection the provider factory makes from *session_key* and
+    *backend_override*: a member DM routed to another harness keeps a pin that
+    harness serves.
+
+    Returns ``None`` when every tier defers, leaving the backend to pick. A
+    resolver error also returns ``None``, with a warning: the provider factory
+    then resolves the template pin / global itself, so a cold start never fails
+    on the ladder.
 
     Blocking I/O (globs + reads ``~/.kiro/agents/*.json``): call in an executor.
     """
-    crew_name = _resolve_allocation_crew_identity(cfg, agent, crew_agent)
-    crew = cfg.agents.get(crew_name) if crew_name else None
-    if crew is not None:
-        crew_model = normalize_agent_model(crew.model)
-        if crew_model:
-            return crew_model
-        # The crew defers, so continue down the chain on the template it binds.
-        agent = crew.kiro_agent or agent
+    from kiro_crew.config.loader import resolve_effective_model
+    from kiro_crew.members import is_member_session_key, select_provider_backend
 
-    per_agent_model = ""
-    if agent and agent != "kirocrew":
-        per_agent_model = cfg._resolve_named_agent_model(agent)
-    return _model_fallback(per_agent_model, cfg.agent.model)
+    try:
+        backend: str | None = None
+        if backend_override is not None or is_member_session_key(session_key):
+            backend = select_provider_backend(
+                session_key,
+                cfg.agent.member_acp_backend,
+                cfg.agent.acp_backend,
+                backend_override=backend_override,
+            )
+        crew_name = _resolve_allocation_crew_identity(cfg, agent, crew_agent)
+        if crew_name and crew_name in cfg.agents:
+            model = resolve_effective_model(cfg, crew_name, app_name=app_name, backend=backend)
+        else:
+            # No crew: the template tier is the agent this session launches,
+            # never a crew that happens to share its name.
+            model = resolve_effective_model(
+                cfg, None, template=agent or "", app_name=app_name, backend=backend
+            )
+    except Exception:  # noqa: BLE001 — includes StopIteration from a malformed config
+        logger.warning("Failed to resolve the session model for agent %r", agent, exc_info=True)
+        return None
+    return model or None
 
 
 # Named by the path callers import them from: a class renders as

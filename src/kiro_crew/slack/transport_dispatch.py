@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
 import time
 from typing import TYPE_CHECKING, Any, cast
@@ -81,6 +82,7 @@ from kiro_crew.slack.thread_parent import (
     ThreadParent,
     fetch_thread_parent,
     has_prior_turns,
+    is_cron_owned,
     is_slack_born,
     parent_prompt_text,
     record_thread_parent,
@@ -158,6 +160,16 @@ def _transport_error_text(exc: BaseException) -> str:
     if is_user_worded_failure(exc):
         return f"❌ {_redacted_error_detail(exc)}"
     return _TRANSPORT_ERROR_TEXT
+
+
+def _own_scratch_dir(provider: object) -> str:
+    """The ``$KIROCREW_SCRATCH`` directory the provider's runtime exposes, or ``""``.
+
+    Read through ``getattr`` and kept only as a real path, so a provider without
+    scratch (or a test double) contributes no root rather than a bogus one.
+    """
+    value = getattr(provider, "work_scratch_dir", None)
+    return str(value) if isinstance(value, (str, os.PathLike)) else ""
 
 
 async def _refresh_dashboard_tab(session_key: str) -> None:
@@ -651,8 +663,10 @@ async def handle_message_transport(
         # `files_outbound=True` advertises it: an agent that writes
         # `![chart](/tmp/chart.png)` ships the raw path as text. The root is the
         # provider's own resolved cwd, which is what bounds extraction to files
-        # the session may read. Mirrors the Discord dispatcher.
-        renderer.authorize_upload_root(client.cwd)
+        # the session may read. Mirrors the Discord dispatcher. The runtime's own
+        # `$KIROCREW_SCRATCH` goes beside it: that is where the agent is told to
+        # stage screenshots, and it is never under the cwd.
+        renderer.authorize_upload_root(client.cwd, scratch_root=_own_scratch_dir(client))
         # Expire AGAIN, now that the turn is serialized. The pass above (just
         # before the turn machinery) runs before `get_or_create` waits its turn,
         # so two messages arriving together both clear the control while it is
@@ -704,19 +718,28 @@ async def handle_message_transport(
         # answering an agent's DM, a reply under a cron post -- otherwise opens a
         # session knowing only the reply. Read once, on a fresh session with no
         # prior turns; recorded BEFORE the receipt row below so the transcript
-        # shows it above the reply. See ``slack/thread_parent.py``.
+        # shows it above the reply. A cron-owned thread reads it for the prompt
+        # only, on any fresh session. See ``slack/thread_parent.py``.
         _thread_parent: ThreadParent | None = None
         # One transcript read serves the parent and the thread-replies checks.
         _prior: bool | None = None
+        _slack_born = is_slack_born(session_key)
         if (
             is_new
             and not resumed
             and thread_ts
             and thread_ts != msg_ts
-            and is_slack_born(session_key)
-            and not (_prior := await has_prior_turns(conversation_log, session_key))
+            and (
+                is_cron_owned(session_key)
+                or (
+                    _slack_born
+                    and not (_prior := await has_prior_turns(conversation_log, session_key))
+                )
+            )
         ):
-            _record_parent = bool(conversation_log and not _is_slack_restricted(session_key))
+            _record_parent = bool(
+                conversation_log and _slack_born and not _is_slack_restricted(session_key)
+            )
             _thread_parent = await fetch_thread_parent(
                 slack, channel, thread_ts, with_author=_record_parent
             )

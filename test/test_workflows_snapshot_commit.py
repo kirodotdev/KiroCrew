@@ -11,6 +11,7 @@ from test_workflows_private_execution import world as _world
 from kiro_crew import atomic_write as atomic
 from kiro_crew.task_models import Project
 from kiro_crew.taskrunner import TaskRunner
+from kiro_crew.testing.wait import await_until
 from kiro_crew.workflow_memory import TaskSnapshotError, WorkflowScope
 from kiro_crew.workflows.store import WorkflowRunStore
 
@@ -196,7 +197,7 @@ async def test_cancelled_write_drains_before_new_snapshot(world, tmp_path, monke
     monkeypatch.setattr(atomic, "_write_all", held_write)
     pending = asyncio.create_task(runner._apersist_runs())
     try:
-        await asyncio.wait_for(entered.wait(), 3)
+        await await_until(entered, what="entered")
         pending.cancel()
         await asyncio.sleep(0)
         pending.cancel()
@@ -207,8 +208,8 @@ async def test_cancelled_write_drains_before_new_snapshot(world, tmp_path, monke
     finally:
         release.set()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(pending, 3)
-    await asyncio.wait_for(newer, 3)
+            await await_until(pending, what="pending")
+    await await_until(newer, what="newer")
     assert waits == [True]
     restarted = await asyncio.to_thread(_runner, world, runner._work_dir)
     assert restarted._runs[private.task_id].spec_content == "PRIVATE_NEW"
@@ -253,7 +254,7 @@ async def test_completion_write_failure_never_publishes_success(
     observed = asyncio.Event()
     pending.add_done_callback(lambda _task: observed.set())
     try:
-        await asyncio.wait_for(observed.wait(), 3)
+        await await_until(observed, what="observed")
         assert any(
             record.funcName == "_observe_background_completion"
             and record.levelname == "ERROR"
@@ -263,8 +264,8 @@ async def test_completion_write_failure_never_publishes_success(
     finally:
         # Observing an exception must not turn a caller's await into success.
         with pytest.raises(OSError):
-            await asyncio.wait_for(pending, 3)
-    await asyncio.wait_for(stopped.wait(), 3)
+            await await_until(pending, what="pending")
+    await await_until(stopped, what="stopped")
     assert task_id not in runner._tasks
     assert all("Task completed" not in call.args[0] for call in notify.await_args_list)
     assert private.status == "failed"
@@ -370,7 +371,7 @@ async def test_background_completion_observer_preserves_await_outcome(caplog, ou
     task.add_done_callback(lambda _task: observed.set())
     if outcome == "cancelled":
         task.cancel()
-    await asyncio.wait_for(observed.wait(), 3)
+    await await_until(observed, what="observed")
     if outcome == "failure":
         with pytest.raises(RuntimeError, match="PRIVATE_TASK_EXCEPTION_SENTINEL"):
             await task

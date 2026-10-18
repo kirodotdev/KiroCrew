@@ -27,6 +27,7 @@ from typing import Any
 import pytest
 from real_adapter_gate import MEASURED_OPENCODE_VERSION, require_real_adapter
 
+from kiro_crew import acp_tool_gate
 from kiro_crew import agent as agent_mod
 from kiro_crew import platform_compat
 from kiro_crew.acp import client as client_mod
@@ -214,6 +215,52 @@ class TestOpencodeRuleEvaluation:
         seed = json.dumps({"permission": {"*": "ask", "a_b": "deny", "c_d": "deny"}})
         assert oc_harness._opencode_seeded_deny_rules(seed, "permission") == ("a_b", "c_d")
         assert oc_harness._opencode_seeded_deny_rules('{"permission": "ask"}', "permission") == ()
+        mapped = json.dumps(
+            {"permission": {"*": "ask", "a_b": {"*": "deny"}, "c_d": {"x": "deny"}}}
+        )
+        assert oc_harness._opencode_seeded_deny_rules(mapped, "permission") == ("a_b",)
+
+    def test_a_masked_value_is_never_a_deny_in_force(self):
+        """``***`` hides the real value, which may be ``allow``."""
+        resolved = {"permission": {"*": "ask", "probe_secret": "***"}}
+        assert oc_harness._opencode_unenforced_denies(
+            resolved, "permission", ["probe_secret"]
+        ) == frozenset({"probe_secret"})
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            {"gh_token": "***", "*": "ask"},
+            {"bash": {"cat *secret*": "***"}, "*": "ask"},
+        ],
+    )
+    def test_a_masked_rule_the_star_outranks_is_not_read_as_ask(self, raw):
+        """A masked value may be a deny the trailing ``"*": "ask"`` silently outranks,
+        the same map a readable deny is refused for."""
+        assert oc_harness._opencode_uniform_permission(raw) != "ask"
+
+    def test_a_masked_rule_gets_a_remedy_naming_the_mask(self):
+        remedy = oc_harness._opencode_routing_remedy(
+            ACP_BACKEND_OPENCODE, {"gh_token": "***", "*": "ask"}
+        )
+        assert "***" in remedy and "map" in remedy
+        assert oc_harness._opencode_routing_remedy(
+            ACP_BACKEND_OPENCODE, {"bash": "allow"}
+        ) == acp_tool_gate.remediation_for(ACP_BACKEND_OPENCODE)
+
+
+# The key words opencode's ``debug config`` masks, from 1.18.33 on.
+_SENSITIVE = ("secret", "token", "password", "key", "credential")
+
+
+def _mask_like_opencode(value: object, key: str = "") -> object:
+    """``value`` as opencode >= 1.18.33 prints it: a string under a sensitive key is
+    ``***``; a map is printed as is, its own entries masked the same way."""
+    if isinstance(value, dict):
+        return {k: _mask_like_opencode(v, str(k)) for k, v in value.items()}
+    if isinstance(value, str) and any(word in key.lower() for word in _SENSITIVE):
+        return "***"
+    return value
 
 
 def _completed(stdout: str) -> subprocess.CompletedProcess:
@@ -234,7 +281,22 @@ class TestOpencodeReadBack:
                 ACP_BACKEND_OPENCODE, client._session_harness_deny_rules
             )
         )
-        assert list(seed["permission"].items()) == [("*", "ask"), ("probe_secret", "deny")]
+        assert list(seed["permission"].items()) == [
+            ("*", "ask"),
+            ("probe_secret", {"*": "deny"}),
+        ]
+
+    def test_a_deny_under_a_sensitive_key_survives_the_masked_read_back(self, client, monkeypatch):
+        """From opencode 1.18.33 on, ``debug config`` prints ``***`` for a string under
+        a key that looks sensitive (measured on 1.18.34 and 1.19.1), and prints a map
+        as is. The seed's deny must still read back in force."""
+        monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising=False)
+        rules = ("probe_secret", "gh_get_token", "probe_public")
+        seed = oc_harness._opencode_routing_config(ACP_BACKEND_OPENCODE, rules)
+        resolved = {"permission": _mask_like_opencode(json.loads(seed)["permission"])}
+        seeded = oc_harness._opencode_seeded_deny_rules(seed, "permission")
+        assert seeded == rules
+        assert oc_harness._opencode_unenforced_denies(resolved, "permission", seeded) == frozenset()
 
     def test_no_rules_keeps_the_plain_ask(self, tmp_path, monkeypatch):
         monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising=False)

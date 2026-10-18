@@ -121,7 +121,7 @@ inline injection the natural shape (§5.1, §9).
 
 Verified against `decba819400e`; the RFC supersedes the issue text on these:
 
-1. `_gate_upload_file` (`handlers/files.py`) is the admission gate for
+1. `_gate_upload_file` (`dashboard/file_api/channel_upload.py`) is the admission gate for
    shipping a local file **out** to a channel. It does not scan chat uploads.
    The sidecar's redaction comes from the same redactors the channels use
    (§6), not from that gate.

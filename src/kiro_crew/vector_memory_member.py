@@ -29,7 +29,11 @@ from typing import TYPE_CHECKING
 
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_schema, memory_stores, platform_compat
-from kiro_crew.lesson_validation import contains_volatile_lesson_fact, extracted_lesson_applies
+from kiro_crew.lesson_validation import (
+    contains_volatile_lesson_fact,
+    extracted_lesson_applies,
+    utf8_encodable,
+)
 from kiro_crew.owner_only_files import owner_only_opener
 from kiro_crew.project_scope import canonical_scope, scope_is_admissible
 from kiro_crew.validation import normalize_lesson_category
@@ -448,6 +452,9 @@ def apply_consolidation(
     source_digest = consolidation_source_digest(messages)
     source = f"consolidation:{session_key}"
     receipt: dict = {"source_id": source_id, "semantic": 0, "episodic": 0, "lessons": 0}
+    # Model metadata the schema cannot take: unknown field names dropped from
+    # facts that still land, and facts skipped for an invalid known field.
+    fields_dropped = metadata_rejected = 0
     with self._db_lock:
         self.db.execute("BEGIN IMMEDIATE")
         try:
@@ -492,7 +499,32 @@ def apply_consolidation(
                 value = item["value"]
                 if self.validate_semantic(key, value, confidence, source) is not None:
                     continue
-                metadata = record_meta.normalize_metadata(item.get("metadata"))
+                # One item's metadata decides that item only: a raise here
+                # would roll back the whole span, and every retry re-bills the
+                # extraction that produced it.
+                try:
+                    metadata, dropped = record_meta.normalize_extracted_metadata(
+                        item.get("metadata")
+                    )
+                except ValueError as exc:
+                    metadata_rejected += 1
+                    # The reason names the field, never its untrusted value.
+                    logger.warning(
+                        "Member consolidation of %s skipped %r: invalid metadata: %s",
+                        session_key,
+                        key,
+                        exc,
+                    )
+                    continue
+                if dropped:
+                    fields_dropped += len(dropped)
+                    logger.warning(
+                        "Member consolidation of %s dropped unknown metadata field(s) %s "
+                        "from %r; the fact keeps its known fields",
+                        session_key,
+                        record_meta.describe_fields(dropped),
+                        key,
+                    )
                 metadata.setdefault("source_ref", source_id)
                 # Same identity resolution as set_semantic: a fact already
                 # held by another key (or written earlier in this batch)
@@ -600,6 +632,12 @@ def apply_consolidation(
                 scope = canonical_scope(raw_scope)
                 if contains_volatile_lesson_fact(rule, negative):
                     continue
+                # A lone surrogate is JSON-legal but not UTF-8 encodable, and
+                # ``_lesson_key`` hashes rule plus scope via ``str.encode()``; a
+                # raise here would abort the pass and roll back the whole
+                # transaction, so skip the item instead.
+                if not utf8_encodable(rule) or (scope is not None and not utf8_encodable(scope)):
+                    continue
                 key = _lesson_key(rule, scope)
                 value = {
                     "rule": rule,
@@ -635,6 +673,11 @@ def apply_consolidation(
             entry = result.get("history_entry")
             if isinstance(entry, str) and entry.strip():
                 self._append_history(entry)
+            # Present only when nonzero, so a clean span's receipt keeps its shape.
+            if fields_dropped:
+                receipt["metadata_fields_dropped"] = fields_dropped
+            if metadata_rejected:
+                receipt["metadata_rejected"] = metadata_rejected
             self.db.execute(
                 "INSERT INTO memory_consolidations VALUES (?,?,?,?,?,?)",
                 (

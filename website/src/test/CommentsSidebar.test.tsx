@@ -94,3 +94,29 @@ describe('CommentsSidebar discardSignal', () => {
     expect(onDraftDirtyChange).toHaveBeenLastCalledWith(false)
   })
 })
+
+describe('CommentsSidebar batch-submit markers', () => {
+  const thread = () => [
+    mk({ id: 'r', thread_id: 'r', body: 'pending root' }),
+    mk({ id: 'rep', thread_id: 'r', parent_id: 'r', body: 'pending reply' }),
+    mk({ id: 'a', thread_id: 'r', parent_id: 'r', body: 'agent reply', is_agent: true, author: 'kiro' }),
+    mk({ id: 's', thread_id: 's', body: 'already sent' }),
+  ]
+  const markerIn = (body: string) =>
+    screen.getByText(body).closest('.group')!.querySelector('[data-testid="comment-pending-submit"]')
+
+  it('marks exactly the rows the batch counts, replies included', () => {
+    render(<CommentsSidebar comments={thread()} pendingSubmitIds={new Set(['r', 'rep'])} {...base()} />)
+    expect(screen.getAllByTestId('comment-pending-submit')).toHaveLength(2)
+    expect(markerIn('pending root')).toHaveTextContent('To send')
+    expect(markerIn('pending root')).toHaveAttribute('title', 'Not sent yet. Submit sends this comment to the chat.')
+    expect(markerIn('pending reply')).not.toBeNull()
+    expect(markerIn('agent reply')).toBeNull()
+    expect(markerIn('already sent')).toBeNull()
+  })
+
+  it('marks no row when the host hands over no pending set', () => {
+    render(<CommentsSidebar comments={thread()} {...base()} />)
+    expect(screen.queryByTestId('comment-pending-submit')).toBeNull()
+  })
+})

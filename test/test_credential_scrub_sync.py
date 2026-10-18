@@ -47,7 +47,7 @@ async def _no_audit(**_kwargs: Any) -> None:
 
 
 class TestScrubListSync:
-    """docker/entrypoint.sh CRED_KEYS mirrors config/loader.py CREDENTIAL_KEYS."""
+    """docker/entrypoint.sh CRED_KEYS mirrors config/loader_credentials.py CREDENTIAL_KEYS."""
 
     def test_entrypoint_and_loader_lists_are_identical(self) -> None:
         """Set equality both ways: a key scrubbed by the entrypoint that the

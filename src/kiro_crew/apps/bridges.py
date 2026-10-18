@@ -95,7 +95,7 @@ logger = logging.getLogger(__name__)
 # the data home and defeats pod isolation, the lazy legacy-home migration and
 # test isolation. The name below is an opt-in override (None = live home) so
 # existing monkeypatch call sites keep working. See config.md "Data Home";
-# dashboard/handlers/usage.py is the reference implementation.
+# dashboard/handlers/usage_store.py is the reference implementation.
 KIRO_AGENTS_DIR: Path | None = None
 
 
@@ -2828,7 +2828,7 @@ def resolve_stdio_command(cfg: dict, app_root: Path | None = None) -> dict:
     ``shutil.which("python")`` can resolve a 0-byte Microsoft-Store reparse point — the case
     ``platform_compat._is_windows_store_python_stub`` exists for — and kiro-cli strips env when
     spawning MCP subprocesses, so a PATH lookup can land on an interpreter that cannot import
-    ``kiro_crew`` at all. ``mcp_gateway/rewriter.py`` bakes ``sys.executable`` into its stub
+    ``kiro_crew`` at all. ``mcp_gateway/rewriter_spec.py`` bakes ``sys.executable`` into its stub
     entry for exactly that reason; this is the same decision for app manifests.
 
     With ``app_root``, the resolution matches what the app's BACKEND launcher already does

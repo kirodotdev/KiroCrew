@@ -655,53 +655,6 @@ describe('RemoteCrewPanel', () => {
     expect(screen.queryByRole('button', { name: /Copy command/i })).not.toBeInTheDocument()
   })
 
-  it('reports a found-but-refused plugin with its reason and remedy, not as not installed', async () => {
-    // The install command would put the same refused file back, so the row must
-    // name the refusal and offer the command that clears it.
-    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
-    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
-    vi.mocked(api.cloudPreflight).mockResolvedValue({
-      ...PREFLIGHT_OK,
-      session_manager_plugin: false,
-      session_manager_plugin_command: 'sudo chown -R root:wheel /usr/local/sessionmanagerplugin',
-      session_manager_plugin_refused_path: '/usr/local/sessionmanagerplugin/bin/session-manager-plugin',
-      session_manager_plugin_refused_reason: 'executable parent is owned by another user (uid 1501)',
-    })
-    const u = userEvent.setup()
-    renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
-
-    expect(
-      await screen.findByText(/Found at \/usr\/local\/sessionmanagerplugin\/bin\/session-manager-plugin.*owned by another user \(uid 1501\).*root-owned/),
-    ).toBeInTheDocument()
-    expect(screen.getByText('sudo chown -R root:wheel /usr/local/sessionmanagerplugin')).toBeInTheDocument()
-    // Making the tree root-owned makes whatever binary is in it an accepted
-    // credential receiver, so the line asks for AWS provenance before the command.
-    expect(
-      screen.getByText(/reinstall it from AWS first\. Then run the command below to make its install folder root-owned/),
-    ).toBeInTheDocument()
-    expect(screen.queryByText(/Not installed/)).not.toBeInTheDocument()
-    // A refusal is a failed check, so it renders through ErrorNotice with the
-    // agent hand-off, not as muted status text.
-    const notice = screen.getByText(/Found at \/usr\/local\/sessionmanagerplugin/).closest('[role="alert"]') as HTMLElement
-    expect(notice).not.toBeNull()
-    expect(within(notice).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
-    // The row's warning circle already marks the failed check, so the notice
-    // inside it draws no second triangle.
-    const row = notice.closest('li') as HTMLElement
-    expect(row.querySelectorAll('.lucide-triangle-alert')).toHaveLength(1)
-    expect(notice.querySelector('.lucide-triangle-alert')).toBeNull()
-    // "Reinstall it from AWS first" links where to do that: the same AWS page
-    // the guide and the CLI's not-installed message link.
-    const install = within(row).getByRole('link', { name: /Open AWS’s Session Manager plugin install page/ })
-    expect(install).toHaveAttribute(
-      'href',
-      'https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html',
-    )
-    expect(install).toHaveAttribute('target', '_blank')
-    expect(install).toHaveAttribute('rel', 'noreferrer')
-  })
-
   it('names the credential_process helper the AWS CLI could not find', async () => {
     vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
@@ -717,16 +670,16 @@ describe('RemoteCrewPanel', () => {
     await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
 
     expect(
-      await screen.findByText(/could not find sso-cred-helper on the gateway’s PATH.*credential_process/s),
+      await screen.findByText(/^Give sso-cred-helper its full path in the credential_process line.*could not find it on the gateway’s PATH/s),
     ).toBeInTheDocument()
     // The CLI failure renders through ErrorNotice with the agent hand-off.
-    const notice = screen.getByText(/could not find sso-cred-helper/).closest('[role="alert"]') as HTMLElement
+    const notice = screen.getByText(/^Give sso-cred-helper its full path/).closest('[role="alert"]') as HTMLElement
     expect(notice).not.toBeNull()
     expect(notice).toHaveTextContent(/No such file or directory: 'sso-cred-helper'/)
     expect(within(notice).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
     // The sentence leads; the CLI's own error sits on its own smaller,
     // monospace line under it instead of running on in the same red paragraph.
-    const lead = screen.getByText(/could not find sso-cred-helper/)
+    const lead = screen.getByText(/^Give sso-cred-helper its full path/)
     expect(lead).not.toHaveTextContent(/No such file or directory/)
     const raw = within(notice).getByText("aws: [ERROR]: [Errno 2] No such file or directory: 'sso-cred-helper'")
     expect(raw).not.toBe(lead)

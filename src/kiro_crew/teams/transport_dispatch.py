@@ -74,6 +74,7 @@ from kiro_crew.messaging.link import (
     rebind_conversation_location,
     release_conversation_location,
     seed_generation,
+    should_rotate_generation,
 )
 from kiro_crew.messaging.queue_drain import (
     drain_until_quiet,
@@ -165,6 +166,24 @@ _RESUMED_BUSY_REFUSAL = (
     "⏳ That session is busy with a turn started elsewhere. Send your "
     "message again once it finishes, or /unlink to return to your "
     "Teams conversation."
+)
+
+#: Refusal for an option chip posted by a session other than the one this
+#: conversation targets now: bound to another session by `/sessions`, released by `/unlink`, or
+#: rotated to a new generation. Same invariant as Discord's and Telegram's tag
+#: gate -- a chip runs only in the session that posted it -- with the posting
+#: session read from the renderer that holds the label instead of from a wire tag.
+_STALE_OPTIONS_REFUSAL = (
+    "🔘 These choices belong to a conversation this chat has since moved away "
+    "from, so your choice was NOT applied. Type it as a message instead, or "
+    "run /sessions to reattach the session that asked."
+)
+
+#: Refusal for a valid chip whose session is mid-turn. A chip is never steered or
+#: queued, for the reason given where this is used.
+_BUSY_OPTIONS_REFUSAL = (
+    "🔘 That conversation is busy with another turn, so your choice was NOT "
+    "applied. Type it as a message once the turn finishes."
 )
 
 #: A release that could not be made durable changes nothing and says so.
@@ -452,6 +471,7 @@ class TeamsDispatcher:
         *,
         interpret_commands: bool = True,
         drain: bool = True,
+        option_session_key: str | None = None,
     ) -> None:
         """Drive one authorized inbound Teams message through TurnDriver.
 
@@ -463,6 +483,12 @@ class TeamsDispatcher:
         re-enter :meth:`_drain_queue` at its tail. The drain's own loop pumps
         whatever arrived during the combined turn; without this the replay would
         nest one drain inside another for every burst round.
+
+        ``option_session_key`` is set only for an option-chip label: the session
+        whose renderer posted the chip. The turn runs only if the session this
+        message resolves to is that one -- checked before the busy path and again
+        after idle/daily rotation in :meth:`_run_turn` -- so a chip cannot inject
+        its model-written label into a session that never asked the question.
         """
         assert self.client is not None, "TeamsDispatcher.client must be set"
         # Inbound channels-governance gate (off-loop) — recheck per message so a
@@ -599,7 +625,19 @@ class TeamsDispatcher:
         # binding change between the decision and its use, which is the silent mis-route
         # the single-decision shape exists to prevent.
         session_key = route.resumed_key or self._session_key(email)
+        if option_session_key is not None and session_key != option_session_key:
+            # Re-checked here, after the one routing decision, because the
+            # binding can change between the card handler's check and route().
+            await self._reply(inbound, _STALE_OPTIONS_REFUSAL)
+            return
         if self.sessions.is_busy(session_key):
+            if option_session_key is not None:
+                # A chip never enters the busy path: the queue keeps bare text and
+                # its replay re-resolves the binding, and a refused enqueue re-enters
+                # handle_message with commands on. Either way the label would run
+                # with no check of where it came from.
+                await self._reply(inbound, _BUSY_OPTIONS_REFUSAL)
+                return
             if route.resumed_key is not None:
                 # NOT `_handle_busy` first: that queues into THIS dispatcher's queue,
                 # drained only at the tail of a TEAMS-driven turn -- so while the
@@ -627,6 +665,7 @@ class TeamsDispatcher:
             inbound_route=inbound_route,
             drain=drain,
             resumed_key=route.resumed_key,
+            option_session_key=option_session_key,
         )
 
     async def _run_admitted(
@@ -638,6 +677,7 @@ class TeamsDispatcher:
         inbound_route: InboundRoute,
         drain: bool,
         resumed_key: str | None,
+        option_session_key: str | None = None,
     ) -> None:
         """Fetch the attachments and run one turn for a message already admitted.
 
@@ -665,6 +705,7 @@ class TeamsDispatcher:
                 inbound_route=inbound_route,
                 drain=drain,
                 resumed_key=resumed_key,
+                option_session_key=option_session_key,
             )
         finally:
             if temp_paths:
@@ -681,6 +722,7 @@ class TeamsDispatcher:
         inbound_route: InboundRoute,
         drain: bool,
         resumed_key: str | None = None,
+        option_session_key: str | None = None,
     ) -> None:
         """Rotate, build the renderer, drive one turn, then drain what arrived.
 
@@ -709,6 +751,11 @@ class TeamsDispatcher:
         # Decided ONCE, upstream, and not re-resolved: re-reading the binding here would
         # let it change between the decision and its use.
         session_key = resumed_key or self._session_key(email)
+        if option_session_key is not None and session_key != option_session_key:
+            # The rotation above moved this conversation to a new generation, which
+            # never asked the question the chip answers.
+            await self._reply(inbound, _STALE_OPTIONS_REFUSAL)
+            return
         # A resumed session keeps the agent it ran before; a pick is this
         # conversation's own.
         agent = self._resolve_agent(None if resumed_key else email)
@@ -986,6 +1033,10 @@ class TeamsDispatcher:
         an earlier turn is still in flight, and that turn's cards stay registered under the
         key it started with. Both keys belong to this conversation and this identity, so
         trying them widens nothing -- the per-prompt nonce still decides.
+
+        An option chip uses only the first key, the conversation's current target: its
+        label becomes a new turn there, so a label found under the other key would run
+        in a session that never asked the question.
         """
         native = self._session_key(identity)
         resumed = self._session_resume.resumed_session(inbound.conversation_id) or ""
@@ -1087,19 +1138,37 @@ class TeamsDispatcher:
             )
             return
         # An option chip: resolve the label from what this turn actually offered,
-        # then run it as an ordinary turn -- the same thing typing it would do.
-        session_key, label, renderer = "", "", None
-        for key in candidates:
-            renderer = self._active_renderers.get(key)
-            label = renderer.option_label(payload["nonce"], payload["index"]) if renderer else ""
-            if label:
-                session_key = key
-                break
+        # then run it as an ordinary turn -- the same thing typing it would do. Only
+        # the conversation's CURRENT target is looked up, because the label turn runs
+        # there: a chip posted before a `/sessions` bind or an `/unlink` is found
+        # under no live renderer and reads as stale, unsettled.
+        session_key = candidates[0]
+        renderer = self._active_renderers.get(session_key)
+        label = renderer.option_label(payload["nonce"], payload["index"]) if renderer else ""
         if not label or renderer is None:
             await self._reply(
                 inbound,
                 "⌛ Those choices are from an earlier reply — type your answer instead.",
             )
+            return
+        messaging = self._live_cfg().messaging
+        if session_key == self._session_key(identity) and should_rotate_generation(
+            self._conv.last_active(identity),
+            time.time(),
+            idle_minutes=messaging.idle_reset_minutes,
+            daily_reset_hour=messaging.daily_reset_hour,
+        ):
+            # The turn this press starts would rotate the native conversation to a new
+            # generation before it runs, and that generation never asked. Refused here,
+            # before settling, with the same predicate `_run_turn`'s rotation applies and
+            # without recording activity; the turn's own post-rotation check stays the
+            # backstop.
+            await self._reply(inbound, _STALE_OPTIONS_REFUSAL)
+            return
+        if self.sessions.is_busy(session_key):
+            # Refused here too, before settling, so the chips stay live for a retry
+            # once the turn ends; handle_message keeps the same check as a backstop.
+            await self._reply(inbound, _BUSY_OPTIONS_REFUSAL)
             return
         # Replace the chips with the pick BEFORE running the turn: every other chip
         # still looks live until this lands, and the transcript otherwise never
@@ -1117,7 +1186,9 @@ class TeamsDispatcher:
         # chip is turn content, exactly like a drained queue payload, so it reaches
         # the model as literal text.
         await self.handle_message(
-            replace(inbound, text=label, card_value=None), interpret_commands=False
+            replace(inbound, text=label, card_value=None),
+            interpret_commands=False,
+            option_session_key=session_key,
         )
 
     # ── Mid-turn queue ─────────────────────────────────────────────────────

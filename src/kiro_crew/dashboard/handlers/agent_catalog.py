@@ -10,6 +10,13 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import agent_state
+from kiro_crew.acp_backends import (
+    ACP_BACKENDS_KNOWN,
+    ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
+    Routing,
+    backend_to_stored,
+    routing_for,
+)
 from kiro_crew.agent_discovery import AgentInfo, list_agents
 from kiro_crew.agent_files import (
     AGENT_FILENAME,
@@ -32,6 +39,7 @@ from kiro_crew.dashboard.handlers.agents import (
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
 from kiro_crew.executors import discovery_executor
+from kiro_crew.members import is_member_session_key
 from kiro_crew.platform import current_context, safe_context_call
 
 logger = logging.getLogger(__name__)
@@ -78,7 +86,11 @@ def _agent_runtime_policy(name: str, engine_identity: str) -> dict[str, Any] | N
 
 def _templates(project_dir: Path | None) -> list[AgentInfo]:
     """Discover shared templates without enrolling members or allocating memory."""
-    discovered = list_agents(project_dir=project_dir)
+    return _choosable_templates(list_agents(project_dir=project_dir))
+
+
+def _choosable_templates(discovered: list[AgentInfo]) -> list[AgentInfo]:
+    """The template choices out of one discovery scan (see :func:`_templates`)."""
     # Discovery's display enrichment can omit unreadable lineage. A selectable
     # catalog cannot interpret that omission as proof a private copy is shared.
     forks = agent_state.all_fork_info()
@@ -110,7 +122,42 @@ def _template_row(agent: AgentInfo) -> dict[str, object]:
         "kiro_agent": agent.name,
         "description": _roster_mask(agent.description),
         "source": _roster_mask(agent.source),
+        # A bool discovery computed, not record content, so it is not masked.
+        "markdown_only": agent.markdown_only,
     }
+
+
+def _session_backend(config: KiroCrewConfig, session_key: str) -> str:
+    """The harness a session on *session_key* runs, in the config-file spelling.
+
+    The same split the provider factory's selection makes
+    (``members.select_provider_backend``): a crewmate's DM runs on
+    ``agent.member_acp_backend``, every other chat and a picker with no chat on
+    ``agent.acp_backend``. Both fields are already resolved runtime ids after
+    ``KiroCrewConfig.load``, so this reads them rather than calling that gate,
+    which logs every member routing. Display-only: no spawn reads this.
+    """
+    if is_member_session_key(session_key):
+        return backend_to_stored(config.agent.member_acp_backend)
+    return backend_to_stored(config.agent.acp_backend)
+
+
+def _markdown_refused_backends() -> list[str]:
+    """The hosts that refuse a markdown-only agent, in the config-file spelling.
+
+    A host refuses one when its spawn names an agent (``Routing.AGENT_SPEC``, the
+    routing table's answer to "this host has an agent to activate", which the
+    runtime's activation guard confirms) and it cannot load the markdown form
+    (``ACP_BACKENDS_MARKDOWN_AGENT_SPECS``). Every other host starts the session
+    without the agent's spec either way, so a "won't start" badge there would be
+    false.
+    """
+    return sorted(
+        backend_to_stored(backend)
+        for backend in ACP_BACKENDS_KNOWN
+        if routing_for(backend) is Routing.AGENT_SPEC
+        and backend not in ACP_BACKENDS_MARKDOWN_AGENT_SPECS
+    )
 
 
 async def api_agent_catalog(request: web.Request) -> web.Response:
@@ -150,11 +197,15 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
         # resets a default agent whose template is gone -- rides the same
         # executor call, and the config is read AFTER it so the response names
         # the default the user will actually get.
-        def _refreshed_templates() -> list[AgentInfo]:
+        def _refreshed_templates() -> tuple[list[AgentInfo], frozenset[str]]:
             refresh_materialized_agents(heal_default=owner)
-            return _templates(project_dir)
+            discovered = list_agents(project_dir=project_dir)
+            # From the WHOLE scan, not the template choices: a crewmate may be
+            # bound to an agent the template list withholds.
+            markdown_only = frozenset(a.name for a in discovered if a.markdown_only)
+            return _choosable_templates(discovered), markdown_only
 
-        templates = await asyncio.get_running_loop().run_in_executor(
+        templates, markdown_only_names = await asyncio.get_running_loop().run_in_executor(
             discovery_executor(), _refreshed_templates
         )
         config = await asyncio.to_thread(KiroCrewConfig.load)
@@ -173,10 +224,12 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
     for name, member in config.agents.items():
         row = _agent_roster_row(name, "global", member, redact=redact)
         row["selection_kind"] = "member"
+        # The agent that RUNS, which for a row that recorded a file name is the
+        # agent that file declares.
+        engine_identity = dispatch_kiro_agent(member.kiro_agent) or name
+        row["markdown_only"] = engine_identity in markdown_only_names
         if not redact:
-            # The companion keys its policy on the agent that RUNS, which for a
-            # row that recorded a file name is the agent that file declares.
-            engine_identity = dispatch_kiro_agent(member.kiro_agent) or name
+            # The companion keys its policy on that same agent.
             policy = _agent_runtime_policy(name, engine_identity)
             if policy is not None:
                 row["runtime_policy"] = policy
@@ -191,5 +244,15 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
         {
             "agents": rows,
             "default_agent": _roster_mask(template) if redact else template,
+            # What a picker needs to badge a ``markdown_only`` row it cannot run:
+            # the harness this chat (or, with no chat, a new session) runs, the
+            # harnesses that refuse such an agent (the badge's condition), and
+            # the ones that load it (the badge's remedy). None names a backend
+            # here; all come from the registry and harness facts.
+            "session_backend": _session_backend(config, session_key),
+            "markdown_refused_backends": _markdown_refused_backends(),
+            "markdown_spec_backends": sorted(
+                backend_to_stored(b) for b in ACP_BACKENDS_MARKDOWN_AGENT_SPECS
+            ),
         }
     )

@@ -38,6 +38,7 @@ from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
 from kiro_crew.apps.builtins.meetings.backend.domain import session as sess
 from kiro_crew.apps.builtins.meetings.backend.routes import _common
+from kiro_crew.testing.wait import await_until
 
 # Repo-root anchor for tests that read a checked-in source file. A relative
 # literal resolves against the process CWD, which no test owns: another test
@@ -697,7 +698,7 @@ class TestAgentRoutes:
             assert await asyncio.to_thread(append_entered.wait, 5)
 
             stop_request = asyncio.create_task(client.post(f"{BASE}/meetings/standup/stop"))
-            await asyncio.wait_for(observed_lock.waiter.wait(), timeout=5)
+            await await_until(observed_lock.waiter)
             release_append.set()
 
             assert (await dispatch_request).status == 200
@@ -762,7 +763,7 @@ class TestAgentRoutes:
                     json={"status": k.STATUS_REVIEWING},
                 )
             )
-            await asyncio.wait_for(observed_lock.waiter.wait(), timeout=5)
+            await await_until(observed_lock.waiter)
             release_append.set()
 
             assert (await dispatch_request).status == 200
@@ -785,12 +786,14 @@ class TestAgentRoutes:
 
             monkeypatch.setattr(session, "flush_all", slow_flush)
             stop_request = asyncio.create_task(client.post(f"{BASE}/meetings/standup/stop"))
-            await asyncio.wait_for(flush_entered.wait(), timeout=5)
+            await await_until(flush_entered)
 
-            dispatch = await asyncio.wait_for(
-                client.post(
-                    f"{BASE}/meetings/standup/dispatch",
-                    json={"text": "too late"},
+            dispatch = await await_until(
+                asyncio.ensure_future(
+                    client.post(
+                        f"{BASE}/meetings/standup/dispatch",
+                        json={"text": "too late"},
+                    )
                 ),
                 timeout=1,
             )
@@ -1014,14 +1017,14 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
         monkeypatch.setattr(sess, "init_agents", blocking_init)
         await client.post(f"{BASE}/meetings/{meeting_id}/init", json={"title": "Standup"})
         start = asyncio.create_task(client.post(f"{BASE}/meetings/{meeting_id}/start", json={}))
-        await asyncio.wait_for(entered.wait(), timeout=5)
+        await await_until(entered)
         return start, release
 
     @staticmethod
     async def _wait_for_agent_flush(session, agent_id: str) -> None:
         task = session.agents[agent_id]._flush_task
         assert task is not None
-        await asyncio.wait_for(task, timeout=2)
+        await await_until(task)
 
     @pytest.mark.asyncio
     async def test_speech_mid_init_is_buffered_and_delivered_in_order(
@@ -1093,8 +1096,8 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
 
             release_init.set()
             try:
-                assert (await asyncio.wait_for(start, timeout=2)).status == 200
-                await asyncio.wait_for(entered_turn.wait(), timeout=2)
+                assert (await await_until(start)).status == 200
+                await await_until(entered_turn)
                 assert any(queue.busy for queue in session.agents.values())
             finally:
                 release_turn.set()

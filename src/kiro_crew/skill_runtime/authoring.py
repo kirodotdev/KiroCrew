@@ -152,7 +152,7 @@ def _create_skill_pinned(
         #
         # 0o666, masked by umask, is what the by-name floor's write_text
         # produces, so the two branches land the same permissions and the pin
-        # changes no default. This is the mode prompts.py's own pinned O_EXCL
+        # changes no default. This is the mode prompts_authoring.py's own pinned O_EXCL
         # create of user content passes, for the same reason. A tighter default
         # for user-authored skill bodies is a policy change that has to cover
         # both branches and both platforms, so it does not ride a migration.

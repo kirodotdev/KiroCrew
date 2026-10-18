@@ -1699,9 +1699,15 @@ class TestRewriterDecodesJsonAsUtf8:
         reaching a release through a green Linux shard. It also covers the
         settings-file read, which has no cheap behavioural harness.
         """
+        import importlib
+
         from kiro_crew.mcp_gateway import rewriter as rw
 
-        source = Path(rw.__file__).read_text(encoding="utf-8")
+        # The facade joined with its owners, which hold most of the reads.
+        source = "".join(
+            Path(importlib.import_module(name).__file__ or "").read_text(encoding="utf-8")
+            for name in (rw.__name__, *rw._REWRITER_OWNERS)
+        )
         offenders = _unencoded_json_reads(source)
         assert offenders == [], (
             "rewriter.py decodes JSON with the host code page at line(s) "
@@ -1732,9 +1738,15 @@ class TestRewriterDecodesJsonAsUtf8:
         dropping ``UnicodeDecodeError`` from one of them would leave every other
         test green. This scan fails instead.
         """
+        import importlib
+
         from kiro_crew.mcp_gateway import rewriter as rw
 
-        source = Path(rw.__file__).read_text(encoding="utf-8")
+        # The facade joined with its owners, which hold most of the reads.
+        source = "".join(
+            Path(importlib.import_module(name).__file__ or "").read_text(encoding="utf-8")
+            for name in (rw.__name__, *rw._REWRITER_OWNERS)
+        )
         reads = _json_text_reads(source)
         assert len(reads) >= 3, (
             f"the scan found only {reads}; rewriter.py has at least three "

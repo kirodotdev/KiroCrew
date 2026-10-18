@@ -283,7 +283,15 @@ async def test_catalog_failure_is_explicit_without_partial_success(catalog, monk
 
 def test_template_projection_omits_runtime_and_file_details():
     row = agent_catalog._template_row(_template("reviewer"))
-    assert set(row) == {"name", "selection_kind", "scope", "kiro_agent", "description", "source"}
+    assert set(row) == {
+        "name",
+        "selection_kind",
+        "scope",
+        "kiro_agent",
+        "description",
+        "source",
+        "markdown_only",
+    }
     assert "filename" not in row
 
 
@@ -416,3 +424,130 @@ def test_runtime_policy_lookup_preserves_composition_failures(catalog, failure, 
             assert agent_catalog._agent_runtime_policy("reviewer", "review-engine") is None
         assert "Failed to read runtime policy for crew reviewer" in caplog.text
     provider.agent_runtime_policy.assert_called_once_with("review-engine")
+
+
+# ── markdown-only agents ──
+# The picker badges a ``markdown_only`` row whose chat runs on a harness outside
+# ``markdown_spec_backends``. The catalog carries the facts; it gates nothing.
+
+
+def test_template_row_carries_markdown_only():
+    assert agent_catalog._template_row(_template("md", markdown_only=True))["markdown_only"] is True
+    assert agent_catalog._template_row(_template("js"))["markdown_only"] is False
+
+
+@pytest.mark.asyncio
+async def test_catalog_marks_markdown_only_templates_and_the_members_bound_to_them(catalog):
+    catalog.config.agents["reviewer"].kiro_agent = "md-engine"
+    # A crewmate's agent may be one the template list withholds (here a
+    # background-only owned file), so membership is read from the whole scan.
+    catalog.discovery.return_value = [
+        _template("test-writer", markdown_only=True),
+        dataclasses.replace(
+            _owned("md-engine", markdown_only=True), filename=agent_files.LITE_AGENT_FILENAME
+        ),
+    ]
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog")
+        assert response.status == 200
+        rows = (await response.json())["agents"]
+    by_id = {(r["selection_kind"], r["name"]): r["markdown_only"] for r in rows}
+    assert by_id == {
+        ("member", "reviewer"): True,
+        ("member", "retained-member"): False,
+        ("template", "test-writer"): True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_catalog_names_the_harness_facts_without_hard_coding_one(catalog):
+    from kiro_crew.acp_backends import ACP_BACKENDS_MARKDOWN_AGENT_SPECS, backend_to_stored
+
+    catalog.config.agent.acp_backend = ""  # the runtime id for kiro-cli
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog")
+        assert response.status == 200
+        body = await response.json()
+    assert body["markdown_spec_backends"] == sorted(
+        backend_to_stored(b) for b in ACP_BACKENDS_MARKDOWN_AGENT_SPECS
+    )
+    assert body["session_backend"] == "kiro"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session_key", "expected"),
+    [
+        (None, "kiro"),  # no chat: a new session runs agent.acp_backend
+        ("chat-empty", "kiro"),  # an ordinary chat
+        ("dashboard:member-reviewer", "kas"),  # a crewmate DM: agent.member_acp_backend
+    ],
+)
+async def test_session_backend_follows_the_member_split(catalog, session_key, expected):
+    catalog.config.agent.acp_backend = ""
+    catalog.config.agent.member_acp_backend = "kas"
+    catalog.state._slots["member-reviewer"] = SimpleNamespace(project="", _app="")
+    headers = {"X-Session-Key": session_key} if session_key else {}
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog", headers=headers)
+        assert response.status == 200
+        assert (await response.json())["session_backend"] == expected
+
+
+@pytest.mark.parametrize(
+    "session_key",
+    [
+        "",
+        "chat-1",
+        "crew-ops",
+        "member-reviewer",
+        "dashboard:member-reviewer",
+        "dashboard_member-reviewer",
+    ],
+)
+@pytest.mark.parametrize(("default", "member"), [("", "kas"), ("kas", ""), ("kas", "kas")])
+def test_session_backend_matches_the_provider_selection(session_key, default, member):
+    """The picker's harness is the one the provider factory starts for that key."""
+    from kiro_crew.acp_backends import backend_to_stored
+    from kiro_crew.members import select_provider_backend
+
+    config = KiroCrewConfig()
+    config.agent.acp_backend = default
+    config.agent.member_acp_backend = member
+    expected = backend_to_stored(select_provider_backend(session_key, member, default))
+    assert agent_catalog._session_backend(config, session_key) == expected
+
+
+def test_refused_backends_are_the_hosts_whose_activation_guard_refuses():
+    """The routing-table answer equals the harness answer, host by host.
+
+    A host refuses a markdown-only agent when its harness verifies activation and
+    cannot read markdown. The catalog derives the set from the routing table (the
+    dashboard may not import the ACP layer), so this pins the two to one answer.
+    """
+    from kiro_crew.acp.harness import harness_for
+    from kiro_crew.acp_backends import ACP_BACKENDS_KNOWN, backend_to_stored
+
+    expected = set()
+    for backend in ACP_BACKENDS_KNOWN:
+        try:
+            harness = harness_for(backend)
+        except ValueError:
+            continue
+        if harness.verifies_agent_activation and not harness.reads_markdown_agent_specs:
+            expected.add(backend_to_stored(backend))
+    refused = agent_catalog._markdown_refused_backends()
+    assert set(refused) == expected
+    assert "kiro" in refused
+    assert not set(refused) & {
+        backend_to_stored(b) for b in agent_catalog.ACP_BACKENDS_MARKDOWN_AGENT_SPECS
+    }
+
+
+@pytest.mark.asyncio
+async def test_catalog_sends_the_refused_backends(catalog):
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog")
+        assert response.status == 200
+        body = await response.json()
+    assert body["markdown_refused_backends"] == agent_catalog._markdown_refused_backends()

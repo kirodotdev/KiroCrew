@@ -3,7 +3,7 @@
  * while the welcome state shows (empty session). WelcomeView is
  * mocked to nothing here, so any chip found comes from ChatPage's own slot.
  */
-import { describe, it, expect, vi, onTestFinished } from 'vitest'
+import { beforeEach, describe, it, expect, vi, onTestFinished } from 'vitest'
 import { render, screen, act, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -73,6 +73,19 @@ import { __resetComposerSendHoldsForTests, isComposerSendHeld, takeComposerArriv
 // same reason the app does. (The miss degrades safely to the surface-free
 // sentence, which is what the unregistered-surface case below asserts.)
 import '../surfaces/builtins'
+
+beforeEach(() => {
+  createChatSlot.mockReset()
+  deleteChatSlot.mockReset().mockResolvedValue(undefined)
+  vi.mocked(api.chatSlotDetail).mockReset().mockImplementation(async () => ({
+    messages: detail.messages,
+    running: false,
+    has_more: false,
+    total: detail.messages.length,
+  }))
+  vi.mocked(api.uploadFiles).mockReset().mockResolvedValue({ paths: [] })
+  switchTimeout.mockReset().mockReturnValue(15_000)
+})
 
 type Slot = { messages: Msg[]; mode?: string; slotKeys?: string[] }
 

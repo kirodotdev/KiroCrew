@@ -230,6 +230,63 @@ def test_recent_journal_says_why_it_is_empty(cfg):
     assert "no pod log yet" in text
 
 
+def _earlier_failed_start(cfg):
+    """Log files as an earlier failed boot left them (launchd appends)."""
+    out, err = launchd.log_paths(cfg, "smoke")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(b"kirocrew-pod: name=smoke earlier boot\n")
+    err.write_bytes(b"FATAL: no built dist for smoke (build the worktree first)\n")
+    return out, err
+
+
+def test_journal_since_mark_leaves_out_an_earlier_starts_fatal(cfg):
+    """A start that wrote nothing is not blamed on an earlier start's FATAL."""
+    _earlier_failed_start(cfg)
+    mark = launchd.journal_mark(cfg, "smoke")
+    text = launchd.recent_journal(cfg, "smoke", since=mark)
+    assert "FATAL" not in text and "earlier boot" not in text
+    assert "no pod log from this start" in text
+    assert "kirocrew pod logs smoke" in text
+    # Negative control: without the mark the same files still yield the stale line.
+    assert "FATAL: no built dist" in launchd.recent_journal(cfg, "smoke")
+
+
+def test_journal_since_mark_keeps_this_starts_fatal(cfg):
+    """A FATAL this start wrote is still shown, and only this start's lines."""
+    out, err = _earlier_failed_start(cfg)
+    mark = launchd.journal_mark(cfg, "smoke")
+    with out.open("ab") as fh:
+        fh.write(b"kirocrew-pod: name=smoke this boot\n")
+    with err.open("ab") as fh:
+        fh.write(b"FATAL: venv missing for smoke\n")
+    text = launchd.recent_journal(cfg, "smoke", since=mark)
+    assert "FATAL: venv missing for smoke" in text and "this boot" in text
+    assert "no built dist" not in text and "earlier boot" not in text
+
+
+def test_journal_mark_of_absent_logs_reads_a_first_start_whole(cfg):
+    """No log yet marks at 0, so the first start's own output is all shown."""
+    mark = launchd.journal_mark(cfg, "smoke")
+    assert mark == {"pod.out.log": 0, "pod.err.log": 0}
+    out, err = launchd.log_paths(cfg, "smoke")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    err.write_bytes(b"FATAL: first boot\n")
+    assert "FATAL: first boot" in launchd.recent_journal(cfg, "smoke", since=mark)
+
+
+def test_runtime_threads_the_journal_mark_to_launchd(cfg, monkeypatch):
+    """On macOS the facade marks and reads through the launchd backend."""
+    monkeypatch.setattr(rt, "IS_MACOS", True)
+    monkeypatch.setattr(rt, "IS_WINDOWS", False)
+    out, err = _earlier_failed_start(cfg)
+    mark = rt.journal_mark(cfg, "smoke")
+    assert mark == {"pod.out.log": out.stat().st_size, "pod.err.log": err.stat().st_size}
+    with err.open("ab") as fh:
+        fh.write(b"FATAL: venv missing for smoke\n")
+    text = rt.recent_journal(cfg, "smoke", since=mark)
+    assert "FATAL: venv missing for smoke" in text and "no built dist" not in text
+
+
 def test_orphan_homes_skips_a_pod_with_an_installed_plist(cfg, monkeypatch):
     """A per-pod plist means "installed", not orphaned — a name mid-`up` whose
     gateway has not gone active yet must not be reported as reapable."""
@@ -622,7 +679,7 @@ def test_up_failure_cleanup_stops_the_pod_inside_the_mutex(cfg, monkeypatch, tmp
     monkeypatch.setattr(rt, "pin_checkout", lambda c, n, co: None)
     monkeypatch.setattr(rt, "is_active", lambda c, n: False)
     monkeypatch.setattr(rt, "start_pod", lambda c, n: _cp())
-    monkeypatch.setattr(rt, "recent_journal", lambda c, n, lines: "")
+    monkeypatch.setattr(rt, "recent_journal", lambda c, n, lines, **_kw: "")
     monkeypatch.setattr(rt, "stop_pod", lambda c, n: (events.append("stop"), _cp())[1])
     monkeypatch.setattr(pod_cli, "_wait_healthy", lambda c, n, p, tries=0, **_kw: -1)  # boot failed
     monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)

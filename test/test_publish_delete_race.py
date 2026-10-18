@@ -40,6 +40,7 @@ from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_folder_delete,
 )
 from kiro_crew.publish_provider import PublishProvider, PublishResult, PushResult
+from kiro_crew.testing.wait import await_until
 
 # ── Harness ─────────────────────────────────────────────────────────────────
 
@@ -153,7 +154,9 @@ def _body(resp) -> dict:
 async def _let_the_other_task_run() -> None:
     """Yield long enough for an unguarded destroy to finish while the upload is parked."""
     for _ in range(20):
-        await asyncio.sleep(0.005)
+        await asyncio.sleep(
+            0.005
+        )  # flake-ok: measurement delay; gives upload-in-window guard time to be observed
 
 
 def _surviving(store: ArtifactStore, slug: str):
@@ -181,7 +184,7 @@ async def test_a_delete_inside_the_upload_window_keeps_the_artifact_and_its_hand
     art = store.create(name="Doc", content="hello", kind="text")
 
     publishing = asyncio.create_task(publish_sync.publish(art.slug, visibility="PUBLIC"))
-    await asyncio.wait_for(provider.uploaded.wait(), timeout=5)
+    await await_until(provider.uploaded)
     assert (
         _surviving(store, art.slug).publication is None
     ), "harness check: the window is the stretch where the copy is up and unrecorded"
@@ -223,7 +226,7 @@ async def test_a_folder_cascade_inside_the_upload_window_keeps_the_artifact(
     art = store.create(name="Doc", content="hello", kind="text", folder_id=folder["id"])
 
     publishing = asyncio.create_task(publish_sync.publish(art.slug, visibility="PUBLIC"))
-    await asyncio.wait_for(provider.uploaded.wait(), timeout=5)
+    await await_until(provider.uploaded)
 
     deleting = asyncio.create_task(
         api_artifact_folder_delete(
@@ -279,7 +282,7 @@ async def test_a_cascade_leaves_alone_an_artifact_that_arrives_while_it_withdraw
     arriving = store.create(name="Arriving", content="hello", kind="text", folder_id="")
 
     publishing = asyncio.create_task(publish_sync.publish(arriving.slug, visibility="PUBLIC"))
-    await asyncio.wait_for(provider.uploaded.wait(), timeout=5)
+    await await_until(provider.uploaded)
 
     async def _withdraw_and_let_one_in(art):
         # The window exactly: the pass has begun, this artifact was not in its listing,

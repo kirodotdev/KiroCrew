@@ -820,7 +820,7 @@ contract tells it not to.
   **git-shaped and must stay scoped to the git engine**: `resolve_remote_url`
   runs `git ls-remote --get-url` and returns `""` for a tree with no git remote,
   and `""` under a non-empty pin is documented as *deny*
-  (`update_governance.py`, `governance.py:permits_source`). Applying them
+  (`update_governance.py`, `governance_parts/carriers.py` `UpdatePins.permits_source`). Applying them
   to the wheel and desktop engines would therefore refuse **every** update on
   any fleet that has configured a pin. Each engine needs its own artifact-source
   predicate — the channel feed / artifact origin URL for wheel and desktop — and

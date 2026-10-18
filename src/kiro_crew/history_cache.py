@@ -13,7 +13,7 @@ import threading
 import time
 import weakref
 from collections import OrderedDict
-from collections.abc import Callable, Container
+from collections.abc import Callable, Container, Iterable
 from typing import TYPE_CHECKING, Generic, NamedTuple, TypeVar
 
 if TYPE_CHECKING:
@@ -401,6 +401,150 @@ class _SearchTextCache(Generic[_V]):
             }
 
 
+class _GroupRecencyMemo(_SearchTextCache[_V]):
+    """A :class:`_SearchTextCache` that admits by recency, one key group at a time.
+
+    Plain admission control keeps whatever filled the budget first, so a memo
+    whose keys name a query term stops learning once full: every term first seen
+    later is refused for the life of the process. Plain per-entry LRU fixes that
+    but brings back the cyclic-scan cliff: a query walks its window in the same
+    order every time, so its next entry evicts the oldest entry of the same
+    query, which is the one it reads next.
+
+    The eviction unit is therefore a GROUP of keys, named by ``group_of(key)``
+    (here: the query term, every session's entry for it together). A full memo
+    evicts whole least-recently-used groups, and never a group that a running
+    query has pinned with :meth:`pinned`, so a query can only evict other
+    queries' terms. When nothing evictable is left, the entry is refused exactly
+    as the base class would, which keeps a single query larger than the budget
+    at a stable partial hit rate instead of thrashing. An eviction counts toward
+    :meth:`refused_since_prune` like a refusal: both mean the budget is binding.
+    """
+
+    def __init__(
+        self,
+        max_bytes: int,
+        sizer: Callable[[_V], int],
+        group_of: Callable[[str], str],
+        label: str = "",
+    ) -> None:
+        super().__init__(max_bytes, sizer, label, warn_on_refusal=False)
+        self._group_of = group_of
+        #: group -> its keys, least recently used group first.
+        self._groups: OrderedDict[str, set[str]] = OrderedDict()
+        self._pins: dict[str, int] = {}
+        self._evicted = 0
+
+    def pinned(self, groups: Iterable[str]) -> _PinnedGroups:
+        """Context manager keeping *groups* from eviction while a query runs."""
+        return _PinnedGroups(self, tuple(dict.fromkeys(groups)))
+
+    def _pin(self, groups: tuple[str, ...], delta: int) -> None:
+        with self._lock:
+            for group in groups:
+                count = self._pins.get(group, 0) + delta
+                if count > 0:
+                    self._pins[group] = count
+                else:
+                    self._pins.pop(group, None)
+
+    def get(self, key: str, default: _V | None = None) -> _V | None:
+        with self._lock:
+            value = self._data.get(key)
+            if value is None:
+                return default
+            group = self._group_of(key)
+            if group in self._groups:
+                self._groups.move_to_end(group)
+            return value
+
+    def _drop(self, key: str) -> None:
+        """Remove *key* and its group bookkeeping. Caller holds the lock."""
+        self._bytes -= self._sizer(self._data.pop(key))
+        group = self._group_of(key)
+        members = self._groups.get(group)
+        if members is not None:
+            members.discard(key)
+            if not members:
+                del self._groups[group]
+
+    def __setitem__(self, key: str, value: _V) -> None:
+        cost = self._sizer(value)
+        group = self._group_of(key)
+        with self._lock:
+            if key in self._data:
+                self._drop(key)
+            if self._max_bytes > 0 and self._bytes + cost > self._max_bytes:
+                for victim in list(self._groups):
+                    if victim == group or self._pins.get(victim):
+                        continue
+                    for member in list(self._groups[victim]):
+                        self._drop(member)
+                        self._evicted += 1
+                    # Pressure, like a refusal: the signal to spend a prune.
+                    self._refused_since_prune += 1
+                    if self._bytes + cost <= self._max_bytes:
+                        break
+                if self._bytes + cost > self._max_bytes:
+                    self._refused += 1
+                    self._refused_since_prune += 1
+                    return
+            self._data[key] = value
+            self._bytes += cost
+            self._admitted += 1
+            members = self._groups.get(group)
+            if members is None:
+                self._groups[group] = {key}
+            else:
+                members.add(key)
+                self._groups.move_to_end(group)
+
+    def pop(self, key: str, default: _V | None = None) -> _V | None:
+        with self._lock:
+            if key in self._data:
+                value = self._data[key]
+                self._drop(key)
+                return value
+            return default
+
+    def retain(self, live_keys: Container[str]) -> int:
+        with self._lock:
+            doomed = [key for key in self._data if key not in live_keys]
+            for key in doomed:
+                self._drop(key)
+            self._refused_since_prune = 0
+            return len(doomed)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._data.clear()
+            self._groups.clear()
+            self._bytes = 0
+
+    def stats(self) -> dict[str, int]:
+        out = super().stats()
+        with self._lock:
+            out["evicted"] = self._evicted
+            out["groups"] = len(self._groups)
+        return out
+
+
+class _PinnedGroups:
+    """``with memo.pinned(groups):`` -- see :meth:`_GroupRecencyMemo.pinned`."""
+
+    __slots__ = ("_memo", "_groups")
+
+    def __init__(self, memo: _GroupRecencyMemo, groups: tuple[str, ...]) -> None:
+        self._memo = memo
+        self._groups = groups
+
+    def __enter__(self) -> None:
+        self._memo._pin(self._groups, 1)
+
+    def __exit__(self, *exc: object) -> None:
+        self._memo._pin(self._groups, -1)
+
+
 class HistoryCacheCoordinator:
     """Coordinate facade-held history caches and invalidation generations.
 
@@ -448,6 +592,17 @@ class HistoryCacheCoordinator:
                 self._registry_owner._cache_gens[gen_key] = (
                     self._registry_owner._cache_gens.get(gen_key, 0) + 1
                 )
+            epochs = self._registry_owner._dir_write_epochs
+            epochs[base] = epochs.get(base, 0) + 1
+
+    def _dir_write_epoch(self) -> int:
+        """How many invalidations any instance over this directory has made.
+
+        Moves whenever any session's generation does, so an unmoved value proves
+        no write landed in this process between two reads of it.
+        """
+        with self._registry_owner._cache_gens_guard:
+            return self._registry_owner._dir_write_epochs.get(str(self._log._dir), 0)
 
     def _publish_if_current(
         self,

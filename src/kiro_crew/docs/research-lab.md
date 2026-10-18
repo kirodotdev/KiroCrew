@@ -5,12 +5,11 @@ Research Lab (the `auto-research` builtin app) runs autonomous, multi-cycle camp
 `auto-research` is disabled by default. App enablement is the activation gate: a disabled app contributes no agents, skills, crons, or routes.
 
 > **Research Lab is not a permission boundary.** Its `kirocrew-research` worker is
-> generated from your main agent's configuration and therefore inherits the same MCP
-> servers and the same tool set — it can write files, run commands, and mutate systems
-> exactly as your main agent can. Research-only is the *intent* of the prompt it is
-> given, not a restriction the code enforces. Review the tools your main agent has
-> before leaving a campaign to run unattended. See
-> [Scope and permissions](#scope-and-permissions).
+> generated from the shipped agent template, your `~/.kiro/crew/agent.json` overrides
+> and Kiro Crew's managed MCP servers — it can write files, run commands, and mutate
+> systems. Research-only is the *intent* of the prompt it is given, not a restriction
+> the code enforces. Review those tools before leaving a campaign to run unattended.
+> See [Scope and permissions](#scope-and-permissions).
 
 ## Execution modes
 
@@ -102,6 +101,6 @@ cancels the workflow run and resume starts a new one that appends to the same fi
 
 ## Scope and permissions
 
-Research Lab writes campaign state, findings, and reports in its campaign directory. Its `kirocrew-research` worker derives from the main Kiro Crew agent configuration rather than a research-only tool allowlist. Treat Research Lab as an orchestration feature, not a permission boundary; review the tools enabled for the generated agent before running an unattended campaign.
+Research Lab writes campaign state, findings, and reports in its campaign directory. Its `kirocrew-research` worker is built from the shipped agent template, `~/.kiro/crew/agent.json` and the managed MCP servers, rather than a research-only tool allowlist. It does not copy what you added to your main agent's own `kirocrew.json`: MCP servers, app registrations and the model you picked there stay off the research worker on purpose, because the campaign loop runs unattended with tool auto-approval. To give a campaign a specific model, pick it on the campaign. Treat Research Lab as an orchestration feature, not a permission boundary; review the tools enabled for the generated agent before running an unattended campaign.
 
 Actions surfaced by a campaign still require the normal tool-approval flow when the configured tool requires approval.

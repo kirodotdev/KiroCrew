@@ -3055,6 +3055,50 @@ _AUDITED_EVENTS = frozenset(
     }
 )
 
+#: ``tempfile``'s own audit events, fired by every ``mkstemp``/``mkdtemp`` -- and so by
+#: ``NamedTemporaryFile``/``TemporaryDirectory``, which are built on them -- with the
+#: path about to be created. Watched for one question: which test made an entry the
+#: session teardown later finds left behind. See ``_note_tmp_creator``.
+_TMP_AUDITED_EVENTS = frozenset({"tempfile.mkstemp", "tempfile.mkdtemp"})
+
+#: One lookup on the hot path: the hook sees every audit event in the process.
+_HOOKED_EVENTS = _AUDITED_EVENTS | _TMP_AUDITED_EVENTS
+
+#: The session temp base ``_isolate_tempfile_base`` owns while it is live, else "".
+_TMP_CREATOR_BASE = ""
+
+#: Entry name directly under that base -> (nodeid of the test running or last run when
+#: ``tempfile`` made it, whether that test was still running, the creating thread's name
+#: when it was not the main thread). The thread matters because a thread one test left
+#: running can create during a LATER test, which the nodeid alone would blame. Bounded so
+#: a suite that makes many bare temp dirs cannot grow it without limit; past the cap a
+#: residue entry is simply reported without a creator, as it was before this existed.
+_TMP_CREATORS: dict[str, tuple[str, bool, str]] = {}
+_TMP_CREATORS_CAP = 200_000
+
+
+def _note_tmp_creator(args: tuple) -> None:
+    """Record which test ``tempfile`` was serving when it made an entry under the base.
+
+    The residue report runs at SESSION teardown, so on its own it can only name the last
+    test a worker ran -- almost never the culprit -- and the per-test mode that does name
+    it changes timing enough that a leak which shows on one CI run in three never shows
+    under it. This answers the same question in the run that leaks, at the cost of a dict
+    entry per bare temp entry. Any thread counts, which is the point: an entry made after
+    its test finished names a thread or callback that test left running.
+    """
+    base = _TMP_CREATOR_BASE
+    if not base or len(_TMP_CREATORS) >= _TMP_CREATORS_CAP:
+        return
+    try:
+        head, name = os.path.split(args[0])
+    except Exception:  # noqa: BLE001 - an audit hook must never break the call it watches
+        return
+    if head == base:
+        thread = threading.current_thread()
+        thread_name = "" if thread is threading.main_thread() else thread.name
+        _TMP_CREATORS[name] = (_AUDIT.nodeid, _AUDIT.active, thread_name)
+
 
 class OffLoopbackNetworkRefused(ConnectionRefusedError):
     """Raised under ``KIROCREW_NET_STRICT=1`` when a test reaches past loopback."""
@@ -3069,7 +3113,10 @@ def _install_determinism_audit_hook() -> None:
 
 
 def _determinism_audit_hook(event: str, args: tuple) -> None:
-    if event not in _AUDITED_EVENTS:
+    if event not in _HOOKED_EVENTS:
+        return
+    if event in _TMP_AUDITED_EVENTS:
+        _note_tmp_creator(args)
         return
     state = _AUDIT
     if not state.active:
@@ -3450,7 +3497,7 @@ def _apply_tracked_gap_list(items, listname: str, platform_label: str) -> None:
     fine is a hang. On Windows there is no ``SIGALRM``, so pytest-timeout cannot
     interrupt the test -- it kills the process, which is why the Windows shards pass
     ``--max-worker-restart=0``. MEASURED: one listed entry
-    (``test_config_loader.py::TestAgentWorkspaceBindingsProperties::test_workspace_path_resolution``)
+    (``test_config_loader_workspace_bindings.py::TestAgentWorkspaceBindingsProperties::test_workspace_path_resolution``)
     hangs on a native Windows host, and running the list killed the session at 22%
     with no summary line printed at all. A hanging test therefore cannot be tracked
     here; it needs an explicit ``skipif`` at the test, with the reason, so nothing
@@ -3856,11 +3903,17 @@ def _isolate_tempfile_base(tmp_path_factory):
     # temp root, and pruning that mirror would delete every concurrent run's bytecode.
     _RUN_TEMP_ROOTS.append(str(base))
     _redirect_tempfile_base(base)
+    global _TMP_CREATOR_BASE
+    # ``tempfile.tempdir`` verbatim: it is the ``dir`` every bare call joins its name to.
+    _TMP_CREATOR_BASE = tempfile.tempdir
     previous_ceiling = os.environ.get("GIT_CEILING_DIRECTORIES")
     _stop_git_discovery_above_the_temp_roots(base, tmp_path_factory)
     try:
         yield base
     finally:
+        _TMP_CREATOR_BASE = ""
+        creators = dict(_TMP_CREATORS)
+        _TMP_CREATORS.clear()
         if previous_ceiling is None:
             os.environ.pop("GIT_CEILING_DIRECTORIES", None)
         else:
@@ -3880,7 +3933,7 @@ def _isolate_tempfile_base(tmp_path_factory):
         _remove_tree(base)
         if not leaked:
             return
-        report = _tmp_residue_report(base, leaked, per_test=per_test)
+        report = _tmp_residue_report(base, leaked, per_test=per_test, creators=creators)
         if os.environ.get(_TMP_RESIDUE_STRICT_ENV):
             raise AssertionError(report)
         warnings.warn(report, stacklevel=1)
@@ -3919,9 +3972,43 @@ def _tmp_residue(base: pathlib.Path, *, per_test: bool) -> list[str]:
     return residue
 
 
-def _tmp_residue_report(base: pathlib.Path, leaked: list[str], *, per_test: bool) -> str:
-    """The message naming what the run left behind, and how to find its owner."""
+def _tmp_creator_note(name: str, creators: dict[str, tuple[str, bool, str]]) -> str:
+    """Who made *name*, from what ``_note_tmp_creator`` saw in this worker."""
+    found = creators.get(name)
+    if found is None:
+        return "not made by tempfile in this worker: a child process, or a direct mkdir/open"
+    nodeid, during, thread_name = found
+    on_thread = f" on thread {thread_name!r}" if thread_name else ""
+    if not nodeid:
+        return (
+            f"made by tempfile{on_thread} before the first test "
+            "(collection or a session fixture)"
+        )
+    if during:
+        return f"made by tempfile{on_thread} during {nodeid}"
+    return (
+        f"made by tempfile{on_thread} after {nodeid} finished: "
+        "a thread or callback it left running"
+    )
+
+
+def _tmp_residue_report(
+    base: pathlib.Path,
+    leaked: list[str],
+    *,
+    per_test: bool,
+    creators: dict[str, tuple[str, bool, str]] | None = None,
+) -> str:
+    """The message naming what the run left behind, and how to find its owner.
+
+    *creators* is what the audit hook recorded for this run's base. Per-test mode gives
+    each test its own base, so the hook records nothing there and the name alone answers.
+    """
     shown = leaked[:20]
+    if creators is not None and not per_test:
+        lines = "".join(f"    {name}  <- {_tmp_creator_note(name, creators)}\n" for name in shown)
+    else:
+        lines = "".join(f"    {name}\n" for name in shown)
     more = f"    ... and {len(leaked) - len(shown)} more\n" if len(leaked) > len(shown) else ""
     hint = (
         "Each name above is a test id, so the leak is in that test."
@@ -3932,7 +4019,7 @@ def _tmp_residue_report(base: pathlib.Path, leaked: list[str], *, per_test: bool
     return (
         f"{len(leaked)} temporary entr{'y' if len(leaked) == 1 else 'ies'} outlived "
         f"this run under {base}:\n"
-        + "".join(f"    {name}\n" for name in shown)
+        + lines
         + more
         + "\nThis is reported at session teardown, so it is attributed to the last "
         "test this worker ran -- that test is almost certainly NOT the culprit.\n"

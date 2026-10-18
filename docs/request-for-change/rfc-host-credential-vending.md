@@ -146,7 +146,7 @@ Two sockets carry the two vends, and they are shaped differently because their
 callers are: the AWS helper can present a bearer, `ssh` cannot.
 
 **An AWS vend listener, shared, bearer-authenticated.** A NEW Crew-owned listener
-under the directory `runtime_dir` resolves in `mcp_gateway/rewriter.py`, which no
+under the directory `runtime_dir` resolves in `mcp_gateway/rewriter_overlay.py`, which no
 mask covers: an `AF_UNIX` socket, started with the gateway whether or not anything
 else is. The socket file is `0600` inside a `0700` directory. There is no Windows
 listener, because no masked child exists there (see Scope). It is not

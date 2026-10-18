@@ -1042,7 +1042,7 @@ class TestHookGateKwargs:
             "dashboard/chat_runner.py",
             "dashboard/handlers/hooks.py",
             "llm_helpers.py",
-            "messaging/dispatch.py",
+            "messaging/dispatch_tools.py",
             "slack/handler.py",
             "slack/transport_dispatch.py",
             "subagent_manager/run.py",

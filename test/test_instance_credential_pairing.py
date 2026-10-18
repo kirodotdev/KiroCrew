@@ -1118,7 +1118,7 @@ class TestTheSharedHelperOwnsThePairing:
         import pathlib
 
         src = pathlib.Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
-        allowed = {pathlib.Path("config/loader.py")}
+        allowed = {pathlib.Path("config/loader_locations.py")}
         # dashboard/server.py composes its server_runtime owners into one namespace,
         # so the two are read as one module.
         runtime = pathlib.Path("dashboard/server_runtime")

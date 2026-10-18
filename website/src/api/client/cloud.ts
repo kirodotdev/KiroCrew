@@ -55,6 +55,15 @@ export interface CloudPreflight {
   session_manager_plugin_refused_path?: string
   /** The provenance check's reason for that refusal, server-authored, or "". */
   session_manager_plugin_refused_reason?: string
+  /** The kind of refusal, so the row can say it in the reader's language:
+   *  'other_owner', 'world_writable', 'root_gateway', 'strict_policy', or ""
+   *  when no kind covers it (the row then shows the English reason). */
+  session_manager_plugin_refused_code?: string
+  /** For 'other_owner': the owning account's login name on the gateway's host,
+   *  or "" when that uid names no account there. */
+  session_manager_plugin_refused_owner?: string
+  /** For 'other_owner': the owning account's uid; otherwise null. */
+  session_manager_plugin_refused_owner_uid?: number | null
 }
 
 /** One remote-instance provisioner the gateway offers, from

@@ -47,7 +47,7 @@ The single enforcement point for non-resumability is one tuple entry. `"subagent
 | Transcript | Assistant text chunks only (`write_result_chunk`, called from `subagent_manager/run.py`'s `_run_inner_impl` on assistant-text events), truncated to `RESULT_FILE_MAX_BYTES = 512_000` with an in-file marker (`context_management.RESULT_FILE_MAX_BYTES`, `cap_result_bytes` / `cap_result_file`) | No roles, no prompt, no tool sequence — cannot be rendered as a conversation or replayed into one |
 | Prompt | Only the redacted task line, in `state.json` | A run cannot be re-issued from disk |
 | Gateway restart | `_reconcile_orphans` (`subagent_manager/monitoring.py`, `_reconcile_orphans_impl`) identity-verifies the child PID, terminates it, tombstones `gateway_restart`, deletes its kiro session files, notifies the parent | Nothing partial is recoverable |
-| Retention | `mark_delivered` schedules folder pruning after `agent.subagent_result_ttl_secs` (default 3600, `config/loader.py:755-756`) | Within an hour of success nothing recoverable remains |
+| Retention | `mark_delivered` schedules folder pruning after `agent.subagent_result_ttl_secs` (default 3600, `config/sections_agent.py` `AgentConfig.subagent_result_ttl_secs`) | Within an hour of success nothing recoverable remains |
 
 The control surfaces match. `spawn_run` / `spawn_sub_agents` / `spawn_list` / `spawn_status` (`mcp_core.py:228,357,288,318`) plus seven routes under `/api/spawn` (`dashboard/server.py:652-660`: create, lost, list, status, delete, retry, clear-all) can start, watch, cancel, and re-run-if-failed. None reads a run as structured messages; none sends into one.
 
@@ -149,7 +149,7 @@ Retention is a **new** policy, not an inherited one: `_cleanup_old_archives` pru
 
 The sweeper runs on gateway start and on the existing reaper cadence, reads each record's terminal timestamp from metadata, and deletes expired records plus their retained kiro session files. If the store is unreadable it skips and logs, leaking files rather than destroying resumable state. The synchronous prune path needs no metadata parse — it only asks whether a record file exists for the id, and skips the unlink if one does.
 
-Retained kiro session files are excluded from `/api/usage`, which counts every `*.jsonl` under `~/.kiro/sessions/cli` (`dashboard/handlers/usage.py:389-462`), so usage tallies are unchanged.
+Retained kiro session files are excluded from `/api/usage`, which counts every `*.jsonl` under `~/.kiro/sessions/cli` (`dashboard/handlers/usage_sessions.py::_parse_sessions`), so usage tallies are unchanged.
 
 ### Promotion
 
@@ -244,7 +244,7 @@ Entry blocker: Open question 4 (which records are surfaced) is answered.
 - Record read access is workspace-global by decision, consistent with chat history. This widens exposure relative to `spawn_status`'s id-only reachability, and is documented rather than implicit.
 - Records must not be reachable through any chat-slot mutation route. Because they are not slots the guarantee is structural, and Phase 3's criteria assert it against the current handlers.
 - Promotion takes the new slot's approval policy from the slot, not from the run's spawn-time approval mode. A run spawned inside an auto-approve wave must not confer auto-approval on the interactive session it becomes (Phase 4 criterion).
-- Governance/audit attribution: `sel._infer_source` falls through to `"slack"` for unrecognized keys (`sel.py:856-888`), and `governance_profiles._infer_surface` delegates to it (`platform/governance_profiles.py:212-220`). The record store avoids this by introducing no new session-key prefix; a future revision that does must update `_infer_source`, `_AUDIT_SOURCES` (`sel.py:891`), and record an explicit decision about `_UNATTENDED_SURFACES` (`governance_profiles.py:190`).
+- Governance/audit attribution: `sel._infer_source` falls through to `"slack"` for unrecognized keys (`sel.py`), and `governance_profiles._infer_surface` delegates to it (`platform/governance_profiles.py:212-220`). The record store avoids this by introducing no new session-key prefix; a future revision that does must update `_infer_source`, `_AUDIT_SOURCES` (`sel.py`), and record an explicit decision about `_UNATTENDED_SURFACES` (`governance_profiles.py:190`).
 
 ## Alternatives considered
 

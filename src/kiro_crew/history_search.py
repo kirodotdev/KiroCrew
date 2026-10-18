@@ -16,14 +16,17 @@ import logging
 import math
 import os
 import re
+import threading
 import time as _time
+from collections import OrderedDict
 from collections.abc import Callable, Container, Iterable, Iterator, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 from kiro_crew._sqlite_compat import is_cjk_char, script_runs
-from kiro_crew.history_cache import _SearchTextCache
+from kiro_crew.history_cache import _GroupRecencyMemo
 from kiro_crew.history_index import (
     INDEX_FILENAME,
     ChunkDecodeError,
@@ -1042,17 +1045,76 @@ def _memo_entry_cost(key: str, value: object) -> int:
     return _MEMO_ENTRY_OVERHEAD + key.__sizeof__() + extra
 
 
-def _new_memo(max_bytes: int, label: str) -> "_SearchTextCache[_MemoValue] | None":
-    """A content-addressed memo with admission control, or ``None`` when off.
+def _memo_group(key: str) -> str:
+    """The query term a memo key names: everything after the content digest."""
+    return key[_DIGEST_HEX_CHARS:]
 
-    Admission control rather than LRU for the same reason the fold memo uses
-    it: a search walks its window in the same order every query, and LRU over
-    a cyclic walk larger than the budget evicts each entry just before its
-    next read.
+
+def _new_memo(max_bytes: int, label: str) -> "_GroupRecencyMemo[_MemoValue] | None":
+    """A content-addressed memo that admits by recency, or ``None`` when off.
+
+    Its eviction unit is a query term across every session (see
+    :class:`_GroupRecencyMemo`): a search walks its window in the same order
+    every query, so evicting single entries by LRU would make a query evict the
+    entry it reads next.
     """
     if max_bytes <= 0:
         return None
-    return _SearchTextCache(max_bytes, lambda v: v[1], label, warn_on_refusal=False)
+    return _GroupRecencyMemo(max_bytes, lambda v: v[1], _memo_group, label)
+
+
+#: Transcript directories whose memos stay alive with no projection holding
+#: them, most recently used last. A memo is keyed by content digest, so every
+#: ``ConversationLog`` over one directory can share one: a log built per call,
+#: as a tool call does, then finds the answers earlier calls computed.
+_SHARED_MEMO_DIRS = 4
+_MemoPair = tuple["_GroupRecencyMemo[_MemoValue] | None", "_GroupRecencyMemo[_MemoValue] | None"]
+_shared_memos: "OrderedDict[tuple[str, int, int], _MemoPair]" = OrderedDict()
+_shared_memos_lock = threading.Lock()
+
+
+def _memos_for(directory: str) -> _MemoPair:
+    """The count and snippet memos every projection over *directory* shares.
+
+    The ceilings are part of the key so a changed ceiling takes effect for the
+    next projection built, as it did when each projection built its own.
+    """
+    slot = (directory, _SEARCH_COUNT_MEMO_BYTES, _SEARCH_SNIPPET_MEMO_BYTES)
+    with _shared_memos_lock:
+        memos = _shared_memos.get(slot)
+        if memos is None:
+            memos = (
+                _new_memo(_SEARCH_COUNT_MEMO_BYTES, "count"),
+                _new_memo(_SEARCH_SNIPPET_MEMO_BYTES, "snippet"),
+            )
+            _shared_memos[slot] = memos
+            while len(_shared_memos) > _SHARED_MEMO_DIRS:
+                _shared_memos.popitem(last=False)
+        else:
+            _shared_memos.move_to_end(slot)
+        return memos
+
+
+def _pinned(
+    memo: "_GroupRecencyMemo[_MemoValue] | None", groups: Iterable[str]
+) -> AbstractContextManager[None]:
+    """``memo.pinned(groups)``, or a no-op for a memo that is switched off."""
+    return nullcontext() if memo is None else memo.pinned(groups)
+
+
+class _Flight:
+    """One unrestricted search in progress, for callers asking the same thing."""
+
+    __slots__ = ("epoch", "done", "result")
+
+    def __init__(self, epoch: int) -> None:
+        self.epoch = epoch
+        self.done = threading.Event()
+        self.result: list[dict] | None = None
+
+
+_flights: dict[tuple[str, str, int], _Flight] = {}
+_flights_lock = threading.Lock()
 
 
 class _LiveDigests:
@@ -1125,7 +1187,7 @@ class _ContentCounts:
     ) -> None:
         memo = projection._count_memo
         row = rowids.get(key)
-        self._memo: "_SearchTextCache[_MemoValue] | None" = None
+        self._memo: "_GroupRecencyMemo[_MemoValue] | None" = None
         self._hits: dict[str, int] = {}
         self._digest = ""
         self._folded = ""
@@ -1185,9 +1247,10 @@ class _MemoGate:
     Session disqualification belongs to the scoring loop, not this gate.
     """
 
-    __slots__ = ("needle_keys", "phrase_key", "memo_keys")
+    __slots__ = ("needle_keys", "phrase_key", "memo_keys", "multi")
 
     def __init__(self, needles: Sequence[SearchNeedle], phrase: str, multi: bool) -> None:
+        self.multi = multi
         self.needle_keys = [_needle_memo_key(n) for n in needles]
         self.phrase_key = _phrase_memo_key(phrase)
         keys = [*self.needle_keys, self.phrase_key] if multi else self.needle_keys
@@ -1213,10 +1276,12 @@ class SessionCatalogProjection:
         self._log = log
         self._index: "SessionSearchIndex | None" = None
         #: ``digest + needle key -> (count, cost)`` over the folded text of a
-        #: session the index vouches for; ``None`` when switched off.
-        self._count_memo = _new_memo(_SEARCH_COUNT_MEMO_BYTES, "count")
-        #: ``digest + repr(query) -> (snippet, cost)`` for the same sessions.
-        self._snippet_memo = _new_memo(_SEARCH_SNIPPET_MEMO_BYTES, "snippet")
+        #: session the index vouches for, and ``digest + repr(query) ->
+        #: (snippet, cost)`` for the same sessions; each ``None`` when switched
+        #: off. Shared with every projection over this directory.
+        self._count_memo: "_GroupRecencyMemo[_MemoValue] | None"
+        self._snippet_memo: "_GroupRecencyMemo[_MemoValue] | None"
+        self._count_memo, self._snippet_memo = _memos_for(str(log._dir))
 
     @property
     def search_index(self) -> "SessionSearchIndex":
@@ -1502,6 +1567,58 @@ class SessionCatalogProjection:
     ) -> list[dict]:
         """Return session metadata for files whose message content matches *query*.
 
+        Ranking, gating and *keys* are documented on :meth:`_search_sessions`.
+
+        Unrestricted callers asking the same *query* and *limit* while one such
+        search is running wait for it and get its rows, rather than each paying
+        the same cold pass in turn on one GIL. A caller joins only while no write
+        has landed in this process since the running search began, so a search
+        that starts after a write never returns rows computed before it.
+        """
+        if keys is not None or not query or limit <= 0:
+            return self._search_sessions(query, limit, keys=keys)
+        slot = (str(self._log._dir), query, limit)
+        epoch = self._log._dir_write_epoch()
+        with _flights_lock:
+            running = _flights.get(slot)
+            if running is None or running.epoch != epoch:
+                flight = _Flight(epoch)
+                _flights[slot] = flight
+                running = None
+        if running is not None:
+            running.done.wait()
+            if running.result is not None:
+                return [dict(row) for row in running.result]
+            return self._search_sessions(query, limit)
+        try:
+            rows = self._search_sessions(query, limit)
+            # A private copy, so a caller editing the rows it was handed cannot
+            # change what a waiting caller receives.
+            flight.result = [dict(row) for row in rows]
+            return rows
+        finally:
+            with _flights_lock:
+                if _flights.get(slot) is flight:
+                    del _flights[slot]
+            flight.done.set()
+
+    def warm_search(self) -> None:
+        """Do the query-independent part of a first search ahead of it.
+
+        Reads every window session's metadata into the log's cache and opens
+        the index with one shortlist read, which together are most of what a
+        first query costs beyond any later new query. Blocking; run off the loop.
+        """
+        if not self._log._dir.exists():
+            return
+        window = self._log.list_sessions()[: _facade_search_scan_window()]
+        self._index_shortlist(window, [])
+
+    def _search_sessions(
+        self, query: str, limit: int = 50, *, keys: Container[str] | None = None
+    ) -> list[dict]:
+        """Return session metadata for files whose message content matches *query*.
+
         This is the ONE ranking every transcript-search consumer shares — the
         dashboard history filter, the ``search_chat_history`` MCP tool, and
         Discord session resume — so the recency weighting and CJK adjacency
@@ -1605,6 +1722,24 @@ class SessionCatalogProjection:
         # a single CJK term expands to several needles while the phrase is what
         # rewards its characters appearing together.
         multi = [n.text for n in required] != [phrase]
+        gate = _MemoGate(needles, phrase, multi)
+        # Pinned for the whole query: a memo full of other terms evicts those,
+        # never the terms this query is reading and filling right now.
+        with _pinned(self._count_memo, gate.memo_keys), _pinned(self._snippet_memo, [repr(query)]):
+            return self._search_parsed(query, limit, keys, needles, phrase, adjacency_floor, gate)
+
+    def _search_parsed(
+        self,
+        query: str,
+        limit: int,
+        keys: Container[str] | None,
+        needles: list[SearchNeedle],
+        phrase: str,
+        adjacency_floor: bool,
+        gate: "_MemoGate",
+    ) -> list[dict]:
+        """The scoring and snippet half of :meth:`_search_sessions`."""
+        multi = gate.multi
         now = _time.time()
         # (score, -rank, meta, needs_snippet)
         scored: list[tuple[float, int, dict, bool]] = []
@@ -1619,7 +1754,6 @@ class SessionCatalogProjection:
             # Only an unrestricted search sees every live session's row; a
             # restricted one would prune entries other callers still reach.
             self._prune_content_memos(rowids)
-        gate = _MemoGate(needles, phrase, multi)
         needle_keys = gate.needle_keys
         phrase_key = gate.phrase_key
         for rank, meta in enumerate(window):
@@ -2030,11 +2164,11 @@ class SessionCatalogProjection:
     def _prune_content_memos(self, rowids: "dict[str, IndexRow]") -> None:
         """Free count and snippet entries whose content no window session has.
 
-        Only runs for a memo that is refusing admissions, like
-        :meth:`_prune_search_memos`. *rowids* holds every window session the
-        index vouches for, so a digest absent from it belongs to text that has
-        changed or left the window, and no search can ask for it again until
-        that exact text returns.
+        Only runs for a memo whose budget is binding (it refused or evicted since
+        the last prune), like :meth:`_prune_search_memos`. *rowids* holds every
+        window session the index vouches for, so a digest absent from it belongs
+        to text that has changed or left the window, and no search can ask for
+        it again until that exact text returns.
         """
         live: _LiveDigests | None = None
         for memo in (self._count_memo, self._snippet_memo):

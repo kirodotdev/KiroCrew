@@ -30,7 +30,9 @@ import type {
   PullRequestStatusBatch,
 } from '../types'
 import {
+  findSourceForUrl,
   MAX_PULL_REQUEST_SOURCES,
+  sourceLinkKey,
   type PullRequestLink,
 } from '../utils/pullRequestLinks'
 import { sourceProviderMeta, sourceTabQualifier } from '../utils/sourceProviderMeta'
@@ -749,7 +751,7 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
   )
 }
 
-function PullRequestBody({ source, tab, onAddToChat }: { source: PullRequestSource; tab: SourceTab; onAddToChat?: (text: string) => void }) {
+function PullRequestBody({ source, tab, onAddToChat, writesPaused = false }: { source: PullRequestSource; tab: SourceTab; onAddToChat?: (text: string) => void; writesPaused?: boolean }) {
   if (tab === 'description') {
     return source.description
       ? <div className="px-4 py-4 text-[13px]"><MarkdownRenderer content={source.description} /></div>
@@ -830,6 +832,7 @@ function PullRequestBody({ source, tab, onAddToChat }: { source: PullRequestSour
     <div className="p-3">
       <CommentThreads
         src={source}
+        writesPaused={writesPaused}
         // The panel owns what it says to the agent; the thread list only
         // reports which comment was picked.
         onAddToChat={onAddToChat && ((c) => onAddToChat(commentHandoff(c)))}
@@ -859,7 +862,7 @@ export default function PullRequestPanel({
   onAddToChat?: (text: string) => void
 }) {
   const cappedSources = sources.slice(0, MAX_PULL_REQUEST_SOURCES)
-  const selected = cappedSources.find(source => source.url === selectedUrl) || cappedSources[0]
+  const selected = findSourceForUrl(cappedSources, selectedUrl) || cappedSources[0]
   // A GitLab MR IID is unique only within its project, so tabs read as bare
   // `MR !1` and two projects sharing an IID become indistinguishable. When the
   // rendered tabs span more than one distinct project, qualify each tab label
@@ -881,9 +884,10 @@ export default function PullRequestPanel({
     if (selected && selected.url !== selectedUrl) (onReconcile || onSelect)(selected.url)
   }, [selected, selectedUrl, onSelect, onReconcile])
 
+  const selectedKey = selected ? sourceLinkKey(selected) : undefined
   useEffect(() => {
     setTab('changes')
-  }, [selected?.url])
+  }, [selectedKey])
 
   const queryKey = useMemo(
     () => ['pull-request-source', selected?.url] as const,
@@ -891,6 +895,15 @@ export default function PullRequestPanel({
   )
   const query = useQuery<PullRequestSource>({
     queryKey,
+    // Keep the composer mounted across revisions of this review, but never
+    // carry another review's payload into the newly selected one.
+    placeholderData: (previousData, previousQuery) => {
+      const previousUrl = previousQuery?.queryKey[1]
+      return selected && typeof previousUrl === 'string'
+        && findSourceForUrl([selected], previousUrl)
+        ? previousData
+        : undefined
+    },
     queryFn: () => {
       const force = forceRefreshRef.current
       forceRefreshRef.current = false
@@ -1241,7 +1254,9 @@ export default function PullRequestPanel({
               <span><span className="text-ok">+{source.additions}</span> <span className="text-danger">-{source.deletions}</span></span>
               {source.updatedAt && <span>{i18nT('components.pullRequestPanel.updated')} {age(source.updatedAt)}</span>}
             </div>
-            <PullRequestActions key={source.url} source={source} />
+            {/* A placeholder payload belongs to an earlier revision, so its
+                merge-state writes would land on that revision's url. */}
+            {!query.isPlaceholderData && <PullRequestActions key={source.url} source={source} />}
           </div>
 
           {mergeBlocker && (
@@ -1299,7 +1314,7 @@ export default function PullRequestPanel({
           </div>
 
           <div id="pr-tabpanel" role="tabpanel" aria-labelledby={`pr-tab-${activeTab}`} className="flex-1 min-h-0 overflow-y-auto">
-            <PullRequestBody source={source} tab={activeTab} onAddToChat={onAddToChat} />
+            <PullRequestBody source={source} tab={activeTab} onAddToChat={onAddToChat} writesPaused={query.isPlaceholderData} />
           </div>
         </>
       )}

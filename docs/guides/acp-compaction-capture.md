@@ -1,6 +1,6 @@
 # Capturing a harness's `/compact` evidence
 
-`ACP_BACKENDS_COMPACT` in `src/kiro_crew/agent_sdk/backends.py` decides whether Kiro
+`ACP_BACKENDS_COMPACT` in `src/kiro_crew/agent_sdk/backends_turns.py` decides whether Kiro
 Crew offers a manual `/compact` on a backend at all. A harness joins that set on a
 DRIVEN capture, never on its source: the bar opencode and goose met is a live session
 whose `usage_update.used` was seen to fall below its pre-compact peak.
@@ -172,7 +172,7 @@ Commit the `.jsonl` and the generated `.expected.json` together.
 row per file and a short section per thing a capture establishes. Add both: the row names
 the frame classes, the section names what the `used` series shows.
 
-**3. The capability sets.** In `src/kiro_crew/agent_sdk/backends.py`:
+**3. The capability sets.** In `src/kiro_crew/agent_sdk/backends_turns.py`:
 
 - add the id to `ACP_BACKENDS_COMPACT`;
 - add it to `ACP_BACKENDS_INLINE_COMPACTION` as well **if** the compaction finished

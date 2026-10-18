@@ -18,8 +18,8 @@ read checked nothing, and nothing is never a pass.
 The script is driven as a SUBPROCESS against a REAL git checkout, because what it
 reports is git's own answer about what changed; a fake ``.git`` marker would pass the
 screen and then make every diff unreadable. :func:`build_repo` is shared with
-``test_security_conductor_verify_fix.py``, which needs the same checkout to exercise
-the contract step through the gate that calls this one.
+``test_security_conductor_verify_fix_contract_and_test_kind.py``, which needs the same
+checkout to exercise the contract step through the gate that calls this one.
 """
 
 from __future__ import annotations

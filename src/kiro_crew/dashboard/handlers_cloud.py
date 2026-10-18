@@ -423,6 +423,11 @@ async def api_cloud_preflight(request: web.Request) -> web.Response:
             "session_manager_plugin_command": plugin_cmd,
             "session_manager_plugin_refused_path": refusal.path if refusal else "",
             "session_manager_plugin_refused_reason": refusal.reason if refusal else "",
+            # The reason's kind and the owning account, so the dashboard can say it
+            # in the reader's language; the English reason stays the fallback.
+            "session_manager_plugin_refused_code": refusal.code if refusal else "",
+            "session_manager_plugin_refused_owner": refusal.owner if refusal else "",
+            "session_manager_plugin_refused_owner_uid": refusal.owner_uid if refusal else None,
         }
     )
 

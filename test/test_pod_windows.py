@@ -321,6 +321,58 @@ def test_recent_journal_says_why_it_is_empty(cfg):
     assert "no pod log yet" in win.recent_journal(cfg, "smoke")
 
 
+def _earlier_failed_start(cfg) -> tuple:
+    """Log files as an earlier refused boot left them (the wrapper appends)."""
+    out, err = win.log_paths(cfg, "smoke")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(b"kirocrew-pod: name=smoke earlier boot\r\n")
+    err.write_bytes(b"FATAL: no built dist for smoke (build the worktree first)\r\n")
+    return out, err
+
+
+def test_journal_since_mark_leaves_out_an_earlier_starts_fatal(cfg):
+    """A start that wrote nothing is not blamed on an earlier start's FATAL."""
+    _earlier_failed_start(cfg)
+    mark = win.journal_mark(cfg, "smoke")
+    text = win.recent_journal(cfg, "smoke", since=mark)
+    assert "FATAL" not in text and "earlier boot" not in text
+    assert "no pod log from this start" in text
+    assert "kirocrew pod logs smoke" in text
+    # Negative control: without the mark the same files still yield the stale line.
+    assert "FATAL: no built dist" in win.recent_journal(cfg, "smoke")
+
+
+def test_journal_since_mark_keeps_this_starts_fatal(cfg):
+    """A FATAL this start wrote is still shown, and only this start's lines."""
+    out, err = _earlier_failed_start(cfg)
+    mark = win.journal_mark(cfg, "smoke")
+    with out.open("ab") as fh:
+        fh.write(b"kirocrew-pod: name=smoke this boot\r\n")
+    with err.open("ab") as fh:
+        fh.write(b"FATAL: venv missing for smoke\r\n")
+    text = win.recent_journal(cfg, "smoke", since=mark)
+    assert "FATAL: venv missing for smoke" in text and "this boot" in text
+    assert "no built dist" not in text and "earlier boot" not in text
+
+
+def test_journal_mark_of_absent_logs_reads_a_first_start_whole(cfg):
+    """No log yet marks at 0, so the first start's own output is all shown."""
+    mark = win.journal_mark(cfg, "smoke")
+    assert mark == {"pod.out.log": 0, "pod.err.log": 0}
+    out, err = win.log_paths(cfg, "smoke")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    err.write_bytes(b"FATAL: first boot\r\n")
+    assert "FATAL: first boot" in win.recent_journal(cfg, "smoke", since=mark)
+
+
+def test_journal_since_mark_reads_a_replaced_file_whole(cfg):
+    """A log that shrank since the mark was replaced; all of it is this start's."""
+    _out, err = _earlier_failed_start(cfg)
+    mark = win.journal_mark(cfg, "smoke")
+    err.write_bytes(b"FATAL: new\r\n")
+    assert "FATAL: new" in win.recent_journal(cfg, "smoke", since=mark)
+
+
 # --------------------------------------------------------------------------
 # The exit-code contract
 # --------------------------------------------------------------------------
@@ -533,12 +585,33 @@ def test_runtime_dispatches_to_the_windows_backend_on_win32(cfg, monkeypatch):
     monkeypatch.setattr(win, "main_pid", lambda c, n: 4242)
     monkeypatch.setattr(win, "unit_state", lambda c, n: ("active", 0))
     monkeypatch.setattr(win, "active_names", lambda c: {"smoke"})
-    monkeypatch.setattr(win, "recent_journal", lambda c, n, lines=30: "log")
+    monkeypatch.setattr(win, "recent_journal", lambda c, n, lines=30, since=None: "log")
     assert rt.is_active(cfg, "smoke") is True
     assert rt.main_pid(cfg, "smoke") == 4242
     assert rt.unit_state(cfg, "smoke") == ("active", 0)
     assert rt.active_names(cfg) == {"smoke"}
     assert rt.recent_journal(cfg, "smoke") == "log"
+
+
+def test_runtime_threads_the_journal_mark_to_the_windows_backend(cfg, monkeypatch):
+    monkeypatch.setattr(rt, "IS_MACOS", False)
+    monkeypatch.setattr(rt, "IS_WINDOWS", True)
+    mark = {"pod.out.log": 5, "pod.err.log": 0}
+    seen: list = []
+    monkeypatch.setattr(win, "journal_mark", lambda c, n: mark)
+    monkeypatch.setattr(
+        win, "recent_journal", lambda c, n, lines=30, since=None: (seen.append(since), "log")[1]
+    )
+    assert rt.journal_mark(cfg, "smoke") is mark
+    assert rt.recent_journal(cfg, "smoke", since=mark) == "log"
+    assert seen == [mark]
+
+
+def test_journal_mark_does_not_touch_the_windows_backend_off_win32(cfg, monkeypatch):
+    monkeypatch.setattr(rt, "IS_WINDOWS", False)
+    monkeypatch.setattr(rt, "IS_MACOS", False)
+    monkeypatch.setattr(win, "journal_mark", lambda c, n: pytest.fail("windows only"))
+    assert set(rt.journal_mark(cfg, "smoke")) == {rt.JOURNAL_SINCE_USEC}
 
 
 def test_runtime_does_not_touch_the_windows_backend_off_win32(cfg, monkeypatch):

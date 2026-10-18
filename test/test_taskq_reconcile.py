@@ -103,6 +103,48 @@ def test_reconcile_settles_every_lost_owner_row_by_class(tmp_path: Path, clock: 
         s.close()
 
 
+@pytest.mark.parametrize(
+    ("side_effect_class", "settled"),
+    [
+        (model.SIDE_EFFECT_UNKNOWN, model.UNKNOWN_SIDE_EFFECT),
+        (model.SIDE_EFFECT_NONE, model.RECOVERING),
+        (model.SIDE_EFFECT_IDEMPOTENT_KEY, model.RECOVERING),
+    ],
+)
+def test_a_row_killed_in_starting_with_no_run_settles_by_its_class(
+    tmp_path: Path, clock: Clock, side_effect_class: str, settled: str
+) -> None:
+    """A process killed after a claimer's ``admitted -> starting`` write and
+    before any run registered leaves the row ``starting`` with nothing on disk.
+    Boot reconcile settles it by side-effect class, exactly as a run cut off
+    before its first stream event: ``unknown`` is parked and never re-run, a
+    replay-safe class is recovered and spends one lost-owner recovery."""
+    path = tmp_path / "t.db"
+    s = TaskStore(path, clock=clock, network_fs=False).open()
+    s.accept([_rec("killed_in_starting", side_effect_class=side_effect_class)])
+    claim = s.claim("killed_in_starting")
+    assert claim is not None
+    assert s.transition("killed_in_starting", model.STARTING, generation=claim.generation)
+    s.close()  # killed before registration
+    clock.t += 100
+
+    s = _crash_and_reopen(path, clock)
+    try:
+        report = reconcile_on_boot(s, artifact_probe=lambda _rec: None)
+        assert report.examined == 1 and report.errors == []
+        assert s.state_of("killed_in_starting") == settled
+        assert s.get("killed_in_starting").lease_owner is None
+        if settled == model.RECOVERING:
+            assert s.lost_owner_recoveries("killed_in_starting") == 1
+            clock.t += 1000  # past the recovery backoff
+            assert s.claim("killed_in_starting") is not None
+        else:
+            clock.t += 1000
+            assert s.claim("killed_in_starting") is None, "a parked row is never re-run"
+    finally:
+        s.close()
+
+
 def test_a_row_that_takes_its_owner_down_every_run_fails_once_its_recoveries_are_spent(
     tmp_path: Path, clock: Clock
 ) -> None:

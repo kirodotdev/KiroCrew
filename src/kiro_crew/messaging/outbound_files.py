@@ -59,7 +59,11 @@ prompt-injected agent chooses what it writes:
   same directory. The read below is pinned to whichever root admitted the
   path, so a linked ancestor inside one root cannot reach outside it -- and the
   browser root is pinned by its CANONICAL spelling (real data home, literal
-  leaf), so replacing the snapshot directory itself with a link admits nothing
+  leaf), so replacing the snapshot directory itself with a link admits nothing.
+  A channel that passes it also admits the session's own ``$KIROCREW_SCRATCH``
+  directory (:func:`session_scratch_root`), where the agent is told to stage
+  screenshots: one allocation under the managed scratch root, pinned the same
+  canonical way, never the managed root or another runtime's allocation
 * a denylist check (:func:`kiro_crew.security.is_sensitive_path`), so
   ``![x](~/.aws/credentials)`` cannot be turned into an upload
 * a refusal to follow a symlink, so the bytes come from the inode the written
@@ -414,12 +418,16 @@ def _walk_destination(rest: str) -> tuple[str | None, int]:
     """
     depth = 1
     out: list[str] = []
+    # Indices into `out` of characters that arrived escaped, so the finish can
+    # tell a `\>` in the path from the `>` that closes a `<...>` wrap.
+    escaped: set[int] = set()
     i = 0
     while i < len(rest):
         ch = rest[i]
         if ch == "\\" and i + 1 < len(rest) and rest[i + 1] in _MD_ESCAPABLE:
             # A real markdown escape: keep the escapee, and never let it move the
             # paren depth.
+            escaped.add(len(out))
             out.append(rest[i + 1])
             i += 2
             continue
@@ -430,23 +438,54 @@ def _walk_destination(rest: str) -> tuple[str | None, int]:
         elif ch == ")":
             depth -= 1
             if depth == 0:
-                return _finish_destination("".join(out)), i + 1
+                return _finish_destination("".join(out), escaped), i + 1
         out.append(ch)
         i += 1
     return None, 0
 
 
-def _finish_destination(raw: str) -> str | None:
-    """Strip the optional ``<...>`` wrapper or trailing ``"title"`` from *raw*."""
+def angle_wrap_close(markup: str, start: int, limit: int) -> int:
+    """Index of the first unescaped ``>`` in ``markup[start:limit]``, or ``-1``.
+
+    *markup* is RAW markdown and *start* is just past a destination's opening
+    ``<``. A backslash before a character in :data:`_MD_ESCAPABLE` makes the pair
+    one token, so the ``\\>`` the composer writes for a ``>`` in a path never
+    closes the wrap -- the same tokenisation :func:`_walk_destination` uses, so a
+    caller that cuts the raw markup closes the wrap where the scanner did.
+    """
+    i = start
+    while i < limit:
+        ch = markup[i]
+        if ch == "\\" and i + 1 < limit and markup[i + 1] in _MD_ESCAPABLE:
+            i += 2
+            continue
+        if ch == ">":
+            return i
+        i += 1
+    return -1
+
+
+def _finish_destination(raw: str, escaped: set[int] | frozenset[int] = frozenset()) -> str | None:
+    """Strip the optional ``<...>`` wrapper or trailing ``"title"`` from *raw*.
+
+    *escaped* holds the indices of *raw* whose character arrived backslash-escaped;
+    an escaped ``>`` is part of the path, never the close of a ``<...>`` wrap.
+    """
     if "\r" in raw or "\n" in raw:
         return None
     dest = raw.strip()
+    lead = len(raw) - len(raw.lstrip())
     # `<...>` is markdown's explicit way to write a destination containing spaces
     # (`![c](</tmp/generated images/c.png>)`). Unwrap it and DON'T split on
     # whitespace: inside the brackets a space is part of the path, not the
     # separator before a `"title"`.
     if dest.startswith("<"):
-        end = dest.find(">")
+        # The wrap closes at the first UNESCAPED `>`, as in CommonMark: the
+        # composer writes a `>` in the path as `\>` (a POSIX data home `a>b`).
+        end = next(
+            (j for j, ch in enumerate(dest) if ch == ">" and j + lead not in escaped),
+            -1,
+        )
         if end == -1:
             return None  # unterminated -- don't guess at the path
         dest = dest[1:end].strip()
@@ -816,7 +855,50 @@ class ApprovedRoot:
     read_root_is_canonical: bool = False
 
 
-def approved_roots(within_root: str) -> tuple[ApprovedRoot, ...]:
+def session_scratch_root(scratch_root: str) -> ApprovedRoot | None:
+    """The session's own ``$KIROCREW_SCRATCH`` directory as a root, or ``None``.
+
+    *scratch_root* is the directory the runtime serving the session exposes as
+    ``$KIROCREW_SCRATCH`` (``providers.base.Provider.work_scratch_dir``), handed
+    over by the channel dispatcher. The agent is told to stage screenshots there,
+    and it is never inside a working directory, so without this root no image the
+    agent staged as instructed could travel inline.
+
+    Admitted only when it is ONE allocation: an absolute, existing directory that
+    is not itself a link or junction, whose parent resolves to the managed scratch
+    root (``agent_scratch.scratch_root``). Anything wider -- the managed root
+    itself, the data home, ``/`` -- or anything elsewhere answers ``None``, so a
+    wrong value can only lose this root, never widen it to another runtime's
+    scratch.
+
+    The read pin is CANONICAL, like the browser root's: the parent resolved, the
+    allocation's leaf kept literal, so a link swapped in at the leaf after this
+    check resolves the opened file outside the pin instead of moving the pin.
+    """
+    if not scratch_root or not os.path.isabs(scratch_root):
+        return None
+    # Imported here: agent_scratch pulls in the config layer, which this
+    # transport-agnostic module otherwise has no reason to load at import time.
+    from kiro_crew.agent_scratch import scratch_root as managed_scratch_root
+
+    lexical = os.path.abspath(scratch_root)
+    path = Path(lexical)
+    try:
+        if is_link_or_junction(path) or not path.is_dir():
+            return None
+        parent = os.path.realpath(path.parent)
+        if parent != os.path.realpath(managed_scratch_root()):
+            return None
+    except (OSError, ValueError):
+        return None
+    return ApprovedRoot(
+        lexical=lexical,
+        read_root=os.path.join(parent, path.name),
+        read_root_is_canonical=True,
+    )
+
+
+def approved_roots(within_root: str, scratch_root: str = "") -> tuple[ApprovedRoot, ...]:
     """The directories an outbound reference may name, authorized first.
 
     *within_root* is the provider's resolved working directory, handed over by
@@ -837,13 +919,16 @@ def approved_roots(within_root: str) -> tuple[ApprovedRoot, ...]:
     resolved-by-the-read pin because a linked working directory is the layout
     it was authorized with.
 
-    An empty *within_root* contributes nothing, so the browser root never
-    stands in for an authorization the dispatcher withheld.
+    The session's own scratch directory comes last, and only when
+    *scratch_root* passes :func:`session_scratch_root`.
+
+    An empty *within_root* contributes nothing, so neither the browser root nor
+    the scratch root ever stands in for an authorization the dispatcher withheld.
     """
     if not within_root:
         return ()
     snap = snapshot_dir()
-    return (
+    roots = (
         ApprovedRoot(lexical=os.path.abspath(within_root), read_root=within_root),
         ApprovedRoot(
             lexical=os.path.abspath(snap),
@@ -851,9 +936,11 @@ def approved_roots(within_root: str) -> tuple[ApprovedRoot, ...]:
             read_root_is_canonical=True,
         ),
     )
+    scratch = session_scratch_root(scratch_root)
+    return roots if scratch is None else (*roots, scratch)
 
 
-def containing_root(path: Path, within_root: str) -> ApprovedRoot | None:
+def containing_root(path: Path, within_root: str, scratch_root: str = "") -> ApprovedRoot | None:
     """The approved root that lexically contains *path*, or ``None``.
 
     Lexical on purpose: ``abspath`` collapses ``..`` so a traversal spelling
@@ -862,7 +949,7 @@ def containing_root(path: Path, within_root: str) -> ApprovedRoot | None:
     returned here and rechecks the opened descriptor's real path against it.
     """
     target = os.path.abspath(path)
-    for root in approved_roots(within_root):
+    for root in approved_roots(within_root, scratch_root):
         try:
             if os.path.commonpath((target, root.lexical)) == root.lexical:
                 return root
@@ -879,6 +966,7 @@ def _inspect(
     budget: int,
     max_file_bytes: int | None,
     within_root: str | None,
+    scratch_root: str = "",
 ) -> OutboundFile | Rejection:
     """Decide whether *path* can be uploaded; return the file OR a rejection.
 
@@ -903,7 +991,7 @@ def _inspect(
     root: ApprovedRoot | None = None
     if within_root is not None:
         try:
-            root = containing_root(path, within_root)
+            root = containing_root(path, within_root, scratch_root)
         except (OSError, ValueError):
             root = None
         if root is None:
@@ -1117,13 +1205,21 @@ def upload_filename(file: "OutboundFile", index: int = 0) -> str:
 
 
 def extract_local_refs(
-    text: str, *, limits: ExtractLimits | None = None, within_root: str | None = None
+    text: str,
+    *,
+    limits: ExtractLimits | None = None,
+    within_root: str | None = None,
+    scratch_root: str = "",
 ) -> ExtractResult:
     """Pull local raster references out of *text* for a transport to upload.
 
     Returns the text to send, the files to send with it, and a reason for every
     reference that could not be sent. Never raises: the reply must go out even if
     every reference in it turns out to be unusable.
+
+    *scratch_root* is the session's own ``$KIROCREW_SCRATCH`` directory, admitted
+    beside *within_root* only as :func:`session_scratch_root` allows; empty adds
+    nothing.
     """
     lim = limits or ExtractLimits()
     refs = iter_local_refs(text)
@@ -1156,6 +1252,7 @@ def extract_local_refs(
             lim.max_total_bytes - total_bytes,
             lim.max_file_bytes,
             within_root,
+            scratch_root,
         )
         if isinstance(outcome, Rejection):
             # A rejected reference keeps its markup, so the path stays visible.
@@ -1242,7 +1339,11 @@ def _apply_cuts(text: str, cuts: list[tuple[int, int]]) -> str:
 
 
 async def extract_local_refs_off_loop(
-    text: str, *, within_root: str, limits: ExtractLimits | None = None
+    text: str,
+    *,
+    within_root: str,
+    limits: ExtractLimits | None = None,
+    scratch_root: str = "",
 ) -> ExtractResult:
     """Async form of :func:`extract_local_refs`, run off the event loop.
 
@@ -1257,4 +1358,10 @@ async def extract_local_refs_off_loop(
     recover a wedged kernel resource, and this work is short and
     filesystem-bound with no reason to queue behind it.
     """
-    return await asyncio.to_thread(extract_local_refs, text, limits=limits, within_root=within_root)
+    return await asyncio.to_thread(
+        extract_local_refs,
+        text,
+        limits=limits,
+        within_root=within_root,
+        scratch_root=scratch_root,
+    )

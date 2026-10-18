@@ -28,6 +28,7 @@ encode is monkeypatched, so no framework loads and no window is captured.
 from __future__ import annotations
 
 import ast
+import importlib
 import inspect
 import os
 from pathlib import Path
@@ -138,11 +139,14 @@ def test_source_uses_tempfile_gettempdir_not_a_hardcoded_tmp():
     ``os.environ.get("TMPDIR", "/tmp")`` was the original defect there: the
     fallback does not exist on Windows and ``os.makedirs`` crashed on it.
 
-    Asserted against ``macos_ffi`` (which owns the default path) plus the absence
-    of any hardcoded literal in ``capture_macos`` itself, since the path could be
-    re-derived in either file.
+    Asserted against ``macos_ffi`` and its owners (``macos_ffi_window`` owns the default
+    path) plus the absence of any hardcoded literal in ``capture_macos`` itself, since the
+    path could be re-derived in either file.
     """
-    ffi_src = inspect.getsource(macos_ffi)
+    ffi_src = "".join(
+        inspect.getsource(module)
+        for module in (macos_ffi, *map(importlib.import_module, macos_ffi._OWNERS))
+    )
     assert "tempfile.gettempdir()" in ffi_src
     assert 'os.environ.get("TMPDIR", "/tmp")' not in ffi_src
 
@@ -675,7 +679,7 @@ def test_capture_uses_no_subprocess_and_no_image_library():
 # successful capture offers the frame it just encoded to the relay, and that a
 # suppressed capture offers nothing at all. The relay's own three suppressions
 # (no surface scope / secure window / screenshot-denied ceiling) are covered in
-# ``test_computer_use_api.py::TestLiveViewSuppression``.
+# ``test_computer_use_api_frame.py::TestLiveViewSuppression``.
 
 
 @pytest.fixture

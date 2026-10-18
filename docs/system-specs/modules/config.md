@@ -9,8 +9,10 @@ modules below and re-exports their names as the same objects, so an existing
 `config.loader.X` or `config.sections.X` import keeps resolving.
 
 A patch reaches the code that looks the name up in the patched module, and only
-that code. Names read by code that stays in `loader.py` are call-time seams on
-the loader: `config_path`, `config_dir`, `config_local_path`, `env_path`,
+that code. `config/loader.py` is a mirrored facade (`kiro_crew._facade_mirror`):
+its code lives in the `config/loader_*.py` owners listed below, and a write or
+delete of a name through `config.loader` lands in every owner that binds it, so the
+names the loader family reads are call-time seams on the loader: `config_path`, `config_dir`, `config_local_path`, `env_path`,
 `workspace_root`, `_default_workspace_base`, `write_config_atomically`,
 `update_config_locked`, `atomic_write`, `_config_write_lock`,
 `_config_fingerprint`, `_validate_config_data`, `_persist_config_migration`,
@@ -26,10 +28,12 @@ instance bounds, `coerce_runtime_ceiling` (which reads the monitoring bounds in
 readers and the section DTO classes a builder constructs (a replacement must be a
 dataclass, and its field defaults are what an omitted key reads); `config.migration` for
 `auto_adoptable`, `drop_drifted_keys`, `stored_value_or_none`,
-`superseded_default_drift` and `drift_summary`. The loader facade and
+`superseded_default_drift` and `drift_summary` (neither module is a loader owner,
+so the loader's mirror does not reach them). The loader facade and
 `config.migration` hold the same warn-once set `_REPORTED_SUPERSEDED_KEYS`: clear
 it with `.clear()`, never rebind it. `test_config_refactor_contract.py` pins
-representative seams of each kind.
+representative seams of each kind; `test_facade_mirror_guards.py` holds every name
+the test trees patch through the loader to reaching every owner that binds it.
 
 | Owner | Owns |
 |---|---|
@@ -52,15 +56,18 @@ representative seams of each kind.
 | `config/resolution.py` | Raw overlay merging, top-level section classification, and degraded-input tracking. |
 | `config/validation.py`, `config/schema.py` | Schema validation with the validated-data cache, and the JSON schema and restart registry built from the DTOs. |
 | `config/paths.py`, `config/live.py`, `config/superseded_defaults.py` | Pure path primitives, the one live-config watcher and applier registry, and the superseded-default registry with its acknowledgment ledger. |
-| `config/loader.py` | `KiroCrewConfig` (load, serialize, save, model and provider resolution) and the residual core below. |
+| `config/loader.py` and `config/loader_*.py` | The loader facade and its nine owners: `KiroCrewConfig` (load, serialize, save, model and provider resolution) and the load core, one responsibility per owner (see "The loader owners" below). |
 
 Imports run one way: `fields`, then the section owners (the `sections_*`
 owners import each other lowest layer first, in the facade's `_OWNERS` order),
-then `sections`, then `section_builders` and `migration`, then `loader`. Each
-module imports only modules earlier in that order plus the existing leaves
-(`sections` and `sections_tailnet` import `resolution`, `migration` imports
-`superseded_defaults`, and neither leaf imports back), and none of the owners imports `loader`, `schema` or `validation`;
-`test_config_module_boundaries.py` pins the graph. Every module
+then `sections`, then `section_builders` and `migration`, then the loader owners
+in the order of the table below, then the `loader` facade. Each module imports
+only modules earlier in that order plus the existing leaves (`sections` and
+`sections_tailnet` import `resolution`, `migration` imports
+`superseded_defaults`, and neither leaf imports back), and none of the section
+owners, `section_builders` or `migration` imports `loader`, `schema` or
+`validation`; `test_config_module_boundaries.py` pins the graph. No loader owner
+imports the facade. Every module
 split out of the loader logs as `kiro_crew.config.loader`, so a relocated warning
 keeps the record name operators filter on.
 
@@ -77,25 +84,50 @@ owner: `ResourceLimitsConfig.from_raw` (`sections_limits.py`), `_tailscale_confi
 (`sections_tailnet.py`), the `_AVATAR_MOTIONS` literal (`sections_agent_fields.py`) and
 the `AgentConfig.acp_backend` declaration (`sections_agent.py`).
 
-`loader.py` groups each residual responsibility into one bannered section. Each
-stays in that file because something outside this package names the file, or
-because its readers look up a name the loader's callers and tests patch there:
+### The loader owners
 
-| Kept in `loader.py` | Held there by |
+`config/loader.py` stays the import path and the patch seam: it keeps every name
+it bound before its owners existed, and serves each owner-defined name from the
+owner that defines it. Its own code is the effective-model resolution
+(`resolve_effective_model`, `resolve_app_spawn_model`, `app_model_pin`, the
+kiro-agent reference check) and `build_provider_factory`, the platform seam in
+front of `KiroCrewConfig.create_provider_factory`. That method reaches
+`AcpProvider` through `agent_sdk.acp_provider_class`, so no config module imports
+the ACP layer. The rest lives in one owner per responsibility, lowest layer first:
+
+| Owner | Owns |
 |---|---|
-| Credential keys, the `.env` reader, the dashboard port | [code-style](../common/code-style.md) names `config/loader.py` for `CRED_*` and `_DEFAULT_PORT`. |
-| Data-home and workspace path helpers | Tests and callers patch `config_path`, `config_dir`, `env_path`, `workspace_root` and `_default_workspace_base` on this module. The instance-pairing and redactor-registry scans key `read_local_secret` and `credential_redaction_path` to this file. |
-| The unsandboxed-exec platform policy | [security](security.md) places that resolution in the loader, where the raw document is read. `unsandboxed_exec_declared` reads the patched `config_path`/`config_local_path` and is itself patched on this module. |
-| The harness-choice record | `agent.acp_backend` and `agent.member_acp_backend` absent or `""` mean no harness choice and resolve to the default; a stored `"kiro"` is the Kiro CLI choice ([harness-parity](harness-parity.md) H1). The loader maps the stored vocabulary to runtime ids on the way in (`_read_backend_choice`), and `to_dict()` maps back (`_stored_agent_dict`), so `config get`, the dashboard response and every full-document writer see `"kiro"`, never the runtime `""`. `to_dict()` carries the RESOLVED value; `save()` writes both keys back as `config.json` stores them (`_restore_stored_harness_fields`, read from disk like `unsandboxed_exec_declared`), so it never invents a choice and never replaces a policy-denied pick with the floor. An in-memory change to either key is therefore not persisted by `save()`; the delta writers (`config set`, the dashboard PATCH) are the write path. `acp_backend_declared()` reports a stored choice, overlay first. |
-| Document I/O: `_raw_config`, `read_config_for_update`, `write_config_atomically`, `update_config_locked`, the meta stamp | The config-writer scans in `test_config_rmw_preserves_settings.py` exempt only `loader.py`, and the writers read this module's patched path and `atomic_write` names. |
-| Write-back persistence (`_persist_config_migration`, the backup) and the `_apply_document_migrations` seam | It rewrites `config.json` under the same writer exemption, and passes this module's `record_adoptions` to the transform as the adoption-ledger writer. |
-| The validated-document cache fingerprint, its overlay sidecar and invalidation | `_config_fingerprint` reads the patched `config_path`/`config_local_path` and is itself patched on this module; `save()` and the write-back call `_invalidate_config_cache` beside it. |
-| `KiroCrewConfig.load`, the load pipeline (`read_config_document`, `build_config`, `persist_write_back`) and `save` | They read `config_path`, `config_local_path`, `_config_fingerprint`, `_validate_config_data`, `_persist_config_migration` and `write_config_atomically` by name, all patched on this module. `test_config_section_construction.py` pins `build_config`'s assembly shape. |
-| The security clamp and its SEL event | [security](security.md), [sel](sel.md) and [resource-protection](../../architecture/resource-protection.md) name the loader. |
-| The loop-stall and managed-launch readers | `load_loop_stall_exit_after` reads the loader's patchable `KiroCrewConfig`; `resolve_loop_stall_exit_after` and `consume_managed_service_launch_environment` are its two halves, and the dashboard server imports all three from here. The consume takes the marker out of `os.environ` so descendants do not inherit it, and hands it to `platform_compat.keep_for_reexec`, so the gateway's own exec successor (an in-app restart) is still a managed launch; `launched_as_managed_service` answers from either place, so it does not change once the dashboard has started. |
-| The agent, session, telemetry and dashboard builders | The harness-parity review scope; the patchable `DEFAULT_POOL_SIZE` fallback; [metrics](metrics.md) naming the loader as the telemetry parser; the feature map naming the loader's `folder_sort` read. |
-| Published snapshots: materialized agents, the alias table, the compaction threshold, the timezone | Tests rebind this module's snapshot state, and the second-boot witness in `test/integration/test_boot_smoke.py` keys the counters to `kiro_crew.config.loader`. |
-| Agent resolution and the provider factory | [crew-mode](crew-mode.md) and [context-management](../../architecture/context-management.md) name the loader for `resolve_agent_bindings` and `resolve_effective_model`. The agent-spec read inventory keys its call sites to this file, the ACP import is a baselined agent-SDK edge, and the blocking harness-parity and memory-store review rules cover `config/loader.py`. |
+| `config/loader_credentials.py` | Credential keys (`CRED_*`, `CREDENTIAL_KEYS`, named by [code-style](../common/code-style.md)), the `.env` reader and its decoder, `secret://` env resolution, the `kiro-cli` API-key injection, the dashboard port. |
+| `config/loader_locations.py` | The data-home and workspace path helpers (`config_path`, `config_local_path`, the per-feature state paths, `workspace_root`, `workspace_dir_from_entry`, `materialize_workspace_dir`) and `read_local_secret`. |
+| `config/loader_document.py` | Document I/O: `_raw_config`, `read_config_for_update`, the publish floor, `write_config_atomically`, `update_config_locked` and its lock, the meta stamp, the unsandboxed-exec policy and `acp_backend_declared` read from the raw document, and the validated-document cache fingerprint. The config-writer scans exempt it with `loader_config.py` (`save`). |
+| `config/loader_builders.py` | The load-time field readers, the security clamp and its SEL event, the agent, session, telemetry and dashboard `_build_*` helpers, the harness-choice mapping (`_read_backend_choice`, `_stored_agent_dict`, `_restore_stored_harness_fields`), and the loop-stall and managed-launch readers. |
+| `config/loader_snapshots.py` | Published snapshots (the materialized agents with their scan, refresh, dispatch and default-agent healer; the alias table; the compaction threshold; the timezone) and the resolvers that answer from them. Every `global` it rebinds has its one home here, served through the facade. |
+| `config/loader_agents.py` | Agent resolution: `resolve_crew_identity`, `resolve_agent_identity`, `resolve_agent_bindings`. |
+| `config/loader_writeback.py` | Write-back persistence: `_persist_config_migration`, the backup, and the `_apply_document_migrations` seam that passes `record_adoptions` to the transform. |
+| `config/loader_config.py` | `KiroCrewConfig`: fields, `load`, `to_dict`, `save`, model, effort and credential resolution, and the provider factory. |
+| `config/loader_pipeline.py` | The load pipeline (`ConfigDocument`, `read_config_document`, `build_config`, `persist_write_back`) and the one-call loaders built on the class (`workspace_dir_for`, `default_project_dir`, `load_config_with_content_stamp`, `load_loop_stall_exit_after`). |
+
+**The harness-choice record.** `agent.acp_backend` and `agent.member_acp_backend` absent or `""` mean no harness choice and resolve to the default; a stored `"kiro"` is the Kiro CLI choice ([harness-parity](harness-parity.md) H1). The loader maps the stored vocabulary to runtime ids on the way in (`_read_backend_choice`), and `to_dict()` maps back (`_stored_agent_dict`), so `config get`, the dashboard response and every full-document writer see `"kiro"`, never the runtime `""`. `to_dict()` carries the RESOLVED value; `save()` writes both keys back as `config.json` stores them (`_restore_stored_harness_fields`, read from disk like `unsandboxed_exec_declared`), so it never invents a choice and never replaces a policy-denied pick with the floor. An in-memory change to either key is therefore not persisted by `save()`; the delta writers (`config set`, the dashboard PATCH) are the write path. `acp_backend_declared()` reports a stored choice, overlay first.
+
+Two call cycles run through the owners, and each is broken by one function-local
+import of the higher owner, the idiom this package already uses for the ACP
+provider: the default-agent healer (`reset_dangling_default_agent`,
+`_locked_workspace_dir`) loads the `KiroCrewConfig` that dispatches through the
+snapshot it heals, and `KiroCrewConfig._load_resolved` runs the pipeline that
+builds instances of the class. `test_loader_owners_contract.py` pins each of the
+three imports and shows a patch made through the facade reaches it.
+
+Three seams behave differently from the one-module loader:
+
+- The mirror indexes no dunder, so a patch of `config.loader.__version__` reaches the
+  facade alone. The meta stamp reads `loader_document`'s own binding.
+- `typing.get_type_hints` raises on the seven owner functions that annotate
+  `KiroCrewConfig` under `TYPE_CHECKING` (`resolve_crew_identity`, `resolve_agent_bindings`,
+  `crew_autocompact_pct`, `_workspace_name_for_dir`, `publish_agent_alias_snapshot`,
+  `publish_autocompact_pct`, `publish_config_timezone`): the cycle forbids a runtime import
+  there.
+- `importlib.reload(config.loader)` re-runs the facade only. Owner bodies run again only when
+  the owners are purged and imported with it.
 
 New section constants, including local speech's automatic-language default, are
 read from `config.sections` directly; they do not expand that historical facade.
@@ -106,8 +138,9 @@ the module that owns its section's DTO, a new section's DTO to the `sections_*`,
 its domain, a shared coercer to `config/fields.py`, a section's `_build_*` helper to
 `config/section_builders.py`, a migration rule to `config/migration.py`, and
 overlay, validation, schema, live-applier and path work to its owner in the
-table above. `config/loader.py` takes only work inside one of its residual rows,
-and `sections.py` only re-exports what an owner defines.
+table above. Loader work goes to the `config/loader_*.py` owner of its row;
+`config/loader.py` itself takes only facade glue, effective-model resolution and
+`build_provider_factory`, and `sections.py` only re-exports what an owner defines.
 
 A feature whose section spends tokens on the user's behalf defaults to off and
 documents its knobs in its own spec — `session_summary` is the current example
@@ -1442,7 +1475,10 @@ keys`. Three exclusions from that warning are named in code:
 
 A deprecated field is announced only when it holds something: `null` and an
 empty map, list or string carry nothing to migrate, so `validation` stays
-silent on them (`False` and `0` are chosen values and are still announced). A
+silent on them (`False` and `0` are chosen values and are still announced). For
+each populated field, `validation` warns once per process for each distinct
+`repr(value)`. It stores only a SHA-256 digest of that representation in the
+warning registry, so configured credentials do not stay there as raw text. A
 schema entry that is marked `deprecated=True` therefore accepts that an empty
 value of its type gets no notice; a field for which `""` or `[]` is itself a
 meaningful choice must not rely on the deprecation notice to surface that
@@ -1539,7 +1575,7 @@ log is the current consumer: see `member-event-log.md` for how a roster read and
 startup sweep each refuse to correct the log from a config they cannot name.
 
 **The load pipeline.** `load()` publishes what `_load_resolved` returns, and that
-runs three stages in `config/loader.py`, each callable on its own:
+runs three stages in `config/loader_pipeline.py`, each callable on its own:
 
 | Stage | Does | Never does |
 |---|---|---|
@@ -1562,9 +1598,9 @@ place. Tests build one in memory, holding what the read stage would produce, and
 call `build_config` with no config file on disk.
 
 **Section construction.** Compound section constructors run in small private
-helpers: `config/section_builders.py` holds 27 of them and `config/loader.py`
+helpers: `config/section_builders.py` holds 27 of them and `config/loader_builders.py`
 keeps the agent, session, telemetry and dashboard ones (see the Overview); the
-loader re-exports all of them. This bounds each construction frame instead of
+loader facade re-exports all of them. This bounds each construction frame instead of
 putting every field expression in one large traced resolver frame. The helpers
 preserve field evaluation order, coercion and section-local assignment
 expressions. Each call creates fresh dataclasses and mutable defaults; no resolved
@@ -1733,7 +1769,7 @@ an exception into model resolution.
 
 ### `kiro_agents_dir() -> Path` (`config/paths.py`)
 Leaf helper returning `~/.kiro/agents` — the **user-level** scope. Lives in the leaf
-module so `loader.py` (and `_resolve_named_agent_model`'s `agents_dir` DI seam) can
+module so the loader owners (and `_resolve_named_agent_model`'s `agents_dir` DI seam) can
 locate installed agent JSONs without importing `kiro_crew.agent` — which imports
 `config.loader` and would create an import cycle.
 
@@ -2016,7 +2052,7 @@ agent(s)"` entry to `result.errors` — which `reconcile_enabled_app_resources`
 counts and logs — instead of returning a silent 0-agent success; a partial
 registration (some but not all) logs a warning.
 
-### Materialized-agent snapshot (`config/loader.py`)
+### Materialized-agent snapshot (`config/loader_snapshots.py`)
 Rung 2's membership test is a process-global `frozenset` — a pure in-memory lookup
 with **no filesystem I/O, not even a stat**. It is reached on every turn of an
 app-bound session from the gateway event loop (`_run_chat` →
@@ -2795,10 +2831,10 @@ happens to notice — which is the bug class this closes.
 
 | Write path | Where |
 |---|---|
-| `update_config_locked` | `config/loader.py` — the required path for new mutations; skips the kick when the mutate returns `None` (no write); an optional `after_write` callback runs inside the lock only after the rename committed, and its exceptions propagate |
-| `KiroCrewConfig.save()` | `config/loader.py` |
-| `_persist_config_migration` | `config/loader.py` — a boot migration is a config write like any other |
-| `refresh_config_meta_stamp` | `config/loader.py` — kicks only when the stamp actually moved (no rewrite, no mtime churn) |
+| `update_config_locked` | `config/loader_document.py` — the required path for new mutations; skips the kick when the mutate returns `None` (no write); an optional `after_write` callback runs inside the lock only after the rename committed, and its exceptions propagate |
+| `KiroCrewConfig.save()` | `config/loader_config.py` |
+| `_persist_config_migration` | `config/loader_writeback.py` — a boot migration is a config write like any other |
+| `refresh_config_meta_stamp` | `config/loader_document.py` — kicks only when the stamp actually moved (no rewrite, no mtime churn) |
 | `_atomic_json_write` | `agent.py` — via `_notify_if_config_write`, and ONLY when the target resolves to `config_path()`. A safety net rather than a route: no handler writes `config.json` through it — the per-channel savers (`messaging._LockedSectionWrite`), the STT PUT and the MCP gateway-enable toggle all go through `update_config_locked`, and `TestTheAtomicJsonWriteConfigFamilyIsRatcheted` pins that population to an empty baseline so a new saver cannot reopen it |
 
 A handler that must answer only after the new value is in force calls
@@ -2815,7 +2851,7 @@ start, a mirror send) is never handed the client about to be closed.
 **A two-file save runs under `live.hold()`.** Every channel saver that writes
 `config.json` and then `.env` (Slack, Teams, Webex, WeCom, Feishu, Discord,
 Telegram) rolls the config back when the credential write fails, through the one
-shared `_write_env_or_roll_back` in `handlers/messaging.py`, and wraps the whole
+shared `_write_env_or_roll_back` in `messaging_api/channel_config_writes.py`, and wraps the whole
 transaction — snapshot through rollback and the `os.environ` sync — in
 `with live.hold():`. Without it the
 config write's own kick (`_atomic_json_write` → `notify_config_written`) wakes
@@ -2896,7 +2932,7 @@ class AgentConfig:
 @dataclass
 class SessionConfig:
     timeout_secs: int = 3600       # 60 min idle timeout (DEFAULT_SESSION_TIMEOUT)
-    idle_exempt_keys: list[str] = []  # session keys the idle sweep never expires on the clock (a dashboard chat is dashboard:<sid>; a tab linked to a cron job or channel thread uses that link's key, e.g. cron:<job>, per chat_utils.session_key_for). Loaded as stripped non-empty strings, at most IDLE_EXEMPT_KEYS_MAX (= POOL_SIZE_MAX, 10: each listed key can keep a whole kiro-cli process tree running, the warm pool's per-entry cost) keys of at most IDLE_EXEMPT_KEY_MAX_CHARS (512) characters each; a longer key is dropped rather than truncated, and one warning is logged per load when any key is dropped; a non-list loads as []. Read at every sweep. A listed dashboard or cron-linked session is still reaped when its tab closes (a channel thread's session is channel-owned, so closing its viewer never reaps it), and the RSS recycle, when enabled, still applies. A listed key that never had a tab, such as a cron job run without one, is reaped on neither axis, even after its job is deleted; that recycle or a restart still ends it, and so does the identity sweep (retire_kiro_identity_sessions, which reads no list). Before each dashboard chat turn and each agent cron run (chat_runner._retire_sessions_on_identity_change) it retires a kiro-backed one once the live Kiro account is no longer the one it was spawned under, except that an agent cron run touches no session when the live fingerprint is empty without proving a sign-out (a social login the reader cannot identify, an unreadable or relocated store); a Kiro sign-out from the dashboard (kas_login._retire_runtimes_after_sign_out) runs it with no live account, which retires every idle kiro-backed session at once, whatever account each signed in with; a busy session is flagged and retired later. See session.md "Idle cleanup".
+    idle_exempt_keys: list[str] = []  # session keys the idle sweep never expires on the clock (a dashboard chat is dashboard:<sid>; a tab linked to a cron job or channel thread uses that link's key, e.g. cron:<job>, per chat_utils.session_key_for). Loaded as stripped non-empty strings, at most IDLE_EXEMPT_KEYS_MAX (= POOL_SIZE_MAX, 10: each listed key can keep a whole kiro-cli process tree running, the warm pool's per-entry cost) keys of at most IDLE_EXEMPT_KEY_MAX_CHARS (512) characters each; a longer key is dropped rather than truncated, and one warning is logged per load when any key is dropped; a non-list loads as []. Read at every sweep. A listed dashboard or cron-linked session is still reaped when its tab closes (a channel thread's session is channel-owned, so closing its viewer never reaps it), and the RSS recycle, when enabled, still applies. A listed key that never had a tab, such as a cron job run without one, is reaped on neither axis, even after its job is deleted; that recycle or a restart still ends it, and so does the identity sweep (retire_kiro_identity_sessions, which reads no list). Before each dashboard chat turn and each agent cron run (chat_turn.account_identity._retire_sessions_on_identity_change) it retires a kiro-backed one once the live Kiro account is no longer the one it was spawned under, except that an agent cron run touches no session when the live fingerprint is empty without proving a sign-out (a social login the reader cannot identify, an unreadable or relocated store); a Kiro sign-out from the dashboard (kas_login._retire_runtimes_after_sign_out) runs it with no live account, which retires every idle kiro-backed session at once, whatever account each signed in with; a busy session is flagged and retired later. See session.md "Idle cleanup".
     empty_response_auto_continue: bool = True  # after TWO consecutive empty model responses, auto-send synthetic "continue" nudges on the same live session (transcript-visible notice; count bounded by empty_response_max_continues; the config gate fails OPEN to the default so a config-load hiccup cannot disable self-healing). See session.md "Empty-response recovery ladder".
     empty_response_max_continues: int = 1  # how many continue nudges may run back to back before the give-up card (EMPTY_RESPONSE_MAX_CONTINUES_MIN/MAX; load-time clamped to [1, 10] so a hand-edited 0 cannot disable recovery and a large value cannot arm an unbounded ladder). Default 1 keeps the pre-knob behavior byte-identical; above 1 the notice numbers each recovery ("recovery 2 of 3").
     autocompact_pct: float = 70.0  # context usage % at which auto-compaction triggers (DEFAULT_AUTOCOMPACT_PCT). Load-time clamped to [5.0, 90.0] (one constant pair shared with the dashboard write gate)
@@ -3005,7 +3041,7 @@ class DashboardConfig:
     theme_color: str = ""          # color-theme slug (e.g. "kiro", "emerald", "monokai"); empty = unset
     language: str = ""             # dashboard UI language, BCP-47 (e.g. "en", "zh-CN"); empty = auto-detect from the browser. See "Dashboard UI language" below.
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
-    session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
+    session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title), "manual" (the person's own drag order). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
     onboarded: bool = False         # whether the "Choose your look" onboarding modal was completed
     import_onboarded: bool = False  # whether foreign-agent import was completed or skipped
     terminal: dict                  # the built-in Terminal tab: shell ("" = $SHELL), max_sessions (12, server-wide ceiling), cwd ("" = $HOME), reuse_current (false; true = Run-in-terminal focuses the selected terminal and copies the command, never runs it), completion.enabled (true). PATCH-able via /api/config/kirocrew
@@ -3367,8 +3403,8 @@ screenshot.
 
 Resource-limit and timeout knobs are clamped to hard ceilings **at load time**, not
 just at the dashboard write gate. The ceilings are owned in `sections_limits.py`
-and re-exported by `sections.py` and `loader.py`; the load-time clamp remains in
-`loader.py`:
+and re-exported by `sections.py` and `loader.py`; the load-time clamp lives in
+`config/loader_builders.py`:
 
 | Constant | Value | Field |
 |----------|-------|-------|
@@ -3598,6 +3634,27 @@ A choice made in another browser, the default included, is never overwritten,
 even if it lands between this browser's read and write. The local key is removed
 when skipped, saved, or refused as already stored; any other carry-over failure
 keeps it for the next load. Settle-time invalidation draws the stored value.
+
+`manual` is the person's own order. The order itself is not config: it lives in
+the pinned order's store (`dashboard/pinned_session_order.py`), as a second file,
+`chat_manual_order.json`, in the same fenced `pinned-order` directory, and reaches
+the browser on every slot row as `manual_rank` / `manual_rev`. Under `manual`,
+pinned rows stay on top in their own order, unpinned rows show a drag handle and
+no date headers, and a session with no place (a new one) shows above the placed
+ones. A drop between two unpinned rows of one container, in any sort, switches
+this key to `manual`, writes the order, and offers "Sorted by hand" with Undo;
+under `manual`, Alt+Arrow on a focused unpinned row moves it the same way. A drop
+on a folder files the session and changes neither. Every write is one operation of `POST /api/chat/manual-order`:
+the first drag (or picking Manual with nothing saved) seeds the order on screen
+and lands only while nothing is saved; a later drag moves one row next to
+another; and the undo of a first drag clears the order only at the revision that
+drag wrote. Undo, or a drop whose write does not take, also puts the previous
+sort back. Picking another sort keeps the order, so picking Manual again
+restores it. Only the person's own browser
+writes it: the one writer refuses a caller whose origin is not `dashboard` (an
+agent or crew member, which reaches the gateway with `X-Internal-Secret`) and an
+app or member principal; no MCP tool writes it. A build without `manual` reads
+the key as `date-desc` and never touches the second file.
 
 ### Interactive model picker visibility
 

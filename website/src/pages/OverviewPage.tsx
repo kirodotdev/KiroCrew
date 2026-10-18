@@ -124,7 +124,11 @@ function WakaTimeSummaryCard({ onOpen }: { onOpen: () => void }) {
     queryKey: ['wakatime-stats', 'last_7_days'],
     queryFn: () => api.wakatimeStats('last_7_days'),
   })
-  const total = data?.stats?.total_seconds ?? 0
+  // Prefer the include-other total so this card matches the WakaTime drill-in
+  // it opens; the classified-only total_seconds drops the "Other" bucket and
+  // reads low. Fall back to total_seconds when the include-other field is null
+  // (free accounts, which do not report it).
+  const total = data?.stats?.total_seconds_including_other_language ?? data?.stats?.total_seconds ?? 0
   const fmtHm = (s: number) => {
     // Round to whole minutes first, then split, so 7199s -> 2h 0m, not 1h 60m.
     const totalMin = Math.round(Math.max(0, s) / 60)

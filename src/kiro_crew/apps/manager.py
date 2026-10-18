@@ -2847,6 +2847,24 @@ def _same_dir_key(path: Path) -> str | None:
         return None
 
 
+def app_agent_backend_refusal(owner: str) -> str:
+    """Why a session bound to app *owner*'s agent cannot run on its backend.
+
+    Only kiro-cli (``--agent``) and KAS (the spec Crew reads and sends) launch an
+    agent from its spec; every other backend would run the app-authored prompt
+    without the app's spec, its tools or its approvals. App-owned sessions are
+    therefore limited to those two, and a session on any other backend is refused
+    rather than given a per-backend way to load the spec. Reads the app's manifest
+    for its label; call it off the event loop.
+    """
+    app = _app_display_name(owner)
+    return (
+        f"{app} can't run here: its agent runs only on the KAS or Kiro backend, and "
+        "this chat runs on another one. Set the agent backend (agent.acp_backend) to "
+        "KAS or Kiro, then run the command again from the command palette."
+    )
+
+
 def app_command_agent_refusal(owner: str, agent: str, *projects: str | None) -> str | None:
     """Why a session bound to app *owner*'s agent must not run as *agent* now, or None.
 

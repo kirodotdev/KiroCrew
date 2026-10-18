@@ -74,6 +74,11 @@ export function acpBackendName(backend: { id: string; policy_id?: string }): str
   }
 }
 
+/** A harness name short enough for a row badge; the full label elsewhere. */
+export function acpBackendShortName(id: string): string {
+  return id === ACP_BACKEND_KAS ? 'KAS' : acpBackendName({ id })
+}
+
 /**
  * What turning ONE MCP tool off costs on a harness, as the two sentences the
  * reader sees, from that harness's `GET /api/acp-backends` row.

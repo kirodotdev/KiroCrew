@@ -1,4 +1,4 @@
-"""Tests for api_file_diff handler in dashboard/handlers/files.py."""
+"""Tests for api_file_diff handler in dashboard/file_api/editor.py (served by handlers/files.py)."""
 
 from __future__ import annotations
 

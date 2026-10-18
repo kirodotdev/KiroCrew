@@ -105,7 +105,7 @@ def _read_record() -> dict[str, dict[str, Any]]:
 def _write_record(entries: dict[str, dict[str, Any]]) -> None:
     path = self_arm_record_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    # The trust subtree is owner-only everywhere else (sel.py creates it 0o700);
+    # The trust subtree is owner-only everywhere else (sel_trust_root.py creates it 0o700);
     # tighten best-effort so a parents=True mkdir does not leave a default-mode
     # directory. The sensitive-path floor is the real fence.
     try:

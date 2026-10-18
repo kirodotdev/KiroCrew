@@ -29,7 +29,7 @@ import { SaveCreateLabel } from '../utils/cronUtils'
 import { i18nT } from '../i18n/t'
 
 /** One schedule row. */
-function WakeRow({ job, onChanged, dense = false }: { job: CronJob; onChanged: () => void; dense?: boolean }) {
+function WakeRow({ job, onChanged, dense = false, hideKindBadge = false }: { job: CronJob; onChanged: () => void; dense?: boolean; hideKindBadge?: boolean }) {
   const { running, runNow, toggleEnabled, actionError } = useCronActions(onChanged)
   const isRunning = running.has(job.id) || !!job.is_running
 
@@ -59,10 +59,12 @@ function WakeRow({ job, onChanged, dense = false }: { job: CronJob; onChanged: (
           narrow says so instead. */}
       <div className={dense ? 'flex flex-col gap-1.5' : 'flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3'}>
         <div className={dense ? 'flex w-full items-center gap-2' : 'flex w-full items-center gap-2 sm:contents'}>
-          <Badge variant="muted" className="shrink-0 font-mono">
-            <Clock className="lucide-inline" aria-hidden="true" />
-            {i18nT('components.crewWakeSection.schedule')}
-          </Badge>
+          {!hideKindBadge && (
+            <Badge variant="muted" className="shrink-0 font-mono">
+              <Clock className="lucide-inline" aria-hidden="true" />
+              {i18nT('components.crewWakeSection.schedule')}
+            </Badge>
+          )}
           <div className="min-w-0 flex-1">
             <div className="truncate text-[12.5px] text-text-strong">{job.name}</div>
             {!job.member_id && <span className="text-[11px] text-muted">{i18nT('pages.kiroCrewAgentsPage.uses_global_memory_v1')}</span>}
@@ -140,7 +142,7 @@ type WakeScope =
   | { ownedOnly: true; isDefaultCrew?: never }
   | { ownedOnly?: false; isDefaultCrew: boolean }
 
-export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefaultCrew, ownedOnly = false, dense = false, initialAdding = false, chromeless = false, heading, blurb, emptyLine, pinnedHint, onDraftChange, onSavingChange, onRequestCancel, onNavigateAway }: WakeScope & {
+export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefaultCrew, ownedOnly = false, dense = false, initialAdding = false, chromeless = false, hideKindBadge = false, heading, blurb, emptyLine, pinnedHint, onDraftChange, onSavingChange, onRequestCancel, onNavigateAway }: WakeScope & {
   crew: string
   /** The crew's IMMUTABLE id (its slug), which is what a private schedule's
    *  `member_id` holds and what a new one is bound to. Separate from `crew`, the
@@ -162,6 +164,10 @@ export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefau
    *  close controls stacked on one short page read as two things to dismiss; the
    *  host's Back is the one exit and still runs the draft guard it owns. */
   chromeless?: boolean
+  /** Hide the per-row "schedule" kind badge. The global Schedule page mixes
+   *  row kinds so the badge disambiguates; inside a Schedules-only tab every
+   *  row is a schedule, so the badge is pure noise. Default false (unchanged). */
+  hideKindBadge?: boolean
   /** Section heading, when the host's word for this thing is not "agent". The crew
    *  editor is editing an AGENT and says so; the Crewmates panel is looking at a
    *  CREWMATE, and borrowing the editor's noun there makes the panel read as if it
@@ -302,7 +308,7 @@ export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefau
             {emptyLine ?? i18nT('components.crewWakeSection.no_schedules_run_this_crew_automatically')}
           </div>
         )
-        : <div>{jobs.map(j => <WakeRow key={j.id} job={j} onChanged={onChanged} dense={dense} />)}</div>
+        : <div>{jobs.map(j => <WakeRow key={j.id} job={j} onChanged={onChanged} dense={dense} hideKindBadge={hideKindBadge} />)}</div>
 
   return (
     <section

@@ -181,7 +181,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_voice.py::api_voice_cancel": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/feedback.py::api_feedback_submit": ("<default>", _BOUNDED_BY_DEFAULT),
     "handlers/redaction.py::api_redaction_allow_host": ("_MAX_BODY", _BOUNDED_BY_DEFAULT),
-    "handlers/messaging.py::api_notification_agent_push": (
+    "messaging_api/agent_push.py::api_notification_agent_push": (
         "<default>",
         _BOUNDED_BY_DEFAULT,
     ),
@@ -201,7 +201,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/ui_prefs.py::api_ui_prefs": ("MAX_REQUEST_BYTES", _BOUNDED_EXPLICIT),
     # Installed exact-read keys allow 32,768 characters. Escaped astral characters
     # need 12 JSON bytes each; 512 KiB covers those keys plus the control envelope.
-    "handlers/prompts.py::api_skills": ("512 * 1024", _BOUNDED_EXPLICIT),
+    "handlers/prompts_skill_catalog.py::api_skills": ("512 * 1024", _BOUNDED_EXPLICIT),
     # agents.py tranche.
     "agent_admin/agent_config.py::api_agent_config": ("None", _UNBOUNDED_USER_CONTENT),
     "agent_admin/default_agent.py::api_default_agent": ("None", _CONTROL_FIELDS_CAP_PENDING),
@@ -233,7 +233,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/memory.py::api_memory_settings": ("None", _CONTROL_FIELDS_CAP_PENDING),
     "handlers/memory.py::api_memory_consolidate": ("None", _CONTROL_FIELDS_CAP_PENDING),
     "handlers/memory.py::api_memory_promote": ("None", _CONTROL_FIELDS_CAP_PENDING),
-    "handlers/memory.py::api_memory_embedding_model": (
+    "handlers/memory_embeddings.py::api_memory_embedding_model": (
         "None",
         _CONTROL_FIELDS_CAP_PENDING,
     ),
@@ -307,6 +307,18 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # boolean and an optional expected_created stamp -- a fixed set of control
     # fields, so the shared default cap is right.
     "chat_folders.py::_toggle_slot_user_flag": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # The pinned-session reorder carries a bounded list of slot keys, sized
+    # from the key-count and key-length ceilings in pinned_session_order.
+    "chat_folders.py::api_chat_pinned_order": (
+        "_MAX_PINNED_ORDER_BODY_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
+    # The manual session order carries one bounded list of slot keys (a seed's
+    # keys or a move's seat), sized from the same store ceilings.
+    "chat_manual_order.py::api_chat_manual_order": (
+        "_MAX_MANUAL_ORDER_BODY_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
     # ---- tranche 3 ----
     # chat_handlers.py and its chat_api owners: control-field slot mutations take
     # the cap; the sites that carry a chat message, queued-edit text, follow-up
@@ -385,15 +397,15 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # handlers/files.py and its file_api owners: bodies name paths and routing
     # fields -- the file bytes travel in api_file_write's body, which is the one
     # uncapped site.
-    "handlers/files.py::api_reveal_path": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "handlers/files.py::api_outbox_notify": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "handlers/files.py::api_slack_upload_file": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "handlers/files.py::api_channel_upload_file": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "file_api/desktop.py::api_reveal_path": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "file_api/outbox.py::api_outbox_notify": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "file_api/channel_upload.py::api_slack_upload_file": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "file_api/channel_upload.py::api_channel_upload_file": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "file_api/workspaces.py::api_workspaces_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "file_api/workspaces.py::api_workspaces_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "handlers/files.py::api_file_write": ("None", _UNBOUNDED_USER_CONTENT),
+    "file_api/editor.py::api_file_write": ("None", _UNBOUNDED_USER_CONTENT),
     # a root path and a query the handler caps at 200 characters
-    "handlers/files.py::api_file_grep": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "file_api/grep.py::api_file_grep": ("<default>", _BOUNDED_CONTROL_FIELDS),
     # a capped list of paths, each a FILE_READ_SCHEMA path
     "file_api/pinned_io.py::api_file_kinds": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "file_api/dashboard_config.py::api_dashboard_config": ("<default>", _BOUNDED_CONTROL_FIELDS),

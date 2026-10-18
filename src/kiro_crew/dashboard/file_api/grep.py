@@ -1,4 +1,4 @@
-"""The content search engines behind ``POST /api/file-grep``: ripgrep, the python walk and the document pass."""
+"""The ``POST /api/file-grep`` route and the content search engines behind it: ripgrep, the python walk and the document pass."""
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ import zipfile
 from pathlib import PurePath
 from typing import TYPE_CHECKING
 
+from aiohttp import web
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
         _GREP_DOC_EXTS,
@@ -23,7 +25,9 @@ if TYPE_CHECKING:
         _GREP_LABEL_CHARS,
         _GREP_MAX_DIRS_VISITED,
         _GREP_MAX_FILE_BYTES,
+        _GREP_MAX_QUERY_CHARS,
         _GREP_MAX_RESULTS,
+        _GREP_MIN_QUERY_CHARS,
         _GREP_PPTX_SLIDE_RE,
         _GREP_PREVIEW_CHARS,
         _GREP_RG_MAX_RECORD_BYTES,
@@ -32,6 +36,7 @@ if TYPE_CHECKING:
         _GREP_RG_QUEUE_LINES,
         _GREP_RG_TEARDOWN_SECS,
         _GREP_ROW_DEADLINE_STRIDE,
+        _GREP_TIME_BUDGET_SECS,
         _SHEET_MAX_EXPANDED_BYTES,
         _SHEET_MAX_MEMBERS,
         _WALK_SKIP_DIRS,
@@ -39,6 +44,10 @@ if TYPE_CHECKING:
         PdfExtraction,
         ZipInventoryRejected,
         _DocSegments,
+        _PathProbeBusy,
+        _probe_busy_response,
+        _run_path_probe,
+        _sel,
         _validate_dashboard_path,
         cgroup_scope_argv,
         extract_pdf_segments,
@@ -47,10 +56,13 @@ if TYPE_CHECKING:
         logger,
         platform_compat,
         popen_limited,
+        read_bounded_json,
         redact,
         redact_credentials,
         redact_exfiltration_urls,
+        redact_log_via_context,
         redact_path_segments,
+        require_owner_dashboard_request,
         safe_read_prefix,
         sandbox_credential_targets,
         validate_provider_executable,
@@ -693,3 +705,124 @@ def _grep_docs(root: str, query: str, deadline: float, taken: int) -> tuple[list
                 out.append(_grep_hit(full, 0, preview.strip(), label=label))
                 break
     return out, skipped, doc_truncated
+
+
+async def api_file_grep(request: web.Request) -> web.Response:
+    """POST /api/file-grep ``{"root", "q"}`` — content search under one directory.
+
+    A POST with the query in the BODY, not a GET with it in the URL: the query is
+    secret-class text (see below), and a request target is what proxies and
+    access logs retain. The same reason keeps it off the ripgrep argv.
+
+    Answers ``{"results", "truncated", "engine", "skipped_docs", "root"}``: a
+    text pass (ripgrep where the host has a vetted one, an equivalent python walk
+    otherwise) then a document pass over ``.docx``/``.pptx``/``.xlsx``, inside
+    one wall-clock budget.
+
+    Every filesystem call lives in a helper handed to :func:`_run_path_probe`:
+    this coroutine runs on the gateway's only event loop and the root is the
+    caller's to choose. Naming the engine costs a ``$PATH`` walk, so the refusal
+    shapes below report an empty engine rather than probe for ripgrep on the
+    loop. The search takes a TRANSFER slot, not a probe slot, because it holds
+    its worker for the length of the search.
+    """
+    owner_denied = await require_owner_dashboard_request(request, "file_grep")
+    if owner_denied is not None:
+        return owner_denied
+    caller = request.get("user", "dashboard")
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    query = str(body.get("q") or "").strip()
+    raw_root = str(body.get("root") or "").strip()
+    # The query is secret-class text (a user grepping for a token VALUE types the
+    # token), so it is redacted before anything durable sees it. Context-aware so
+    # a loaded companion's stronger credential regexes apply.
+    logged_query = redact_log_via_context(query)
+    empty: dict = {
+        "results": [],
+        "truncated": False,
+        "engine": "",
+        "skipped_docs": 0,
+        "root": "",
+    }
+    # A newline joins the length bounds rather than earning a code: both engines
+    # are line-oriented, so such a pattern matches nothing either way -- and
+    # `--file` would read two lines as two patterns OR-ed together.
+    if (
+        not raw_root
+        or not _GREP_MIN_QUERY_CHARS <= len(query) <= _GREP_MAX_QUERY_CHARS
+        or "\n" in query
+        or "\r" in query
+    ):
+        return web.json_response(empty)
+
+    try:
+        root, root_is_dir = await _run_path_probe(_grep_resolve_root, raw_root)
+    except _PathProbeBusy:
+        return _probe_busy_response(resource=raw_root, operation="file_grep", caller=caller)
+    # An empty root is a refused name or a credential store; both get the 403.
+    if not root:
+        _sel().log_api_access(
+            caller=caller,
+            operation="file_grep",
+            outcome="denied",
+            resources=raw_root,
+            error="sensitive path",
+        )
+        return web.json_response({"error": "Access denied", "code": "sensitive_path"}, status=403)
+    if not root_is_dir:
+        # Spelled out rather than spread from `empty`: the error-code ratchet
+        # reads response bodies as literals.
+        return web.json_response(
+            {
+                "results": [],
+                "truncated": False,
+                "engine": "",
+                "skipped_docs": 0,
+                "root": "",
+                "error": "Search root is not a directory",
+                "code": "not_a_directory",
+            },
+            status=404,
+        )
+
+    def _search() -> tuple[list[dict], bool, str, int]:
+        """The whole search on one transfer worker. Blocking by construction."""
+        deadline = time.monotonic() + _GREP_TIME_BUDGET_SECS
+        attempt = _grep_rg(root, query, deadline)
+        if attempt is None:
+            engine = "python"
+            results, truncated = _grep_python(root, query, deadline)
+        else:
+            engine = "rg"
+            results, truncated = attempt
+        doc_hits, skipped, doc_truncated = _grep_docs(root, query, deadline, len(results))
+        return results + doc_hits, truncated or doc_truncated, engine, skipped
+
+    try:
+        results, truncated, engine, skipped_docs = await _run_path_probe(_search, transfer=True)
+    except _PathProbeBusy:
+        return _probe_busy_response(
+            resource=f"q={logged_query} root={root}", operation="file_grep", caller=caller
+        )
+
+    _sel().log_api_access(
+        caller=caller,
+        operation="file_grep",
+        outcome="allowed",
+        resources=(
+            f"q={logged_query} root={root} engine={engine} results={len(results)} "
+            f"truncated={truncated} skipped_docs={skipped_docs}"
+        ),
+    )
+    return web.json_response(
+        {
+            "results": results,
+            "truncated": truncated,
+            "engine": engine,
+            "skipped_docs": skipped_docs,
+            "root": root,
+        }
+    )

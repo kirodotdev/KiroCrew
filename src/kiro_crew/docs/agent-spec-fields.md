@@ -113,7 +113,7 @@ Four cases, and the difference between them is the whole answer:
   What they lose is the projection — the spec's own `mcpServers` and its per-tool
   deny set. Two things still reach them, by channels that are not the mirror and
   not the spec file: `model`, pushed with `session/set_config_option` (both are in
-  `agent_sdk/backends.py`, `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`), and `prompt`,
+  `agent_sdk/backends_models.py`, `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`), and `prompt`,
   as ordinary context text. They are still in `registry.py`'s `PROJECTIONS`, which
   carries an entry for every backend precisely so absence is a statement rather
   than a lookup miss — `MIRRORS` is the four above, `PROJECTIONS` is all eight.
@@ -234,7 +234,7 @@ the spawn window, which is why a prepared view is preferred.
    elements, so its session holds the shared gateway's pooled broker stubs — just
    not the servers its own spec declares, and not its per-tool deny set.
 9. "No mirror" is not "nothing from the spec". Both are in
-   `agent_sdk/backends.py`'s `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`, so the spec's
+   `agent_sdk/backends_models.py`'s `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`, so the spec's
    `model` reaches them with `session/set_config_option` after `session/new` —
    the same channel `codex`, `opencode` and `goose` use, which is why `model` is
    the one field no mirror needs to carry. And `prompt` arrives as context text on
@@ -672,7 +672,7 @@ would otherwise clobber your pin.
 | `kirocrew-pipeline-conductor.json` | generated; your `allowedTools` entries are carried forward | every gateway start |
 | `kirocrew-security-conductor.json` | generated; your `allowedTools` entries are carried forward | every gateway start |
 | `kirocrew-knowledge.json` | generated | every gateway start |
-| `kirocrew-research.json` | generated | every gateway start |
+| `kirocrew-research.json` | generated from the template and `agent.json`; NOT derived from `kirocrew.json`, so servers, app registrations and the model added there stay off it | every gateway start |
 | `kirocrew-dashboard-manager.json` | generated | every gateway start (the subagent a crewmate hands page work to) |
 | `kirocrew-heartbeat.json` | DERIVED from `kirocrew.json` (its `kirocrew-core` entry, `autoApprove` included) | every gateway start, and re-checked before every heartbeat session |
 | an app's generated agent | the App Kit | regenerated on app refresh; containment fields are framework-owned |

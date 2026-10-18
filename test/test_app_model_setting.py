@@ -28,6 +28,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from test_chat_runner_coverage import _complete, _drive, _runner_state, _set_stream, _slot
+from test_chat_send_agent_model_default import _allocation_resolves
 
 from kiro_crew.acp.types import EVENT_TEXT_CHUNK
 from kiro_crew.config.loader import (
@@ -261,12 +262,16 @@ def _turn_state(tmp_path: Path):
     state, client = _runner_state(tmp_path, context_builder=builder)
     _pin_sync_accessors(client)
     _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi"), _complete()])
+    _allocation_resolves(state, chat_runner.KiroCrewConfig.load())
     return state, client
 
 
 def _session_model(state) -> str | None:
+    """The model the session this turn allocated starts on, resolved at allocation."""
     state.sessions.get_or_create.assert_awaited_once()
-    return state.sessions.get_or_create.await_args.kwargs["model"]
+    return (
+        state.sessions.allocated_models.get(state.sessions.get_or_create.await_args.args[0]) or None
+    )
 
 
 @pytest.fixture
@@ -374,6 +379,7 @@ class TestAppSlotTurn:
         _runner_config(_config(tmp_path))
         state, client = _runner_state(tmp_path)
         _pin_sync_accessors(client)
+        _allocation_resolves(state, chat_runner.KiroCrewConfig.load())
         slot = _app_slot()
         state._slots[slot.key] = slot
         state.sessions.release = unittest.mock.MagicMock()

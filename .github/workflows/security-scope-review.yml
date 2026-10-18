@@ -363,7 +363,7 @@ jobs:
       # when a human override is recorded, so an OIDC failure can never keep the
       # override from clearing the lane. github.actor is set by GitHub and cannot
       # be spoofed by PR content.
-      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
           && (
@@ -512,6 +512,9 @@ jobs:
           # write, and a deny outranks every allow rule and CLI flag, so the bound
           # holds even if an allowlist entry is later widened. This matches the UX
           # lane, which denies the whole family.
+          #
+          # The fork lane carries a COPY of these arguments, pinned equal to them
+          # by `test_ai_review_workflows_scope_verdict.py`.
           claude_args: |
             --model us.anthropic.claude-opus-5-5
             --fallback-model us.anthropic.claude-sonnet-5-5
@@ -1040,6 +1043,9 @@ jobs:
             # a COPY and refuse the run, the same refusal the publish path applies to
             # a redacted confirmed row before it reaches the comment. A candidate
             # carrying a credential shape is not a legitimate operation worth adjudicating.
+            #
+            # The fork lane carries a COPY of this probe, pinned equal to it by
+            # `test_ai_review_workflows_scope_verdict.py`.
             cp normalized.json scrub-probe.json
             probe=0
             python "$REDACTOR" --mode json --fail-if-changed scrub-probe.json || probe=$?
@@ -1638,6 +1644,9 @@ jobs:
           fi
           exit 0
 
+      # The fork lane assembles its own body, and carries a COPY of the
+      # `[SCOPE-REVIEWED] $HEAD` stamp this step writes, pinned equal to it by
+      # `test_ai_review_workflows_scope_verdict.py`.
       - name: Post the scope verdict
         id: post
         if: >-
@@ -1719,6 +1728,8 @@ jobs:
             # inside a record -- an awk record holds no newline -- because the
             # runners' awk is mawk and nothing here should depend on its POSIX
             # class support; the indentation the contract displays still matches.
+            # The fork lane carries a COPY of this capture, pinned equal to it by
+            # `test_ai_review_workflows_scope_verdict.py`.
             model="$(awk '!found && tolower($0) ~ /^[ \t\v\f\r]*scope-verdict:/ { sub(/^[^:]*:[ \t\v\f\r]*/, ""); gsub(/\r/, ""); value = toupper($0); found = 1 } END { if (found) print value }' <<< "$summary")"
             [ -z "$model" ] && model="UNKNOWN"
             # The marker is the ONLY proof the review ran for THIS revision. A
@@ -1761,7 +1772,15 @@ jobs:
             # only reads its answer and maps it to a badge below.
             SC="${HARNESS:-}/scope_candidates.py"
             if [ -s "$SC" ]; then
-              conc="$(python "$SC" conclude --lane same-repo \
+              # The table takes no lane, but the copy staged here is the BASE blob,
+              # and a base can be a revision whose `conclude` still requires
+              # `--lane`. Hand it one only when the staged copy declares it -- the
+              # same file grep the probe uses for `--drop-changed-fields` on the
+              # base redactor -- so such a base still answers instead of exiting 2
+              # and taking this step down above the fail-closed comment.
+              lane_flag=()
+              grep -qF 'c.add_argument("--lane"' "$SC" && lane_flag=(--lane same-repo)
+              conc="$(python "$SC" conclude ${lane_flag[@]+"${lane_flag[@]}"} \
                 --fold "$fold" --model "$model" --marker "$marker" \
                 --nothing-new "$nothing_new" --gap-script "$gap_script" --gap-model "$gap_model" \
                 --refusal "${VALIDATE_REFUSAL:-}")"

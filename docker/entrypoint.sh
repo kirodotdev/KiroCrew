@@ -61,7 +61,7 @@ CONFIG="$ACTIVE_HOME/config.json"
 ENV_FILE="$ACTIVE_HOME/.env"
 
 # ── 1. Credential sync: env -> .env file, then scrub ─────────────────────
-# Keys mirror the product's credential key list (config/loader.py
+# Keys mirror the product's credential key list (config/loader_credentials.py
 # CREDENTIAL_KEYS) — a sync test pins the two lists to set equality, so a
 # key added to one without the other fails CI. Replace-or-append line-wise so
 # operator-added lines and comments in .env survive; grep -v (not sed) avoids

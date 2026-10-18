@@ -585,9 +585,21 @@ class TestNoSecondGate:
         # inside a function would pass once the prose was reworded. The import graph
         # and the call nodes are what the rule is actually about.
         import ast
+        import importlib
         import inspect
 
-        tree = ast.parse(inspect.getsource(acp_backends))
+        facade = ast.parse(inspect.getsource(acp_backends))
+        owners = sorted(
+            node.module
+            for node in facade.body
+            if isinstance(node, ast.ImportFrom)
+            and (node.module or "").startswith(acp_backends.__name__ + "_")
+        )
+        trees = [
+            facade,
+            *(ast.parse(inspect.getsource(importlib.import_module(m))) for m in owners),
+        ]
+        tree = ast.Module(body=[node for t in trees for node in t.body], type_ignores=[])
         imported = {
             node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
         } | {

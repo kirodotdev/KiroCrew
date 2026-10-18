@@ -1,22 +1,12 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
-import { api } from '../api/client'
+import { usePickerSource } from './dashboardPickerSource'
+import { pickerQueryKey, type SlashCommand } from '../chat-core/composer/pickerSource'
 import { i18nT } from '../i18n/t'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 import type { SendMode } from '../pages/chat/ChatSettings'
-
-interface SlashCommand {
-  name: string
-  /**
-   * Description as the SERVER sent it (English). Only a fallback for display —
-   * {@link commandDescription} prefers the catalog. Optional because the local
-   * command lists below carry no copy of their own; the backend itself also
-   * sends `""` for a command missing from its description map.
-   */
-  description?: string
-}
 
 /**
  * Catalog KEY for each command's description, keyed by the command's TRIGGER
@@ -150,10 +140,12 @@ const FRONTEND_COMMAND_NAMES = ['/btw', '/kb', '/onboarding', '/plain'] as const
 const FRONTEND_COMMANDS: SlashCommand[] = FRONTEND_COMMAND_NAMES.map(name => ({ name }))
 
 export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, open = true, sendOnEnter = 'enter', hidden }: Props) {
+  const source = usePickerSource()
+  const load = source.slashCommands
   const { data: apiCommands = FALLBACK_COMMANDS, isFetching, isError } = useQuery<SlashCommand[]>({
-    queryKey: ['slash-commands'],
-    queryFn: ({ signal }) => api.slashCommands(signal),
-    enabled: typeof api.slashCommands === 'function',
+    queryKey: pickerQueryKey(source, ['slash-commands']),
+    queryFn: ({ signal }) => load!(signal),
+    enabled: typeof load === 'function',
   })
   const allCommands = useMemo(() => {
     const names = new Set(apiCommands.map(c => c.name))

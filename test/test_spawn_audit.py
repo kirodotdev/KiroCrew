@@ -964,7 +964,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         #     named, created 0600, and unlinked in a finally, so a body is neither
         #     visible in the process table nor left behind.
         # No binary or cwd is agent-selected.
-        "apps/builtins/issue_radar/backend/azure_client.py::_az_run",
+        "apps/builtins/issue_radar/backend/azure_client_cli.py::_az_run",
         "apps/builtins/design_tweak/backend/server.py::_h_pick_folder",
         "apps/builtins/design_tweak/backend/server.py::_lsof_fields",
         "apps/builtins/design_tweak/backend/server.py::_start_dev_proc",
@@ -1412,14 +1412,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # probe is to read the HOST's own macOS TCC grants, which a sandbox that
         # rewrites the process identity would answer wrongly.
         "dashboard/handlers/computer_use.py::_probe_permissions",
-        "dashboard/handlers/files.py::_run",
+        "dashboard/file_api/editor.py::_run",
         # The file panel diff: fixed list-argv `git diff --no-index -- a b`
         # (no shell) with the same textconv/attributes/fsmonitor hardening as
         # `_run`, over two files the gateway itself wrote into a fresh private
         # temp dir. No argument, path or cwd comes from the request.
-        "dashboard/handlers/files.py::_diff_redacted_bodies",
-        "dashboard/handlers/files.py::api_screenshot",
-        "dashboard/handlers/files.py::api_upload",
+        "dashboard/file_api/editor.py::_diff_redacted_bodies",
+        "dashboard/file_api/desktop.py::api_screenshot",
+        "dashboard/file_api/desktop.py::api_upload",
         "dashboard/handlers/knowledge.py::_run_folder_dialog",
         # Terminal live-cwd probe on hosts without /proc (macOS/BSD): fixed
         # `lsof -a -p <pid> -d cwd -Fn` list-argv (no shell=True) where <pid>
@@ -1543,7 +1543,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # merely pointless -- the child must inherit THIS process's stdio fds to
         # keep serving kiro-cli's existing pipe, which is the whole fix, and a
         # scrubbed env would drop the credentials the sidecar exists to restore.
-        "mcp_gateway/stub.py::_fallback_spawn_child",
+        "mcp_gateway/stub_fallback.py::_fallback_spawn_child",
         # The update seam's one read-only git chokepoint: `git config` (the
         # `updates.source` pin's remote, the repo-driver probe, and which remote a
         # branch tracks) and `git ls-remote --get-url`. Fixed list-argv (no
@@ -1861,7 +1861,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``subprocess.run(timeout=...)`` kill is the DoS bound, plus the pattern
         # and value are size-capped before the spawn. Fixed argv + isolated
         # interpreter + stdin-only data + killed on timeout ⇒ benign, not routed.
-        "validation.py::_bounded_pattern_search",
+        "validation_parts/json_schema_args.py::_bounded_pattern_search",
         "voice_reply.py::stitch_mp3s",
         # Enumerating the host speech engine's voices. The whole argv is fixed
         # by this module: the binary comes from ``trusted_system_bin`` (a system

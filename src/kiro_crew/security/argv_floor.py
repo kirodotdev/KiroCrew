@@ -1425,6 +1425,7 @@ _HOSTS_FILE_READ_CAP = 4 * 1024 * 1024
 # parse in the same call on a miss: a typical file in well under a
 # millisecond, one at the cap in a few.
 _HOSTS_FILE_READ_CHUNK = 64 * 1024
+_HOSTS_KEY_MOVED_ATTEMPTS = 3  # passes per call; one enrichment pass moves the key at most twice
 
 
 # path -> (key, {name -> maps-to-local}), key = (mtime, ctime, size, content
@@ -1559,7 +1560,7 @@ def _parse_and_cache_for_key(
     vet is what starts the worker), the table is returned but NOT cached:
     it was judged against the older own set, so a remote entry could be an
     alias for the newly learned address, and the gate's own-state re-check
-    holds exactly those entries pending.  The file itself is the one the
+    judges exactly those entries again.  The file itself is the one the
     key names, so the table's NAME SET is exact: a local entry stays local
     under a grown own set, and a name absent from the file is absent under
     any own set.  Answering those two from the uncached table is what keeps
@@ -1692,60 +1693,59 @@ def _hosts_file_verdict(host: str) -> "bool | None":
     hostname or an IP address.  An in-call parse whose FILE changed
     while it ran is also pending; one whose own-address state moved (the
     enrichment worker publishing mid-parse) still answers a local or an
-    absent name from the table it built, and holds a remote entry pending
-    through the own-state check below.  A remote answer is given
-    only if publication and the own set still match the table's key at the
-    moment of return.  A name on several lines is local if ANY of them maps
-    local (deny-floor direction).
+    absent name from the table it built.  A remote answer is given only if
+    publication and the own set still match its table's key at return;
+    otherwise every path is judged again on the current key, at most
+    ``_HOSTS_KEY_MOVED_ATTEMPTS`` passes per call (so at most that many parses
+    of one file), then the answer is pending.  A name on several lines is
+    local if ANY of them maps local (deny-floor direction).
     """
-    tables: "list[tuple[_HostsKey, dict[str, bool]]]" = []
-    for path in _hosts_file_paths():
-        try:
-            key = _hosts_file_key(path)
-        except _HostsFileUnreadable:
-            _schedule_hosts_file_warm()
-            return True
-        except OSError:
-            continue
-        if _unverifiable_hosts_file(key):
-            return True
-        cached = _HOSTS_FILE_CACHE.get(path)
-        if cached is None or cached[0] != key:
-            on_loop = _event_loop_running()
-            if key[2] > _HOSTS_FILE_READ_CHUNK and on_loop:
-                # Every call on an uncached key re-schedules the warm, so a
-                # retry does not hang on one thread that failed to start.
-                _schedule_hosts_file_warm()
-                return True
-            limit = _HOSTS_FILE_READ_CHUNK if on_loop else None
+    for _attempt in range(_HOSTS_KEY_MOVED_ATTEMPTS):
+        tables: "list[tuple[_HostsKey, dict[str, bool]]]" = []
+        for path in _hosts_file_paths():
             try:
-                result = _parse_and_cache_for_key(path, key, limit=limit)
-            except OSError:
-                result = "changed"
-            if isinstance(result, str):
+                key = _hosts_file_key(path)
+            except _HostsFileUnreadable:
                 _schedule_hosts_file_warm()
                 return True
-            cached = (key, result)
-        tables.append(cached)
-    remote = []
-    for key, table in tables:
-        verdict = table.get(host)
-        if verdict is True:
-            return True
-        if verdict is False:
-            remote.append(key)
-    if not remote:
-        return None
-    # The worker may have published or grown the own set since the key was
-    # read; a not-local entry judged by the older state is not served.
-    own_state = (_NETLINK_ADDRS_PUBLISHED, _own_host_names())
-    if any((key[-2], key[-1]) != own_state for key in remote):
-        _schedule_hosts_file_warm()
-        return True
-    # Not-local counts only when judged after publication; while the
-    # own-address set is incomplete it defers to the async verdict layer.
-    # (Every remote key's publication bit equals own_state[0] here.)
-    return False if own_state[0] else None
+            except OSError:
+                continue
+            if _unverifiable_hosts_file(key):
+                return True
+            cached = _HOSTS_FILE_CACHE.get(path)
+            if cached is None or cached[0] != key:
+                on_loop = _event_loop_running()
+                if key[2] > _HOSTS_FILE_READ_CHUNK and on_loop:
+                    # Each uncached call re-schedules: a failed warm start cannot hang a later call.
+                    _schedule_hosts_file_warm()
+                    return True
+                limit = _HOSTS_FILE_READ_CHUNK if on_loop else None
+                try:
+                    result = _parse_and_cache_for_key(path, key, limit=limit)
+                except OSError:
+                    result = "changed"
+                if isinstance(result, str):
+                    _schedule_hosts_file_warm()
+                    return True
+                cached = (key, result)
+            tables.append(cached)
+        remote = []
+        for key, table in tables:
+            verdict = table.get(host)
+            if verdict is True:
+                return True
+            if verdict is False:
+                remote.append(key)
+        if not remote:
+            return None
+        # A not-local entry judged under an own state that has since moved is judged again.
+        own_state = (_NETLINK_ADDRS_PUBLISHED, _own_host_names())
+        if all((key[-2], key[-1]) == own_state for key in remote):
+            # Not-local counts only when judged after publication; while the
+            # own-address set is incomplete it defers to the async verdict layer.
+            return False if own_state[0] else None
+    _schedule_hosts_file_warm()
+    return True
 
 
 def _resolved_host_verdict(host: str, *, fail_closed: bool = True) -> bool:

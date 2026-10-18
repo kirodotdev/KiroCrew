@@ -49,6 +49,9 @@ from kiro_crew.apps.registry_pipeline import (
     git_targets,
     indexes,
     install,
+    install_clone,
+    install_desktop_gate,
+    install_rollback,
     manifests,
     recovery,
     sources,
@@ -76,6 +79,9 @@ PARTS: tuple[ModuleType, ...] = (
     indexes,
     manifests,
     catalog,
+    install_desktop_gate,
+    install_rollback,
+    install_clone,
     install,
 )
 
@@ -345,7 +351,7 @@ FACADE_CALL_SITES: frozenset[tuple[str, str, str]] = frozenset(
     {
         ("caches", "_read_external_registry_cache", "_admit_cached_index_entries"),
         ("indexes", "_fetch_and_cache_external_registry", "_admit_fetched_index_entries"),
-        ("install", "_clone_build_app_locked", "_run_app_build"),
+        ("install_clone", "_clone_build_app_locked", "_run_app_build"),
     }
 )
 
@@ -816,7 +822,7 @@ class TestAPatchOnTheFacadeReachesEveryCallSite:
     async def test_the_build_step_is_resolved_on_the_facade_when_it_runs(
         self, tmp_path: Path
     ) -> None:
-        # ``install._clone_build_app_locked`` calls the facade's ``_run_app_build``
+        # ``install_clone._clone_build_app_locked`` calls the facade's ``_run_app_build``
         # through ``registry_pipeline._facade()``, so a patch of the facade's own
         # binding is what the install transaction runs.
         async def fake_clone(*args: Any, **kwargs: Any) -> None:

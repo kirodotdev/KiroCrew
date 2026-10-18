@@ -1,4 +1,5 @@
 """Tests for the dev-fleet native dashboard handler."""
+
 from __future__ import annotations
 
 import asyncio
@@ -79,7 +80,9 @@ async def test_get_owner_repo_caches_success():
     fleet_state_mod._OWNER_REPO = None
     fleet_state_mod._OWNER_REPO_RETRY_AT = 0.0
     try:
-        with patch.object(fleet_state_mod, "_repo_owner_name", new=AsyncMock(return_value="org/repo")):
+        with patch.object(
+            fleet_state_mod, "_repo_owner_name", new=AsyncMock(return_value="org/repo")
+        ):
             result = await mod._get_owner_repo()
             assert result == "org/repo"
             # Second call uses cache
@@ -125,9 +128,11 @@ async def test_get_owner_repo_retries_on_failure():
 @pytest.mark.asyncio
 async def test_discover_worktrees_sandbox_error_raises():
     """sandbox RuntimeError propagates as RuntimeError, not silent empty."""
-    with patch.object(runtime_mod, "_run_cmd", new=AsyncMock(
-        return_value=(-1, "", "sandbox unavailable: RuntimeError(no backend)")
-    )):
+    with patch.object(
+        runtime_mod,
+        "_run_cmd",
+        new=AsyncMock(return_value=(-1, "", "sandbox unavailable: RuntimeError(no backend)")),
+    ):
         with pytest.raises(RuntimeError, match="sandbox unavailable"):
             await mod._discover_worktrees()
 
@@ -183,10 +188,14 @@ async def test_discover_worktrees_missing_repo_raises_actionable_error(tmp_path)
     worktrees when the app was simply looking at a path that does not exist.
     """
     missing = tmp_path / "does-not-exist"
-    with patch.object(repository_mod, "MAIN_REPO", str(missing)), \
-         patch.object(runtime_mod, "_run_cmd", new=AsyncMock(
-             return_value=(128, "", f"fatal: cannot change to '{missing}'")
-         )):
+    with (
+        patch.object(repository_mod, "MAIN_REPO", str(missing)),
+        patch.object(
+            runtime_mod,
+            "_run_cmd",
+            new=AsyncMock(return_value=(128, "", f"fatal: cannot change to '{missing}'")),
+        ),
+    ):
         with pytest.raises(RuntimeError) as exc:
             await mod._discover_worktrees()
     msg = str(exc.value)
@@ -199,10 +208,14 @@ async def test_discover_worktrees_git_failure_raises_with_stderr(tmp_path):
     """When the repo exists but git fails, git's own message is surfaced."""
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
-    with patch.object(repository_mod, "MAIN_REPO", str(repo)), \
-         patch.object(runtime_mod, "_run_cmd", new=AsyncMock(
-             return_value=(128, "", "fatal: index file corrupt")
-         )):
+    with (
+        patch.object(repository_mod, "MAIN_REPO", str(repo)),
+        patch.object(
+            runtime_mod,
+            "_run_cmd",
+            new=AsyncMock(return_value=(128, "", "fatal: index file corrupt")),
+        ),
+    ):
         with pytest.raises(RuntimeError, match="index file corrupt"):
             await mod._discover_worktrees()
 
@@ -212,10 +225,12 @@ async def test_discover_worktrees_git_failure_is_bounded(tmp_path):
     """An unbounded git stderr is clipped before reaching the UI."""
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
-    with patch.object(repository_mod, "MAIN_REPO", str(repo)), \
-         patch.object(runtime_mod, "_run_cmd", new=AsyncMock(
-             return_value=(128, "", "fatal: " + "x" * 5000)
-         )):
+    with (
+        patch.object(repository_mod, "MAIN_REPO", str(repo)),
+        patch.object(
+            runtime_mod, "_run_cmd", new=AsyncMock(return_value=(128, "", "fatal: " + "x" * 5000))
+        ),
+    ):
         with pytest.raises(RuntimeError) as exc:
             await mod._discover_worktrees()
     # bounded: the git portion is clipped to _GIT_ERR_MAX plus the fixed prefix
@@ -234,10 +249,10 @@ async def test_discover_worktrees_unresolved_git_blames_host_not_repo(tmp_path):
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
     stderr = f"{mod._UNRESOLVED_TOOL_PREFIX}'git' in {mod._TRUSTED_PATH}"
-    with patch.object(repository_mod, "MAIN_REPO", str(repo)), \
-         patch.object(runtime_mod, "_run_cmd", new=AsyncMock(
-             return_value=(-1, "", stderr)
-         )):
+    with (
+        patch.object(repository_mod, "MAIN_REPO", str(repo)),
+        patch.object(runtime_mod, "_run_cmd", new=AsyncMock(return_value=(-1, "", stderr))),
+    ):
         with pytest.raises(RuntimeError) as exc:
             await mod._discover_worktrees()
     msg = str(exc.value)
@@ -256,10 +271,14 @@ async def test_discover_worktrees_real_git_error_not_misclassified(tmp_path):
     surfaces git's own redacted, bounded message."""
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
-    with patch.object(repository_mod, "MAIN_REPO", str(repo)), \
-         patch.object(runtime_mod, "_run_cmd", new=AsyncMock(
-             return_value=(128, "", f"fatal: {mod._UNRESOLVED_TOOL_PREFIX}'hook'")
-         )):
+    with (
+        patch.object(repository_mod, "MAIN_REPO", str(repo)),
+        patch.object(
+            runtime_mod,
+            "_run_cmd",
+            new=AsyncMock(return_value=(128, "", f"fatal: {mod._UNRESOLVED_TOOL_PREFIX}'hook'")),
+        ),
+    ):
         with pytest.raises(RuntimeError, match="worktree discovery failed"):
             await mod._discover_worktrees()
 
@@ -267,12 +286,12 @@ async def test_discover_worktrees_real_git_error_not_misclassified(tmp_path):
 @pytest.mark.asyncio
 async def test_sync_unresolved_git_names_override_not_path(monkeypatch):
     """/api/sync with no trusted git returns the same remedy-first message."""
-    with patch.object(repository_mod, "_git", new_callable=AsyncMock,
-                      return_value=mod.BASE_BRANCH), \
-         patch.object(worktree_ops_mod, "_venv_python",
-                      return_value=Path("/fake/.venv/bin/python")), \
-         patch.object(runtime_mod, "_trusted_bin", side_effect=lambda n: None), \
-         patch.object(worktree_ops_mod.dep_sync, "locked_console_scripts", return_value=[]):
+    with (
+        patch.object(repository_mod, "_git", new_callable=AsyncMock, return_value=mod.BASE_BRANCH),
+        patch.object(worktree_ops_mod, "_venv_python", return_value=Path("/fake/.venv/bin/python")),
+        patch.object(runtime_mod, "_trusted_bin", side_effect=lambda n: None),
+        patch.object(worktree_ops_mod.dep_sync, "locked_console_scripts", return_value=[]),
+    ):
         worktree_ops_mod._SYNC_RID = None
         res = await mod._sync()
     assert res["ok"] is False
@@ -406,15 +425,23 @@ async def test_worktree_remove_refuses_cherry_ahead_at_pinned_oid():
     """Non-forced removal with merged PR must fail if branch OID != PR headRefOid."""
     fake_wt = {"path": "/tmp/fake-wt", "branch": "feat-x", "is_main": False}
 
-    with patch.object(repository_mod, "_find_worktree", new=AsyncMock(return_value=(fake_wt, None))), \
-         patch.object(repository_mod, "_git", new=AsyncMock(return_value="local_oid_aaa")), \
-         patch.object(repository_mod, "_real_dirty", new=AsyncMock(return_value=False)), \
-         patch.object(fleet_state_mod, "_pr_status_cached", new=AsyncMock(return_value={"state": "MERGED", "number": 1})), \
-         patch.object(repository_mod, "_own_commits_count", new=AsyncMock(return_value=0)), \
-         patch.object(fleet_state_mod, "_fetch_pr_head_oid", new=AsyncMock(return_value="pr_oid_bbb")), \
-         patch.object(repository_mod, "_upstream_remote", new=AsyncMock(return_value="origin")), \
-         patch.object(runtime_mod, "_load_cfg", return_value=None), \
-         patch.object(runtime_mod, "_POD_AVAILABLE", False):
+    with (
+        patch.object(repository_mod, "_find_worktree", new=AsyncMock(return_value=(fake_wt, None))),
+        patch.object(repository_mod, "_git", new=AsyncMock(return_value="local_oid_aaa")),
+        patch.object(repository_mod, "_real_dirty", new=AsyncMock(return_value=False)),
+        patch.object(
+            fleet_state_mod,
+            "_pr_status_cached",
+            new=AsyncMock(return_value={"state": "MERGED", "number": 1}),
+        ),
+        patch.object(repository_mod, "_own_commits_count", new=AsyncMock(return_value=0)),
+        patch.object(
+            fleet_state_mod, "_fetch_pr_head_oid", new=AsyncMock(return_value="pr_oid_bbb")
+        ),
+        patch.object(repository_mod, "_upstream_remote", new=AsyncMock(return_value="origin")),
+        patch.object(runtime_mod, "_load_cfg", return_value=None),
+        patch.object(runtime_mod, "_POD_AVAILABLE", False),
+    ):
         result = await mod._worktree_remove("feat-x", force=False)
         assert result["ok"] is False
         assert "OID diverged" in result["error"]
@@ -428,11 +455,14 @@ async def test_worktree_remove_refuses_cherry_ahead_at_pinned_oid():
 @pytest.mark.asyncio
 async def test_fleet_handler_sandbox_error_returns_error_payload():
     """api_dev_fleet_fleet returns error payload when sandbox is unavailable."""
+
     async def boom():
         raise RuntimeError("sandbox unavailable: no backend")
 
-    with patch.object(fleet_state_mod, "_fleet_refresh", new=boom), \
-         patch.object(fleet_state_mod, "_fleet_cached", new=boom):
+    with (
+        patch.object(fleet_state_mod, "_fleet_refresh", new=boom),
+        patch.object(fleet_state_mod, "_fleet_cached", new=boom),
+    ):
         # Use a minimal app to test the handler
         app = web.Application()
         app.router.add_get("/api/fleet", mod.api_dev_fleet_fleet)
@@ -449,6 +479,7 @@ async def test_fleet_handler_missing_repo_returns_error_payload():
     """The missing-repo RuntimeError reaches the client as the error payload
     (the frontend renders it as the Discovery Error banner), not a silent
     empty fleet."""
+
     async def boom():
         raise RuntimeError(
             "main checkout not found: /nope/kirocrew is missing or not a git "
@@ -456,8 +487,10 @@ async def test_fleet_handler_missing_repo_returns_error_payload():
             "or clone it to ~/kirocrew."
         )
 
-    with patch.object(fleet_state_mod, "_fleet_refresh", new=boom), \
-         patch.object(fleet_state_mod, "_fleet_cached", new=boom):
+    with (
+        patch.object(fleet_state_mod, "_fleet_refresh", new=boom),
+        patch.object(fleet_state_mod, "_fleet_cached", new=boom),
+    ):
         app = web.Application()
         app.router.add_get("/api/fleet", mod.api_dev_fleet_fleet)
         async with TestClient(TestServer(app)) as client:
@@ -544,9 +577,11 @@ def test_discover_main_repo_finds_a_conventional_clone_location(monkeypatch, tmp
     checkout = _make_checkout(home / "Repos" / "KiroCrew")  # brand-ok: clone dir name
     monkeypatch.delenv("KIROCREW_DEVFLEET_REPO", raising=False)
     monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
-    with patch.object(repository_mod, "_load_dev_fleet_cfg", return_value={}), \
-         patch.object(repository_mod, "_own_source_checkout", return_value=None), \
-         patch.object(repository_mod.Path, "home", staticmethod(lambda: home)):
+    with (
+        patch.object(repository_mod, "_load_dev_fleet_cfg", return_value={}),
+        patch.object(repository_mod, "_own_source_checkout", return_value=None),
+        patch.object(repository_mod.Path, "home", staticmethod(lambda: home)),
+    ):
         assert mod._discover_main_repo() == str(checkout)
 
 
@@ -557,9 +592,11 @@ def test_discover_main_repo_uses_the_filesystem_spelling(monkeypatch, tmp_path):
     checkout = _make_checkout(home / "repos" / "KIROCREW")
     monkeypatch.delenv("KIROCREW_DEVFLEET_REPO", raising=False)
     monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
-    with patch.object(repository_mod, "_load_dev_fleet_cfg", return_value={}), \
-         patch.object(repository_mod, "_own_source_checkout", return_value=None), \
-         patch.object(repository_mod.Path, "home", staticmethod(lambda: home)):
+    with (
+        patch.object(repository_mod, "_load_dev_fleet_cfg", return_value={}),
+        patch.object(repository_mod, "_own_source_checkout", return_value=None),
+        patch.object(repository_mod.Path, "home", staticmethod(lambda: home)),
+    ):
         assert mod._discover_main_repo() == str(checkout)
 
 
@@ -569,9 +606,11 @@ def test_discover_main_repo_ignores_an_unmarked_conventional_location(monkeypatc
     (home / "kirocrew").mkdir(parents=True)
     monkeypatch.delenv("KIROCREW_DEVFLEET_REPO", raising=False)
     monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
-    with patch.object(repository_mod, "_load_dev_fleet_cfg", return_value={}), \
-         patch.object(repository_mod, "_own_source_checkout", return_value=None), \
-         patch.object(repository_mod.Path, "home", staticmethod(lambda: home)):
+    with (
+        patch.object(repository_mod, "_load_dev_fleet_cfg", return_value={}),
+        patch.object(repository_mod, "_own_source_checkout", return_value=None),
+        patch.object(repository_mod.Path, "home", staticmethod(lambda: home)),
+    ):
         assert mod._discover_main_repo() == ""
 
 
@@ -580,7 +619,10 @@ async def test_discover_worktrees_without_a_repo_never_runs_git():
     """`git -C ""` answers for the backend's own working directory, so an
     unresolved repo must not reach git at all."""
     run = AsyncMock(return_value=(0, "", ""))
-    with patch.object(repository_mod, "MAIN_REPO", ""), patch.object(runtime_mod, "_run_cmd", new=run):
+    with (
+        patch.object(repository_mod, "MAIN_REPO", ""),
+        patch.object(runtime_mod, "_run_cmd", new=run),
+    ):
         with pytest.raises(mod.RepoNotConfigured):
             await mod._discover_worktrees()
     run.assert_not_awaited()
@@ -589,9 +631,11 @@ async def test_discover_worktrees_without_a_repo_never_runs_git():
 @pytest.mark.asyncio
 async def test_upstream_remote_without_a_repo_never_runs_git():
     run = AsyncMock(return_value=(0, "", ""))
-    with patch.object(repository_mod, "MAIN_REPO", ""), \
-         patch.object(repository_mod, "_UPSTREAM_REMOTE", None), \
-         patch.object(runtime_mod, "_run_cmd", new=run):
+    with (
+        patch.object(repository_mod, "MAIN_REPO", ""),
+        patch.object(repository_mod, "_UPSTREAM_REMOTE", None),
+        patch.object(runtime_mod, "_run_cmd", new=run),
+    ):
         assert await mod._upstream_remote() == "origin"
     run.assert_not_awaited()
 
@@ -607,11 +651,14 @@ async def test_fleet_handler_reports_needs_setup_without_an_error():
     """No checkout found is a setup state, not a failure: the payload carries
     ``needs_setup`` and NO ``error``, so the page asks where the checkout is
     instead of rendering a red banner against a path the user never chose."""
+
     async def unconfigured():
         raise mod.RepoNotConfigured("no Kiro Crew checkout found to manage")
 
-    with patch.object(fleet_state_mod, "_fleet_refresh", new=unconfigured), \
-         patch.object(fleet_state_mod, "_fleet_cached", new=unconfigured):
+    with (
+        patch.object(fleet_state_mod, "_fleet_refresh", new=unconfigured),
+        patch.object(fleet_state_mod, "_fleet_cached", new=unconfigured),
+    ):
         app = web.Application()
         app.router.add_get("/api/fleet", mod.api_dev_fleet_fleet)
         async with TestClient(TestServer(app)) as client:
@@ -628,9 +675,13 @@ async def test_discover_worktrees_refuses_a_configured_non_kirocrew_repo():
     DISCOVERY so a typo is not silently replaced by a found checkout — that must
     not also mean the wrong tree gets `worktree remove` run inside it."""
     run = AsyncMock(return_value=(0, "worktree /some/other/repo\n", ""))
-    with patch.object(repository_mod, "MAIN_REPO", "/some/other/repo"), \
-         patch.object(repository_mod, "_REPO_INVALID_MSG", "not a Kiro Crew checkout: /some/other/repo ..."), \
-         patch.object(runtime_mod, "_run_cmd", new=run):
+    with (
+        patch.object(repository_mod, "MAIN_REPO", "/some/other/repo"),
+        patch.object(
+            repository_mod, "_REPO_INVALID_MSG", "not a Kiro Crew checkout: /some/other/repo ..."
+        ),
+        patch.object(runtime_mod, "_run_cmd", new=run),
+    ):
         with pytest.raises(mod.RepoUnreadable) as exc:
             await mod._discover_worktrees()
     # Refused BEFORE git ran: a readable wrong repo answers `worktree list`
@@ -652,12 +703,14 @@ async def test_auto_prune_reaper_idles_for_a_configured_non_kirocrew_repo():
     """
     prune = AsyncMock()
     sel = MagicMock()
-    with patch.object(repository_mod, "MAIN_REPO", "/some/other/repo"), \
-         patch.object(repository_mod, "_REPO_INVALID_MSG", "not a Kiro Crew checkout: ..."), \
-         patch.object(worktree_ops_mod, "_auto_prune_cfg", return_value=(True, 0.01)), \
-         patch.object(worktree_ops_mod, "_auto_prune_once", new=prune), \
-         patch.object(runtime_mod, "_sel", return_value=sel), \
-         patch.object(worktree_ops_mod, "asyncio", wraps=asyncio) as aio:
+    with (
+        patch.object(repository_mod, "MAIN_REPO", "/some/other/repo"),
+        patch.object(repository_mod, "_REPO_INVALID_MSG", "not a Kiro Crew checkout: ..."),
+        patch.object(worktree_ops_mod, "_auto_prune_cfg", return_value=(True, 0.01)),
+        patch.object(worktree_ops_mod, "_auto_prune_once", new=prune),
+        patch.object(runtime_mod, "_sel", return_value=sel),
+        patch.object(worktree_ops_mod, "asyncio", wraps=asyncio) as aio,
+    ):
         aio.sleep = AsyncMock(side_effect=[None, asyncio.CancelledError()])
         with pytest.raises(asyncio.CancelledError):
             await mod._auto_prune_reaper()
@@ -670,8 +723,12 @@ async def test_sync_refuses_a_configured_non_kirocrew_repo():
     """The gate lives in the accessor, not the discovery funnel: sync and the
     refresher never pass through _discover_worktrees, and `pull --ff-only` plus
     `pip install -e` inside an unrelated repository is the worst outcome here."""
-    with patch.object(repository_mod, "MAIN_REPO", "/some/other/repo"), \
-         patch.object(repository_mod, "_REPO_INVALID_MSG", "not a Kiro Crew checkout: /some/other/repo ..."):
+    with (
+        patch.object(repository_mod, "MAIN_REPO", "/some/other/repo"),
+        patch.object(
+            repository_mod, "_REPO_INVALID_MSG", "not a Kiro Crew checkout: /some/other/repo ..."
+        ),
+    ):
         res = await mod._sync_start_locked()
     assert res["ok"] is False
     assert "not a Kiro Crew checkout" in res["error"]
@@ -680,9 +737,13 @@ async def test_sync_refuses_a_configured_non_kirocrew_repo():
 @pytest.mark.asyncio
 async def test_status_refresher_idles_for_a_configured_non_kirocrew_repo():
     run = AsyncMock(return_value=(0, "", ""))
-    with patch.object(repository_mod, "MAIN_REPO", "/some/other/repo"), \
-         patch.object(repository_mod, "_REPO_INVALID_MSG", "not a Kiro Crew checkout: /some/other/repo ..."), \
-         patch.object(runtime_mod, "_run_cmd", new=run):
+    with (
+        patch.object(repository_mod, "MAIN_REPO", "/some/other/repo"),
+        patch.object(
+            repository_mod, "_REPO_INVALID_MSG", "not a Kiro Crew checkout: /some/other/repo ..."
+        ),
+        patch.object(runtime_mod, "_run_cmd", new=run),
+    ):
         await mod._status_refresher()
     # Returned without fetching: no git ran against the unrelated repository.
     run.assert_not_awaited()
@@ -691,25 +752,40 @@ async def test_status_refresher_idles_for_a_configured_non_kirocrew_repo():
 def test_repo_accessor_gates_both_unusable_states():
     """Both states raise from the accessor, and both share a base so a degrading
     caller cannot enumerate only the reason that existed when it was written."""
-    with patch.object(repository_mod, "MAIN_REPO", ""), patch.object(repository_mod, "_REPO_INVALID_MSG", None):
+    with (
+        patch.object(repository_mod, "MAIN_REPO", ""),
+        patch.object(repository_mod, "_REPO_INVALID_MSG", None),
+    ):
         with pytest.raises(mod.RepoNotConfigured):
             mod._repo()
-    with patch.object(repository_mod, "MAIN_REPO", "/x"), patch.object(repository_mod, "_REPO_INVALID_MSG", "bad"):
+    with (
+        patch.object(repository_mod, "MAIN_REPO", "/x"),
+        patch.object(repository_mod, "_REPO_INVALID_MSG", "bad"),
+    ):
         with pytest.raises(mod.RepoUnreadable):
             mod._repo()
     assert issubclass(mod.RepoNotConfigured, mod.RepoUnavailable)
     assert issubclass(mod.RepoUnreadable, mod.RepoUnavailable)
-    with patch.object(repository_mod, "MAIN_REPO", "/good"), patch.object(repository_mod, "_REPO_INVALID_MSG", None):
+    with (
+        patch.object(repository_mod, "MAIN_REPO", "/good"),
+        patch.object(repository_mod, "_REPO_INVALID_MSG", None),
+    ):
         assert mod._repo() == "/good"
 
 
 @pytest.mark.asyncio
 async def test_discover_worktrees_proceeds_for_a_validated_checkout():
-    with patch.object(repository_mod, "MAIN_REPO", "/good/kirocrew"), \
-         patch.object(repository_mod, "_REPO_INVALID_MSG", None), \
-         patch.object(runtime_mod, "_run_cmd", new=AsyncMock(
-             return_value=(0, "worktree /good/kirocrew\nbranch refs/heads/main\n", "")
-         )):
+    with (
+        patch.object(repository_mod, "MAIN_REPO", "/good/kirocrew"),
+        patch.object(repository_mod, "_REPO_INVALID_MSG", None),
+        patch.object(
+            runtime_mod,
+            "_run_cmd",
+            new=AsyncMock(
+                return_value=(0, "worktree /good/kirocrew\nbranch refs/heads/main\n", "")
+            ),
+        ),
+    ):
         entries = await mod._discover_worktrees()
     assert entries and entries[0]["is_main"] is True
 
@@ -753,7 +829,9 @@ async def test_unreadable_repo_answers_a_coded_409_too():
     secret = "s" * 32
 
     async def boom(request):
-        raise mod.RepoUnreadable("main checkout not found: /opt/kc is missing or not a git checkout.")
+        raise mod.RepoUnreadable(
+            "main checkout not found: /opt/kc is missing or not a git checkout."
+        )
 
     app = web.Application(middlewares=[mod.hmac_proxy_middleware])
     app.router.add_get("/api/prune-candidates", boom)
@@ -770,11 +848,16 @@ async def test_unreadable_repo_answers_a_coded_409_too():
 async def test_fleet_handler_still_reports_an_unreadable_repo_as_an_error():
     """/fleet is the one route that distinguishes them: unreadable keeps the
     error payload (the Discovery Error banner names the path the user chose)."""
-    async def boom():
-        raise mod.RepoUnreadable("main checkout not found: /opt/kc is missing or not a git checkout.")
 
-    with patch.object(fleet_state_mod, "_fleet_refresh", new=boom), \
-         patch.object(fleet_state_mod, "_fleet_cached", new=boom):
+    async def boom():
+        raise mod.RepoUnreadable(
+            "main checkout not found: /opt/kc is missing or not a git checkout."
+        )
+
+    with (
+        patch.object(fleet_state_mod, "_fleet_refresh", new=boom),
+        patch.object(fleet_state_mod, "_fleet_cached", new=boom),
+    ):
         app = web.Application()
         app.router.add_get("/api/fleet", mod.api_dev_fleet_fleet)
         async with TestClient(TestServer(app)) as client:
@@ -793,7 +876,9 @@ def test_repo_source_hint_names_the_env_var(monkeypatch):
 
 def test_repo_source_hint_names_the_config_key(monkeypatch):
     monkeypatch.delenv("KIROCREW_DEVFLEET_REPO", raising=False)
-    with patch.object(repository_mod, "_load_dev_fleet_cfg", return_value={"repo_path": "/typo/kc"}):
+    with patch.object(
+        repository_mod, "_load_dev_fleet_cfg", return_value={"repo_path": "/typo/kc"}
+    ):
         hint = mod._repo_source_hint()
     assert "config.json" in hint
     assert "environment variable" not in hint
@@ -940,9 +1025,7 @@ def test_the_neutralizers_answer_from_the_real_object_graph(tmp_path, monkeypatc
     # Ungrafted the reading is the truth; grafted it is not. Both are asserted so
     # neither half of the pin can rot silently.
     assert run("rev-list", "--count", "HEAD") == "2"
-    assert (
-        run("rev-list", "--count", "HEAD", env={"GIT_NO_REPLACE_OBJECTS": "1"}) == "3"
-    )
+    assert run("rev-list", "--count", "HEAD", env={"GIT_NO_REPLACE_OBJECTS": "1"}) == "3"
     assert run("rev-list", "--count", "HEAD", env=mod._GIT_ENV_NEUTRALIZERS) == "3"
 
     # Nothing reached the decoy, so the allowlist rather than luck is what kept
@@ -958,11 +1041,16 @@ def test_the_neutralizers_answer_from_the_real_object_graph(tmp_path, monkeypatc
 def test_audited_decorator_applied_to_mutations():
     """All mutating handlers are wrapped by _audited."""
     import inspect
+
     for name in [
-        "api_dev_fleet_sync", "api_dev_fleet_worktree_remove",
-        "api_dev_fleet_prune_run", "api_dev_fleet_pod_up",
-        "api_dev_fleet_pod_down", "api_dev_fleet_pod_restart",
-        "api_dev_fleet_pod_token", "api_dev_fleet_pod_provision",
+        "api_dev_fleet_sync",
+        "api_dev_fleet_worktree_remove",
+        "api_dev_fleet_prune_run",
+        "api_dev_fleet_pod_up",
+        "api_dev_fleet_pod_down",
+        "api_dev_fleet_pod_restart",
+        "api_dev_fleet_pod_token",
+        "api_dev_fleet_pod_provision",
         "api_dev_fleet_pod_provision_dismiss",
         "api_dev_fleet_rebase",
     ]:
@@ -1014,7 +1102,7 @@ def test_backend_spawn_env_passes_project_dir(monkeypatch):
     import kiro_crew.apps.backend as backend_mod
 
     src = inspect.getsource(backend_mod)
-    assert 'KIROCREW_HOME=str(config_dir())' in src
+    assert "KIROCREW_HOME=str(config_dir())" in src
     assert '"KIROCREW_PROJECT_DIR"' in src
 
 

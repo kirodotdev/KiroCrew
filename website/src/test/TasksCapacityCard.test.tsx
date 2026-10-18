@@ -449,6 +449,47 @@ describe('TasksCapacityCard', () => {
     expect(linesOf(spawnGate)).toEqual([`Up to 2 at once, lowered from your${NBSP}8`])
   })
 
+  it('counts a spawn gate as lowered only below its start value, the rule the chat chip uses', async () => {
+    // The gate starts at its initial capacity (`start`) and grows toward its
+    // ceiling, so a gate between the two is not cut: the chat header's chip says
+    // nothing there, and the card must not call it "lowered" either. Below the
+    // start value both surfaces call it a cut, and both name the start value.
+    tasksSummary.mockResolvedValue(summary({
+      lanes: {
+        subagents: { effective: 8, user_max: 8 },
+        spawn_gate: { effective: 6, user_max: 8, start: 4 },
+      },
+      degrade_reason: 'adaptive_decrease',
+    }))
+    const { unmount } = renderWithProviders(<TasksCapacityCard />)
+    const linesOf = (el: Element) => Array.from(el.querySelectorAll('span')).map(s => s.textContent)
+    const [, grown] = await screen.findAllByTestId('tasks-capacity-lane')
+    expect(linesOf(grown)).toEqual(['Up to 6 at once', `Starts at${NBSP}4 and can rise to your${NBSP}8`])
+    expect(screen.queryByText(/lowered from/)).toBeNull()
+    // No lane is lowered, so the cause sits in its own row rather than on a lane.
+    expect(screen.getByTestId('tasks-capacity-degrade').textContent).toBe('Concurrency lowered under load')
+    unmount()
+
+    tasksSummary.mockResolvedValue(summary({
+      lanes: { spawn_gate: { effective: 4, user_max: 8, start: 4 } },
+    }))
+    const atStart = renderWithProviders(<TasksCapacityCard />)
+    const fresh = await screen.findByTestId('tasks-capacity-lane')
+    expect(linesOf(fresh)).toEqual(['Up to 4 at once', `Starts at${NBSP}4 and can rise to your${NBSP}8`])
+    atStart.unmount()
+
+    tasksSummary.mockResolvedValue(summary({
+      lanes: { spawn_gate: { effective: 2, user_max: 8, start: 4 } },
+      degrade_reason: 'adaptive_decrease',
+    }))
+    renderWithProviders(<TasksCapacityCard />)
+    const cut = await screen.findByTestId('tasks-capacity-lane')
+    expect(linesOf(cut)).toEqual([
+      `Up to 2 at once, lowered from its starting${NBSP}4`, 'Concurrency lowered under load',
+    ])
+    expect(screen.queryByTestId('tasks-capacity-degrade')).toBeNull()
+  })
+
   it('falls back to the bare ceiling when the wire reports a cap above it', async () => {
     // Neither "your full limit" nor "below your limit" is true of a cap ABOVE the
     // configured one, so the card states the ceiling and claims no relationship.

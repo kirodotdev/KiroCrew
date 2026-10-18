@@ -1083,6 +1083,13 @@
       "description": "Start a gateway on this machine. Leave it on unless this app's port already reaches a crew on another machine, or the app cannot connect the next time it opens, which is when this takes effect. That needs the crew saved for this port with “Set Remote Host…” in the Connection menu, plus a tunnel: tick “Keep an SSH tunnel to this crew open” there (macOS and Linux) or keep your own SSH tunnel running. Settings → Remote Crew connections stop when this is off, so they do not count."
     },
     {
+      "id": "developer.run-kas-on-kiro-crew-s-own-engine",
+      "label": "Run KAS on Kiro Crew's own engine",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.run-kas-on-kiro-crew-s-own-engine",
+      "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Agent Harness. Takes effect when Kiro Crew restarts."
+    },
+    {
       "id": "developer.webhooks",
       "label": "Webhooks",
       "tab": "developer",

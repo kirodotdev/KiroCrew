@@ -1,6 +1,6 @@
 """``instances.ssh_tunnel_manager`` — the ``_SshTunnel`` teardown / exit paths.
 
-``test_instances.py`` covers the state machine's happy path, the probe loop and
+``test_instances_self_heal.py`` covers the state machine's happy path, the probe loop and
 the ssh error classifier. What it leaves unobserved is everything that runs when
 a tunnel goes DOWN, plus the whole SSM error vocabulary:
 
@@ -36,6 +36,7 @@ from kiro_crew.instances.ssh_tunnel_manager import (
     _SshTunnel,
     _TransportParams,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 class _FakeProc:
@@ -295,7 +296,7 @@ class TestForwardAlive:
 
         t._port_reachable = _socket_bound  # type: ignore[assignment]
         t._forward_alive = _far_end_dead  # type: ignore[assignment]
-        await asyncio.wait_for(t._probe_loop(), timeout=2)
+        await await_until(asyncio.ensure_future(t._probe_loop()))
         await asyncio.sleep(0.05)
 
         assert called["forward_alive"] >= 2  # the loop consulted the end-to-end check
@@ -393,7 +394,6 @@ class TestStderrIsDrainedWhileRunning:
         self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, size: int
     ) -> tuple[bool, bool, list[Any]]:
         import sys
-        import time
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
         forward = _held_port(listening=True)
@@ -407,9 +407,10 @@ class TestStderrIsDrainedWhileRunning:
         try:
             started = await tunnel.start()
             proc = tunnel._proc
-            deadline = time.monotonic() + 10.0
-            while time.monotonic() < deadline and not marker.exists():
-                await asyncio.sleep(0.05)
+            await async_wait_until(
+                lambda: marker.exists(),
+                describe=lambda: "marker file not yet created",
+            )
             past_the_writes = marker.exists()
             await tunnel.stop()
             assert proc is not None and proc.returncode is not None, "stop() ended the child"
@@ -485,15 +486,13 @@ class TestStderrIsDrainedWhileRunning:
         tunnel._stderr_task = asyncio.create_task(tunnel._drain_stderr())
         # Wait until the drain has read what is buffered and is blocked on the
         # missing EOF, on the condition itself and under a monotonic bound.
-        import time
-
-        deadline = time.monotonic() + 5.0
-        while "Connection closed by remote host" not in tunnel._stderr_buf:
-            assert time.monotonic() < deadline, "the drain never read the buffered line"
-            await asyncio.sleep(0.01)
+        await async_wait_until(
+            lambda: "Connection closed by remote host" in tunnel._stderr_buf,
+            describe=lambda: f"stderr_buf={tunnel._stderr_buf!r}",
+        )
         assert not tunnel._stderr_task.done(), "the drain must still be waiting for EOF"
 
-        await asyncio.wait_for(tunnel._capture_stderr(), timeout=5)
+        await await_until(asyncio.ensure_future(tunnel._capture_stderr()))
 
         assert tunnel._stderr_task is None
         assert "Connection closed by remote host" in tunnel._stderr_buf
@@ -519,15 +518,13 @@ class TestStderrIsDrainedWhileRunning:
         tunnel.status.state = TunnelState.CONNECTED
         tunnel._monitor_task = asyncio.create_task(tunnel._monitor())
         # The monitor takes the drain task when it starts waiting for it.
-        import time
-
-        deadline = time.monotonic() + 5.0
-        while tunnel._stderr_task is not None:
-            assert time.monotonic() < deadline, "the monitor never reached its stderr wait"
-            await asyncio.sleep(0.01)
+        await async_wait_until(
+            lambda: tunnel._stderr_task is None,
+            describe=lambda: "monitor has not yet taken the stderr task",
+        )
         assert not tunnel._monitor_task.done(), "the monitor must still be waiting on stderr"
 
-        await asyncio.wait_for(tunnel.stop(), timeout=10)
+        await await_until(asyncio.ensure_future(tunnel.stop()))
 
         assert exits == [], f"a deliberate stop fired the self-heal seam: {exits}"
         assert tunnel.status.state == TunnelState.STOPPED

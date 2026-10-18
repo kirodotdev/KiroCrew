@@ -41,6 +41,7 @@ from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.dashboard import revocation_gen, token_auth
 from kiro_crew.dashboard.routes import register_all
 from kiro_crew.dashboard.state import SlotOrigin
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _NOT_FOUND = {"error": "not found", "code": "slot_not_found"}
 #: Bound on awaiting a state-level approval task the test itself settles. Its
@@ -140,11 +141,11 @@ async def _state_approval(state, approval_id: str, slot: str = "user-tab"):
     task = asyncio.ensure_future(
         state.request_approval(approval_id, "subagent", "spawn_run", tool_input="x", slot=slot)
     )
-    for _ in range(100):
-        if approval_id in state._pending_approvals:
-            return task
-        await asyncio.sleep(0.01)
-    raise AssertionError("state-level approval was never registered")
+    await async_wait_until(
+        lambda: approval_id in state._pending_approvals,
+        describe=lambda: f"{approval_id!r} not yet in pending_approvals",
+    )
+    return task
 
 
 def _user_slot(state, key: str = "user-tab"):
@@ -172,7 +173,7 @@ async def test_app_list_omits_state_level_approvals(state, monkeypatch):
                 assert await resp.read() == b"[]"
         finally:
             state.resolve_state_approval("spawn:list", False)
-            await asyncio.wait_for(task, _SETTLE)
+            await await_until(task)
     assert [
         c.kwargs
         for c in audit.log_api_access.call_args_list
@@ -201,7 +202,7 @@ async def test_dashboard_user_still_lists_every_approval(state):
             assert [a["id"] for a in await resp.json()] == ["spawn:dash"]
         finally:
             state.resolve_state_approval("spawn:dash", False)
-            await asyncio.wait_for(task, _SETTLE)
+            await await_until(task)
 
 
 # ── /api/approvals: resolve ──
@@ -230,7 +231,7 @@ async def test_app_never_resolves_a_state_level_approval(state, app_name):
             assert not task.done()
         finally:
             state.resolve_state_approval("spawn:bg", False)
-            assert await asyncio.wait_for(task, _SETTLE) is False
+            assert await await_until(task) is False
 
 
 @pytest.mark.asyncio
@@ -311,7 +312,7 @@ async def test_app_resolves_its_own_slot_when_the_id_also_names_a_foreign_approv
             assert not task.done()
         finally:
             state.resolve_state_approval("3", False)
-            await asyncio.wait_for(task, _SETTLE)
+            await await_until(task)
 
 
 @pytest.mark.asyncio
@@ -412,7 +413,7 @@ async def test_dashboard_user_still_resolves_every_approval(state):
             assert (resp.status, await resp.json()) == (200, {"ok": True})
         assert native.result() == "approved"
         assert app_owned.result() == "approved"
-        assert await asyncio.wait_for(task, _SETTLE) is True
+        assert await await_until(task) is True
 
 
 # ── /api/sessions ──

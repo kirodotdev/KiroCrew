@@ -1206,6 +1206,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.history_consolidation_memory import (  # noqa: F401
         _EMBED_BUDGET_SECS_PER_PASS,
         _INHERIT_GLOBAL,
+        _LESSON_PASSTHROUGH_FIELDS,
         _PLACEHOLDER_BODIES,
         _SEMANTIC_OMISSION_NOTICE,
         _bounded_semantic_table,
@@ -1215,6 +1216,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _is_plausible_memory_file,
         _LessonDeleteDecision,
         _recency,
+        _reroute_lesson_semantic_keys,
         _session_facets,
         _withhold_unseen_deletes,
     )

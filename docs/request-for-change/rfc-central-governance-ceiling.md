@@ -18,8 +18,8 @@ Status: draft (no maintainer acceptance recorded). The tighten-only ladder is on
 tier described below exists on main. `break_glass`, `BreakGlass`, `BREAK_GLASS`,
 `_read_managed_policy`, `_managed_policy_path` and `compose_local_ceiling` each
 return zero hits under `src/` (grep for callers, not just definitions).
-`compose_tier_ladder` does exist: #7362 shipped it in
-`src/kiro_crew/platform/governance.py`, where `load_security_policy` calls it to
+`compose_tier_ladder` does exist: #7362 shipped it, and it now lives in
+`src/kiro_crew/platform/governance_parts/tiers.py`, where `load_security_policy` calls it to
 compose the central document over the subordinate tier. This RFC names it only as
 the function the withdrawn `break_glass` replace branch modified.
 
@@ -50,7 +50,7 @@ companion-bundled → `~/.kiro/crew/security_policy.json` (home) → none
 (ungoverned). The central document is the authority; every local tier may only
 *tighten* it, and none is a rollback lever. See [`../system-specs/modules/governance.md`](../system-specs/modules/governance.md)
 and `load_security_policy` in
-[`../../src/kiro_crew/platform/governance.py`](../../src/kiro_crew/platform/governance.py)
+[`../../src/kiro_crew/platform/governance_parts/tiers.py`](../../src/kiro_crew/platform/governance_parts/tiers.py)
 for the shape that is actually on main.
 
 This RFC records two follow-ups that were designed but not shipped:

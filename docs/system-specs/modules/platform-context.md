@@ -445,7 +445,7 @@ numbers. Two readers deliberately do not change: the anonymous usage beacon
 build sends the same value as its base), and the About page's changelog, where
 `changelog.running_release` folds the stamp back onto its three-segment release
 so the build marks the `0.6.0` row rather than opening an empty `0.6.0.12` row. Import time is the only point that works:
-`dashboard/handlers/updates.py`, `dashboard/ws.py`, `config/loader.py` and
+`dashboard/handlers/updates.py`, `dashboard/ws.py`, `config/loader_document.py` and
 `cli_server.py` bind `from kiro_crew import __version__` copies that nothing
 later can reach, so this is deliberately not a `PlatformContext` field — a
 context is composed after those imports.
@@ -637,9 +637,11 @@ Wired sites:
   `kiro_crew.platform.redact_via_context` shim (the one canonical
   fail-closed-aware shim; modules import it as `redact`). Covers: `agent.py`
   SEL-audit callers, `mcp_core_parts/` chat-history/crew output, `mcp_cron.py`
-  deny-reason + script-vet + timezone messages, and `dashboard/handlers/files.py`
-  file-content egress (slot append, file_read; file-watch and the download gate in
-  `dashboard/file_api/transfer.py`) as well as the filename/path/description gates.
+  deny-reason + script-vet + timezone messages, and the file-content egress the
+  `dashboard/handlers/files.py` facade serves (the outbox's slot append in
+  `dashboard/file_api/outbox.py`, file_read in `dashboard/file_api/editor.py`,
+  file-watch and the download gate in `dashboard/file_api/transfer.py`) as well as
+  the filename/path/description gates.
   Standalone is byte-for-byte the prior
   exfil-then-credential two-pass (the Default `CredentialPolicy.redact` delegates
   to `security.redact`); a loaded companion adds its internal-token regexes

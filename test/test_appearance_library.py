@@ -898,6 +898,101 @@ class TestImport:
             assert (await client.post("/api/appearances/import", data=b"not json")).status == 400
 
 
+class TestImportNamesALottieThePlayerWillRefuse:
+    """The player refuses a clip that names a remote image or font and draws the
+    ghost; the import answer is where the person who picked the file reads why.
+    A warning, never a refusal."""
+
+    @staticmethod
+    def _lottie(**over) -> str:
+        return json.dumps({"v": "5.7.4", "fr": 24, "ip": 0, "op": 48, "layers": [], **over})
+
+    @staticmethod
+    def _bundle(ident: str, clip: str, **extra_files) -> dict:
+        return {
+            "kind": "crew-companion-pack",
+            "version": 1,
+            "id": ident,
+            "manifest": {"meta": {"id": ident, "name": ident}, "states": {"idle": "idle.json"}},
+            "files": {"idle.json": clip, **extra_files},
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_https_image_imports_with_a_warning_naming_the_file(self):
+        clip = self._lottie(
+            assets=[{"id": "i0", "u": "https://attacker.example/", "p": "pixel.png", "e": 0}]
+        )
+        async with TestClient(TestServer(_app())) as client:
+            resp = await client.post(
+                "/api/appearances/import", json={"bundle": self._bundle("remote", clip)}
+            )
+            assert resp.status == 200, await resp.json()
+            body = await resp.json()
+        assert body["ok"] is True
+        assert len(body["warnings"]) == 1
+        assert "idle.json" in body["warnings"][0]
+        assert "ghost" in body["warnings"][0]
+        assert shared.get_appearance_store().pack_exists("remote")
+
+    @pytest.mark.asyncio
+    async def test_inline_data_uris_import_with_no_warning(self):
+        clip = self._lottie(assets=[{"id": "i0", "e": 1, "p": "data:image/png;base64,iVBORw0="}])
+        async with TestClient(TestServer(_app())) as client:
+            resp = await client.post(
+                "/api/appearances/import", json={"bundle": self._bundle("inline", clip)}
+            )
+            assert resp.status == 200, await resp.json()
+            assert "warnings" not in await resp.json()
+
+    @pytest.mark.asyncio
+    async def test_an_integer_past_the_float_range_warns_rather_than_failing(self):
+        """JSON integers are unbounded in Python; ``math.isnan`` on one past the
+        float range overflows. The import must still answer 200 with the warning."""
+        clip = (
+            '{"v": "5.7.4", "fr": 24, "ip": 0, "op": 48, "layers": [], "fonts": {"list": [{"fFamily": "X", "fPath": 1'
+            + "0" * 400
+            + "}]}}"
+        )
+        async with TestClient(TestServer(_app())) as client:
+            resp = await client.post(
+                "/api/appearances/import", json={"bundle": self._bundle("huge", clip)}
+            )
+            assert resp.status == 200, await resp.text()
+            body = await resp.json()
+        assert len(body["warnings"]) == 1
+        assert "idle.json" in body["warnings"][0]
+
+    @pytest.mark.asyncio
+    async def test_the_warning_is_judged_before_the_pack_is_written(self, monkeypatch):
+        """A failure inside the check must leave nothing installed, so a retry is
+        not refused by the id guard for a pack the caller was told failed."""
+
+        def boom(_payload):
+            raise RuntimeError("check failed")
+
+        monkeypatch.setattr(shared, "bundle_remote_asset_warnings", boom)
+        clip = self._lottie()
+        with pytest.raises(RuntimeError):
+            await shared.import_pack(self._bundle("never", clip))
+        assert not shared.get_appearance_store().pack_exists("never")
+
+    def test_only_referenced_lottie_clips_are_judged_once_each(self):
+        """A carried clip no slot names is never played, so it says nothing; a clip
+        many slots name is one warning, not one per slot."""
+        remote = self._lottie(fonts={"list": [{"fFamily": "X", "fOrigin": "p"}]})
+        bundle = self._bundle("many", remote, **{"unused.json": remote})
+        bundle["manifest"]["moods"] = {"happy": "idle.json", "sad": "idle.json"}
+        warnings = shared.bundle_remote_asset_warnings(bundle)
+        assert len(warnings) == 1
+        assert "idle.json" in warnings[0]
+
+    def test_a_clip_the_player_cannot_parse_is_not_called_remote(self):
+        """``JSON.parse`` refuses ``NaN``; Python's parser would accept it. The
+        player refuses such a clip for not parsing, not for fetching."""
+        clip = '{"v": "5.7.4", "fr": NaN, "assets": [{"id": "i0", "u": "https://x.example/", "p": "a.png"}]}'
+        assert shared.bundle_remote_asset_warnings(self._bundle("nan", clip)) == []
+
+
 class TestDelete:
     @pytest.fixture()
     def worn(self):
@@ -1159,7 +1254,7 @@ class TestUntrustedSvgIsServedInert:
         from kiro_crew.dashboard.handlers import appearances as handlers_mod
 
         source = Path(
-            Path(handlers_mod.__file__).resolve().parents[1] / "handlers" / "files.py"
+            Path(handlers_mod.__file__).resolve().parents[1] / "file_api" / "editor.py"
         ).read_text(encoding="utf-8")
         assert f'"{handlers_mod._SVG_CSP}"' in source
 

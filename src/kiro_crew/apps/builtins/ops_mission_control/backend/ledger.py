@@ -152,9 +152,8 @@ class _LedgerLock:
     Every mutation that RE-READS the ledger and REWRITES the whole file — ``upsert``,
     ``record_use``, ``record_miss``, ``remove``/decay, and the hygiene pass — must hold this,
     or one clobbers another's snapshot. The hygiene pass in particular reads, dedupes/prunes,
-    and calls ``_write_all``; a ledger POST that ran ``upsert`` in between was silently erased,
-    because ``_write_all`` overwrites rather than appends. `store` already learned this for the
-    incident index; the ledger had no lock at all. Found in review.
+    and calls ``_write_all``; a ledger POST that ran ``upsert`` in between would be silently
+    erased, because ``_write_all`` overwrites rather than appends.
 
     ``_append`` alone (the raw write behind an already-locked ``upsert``) is git-merge-safe by
     construction — append-only, deduped on read — but ``_write_all`` is not, which is why the
@@ -214,8 +213,8 @@ def read_entries() -> list[LedgerEntry]:
 def read_entries_for_update() -> list[LedgerEntry]:
     """The mutation-path read: same parse and reconcile, but ``OSError`` PROPAGATES.
 
-    Every locked read → mutate → ``_write_all`` in this module must start here, not at
-    ``read_entries``. The lenient read answers a failed open with ``[]``, and each of
+    Every locked read → mutate → ``_write_all`` in this module must start here (or at
+    ``_read_counted_for_update``, which this wraps), not at ``read_entries``. The lenient read answers a failed open with ``[]``, and each of
     those callers then rewrites the file from what it read — so a transient read fault
     became a silent full truncation of the team's shared ledger (``hygiene``), a
     ``404`` claiming an entry never existed while it is still on disk (``remove``), or
@@ -228,11 +227,23 @@ def read_entries_for_update() -> list[LedgerEntry]:
     the broken line is repair. A failed OPEN says nothing about the content at all —
     there is no partial result to preserve, only a file this process cannot see.
     """
+    return _read_counted_for_update()[0]
+
+
+def _read_counted_for_update() -> tuple[list[LedgerEntry], int]:
+    """``read_entries_for_update`` plus how many duplicate lines the read collapsed.
+
+    The count is valid lines minus unique ids: the lines a git merge left behind that
+    ``_reconcile`` folded into an earlier one. A malformed line is skipped and not counted,
+    because it is damage rather than a duplicate. ``hygiene`` needs the count, since every
+    id it sees after this read is already unique.
+    """
     path = ledger_path()
     if not path.exists():
-        return []
+        return [], 0
     ordered: list[str] = []
     by_id: dict[str, LedgerEntry] = {}
+    collapsed = 0
     with path.open("r", encoding="utf-8") as handle:
         for line_no, line in enumerate(handle, start=1):
             line = line.strip()
@@ -249,7 +260,17 @@ def read_entries_for_update() -> list[LedgerEntry]:
                 by_id[entry.entry_id] = entry
             else:
                 by_id[entry.entry_id] = _reconcile(prior, entry)
-    return [by_id[eid] for eid in ordered]
+                collapsed += 1
+    return [by_id[eid] for eid in ordered], collapsed
+
+
+def _confidence_rank(confidence: str) -> int:
+    """Position of ``confidence`` on the ``CONFIDENCE_DECAY`` scale, strongest first.
+
+    A value off the scale ranks after every value on it.
+    """
+    order = list(CONFIDENCE_DECAY.keys())  # high, medium, low
+    return order.index(confidence) if confidence in order else len(order)
 
 
 def _reconcile(prior: LedgerEntry, other: LedgerEntry) -> LedgerEntry:
@@ -267,30 +288,25 @@ def _reconcile(prior: LedgerEntry, other: LedgerEntry) -> LedgerEntry:
     team ledger" a way to clear a demotion, which is the one direction a shared,
     append-only knowledge base must not move on its own.
     """
-    order = list(CONFIDENCE_DECAY.keys())  # high, medium, low
-
-    def _rank(value: str) -> int:
-        return order.index(value) if value in order else len(order)
-
     # BOTH identity lists union here, and both are capped — mirroring `upsert` exactly.
     #
-    # `provider_keys` was missing entirely: this function reconciles duplicate ids produced
-    # by a real `git merge` of two teammates' ledgers, so dropping one side's provider keys
-    # permanently wrote incomplete identity data — and `match()` treats a provider key as
-    # the EXACT-identity signal, so the very next recurrence on that alert would have been
-    # matched by shape hash alone, or not at all. That is the same class of silent
-    # knowledge loss the fingerprint union exists to prevent. Found in review.
+    # `provider_keys` must union too: this function reconciles duplicate ids produced by a
+    # real `git merge` of two teammates' ledgers, so dropping one side's provider keys would
+    # permanently write incomplete identity data — and `match()` treats a provider key as
+    # the EXACT-identity signal, so the very next recurrence on that alert would be matched
+    # by shape hash alone, or not at all. That is the same class of silent knowledge loss
+    # the fingerprint union exists to prevent.
     #
-    # The cap was missing too: two already-capped lists unioned are up to 2× the cap, which
-    # `upsert` bounds and this path did not, so a merge could grow a list past the limit and
-    # keep it there.
+    # The cap applies here too: two already-capped lists unioned are up to 2× the cap, which
+    # `upsert` bounds, so an uncapped merge could grow a list past the limit and keep it
+    # there.
     prior.fingerprints = list(dict.fromkeys([*prior.fingerprints, *other.fingerprints]))[
         -MAX_KEYS_PER_ENTRY:
     ]
     prior.provider_keys = list(dict.fromkeys([*prior.provider_keys, *other.provider_keys]))[
         -MAX_KEYS_PER_ENTRY:
     ]
-    prior.confidence = min((prior.confidence, other.confidence), key=_rank)
+    prior.confidence = min((prior.confidence, other.confidence), key=_confidence_rank)
     prior.trust = TRUST_VERIFIED if TRUST_VERIFIED in {prior.trust, other.trust} else prior.trust
     prior.use_count = max(prior.use_count, other.use_count)
     prior.miss_count = max(prior.miss_count, other.miss_count)
@@ -351,11 +367,7 @@ def _upsert_locked(entry: LedgerEntry) -> LedgerEntry:
     # Provider keys union on the same terms as fingerprints: two teammates who learn the
     # same lesson against the same provider-side alert must converge, not conflict.
     merged_keys = list(dict.fromkeys([*prior.provider_keys, *entry.provider_keys]))
-    order = list(CONFIDENCE_DECAY.keys())  # high, medium, low
-    best_confidence = min(
-        (prior.confidence, entry.confidence),
-        key=lambda c: order.index(c) if c in order else len(order),
-    )
+    best_confidence = min((prior.confidence, entry.confidence), key=_confidence_rank)
     # Bounded on merge too: a git pull brings in a teammate's keys, and two capped lists
     # unioned are up to 2× the cap.
     prior.fingerprints = merged_fps[-MAX_KEYS_PER_ENTRY:]
@@ -399,19 +411,17 @@ def match(
     merely got lucky with. Within each tier the existing ordering applies: trust, then
     confidence, then use count.
 
-    Passing no ``provider_key`` reproduces the previous fingerprint-only behaviour
-    exactly, which is what every adapter that publishes no stable identity still gets.
+    Passing no ``provider_key`` matches on ``fingerprint`` alone and ranks every hit as a
+    shape match, which is what every adapter that publishes no stable identity gets.
     """
     if not fingerprint and not provider_key:
         return []
-    order = list(CONFIDENCE_DECAY.keys())
 
     def rank(entry: LedgerEntry) -> tuple[int, int, int, int]:
-        exact = bool(provider_key) and provider_key in entry.provider_keys
         return (
-            0 if exact else 1,
+            0 if is_exact_match(entry, provider_key) else 1,
             0 if entry.trust == TRUST_VERIFIED else 1,
-            order.index(entry.confidence) if entry.confidence in order else len(order),
+            _confidence_rank(entry.confidence),
             -entry.use_count,
         )
 
@@ -651,9 +661,9 @@ def hygiene(*, now: datetime | None = None) -> dict[str, int]:
 
     The whole read → dedupe/decay/demote/prune → ``_write_all`` runs under ``_LedgerLock``.
     ``_write_all`` overwrites the file, so a ``POST /ledger`` (``upsert``) or a ``record_use``
-    landing between this pass's ``read_entries`` and its write would be silently erased — the
-    ledger analogue of the incident-index race, and the write half of the peek/ack lesson: a
-    rewrite from a stale snapshot drops everything appended since the snapshot. Found in review.
+    landing between this pass's ``_read_counted_for_update`` and its write would be silently
+    erased — the ledger analogue of the incident-index race, and the write half of the peek/ack
+    lesson: a rewrite from a stale snapshot drops everything appended since the snapshot.
     """
     with _LedgerLock():
         return _hygiene_locked(now)
@@ -661,31 +671,12 @@ def hygiene(*, now: datetime | None = None) -> dict[str, int]:
 
 def _hygiene_locked(now: datetime | None) -> dict[str, int]:
     current = now or datetime.now(timezone.utc)
-    entries = read_entries_for_update()
-    before = len(entries)
-
-    # Dedupe by content-addressed id, merging fingerprints and keeping the
-    # highest use_count. Duplicates arrive via git-synced ledgers.
-    merged: dict[str, LedgerEntry] = {}
-    for entry in entries:
-        seen = merged.get(entry.entry_id)
-        if seen is None:
-            merged[entry.entry_id] = entry
-            continue
-        seen.fingerprints = list(dict.fromkeys([*seen.fingerprints, *entry.fingerprints]))
-        seen.use_count = max(seen.use_count, entry.use_count)
-        # Same max-wins rule as ``_reconcile``, and load-bearing HERE too: this is the
-        # pass that rewrites the file, so a dedupe that dropped the higher miss_count
-        # would make the nightly cron the thing that erases the team's counter-evidence.
-        seen.miss_count = max(seen.miss_count, entry.miss_count)
-        seen.last_miss = max(seen.last_miss, entry.last_miss)
-        seen.decayed_at_miss_count = max(seen.decayed_at_miss_count, entry.decayed_at_miss_count)
-        if entry.trust == TRUST_VERIFIED:
-            seen.trust = TRUST_VERIFIED
-        if entry.last_used > seen.last_used:
-            seen.last_used = entry.last_used
-    deduped = list(merged.values())
-    dupes_removed = before - len(deduped)
+    # Dedupe by content-addressed id. Duplicates arrive via git-synced ledgers, and the
+    # read already merged them with ``_reconcile``, the one merge algebra (its max on
+    # ``miss_count`` is what keeps this rewrite from erasing a teammate's counter-evidence).
+    # What is left here is to count the collapsed lines and rewrite the file without them.
+    deduped, dupes_removed = _read_counted_for_update()
+    before = len(deduped)
 
     # Decay confidence for entries unused past the window.
     cutoff = current - timedelta(days=DECAY_AFTER_DAYS)
@@ -736,18 +727,17 @@ def _hygiene_locked(now: datetime | None) -> dict[str, int]:
             )
 
     # Prune to the cap, dropping least-valuable first.
-    order = list(CONFIDENCE_DECAY.keys())
     deduped.sort(
         key=lambda e: (
-            # Misses subtract from standing in the prune order. Before this the order was
-            # ``-use_count`` alone, so a false-matching entry that climbed the ranking on
-            # every mismatch was the LAST thing pruned — the ledger preferentially kept
-            # its most misleading rows. A net score keeps a genuinely useful entry (8
-            # uses, 1 miss) ahead of an unproven one while sinking a 2-use/2-miss entry
-            # below it.
+            # Misses subtract from standing in the prune order. Ranked on ``-use_count``
+            # alone, a false-matching entry that climbs the ranking on every mismatch would
+            # be the LAST thing pruned — the ledger would preferentially keep its most
+            # misleading rows. A net score keeps a genuinely useful entry (8 uses, 1 miss)
+            # ahead of an unproven one and drops a 2-use/2-miss entry to the unproven one's
+            # level, where ``-use_count`` alone would rank it above.
             -(e.use_count - e.miss_count),
             0 if e.trust == TRUST_VERIFIED else 1,
-            order.index(e.confidence) if e.confidence in order else len(order),
+            _confidence_rank(e.confidence),
             e.last_used,
         )
     )

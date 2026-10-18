@@ -310,3 +310,71 @@ def test_every_mark_label_is_named(doc_text: str) -> None:
         assert (
             f"`{label}`" in doc_text
         ), f"context.py stamps _mark({label!r}) but the doc's timing list omits it"
+
+
+#: ``_MARKERS`` labels the §1 block-order table deliberately does not give a row,
+#: with the reason. The table is the first-turn ``build_session_context`` order;
+#: these are either named by §2 or composed somewhere that table does not cover.
+_BLOCK_ORDER_OMITTED = {
+    # The wrapper around the table's rows, described in §1's prose.
+    "session_wrapper": "the [SESSION CONTEXT …] wrapper itself",
+    # Vector-store headers rendered inside `memory.py` → `get_context` (row 15).
+    "semantic_memory": "inside the memory family row",
+    "task_facts": "inside the memory family row",
+    "episodic_memory": "inside the memory family row",
+    # Per-turn blocks §2 owns.
+    "recovery": "§2 What comes back after compaction",
+    "loaded_skill": "§2 per-turn table",
+    "skill_hint": "§2 per-turn table",
+    "channel_context": "§2 per-turn table",
+    "hook_context": "§2 per-turn table",
+    "theme_persona": "§2 per-turn table",
+    "working_folder": "§2 per-turn table",
+    "folder_path": "§2 per-turn table",
+    "resource_advisory": "§2 per-turn table",
+    "user_display": "§2 per-turn table",
+    "reply_format_rules": "§2 per-turn table",
+    "request_header": "§2 per-turn table",
+    # Prefixed onto the message by a caller outside build_session_context.
+    "history_prefix": "dashboard chat_persistence, after a stop reset",
+    "system_notice": "dashboard chat_runner regenerate hint",
+    "channel_persona": "channel.py multi-agent channel turn",
+    "incognito": "dashboard chat_utils session-mode prefix",
+    "temporary_session": "dashboard chat_utils session-mode prefix",
+    "interrupted_turn": "context_assembly/replay.py restore notice",
+    "change_card_results": "change-card outcome block for the next turn",
+}
+
+
+def test_block_order_table_names_every_marker(doc_text: str) -> None:
+    """§1's block-order table covers `_MARKERS`, minus an explicit allowlist.
+
+    A block added to ``_MARKERS`` must get a table row or an allowlist entry with
+    its reason. An allowlisted label that is gone from ``_MARKERS`` or now has a
+    row is stale and fails too, so the list cannot rot into a blanket waiver.
+    """
+    from kiro_crew.context_blocks import _MARKERS
+
+    start = doc_text.index("### Block order")
+    end = doc_text.index("\n### ", start + 1)
+    table = "\n".join(ln for ln in doc_text[start:end].splitlines() if ln.startswith("|"))
+    assert table, "the §1 block-order table moved"
+
+    labels = {label for label, _ in _MARKERS}
+    in_table = {label for label, pat in _MARKERS if re.search(pat, table)}
+    missing = labels - in_table - _BLOCK_ORDER_OMITTED.keys()
+    assert not missing, (
+        f"_MARKERS has {sorted(missing)} but the §1 block-order table has no row; "
+        "add one, or add it to _BLOCK_ORDER_OMITTED with the section that owns it"
+    )
+    stale = (_BLOCK_ORDER_OMITTED.keys() - labels) | (_BLOCK_ORDER_OMITTED.keys() & in_table)
+    assert not stale, f"_BLOCK_ORDER_OMITTED entries {sorted(stale)} are stale; drop them"
+
+    # A "§2" reason is a claim too: the block must really be named there.
+    sec2 = doc_text[doc_text.index("## 2. During a session") : doc_text.index("\n## 3.")]
+    unowned = sorted(
+        label
+        for label, pat in _MARKERS
+        if _BLOCK_ORDER_OMITTED.get(label, "").startswith("§2") and not re.search(pat, sec2)
+    )
+    assert not unowned, f"_BLOCK_ORDER_OMITTED says §2 owns {unowned}, but §2 never names them"

@@ -467,6 +467,86 @@ def test_the_sweep_is_its_own_command_and_doctor_stays_read_only(monkeypatch, tm
     assert len(ran) == 1, "doctor never reaches the sweep"
 
 
+# ── doctor's count line ──────────────────────────────────────────────────
+
+
+def test_doctor_counts_what_the_dry_run_lists_and_deletes_nothing(capsys):
+    """The doctor line is the dry run's count at the default window, and it names
+    the command that holds the detail. It purges nothing."""
+    from kiro_crew.doctor_checks import workload
+
+    session = _session_ledger("chat-1-old", phase="done", age_days=90)
+    work = _work_ledger()
+    _session_ledger("chat-2-live", phase="implementing", age_days=90)
+    _session_ledger("chat-3-recent", phase="done", age_days=1)
+
+    workload._doctor_ledger_backlog()
+
+    out = capsys.readouterr().out
+    assert out == (
+        "\nLedgers\n"
+        "  ledgers:     🧹 kirocrew ledger-sweep lists 2 ledger(s) (30-day window)"
+        " -- run it to review them\n"
+    )
+    assert session.name not in out, "a count only; the detail lives in the dry run"
+    assert session.is_dir() and work.is_dir(), "doctor must not remove anything"
+
+
+@pytest.mark.skipif(not IS_POSIX, reason="symlink creation needs no privilege on POSIX")
+def test_doctor_counts_a_linked_store_without_calling_it_finished(tmp_path, capsys):
+    import shutil
+
+    from kiro_crew.doctor_checks import workload
+
+    directory = _session_ledger("chat-linked", phase="implementing", age_days=0)
+    target = tmp_path / "session-target"
+    shutil.move(str(directory), str(target))
+    directory.symlink_to(target, target_is_directory=True)
+    assert _stores(sweep.scan()) == {directory.name}
+
+    workload._doctor_ledger_backlog()
+
+    out = capsys.readouterr().out
+    assert out == (
+        "\nLedgers\n"
+        "  ledgers:     🧹 kirocrew ledger-sweep lists 1 ledger(s) (30-day window)"
+        " -- run it to review them\n"
+    )
+    assert "finished" not in out and "idle" not in out
+    assert directory.is_symlink() and target.is_dir()
+
+
+def test_doctor_says_so_when_the_dry_run_lists_nothing(capsys):
+    from kiro_crew.doctor_checks import workload
+
+    workload._doctor_ledger_backlog()
+
+    assert capsys.readouterr().out == (
+        "\nLedgers\n  ledgers:     ✅ kirocrew ledger-sweep lists nothing (30-day window)\n"
+    )
+
+
+def test_doctor_reports_an_unreadable_root_and_keeps_going(monkeypatch, capsys):
+    """``scan`` raises when a root exists but cannot be read. Doctor calls its
+    sections directly, so the section turns that into one row instead of ending
+    the health run, and it never adds to ``issues``: it takes no list at all."""
+    import inspect
+
+    from kiro_crew.doctor_checks import workload
+
+    def denied(**_kwargs):
+        raise PermissionError(13, "Permission denied", "/data/work-ledger\x1b[2J")
+
+    monkeypatch.setattr(sweep, "scan", denied)
+
+    workload._doctor_ledger_backlog()
+
+    out = capsys.readouterr().out
+    assert out.startswith("\nLedgers\n  ledgers:     ⚠️  could not check: ")
+    assert "Permission denied" in out and "\x1b" not in out
+    assert not inspect.signature(workload._doctor_ledger_backlog).parameters
+
+
 # ── damage is classified last ──────────────────────────────────────────────
 
 

@@ -207,8 +207,8 @@ The folder is where the answer goes; the test is what asks the question.
 
 ### 3.7 Where the supporting code lives
 
-- Capability sets: `src/kiro_crew/agent_sdk/backends.py` only;
-  `acp_backends.py` re-exports them. Harness-parity R5/H8 exempts no other path,
+- Capability sets: the `backends_*` owners behind `src/kiro_crew/agent_sdk/backends.py`,
+  which `acp_backends.py` re-exports. Harness-parity R5/H8 exempts no other path,
   and every member must already be in `ACP_BACKENDS_KNOWN`.
 - Consumption: `backend in ACP_BACKENDS_<CAP>`. Never `not self._is_claude`,
   never `!= ACP_BACKEND_X`, never a name comparison (H5, H1).

@@ -105,6 +105,38 @@ the composer, as it takes the text back, so they are not sent twice. A
 slot switch or unmount aborts in-flight
 uploads and drops their late results.
 
+`ChatEmbed`'s `/` command and `@` file pickers are the dashboard composer's own
+picker atom: `chat-core/composer/pickers.ts` (`useComposerPickers`, which
+decides from the text at the caret which menu opens) and
+`chat-core/composer/PickerMenus.tsx` (`ComposerPickerMenus`), both store-free
+and pinned by the same import-graph test. They read through a picker source
+(`chat-core/composer/pickerSource.ts`), one member per read. `ChatInput` passes
+the dashboard's (`components/dashboardPickerSource.ts`, with the query keys the
+dashboard already uses), so the main chat, the panes and the side chat behave
+as before. The embed passes `app-sdk/embedPickerSource.ts`, built over the
+scoped client: a read is a member only when the host's declared paths cover
+its endpoint (`/api/slash-commands`, `/api/file-search`), and a missing member
+is a menu the atom does not mount, so an ungranted picker never opens and
+never sends a request. The embed source has no `./` path read (no project to
+resolve against) and no `$` skill read (the listing is resolved against the
+chat's session key, which the scoped client does not let an app choose). Its
+query keys carry an `app:<name>` prefix, so an embed never reads the
+dashboard's cached lists. The Editor atom reports each edit with its caret
+(`onEdit`), which is how the atom sees the text before the caret. An accepted
+file is staged through the attach hook's `stage` (a gateway-side path: no
+upload, no upload grant), and removing its chip strips the `@token` that pick
+wrote (`useEmbedPickers.removeFile` → `stripPickedToken`, matched with the
+shared `mentionTokenRegex`), skipping any spot where a still-picked token
+that extends it begins (`@report final.pdf` survives removing `@report`); a
+folder's token stays text. The `/` menu leaves out
+the commands the main chat runs in the browser (`/side`, `/btw`,
+`/onboarding`, `/kb`). The embed's `@` rows use `FilePickerMenu`'s `pathTail`
+(`ComposerPickerMenus` `filePathTail`): each row shows its root-relative
+folder cut from the start, so same-named results stay apart in the narrow
+menu. Both menus are opt-in and fail closed per path: a host that declares
+only `/api/slash-commands` gets the `/` menu and an `@` that stays plain text,
+with no file search sent. Tests: `ChatEmbed.pickers.test.tsx`.
+
 The host owns session attribution. Chat hosts bind their session; routed app
 pages bind the established `dashboard:ui` page identity. A provided host key
 wins over caller headers; an unbound host rejects caller-selected session keys.
@@ -835,6 +867,15 @@ complete). The callers act on it as follows:
 | `bridges._prune_stale_app_resources` (agents) | not a current link; the prune goes on | prune aborted, existing configs kept |
 | `file_entry_point_refusal` (backend spawn) | `refused by the path screen` | `path resolution failed` |
 | `_declared_agent_names` / `manager._app_agent_names` | no name | no name on this pass; the next pass asks again |
+
+A session a palette command opens for its app's own agent (`app_agent_owner`) runs
+only on a backend whose routing is `Routing.AGENT_SPEC` (KAS and Kiro), the hosts that
+launch the agent from its spec. Any other backend would run the app-authored prompt
+without the app's spec, so `dashboard/chat_runner.py` refuses the turn before the
+claim (the selected backend) and again after it (the claimed provider's
+capabilities), with `apps.manager.app_agent_backend_refusal` as the message and the
+`app_agent_refused` row kind. The bare-name check `app_command_agent_refusal` runs
+only on an allowed backend.
 
 A `contributes.commands[].agent` that no checked agent path declares is an install
 error. When an agent path was unchecked, that miss is reported as unchecked too, so
@@ -2144,7 +2185,7 @@ authorization bypass). The carve-out is the primary boundary and binds even an
 app already published under one of these names; the `/apps/<name>` reverse-proxy
 branch is a distinct namespace whose literal-page reservations live in
 `RESERVED_ROUTE_APP_NAMES` and is intentionally left unchanged. As
-defense-in-depth for NEW apps, `apps/manifest.py` mirrors the same set as
+defense-in-depth for NEW apps, `apps/manifest_names.py` mirrors the same set as
 `RESERVED_APP_PATH_SEGMENTS` and rejects those names at validation
 (`app_name_error`, `is_reserved_app_name`); reserving a name is a one-way door, so
 that backstop only refuses names not yet admitted while the carve-out covers any
@@ -2157,8 +2198,8 @@ resolution), `dashboard/state.py` (`_send_ws_all`, `_ws_client_allowed`,
 `_serialize_for_client`), `dashboard/state_parts/slot_directory.py` (`SlotOrigin`),
 `dashboard/token_auth_app_scope.py`
 (`_APP_TOKEN_IMPLICIT_ALLOW`, `app_token_path_allowed`, `_app_owns_path`,
-`RESERVED_APP_PATH_SEGMENTS`), `apps/manifest.py`
-(`_granted_list`, `RESERVED_APP_PATH_SEGMENTS`), `dashboard/slot_ownership.py`
+`RESERVED_APP_PATH_SEGMENTS`), `apps/manifest_sections.py`
+(`_granted_list`), `apps/manifest_names.py` (`RESERVED_APP_PATH_SEGMENTS`), `dashboard/slot_ownership.py`
 (`slot_ownership_middleware`, `SLOT_ROUTE_POLICIES`, `deny_app_slot_access`,
 `app_reserved_key_reason`, `transcript_acquisition_reason`, `app_holds_gateway_key`),
 `dashboard/chat_api/app_admission.py` (`_app_slot_acquisition_denial`,
@@ -2326,7 +2367,7 @@ Writers: `apps/official_catalog.py` (`list_catalog_rows`, `inventory`,
 `fetch_inventory_entries`, `inventory_for_install`), `apps/registry_pipeline/catalog.py`
 (`list_catalog_apps`, `_resolve_registry_row`, `_append_external_registry_apps`,
 `_detect_installed_probe`), `apps/registry_pipeline/checkout.py` (`_git_fetch_commit`),
-`dashboard/handlers/security.py` (`api_trusted_app_grant`),
+`dashboard/handlers/security_trusted_apps.py` (`api_trusted_app_grant`),
 `apps/routes.py` (`handle_registry`, `handle_list_apps`, `handle_get_app`), and
 `website/src/components/appstore/TrustAppModal.tsx`.
 
@@ -2642,7 +2683,7 @@ agent cannot forge.
 operator's configured registries and lets the operator grant each one `owner`
 trust; the dashboard writes `POST /api/security/trusted-registries` (revoke:
 `…/trusted-registries/revoke`, snapshot: `GET …/trusted-registries`, handlers in
-`dashboard/handlers/security.py`). The grant is on the same read+write keystone
+`dashboard/handlers/security_trusted_registries.py`). The grant is on the same read+write keystone
 floor as `denied_commands.json` — `security._CREW_SECRET_LEAVES` (the agent's
 file tools refuse it), `sandbox._CREW_READONLY_LEAVES` and
 `_CREW_CHILD_WITHHELD_LEAVES` (the OS sandbox mounts it read-only / withholds it
@@ -2657,8 +2698,8 @@ and the FIRST grant lands rather than being refused as a wrong-version document.
 A NON-empty document is held to the schema: only a version-1 document whose
 `owner_trusted` is a list parses; an unknown `version`, a dict-shaped
 `owner_trusted`, or any other shape is refused. The read/write core lives in
-`apps/registry_trust.py`, a leaf both `dashboard/handlers/security.py` and
-`apps/routes.py` import (`security.py` top-level imports `apps.routes`, so the
+`apps/registry_trust.py`, a leaf both `dashboard/handlers/security_trusted_registries.py` and
+`apps/routes.py` import (the security handlers top-level import `apps.routes`, so the
 writer cannot live there without a cycle). Properties that carry the design:
 
 - **Keyed by REPOSITORY, never by name.** `_granted_owner_repos` returns a
@@ -3420,8 +3461,8 @@ load their own ESM runtime from a CDN through an import map and are confined by
 the response CSP. §13 covers their token scoping;
 `src/kiro_crew/docs/mcp-apps.md` covers the iframe contract itself.
 
-Writers: `website/src/components/AppHost.tsx`, `apps/manifest.py` (the manifest
-`entry` field), `apps/routes.py` (static UI serving),
+Writers: `website/src/components/AppHost.tsx`, `apps/manifest_sections.py` (the
+manifest `entry` field), `apps/routes.py` (static UI serving),
 `dashboard/server.py` (the CSP allowances the CDN import map needs).
 
 ## 19. Spec Builder's backend is composed by lifecycle owner
@@ -3498,11 +3539,14 @@ change lands in its owner.
 | `registry_pipeline/indexes.py` | External index fetch, the configured-branch rule, fetch-then-swap caching, load with stale fallback, and the install-time owner-tier confirmation (`_owner_tier_confirmed`) |
 | `registry_pipeline/manifests.py` | An app's `app.json` for the store: subdirectory containment, fetch from the verified checkout or a throwaway clone, resolution through the cache, and the merge with its blob-proxy asset paths |
 | `registry_pipeline/catalog.py` | The store listing and lookups: seed, catalog and external precedence, install status, trust fields, refresh, and the row and candidate resolution install and consent go through |
-| `registry_pipeline/install.py` | The install transaction: every gate before repository bytes run, clone, identity and admission before the build, the rejected-checkout rollback (`_unpoison_rejected_checkout`), `onInstall`, registration, provenance, and the single restore-and-report `finally` |
+| `registry_pipeline/install_desktop_gate.py` | The desktop build-step verdict (`_desktop_build_refusal`) and its code `DESKTOP_BUILD_STEP_UNSUPPORTED`, judged on the copy the install would produce (`_installed_tree_preview`) with the runtime's own provisioning predicates, and the build step's probe of it (`_desktop_gate_probe`) |
+| `registry_pipeline/install_rollback.py` | Putting a refused checkout back: the rejected-checkout rollback (`_unpoison_rejected_checkout`), the layout snapshot taken before `onInstall` (`_desktop_layout_present`), and the post-script removal or set-aside of the layout files the script created (`_roll_back_post_script_refusal`) |
+| `registry_pipeline/install_clone.py` | Clone and build under the per-app lock: clone or pull, the identity and admission gates before the build (`_refuse_identity_mismatch`), the facade's build step, the restore of a same-origin previous checkout when the build fails, the verb-named refusal lines (`_refusal_line`), and the report of the move-asides the install's exits leave retained (`_report_retained_stale_checkouts`) |
+| `registry_pipeline/install.py` | The install transaction: every gate before repository bytes run, the clone and build through `install_clone`, the sandboxed `setup.onInstall` run, the checks after the build and after the script, registration, provenance, and the single restore-and-report `finally` |
 
 Imports only point down this order: `subprocess_env`, `git_targets`, `caches`,
 `sources`, `recovery`, `checkout`, `store_art`, `indexes`, `manifests`, `catalog`,
-`install`, then
+`install_desktop_gate`, `install_rollback`, `install_clone`, `install`, then
 `registry.py`. There is no cycle, and no owner imports the facade. The facade imports
 every owner at its own import, so an owner's `from ... import` bindings are taken
 once, as the one-module registry took them. `registry.py` re-exports every name an
@@ -3523,7 +3567,7 @@ Three placements are constraints rather than style. `_run_app_build` stays in
 the two `KEBAB_RE.fullmatch` name gates stay there because
 `test_kebab_gates_reject_trailing_newline.py` counts them in the facade's source. The
 three owners that call them (`caches._read_external_registry_cache`,
-`indexes._fetch_and_cache_external_registry`, `install._clone_build_app_locked`)
+`indexes._fetch_and_cache_external_registry`, `install_clone._clone_build_app_locked`)
 resolve the facade at call time through `registry_pipeline._facade()`, and nothing
 else in the pipeline refers to it. `_redact_url_userinfo` and
 `_redacted_git_failure_class` are the two names `test_security_posture.py` classifies
@@ -3682,7 +3726,7 @@ shipped `data` link, the root `data` file refused before the record),
 `TestCopyAppTree::test_an_installed_data_file_refuses_the_update_before_the_transaction`
 (and its link and junction siblings),
 `TestCopyAppTreeAsInstalled`,
-`test/test_apps_registry.py::test_a_root_data_file_is_refused_before_any_record_is_written`.
+`test/test_apps_registry_desktop_layout.py::test_a_root_data_file_is_refused_before_any_record_is_written`.
 
 
 
@@ -3781,7 +3825,7 @@ that stays the backend's own check.
 The flag is part of the manifest's `backend` dict, so an admission signature
 covers it. Only the JSON boolean `true` turns it on.
 
-Writers: `apps/routes.py`, `apps/proxy_auth.py`, `apps/manifest.py`. Tests:
+Writers: `apps/routes.py`, `apps/proxy_auth.py`, `apps/manifest_sections.py`. Tests:
 `test/test_app_proxy_auth.py`, `test/test_app_manifest.py`,
 `test/test_gateway_appkit_endpoints.py`.
 
@@ -3811,9 +3855,64 @@ as well: `supports_platform` happens to match a raw `sys.platform` value, but th
 manifest may use are the three keys. `platform.arch` has no reader, so it has no
 vocabulary to enforce.
 
-Writers: `apps/manifest.py` (`PlatformConfig.validate`, `AppManifest.validate`). Tests:
+Writers: `apps/manifest_sections.py` (`PlatformConfig.validate`), `apps/manifest.py`
+(`AppManifest.validate`). Tests:
 `test/test_app_manifest_platform_vocabulary.py`,
 `test/test_builtin_app_platform_declarations.py`.
+
+## 26. The app manifest and the Job SDK are composed by owner
+
+The manifest parser and validator (`apps/manifest.py`) and the Job SDK
+(`apps/job_sdk.py`) are each one import path over sibling owner modules. Their
+behaviour is specified in §5.1, §13, §18, §24 and §25 above, in the
+[manifest reference](../../app-kit/manifest-reference.md) and in the
+[durable-jobs RFC](../../request-for-change/rfc-app-sdk-durable-jobs-and-view-state.md).
+This section records which module owns which part, so a change lands in its owner.
+
+| Module under `src/kiro_crew/apps/` | Owns |
+|---|---|
+| `manifest.py` | The facade: the only import path and patch surface, plus `AppManifest` (parse, validate, serialize, `signing_payload`), the cron grant rule (`cron_permission_error`), the endpoint allowlist every app-declared URL is checked against (`app_endpoint_allowed`, `CORE_APP_ROUTE_SEGMENTS`), and the provisioning predicates `runtime_provisions_requirements` composes |
+| `manifest_names.py` | The app-name contract (`app_name_error`, `is_reserved_app_name`, the reserved sets, `KEBAB_RE`) and the version grammar (`SEMVER_RE`) |
+| `manifest_containment.py` | App-root containment of declared resource paths through the shared path screen (`_app_path_refusal`, `screen_app_path`, the `Containment` answers) and of the agents a contributed command selects (`_declared_agent_names`, `contain_command_agents`) |
+| `manifest_sections.py` | The typed `app.json` blocks other than `contributes`: `CronEntry`, `UIConfig` with its pages, overlays and sidebar, `BackendConfig` with `HooksConfig`, `Permissions`, `SetupConfig`, `Dependencies`, `PlatformConfig`, `PublishProviderConfig` and `NotificationsConfig` |
+| `manifest_contributes.py` | The `contributes` block: session controls, Command Bar commands and their argument, side-panel tabs, file-menu rows, `Contributes`, and the caps and grammars the dashboard mirrors for them |
+| `job_sdk.py` | The facade, plus `JobSDK`, the per-app `JobStore`, the process-wide SDK registry, the interruption message `reconcile` composes (`_interrupt_error`), the process identity (`_ORIGIN`) and the tunables only they read |
+| `job_sdk_records.py` | The run record (`JobRun`), its lifecycle states and interruption causes, the params bounds and the ingest redaction (`_validated_params`, `_redact`), the `JobHandle` a runner holds, and the Job SDK exceptions |
+| `job_sdk_returns.py` | What a runner hands back: `_undriven_result`, `_stop_returned_work`, `_close_quietly`, and the registration-time `_lazy_call_shape` |
+
+Imports only point down. `manifest_sections` imports `KEBAB_RE` from `manifest_names`;
+`manifest_containment`, `manifest_contributes`, `job_sdk_records` and `job_sdk_returns`
+import no owner, and no owner imports its facade, even for type checking. Each facade
+imports every name its owners define
+at its own import, private names included, so every `from kiro_crew.apps.manifest
+import ...` and every `kiro_crew.apps.job_sdk.<name>` read keeps one path and the same
+object.
+
+The re-exports are plain bindings, so a write to `manifest.<name>` or `job_sdk.<name>`
+reaches the facade's own readers only. That is the reach the patched names need: tests
+patch `job_sdk.read_bytes_with_retry`, `job_sdk.sel` and `job_sdk._CLEANUP_JOIN_SECS`,
+which only `JobStore` and `JobSDK` read, and `manifest.sys.platform`, which is the
+shared `sys` module `PlatformConfig` reads. `test_manifest_facade.py` and
+`test_job_sdk_facade.py` pin that no owner reads or binds a name the test trees patch
+through its facade, and the layering above. The Job SDK owners log through the
+`kiro_crew.apps.job_sdk` logger; the Job SDK's three exceptions and the manifest's
+`Containment` enum keep the facade as their `__module__`, so a traceback, a repr or a
+pickle names the path callers import.
+
+The placements are constraints rather than style. `CORE_APP_ROUTE_SEGMENTS` stays in
+`manifest.py` because `website/src/test/fileMenuContributions.test.tsx` reads its
+literal there. `JobSDK._execute` stays beside `_write_terminal` in `job_sdk.py` because
+`test_job_sdk.py` reads the text between them there; its two one-site counts (the
+interruption fields' assignments, the message table's spellings) read the facade joined
+with its owners, so a second site in any of them fails. `test_setup_hooks_contract.py`
+excludes `manifest_sections.py`, where every `setup` hook is declared and serialized,
+from its runtime scan; `test_agent_spec_hardened_reads.py` keys the hardened agent-spec
+read under `manifest_containment.py`; and `NON_EGRESS_REDACTION_MODULES` names
+`apps/job_sdk_records.py`, whose `_redact` is the ingest scrub.
+
+Writers: `apps/manifest.py`, `apps/manifest_names.py`, `apps/manifest_containment.py`,
+`apps/manifest_sections.py`, `apps/manifest_contributes.py`, `apps/job_sdk.py`,
+`apps/job_sdk_records.py`, `apps/job_sdk_returns.py`.
 
 ## Windows stale-backend cleanup capacity
 

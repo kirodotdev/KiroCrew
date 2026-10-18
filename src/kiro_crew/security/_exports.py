@@ -564,6 +564,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "scan_memory",
     "sensitive_home_dirs",
     "sensitive_path_refusal",
+    "sensitive_write_path_refusal",
     "shlex",
     "should_record_observe_history",
     "socket",

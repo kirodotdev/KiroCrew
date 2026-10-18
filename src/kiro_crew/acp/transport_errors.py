@@ -18,14 +18,27 @@ import re
 from dataclasses import dataclass
 from typing import Any, Sequence
 
-from kiro_crew.acp._dispatch import redact_text
+from kiro_crew.acp.compaction_errors import (  # noqa: F401 - re-exported via this module's facade
+    _COMPACTION_DETAIL_KEYS,
+    _COMPACTION_DETAIL_MAX_CHARS,
+    _COMPACTION_DETAIL_PLACEHOLDERS,
+    _COMPACTION_TRANSIENT_MARKERS,
+    _COMPACTION_WALK_MAX_DEPTH,
+    _walk_compaction_payload,
+    compaction_failure_detail,
+    compaction_failure_is_transient,
+)
 from kiro_crew.acp.runtime_models import (
     DEFAULT_MODEL,
     advertised_model_ids,
     model_is_unusable,
     resolve_pin_spelling_on,
 )
-from kiro_crew.acp.types import ACP_BACKENDS_HOST_AUTH_CALLBACK, ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
+from kiro_crew.acp.types import (
+    ACP_BACKEND_KIRO,
+    ACP_BACKENDS_HOST_AUTH_CALLBACK,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+)
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.credential_errors import is_credential_propagation_delay
 from kiro_crew.sandbox import (
@@ -41,163 +54,6 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 # Logged under the ACP client's name: these are the client's diagnostics, and operator
 # log filters and level settings key on that name.
 logger = logging.getLogger("kiro_crew.acp.client")
-
-
-# Cap for the failure detail carried into the compaction notice: it is
-# backend-echoed text on a chat row, not a log line.
-_COMPACTION_DETAIL_MAX_CHARS = 200
-
-
-# Keys that may carry a human-readable failure reason, MOST preferred first.
-# The rank is what makes extraction deterministic on a payload carrying several
-# of them: KAS nests a machine reason (``cause.reason`` =
-# ``MODEL_TEMPORARILY_UNAVAILABLE``) beside a sentence written for the user
-# (``userFacingSessionErrorMessage``), and the sentence is the one that tells a
-# reader what to DO about it.
-_COMPACTION_DETAIL_KEYS = (
-    "userFacingSessionErrorMessage",
-    "reason",
-    "message",
-    "error",
-    "detail",
-    "name",
-)
-
-# A named reason holding one of these words says nothing the notice does not
-# already say. KAS's ``summarization_failed`` frame reported literally "error",
-# which rendered as "Compaction failed: error" — no reason, and nothing to grep
-# server-side. Rejecting them falls through to the raw shape, which at least
-# carries the payload the backend actually sent.
-_COMPACTION_DETAIL_PLACEHOLDERS = frozenset(
-    {"error", "errored", "failed", "failure", "none", "null", "unknown", "unknown error"}
-)
-
-# Reason markers that make a failed compaction RETRYABLE: the summarization
-# model call was throttled or 5xx'd, so the same conversation can succeed on a
-# later attempt or on another model. Deliberately EXCLUDES the
-# context/too-large family — retrying one of those replays the same overflow,
-# which is the case the no-retry policy was written for.
-_COMPACTION_TRANSIENT_MARKERS = (
-    "temporarily unavailable",
-    "throttl",
-    "too many requests",
-    "rate limit",
-    "high volume of traffic",
-    "service unavailable",
-    "internalserverexception",
-    "internal server error",
-    "timed out",
-    "timeout",
-)
-
-# Depth bound for the payload walk. The shapes we read are three levels at
-# most (``status`` -> ``error`` -> ``cause``); the bound only stops a
-# pathological or cyclic frame from walking forever.
-_COMPACTION_WALK_MAX_DEPTH = 6
-
-
-def _walk_compaction_payload(value: object, depth: int = 0):
-    """Yield ``(key, leaf)`` pairs from a compaction notification payload.
-
-    One walker serves both readers below, so the reason a notice DISPLAYS and
-    the verdict that decides whether to RETRY are derived from the same view of
-    the frame — a backend that moves a field cannot make them disagree.
-    """
-    if depth > _COMPACTION_WALK_MAX_DEPTH:
-        return
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if isinstance(child, (dict, list)):
-                yield from _walk_compaction_payload(child, depth + 1)
-            else:
-                yield str(key), child
-    elif isinstance(value, list):
-        for child in value:
-            yield from _walk_compaction_payload(child, depth + 1)
-
-
-def compaction_failure_detail(params: dict) -> str:
-    """Best-effort reason text from a ``failed`` compaction notification.
-
-    kiro-cli carries no dedicated error field today: ``summary`` is
-    populated on success but typically empty on failure, which collapses the
-    user-facing notice to "unknown error" with nothing to report or grep.
-    Prefer any named reason the payload does carry, else fall
-    back to the raw shape so the notice says something concrete. Redacted
-    here (not at each call site) because this reaches the dashboard.
-
-    Nested by design: KAS reports the real reason under ``cause``, and the
-    previous one-level read saw only the flat sibling — a placeholder word —
-    so the notice said "error" while the payload carried the whole throttle.
-    """
-    best_rank = len(_COMPACTION_DETAIL_KEYS)
-    detail = ""
-    for key, value in _walk_compaction_payload(params):
-        if not isinstance(value, str):
-            continue
-        text = value.strip()
-        if not text or text.lower() in _COMPACTION_DETAIL_PLACEHOLDERS:
-            continue
-        try:
-            rank = _COMPACTION_DETAIL_KEYS.index(key)
-        except ValueError:
-            continue
-        if rank < best_rank:
-            best_rank, detail = rank, text
-    if not detail:
-        # No named reason anywhere — the raw params ARE the only evidence.
-        detail = f"no reason reported by the agent (raw: {params})"
-    # redact_text is the single-source scrub (exfil URLs + credentials) every
-    # other LLM-influenced surface uses, including the sibling KAS summary.
-    return redact_text(detail)[:_COMPACTION_DETAIL_MAX_CHARS]
-
-
-def compaction_failure_is_transient(params: dict) -> bool:
-    """True when a ``failed`` compaction is worth attempting again.
-
-    Read from the STRUCTURED payload rather than the rendered notice: the
-    notice is truncated, redacted and sometimes only a raw ``repr``, so
-    matching prose would both miss real throttles and fire on a digit that
-    happened to land in a summary. An HTTP status is therefore compared as a
-    number under its own key, never as a substring.
-
-    The distinction is load-bearing. A compaction that failed because the
-    conversation overflows the window fails again identically, which is why
-    the turn is abandoned without a retry; a compaction whose summarization
-    call was throttled has nothing wrong with it and succeeds on the next
-    attempt. Treating the second as permanent is what dropped the user's
-    message with a bare "error" on the row.
-    """
-    for key, value in _walk_compaction_payload(params):
-        if key == "httpStatusCode":
-            # ``bool`` is an ``int`` subclass, so a stray True would otherwise
-            # compare as 1 and read as a status code.
-            if isinstance(value, int) and not isinstance(value, bool):
-                if value == 429 or 500 <= value < 600:
-                    return True
-            continue
-        if not isinstance(value, str):
-            continue
-        # Only REASON-BEARING keys are scanned -- the same set the reason reader
-        # ranks. The frame also carries backend-echoed, conversation-derived text
-        # (conversationSummary rides in the very payload the KAS branch passes
-        # whole), so matching every string leaf would let a summary that merely
-        # mentions "timeout" upgrade a permanent context overflow to transient
-        # and replay it. A control decision must not be reachable from content
-        # the model wrote -- the same reasoning that made this read the payload
-        # instead of the rendered notice.
-        if key not in _COMPACTION_DETAIL_KEYS:
-            continue
-        # Separators folded to spaces before matching: the same fault is spelled
-        # as prose in the user-facing sentence ("temporarily unavailable") and as
-        # a SCREAMING_SNAKE enum in the machine reason
-        # ("MODEL_TEMPORARILY_UNAVAILABLE"), and a marker list that matched only
-        # one spelling would classify the same failure two different ways
-        # depending on which field the backend happened to fill.
-        low = value.lower().replace("_", " ").replace("-", " ")
-        if any(marker in low for marker in _COMPACTION_TRANSIENT_MARKERS):
-            return True
-    return False
 
 
 class AcpError(Exception):
@@ -286,6 +142,12 @@ class AcpError(Exception):
         # formatter rewrites a dispatch failure into the generic 5xx prose.
         # ``None`` means unclassified: readers fall back to the message text.
         self.connection_failure: bool | None = None
+        # Set by :func:`_raise_acp_error` when the frame's ``data`` names
+        # ``errorKind: cloud_credential_error``: the process cached credentials
+        # it cannot reload, so the remedy is a fresh process, not a retry.
+        # ``llm_helpers.acp_error_is_session_not_found`` routes it down the
+        # reset-and-reload-once path a dropped session takes.
+        self.credential_reload: bool = False
 
 
 class AcpTimeoutError(AcpError):
@@ -648,6 +510,8 @@ _RE_THROTTLE_NAMED = re.compile(
     r"\b(ThrottlingException|TooManyRequestsException|ServiceQuotaExceededException)\b"
 )
 _RE_THROTTLE_GENERIC = re.compile(r"\b(rate.?limit|throttl(?:e|ed|ing))\b", re.IGNORECASE)
+
+
 _RE_AUTH = re.compile(
     r"\b(AccessDenied(?:Exception)?|UnauthorizedException|ExpiredToken(?:Exception)?"
     r"|InvalidSignatureException|UnrecognizedClientException)\b"
@@ -1017,11 +881,21 @@ def registration_rate_limited_error(base: str, cause: str) -> "AcpRegistrationRa
 
 # Account/plan capacity is EXHAUSTED — terminal. Distinct from a throttle: a
 # throttle clears in seconds and a retry is the right move, whereas a spent
-# monthly allowance does not come back until it resets, so retrying only adds
-# latency before the same rejection. Checked BEFORE the throttle branch because
-# some limit messages also carry rate-limit-ish wording.
+# allowance does not come back until it resets, so retrying only adds latency
+# before the same rejection. Checked BEFORE the throttle branch because some
+# limit messages also carry rate-limit-ish wording.
+#
+# A Claude seat (claude-agent-acp) does not go through Bedrock and words a spent
+# allowance in Anthropic's terms, so the window names cover both vocabularies:
+# monthly / daily / weekly, plus Anthropic's rolling SESSION limit and its
+# "5-hour" (a.k.a. five-hour) spelling ("5-hour limit reached - resets <time>",
+# "You've hit your session limit · resets <time>"). The reset clause is quoted
+# verbatim by the formatter (_provider_detail), never parsed here. The window
+# must be one of these NAMED spellings, not any word before "limit", so a genuine
+# "hit your rate limit" stays a retryable throttle, not a terminal usage limit.
 _RE_USAGE_LIMIT = re.compile(
-    r"\b(?:monthly|daily|weekly)\s+(?:usage\s+)?limit\b"
+    r"\b(?:monthly|daily|weekly|session)\s+(?:usage\s+)?limit\b"
+    r"|\b(?:5|five)[\s-]?hour\s+limit\b"
     r"|\busage\s+limit\s+has\s+been\s+reached\b"
     r"|\b(?:MonthlyLimitError|FreeTierLimitExceeded)\b",
     re.IGNORECASE,
@@ -1621,11 +1495,17 @@ def _format_acp_error_worded(
                 f"{req_id_suffix}"
             )
         elif _RE_THROTTLE_NAMED.search(haystack) or _RE_THROTTLE_GENERIC.search(haystack):
-            # Bedrock throttle / rate limit. Cover both AWS service exception
-            # names and the generic phrasing the ACP backend sometimes uses.
+            # Throttle / rate limit (the spent usage limit above was checked
+            # first). Worded by backend: only kiro-cli reaches the model through
+            # Bedrock, so only it names Bedrock (POSITIVE identity per AGENTS.md
+            # "Harness parity"; a "not claude" test would answer Bedrock for
+            # untested harnesses). The verb stays "throttling" so
+            # llm_helpers._TRANSIENT_MARKERS ("throttl") keeps classifying it
+            # transient: a throttle IS retryable, unlike the usage-limit branch.
+            subject = "Bedrock" if backend == ACP_BACKEND_KIRO else "The model provider"
             formatted = (
-                "Bedrock is throttling requests. Try: (1) wait a few seconds and "
-                "retry, or (2) switch to a different model in the picker (e.g. sonnet)."
+                f"{subject} is throttling requests. Try: (1) wait a few seconds "
+                "and retry, or (2) switch to a different model in the picker."
                 f"{req_id_suffix}"
             )
         elif is_credential_propagation_delay(haystack):
@@ -1853,6 +1733,27 @@ def _rejected_model_from_error(error: object) -> str | None:
     return m.group(1) if m else None
 
 
+def _error_kind_from_frame(error: object) -> str:
+    """Return the structured ``errorKind`` a raw ACP frame's ``data`` carries.
+
+    claude-agent-acp names some provider answers with a machine-readable kind
+    alongside the prose (``{"code": -32603, "message": "Internal error",
+    "data": {"errorKind": "cloud_credential_error"}}`` -- the same field the
+    ``{'errorKind': 'unknown'}`` wrapper note at ``_RE_5XX_HINT`` describes).
+    Only a ``data`` that IS a mapping is read: the formatter pastes a
+    non-mapping ``data`` verbatim into the user-visible message, so matching
+    the kind out of that string would be the prose path structured readers
+    exist to avoid. Returns "" when the frame names no kind.
+    """
+    if not isinstance(error, dict):
+        return ""
+    data_field = error.get("data")
+    if isinstance(data_field, dict):
+        kind = data_field.get("errorKind")
+        return kind if isinstance(kind, str) else ""
+    return ""
+
+
 def _raise_acp_error(
     error: object,
     available_models: Sequence[str] | None = None,
@@ -1961,4 +1862,12 @@ def _raise_acp_error(
         raw_data_field, available_models
     ):
         err.usage_limit = True
+    # A stale-credential answer, read from the structured field (not the prose),
+    # recycles the process instead of retrying it. Pinned non-transient: the
+    # prose ends in "try again", and a retry would re-ask the one process that
+    # cannot reload. Not ``auth_required``: that card signs in the wrong identity
+    # for a harness that loads its own credentials (harness parity H6).
+    if _error_kind_from_frame(error) == "cloud_credential_error":
+        err.credential_reload = True
+        err.transient = False
     raise err

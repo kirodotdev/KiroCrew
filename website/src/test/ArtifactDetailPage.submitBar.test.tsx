@@ -124,6 +124,28 @@ describe('ArtifactDetailPage comment submit bar', () => {
     expect(await screen.findByText('2 comments to send to this chat')).toBeInTheDocument()
   })
 
+  it('marks each row the count is made of, and no other', async () => {
+    renderPage([
+      mkComment('h1'),
+      mkComment('h2'),
+      mkComment('a1', { is_agent: true }),
+      mkComment('s1'),
+    ], { sentIds: ['s1'] })
+    await screen.findByText('2 comments to send to this chat')
+    const marked = (id: string) => !!screen.getByText(`note ${id}`).closest('.group')!
+      .querySelector('[data-testid="comment-pending-submit"]')
+    expect(screen.getAllByTestId('comment-pending-submit')).toHaveLength(2)
+    expect([marked('h1'), marked('h2'), marked('a1'), marked('s1')]).toEqual([true, true, false, false])
+  })
+
+  it('unmarks the rows once the batch is sent', async () => {
+    renderPage([mkComment('h1')])
+    await bar()
+    expect(screen.getAllByTestId('comment-pending-submit')).toHaveLength(1)
+    fireEvent.click(submit())
+    await waitFor(() => expect(screen.queryByTestId('comment-pending-submit')).toBeNull())
+  })
+
   it('leaves a resolved thread out of the batch, reply included', async () => {
     // This page has its OWN pending-batch derivation, separate from
     // ArtifactPanel's. Filtering only the panel's would show the page's filtered
@@ -225,6 +247,7 @@ describe('ArtifactDetailPage comment submit bar', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /Ask agent to address/ })).toBeInTheDocument())
     expect(screen.queryByText(/to send to this chat/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Submit$/ })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('comment-pending-submit')).not.toBeInTheDocument()
   })
 
   it('keeps the comments pending when the send times out', async () => {

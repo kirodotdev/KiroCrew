@@ -36,6 +36,7 @@ from work_ledger_projection_helpers import (
 from kiro_crew import work_ledger as wl
 from kiro_crew.crew_log import eager, projection
 from kiro_crew.dashboard.handlers import work_ledger as routes
+from kiro_crew.testing.wait import await_until, until_parked
 
 # The shared fixtures, bound here by name so pytest registers them for this module.
 _isolated = work_ledger_projection_helpers._isolated
@@ -223,23 +224,24 @@ async def test_a_write_queued_behind_the_lock_rechecks_the_dirty_flag_under_it(m
         async def _holder() -> None:
             async with routes._board_lock(CONDUCTOR):
                 held.set()
-                await asyncio.wait_for(release.wait(), 10)
+                await await_until(release)
 
         holder = asyncio.ensure_future(_holder())
-        await asyncio.wait_for(held.wait(), 10)
+        await await_until(held)
         return holder, release
 
     holder, release = await _hold_the_board()
     queued = asyncio.ensure_future(
         _record(CONDUCTOR, {"action": "decide", "item_id": item_id, "decision": "go"})
     )
-    for _ in range(20):
-        # flake-ok: pre-existing 100 ms yield loop before the queued-write absence check; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0.005)
+    await until_parked(
+        routes._BOARD_LOCKS._locks[CONDUCTOR][0],
+        describe=lambda: f"queued.done()={queued.done()}",
+    )
     assert not queued.done()  # past the early check, waiting on the lock
     wl.mark_cache_dirty(CONDUCTOR, "the write ahead could not be undone")
     release.set()
-    await asyncio.wait_for(holder, 10)
+    await await_until(holder)
 
     # flake-ok: pre-existing unbounded await of the queued write once the lock holder is released; moved verbatim, tracked for a de-flake pass
     status, body = await queued
@@ -250,13 +252,14 @@ async def test_a_write_queued_behind_the_lock_rechecks_the_dirty_flag_under_it(m
     wl.clear_cache_dirty(CONDUCTOR)
     holder, release = await _hold_the_board()
     queued = asyncio.ensure_future(_report(WORKER, {"status": "progress", "summary": "x"}))
-    for _ in range(20):
-        # flake-ok: pre-existing 100 ms yield loop before the queued-write absence check; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0.005)
+    await until_parked(
+        routes._BOARD_LOCKS._locks[CONDUCTOR][0],
+        describe=lambda: f"queued.done()={queued.done()}",
+    )
     assert not queued.done()
     wl.mark_cache_dirty(CONDUCTOR, "the write ahead could not be undone")
     release.set()
-    await asyncio.wait_for(holder, 10)
+    await await_until(holder)
     # flake-ok: pre-existing unbounded await of the queued write once the lock holder is released; moved verbatim, tracked for a de-flake pass
     status, body = await queued
     assert (status, body["code"]) == (409, "cache_dirty"), body

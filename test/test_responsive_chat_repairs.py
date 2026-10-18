@@ -17,6 +17,7 @@ from kiro_crew.dashboard import chat_handlers, chat_runner
 from kiro_crew.dashboard import responsive_chat as rc
 from kiro_crew.dashboard.chat_delivery import queue_entry_view
 from kiro_crew.dashboard.handlers import ask_question
+from kiro_crew.dashboard.state import _ChatSlot
 
 fixture = _responsive_fixture
 
@@ -178,7 +179,7 @@ async def test_prompts_get_keeps_same_request_guidance_and_owner(tmp_path, monke
     client.is_alive = MagicMock(return_value=True)
     client.supports_steer = False
     client.client = SimpleNamespace(
-        pop_pending_oauth_requests=lambda: [],
+        pop_pending_oauth_requests=list,
         awaiting_permission=False,
         last_prompt_stats=None,
         pending_steers=[],
@@ -303,7 +304,6 @@ async def test_no_send_rollback_does_not_overwrite_new_owner(fixture):
         turn.owner = newer_owner
         turn.interrupted = True
         turn.recovery = newer_recovery
-        return None
 
     state.sessions.cancel_owned_turn.side_effect = cancel
     try:
@@ -359,7 +359,9 @@ async def test_stop_resolver_cannot_wake_a_different_owner(fixture, monkeypatch,
         slot._stop_state = "idle"
         slot._stop_state = "soft_pending"
     elif fence == "replacement":
-        state._slots[slot.key] = object()
+        state._slots[slot.key] = _ChatSlot(
+            slot.key
+        )  # slot-shaped stand-in so background serializer can safely access .key
     elif fence == "rebind":
         slot.linked_session_key = "dashboard:other"
     elif fence == "running":
@@ -462,7 +464,7 @@ async def test_normal_completion_after_cancel_preserves_only_uncertain_recovery(
     client.is_alive = MagicMock(return_value=True)
     client.supports_steer = False
     client.client = SimpleNamespace(
-        pop_pending_oauth_requests=lambda: [],
+        pop_pending_oauth_requests=list,
         awaiting_permission=False,
         last_prompt_stats=None,
         pending_steers=[],

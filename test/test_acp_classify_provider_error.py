@@ -28,11 +28,24 @@ from kiro_crew.acp.client import (
 
 CASES = [
     ("You have reached your monthly usage limit for this model", PROVIDER_ERROR_USAGE_LIMIT),
+    # Anthropic (Claude seat) allowance wording. These do not go
+    # through Bedrock and name the rolling session / 5-hour and the fixed weekly
+    # limit, each with a reset time.
+    ("You've hit your session limit \u00b7 resets 5:50pm", PROVIDER_ERROR_USAGE_LIMIT),
+    ("5-hour limit reached - resets 3pm", PROVIDER_ERROR_USAGE_LIMIT),
+    ("You've reached your weekly limit. It resets Monday at 9am.", PROVIDER_ERROR_USAGE_LIMIT),
     ("Improperly formed request: field x", PROVIDER_ERROR_MALFORMED_REQUEST),
     ("The model 'claude-x' is not available", PROVIDER_ERROR_MODEL_UNAVAILABLE),
     ("The model you've selected is temporarily unavailable", PROVIDER_ERROR_MODEL_UNAVAILABLE),
     ("ThrottlingException: Rate exceeded", PROVIDER_ERROR_THROTTLE),
     ("HTTP 429 too many requests, rate limit hit", PROVIDER_ERROR_THROTTLE),
+    # A bare short-term rate limit with no spent-allowance wording stays a
+    # retryable throttle — the fix must not reclassify genuine throttling. The
+    # "hit/reached your ... limit" phrasing is a throttle too when the window is
+    # "rate", since only the named windows (session/5-hour/weekly/...) are a
+    # spent allowance.
+    ("rate limit exceeded", PROVIDER_ERROR_THROTTLE),
+    ("You've hit your rate limit", PROVIDER_ERROR_THROTTLE),
     ("AccessDeniedException: not allowed", PROVIDER_ERROR_AUTH),
     ("ECONNREFUSED 127.0.0.1:443", PROVIDER_ERROR_CONNECTION),
     ("Internal server error", PROVIDER_ERROR_HTTP_5XX),

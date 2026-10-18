@@ -54,8 +54,8 @@ isolation admission. See [the memory contract](memory-skills-hooks.md).
 ```
 
 `agent_sdk/backends.py` is the selection authority: it defines the ids, the membership
-floor (`ACP_BACKENDS_KNOWN`), the selectable baseline, and every capability set a
-backend opts into. Do not re-describe that seam here —
+floor (`ACP_BACKENDS_KNOWN`) and the selectable baseline, and re-exports every
+capability set a backend opts into from the `backends_*` owner that defines it. Do not re-describe that seam here —
 [harness-parity.md](harness-parity.md) holds the invariants that keep the Kiro
 path from being widened for an adapted harness,
 [harness-onboarding.md](harness-onboarding.md) the sequence a new harness walks,

@@ -21,6 +21,7 @@ from kiro_crew.session_surface import set_dashboard_surfaced
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_manager import published_depth
 from kiro_crew.subagent_manager.published_depth import PublishedQueueDepths
+from kiro_crew.testing.wait import async_wait_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -122,12 +123,12 @@ async def test_the_real_emit_path_records_what_it_publishes() -> None:
         await wait_taskq_open(mgr)
         mgr._queue.append({"parent_session_key": PARENT, "_preassigned_id": "q1"})
         mgr._emit_queue_depth(PARENT)
-        await asyncio.wait_for(_until(lambda: frames[-1:] == [1]), 5)
+        await async_wait_until(lambda: frames[-1:] == [1])
         assert _published(mgr) == 1
 
         mgr._queue.clear()
         mgr._emit_queue_depth(PARENT)
-        await asyncio.wait_for(_until(lambda: frames[-1:] == [0]), 5)
+        await async_wait_until(lambda: frames[-1:] == [0])
         assert _published(mgr) == 0
     finally:
         mgr._queue.clear()
@@ -163,11 +164,11 @@ async def test_a_memory_wait_frame_carries_the_live_bound(
         mgr._subagent_queue_max_wait_secs = 7
         mgr._queue.append({"parent_session_key": PARENT, "_preassigned_id": "q1"})
         mgr._emit_queue_depth(PARENT, wait={"reason": reason})
-        await asyncio.wait_for(_until(lambda: len(frames) == 1), 30)
+        await async_wait_until(lambda: len(frames) == 1, timeout=30)
         # A reload between frames shows on the next one: read at send time.
         mgr._subagent_queue_max_wait_secs = bound
         mgr._emit_queue_depth(PARENT)
-        await asyncio.wait_for(_until(lambda: len(frames) == 2), 30)
+        await async_wait_until(lambda: len(frames) == 2, timeout=30)
         assert frames[-1]["queued"] == 1 and frames[-1]["reason"] == reason
         assert frames[-1].get("max_wait_secs") == expected
     finally:
@@ -211,7 +212,7 @@ async def test_a_child_start_re_derives_a_depth_no_path_cleared() -> None:
         assert _published(mgr) == 1
         child = SubagentInfo(id="c1", task="t", parent_session_key=PARENT)
         await mgr._fire_event("subagent_spawn", child, {})
-        await asyncio.wait_for(_until(lambda: frames[-1:] == [0]), 5)
+        await async_wait_until(lambda: frames[-1:] == [0])
         assert _published(mgr) == 0
 
         # A parent with nothing held is not re-counted on every lifecycle edge.
@@ -221,11 +222,6 @@ async def test_a_child_start_re_derives_a_depth_no_path_cleared() -> None:
         assert frames == []
     finally:
         await mgr.cancel_all()
-
-
-async def _until(predicate) -> None:
-    while not predicate():
-        await asyncio.sleep(0.01)
 
 
 @pytest.mark.asyncio

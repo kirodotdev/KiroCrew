@@ -447,6 +447,9 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # otherwise the first sandbox spawned before the first grant write sees an
     # unmasked leaf appear later.
     "tag-grants",
+    # The pinned-order store is created on the first reorder, so it is
+    # materialised here for the same reason as tag-grants.
+    "pinned-order",
     # The crewmate-teams store is created on the first team the owner makes, so a
     # sandbox spawned before that finds the name absent and the mask is vacuous
     # for its lifetime; materialised empty at 0700 so the bind always has a

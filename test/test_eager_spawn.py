@@ -354,21 +354,21 @@ class TestEagerSpawn:
         assert slot.memory_store == ""
 
     @pytest.mark.asyncio
-    async def test_store_change_during_model_resolution_stands_down_before_allocation(self):
+    async def test_store_change_during_selection_record_stands_down_before_allocation(self):
         """Store identity is part of the pre-allocation snapshot. An agent
-        switch landing during an awaited model read must win without creating
-        a provider from the old binding."""
+        switch landing during the awaited agent-selection write must win without
+        creating a provider from the old binding."""
         slot = _ChatSlot("t1")
         state = _mock_state(slot)
         real_to_thread = asyncio.to_thread
         model_lookups = []
 
         async def _switch_store(_func, *_args, **_kwargs):
-            if _func is not chat_runner._default_session_model:
+            if _func is not chat_runner.record_agent_selection:
                 return await real_to_thread(_func, *_args, **_kwargs)
             model_lookups.append(_func)
             slot.memory_store = "member-new"
-            return ""
+            return None
 
         with (
             patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),

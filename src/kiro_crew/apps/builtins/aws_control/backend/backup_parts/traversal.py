@@ -1,8 +1,8 @@
 """Descriptor-pinned directory traversal, and the platform capability it needs.
 
 :func:`_add_pinned` walks a tree through held directory descriptors, so no path is
-resolved twice. Its screened entry point, ``backup._add_tree``, stays in the facade
-because it is a declared link-screen site. :func:`kind_unavailable_reason` turns the
+resolved twice. Its screened entry point, ``backup._add_tree``, a declared link-screen
+site, lives in ``archive_inputs``. :func:`kind_unavailable_reason` turns the
 capability into the one per-kind refusal every surface quotes.
 """
 

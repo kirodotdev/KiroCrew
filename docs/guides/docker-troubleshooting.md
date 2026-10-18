@@ -525,7 +525,7 @@ gateway's own process environment has no trace of the token you passed in.
 `docker/entrypoint.sh` moves every credential it finds in the environment into
 the data home's `.env` (written mode 600), unsets it, and exports
 `_KIROCREW_CREDS_SCRUBBED=1`. `KiroCrewConfig.load_credentials`
-(`src/kiro_crew/config/loader.py`) reads that marker and refuses to re-inject
+(`src/kiro_crew/config/loader_config.py`) reads that marker and refuses to re-inject
 those keys into `os.environ`, so they never sit in the long-lived gateway's
 `/proc/<pid>/environ`.
 

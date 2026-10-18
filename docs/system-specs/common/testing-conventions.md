@@ -122,9 +122,9 @@ id>` with the reason where a `semgrep/test-determinism.yaml` rule refuses it. Re
 accepts the marker, and the reason is the record of why the rule does not apply there.
 
 `test/test_flake_pattern_ratchet.py` counts, file by file, the shapes
-`semgrep/test-determinism.yaml`'s patterns miss, so no site needs both markers: patches of `asyncio.sleep`, of the
-`datetime` classes or of another module's `time` binding (`<mod>.time`,
-`"pkg.mod.time.<attr>"`, `mock.patch.object(time, ...)`), a `sys.modules` eviction with
+`semgrep/test-determinism.yaml`'s patterns miss, so no site needs both markers: patches of `asyncio.sleep` or of the
+`datetime` classes (named directly or through another module's binding; the `time`
+module through any binding is the semgrep rule's), a `sys.modules` eviction with
 no restore in the same function, raw environment writes, duration bounds, literal waits
 under two seconds (the too-tight lost-run bound of class 6; a negative such as
 `assert not done.wait(0.3)` is not one), literal listener ports, fixed crew-log flush
@@ -446,7 +446,7 @@ test that removes crew-log segments or a unit folder with a bare `path.unlink()`
 which reads the unit on its own thread after every entry. Retention removes them inside
 `crew_log.eager.paused()`, which holds the folder between batches; a test does the same
 after `eager.drain()`, and asserts the hold was granted rather than proceeding without it
-(`test_issue_radar_crew_store.py::test_a_unit_recreated_under_its_id_folds_cold_however_far_its_seq_climbed`).
+(`test_issue_radar_crew_store_fold_bounds.py::test_a_unit_recreated_under_its_id_folds_cold_however_far_its_seq_climbed`).
 That hold is only waited for off the event-loop thread: an `async def` test that calls
 `store.sweep_expired` or `store.remove_unit` directly proceeds without it, so the fold
 woken by the entry the test just flushed keeps the segment open and Windows reports
@@ -460,7 +460,7 @@ test patched `_read_header_line` can assign `_slot_index` after the test's own r
 replacing the map the test is about to check with one that proves every unit. A test
 that patches a store read and then inspects the index does it inside
 `_eager_folder_held()` (drain, then `eager.paused()`), the way the two unprovable-header
-tests in `test_issue_radar_crew_store.py` do.
+tests in `test_issue_radar_crew_store_write_refusal.py` do.
 
 **Hold the crew-log writer for a burst the test counts.** `CrewLogWriter` claims a
 unit's whole bucket after its batching pause (`WriterLimits.batch_deadline_seconds`,
@@ -1533,8 +1533,9 @@ measures, never above.
   no tool state and **spins forever instead of exec'ing an interpreter**. Nine such
   processes were measured reparented to init at 1464% CPU between them for six days;
   another site turned it into a permanently blocked xdist worker. Either pin the real
-  interpreter's own directory first on `PATH` (`test_security_conductor_scripts.runnable_python`
-  is the shape) or resolve the tool to its real executable before building the env. Do
+  interpreter's own directory first on `PATH`
+  (`test_security_conductor_scripts_verify_finding.runnable_python` is the shape) or
+  resolve the tool to its real executable before building the env. Do
   NOT drop the `HOME` substitution to fix it — that is usually a blast-radius bound
   somebody chose on purpose.
 
@@ -1547,7 +1548,7 @@ measures, never above.
   directory that also contains sibling tools.
 
 - **Bootstrap fixtures must match the child's libc target.** In
-  `test_playwright_cli_installer.py`, `_expected_node_base` uses native
+  `playwright_cli_installer_helpers.py`, `_expected_node_base` uses native
   `os.confstr("CS_GNU_LIBC_VERSION")` on Linux/x64 to select `glibc-217` below
   glibc 2.28. OS and architecture alone give the fake mirror the wrong archive,
   failing before checksum and cleanup assertions. Keep the real platform tool
@@ -1924,11 +1925,12 @@ tests; the classes below are what the rest was made of.
   The `mc-maint` pool is the gateway's own, so `_join_test_loop_executor` (which joins
   the TEST LOOP's default executor at teardown) cannot reach it; the caller-resolves rule
   is the fix there. The loop's executor is covered: a cache write-through in
-  `test_source_providers.py` scheduled a detached repo-visibility refresh whose
-  `to_thread` resolved the provider CLI through `workspace_root()`; the join drains it,
-  and the module also stubs the scheduler (a recorder, so the calls stay observable),
-  because no test there is about visibility and a side task that never starts has
-  nothing to drain.
+  `test_source_providers.py` (and the topic modules split from it, which import its
+  fixtures from `source_providers_helpers.py`) scheduled a detached repo-visibility
+  refresh whose `to_thread` resolved the provider CLI through `workspace_root()`; the
+  join drains it, and those modules also stub the scheduler (a recorder, so the calls
+  stay observable), because no test there is about visibility and a side task that
+  never starts has nothing to drain.
 - **Dropping the override to test the DEFAULT home resolves, and creates, the real one.**
   Five tests `delenv("KIROCREW_HOME")` (or `patch.dict(os.environ, {}, clear=True)`, or
   ran a module-scoped fixture BEFORE the function-scoped floor) and let `config_dir()`
@@ -2205,7 +2207,8 @@ carrying forward:
   `killpg` (POSIX) or `taskkill /T` (Windows), which is what
   `test/installer_test_helpers.run_bounded` already did one layer up. **And a test that
   lets a proof actually RUN pins the interpreter's own directory first on PATH**
-  (`runnable_python`). It cannot be fixed by spelling `sys.executable` in the proof
+  (`test_security_conductor_scripts_verify_finding.runnable_python`). It cannot be fixed by
+  spelling `sys.executable` in the proof
   itself: the verifier refuses a proof whose argv names an absolute path outside the
   worktree, and that refusal is correct and stays.
 
@@ -2260,7 +2263,7 @@ carrying forward:
   window.**
 
 - **A production timeout the test never asserts on is paid in full, ~11 times over.**
-  Eleven `test_slack_gateway.py::TestAutoApplyUpdate*` tests measured **30.02–30.16s
+  Eleven `test_slack_gateway_update_*.py::TestAutoApplyUpdate*` tests measured **30.02–30.16s
   each, identically in all five runs**: `_auto_apply_update` awaits
   `_drain_update_callback_work(timeout=30.0)`, nothing in those tests makes the drain
   condition true, and it polls at 10ms to the deadline. That is **~330s of pure sleeping
@@ -3420,7 +3423,16 @@ that survives neither is the probe's.
   may get, and `a-ratchet-may-only-tighten` forbids raising it to fit -- concurrency fixes
   the budget, a looser cap would only hide the stall. Every nested run gets `--basetemp`
   under `tmp_path` (the rule from the fifth pass). Why one collect passed 60 s on this host
-  is NOT explained by this pass; the design defect was real regardless.
+  is NOT explained by this pass; the design defect was real regardless. A later pass found
+  most of the child's work: given three file arguments, pytest still walks every sibling in
+  `test/` (about 4,600 entries) through `pytest_ignore_collect` and `pytest_collect_file`.
+  Each child now passes `--ignore-glob=*`, which pytest never applies to a named argument,
+  so it reads only the three files and collects the same nodes in about 60% of the time
+  (Linux, six children in series: 26.3 s -> 15.7 s). The 60 s cap stays.
+  `test_a_nested_collection_reads_only_the_named_files` pins that only the named files
+  reach `pytest_collect_file`. A Windows runner is slower at the per-entry `stat` and
+  `relative_to` work this removes, so the saving is likely larger there; this pass did not
+  measure it on Windows.
 - **Reading a claim's task after the POST names whichever task won the race.**
   `test_cron_manual_run_claim_window.py::test_the_manual_wrappers_backstop_leaves_a_replacement_claim_alone`
   took `first = svc._claims[job.id].task` after the route answered; when the first run's
@@ -3481,7 +3493,7 @@ that survives neither is the probe's.
 `test_plugin_import.py::test_the_frontier_is_bounded_when_no_directory_carries_a_marker`
 took 101 s once (round 1) and 30-41 s after: a nested-pytest test on a loaded host, the
 same shape as the ipv6 one, left as is.
-`test_instances.py::TestProxyRequest::test_failed_exchange_sends_no_link_and_remints`
+`test_instances_proxy.py::TestProxyRequest::test_failed_exchange_sends_no_link_and_remints`
 failed once in round 1 with `ProxyRequestError: instance is not connected` immediately
 after `connect()`; one occurrence under the round-1 probe is not attributable and is
 recorded here, not fixed. `test_dashboard_files_onloop_fs.py` is green: its red was the
@@ -5021,7 +5033,7 @@ only — the dashboard's `notif-io` pool
 runs. The fix that removes the race rather than draining it is the one in
 [the classes it found](#the-classes-it-found-and-the-one-correct-fix-for-each): resolve
 every path when the work is queued. For the member log that means threading a home
-through `crew_log/store.py`, which derives it at each of the log, lease, segment and
+through `crew_log/store_paths.py`, which derives it at each of the log, lease, segment and
 checkpoint paths; production never moves its home, so only the suite pays. A new
 fire-and-forget writer resolves at queue time AND joins a drain.
 

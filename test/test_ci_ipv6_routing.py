@@ -62,6 +62,35 @@ def _run(argv, cwd, env=None, **kwargs):
     )
 
 
+def _collect_argv(basetemp, *args):
+    """A nested ``--collect-only`` of only the TARGETS.
+
+    Given file arguments, pytest still walks every sibling of each argument's
+    directory and offers each to ``pytest_collect_file`` -- about 4,600 entries
+    of ``test/`` for three files, roughly 40% of one child's time.
+    ``--ignore-glob=*`` refuses every path that is not a named argument (pytest
+    never ignores an initial path), so the child reads only the TARGETS and
+    collects the same nodes.
+    """
+    return [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-n0",
+        "--no-cov",
+        "--collect-only",
+        "-qq",
+        "--color=no",
+        "-p",
+        "no:cacheprovider",
+        "--basetemp",
+        str(basetemp),
+        "--ignore-glob=*",
+        *args,
+        *TARGETS,
+    ]
+
+
 def _env(root):
     env = dict(os.environ)
     for key in (
@@ -121,6 +150,30 @@ def test_shell_requires_bash_with_native_windows_resolver(monkeypatch, platform,
         assert not calls
 
 
+_FILE_COUNTER_PLUGIN = """
+import os
+
+def pytest_collect_file(file_path, parent):
+    with open(os.environ["COLLECT_FILE_LOG"], "a", encoding="utf-8") as fh:
+        fh.write(str(file_path) + "\\n")
+"""
+
+
+def test_a_nested_collection_reads_only_the_named_files(tmp_path):
+    """The nested collect offers pytest only the TARGETS, not every sibling in test/."""
+    (tmp_path / "plugin").mkdir()
+    (tmp_path / "plugin" / "count_collect_files.py").write_text(_FILE_COUNTER_PLUGIN, "utf-8")
+    log = tmp_path / "collected-files.txt"
+    env = _env(tmp_path)
+    env["PYTHONPATH"] = os.pathsep.join((str(tmp_path / "plugin"), env["PYTHONPATH"]))
+    env["COLLECT_FILE_LOG"] = str(log)
+    argv = _collect_argv(tmp_path / "bt", "-p", "count_collect_files")
+    result = _run(argv, ROOT, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    offered = {Path(line).resolve() for line in log.read_text("utf-8").splitlines()}
+    assert offered == {(ROOT / target).resolve() for target in TARGETS}
+
+
 # One nested ``--collect-only`` of the three TARGETS takes about 2 s on an idle host and
 # 8 to 13 s on a host running the full suite at 8 workers. The test needs six of them.
 # Run sequentially, that put up to 360 s of inner budget inside the 120 s ``--timeout``
@@ -128,6 +181,8 @@ def test_shell_requires_bash_with_native_windows_resolver(monkeypatch, platform,
 # is its own interpreter), so they run CONCURRENTLY -- wall time is the slowest one, not
 # the sum -- and each keeps ``_run``'s 60 s cap: that cap is the ratchet on how slow a
 # single collection may get, and concurrency is what fixes the budget, not a looser cap.
+# Each child also reads only the TARGETS (``_collect_argv``), not the ~4,600 siblings
+# pytest otherwise walks, which took about 40% of a child's time.
 
 
 def test_real_collected_nodes_are_the_disjoint_fleet_and_hosted_union(tmp_path):
@@ -135,26 +190,7 @@ def test_real_collected_nodes_are_the_disjoint_fleet_and_hosted_union(tmp_path):
         # ``--basetemp`` under THIS test's tmp_path (testing-conventions: a nested pytest
         # always gets one), so its startup prune and its output describe only its run.
         basetemp = tmp_path / "bt" / str(abs(hash(args)))
-        result = _run(
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "-n0",
-                "--no-cov",
-                "--collect-only",
-                "-qq",
-                "--color=no",
-                "-p",
-                "no:cacheprovider",
-                "--basetemp",
-                str(basetemp),
-                *args,
-                *TARGETS,
-            ],
-            ROOT,
-            _env(tmp_path),
-        )
+        result = _run(_collect_argv(basetemp, *args), ROOT, _env(tmp_path))
         assert result.returncode == 0, result.stdout + result.stderr
         nodes = [line for line in result.stdout.splitlines() if line.startswith("test/")]
         assert nodes and len(nodes) == len(set(nodes))

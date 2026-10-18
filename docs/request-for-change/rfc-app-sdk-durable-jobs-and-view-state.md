@@ -45,19 +45,19 @@ work.
 
 AWS Control declares `"jobs": true` in its `app.json`. `_handle_backup_run`
 starts the backup as a Job SDK run and returns its run id without waiting for it
-to finish (`src/kiro_crew/apps/builtins/aws_control/backend/routes.py`,
+to finish (`src/kiro_crew/apps/builtins/aws_control/backend/routes_parts/backups.py`,
 `_handle_backup_run`). The in-flight fact therefore lives on the server: a
 reload, a navigation away, or a second tab still sees it. The runner still
 records completed backup metadata through `_record_run`, and `last_runs` reads
 that per-account terminal ledger (`backend/backup_parts/ledger.py`, `_record_run`
 and `last_runs`). The status endpoint returns that ledger as `runs` and the
-account's job state as `jobs` (`backend/routes.py`, `_handle_backup_status`).
+account's job state as `jobs` (`backend/routes_parts/backups.py`, `_handle_backup_status`).
 
 `_STOP` only prevents an upload reached after app teardown
 (`backend/backup_parts/uploads.py`, `_STOP` and `_authorize_upload`).
 
 The backup UI's `busy` indicator comes from the server-owned job state, not
-only from the mutation (`website/src/apps/aws-control/DrivePage.tsx`,
+only from the mutation (`website/src/apps/aws-control/DrivePageBackup.tsx`,
 `BackupSection`: `job?.active != null || runMut.isPending`). The API client
 posts directly to the backup route (`website/src/apps/aws-control/api.ts`,
 `backupRun`). A fresh mount adopts an in-flight backup through the status
@@ -126,9 +126,9 @@ the new gateway's reconciliation marks its runs `INTERRUPTED`, recording that th
 gateway restarted while the run was executing and that no runner is registered for
 its kind — a backend-process runner has no registration path, so the resolved
 record's `interrupt_cause` is `runner_unregistered` (`job_sdk.py`,
-`JobSDK.reconcile` and `CAUSE_RUNNER_UNREGISTERED`).
+`JobSDK.reconcile`; `job_sdk_records.py`, `CAUSE_RUNNER_UNREGISTERED`).
 `INTERRUPTED` is a member of `TERMINAL_STATES`, so that record is neither
-reconciled again nor resumed (`job_sdk.py`, `TERMINAL_STATES`).
+reconciled again nor resumed (`job_sdk_records.py`, `TERMINAL_STATES`).
 
 This scope is load-bearing: an app whose run registry is process memory reports
 nothing after a restart, and reporting nothing is accurate, while a durable record
@@ -167,7 +167,7 @@ contract itself.
 `useAppViewState` (`website/src/app-sdk/viewState.ts`) persists view state in
 host-namespaced storage under `kc:app:<appId>:view`. It is not exported from the
 App SDK barrel. AWS Control's drive view uses it, scoped by account
-(`website/src/apps/aws-control/DrivePage.tsx`). The selected account is still
+(`website/src/apps/aws-control/useDrivePageFiles.ts`). The selected account is still
 local component state (`website/src/apps/aws-control/AwsControlPage.tsx`,
 `AwsControlPage`). Neither is encoded in the URL, so they cannot identify an
 account or drive in a shareable link. This local-state boundary is load-bearing: a URL can only

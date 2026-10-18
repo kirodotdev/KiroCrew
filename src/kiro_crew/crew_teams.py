@@ -237,7 +237,15 @@ def _new_team_id() -> str:
 
 
 def _utf8_encodable(value: str) -> bool:
-    """False for a string holding a lone surrogate (JSON-legal, UTF-8-illegal)."""
+    """False for a string holding a lone surrogate (JSON-legal, UTF-8-illegal).
+
+    Kept local rather than imported from ``lesson_validation.utf8_encodable``
+    (its twin): ``crew_teams`` is pulled in early by ``memory_stores`` ->
+    ``security``, and ``lesson_validation`` imports ``model_registry``, whose
+    module load resolves the data home -- which raises on a host with no home
+    directory. A five-line duplicate is cheaper than widening this module's
+    import chain.
+    """
     try:
         value.encode("utf-8")
     except UnicodeEncodeError:

@@ -1,0 +1,34 @@
+{
+ "base_public_names": [
+  "OutboundFile",
+  "REACTION_EMOJI",
+  "TELEGRAM_CHUNK_LIMIT",
+  "TELEGRAM_MAX_AUDIO_BYTES",
+  "TELEGRAM_MAX_CAPTION",
+  "TELEGRAM_MAX_MEDIA_GROUP",
+  "TELEGRAM_MAX_PHOTO_BYTES",
+  "TELEGRAM_MAX_TEXT",
+  "TELEGRAM_MAX_TOTAL_UPLOAD_BYTES",
+  "TELEGRAM_RICH_MAX_CHARS",
+  "TELEGRAM_VOICE_MIMES",
+  "TelegramAuthError",
+  "TelegramCallback",
+  "TelegramClient",
+  "TelegramInbound",
+  "atomic_write",
+  "data_home",
+  "get_recorder",
+  "logger",
+  "normalize_reaction_emoji",
+  "truncate_html_safe",
+  "upload_filename"
+ ],
+ "note": "TelegramClient's HTTP round trip, polling loop and album owners moved into client_*; the facade keeps every public name it defined and serves the moved private ones through kiro_crew._facade_mirror.",
+ "rebound": {
+  "OutboundFile": "kiro_crew.messaging.outbound_files",
+  "atomic_write": "kiro_crew.atomic_write",
+  "data_home": "kiro_crew.config.paths",
+  "get_recorder": "kiro_crew.metrics.provider",
+  "upload_filename": "kiro_crew.messaging.outbound_files"
+ }
+}

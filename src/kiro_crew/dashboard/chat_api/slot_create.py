@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         dispatch_kiro_agent,
         drained_to_thread,
         effective_session_key,
+        folder_principal,
         is_owner_dashboard_request,
         is_sensitive_path,
         logger,
@@ -81,6 +82,22 @@ def _default_template_stamp(cfg: KiroCrewConfig) -> str:
     default, so it has to be the declared name from the first write.
     """
     return dispatch_kiro_agent(default_template(cfg))
+
+
+def _created_slot_row(state: Any, request: web.Request, slot: Any) -> dict[str, Any]:
+    """*slot*'s row for the create route's answer, rank-free for a scoped caller.
+
+    A create can answer with an existing, already-pinned session (an
+    idempotent retry or a raced key). Its ``pin_rank`` is a place in the
+    person's whole pinned order, which an app or member caller gets none of.
+    """
+    row = state.serialize_slot(slot)
+    if folder_principal(state, request):
+        from kiro_crew.dashboard.pinned_session_order import PIN_ORDER_FIELDS
+
+        for field in PIN_ORDER_FIELDS:
+            row.pop(field, None)
+    return row
 
 
 async def api_chat_slot_create(request: web.Request) -> web.Response:
@@ -806,7 +823,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # idle until it timed out.
     if slot.executor != "remote":
         schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
-    created = state.serialize_slot(slot)
+    created = _created_slot_row(state, request, slot)
     if session_folder_notice:
         created["session_folder_notice"] = session_folder_notice
     return web.json_response(created)

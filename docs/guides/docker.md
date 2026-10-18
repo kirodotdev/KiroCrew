@@ -96,7 +96,7 @@ gateway starts — so they never sit in the long-lived gateway process's
 compose `.env` and restarting updates the stored copy.
 
 Four channels are unavailable in the stock image. **Microsoft Teams** needs
-`PyJWT[crypto]==2.13.0` (the `teams` extra), **Feishu** needs
+`PyJWT[crypto]==2.15.0` (the `teams` extra), **Feishu** needs
 `lark-oapi>=1.4,<2` (the `feishu` extra), and **WhatsApp** needs
 `neonize==0.4.3.post0` (the `whatsapp` extra). The Dockerfile installs the bare
 wheel, so use a custom image that installs the required distribution before
@@ -162,10 +162,11 @@ the version selector (channel tags track their channel; version tags pin).
   2. **Static assets** — the SPA shell, `/assets/`, `/vendor/`, and
      similar non-secret static files are served without a token (standard
      SPA bootstrap; the app is useless without a token once loaded).
-  3. **Local bootstrap** — `/api/token/local` and `/api/shutdown` require
-     a same-machine peer (a loopback address, or for the token endpoint the
-     dashboard's kernel-verified unix socket) **plus** a filesystem secret,
-     so they are unreachable through the published port by construction.
+  3. **Local bootstrap** — `/api/token/local`, `/api/shutdown`,
+     `/api/logout` and `/api/update/revalidate` require a same-machine peer
+     (a loopback address, or a same-user peer on the dashboard's
+     kernel-verified unix socket) **plus** a filesystem secret, so they are
+     unreachable through the published port by construction.
   CSRF origin checks apply to all state-changing requests, and the
   DNS-rebinding Host barrier applies to every request except the three
   probe paths.

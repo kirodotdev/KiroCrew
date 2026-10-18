@@ -45,7 +45,7 @@ function item(over: Record<string, unknown> = {}) {
   }
 }
 
-function mount(fields: Record<string, unknown>, agentic: string[] = ['needs_you']) {
+function setState(fields: Record<string, unknown>, agentic: string[] = ['needs_you']) {
   ;(window as unknown as { kirocrew: unknown }).kirocrew = {
     fields,
     agentic,
@@ -54,20 +54,117 @@ function mount(fields: Record<string, unknown>, agentic: string[] = ['needs_you'
     missing: [],
     written_at: {},
   }
-  const { code, body } = halves()
-  document.body.replaceChildren(...Array.from(body.childNodes))
-  // The host's own fill: every bound element gets its value by textContent.
+}
+
+function publish(fields: Record<string, unknown>, agentic: string[] = ['needs_you']) {
+  setState(fields, agentic)
+  // The host fills bindings before telling the page that a refill landed.
   for (const node of Array.from(document.querySelectorAll('[data-dashboard-field]'))) {
     const value = fields[node.getAttribute('data-dashboard-field') ?? '']
     if (value !== undefined) node.textContent = typeof value === 'string' ? value : JSON.stringify(value)
   }
+}
+
+function mount(fields: Record<string, unknown>, agentic: string[] = ['needs_you']) {
+  setState(fields, agentic)
+  const { code, body } = halves()
+  document.body.replaceChildren(...Array.from(body.childNodes))
+  publish(fields, agentic)
   new Function(code)()
+}
+
+/** Refill the mounted document without running its script again. */
+function refill(fields: Record<string, unknown>, agentic: string[] = ['needs_you']) {
+  publish(fields, agentic)
+  window.dispatchEvent(new Event('kirocrew-dashboard'))
 }
 
 const text = (sel: string) => document.querySelector(sel)?.textContent ?? ''
 const all = (sel: string) => Array.from(document.querySelectorAll(sel))
 
 describe('kirocrew-conductor page', () => {
+  it('keeps stable nodes on refill and animates only new work', () => {
+    const frameCallbacks: FrameRequestCallback[] = []
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frameCallbacks.push(callback)
+      return frameCallbacks.length
+    })
+    const fields = {
+      goal: 'ship the board',
+      needs_you: ['Approve the merge'],
+      items: [
+        item({ item_id: 'a', title: 'accepted one', state: 'accepted', status: 'done' }),
+        item({ item_id: 'b', title: 'running one' }),
+      ],
+    }
+    mount(fields)
+    const band = document.querySelector('#cb-you .band')
+    const fill = document.querySelector('#cb-meter .fill') as HTMLElement
+    const cards = all('#cb-tasks .card')
+    const runningDot = cards[1].querySelector('.dot')
+    expect(band).not.toBeNull()
+    expect(runningDot).not.toBeNull()
+    // A new meter keeps its useful first-paint ease.
+    expect(fill.style.width).toBe('')
+    while (frameCallbacks.length) frameCallbacks.shift()?.(0)
+    expect(fill.style.width).toBe('50%')
+    expect(cards).toHaveLength(2)
+
+    // Only the update stamp moved. No animated subtree may be replaced.
+    const taskMutations: MutationRecord[] = []
+    const observer = new MutationObserver((records) => taskMutations.push(...records))
+    observer.observe(document.getElementById('cb-tasks') as HTMLElement, { childList: true, subtree: true })
+    refill({ ...fields, last_entry_at: '2026-10-16T16:00:00Z' })
+    taskMutations.push(...observer.takeRecords())
+    observer.disconnect()
+    expect(taskMutations).toEqual([])
+    expect(document.querySelector('#cb-you .band')).toBe(band)
+    expect(document.querySelector('#cb-meter .fill')).toBe(fill)
+    expect(all('#cb-tasks .card')).toEqual(cards)
+    expect(cards[1].querySelector('.dot')).toBe(runningDot)
+    expect(frameCallbacks).toEqual([])
+    expect(fill.style.width).toBe('50%')
+
+    // Real progress reuses the meter and old cards. Only the new task pops in.
+    refill({
+      ...fields,
+      items: [
+        item({ item_id: 'a', title: 'accepted one', state: 'accepted', status: 'done' }),
+        item({ item_id: 'b', title: 'running one', state: 'accepted', status: 'done' }),
+        item({ item_id: 'c', title: 'new work' }),
+      ],
+    })
+    expect(document.querySelector('#cb-meter .fill')).toBe(fill)
+    expect(fill.style.width).toBe('66.67%')
+    const after = all('#cb-tasks .card')
+    expect(after[0]).toBe(cards[0])
+    expect(after[1]).toBe(cards[1])
+    expect(after[1].classList.contains('pop')).toBe(false)
+    expect(after[2].classList.contains('pop')).toBe(true)
+    expect(RAW).toContain('animation: cb-blink')
+    raf.mockRestore()
+  })
+
+  it('draws after the composed host performs its first fill', () => {
+    const fields = {
+      goal: 'ship the board',
+      last_entry_at: '2026-10-16T16:00:00Z',
+      items: [item()],
+    }
+    setState(fields)
+    const { code, body } = halves()
+    document.body.replaceChildren(...Array.from(body.childNodes))
+    const ready = vi.spyOn(document, 'readyState', 'get').mockReturnValue('loading')
+    new Function(code)()
+
+    // The composed frame's bootstrap registered first and fills on DOMContentLoaded.
+    publish(fields)
+    expect(text('[data-dashboard-field="last_entry_at"]')).toBe(fields.last_entry_at)
+    window.dispatchEvent(new Event('DOMContentLoaded'))
+    expect(text('[data-dashboard-field="last_entry_at"]')).not.toBe(fields.last_entry_at)
+    ready.mockRestore()
+  })
+
   it('draws one card per work item, with its state', () => {
     mount({
       goal: 'ship the board',

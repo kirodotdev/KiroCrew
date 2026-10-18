@@ -5,6 +5,7 @@ the per-head monotonic floor.
 
 from __future__ import annotations
 
+import difflib
 import functools
 import importlib.util
 import json
@@ -224,7 +225,8 @@ class TestBothScopeLanesTolerateAnIndentedVerdictHeader:
     input through each lane's OWN expression.
     """
 
-    def _capture_line(self, workflow: str) -> str:
+    @staticmethod
+    def _capture_line(workflow: str) -> str:
         for line in _workflow(workflow).splitlines():
             stripped = line.strip()
             if stripped.startswith("#"):
@@ -377,6 +379,153 @@ class TestBothScopeLanesTolerateAnIndentedVerdictHeader:
         assert out.stdout == expected, (
             f"{workflow}: a {review_kind} review captured {out.stdout!r}, " f"expected {expected!r}"
         )
+
+
+class TestTheScopeLanesKeepTheirCopiedBlocksEqual:
+    """The four blocks the fork lane keeps as COPIES of the same-repo lane's.
+
+    The surface list is the one block the fork lane reads out of the same-repo lane
+    at run time (`TestTheScopeSurfaceIsResolvedOnce`). These four stay copies, for
+    the reason written at each fork copy: read out of that file, the model call's
+    arguments would follow the pull request's base checkout, the probe and the
+    header capture would be shell run as read, and the two comment bodies differ by
+    design around the one stamp they share.
+
+    A copy drifts, and a pin written per invariant catches only the drift someone
+    thought to pin. So each test compares the WHOLE block across the two lanes and
+    names every lane-native difference: a difference not listed here fails, the
+    unforeseen ones included. When the two lanes stamp a body is run per lane in
+    `test_ai_review_workflows_verdict_publication.py`; what is held here is that
+    the stamp is one spelling.
+    """
+
+    SAME_REPO = "security-scope-review.yml"
+    FORK = "fork-security-scope-review.yml"
+
+    #: The one argument the two model calls set apart: the turn budget, a per-lane
+    #: cost setting rather than part of the fence. Both values are named, so moving
+    #: either one is an edit to this table.
+    ARGUMENT_DIFFERENCES = {"--max-turns": ("60", "80")}
+
+    #: The step each lane's credential-shape probe on the normalized corpus runs in.
+    PROBE_STEPS = {
+        SAME_REPO: "Validate the candidates against the base corpus",
+        FORK: "Validate candidates against the base-owned corpus",
+    }
+
+    #: Each lane's own spellings in its probe, mapped onto one form: the corpus
+    #: path, the interpreter's name, and the output key its own publish job reads the
+    #: refusal code from.
+    PROBE_REWRITES = {
+        SAME_REPO: (('echo "refusal=', 'echo "<code>='),),
+        FORK: (
+            ('"$NORMALIZED"', "normalized.json"),
+            ("python3 ", "python "),
+            ('echo "rc=', 'echo "<code>='),
+        ),
+    }
+
+    #: The same-repo lane writes `adjudicate=false` before each refusal; the fork
+    #: lane writes it once, at the top of its step. Either way a refused corpus is
+    #: never handed to the legs.
+    PROBE_DROPPED = {SAME_REPO: ('echo "adjudicate=false" >> "$GITHUB_OUTPUT"',), FORK: ()}
+
+    #: What each lane's header capture assigns, and what it reads: the same-repo
+    #: lane the `$summary` it already holds, the fork lane the `$OUT` file it just
+    #: wrote. The awk program between them is one program.
+    CAPTURE_ENDS = {SAME_REPO: ("model", '<<< "$summary"'), FORK: ("v", '"$OUT"')}
+
+    STAMP = "[SCOPE-REVIEWED] $HEAD"
+
+    #: How each lane reads the stamp in the model's own review, from the same two
+    #: inputs its capture reads.
+    STAMP_READS = {
+        SAME_REPO: 'grep -qF "[SCOPE-REVIEWED] $HEAD" <<< "$summary"',
+        FORK: 'grep -qF "[SCOPE-REVIEWED] $HEAD" "$REVIEW"',
+    }
+
+    def _model_call_arguments(self, workflow: str) -> list[str]:
+        doc = yaml.safe_load(_workflow(workflow))
+        calls = [
+            str(step["with"]["claude_args"])
+            for step in doc["jobs"]["generate"]["steps"]
+            if "anthropics/claude-code-action" in str(step.get("uses", ""))
+        ]
+        assert len(calls) == 1, f"{workflow}: expected one model call, found {len(calls)}"
+        return [line.strip() for line in calls[0].splitlines() if line.strip()]
+
+    def test_the_model_call_arguments_agree(self) -> None:
+        same = self._model_call_arguments(self.SAME_REPO)
+        fork = self._model_call_arguments(self.FORK)
+        for flag, (same_value, fork_value) in self.ARGUMENT_DIFFERENCES.items():
+            assert f"{flag} {same_value}" in same, (flag, same)
+            assert f"{flag} {fork_value}" in fork, (flag, fork)
+
+        def shared(args: list[str]) -> list[str]:
+            return [arg for arg in args if arg.split(" ", 1)[0] not in self.ARGUMENT_DIFFERENCES]
+
+        assert shared(same) == shared(fork), (shared(same), shared(fork))
+
+    def _probe(self, workflow: str) -> list[str]:
+        script = str(_step_by_name(workflow, "validate", self.PROBE_STEPS[workflow])["run"])
+        lines = [line.strip() for line in script.splitlines()]
+        start = next(
+            i
+            for i, line in enumerate(lines)
+            if line.startswith("cp ") and line.endswith(" scrub-probe.json")
+        )
+        end = lines.index('echo "adjudicate=true" >> "$GITHUB_OUTPUT"', start)
+        block = [
+            line
+            for line in lines[start:end]
+            if line and not line.startswith("#") and line not in self.PROBE_DROPPED[workflow]
+        ]
+        for old, _new in self.PROBE_REWRITES[workflow]:
+            # A listed spelling absent from the copy is a stale entry here.
+            assert any(old in line for line in block), (workflow, old)
+        for old, new in self.PROBE_REWRITES[workflow]:
+            block = [line.replace(old, new) for line in block]
+        return block
+
+    def test_the_corpus_probe_agrees(self) -> None:
+        same, fork = self._probe(self.SAME_REPO), self._probe(self.FORK)
+        assert same == fork, "\n".join(difflib.unified_diff(same, fork, lineterm=""))
+        # And it is the probe: the redactor's changed answer is what refuses.
+        assert 'if [ "$probe" = "10" ]; then' in same
+
+    def test_the_verdict_header_capture_agrees(self) -> None:
+        programs = {}
+        for workflow, (name, source) in self.CAPTURE_ENDS.items():
+            line = TestBothScopeLanesTolerateAnIndentedVerdictHeader._capture_line(workflow)
+            shape = rf"{re.escape(name)}=\"\$\(awk '([^']*)' {re.escape(source)}\)\""
+            match = re.fullmatch(shape, line)
+            assert match, f"{workflow}: the capture is not `{name}=\"$(awk '...' {source})\"`"
+            programs[workflow] = match.group(1)
+        assert programs[self.SAME_REPO] == programs[self.FORK], programs
+
+    def test_the_stamp_agrees(self) -> None:
+        for workflow in (self.SAME_REPO, self.FORK):
+            lines = [
+                line.strip()
+                for line in _workflow(workflow).splitlines()
+                if line.strip() and not line.strip().startswith("#")
+            ]
+            written = [
+                match.group(1)
+                for line in lines
+                for match in re.finditer(r'echo "(\[SCOPE-REVIEWED\][^"]*)"', line)
+            ]
+            assert written, f"{workflow}: no stamp is written"
+            assert set(written) == {self.STAMP}, (workflow, written)
+            reads = [line for line in lines if "grep" in line and "[SCOPE-REVIEWED]" in line]
+            assert len(reads) == 1, (workflow, reads)
+            assert self.STAMP_READS[workflow] in reads[0], (workflow, reads)
+            # The stamp is the guarded upsert's proof, so both key it the same way.
+            assert 'MARKER="<!-- security-scope-review -->"' in lines, workflow
+            assert any(
+                line.startswith('guarded_comment_upsert "$MARKER" "[SCOPE-REVIEWED]" ')
+                for line in lines
+            ), workflow
 
 
 class TestTheForkLaneNamesARemedyThatClearsAForkPullRequest:
@@ -626,10 +775,26 @@ class TestScopeConclusionLadderLivesInOnePlace:
 
     def test_both_lanes_delegate_the_conclusion_to_the_shared_table(self) -> None:
         # Same-repo invokes the staged harness via a $SC variable; the fork runs
-        # the trusted default-branch checkout by path. Both name the subcommand
-        # and the lane.
-        assert "conclude --lane same-repo" in _workflow(self.SAME_REPO)
-        assert "scope_candidates.py conclude --lane fork" in _workflow(self.FORK)
+        # the trusted default-branch checkout by path. Both name the subcommand,
+        # and neither hands the table a lane of its own: the table takes none.
+        same, fork = _workflow(self.SAME_REPO), _workflow(self.FORK)
+        assert 'python "$SC" conclude ${lane_flag[@]+"${lane_flag[@]}"} \\' in same
+        assert "python3 scripts/scope_candidates.py conclude \\" in fork
+        assert "conclude --lane" not in same + fork
+
+    def test_the_same_repo_lane_names_a_lane_only_to_a_base_table_that_requires_one(
+        self,
+    ) -> None:
+        # The table runs from the BASE blob, and a base can be a revision whose
+        # `conclude` still requires `--lane`. The lane reads the staged copy for that
+        # revision's own parser line, so the needle must be absent from the table
+        # this tree ships -- or the lane would hand `--lane` to a parser that refuses
+        # it. The behaviour on both shapes is run in
+        # `test_ai_review_workflows_verdict_publication.py`.
+        run = _step_script(_workflow(self.SAME_REPO), "Post the scope verdict")
+        needle = 'c.add_argument("--lane"'
+        assert f"grep -qF '{needle}' \"$SC\" && lane_flag=(--lane same-repo)" in run
+        assert needle not in (ROOT / "scripts" / "scope_candidates.py").read_text(encoding="utf-8")
 
     def test_same_repo_keeps_no_shell_conclusion_ladder(self) -> None:
         run = _step_script(_workflow(self.SAME_REPO), "Post the scope verdict")
@@ -641,7 +806,7 @@ class TestScopeConclusionLadderLivesInOnePlace:
         # must not be re-derived in shell here.
         assert 'why="a demonstrated platform gap' not in run
         assert 'verdict="CONCERNS"; why="the reviewer wrote BLOCK' not in run
-        assert "conclude --lane same-repo" in run
+        assert 'python "$SC" conclude ' in run
 
     def test_fork_keeps_no_shell_conclusion_ladder(self) -> None:
         run = _step_script(_workflow(self.FORK), "Decide the lane's conclusion")
@@ -649,7 +814,7 @@ class TestScopeConclusionLadderLivesInOnePlace:
         # The fork's old single-source gap flag and its BLOCK branch are gone.
         assert 'gap="yes"' not in run
         assert 'title="BLOCK ' not in run
-        assert "conclude --lane fork" in run
+        assert "scripts/scope_candidates.py conclude " in run
 
     def test_both_lanes_feed_both_gap_sources_to_the_table(self) -> None:
         # The divergence that motivated the collapse was the fork reading the
@@ -670,7 +835,7 @@ class TestScopeConclusionLadderLivesInOnePlace:
         # the tree. The $SC path is assigned from $HARNESS and then executed.
         same = _step_script(_workflow(self.SAME_REPO), "Post the scope verdict")
         assert 'SC="${HARNESS:-}/scope_candidates.py"' in same
-        assert '"$SC" conclude --lane same-repo' in same
+        assert 'python "$SC" conclude ' in same
         # The fork publish job checks out the DEFAULT branch (the trusted harness)
         # and runs no PR tree, so `scripts/scope_candidates.py` there is trusted.
         fork = _step_script(_workflow(self.FORK), "Decide the lane's conclusion")

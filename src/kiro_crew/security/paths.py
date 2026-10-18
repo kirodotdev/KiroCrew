@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import platform
 import re
@@ -418,11 +419,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # a backup restore resurrects). Kept alongside the ``trust``
     # directory entry below so the key is gated at BOTH locations.
     "sel_hmac.key",
-    # SEL trust-root directory: sel.py stores/migrates the audit chain's HMAC
+    # SEL trust-root directory: sel_trust_root.py stores/migrates the audit chain's HMAC
     # signing key at ``trust/sel_hmac.key`` — OUTSIDE the log's directory, so
     # write access to the log dir does not imply re-signing power. The whole
     # dir is gated (like ``profiles``/``run``) so future trust-root material is
-    # covered without a new entry. sel.py opens the key directly, not through
+    # covered without a new entry. sel_trust_root.py opens the key directly, not through
     # this gate.
     #
     # Spec Builder's decision record (``trust/spec-builder-decisions.json``) relies
@@ -454,12 +455,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # reader it fences is the AGENT'S OWN FILE TOOLS.
     "member-memory-bindings",
     "security_events.jsonl",
-    # Rotated SEL segments. sel.py closes the live log at a size cap and renames
+    # Rotated SEL segments. sel_rotation.py closes the live log at a size cap and renames
     # it into this directory, so a segment holds exactly the same audit records
     # the live file does and must be gated identically — a rotated log that the
     # agent could read (or rewrite, then let the chain re-anchor from) would make
     # rotation itself the way around the fence. Directory entry, so every
-    # segment is covered without a per-name matcher. sel.py opens segments
+    # segment is covered without a per-name matcher. sel_reader.py opens segments
     # directly, not through this gate.
     "security_events.d",
     "app_admission.json",
@@ -535,6 +536,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # the OS-sandbox counterpart is ``sandbox._CREW_HIDDEN_LEAVES``. Only the
     # gateway opens the path.
     "tag-grants",
+    "pinned-order",  # person-only sidebar order; mirror: sandbox._CREW_HIDDEN_LEAVES
     # Crewmate teams (``crew_teams.py``): the owner's grouping of the roster. Not
     # a secret, but it decides which team view a crewmate's questions and work
     # roll up into, and a crewmate must not be able to move itself or a sibling.
@@ -3571,16 +3573,47 @@ def sensitive_path_refusal(path_str: str, base_dir: str | None = None) -> str | 
         matched = _path_in_home_dirs(
             path_str, _SENSITIVE_HOME_DIRS, base_dir, strict=True
         ) or _is_keystone_publish_artifact(path_str, base_dir, strict=True)
-    except PathResolutionStalled:
-        return (
-            f"{UNVERIFIABLE_PATH_PREFIX} (symlink resolution did not complete in time), "
-            "so it is refused fail-closed. This is NOT a match: the path is not known to "
-            "be sensitive. Retry the same call after a short wait; do not re-spell it. "
-            f"Path: {path_str!r}"
+    except PathResolutionStalled as exc:
+        return _stall_refusal(exc, path_str)
+    return f"Blocked: access to sensitive path: {path_str}" if matched else None
+
+
+def sensitive_write_path_refusal(path_str: str, base_dir: str | None = None) -> str | None:
+    """:func:`is_sensitive_write_path` as reason-or-``None``: same decision, a stall
+    still refuses, worded as the stall :func:`sensitive_path_refusal` words it."""
+    try:
+        matched = _path_in_home_dirs(
+            path_str, _SENSITIVE_HOME_DIRS + _WRITE_PROTECTED_HOME_PATHS, base_dir, strict=True
+        ) or _is_keystone_publish_artifact(path_str, base_dir, strict=True)
+    except PathResolutionStalled as exc:
+        return _stall_refusal(exc, path_str)
+    return f"Blocked: write to protected path: {path_str}" if matched else None
+
+
+def _stall_refusal(exc: PathResolutionStalled, path_str: str) -> str:
+    # Caller text follows the fixed prefix. The stalled prefix is named only while its
+    # cooldown is open: most raises (wait allowance spent, pool saturated, load, clamped
+    # grace) never charge it, so naming it there would blame the wrong cause. A stalled
+    # anchor rebuild is charged to the home prefix and refuses paths outside it too, so
+    # the wait names the checks that touch the prefix, not only paths beneath it.
+    now = _path_resolve_clock()
+    with _path_resolve_lock:
+        until = _path_resolve_degraded.get(exc.prefix, (0.0, 0))[0]
+    if until > now:
+        cause = f": the check timed out under {exc.prefix!r}"
+        wait = (
+            f"Path checks that touch that prefix are refused for about "
+            f"{max(1, math.ceil(until - now))} s more; retry the same call after that wait"
         )
-    if matched:
-        return f"Blocked: access to sensitive path: {path_str}"
-    return None
+    else:
+        cause = ""
+        wait = "Retry the same call after a short wait"
+    return (
+        f"{UNVERIFIABLE_PATH_PREFIX} (symlink resolution did not complete in time"
+        f"{cause}), so it is refused fail-closed. "
+        f"This is NOT a match: the path is not known to be sensitive. {wait}; do not "
+        f"re-spell it. Path: {path_str!r}"
+    )
 
 
 def path_contains_sensitive(
@@ -3652,9 +3685,7 @@ def is_sensitive_write_path(path_str: str, base_dir: str | None = None) -> bool:
     read+write gate refused it, the same one-path-only hole the pairing notes above warn
     about.
     """
-    return _path_in_home_dirs(
-        path_str, _SENSITIVE_HOME_DIRS + _WRITE_PROTECTED_HOME_PATHS, base_dir
-    ) or _is_keystone_publish_artifact(path_str, base_dir)
+    return sensitive_write_path_refusal(path_str, base_dir) is not None
 
 
 def sensitive_home_dirs() -> tuple[str, ...]:

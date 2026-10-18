@@ -27,6 +27,7 @@ from kiro_crew.apps.builtins.dev_fleet import fleet_state as fleet_state_mod
 from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
+from kiro_crew.testing.wait import await_until
 
 
 # --- SEL audit on mutations (Codex R17) ---
@@ -828,7 +829,7 @@ async def test_run_cmd_cancel_with_reaped_child_propagates_cancellation(monkeypa
 
     task = asyncio.ensure_future(mod._run_cmd(["/bin/true"]))
     # Bounded so a future early-return in _run_cmd fails fast, not a hang.
-    await asyncio.wait_for(entered.wait(), timeout=5)
+    await await_until(entered, what="run_cmd entered cancellation point")
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task

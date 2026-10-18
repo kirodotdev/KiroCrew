@@ -50,7 +50,7 @@ function wrap(ui: React.ReactElement, storeOverrides?: StoreOverrides) {
   return render(
     <Provider store={store}>
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/embed/chat/chat-1']}>
+        <MemoryRouter initialEntries={['/embed/sessions']}>
           {ui}
         </MemoryRouter>
       </QueryClientProvider>

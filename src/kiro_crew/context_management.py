@@ -135,7 +135,7 @@ def apply_completion_keep(text: str, mode: str, max_chars: int) -> str:
     of ``0`` or less disables truncation.
 
     ``mode`` is validated at config load by ``_validated_completion_keep``
-    in ``config/loader.py``; callers may rely on receiving one of
+    in ``config/loader_builders.py``; callers may rely on receiving one of
     ``head``/``tail``/``both``.
 
     The transcript stays in ``~/.kiro/crew/subagents/<id>/result.txt``, trimmed towards

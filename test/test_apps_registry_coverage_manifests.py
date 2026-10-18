@@ -848,3 +848,96 @@ class TestVersionNewer:
 
     def test_non_string_input_is_conservative(self):
         assert registry._version_newer(None, "1.0.0") is False
+
+
+class TestExternalRegistryAvailableVersion:
+    """An installed external-registry app's available version comes from the index.
+
+    The listing reads an installed app's ``app.json`` from its persistent checkout,
+    which is the tree that was INSTALLED, so the manifest's ``version`` there always
+    equals the installed one. The index row is the only listing input that has seen
+    the registry's newer release.
+    """
+
+    _ROW = {
+        "name": "demo",
+        "gitUrl": "https://git.example.com/team/demo.git",
+        "branch": "main",
+        "_registry": "team-registry",
+    }
+
+    @pytest.fixture()
+    def installed_checkout(self, cache_dir, monkeypatch, tmp_path):
+        src = tmp_path / "app-sources" / "demo"
+        src.mkdir(parents=True)
+        monkeypatch.setattr(registry, "app_source_dir", lambda n: src)
+
+        async def _true(*a, **k):
+            return True
+
+        monkeypatch.setattr(registry, "_clone_origin_matches", _true)
+        monkeypatch.setattr(registry, "_clone_branch_matches", _true)
+        monkeypatch.setattr(registry, "_owner_designated_repo_target", lambda entry: "")
+
+        def _write(version: str) -> None:
+            (src / "app.json").write_text(
+                json.dumps({"name": "demo", "version": version}), encoding="utf-8"
+            )
+
+        return _write
+
+    async def _list(self, monkeypatch, index_row, installed_version="0.3.0"):
+        async def _external():
+            return [dict(index_row)]
+
+        monkeypatch.setattr(registry, "_load_external_registries", _external)
+        installed_map = {"demo": {"version": installed_version, "enabled": True}}
+        rows, detected = await registry._append_external_registry_apps([], set(), installed_map)
+        return registry._apply_trust_fields(
+            registry._enrich_with_install_status(rows, installed_map, detected)
+        )
+
+    @pytest.mark.asyncio
+    async def test_index_bump_shows_an_update_for_the_installed_checkout(
+        self, installed_checkout, monkeypatch
+    ):
+        installed_checkout("0.3.0")
+        rows = await self._list(monkeypatch, {**self._ROW, "version": "0.3.1"})
+        row = rows[0]
+        assert row["installedVersion"] == "0.3.0"
+        assert row["updateAvailable"] is True
+        assert row["version"] == "0.3.1"
+
+    @pytest.mark.asyncio
+    async def test_unchanged_index_reports_no_update(self, installed_checkout, monkeypatch):
+        installed_checkout("0.3.0")
+        rows = await self._list(monkeypatch, {**self._ROW, "version": "0.3.0"})
+        assert rows[0]["updateAvailable"] is False
+        assert rows[0]["version"] == "0.3.0"
+
+    @pytest.mark.asyncio
+    async def test_index_without_a_version_keeps_the_manifest_answer(
+        self, installed_checkout, monkeypatch
+    ):
+        installed_checkout("0.3.0")
+        rows = await self._list(monkeypatch, dict(self._ROW))
+        assert rows[0]["updateAvailable"] is False
+        assert rows[0]["version"] == "0.3.0"
+
+    @pytest.mark.asyncio
+    async def test_an_older_index_version_never_lowers_a_newer_manifest(
+        self, cache_dir, monkeypatch
+    ):
+        # A manifest fetched from the remote tip (cached) can be ahead of a lagging index.
+        registry._write_manifest_cache(self._ROW, {"name": "demo", "version": "0.4.0"})
+        rows = await self._list(monkeypatch, {**self._ROW, "version": "0.3.1"})
+        assert rows[0]["updateAvailable"] is True
+        assert rows[0]["version"] == "0.4.0"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["not-a-version", "1.0.0 <b>", "", 7, None, ["1.0.0"]])
+    async def test_a_malformed_index_version_is_ignored(self, installed_checkout, monkeypatch, bad):
+        installed_checkout("0.3.0")
+        rows = await self._list(monkeypatch, {**self._ROW, "version": bad})
+        assert rows[0]["updateAvailable"] is False
+        assert rows[0]["version"] == "0.3.0"

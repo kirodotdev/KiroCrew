@@ -89,8 +89,9 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/dashboard/chat_mirror.py", "recent"),
         ("kiro_crew/dashboard/chat_persistence.py", "read_messages_chained"),
         ("kiro_crew/dashboard/chat_rewind.py", "read_messages_chained"),
-        ("kiro_crew/dashboard/chat_runner.py", "recent"),
         ("kiro_crew/dashboard/chat_slack.py", "recent"),
+        # The decisions hooks composed into chat_runner: the same read it made.
+        ("kiro_crew/dashboard/chat_turn/decisions_hooks.py", "recent"),
         ("kiro_crew/dashboard/chat_threads.py", "read_messages_chained"),
         ("kiro_crew/dashboard/cron_inject.py", "read_messages"),
         # Rendering the transcript's own artifacts / rows to its user.
@@ -134,6 +135,8 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/history_projection.py", "_read_messages_locked"),
         ("kiro_crew/history_projection.py", "_recent_via_tail"),
         ("kiro_crew/history_projection.py", "read_messages_chained"),
+        # SEL audit log `recent` (the class binds sel_reader's), not a transcript.
+        ("kiro_crew/sel.py", "recent"),
         ("kiro_crew/slack/gateway_runtime/cron_delivery.py", "read_messages"),
         ("kiro_crew/slack/gateway_runtime/nudge_wiring.py", "read_messages"),
         # A yes/no "does this session already have turns" check on its OWN

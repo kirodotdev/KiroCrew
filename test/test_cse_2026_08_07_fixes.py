@@ -375,7 +375,7 @@ class TestFileSendErrorRedaction:
         validation branch.
         """
         src = (Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
-               / "dashboard" / "handlers" / "files.py").read_text(encoding="utf-8")
+               / "dashboard" / "file_api" / "channel_upload.py").read_text(encoding="utf-8")
         handler = src.split("async def api_slack_upload_file", 1)[1]
         handler = handler.split("\nasync def ", 1)[0]
         return handler.rsplit("except Exception as e:", 1)[1]

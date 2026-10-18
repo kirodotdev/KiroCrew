@@ -535,6 +535,18 @@ def test_a_path_needing_markdown_quoting_is_angle_wrapped(tmp_path):
     assert out == f"![s](<{_dest(stored)}>)"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="'>' is not a legal Windows path character")
+def test_an_escaped_angle_in_a_wrapped_source_path_is_replaced_whole(sessions, tmp_path):
+    """The rewrite closes the wrap where the scanner does, so no path tail is left behind."""
+    source = _write_png(tmp_path / "scr>atch" / "shot.png")
+    escaped = str(source).replace(">", "\\>")
+
+    out = persist_inline_images(f"![s](<{escaped}>)", sessions_dir=sessions, stem=STEM)
+
+    stored = next(attachments_dir(sessions, STEM).iterdir())
+    assert out == f"![s](<{_dest(stored)}>)"
+
+
 def test_fenced_and_escaped_references_are_left_as_written(sessions, tmp_path):
     """Literal text, not markup -- the shared scanner already knows the difference."""
     source = _write_png(tmp_path / "scratch" / "shot.png")

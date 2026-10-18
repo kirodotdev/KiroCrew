@@ -14,7 +14,7 @@ Every case asserts real behaviour — a status code, a response ``code`` field,
 or whether a collaborator was called — not merely that a line executed.
 
 Helpers (`_request`, `_payload`, `_enabled_owner_env`, ``ACCOUNT``) mirror the
-conventions in ``test_aws_control_app.py`` so the two files build requests and
+conventions in ``aws_control_app_helpers.py`` so the two files build requests and
 patch the environment identically; they are copied here because they are
 module-private there and the two files must not edit each other.
 """
@@ -27,6 +27,7 @@ import inspect
 import json
 import logging
 import re
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -193,7 +194,12 @@ class TestHelpers:
         # every call site must `await` the wrapper, directly or through
         # `asyncio.shield` (the post-side-effect sites). Same style as
         # test_api_health.py::test_every_middleware_denial_is_audited_off_the_loop.
-        src = inspect.getsource(routes_mod)
+        # The facade and every owner it serves: the handlers live in
+        # ``routes_parts`` and are reached through ``routes``.
+        src = "\n".join(
+            inspect.getsource(module)
+            for module in (routes_mod, *(sys.modules[name] for name in routes_mod._OWNERS))
+        )
         sites = [m for m in re.finditer(r"_audit\(", src) if not src[: m.start()].endswith("def ")]
         assert len(sites) >= 13, "expected the module's audit call sites to be present"
         for m in sites:
@@ -476,7 +482,7 @@ class TestDriveList:
 
 # ---------------------------------------------------------------------------
 # Drive download — invalid key + aws error (success/backup/publish/missing
-# covered in test_aws_control_app.py)
+# covered in test_aws_control_app.py and test_aws_control_app_hardening.py)
 # ---------------------------------------------------------------------------
 
 

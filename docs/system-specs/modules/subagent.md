@@ -6,6 +6,8 @@ The subagent module (`kiro_crew/subagent.py`) spawns isolated background agents 
 
 Supports `on_tool_approval` callback for interactive tool approval (routed through gateway's approval system in Normal/Trust modes).
 
+See also: [context management § 3](../../architecture/context-management.md#3-sub-agent-sessions-spawn_run), which restates what a child session's context carries.
+
 Subagent admission captures a frozen `ExecutionContext` before queueing,
 approval or provider allocation. An ordinary child inherits its parent's member
 and store. Explicit `target_member` (and Crew dispatch's member selector) resolves
@@ -1154,19 +1156,48 @@ Admission order (`subagent_manager/admission/gate.py::spawn_impl`):
    (step 4, `low_memory`) is not also held: the floor's verdict outranks the
    kernel's, and that wait carries no pressure clock. Then the **atomic
    claim** for persistent work (`admitted`, generation++). A row cancelled while it waited fails the
-   claim here and is never started. Every claim the store took then re-reads
-   its row (`taskq_claim_still_current`: still `admitted`, same generation, our
-   lease; a generation-0 claim of a row the store never saw has nothing to
-   re-read and skips it:
-   `test_taskq_admission_integration.py::test_a_claim_of_a_row_the_store_never_saw_still_starts`)
-   and checks the loop for a stop recorded while the claim was in flight
+   claim here and is never started. Every claim the store took then checks the
+   loop for a stop recorded while the claim was in flight
    (`_stopped_while_claimed`: a stopped or ended `_agents` record, which is what a
-   queued-stop report installs). Either one refuses the start, so a row Stop all
-   cancelled between the claim and the registration ends stopped and never
-   starts. Nothing awaits between these checks and registration. If that post-claim store step is
+   queued-stop report installs) and, finding none, takes the start in the store:
+   one compare-and-set `admitted -> starting` fenced on the claim's generation
+   (`taskq_claim_start`, awaited on the writer thread). The store decides whether
+   the claimer still owns the row: a cancel that committed first, by any path,
+   bumped the generation and the write is refused; a cancel that commits later
+   finds a `starting` row no unstarted-row cancel accepts. Either check refuses
+   the start, so a row cancelled between the claim and the registration ends
+   stopped and never starts, and no cancel lands on a row a run registers over.
+   A generation-0 claim of a row the store never saw has no row to move and
+   skips the write
+   (`test_taskq_claim_start.py::test_a_claim_of_a_row_the_store_never_saw_still_starts`).
+   Nothing awaits between the taken start and registration; while the start is
+   in flight and until the row is registered or refused, `_starting_claims`
+   holds its answer, which a single `cancel` of a `starting` row with no record
+   joins before reaping the run. If the start write is
    unavailable, `_retained_claims` keeps the admitted generation and its reserved
    slot, and the next pump settlement pass retries it before ordinary refill.
-   Registration consumes the reservation; a durable refusal releases it.
+   Registration consumes the reservation; a durable refusal releases it. Every
+   taken start the claimer does not register -- a re-entry that raises before it
+   registers (the exception still propagates; one that raises after registering
+   keeps its live run and slot), a re-entry that returns without registering
+   (gateway admission closed meanwhile), or a claimer cancelled while it awaits
+   the shielded start write -- is released by one generation-fenced `starting ->
+   retry_wait` write (`_release_taken_start`), so the accepted row is claimable
+   again on the next pump pass
+   (`test_taskq_claim_start.py::test_a_reentry_refused_by_closed_admission_releases_the_start_to_retry_wait`,
+   `test_taskq_claim_start.py::test_a_release_queued_behind_another_writer_job_survives_the_claimers_cancel`,
+   `test_overload_integration_glue.py::test_a_raise_inside_reenter_releases_the_reservation`).
+   The release write is shielded from the claimer's cancel and its outcome is
+   accounted for before cancellation propagates.
+   If that release is unavailable, the claim keeps its generation and reserved
+   slot in `_retained_claims`, just like a start-write outage. The retry's start
+   write is idempotent for the claim's own `starting` row (same generation and
+   this store's lease), so the retry registers or releases without reserving a
+   second slot. A retained claim's `starting` row has no run and no claimer in
+   flight, so a single `cancel` or Stop all stops it like a retained `admitted`
+   row, and the retry then meets the stop's record and is refused. A cancelled claimer retains only while the manager is not
+   shutting down and still propagates its cancellation; shutdown leaves the
+   logged row to the boot reconcile.
 6. Register, take the slot, `starting`; then the approval branch below.
 
 **Every wait is labelled with the verdict that caused it.** Steps 4 and 5 set
@@ -1939,26 +1970,45 @@ yet, the same set the queued count reads: claimable rows and `admitted` rows
 nothing registered (a claim the pump is awaiting, or a retained one; a direct
 `spawn_async` claim is still in `_admitting_ids`, which `taskq_excluded_ids`
 leaves out of this pass). Stop all cancels such a row, and the claimer's
-post-claim re-read (step 5 of `spawn`) then refuses it, so a row stopped
-between its claim and its start never starts. A row the pump registered while the store read was in flight is a
+generation-fenced `admitted -> starting` write (step 5 of `spawn`) is then
+refused, so a row stopped
+between its claim and its start never starts. A claim retained after its
+release could not reach the store holds a `starting` row with no run and no
+claimer in flight; the pass names it too (the retained ids are read on the loop
+and handed to the store read), the batched cancel accepts it as a retained
+claim's row, and the retry then meets the stop's record and is refused. A row the pump registered while the store read was in flight is a
 live run: the queued pass leaves it out of its cancel job and the running
-sweep reaps it. A claimer whose re-read was queued ahead of the cancel job
-answers before the cancel lands, and it can resume before the batch's answer
-installs any record; it finds the row in `_batched_stops`, waits for that
-answer and re-reads behind the cancel, so it refuses the start instead of
-registering a run the cancel ends under it (counted once as queued, once as
-running). The
+sweep reaps it. A claimer whose start write was queued ahead of the cancel job
+has moved the row to `starting` before the cancel lands; the cancel does not
+accept that row, so the batch neither cancels nor reports it, and the run the
+claimer registered is reaped and counted once, as running -- never a run the
+cancel ends under it (counted once as queued, once as running). A row whose
+start write lands before the pending read is `starting` and has no `_agents`
+record yet, so neither pass reads it as unstarted: the running sweep also takes
+this parent's rows whose start is in flight (`starting_claim_ids_for`, filed in
+`_starting_claims` with their parent beside them) and stops each through
+`cancel`, which joins the start and reaps the run it registered. The
 queued-stop report never installs its synthetic record over a registered
 run's `_agents` record, since every running sweep skips a `queued` record and
 nothing would stop the run behind it, and it leaves what this process kept for
 that run's start (`_forget_pending_start`: a memory-pressure hold the run may
 still be waiting under) to the run's own start. Pinned by
-`test_taskq_admission_integration.py::test_stop_all_between_claim_and_start_keeps_the_row_stopped`,
+`test_taskq_claim_start.py::test_stop_all_between_claim_and_start_keeps_the_row_stopped`,
 `::test_a_row_registered_during_stop_alls_read_is_reaped_not_replaced`,
-`::test_a_claim_resumed_between_stop_alls_post_and_answer_refuses_the_start`,
-`::test_a_queued_stop_never_replaces_a_registered_record` and, for a cancel that
-reaches the row through the store alone,
-`::test_a_store_only_cancel_between_claim_and_start_refuses_the_start`.
+`::test_a_claim_resumed_between_stop_alls_post_and_answer_is_reaped_once`,
+`::test_a_queued_stop_never_replaces_a_registered_record`,
+`::test_a_retained_claim_stop_all_cancelled_is_refused_on_retry`,
+`::test_a_retained_starting_claim_is_stopped_and_refused_on_retry`,
+`::test_a_single_stop_between_the_taken_start_and_registration_reaps_the_run`,
+`::test_a_parent_cancel_cascade_reaps_a_child_whose_start_is_in_flight`,
+`::test_stop_all_reaching_a_start_in_flight_after_its_pending_read_stops_the_run`,
+`::test_a_claimer_cancelled_under_its_start_write_releases_the_row`,
+`::test_a_reentry_refused_by_closed_admission_releases_the_start_to_retry_wait`,
+`::test_a_release_outage_retains_the_claim_and_the_retry_registers_it`,
+`::test_a_cancelled_claimer_retains_a_release_outage_unless_shutting_down`
+and, for a cancel that reaches the row through the store alone,
+`::test_a_store_only_cancel_between_claim_and_start_refuses_the_start` and
+`::test_a_store_only_cancel_after_the_start_was_taken_cannot_end_an_unstarted_row`.
 The rows' store cancels never run on the loop: a synchronous cancel there holds
 it for the store's busy timeout, once per row, whenever the store is contended
 (one measured Stop all froze the gateway for 10 s that way). Each pass
@@ -3874,7 +3924,7 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
   done (and `spawn_steer` then answers `not_running`, a dead end), refused
   `release_conversation`, and made the TTL sweep refresh `last_used` on a
   conversation nothing holds, so its session files were never deleted. Pinned by
-  `test_subagent_continuable.py::test_a_stale_resume_entry_does_not_hold_a_conversation`,
+  `test_subagent_continuable_runs.py::test_a_stale_resume_entry_does_not_hold_a_conversation`,
   which also pins that an UNSTARTED entry on the same conversation still holds it.
   Off-loop promotion lets `update_state` acquire that non-reentrant writer lock
   normally, avoiding self-deadlock while preserving serialization.
@@ -4213,7 +4263,7 @@ Decision + lifecycle:
   queued start (acp-client.md § Session-start gate) would add to it.
   `_run_inner` passes `on_gate_queued` / `on_gate_acquired` into `get_or_create`,
   which fires them around `_start_sem` itself; they ride `extra_factory_kwargs`
-  to the provider factory (`config/loader.py` `_acp`, where they are NAMED
+  to the provider factory (`config/loader_config.py` `_acp`, where they are NAMED
   parameters -- the `**_kwargs` catch-all would swallow them silently), into
   `AcpProvider(on_gate_acquired=...)`, and from `_start_kiro_runtime_impl` into
   both `runtime.spawn` calls and the process's `create_session`. Each callback

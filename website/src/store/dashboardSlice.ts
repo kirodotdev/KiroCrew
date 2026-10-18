@@ -54,6 +54,23 @@ interface DashboardState {
   slots: ChatSlot[]
   /** Increments for every accepted authoritative full-slot frame/reply. */
   slotsGeneration: number
+  /** Highest pinned-order revision (`pin_rev`) whose ranks the rows hold. A
+   *  frame or answer with a lower one was serialized before a write whose
+   *  ranks are already applied, so its ranks are ignored. */
+  pinOrderRev?: number
+  /** The latest reorder gesture while its write is queued or in flight. It
+   *  lives here, not in the sidebar, so a sidebar that remounts mid-write
+   *  derives the next gesture from it rather than from an earlier answer. */
+  pendingPinOrder?: string[] | null
+  /** Why the last pinned-order write failed, shown above the sidebar list
+   *  until dismissed or the next reorder; '' when there is nothing to show. */
+  pinOrderError?: string
+  /** The manual order's counterparts of the three fields above (sort
+   *  "Manual"): the highest `manual_rev` applied, the latest gesture's whole
+   *  order while its writes are queued, and the last write's failure text. */
+  manualOrderRev?: number
+  pendingManualOrder?: string[] | null
+  manualOrderError?: string
   /** Per-key optimistic/reconciliation pin writes, independent of other slot fields. */
   slotPinGenerations: Record<string, number>
   /** Last failed mute toggle, one record for both user-owned mute flags
@@ -317,6 +334,12 @@ const initialState: DashboardState = {
   connected: false,
   slots: [],
   slotsGeneration: 0,
+  pinOrderRev: 0,
+  pendingPinOrder: null,
+  pinOrderError: '',
+  manualOrderRev: 0,
+  pendingManualOrder: null,
+  manualOrderError: '',
   slotPinGenerations: {},
   slotMuteFlagError: {},
   closingSlots: {},
@@ -783,7 +806,67 @@ const membersOutranking = (state: DashboardState, requestId: string | undefined)
   return added
 }
 
-const applySlots = (state: DashboardState, incomingRows: ChatSlot[]): void => {
+/** The gateway orders a slot row carries a place in: the place field, the
+ *  revision field beside it, and the state field holding the highest revision
+ *  whose places the rows hold. */
+const ORDER_GATES = [
+  { rank: 'pin_rank', rev: 'pin_rev', applied: 'pinOrderRev' },
+  { rank: 'manual_rank', rev: 'manual_rev', applied: 'manualOrderRev' },
+] as const
+type OrderGate = typeof ORDER_GATES[number]
+
+/** *rows* with one order's revision folded into its state field. The revision
+ *  is not kept on the rows (every row would change on every reorder). Rows
+ *  from a list older than the places already applied keep the places they
+ *  have. A list with no revision (a scoped stream) passes as is. */
+const gateOrder = (state: DashboardState, rows: ChatSlot[], gate: OrderGate): ChatSlot[] => {
+  let rev = -1
+  for (const row of rows) {
+    const value = row[gate.rev]
+    if (typeof value === 'number' && value > rev) rev = value
+  }
+  if (rev < 0) return rows
+  const stale = rev < (state[gate.applied] ?? 0)
+  if (!stale) state[gate.applied] = rev
+  const current = stale ? new Map((state.slots ?? []).map(s => [s.key, s])) : null
+  return rows.map(row => {
+    const { [gate.rev]: _rev, ...rest } = row
+    const existing = current?.get(row.key)
+    return existing ? { ...rest, [gate.rank]: existing[gate.rank] ?? null } : rest
+  })
+}
+
+/** Paint one order onto the rows. A bare list is the person's own gesture,
+ *  shown before the gateway answers; `{order, rev}` is the gateway's answer,
+ *  applied only if no newer revision of that order has landed since. A row
+ *  `placed` rejects holds no place in it. */
+const paintOrder = (
+  state: DashboardState,
+  payload: string[] | { order: string[]; rev: number },
+  gate: OrderGate,
+  placed: (slot: ChatSlot) => boolean,
+): void => {
+  let order: string[]
+  if (Array.isArray(payload)) order = payload
+  else {
+    if (payload.rev < (state[gate.applied] ?? 0)) return
+    state[gate.applied] = payload.rev
+    order = payload.order
+  }
+  const rank = new Map(order.map((key, index) => [key, index]))
+  patchSlotRowsWhere(state, slot => {
+    const next = placed(slot) ? (rank.get(slot.key) ?? null) : null
+    if ((slot[gate.rank] ?? null) === next) return false
+    slot[gate.rank] = next
+  })
+}
+
+/** *rows* gated by every order's revision (see `gateOrder`). */
+const gatePinOrder = (state: DashboardState, rows: ChatSlot[]): ChatSlot[] =>
+  ORDER_GATES.reduce((gated, gate) => gateOrder(state, gated, gate), rows)
+
+const applySlots = (state: DashboardState, rawRows: ChatSlot[]): void => {
+  const incomingRows = gatePinOrder(state, rawRows)
   // `durablyRemoved` is the durable fast path for browser-history rewrites: a
   // full list naming the key proves it is live again and clears that evidence.
   // This does not change slot-list visibility; the hold and frame budget below
@@ -1015,7 +1098,16 @@ const dashboardSlice = createSlice({
       const { slots: rows, removed } = action.payload
       for (const row of rows ?? []) {
         if (!row || typeof row.key !== 'string') continue
-        const { key, ...fields } = row
+        const { key, ...fields } = row as typeof row & { pin_rev?: number; manual_rev?: number }
+        for (const gate of ORDER_GATES) {
+          const rev = (fields as Record<string, unknown>)[gate.rev]
+          if (typeof rev !== 'number') continue
+          delete (fields as Record<string, unknown>)[gate.rev]
+          // One row's patch: a rank serialized before an applied write is
+          // dropped; a newer one moves the revision for the full list to follow.
+          if (rev < (state[gate.applied] ?? 0)) delete (fields as Record<string, unknown>)[gate.rank]
+          else state[gate.applied] = rev
+        }
         patchSlotRow(state, key, slot => {
           if (Object.keys(fields).every(field => jsonEqual(
             slotPatchCurrent(slot as unknown as Record<string, unknown>, field),
@@ -1274,6 +1366,23 @@ const dashboardSlice = createSlice({
       state.slotMuteFlagError ??= {}  // partial preloaded state
       state.slotMuteFlagError[muteFlagErrorKey(action.payload.flag, action.payload.key)] = action.payload.message
     },
+    /** Paint a pinned order. A bare list is the person's own gesture, shown
+     *  before the gateway answers; `{order, rev}` is the gateway's answer,
+     *  applied only if no newer revision has landed since. */
+    setPinRanks(state, action: PayloadAction<string[] | { order: string[]; rev: number }>) {
+      paintOrder(state, action.payload, ORDER_GATES[0], slot => !!slot.pinned)
+    },
+    setPendingPinOrder(state, action: PayloadAction<string[] | null>) { state.pendingPinOrder = action.payload },
+    setPinOrderError(state, action: PayloadAction<string>) { state.pinOrderError = action.payload },
+    /** Paint the manual order (sort "Manual"), the same two ways as
+     *  `setPinRanks`. Every slot may hold a place, pinned or not: a pinned row
+     *  draws in the pinned order and keeps its manual place for when it is
+     *  unpinned. */
+    setManualRanks(state, action: PayloadAction<string[] | { order: string[]; rev: number }>) {
+      paintOrder(state, action.payload, ORDER_GATES[1], () => true)
+    },
+    setPendingManualOrder(state, action: PayloadAction<string[] | null>) { state.pendingManualOrder = action.payload },
+    setManualOrderError(state, action: PayloadAction<string>) { state.manualOrderError = action.payload },
     triggerRefresh(state) { state.refreshTrigger += 1 },
     /** DUAL PAYLOAD SHAPE — the form IS the semantics. String payload =
      *  MANUAL reminder: records the relay-immune sentinel; only a local read
@@ -1646,7 +1755,7 @@ const dashboardSlice = createSlice({
 })
 
 export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
-  setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink, dropSlotLinks } = dashboardSlice.actions
+  setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink, dropSlotLinks, setPinRanks, setPendingPinOrder, setPinOrderError, setManualRanks, setPendingManualOrder, setManualOrderError } = dashboardSlice.actions
 
 /**
  * Resolve a slot's surface key. Backend emits `surface` (mirrors `mode` today

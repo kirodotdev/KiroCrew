@@ -19,6 +19,15 @@ function setup(over: Partial<ComposerAttachmentsOptions> = {}) {
 }
 
 describe('useComposerAttachments', () => {
+  it('stage adds gateway-side paths after the staged ones, deduped, with no upload or grant', () => {
+    const { post, hook } = setup({ granted: false })
+    act(() => { hook.result.current.stage(['/w/a.ts']) })
+    act(() => { hook.result.current.stage(['/w/b.ts', '/w/a.ts']) })
+    expect(hook.result.current.files).toEqual(['/w/a.ts', '/w/b.ts'])
+    expect(post).not.toHaveBeenCalled()
+    expect(hook.result.current.notice).toBe('')
+  })
+
   it('without the grant posts nothing and shows the host notice', () => {
     const { post, hook } = setup({ granted: false })
     act(() => { hook.result.current.addFiles([pdf()]) })

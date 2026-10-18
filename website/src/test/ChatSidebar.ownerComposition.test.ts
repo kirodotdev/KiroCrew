@@ -111,6 +111,7 @@ describe('the facade composition', () => {
   const CALL_ORDER = [
     'useSessionSources', 'useDebouncedSessionSearch', 'useSessionRename', 'useSessionAutoTitle', 'useSessionSort', 'useSidebarLane',
     'useSessionFilterState', 'useSessionStatusFilters', 'useHistoryPane', 'useSessionCleanup', 'useBulkModelSwitch', 'usePinnedSessionOrder',
+    'useManualSessionOrder',
     'useStaleCollapse', 'useFolderSort', 'useFolderRename', 'useSidebarTags',
     'useSidebarModels', 'useBoardColumns', 'useSidebarResize', 'useFullTitlesOnScrollSetting', 'usePinnedOrderAuthority', 'useColumnPopover', 'useBoardColumnMutations',
     'useColumnMatches', 'useFolderVisibility', 'useStaleMoveWatcher', 'useSearchMatches',
@@ -119,7 +120,7 @@ describe('the facade composition', () => {
     'useFolderFilterRows', 'useFolderMutations', 'useHoldPinnedHeaderOnCollapse', 'useRowAnimSettled', 'useBoardFolderCollapse',
     'useNativeSessionDrag', 'useFolderDropOps',
     'useFolderTree', 'useSidebarReveal', 'useSidebarMoveUndo', 'useSidebarDragHandlers',
-    'useFolderChatCreate', 'useSessionCreate', 'usePinnedKeyboardReorder', 'useRootFolderLanes',
+    'useFolderChatCreate', 'useSessionCreate', 'usePinnedKeyboardReorder', 'useManualKeyboardReorder', 'useRootFolderLanes',
   ]
 
   it('calls every owner hook once, in the pinned order', () => {

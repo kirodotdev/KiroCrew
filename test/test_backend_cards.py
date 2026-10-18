@@ -554,21 +554,22 @@ def test_the_payload_carries_every_field_the_panel_reads() -> None:
 def _comment_block_above(name: str) -> str:
     """The contiguous ``#`` comment block directly above set *name*'s definition.
 
-    Read out of the vocabulary module's own SOURCE rather than out of a docstring,
-    because that is where the reason for a non-membership is actually written: these
-    sets carry their evidence in the comment above the assignment, and the rule this
-    gate enforces is about that text.
+    Read out of the vocabulary's own SOURCE (the module and its ``backends_*`` owners)
+    rather than out of a docstring, because that is where the reason for a non-membership
+    is actually written: these sets carry their evidence in the comment above the
+    assignment, and the rule this gate enforces is about that text.
     """
-    lines = VOCABULARY_MODULE.read_text(encoding="utf-8").splitlines()
-    for index, line in enumerate(lines):
-        if not line.startswith(f"{name} ") and not line.startswith(f"{name}:"):
-            continue
-        block: list = []
-        cursor = index - 1
-        while cursor >= 0 and lines[cursor].lstrip().startswith("#"):
-            block.append(lines[cursor])
-            cursor -= 1
-        return "\n".join(reversed(block))
+    for source in (VOCABULARY_MODULE, *sorted(VOCABULARY_MODULE.parent.glob("backends_*.py"))):
+        lines = source.read_text(encoding="utf-8").splitlines()
+        for index, line in enumerate(lines):
+            if not line.startswith(f"{name} ") and not line.startswith(f"{name}:"):
+                continue
+            block: list = []
+            cursor = index - 1
+            while cursor >= 0 and lines[cursor].lstrip().startswith("#"):
+                block.append(lines[cursor])
+                cursor -= 1
+            return "\n".join(reversed(block))
     raise AssertionError(f"no assignment of {name} found in {VOCABULARY_MODULE.name}")
 
 

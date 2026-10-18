@@ -504,7 +504,7 @@ def restrict_to_owner(path: str | os.PathLike) -> None:
     That decision is deliberately not a parameter here: by the time this function
     is reached the caller has already done whatever filesystem work it took to get
     here, so a refusal at this depth would come after the cost it was meant to
-    avoid. ``config/loader.py``'s ``write_config_atomically`` is the one such
+    avoid. ``config/loader_document.py``'s ``write_config_atomically`` is the one such
     caller today.
     """
     from kiro_crew.platform_compat import IS_POSIX

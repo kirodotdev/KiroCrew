@@ -325,7 +325,7 @@ nothing else.
 §3.1 extracts the seam the *gateway* branches on. The dashboard branches on the
 same string independently, and it does so with non-exhaustive conditionals whose
 final arm is `ssh`. `connectionTypeLabel` and `connectionTypeHint`
-(`website/src/pages/settings/RemoteCrewPanel.tsx`) end in the SSH label and the
+(`website/src/pages/settings/RemoteCrewPanelCrewRow.tsx`) end in the SSH label and the
 SSH hint; the card's target line reads `ssm_target` for an SSM-family method and
 `ssh_host` otherwise; and the diagnostics handoff passes a `transport` of `ssm`
 or `ssh` into `reportInstanceFailure`

@@ -710,7 +710,7 @@ _KERNEL_PSEUDO_FILE_READERS = {
 # Fenced from agent file tools by security._CREW_SECRET_LEAVES, so it is outside
 # this issue's "agent-writable" premise. It is the tamper-evident audit chain, so
 # if it is ever bounded the posture must be abort/count, never skip.
-_FENCED_READERS = {"sel.py"}
+_FENCED_READERS = {"sel_reader.py", "sel_rotation.py"}
 
 # DEFERRED, not excused: nothing is deferred today. `snapshot._merge_notifications`
 # was the one entry, and it is converted -- it reads both the destination and the
@@ -748,7 +748,7 @@ class TestNoUnboundedHandleIteration:
     def test_every_handle_iteration_is_bounded_or_excused(self):
         src = Path(kiro_crew.__file__).parent
         # Detect by the handle-name vocabulary this codebase uses, not by a
-        # fixed window after the `with`: sel.py binds its handle several lines
+        # fixed window after the `with`: sel_reader.py binds its handle several lines
         # earlier (`handle = self._reader_handle(...)`, then `with handle:`),
         # which a distance-based match misses. A file is only considered if it
         # opens something at all, so a loop over a list that happens to be

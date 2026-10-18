@@ -35,7 +35,6 @@ from __future__ import annotations
 # not a call at runtime, and test_gateway_runtime_bindings.py checks that each import is read.
 import asyncio
 import contextlib
-import functools
 import hashlib
 import importlib
 import importlib.util

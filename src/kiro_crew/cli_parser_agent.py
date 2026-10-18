@@ -715,6 +715,14 @@ def register_agent_parser(sub: _Commands) -> None:
         default="default",
         help="Create a fresh member store (already enabled for explicit member creation)",
     )
+    agent_create.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "Default model for the agent's sessions; omitted or 'auto', it follows "
+            "the template's pinned model, then agent.model"
+        ),
+    )
     agent_update = agent_sub.add_parser("update", help="Update a Kiro Crew agent")
     agent_update.add_argument("name", help="Agent name to update")
     agent_update.add_argument("--kiro-agent", help="New kiro agent name")
@@ -728,6 +736,13 @@ def register_agent_parser(sub: _Commands) -> None:
         help=(
             "Existing memory store identity (cannot be changed, except to 'default' "
             "from a store name the config refuses)"
+        ),
+    )
+    agent_update.add_argument(
+        "--model",
+        help=(
+            "New default model for the agent's sessions; \"\" or 'auto' clears the pin "
+            "so it follows the template's pinned model, then agent.model"
         ),
     )
     agent_delete = agent_sub.add_parser("delete", help="Delete a Kiro Crew agent")

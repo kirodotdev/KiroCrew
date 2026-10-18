@@ -5,11 +5,14 @@
  *     the gateway's PATH: the row names the helper and says to give it a full path,
  *     with the AWS CLI's own error underneath on its own monospace line.
  *  2. The Session Manager plugin row when the plugin is installed but the provenance
- *     check refused it, and AWS's package tree is owned by a third account: the row
- *     says where it was found and why, links AWS's install page for the reinstall it
- *     asks for, and the copyable command is the chown that clears it, not the install
- *     command.
- *  3. The same refusal with no known fix: the reason, and no command.
+ *     check refused it, and AWS's package tree is owned by a third account: the alert
+ *     says where it was found and why, in the dashboard's own words, with the check's
+ *     reason as its smaller second line; the reinstall caution, AWS's install page and
+ *     the steps sit under the alert as plain text; the copyable command is the chown
+ *     that clears it, with a line saying where it runs and what it changes.
+ *  3. The same refusal with no known fix, for a named owner: the reason, the next
+ *     step as plain text, and no command.
+ *  4. A strict-policy refusal: its own sentence and its own next step, no command.
  *
  * Each row shows one warning triangle: its own status circle.
  *
@@ -40,6 +43,9 @@ const PREFLIGHT_OK = {
   session_manager_plugin_command: '',
   session_manager_plugin_refused_path: '',
   session_manager_plugin_refused_reason: '',
+  session_manager_plugin_refused_code: '',
+  session_manager_plugin_refused_owner: '',
+  session_manager_plugin_refused_owner_uid: null,
   credential_helper_missing: '',
   note: '',
   detail: '',
@@ -65,12 +71,25 @@ const PLUGIN_REFUSED_FIX = {
   session_manager_plugin_command: 'sudo chown -R root:wheel /usr/local/sessionmanagerplugin',
   session_manager_plugin_refused_path: '/usr/local/sessionmanagerplugin/bin/session-manager-plugin',
   session_manager_plugin_refused_reason: 'executable parent is owned by another user (uid 1501)',
+  session_manager_plugin_refused_code: 'other_owner',
+  session_manager_plugin_refused_owner: '',
+  session_manager_plugin_refused_owner_uid: 1501,
 }
 
 const PLUGIN_REFUSED_NO_FIX = {
   ...PLUGIN_REFUSED_FIX,
   session_manager_plugin_command: '',
   session_manager_plugin_refused_reason: 'executable is owned by another user (uid 502)',
+  session_manager_plugin_refused_owner: 'builder',
+  session_manager_plugin_refused_owner_uid: 502,
+}
+
+const PLUGIN_REFUSED_STRICT = {
+  ...PLUGIN_REFUSED_NO_FIX,
+  session_manager_plugin_refused_reason: 'executable parent is not root-owned',
+  session_manager_plugin_refused_code: 'strict_policy',
+  session_manager_plugin_refused_owner: '',
+  session_manager_plugin_refused_owner_uid: null,
 }
 
 const AWS_EC2_ROW = {
@@ -150,12 +169,15 @@ world.preflight = HELPER_MISSING
 for (const theme of ['dark', 'light']) {
   const { page, row } = await openRow(theme, 'AWS credentials')
   const text = await row.innerText()
-  if (!/could not find sso-cred-helper on the gateway’s PATH/.test(text)) {
-    fail(`${theme}: the row must name the missing helper: ${JSON.stringify(text)}`)
+  // The edit leads, naming the file and the setting; PATH comes after; then how to
+  // find the full path.
+  if (!/^Give sso-cred-helper its full path in the credential_process line of your AWS config file \(usually ~\/\.aws\/config\), then re-check\./m.test(text)) {
+    fail(`${theme}: the row must lead with the fix, naming the AWS config file: ${JSON.stringify(text)}`)
   }
-  if (!/full path in the credential_process line/.test(text)) {
-    fail(`${theme}: the row must say how to fix it: ${JSON.stringify(text)}`)
+  if (!/could not find it on the gateway’s PATH\. To get the full path, run which sso-cred-helper in a terminal on the computer that runs .+, from the account that runs it\./.test(text)) {
+    fail(`${theme}: the row must say why and how to find the full path: ${JSON.stringify(text)}`)
   }
+  if (/It is usually the program/.test(text)) fail(`${theme}: the hedge sentence must be gone`)
   if (!/No such file or directory: 'sso-cred-helper'/.test(text)) {
     fail(`${theme}: the AWS CLI's own error must stay under the sentence`)
   }
@@ -181,10 +203,22 @@ for (const theme of ['dark', 'light']) {
   if (!/Found at \/usr\/local\/sessionmanagerplugin\/bin\/session-manager-plugin/.test(text)) {
     fail(`${theme}: the row must say where the plugin was found: ${JSON.stringify(text)}`)
   }
-  if (!/owned by another user \(uid 1501\)/.test(text)) fail(`${theme}: the row must give the reason`)
+  const alert = row.locator('[role="alert"]')
+  const alertText = await alert.innerText()
+  if (!/belongs to another account \(user ID 1501, which has no name on the computer that runs /.test(alertText)) {
+    fail(`${theme}: the alert must give the reason in its own words: ${JSON.stringify(alertText)}`)
+  }
+  if ((await alert.locator('.font-mono', { hasText: 'owned by another user (uid 1501)' }).count()) !== 1) {
+    fail(`${theme}: the check's own reason must stay in the notice as its monospace second line`)
+  }
+  if (/reinstall/.test(alertText)) fail(`${theme}: the reinstall caution must sit outside the alert`)
   if (!/reinstall it from AWS first\. Then run the command below/.test(text)) {
     fail(`${theme}: the row must ask for AWS provenance before the ownership command`)
   }
+  if (!/Run it in a terminal on the computer that runs .+, from an administrator account: sudo asks for that account’s password\./.test(text)) {
+    fail(`${theme}: the command must say where it runs and what sudo asks for`)
+  }
+  if (/Run it in a terminal/.test(alertText)) fail(`${theme}: the command note must sit outside the alert`)
   if (!/sudo chown -R root:wheel \/usr\/local\/sessionmanagerplugin/.test(text)) {
     fail(`${theme}: the copyable command must be the chown that clears the refusal`)
   }
@@ -207,14 +241,48 @@ world.preflight = PLUGIN_REFUSED_NO_FIX
 for (const theme of ['dark', 'light']) {
   const { page, row } = await openRow(theme, 'Session Manager plugin')
   const text = await row.innerText()
-  if (!/owned by another user \(uid 502\)/.test(text)) fail(`${theme}: the row must give the reason`)
-  if (!/Fix the file’s ownership or permissions/.test(text)) fail(`${theme}: the row must name the remedy`)
+  const alertText = await row.locator('[role="alert"]').innerText()
+  if (!/belongs to another account \(builder, user ID 502\)/.test(alertText)) {
+    fail(`${theme}: the alert must name the owning account and its user ID: ${JSON.stringify(alertText)}`)
+  }
+  if (!/Fix the file’s ownership or permissions, then re-check\. If you are not sure how, use “Ask the agent”\./.test(text)) {
+    fail(`${theme}: the row must name the remedy and the hand-off`)
+  }
+  if (/Fix the file’s ownership/.test(alertText)) fail(`${theme}: the next step must sit outside the alert`)
+  if (/Run it in a terminal/.test(text)) fail(`${theme}: no command note without a command`)
   if (await row.getByRole('button', { name: /Copy command/i }).count()) {
     fail(`${theme}: no Copy button with no command to copy`)
+  }
+  // No command to offer: the row points at the guide's troubleshooting entry.
+  const guide = row.getByRole('link', { name: 'Open the troubleshooting steps in the Remote Crew on EC2 guide' })
+  if (!(await guide.isVisible())) fail(`${theme}: a refusal with no command must link the guide's troubleshooting entry`)
+  else if (!/docs\/guides\/remote-crew-on-ec2\.md#set-up-pre-flight-credential-helper-not-found-or-plugin-refused$/.test(await guide.getAttribute('href'))) {
+    fail(`${theme}: the guide link must open the pre-flight troubleshooting entry`)
   }
   await oneTriangle(theme, row)
   await page.screenshot({ path: `${OUT}/03-plugin-refused-no-fix-${theme}.png`, clip: await clipOf(page, row) })
   console.log(`wrote 03 (${theme})`)
+  await page.close()
+}
+
+// ---- Frame 4: refused by the strict policy, with its own next step ----------
+
+world.preflight = PLUGIN_REFUSED_STRICT
+for (const theme of ['dark', 'light']) {
+  const { page, row } = await openRow(theme, 'Session Manager plugin')
+  const text = await row.innerText()
+  const alertText = await row.locator('[role="alert"]').innerText()
+  if (!/the strict check \(KIROCREW_PROVIDER_BIN_STRICT\) is on, and it accepts only a file and folders that only root can change, at a path with no symbolic links/.test(alertText)) {
+    fail(`${theme}: the alert must say the strict policy refused it: ${JSON.stringify(alertText)}`)
+  }
+  if (!/Install it where only root can change the file and its folders, at a path with no symbolic links, then re-check\./.test(text)) {
+    fail(`${theme}: the strict refusal needs its own next step`)
+  }
+  if (/Fix the file’s ownership or permissions/.test(text)) fail(`${theme}: the ownership step cannot clear a strict refusal`)
+  if (await row.getByRole('button', { name: /Copy command/i }).count()) fail(`${theme}: no command clears a strict refusal`)
+  await oneTriangle(theme, row)
+  await page.screenshot({ path: `${OUT}/04-plugin-refused-strict-${theme}.png`, clip: await clipOf(page, row) })
+  console.log(`wrote 04 (${theme})`)
   await page.close()
 }
 

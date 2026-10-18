@@ -180,8 +180,8 @@ RESOLVER_DEPTH = 1
 CONTROL_MODULES = (
     "acp/prompt_blocks.py",
     "apps/builtins/auto_improvement/backend/clone_setup.py",
-    "apps/builtins/aws_control/backend/backup.py",
-    "apps/builtins/issue_radar/backend/crew_store.py",
+    "apps/builtins/aws_control/backend/backup_parts/conversations.py",
+    "apps/builtins/issue_radar/backend/crew_store_unit_order.py",
     "apps/plugin_import.py",
     "dashboard/handlers/themes.py",
     "image_artifacts.py",
@@ -195,7 +195,7 @@ CONTROL_MODULES = (
 #: holding, not by being important.
 HELD_SITES = frozenset(
     {
-        ("apps/builtins/issue_radar/backend/crew_store.py", "_write_unit_order"),
+        ("apps/builtins/issue_radar/backend/crew_store_unit_order.py", "_write_unit_order"),
     }
 )
 
@@ -209,7 +209,10 @@ RELEASE_CALL = "_release_held"
 #: cannot satisfy, which is why these are numbers and a named member rather than a
 #: second copy of the lists.
 MIN_CONTROL_MODULES = 10
-REQUIRED_HELD_SITE = ("apps/builtins/issue_radar/backend/crew_store.py", "_write_unit_order")
+REQUIRED_HELD_SITE = (
+    "apps/builtins/issue_radar/backend/crew_store_unit_order.py",
+    "_write_unit_order",
+)
 
 
 def test_the_gates_own_lists_are_not_shrunk() -> None:

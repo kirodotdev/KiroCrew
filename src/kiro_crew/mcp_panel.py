@@ -313,8 +313,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "fold paths its fields read, so asking for `cost` finds the page "
                 "that shows a usage number whether or not its author used that "
                 "word. Omit `query` for all of them. This is the FIRST step of "
-                "'show me another one': list, then dashboard_preview the one that "
-                "fits, then ask the person before you apply it."
+                "'show me another one': list, then dashboard_apply with the "
+                "`template_id` that fits. dashboard_preview it first only when the "
+                "person asks to look."
             ),
             "inputSchema": {
                 "type": "object",
@@ -755,8 +756,7 @@ def _render_verification(verification: Any) -> list[str]:
         count = len(verification.get("errors") or []) + int(verification.get("omitted") or 0)
         lines = [
             f"verification: failed -- the page ran once over {ran_over} and raised {count} "
-            "error(s). Fix them and call dashboard_save again before you describe the page "
-            "to the person."
+            "error(s). Fix them and call dashboard_save again before you apply it."
         ]
         lines.extend(errors)
     else:
@@ -952,12 +952,12 @@ def _render_types(payload: dict[str, Any]) -> str:
 
 
 def _render_preview(preview: dict[str, Any]) -> str:
-    """The staged page, and the sentence that makes the agent ASK before applying.
+    """The staged page, its link, and how to put it live.
 
-    The link leads, because it is the only part the person needs. The reminder to ask
-    is last and unconditional: this tool's whole value is that it changes nothing, and
-    an agent that previews and then applies in the same breath has spent the staging
-    step without ever letting anybody look.
+    The link leads, because it is the only part the person needs: a preview is the
+    look they asked for, and it changes nothing. The apply line is last, and it tells
+    the agent to re-read its [DASHBOARD] block first, because the person may already
+    have pressed Keep or Discard on the preview.
     """
     fields = preview.get("fields")
     lines = [

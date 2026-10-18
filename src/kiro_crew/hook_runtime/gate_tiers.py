@@ -52,12 +52,13 @@ if TYPE_CHECKING:
         is_edit_call,
         is_read_only_bash,
         is_sensitive_bash_command,
-        is_sensitive_write_path,
+        is_unverifiable_path_refusal,
         mcp_identity_ref,
         policy_alias_split,
         policy_aliases,
         security,
         sensitive_path_refusal,
+        sensitive_write_path_refusal,
         target_paths,
         title_is_trusted_mcp_identity,
         untruncated_shell_title,
@@ -670,10 +671,16 @@ def _tier_write_protected(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
                 "Blocked: file edit names no target path to verify (deny-by-default)"
             )
         for wpath in candidates:
-            if is_sensitive_write_path(wpath):
-                return ToolHookResult.deny(
-                    f"Blocked: modification of write-protected config path: {wpath}"
-                )
+            # Same decision as ``is_sensitive_write_path`` (a stall still refuses);
+            # a stall gets the timed-out wording instead of naming a config file.
+            reason = sensitive_write_path_refusal(wpath)
+            if reason is None:
+                continue
+            if is_unverifiable_path_refusal(reason):
+                return ToolHookResult.deny(reason)
+            return ToolHookResult.deny(
+                f"Blocked: modification of write-protected config path: {wpath}"
+            )
     return None
 
 

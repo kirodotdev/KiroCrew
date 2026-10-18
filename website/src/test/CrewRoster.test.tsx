@@ -769,8 +769,9 @@ describe('crew editor — stale writes', () => {
    Radix commits discrete events via `ReactDOM.flushSync(...)`, Testing Library
    wraps interactions in `act()`, and React throws "Should not already be
    working." on a flushSync nested inside a flush. That file mocks SimpleSelect
-   to keep the assertion; the REAL Radix path is verified end-to-end in
-   scripts/verify-crews-dialog-select.mjs. */
+   to keep the assertion. The REAL Radix path is driven by
+   scripts/verify-crews-dialog-select.mjs, which runs on demand only
+   (`npm run verify:crews-dialog-select`); no CI lane runs it. */
 
 describe('crew editor — chat with this crew', () => {
   it('keeps the panel open and surfaces the error when the session cannot be created', async () => {

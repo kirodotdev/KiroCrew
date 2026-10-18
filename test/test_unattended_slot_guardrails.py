@@ -53,6 +53,7 @@ from kiro_crew.constants import TOOL_APPROVAL_TIMEOUT
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.safety_override import safety_override
+from kiro_crew.testing.wait import await_until
 
 _DONE = AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
 
@@ -146,9 +147,9 @@ class TestUnattendedApprovalWindow:
         writes = [ln for ln in src.splitlines() if "_human_seen = True" in ln]
         assert len(writes) == 1, "attendance must be recorded in exactly one place"
         gate = src.index("request_app = request.get")
-        assert src.index("_human_seen = True") > gate, (
-            "attendance must be recorded only after the app-ownership gate"
-        )
+        assert (
+            src.index("_human_seen = True") > gate
+        ), "attendance must be recorded only after the app-ownership gate"
 
     def test_trust_is_not_the_detector(self, tmp_path) -> None:
         """Why ``_app`` and not ``_trust``: trust is False wherever this is read.
@@ -284,7 +285,7 @@ class TestBackgroundTurnCap:
             order.append("second-start")
 
         t1 = asyncio.ensure_future(state.run_background_turn(w1, _first()))
-        await asyncio.wait_for(started.wait(), 5.0)
+        await await_until(started)
         t2 = asyncio.ensure_future(state.run_background_turn(w2, _second()))
         await asyncio.sleep(0)  # let t2 reach the semaphore and block
 
@@ -295,7 +296,7 @@ class TestBackgroundTurnCap:
         assert order == ["first-start"], "the second turn ran despite the cap"
 
         release.set()
-        await asyncio.wait_for(asyncio.gather(t1, t2), 5.0)
+        await await_until(asyncio.gather(t1, t2))
 
         assert order == ["first-start", "first-end", "second-start"]
         assert state.background_turn_stats() == {"cap": 1, "running": 0, "waiting": 0}
@@ -320,10 +321,15 @@ class TestBackgroundTurnCap:
             return "ran"
 
         t1 = asyncio.ensure_future(state.run_background_turn(worker, _held()))
-        await asyncio.wait_for(started.wait(), 5.0)
+        await await_until(started)
 
         # Cap is full, yet the human turn completes immediately.
-        assert await asyncio.wait_for(state.run_background_turn(human, _human_turn()), 5.0) == "ran"
+        assert (
+            await await_until(
+                asyncio.ensure_future(state.run_background_turn(human, _human_turn()))
+            )
+            == "ran"
+        )
         assert state.background_turn_stats()["waiting"] == 0
 
         release.set()
@@ -379,7 +385,7 @@ class TestBackgroundTurnCap:
             ran = True
 
         t1 = asyncio.ensure_future(state.run_background_turn(w1, _held()))
-        await asyncio.wait_for(started.wait(), 5.0)
+        await await_until(started)
         queued = _never()
         t2 = asyncio.ensure_future(state.run_background_turn(w2, queued))
         await asyncio.sleep(0)
@@ -388,7 +394,7 @@ class TestBackgroundTurnCap:
             # Bounded for the same reason: a regression that swallows the cancel
             # while queued leaves t2 waiting out the 1800s permit ceiling, so the
             # raises-block above would never get to report the miss.
-            await asyncio.wait_for(t2, 5.0)
+            await await_until(t2)
 
         assert ran is False
         assert queued.cr_running is False and queued.cr_frame is None, "coroutine left open"
@@ -426,7 +432,7 @@ class TestBackgroundTurnCap:
             ran = True
 
         t1 = asyncio.ensure_future(state.run_background_turn(w1, _held()))
-        await asyncio.wait_for(started.wait(), 5.0)
+        await await_until(started)
 
         # The inner bound is 0.05s (set above), so the 5s ceiling cannot mask the
         # real TimeoutError; it only converts "the wait is not bounded any more"
@@ -555,9 +561,7 @@ class TestIdleCleanupSparesArmedLoops:
         )
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/cleanup", json={"max_inactive_days": 3}
-            )
+            resp = await client.post("/api/chat/slots/cleanup", json={"max_inactive_days": 3})
             data = await resp.json()
 
         assert data["keys"] == ["worker-2"], "cleanup archived a slot owning an armed loop"
@@ -578,9 +582,9 @@ class TestIdleCleanupSparesArmedLoops:
             patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
         ):
             assert await orch._fire_dashboard_nudge(_Loop("worker-1")) is True
-        assert rehydrate.await_args.kwargs.get("adopt_closed") is True, (
-            "the nudge fire path must reach a session that idle cleanup closed"
-        )
+        assert (
+            rehydrate.await_args.kwargs.get("adopt_closed") is True
+        ), "the nudge fire path must reach a session that idle cleanup closed"
 
     @pytest.mark.asyncio
     async def test_an_inactive_loop_does_not_pin_a_dead_slot_forever(
@@ -600,9 +604,7 @@ class TestIdleCleanupSparesArmedLoops:
         )
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/cleanup", json={"max_inactive_days": 3}
-            )
+            resp = await client.post("/api/chat/slots/cleanup", json={"max_inactive_days": 3})
             data = await resp.json()
 
         assert data["keys"] == ["worker-1"]
@@ -623,9 +625,7 @@ class TestIdleCleanupSparesArmedLoops:
         monkeypatch.setattr("kiro_crew.autonudge.get_instance", _boom)
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/cleanup", json={"max_inactive_days": 3}
-            )
+            resp = await client.post("/api/chat/slots/cleanup", json={"max_inactive_days": 3})
             data = await resp.json()
 
         assert data["archived"] == 0
@@ -634,7 +634,7 @@ class TestIdleCleanupSparesArmedLoops:
 
     @pytest.mark.asyncio
     async def test_the_users_close_still_retires_the_loop(self, tmp_path, monkeypatch) -> None:
-        """"Respect the close" survives adopt_closed=True.
+        """ "Respect the close" survives adopt_closed=True.
 
         The rule is not an emergent property of the fire path's rehydrate
         miss: since the fire path adopts a closed session, the ✕ handler has
@@ -661,9 +661,9 @@ class TestIdleCleanupSparesArmedLoops:
             resp = await client.delete("/api/chat/slots/chat-1-1785")
             assert resp.status == 200
 
-        assert removed == ["chat-1-1785"], (
-            "the user's ✕ must retire the slot's current nudge generation"
-        )
+        assert removed == [
+            "chat-1-1785"
+        ], "the user's ✕ must retire the slot's current nudge generation"
 
     @pytest.mark.asyncio
     async def test_the_users_close_tells_the_owning_app(self, tmp_path, monkeypatch) -> None:
@@ -798,17 +798,17 @@ class TestIdleCleanupSparesArmedLoops:
                 return super().pop(key, *a)
 
         state._slots = _WatchedSlots(state._slots)
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_handlers._retire_slot_nudge_loop", _retire
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._retire_slot_nudge_loop", _retire)
         monkeypatch.setattr("kiro_crew.autonudge.get_instance", lambda: None)
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.delete("/api/chat/slots/crew-c_1a2b3c4d")
             assert resp.status == 200
 
-        assert order == ["retire", "retire", "pop"], (
-            f"the slot left the registry before both retirement passes finished: {order}"
-        )
+        assert order == [
+            "retire",
+            "retire",
+            "pop",
+        ], f"the slot left the registry before both retirement passes finished: {order}"
 
 
 # ── A SCOPED grant is never cached as a session approval policy ───────────────
@@ -925,7 +925,9 @@ class TestScopedGrantIsNeverPersisted:
         state = _crew_state()
         with patch.object(type(safety_override()), "is_scope_active", return_value=True):
             assert chat_runner._slot_is_trusted(slot) is True
-            assert chat_runner._native_crew_should_auto_approve({"s1": {"done": False}}, state, slot)
+            assert chat_runner._native_crew_should_auto_approve(
+                {"s1": {"done": False}}, state, slot
+            )
 
     @pytest.mark.asyncio
     async def test_a_scope_trusted_crew_turn_approves_its_tool_call_at_once(self) -> None:

@@ -167,7 +167,7 @@ _ERROR_ROWS = [
         _frame(f"ThrottlingException: Rate exceeded request_id: {_RID}"),
         None,
         "Bedrock is throttling requests. Try: (1) wait a few seconds and retry, or (2) "
-        f"switch to a different model in the picker (e.g. sonnet). (request_id: {_RID})",
+        f"switch to a different model in the picker. (request_id: {_RID})",
         _tags(transient=True),
         id="throttle",
     ),

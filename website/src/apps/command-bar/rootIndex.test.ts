@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { frecencyScore, recordUse, _clearUsageForTest, type UsageMap } from './frecency'
@@ -449,7 +449,9 @@ describe('root purity ratchet', () => {
     // means two keystrokes then Enter -- a launcher's whole point -- activates the
     // row that was selected against the PREVIOUS query, and the fallback row is not
     // on screen yet either.
-    const src = readFileSync(join(__dirname, 'CommandBarOverlay.tsx'), 'utf8')
+    // The overlay's whole source: the facade and every owner beside it.
+    const src = readdirSync(__dirname).filter(f => /^(?:use)?[Cc]ommandBarOverlay\w*\.tsx?$/.test(f)).sort()
+      .map(f => readFileSync(join(__dirname, f), 'utf8')).join('\n')
     expect(src).toMatch(/rankRootRows\(rootRows, query, usage[,)]/)
     expect(src).not.toMatch(/rankRootRows\(rootRows,\s*debounced/)
     // The fallback row rides the same live query. It used to be a `fallbackVisible`

@@ -13,7 +13,6 @@ import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage } from './Art
 import { useFileArtifactComments } from './FileArtifactComments'
 import { useConfirm } from './ConfirmDialog'
 import { formatArtifactCommentsMessage } from './CommentOverlay'
-import { filterCommentsForForward } from '../lib/commentFilter'
 import { copyToClipboard } from '../utils/clipboard'
 import { safeSetItem } from '../utils/safeStorage'
 import { offlineProps } from '../utils/offline'
@@ -203,6 +202,28 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
     layer: 'top',
   }), [confirm])
 
+  // ── submitted-to-chat tracking ──
+  // Durable artifact comments survive a chat submission (unlike the local-file
+  // pending list, which the submit clears), so without per-id tracking every
+  // Submit would re-send the whole comment history and the "N comments to send"
+  // count would never reset — the bar reads as stuck on the previous batch and
+  // newly added comments are indistinguishable inside the stale total. Sent ids
+  // are persisted per artifact (mirroring the `mc-cmt-read:` key in
+  // useFileArtifactComments) so a slot switch / remount doesn't resurrect an
+  // already-sent batch.
+  // ponytail: append-only like the read-tracking key — ids of since-deleted
+  // comments linger harmlessly (pruning against a possibly-stale comment list
+  // could resurrect sent ids); cross-window sync is on remount only; an edit
+  // to an already-sent comment does not re-queue it.
+  const sentKey = `mc-cmt-sent:${slug}`
+  const [sentIds, setSentIds] = useState<Set<string>>(() => readSentIds(sentKey))
+  // Re-read when the panel is reused for a different artifact.
+  useEffect(() => { setSentIds(readSentIds(sentKey)) }, [sentKey])
+  // Handed to the comment layers so each sidebar row the Submit bar counts is
+  // marked; only when this host has a Submit, since otherwise there is no bar
+  // for a marker to answer to.
+  const submitSentIds = onSubmitComments ? sentIds : undefined
+
   // Two instances (non-fullscreen body / fullscreen body) read the SAME durable
   // comments via the shared query cache; only local UI state (sidebar open,
   // active thread) is per-instance.
@@ -212,8 +233,9 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
     sidebarClassName: STACKED_SIDEBAR_CLASS,
     sidebarStyle: STACKED_SIDEBAR_STYLE,
     confirmDiscardDraft,
+    submitSentIds,
   })
-  const faFull = useFileArtifactComments({ slug, previewRef: fsPreviewRef, scrollRef: fsScrollRef, usesIframe, confirmDiscardDraft })
+  const faFull = useFileArtifactComments({ slug, previewRef: fsPreviewRef, scrollRef: fsScrollRef, usesIframe, confirmDiscardDraft, submitSentIds })
   // The active comment layer for the visible surface.
   const active = fullscreen ? faFull : fa
   /** Run `proceed` unless the visible layer's comment draft would be lost, in
@@ -242,33 +264,11 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
   // mounted at all (the same call the chat reply makes for its Copy).
   const showCopyOnlyToolbar = !canAnchorComments && !isTouchDevice()
 
-  // ── submitted-to-chat tracking ──
-  // Durable artifact comments survive a chat submission (unlike the local-file
-  // pending list, which the submit clears), so without per-id tracking every
-  // Submit would re-send the whole comment history and the "N comments to send"
-  // count would never reset — the bar reads as stuck on the previous batch and
-  // newly added comments are indistinguishable inside the stale total. Sent ids
-  // are persisted per artifact (mirroring the `mc-cmt-read:` key in
-  // useFileArtifactComments) so a slot switch / remount doesn't resurrect an
-  // already-sent batch.
-  // ponytail: append-only like the read-tracking key — ids of since-deleted
-  // comments linger harmlessly (pruning against a possibly-stale comment list
-  // could resurrect sent ids); cross-window sync is on remount only; an edit
-  // to an already-sent comment does not re-queue it.
-  const sentKey = `mc-cmt-sent:${slug}`
-  const [sentIds, setSentIds] = useState<Set<string>>(() => readSentIds(sentKey))
-  // Re-read when the panel is reused for a different artifact.
-  useEffect(() => { setSentIds(readSentIds(sentKey)) }, [sentKey])
-  // Pending = forwarding-eligible AND human-authored AND not yet submitted.
-  // The three filters answer different questions and all three are needed:
-  // filterCommentsForForward drops threads already resolved, `!is_agent` drops
-  // agent-authored comments (also filtered defensively inside
-  // formatArtifactCommentsMessage, hardened esc()), and `!sentIds.has` stops an
-  // already-submitted batch being re-sent.
-  const pendingComments = useMemo(
-    () => filterCommentsForForward(fa.comments).filter(c => !c.is_agent && !sentIds.has(c.id)),
-    [fa.comments, sentIds],
-  )
+  // Pending = forwarding-eligible AND human-authored AND not yet submitted,
+  // as the comment layer worked it out from `submitSentIds` (the same list its
+  // sidebar marks). Agent comments are also filtered defensively inside
+  // formatArtifactCommentsMessage (hardened esc()).
+  const pendingComments = fa.pendingSubmit
   const [submitting, setSubmitting] = useState(false)
   // Tracks the "submitting" reset timer so it can be cancelled on unmount —
   // otherwise a late firing calls setSubmitting on an unmounted component,

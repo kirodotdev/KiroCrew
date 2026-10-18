@@ -27,6 +27,7 @@ from kiro_crew import taskrunner as tr
 from kiro_crew.safety_override import safety_override
 from kiro_crew.task_models import Project, Task, TaskStatus
 from kiro_crew.taskrunner import TaskRunner, _auto_approve_scope, _resolve_workspace_dir
+from kiro_crew.testing.wait import async_wait_until
 
 # ── Fixtures / helpers ──
 
@@ -1667,10 +1668,12 @@ class TestLogTask:
         runner = _runner(tmp_path, conversation_log=log)
         run = _seed_run(runner, tmp_path)
         runner._log_task("hist", run, Task(index=1, title="T", description="d"))
-        for _ in range(100):
-            if log.append.call_count >= 2:
-                break
-            await asyncio.sleep(0.005)
+        # The worker thread can be scheduled late on a loaded runner, so wait
+        # for its second append under the lost-run bound, not a sleep count.
+        await async_wait_until(
+            lambda: log.append.call_count >= 2,
+            describe=lambda: log.append.call_args_list,
+        )
         assert [call.args[1] for call in log.append.call_args_list] == ["user", "assistant"]
 
     @pytest.mark.asyncio
@@ -1681,13 +1684,16 @@ class TestLogTask:
         log.append = MagicMock(side_effect=RuntimeError("history locked"))
         runner = _runner(tmp_path, conversation_log=log)
         run = _seed_run(runner, tmp_path)
+
+        def reported() -> bool:
+            return any("history locked" in rec.getMessage() for rec in caplog.records)
+
         with caplog.at_level(logging.DEBUG, logger="kiro_crew.taskrunner"):
             runner._log_task("hist", run, Task(index=1, title="T", description="d"))
-            for _ in range(100):
-                if any("history locked" in rec.getMessage() for rec in caplog.records):
-                    break
-                await asyncio.sleep(0.005)
-        assert any("history locked" in rec.getMessage() for rec in caplog.records)
+            # The failure is logged by a done-callback the loop runs once the
+            # worker thread returns; wait for that record, not a sleep count.
+            await async_wait_until(reported, describe=lambda: caplog.messages)
+        assert reported()
 
 
 # ── Watchdog ──

@@ -151,7 +151,7 @@ jobs:
       # way it broke the other five. Carried now so the bump is a no-op instead
       # of a repo-wide fork outage. Rationale: fork-opus-review.yml.
       - name: Harden runner (egress allowlist)
-        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: block
           disable-telemetry: true
@@ -526,7 +526,7 @@ jobs:
       # One assume per model call: an AssumeRole session lasts an hour, and a
       # call that inherits a spent session dies on an expired token with no
       # verdict.
-      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         if: >-
           steps.human_override.outputs.active != 'true'
           && (steps.scope.outputs.in_scope == 'true')
@@ -656,6 +656,11 @@ jobs:
           # deny outranks every allow rule and CLI flag, so the bound holds even if
           # an allowlist entry is later widened. This matches the UX lane, which
           # denies the whole family.
+          #
+          # A COPY of the same-repo lane's arguments, pinned equal to them by
+          # `test_ai_review_workflows_scope_verdict.py`. Not read out of that file:
+          # here it would come from the base checkout, so the fence would follow
+          # the pull request's base rather than this default-branch workflow.
           claude_args: |
             --model us.anthropic.claude-opus-5-5
             --fallback-model us.anthropic.claude-sonnet-5-5
@@ -731,6 +736,10 @@ jobs:
             # from `END`, never taken from a partial read, and the class spells out
             # the five characters `[[:space:]]` matches inside a record so nothing
             # depends on the runners' mawk supporting a POSIX class.
+            # A COPY of the same-repo lane's capture, pinned equal to it by
+            # `test_ai_review_workflows_scope_verdict.py`. Not read out of that
+            # file: this job holds the Bedrock credential and runs no program
+            # read out of a checkout.
             v="$(awk '!found && tolower($0) ~ /^[ \t\v\f\r]*scope-verdict:/ { sub(/^[^:]*:[ \t\v\f\r]*/, ""); gsub(/\r/, ""); value = toupper($0); found = 1 } END { if (found) print value }' "$OUT")"
             [ -n "$v" ] && verdict="$v"
           fi
@@ -807,7 +816,7 @@ jobs:
       # Still hardened: this job reads a fork-influenced candidate file, so the
       # egress block is what stops anything here from calling out.
       - name: Harden runner (egress allowlist)
-        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: block
           disable-telemetry: true
@@ -1062,6 +1071,12 @@ jobs:
             # a COPY and refuse the run, the same refusal the publish path applies to
             # a redacted confirmed row before it reaches the comment. A candidate
             # carrying a credential shape is not a legitimate operation worth adjudicating.
+            #
+            # A COPY of the same-repo lane's probe under this lane's own output key,
+            # pinned equal to it by `test_ai_review_workflows_scope_verdict.py`. Not
+            # read out of that file: shell taken from a checkout would run as
+            # written, while the surface list, the one block this lane does read
+            # from it, is filtered down to quoted paths before any use.
             cp "$NORMALIZED" scrub-probe.json
             probe=0
             python3 "$REDACTOR" --mode json --fail-if-changed scrub-probe.json || probe=$?
@@ -1167,7 +1182,7 @@ jobs:
       # Still hardened. This job holds no secret, but it RUNS fork code, so the
       # egress block is what stops that code from calling out.
       - name: Harden runner (egress allowlist)
-        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: block
           disable-telemetry: true
@@ -1391,7 +1406,7 @@ jobs:
       && github.event.workflow_run.head_repository.full_name != github.repository
     steps:
       - name: Harden runner (egress allowlist)
-        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: block
           disable-telemetry: true
@@ -1699,7 +1714,7 @@ jobs:
             # DEFAULT-branch harness (the trusted copy `adjudicate` judged with),
             # never a PR tree, so this call executes no fork code. This step only
             # reads its answer and maps it to a check-run conclusion.
-            conc="$(python3 scripts/scope_candidates.py conclude --lane fork \
+            conc="$(python3 scripts/scope_candidates.py conclude \
               --fold "$fold" --model "${MODEL_VERDICT:-UNKNOWN}" --marker "$marker" \
               --nothing-new "$nothing_new" --gap-script "$gap_script" --gap-model "$gap_model" \
               --refusal "${VALIDATE_RC:-}")"
@@ -1792,6 +1807,11 @@ jobs:
           echo "remedy=$remedy" >> "$GITHUB_OUTPUT"
           echo "Scope lane conclusion: $conclusion — $title"
 
+      # The body is this lane's own: it names the fork lane and the check-run's
+      # conclusion words, so it is not one block with the same-repo lane's. What
+      # the two share is the `[SCOPE-REVIEWED] $HEAD` stamp, and that is a COPY,
+      # pinned equal to the same-repo lane's by
+      # `test_ai_review_workflows_scope_verdict.py`.
       - name: Assemble the comment body
         if: always() && needs.generate.outputs.in_scope != 'false'
         env:

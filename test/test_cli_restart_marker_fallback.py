@@ -21,7 +21,9 @@ def test_authenticated_shutdown_request_uses_fixed_loopback_endpoint() -> None:
 
     with (
         patch("kiro_crew.cli_server.run_marker.read_secret", return_value="local-secret"),
-        patch("kiro_crew.cli_server.loopback_urlopen", return_value=context) as mock_open,
+        patch(
+            "kiro_crew.cli_server._owner_verified_secret_urlopen", return_value=context
+        ) as mock_open,
     ):
         assert _request_gateway_shutdown(7777) is True
 
@@ -39,7 +41,7 @@ def test_authenticated_shutdown_request_fails_closed_without_secret() -> None:
 
     with (
         patch("kiro_crew.cli_server.run_marker.read_secret", return_value=""),
-        patch("kiro_crew.cli_server.loopback_urlopen") as mock_open,
+        patch("kiro_crew.cli_server._owner_verified_secret_urlopen") as mock_open,
     ):
         assert _request_gateway_shutdown(7777) is False
     mock_open.assert_not_called()
@@ -58,7 +60,7 @@ def test_authenticated_shutdown_request_rejects_non_object_response() -> None:
 
     with (
         patch("kiro_crew.cli_server.run_marker.read_secret", return_value="local-secret"),
-        patch("kiro_crew.cli_server.loopback_urlopen", return_value=context),
+        patch("kiro_crew.cli_server._owner_verified_secret_urlopen", return_value=context),
     ):
         assert _request_gateway_shutdown(7777) is False
 
@@ -101,7 +103,7 @@ def test_authenticated_shutdown_request_rejects_oversized_response() -> None:
 
     with (
         patch("kiro_crew.cli_server.run_marker.read_secret", return_value="local-secret"),
-        patch("kiro_crew.cli_server.loopback_urlopen", return_value=context),
+        patch("kiro_crew.cli_server._owner_verified_secret_urlopen", return_value=context),
     ):
         assert cli_server._request_gateway_shutdown(7777) is False
 
@@ -118,7 +120,7 @@ def test_authenticated_shutdown_request_rejects_recursive_json() -> None:
 
     with (
         patch("kiro_crew.cli_server.run_marker.read_secret", return_value="local-secret"),
-        patch("kiro_crew.cli_server.loopback_urlopen", return_value=context),
+        patch("kiro_crew.cli_server._owner_verified_secret_urlopen", return_value=context),
     ):
         assert cli_server._request_gateway_shutdown(7777) is False
 

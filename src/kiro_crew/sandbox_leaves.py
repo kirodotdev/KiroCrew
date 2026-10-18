@@ -304,6 +304,10 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # appends above. Written and read only by the GATEWAY (dashboard tag CRUD
     # + the chat_tag applier); no in-sandbox code opens it.
     "tag-grants",
+    # The person's pinned-session order: person-only by route, so the agents
+    # it would reorder for must not rewrite it on disk. Gateway-only reader and
+    # writer, like tag-grants above.
+    "pinned-order",
     "agentcore-inbound",
     "routing",
     "webhooks",

@@ -1333,6 +1333,10 @@ class TestStructuralGuarantees:
                 modules.add(node.module)
         forbidden = {
             "kiro_crew.computer_use.macos_ffi",
+            "kiro_crew.computer_use.macos_ffi_bind",
+            "kiro_crew.computer_use.macos_ffi_cf",
+            "kiro_crew.computer_use.macos_ffi_ax",
+            "kiro_crew.computer_use.macos_ffi_window",
             "kiro_crew.computer_use.snapshot_macos",
             "kiro_crew.computer_use.capture_macos",
             "kiro_crew.computer_use.apps_macos",

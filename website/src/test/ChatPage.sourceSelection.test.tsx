@@ -12,7 +12,7 @@
  * Reverting the per-slot/persisted selection in ChatPage.tsx fails them.
  */
 import { useEffect } from 'react'
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -22,6 +22,12 @@ import { appendMessage } from '../store/chatSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import { __resetPanelTabs } from '../hooks/usePanelTabs'
 import type { ChatMessage, ChatSlot } from '../types'
+import {
+  commitRevealedSource,
+  registerSourceProvider,
+  resetSourceProvidersForTests,
+  type PullRequestLink,
+} from '../utils/pullRequestLinks'
 import type { RootState } from '../store'
 
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
@@ -54,36 +60,41 @@ vi.mock('../pages/chat/ChatSettings', () => ({
 // the parent. That behaviour is the reason onReconcileSource exists, so a mock
 // without it cannot catch the parent wiring that path to a persisting callback —
 // which is exactly how a durable-overwrite regression went unnoticed here.
-vi.mock('../pages/chat/SidePanel', () => ({
-  // Named (uppercase) rather than an inline arrow: react-hooks/rules-of-hooks
-  // rejects a hook called inside a function named `default`.
-  default: function MockSidePanel({ selectedSourceUrl, selectedIssueUrl, sources, onSelectSource, onReconcileSource }: {
-    selectedSourceUrl?: string
-    selectedIssueUrl?: string
-    sources?: Array<{ url: string }>
-    onSelectSource?: (url: string) => void
-    onReconcileSource?: (url: string) => void
-  }) {
-    const rendered = (sources ?? []).slice(0, 64)
-    const selected = rendered.find(source => source.url === selectedSourceUrl) || rendered[0]
-    useEffect(() => {
-      if (selected && selected.url !== selectedSourceUrl) {
-        (onReconcileSource || onSelectSource)?.(selected.url)
-      }
-    }, [selected, selectedSourceUrl, onSelectSource, onReconcileSource])
-    return (
-      <div>
-        <span data-testid="selected-source">{selectedSourceUrl}</span>
-        <span data-testid="selected-issue">{selectedIssueUrl}</span>
-        {(sources ?? []).map(source => (
-          <button key={source.url} aria-label={`pick ${source.url}`} onClick={() => onSelectSource?.(source.url)} />
-        ))}
-      </div>
-    )
-  },
-  CHAT_PANE_MIN_W: 320,
-  sidePanelFillWidth: () => false,
-}))
+vi.mock('../pages/chat/SidePanel', async () => {
+  // The real panel's selection rule, so a tab remembered at an older revision of
+  // a review normalizes onto that review here exactly as it does in the panel.
+  const { findSourceForUrl } = await vi.importActual<typeof import('../utils/pullRequestLinks')>('../utils/pullRequestLinks')
+  return {
+    // Named (uppercase) rather than an inline arrow: react-hooks/rules-of-hooks
+    // rejects a hook called inside a function named `default`.
+    default: function MockSidePanel({ selectedSourceUrl, selectedIssueUrl, sources, onSelectSource, onReconcileSource }: {
+      selectedSourceUrl?: string
+      selectedIssueUrl?: string
+      sources?: PullRequestLink[]
+      onSelectSource?: (url: string) => void
+      onReconcileSource?: (url: string) => void
+    }) {
+      const rendered = (sources ?? []).slice(0, 64)
+      const selected = findSourceForUrl(rendered, selectedSourceUrl ?? '') || rendered[0]
+      useEffect(() => {
+        if (selected && selected.url !== selectedSourceUrl) {
+          (onReconcileSource || onSelectSource)?.(selected.url)
+        }
+      }, [selected, selectedSourceUrl, onSelectSource, onReconcileSource])
+      return (
+        <div>
+          <span data-testid="selected-source">{selectedSourceUrl}</span>
+          <span data-testid="selected-issue">{selectedIssueUrl}</span>
+          {(sources ?? []).map(source => (
+            <button key={source.url} aria-label={`pick ${source.url}`} onClick={() => onSelectSource?.(source.url)} />
+          ))}
+        </div>
+      )
+    },
+    CHAT_PANE_MIN_W: 320,
+    sidePanelFillWidth: () => false,
+  }
+})
 
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
 vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: null }) }))
@@ -409,5 +420,86 @@ describe('focused source tab persistence', () => {
     } finally {
       keySpy.mockRestore()
     }
+  })
+})
+
+describe('a review remembered at an older revision', () => {
+  // A registered provider keeps the revision in its canonical url. Revision 1
+  // is OPEN and revision 2 SHIPPED, so the panel must land on revision 2.
+  const CR = 'https://review.acme.example/cr/123'
+  const REV_1 = `${CR}/revisions/1`
+  const REV_2 = `${CR}/revisions/2`
+
+  beforeEach(() => {
+    registerSourceProvider({
+      id: 'acme',
+      displayName: 'Acme Review',
+      parse(url) {
+        const match = /^\/cr\/(\d+)(\/revisions\/\d+)?$/.exec(url.pathname)
+        if (url.hostname !== 'review.acme.example' || !match) return null
+        return { url: url.href, provider: 'acme', number: Number(match[1]), repo: 'acme', kind: 'change' }
+      },
+      chipLabel: link => `CR-${link.number}`,
+      refLabel: n => `CR-${n}`,
+      capabilities: { checks: true, mergeState: true, resolveThreads: false, comment: false },
+    })
+  })
+  afterEach(() => resetSourceProvidersForTests())
+
+  it('stays on that review at its newest revision instead of the first tab', async () => {
+    seedSelection('chat-2', REV_1)
+    renderChatPage('chat-2', transcript(PR_ONE, REV_1, REV_2))
+    await waitFor(() => {
+      expect(screen.getByTestId('selected-source')).toHaveTextContent(REV_2)
+    })
+    expect(screen.queryByLabelText(`pick ${REV_1}`)).not.toBeInTheDocument()
+  })
+
+  it('does not list a revealed older revision as a second tab', async () => {
+    expect(commitRevealedSource('chat-2', 'change', REV_1)).toBe(true)
+    renderChatPage('chat-2', transcript(REV_2))
+    await waitFor(() => {
+      expect(screen.getByTestId('selected-source')).toHaveTextContent(REV_2)
+    })
+    expect(screen.queryByLabelText(`pick ${REV_1}`)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(`pick ${REV_2}`)).toBeInTheDocument()
+  })
+
+  it('restores the stored older revision once the transcript lists the review at a newer one', async () => {
+    // The provisional render lacks the review, so the panel falls back to PR 11
+    // in memory while storage keeps revision 1. The full transcript lists the
+    // review at revision 2, which is still the tab the user left open.
+    seedSelection('chat-2', REV_1)
+    const { store } = renderChatPage('chat-2', transcript(PR_ONE))
+    await waitFor(() => {
+      expect(screen.getByTestId('selected-source')).toHaveTextContent(PR_ONE)
+    })
+    expect(readSelection('chat-2')).toBe(REV_1)
+
+    await act(async () => {
+      store.dispatch(appendMessage({ role: 'assistant', content: `opened ${REV_1} then ${REV_2}`, cls: '' }))
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('selected-source')).toHaveTextContent(REV_2)
+    })
+  })
+
+  it('keeps the picked review in its place when a newer revision is mentioned mid-chat', async () => {
+    seedSelection('chat-2', REV_1)
+    const { store } = renderChatPage('chat-2', transcript(PR_ONE, REV_1))
+    await waitFor(() => {
+      expect(screen.getByTestId('selected-source')).toHaveTextContent(REV_1)
+    })
+
+    await act(async () => {
+      store.dispatch(appendMessage({ role: 'assistant', content: `pushed ${REV_2}`, cls: '' }))
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('selected-source')).toHaveTextContent(REV_2)
+    })
+    const picks = screen.getAllByRole('button', { name: /^pick / }).map(button => button.getAttribute('aria-label'))
+    expect(picks).toEqual([`pick ${PR_ONE}`, `pick ${REV_2}`])
   })
 })

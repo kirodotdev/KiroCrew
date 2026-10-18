@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -25,6 +24,7 @@ import kiro_crew.llm_helpers as llm_helpers
 from kiro_crew.acp.runtime import AcpRequestTimeout
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.session import SessionManager
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 from kiro_crew.workflows.library import WorkflowDefinitionLibrary
 from kiro_crew.workflows.service import WorkflowService
 from kiro_crew.workflows.store import WorkflowRunStore
@@ -128,13 +128,13 @@ async def _await_store_entry(store: BlockingSourceStore, task: asyncio.Task) -> 
     If ``task`` settles first, its own failure surfaces; a clean settle without
     the save is a deterministic failure.
     """
-    give_up_at = time.monotonic() + _HANG_GUARD_SECS
-    while not store.started.is_set():
-        if task.done():
-            task.result()
-            raise AssertionError("the task settled before its source-bearing save began")
-        assert time.monotonic() < give_up_at, "the source-bearing save never began"
-        await asyncio.sleep(0.005)
+    await async_wait_until(
+        lambda: store.started.is_set() or task.done(),
+        describe=lambda: f"started={store.started.is_set()}, task.done={task.done()}",
+    )
+    if task.done():
+        task.result()
+        raise AssertionError("the task settled before its source-bearing save began")
 
 
 def _patch_stream(monkeypatch, replies: list[str]) -> dict:
@@ -155,15 +155,12 @@ def _patch_stream(monkeypatch, replies: list[str]) -> dict:
     return state
 
 
-async def _wait_terminal(svc: WorkflowService, run_id: str, timeout: float = 3.0):
-    t = 0.0
-    while t < timeout:
-        snap = svc.status(run_id)
-        if snap and snap["status"] != "running":
-            return snap
-        await asyncio.sleep(0.02)
-        t += 0.02
-    raise AssertionError("run did not finish")
+async def _wait_terminal(svc: WorkflowService, run_id: str):
+    def _done():
+        s = svc.status(run_id)
+        return s if s and s["status"] != "running" else None
+
+    return await async_wait_until(_done, describe=lambda: f"run {run_id}: {svc.status(run_id)}")
 
 
 async def _wait_durable_terminal(svc: WorkflowService, run_id: str):
@@ -1806,15 +1803,15 @@ async def test_orderly_restart_waits_for_terminal_snapshot(tmp_path, monkeypatch
     started = await original.start(sensitive)
     waiter = asyncio.create_task(_wait_durable_terminal(original, started["run_id"]))
     try:
-        await asyncio.wait_for(entered.wait(), timeout=1.0)
+        await await_until(entered, what="entered")
         # This is what the old helper observed before the restart raced disk.
         assert (await _wait_terminal(original, started["run_id"]))["status"] == "finished"
-        saved = await asyncio.wait_for(asyncio.to_thread(store.load_all), timeout=1.0)
+        saved = await finished(asyncio.to_thread(store.load_all), "store.load_all")
         assert saved[0]["status"] == "running"
         assert not waiter.done()
     finally:
         release.set()
-        await asyncio.wait_for(waiter, timeout=3.0)
+        await await_until(waiter, what="waiter")
 
     restored = WorkflowService(sessions=FakeSessions([]), store=store, definition_library=library)
     promoted = await restored.promote_run_definition(started["run_id"])
@@ -1910,7 +1907,7 @@ async def test_durable_terminal_wait_includes_the_completion_callback(monkeypatc
     out = await svc.start(GOOD_SCRIPT)
     waiter = None
     try:
-        await asyncio.wait_for(flushing.wait(), timeout=3.0)
+        await await_until(flushing, what="flushing")
         assert svc.status(out["run_id"])["status"] == "finished"
         assert done == []
         waiter = asyncio.create_task(_wait_durable_terminal(svc, out["run_id"]))

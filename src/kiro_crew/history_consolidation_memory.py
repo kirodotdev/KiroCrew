@@ -2,7 +2,10 @@
 
 A pass shows the model a bounded ``## Current Semantic Memory`` table
 (:func:`_bounded_semantic_table`) and withholds deletes of keys the table did not show
-(:func:`_withhold_unseen_deletes`). It then writes what the model extracted:
+(:func:`_withhold_unseen_deletes`). A ``lesson.*`` key the model put in the ``semantic``
+array is moved to the ``lessons`` array first (:func:`_reroute_lesson_semantic_keys`), so
+it gets the lessons path's dedup and checks instead of a plain semantic write. It then
+writes what the model extracted:
 lessons through :func:`_save_lessons`, which drops a lesson with a malformed scope and
 forwards its authored tier, and semantic and episodic rows through
 :func:`_write_structured_memory`, which refuses to delete a standing lesson
@@ -206,6 +209,84 @@ def _withhold_unseen_deletes(
     if not withheld:
         return result, 0
     return {**result, "semantic": kept}, len(withheld)
+
+
+#: The keys a rerouted ``lesson.*`` semantic item may carry into a lesson, mapped
+#: from the semantic shape to the lesson shape. A lesson's rule is the semantic
+#: ``value``; ``category``, ``negative``, ``applies`` and ``repo_scope`` are
+#: already the lesson field names and copy across unchanged.
+_LESSON_PASSTHROUGH_FIELDS = ("category", "negative", "applies", "repo_scope")
+
+
+def _reroute_lesson_semantic_keys(result: dict, logger: logging.Logger) -> dict:
+    """Move ``semantic`` items whose key is ``lesson.*`` into the ``lessons`` array.
+
+    The prompt asks the model for ``pref.*`` / ``project.*`` / ``user.*`` keys in
+    ``semantic`` and for lessons in ``lessons``, but that split is not enforced.
+    A ``lesson.*`` key left in ``semantic`` is written straight through
+    ``set_semantic`` (V1) or ``_write_semantic`` (V2), so it skips the exact-rule
+    dedup, the volatile-fact screen and the extraction-enabled gate that
+    ``write_lesson`` / the member store's lesson branch apply -- which is how the
+    same rule ends up stored several times under different model-chosen keys.
+    Rerouting it to ``lessons`` before any write hands it the same
+    checks as the model's other lessons, on BOTH paths, because this runs once on
+    the shared ``result`` before it branches to ``_write_structured_memory`` /
+    ``_save_lessons`` (V1) and ``apply_consolidation`` (V2).
+
+    Only a CREATE is rerouted. A ``delete`` of a ``lesson.*`` key stays in
+    ``semantic``: the delete site already tier-protects standing lessons
+    (``_lesson_delete_decision``), and the lessons array has no delete verb.
+    The lesson's rule is the item's ``value``, so an item whose value is not a
+    non-empty string is not a lesson and is DROPPED (restating the issue's note
+    that a value like ``true`` is not a lesson) rather than left to be written as
+    a plain semantic row -- which would reintroduce exactly the un-deduped
+    ``lesson.*`` semantic row this reroute exists to remove.
+
+    Returns the result -- a shallow copy with fresh ``semantic`` / ``lessons``
+    lists when anything moved, otherwise the input unchanged. Reroutes and drops
+    are logged once for the pass; no caller needs the counts.
+    """
+    items = result.get("semantic")
+    if not isinstance(items, list):
+        return result
+    kept_semantic: list = []
+    moved_lessons: list = []
+    dropped = 0
+    for item in items:
+        key = item.get("key") if isinstance(item, dict) else None
+        if not (isinstance(key, str) and key.startswith("lesson.")) or (
+            isinstance(item, dict) and item.get("delete")
+        ):
+            kept_semantic.append(item)
+            continue
+        value = item.get("value")
+        if not isinstance(value, str) or not value.strip():
+            # A lesson's rule is text. A non-string (``true``, a number, an
+            # object) or an empty value is not a lesson; drop it rather than
+            # let it fall through to a plain semantic write.
+            dropped += 1
+            continue
+        lesson: dict = {"rule": value}
+        for field in _LESSON_PASSTHROUGH_FIELDS:
+            if field in item:
+                lesson[field] = item[field]
+        moved_lessons.append(lesson)
+    if not moved_lessons and not dropped:
+        return result
+    existing = result.get("lessons")
+    lessons = list(existing) if isinstance(existing, list) else []
+    lessons.extend(moved_lessons)
+    if moved_lessons:
+        logger.info(
+            "Consolidation rerouted %d lesson.* semantic item(s) to the lessons path",
+            len(moved_lessons),
+        )
+    if dropped:
+        logger.warning(
+            "Consolidation dropped %d lesson.* semantic item(s) with a non-text value",
+            dropped,
+        )
+    return {**result, "semantic": kept_semantic, "lessons": lessons}
 
 
 class _EmbedBudget:

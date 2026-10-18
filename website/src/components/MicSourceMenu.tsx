@@ -59,7 +59,7 @@ export default function MicSourceMenu({ deviceLabel, activeDeviceId, onSelect, r
   // holding it is unmounted by the close — without a restore, focus would be
   // orphaned on <body> and the next Tab would restart from the top of the
   // document, nowhere near the composer the user came from. Same posture as
-  // `MenuBtn` (DevFleetPage), the precedent for this contract.
+  // `MenuBtn` (DevFleetPageMenus.tsx), the precedent for this contract.
   const triggerRef = useRef<HTMLButtonElement | null>(null)
 
   // role="menu" promises the WAI-ARIA menu keyboard contract (arrow-key row

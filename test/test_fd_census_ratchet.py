@@ -38,7 +38,7 @@ _CENSUS = re.compile(
 # test quotes these shapes as string data for its own needle, not as a census.
 _EXCLUDED_PREFIXES = ("test_platform_compat", "test_macos_platform_tests_gate")
 
-# test_issue_radar_crew_store.py::test_a_directory_at_the_order_files_name_leaks_no_descriptor
+# test_issue_radar_crew_store_unit_order.py::test_a_directory_at_the_order_files_name_leaks_no_descriptor
 _BASELINE_SITES = 1
 
 

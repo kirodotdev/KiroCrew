@@ -43,7 +43,7 @@ import type { DriveSection, DriveUsage } from './types'
  * and the reader cannot from the sentence, and there is nothing on screen to
  * lose — so every other notice opts in. Two panes go one step further because
  * all of their notices share the screen with one draft: the Files pane gates
- * on the folder-name disclosure being closed (`handOff` in `DriveSectionView`),
+ * on the folder-name disclosure being closed (`handOff` in `useDrivePageFiles`),
  * and the accounts pane gates on no profile being ticked in the Add-accounts
  * form (`handOff` in `AccountsPane`, fed by `AddAccounts`'s `onDraftChange`).
  */

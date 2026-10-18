@@ -35,6 +35,7 @@ import pytest
 from conftest import make_dir_link
 from kiro_crew import memory_backup as mb
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, resolve_store_path
+from kiro_crew.testing.wait import wait_until
 from kiro_crew.vector_memory import VectorMemoryStore
 
 pytestmark = pytest.mark.xdist_group("memory_backup")
@@ -311,7 +312,9 @@ class TestABackupIsConsistentUnderALiveWriter:
                     "project.between_backups", "committed", 1.0, "user_explicit"
                 )
                 second_result = executor.submit(mb.backup_store, src, now=stamp)
-                first, second = first_result.result(timeout=10), second_result.result(timeout=10)
+                wait_until(first_result.done)
+                wait_until(second_result.done)
+                first, second = first_result.result(), second_result.result()
 
         assert first is not None and second is not None and first != second
         assert {_rows(first), _rows(second)} == {20, 21}
@@ -360,10 +363,12 @@ class TestABackupIsConsistentUnderALiveWriter:
                 try:
                     assert second_ready.wait(timeout=10)
                     with pytest.raises(mb.MemoryBackupFailed, match="first backup interrupted"):
-                        failed.result(timeout=10)
+                        wait_until(failed.done)
+                        failed.result()
                 finally:
                     let_second_finish.set()
-                backup = surviving.result(timeout=10)
+                wait_until(surviving.done)
+                backup = surviving.result()
 
         assert backup is not None and backup.exists()
         assert len(stages) == 2 and stages[0] != stages[1]

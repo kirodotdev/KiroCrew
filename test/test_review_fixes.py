@@ -309,7 +309,7 @@ class TestObserveModeAuthFilter:
 
 
 class TestLoaderChmodWarning:
-    """Guard test for loader.py chmod warning on failure (L1219-1222)."""
+    """Guard test for config/loader_config.py chmod warning on failure (load_credentials)."""
 
     def test_chmod_enforced_on_open_permissions(self, tmp_path: object, monkeypatch) -> None:
         from pathlib import Path

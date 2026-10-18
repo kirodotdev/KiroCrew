@@ -133,7 +133,7 @@ def is_headless_provisioner(provisioner_id: str) -> bool:
 
 # The port a stock gateway binds, so "add a remote that has not been
 # reconfigured" needs no edit. NOT a second definition of the number:
-# ``config/loader.py`` owns it per docs/system-specs/common/code-style.md, which
+# ``config/loader_credentials.py`` owns it per docs/system-specs/common/code-style.md, which
 # names that module as the single owner of the dashboard port and cites
 # ``dashboard/origin.py`` importing it rather than restating it. This is the same
 # re-export seam, giving the value a name that says what it means HERE (the

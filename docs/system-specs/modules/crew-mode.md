@@ -17,15 +17,18 @@ gateway, which this one reaches through a tunnel (see [instances.md](instances.m
 — and not an Issue Radar *crew*, which is that app's own repository work crew
 (see [issue-radar.md](issue-radar.md)).
 
+See also: [context management § 5](../../architecture/context-management.md#5-crew-mode-crew-page),
+which restates what a member's DM session carries in its context.
+
 ## Components
 
 | File | Role |
 |---|---|
 | `src/kiro_crew/config/sections_session.py` | `KiroCrewAgentConfig` — the crew record: `kiro_agent`, `workspace`, `memory_store`, `model`, `reasoning_effort`, `display_name`, `description`, `triggers`, `source`, `session_color`, `avatar`, per-crew watchdog overrides |
-| `src/kiro_crew/config/loader.py` | `resolve_agent_bindings` (crew to workspace / memory store / template) and `resolve_effective_model` (the default-model precedence) |
+| `src/kiro_crew/config/loader_agents.py`, `src/kiro_crew/config/loader.py` | `resolve_agent_bindings` (crew to workspace / memory store / template) and `resolve_effective_model` (the default-model precedence) |
 | `src/kiro_crew/mcp_core_parts/crew.py` | `_do_select_crew` — the roster and bind bodies |
 | `src/kiro_crew/mcp_tools/control.py` | The `select_crew` tool declaration and dispatch |
-| `src/kiro_crew/validation.py` | `SELECT_CREW_SCHEMA` — argument validation for that tool |
+| `src/kiro_crew/validation_parts/messaging_session_schemas.py` | `SELECT_CREW_SCHEMA` — argument validation for that tool (imported through `kiro_crew.validation`) |
 | `src/kiro_crew/members.py` | Per-crew member space: activity log, DM-thread binding, permanent rules, self-maintained briefing, the member turn chokepoint |
 | `src/kiro_crew/subagent_parts/agent_policy.py` | `_validate_agent` — what an `agent=` name is checked against, and `UNADVERTISED_AGENTS` (both read and patched through `kiro_crew.subagent`) |
 | `src/kiro_crew/dashboard/handlers/agents.py` | The agents handlers' import and patch surface: `GET /api/agents`, the model picker reads and the crew model-pin checks, composed with the `agent_admin` owners below |
@@ -35,7 +38,7 @@ gateway, which this one reaches through a tunnel (see [instances.md](instances.m
 | `website/src/pages/overview/AgentTemplatesTab.tsx` | The **Custom agents** tab of `CapabilitiesPage` (Customize): list by origin, edit the shared definition, create, delete, chat-with / enroll (an enroll invalidates `['kirocrew-agents']` and `['kirocrewConfig']`) |
 | `src/kiro_crew/dashboard/handlers/members.py` | `/api/members` roster, thread get-or-create, rules, activity |
 | `src/kiro_crew/crew_teams.py` + `src/kiro_crew/dashboard/handlers/teams.py` | Crewmate teams (`teams.json` in the masked gateway-only data-home directory `crew-teams`; `/api/teams`): the Crewmates page's roster grouping and team view — specified under [learn-cron-dashboard](learn-cron-dashboard.md) with the members handlers |
-| `website/src/pages/KiroCrewAgentsPage.tsx` | The crewmate roster and crew editor, mounted as the **Crewmates** tab of `CapabilitiesPage` (Customize). The page holds the roster and editor queries, the editor's draft, opening, saving and deleting a crew, the deep links, the template-switch writes and the Danger zone, and composes its owners beside it: the roster cards, rows, toolbar and list (`KiroCrewAgentsPageRoster.tsx`), the binding fields every crew editor shares (`KiroCrewAgentsPageFields.tsx`; consumers import them from the page, which re-exports each), the editor header and the Model, Workspace & memory and Routing pane bodies (`KiroCrewAgentsPagePanes.tsx`), and the unsaved-work guard with its discard dialog (`KiroCrewAgentsPageDiscard.tsx`). The Crewmates page's own crew editor (`components/crew/CrewEditorDialog.tsx` + `useCrewEditor.ts`) mounts the same fields from here and keeps its own `INHERIT_MODEL` twin |
+| `website/src/pages/KiroCrewAgentsPage.tsx` | The crewmate roster and crew editor, mounted as the **Crewmates** tab of `CapabilitiesPage` (Customize). The page holds the roster and editor queries, the editor's draft, opening, saving and deleting a crew, the deep links, the template-switch writes and the Danger zone, and composes its owners beside it: the roster cards, rows, toolbar and list (`KiroCrewAgentsPageRoster.tsx`), the binding fields every crew editor shares (`KiroCrewAgentsPageFields.tsx`; consumers import them from the page, which re-exports each), the editor header and the Model, Workspace & memory and Routing pane bodies (`KiroCrewAgentsPagePanes.tsx`), and the unsaved-work guard with its discard dialog (`KiroCrewAgentsPageDiscard.tsx`). The Crewmates page's own crew editor (`components/crew/CrewEditorNextDialog.tsx` + `useCrewEditor.ts`) mounts the same fields from here and keeps its own `INHERIT_MODEL` twin |
 | `website/src/components/crew/crewEditorSections.ts` | The crew editor's pane registry, including the Routing pane that edits `triggers` |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
 | `website/src/components/chat/crewmateBubbles.ts` | A crewmate's chat: what the transcript draws (`filterCrewmateChat`) and the run / corner rule for its bubbles (`crewmateRunPosition`, `crewmateBubbleClass`) |
@@ -1489,7 +1492,7 @@ rules above apply unchanged. A create link followed while a chat is open lands
 on that chat, never on this rule.
 
 Deleting a crewmate is available on this page: the crewmate's edit controls
-open the shared `CrewEditorDialog` in place, and its Danger pane deletes the
+open `CrewEditorModal` in place, and its Danger pane deletes the
 crewmate. A row the listing rule hides is reached through search, or through
 the Customize page's Crewmates tab.
 
@@ -1527,15 +1530,10 @@ does not migrate it or grant access to that member's member store.
 session on a crew starts with, highest tier first: the crew's own `model`, the
 bound kiro agent's pinned model (skipped for the built-in `kirocrew` agent), the
 global `agent.model`, then the installed agent file's model. A per-session pick
-outranks all four and is not considered there. A bound template whose `model` is
-`auto` is NOT treated alike everywhere. The chip (`resolve_effective_model`)
-collapses it through `normalize_agent_model` and shows the global. The session
-layer (`session._session_model` -> `_model_fallback`) defers to the provider for
-ANY nonempty template value, `auto` included, so it returns `None`. The factory
-(`acp_effective_model`) then reads the template pin, collapses `auto` to `""`, and
-sends no model, which leaves kiro-cli's own resolution in charge rather than the
-global. That precedence is unchanged for ordinary named templates. No template
-follows the global default through these resolvers.
+outranks all four and is not considered there. The session layer
+(`session._session_model`, run by `get_or_create` for a caller that names no model)
+answers through the same function, so a bound template whose `model` is `auto`
+inherits the global on the chip and in the session alike.
 
 The loader is defensive about hand-edited config: a non-string `model` or
 `triggers` collapses to `""`, an unknown `reasoning_effort` collapses to inherit,
@@ -1843,7 +1841,11 @@ never in the chat. Each pick writes the crew record (`approval_mode`, `model`,
 the open thread follows at once. `approval_mode` is `""` until the user picks one, and while it is `""` the
 thread opens in `trust` (`_seed_member_approval` seeds the slot from `mode or
 "trust"`); picking `Normal` is what opens it without trust, and `trust_reads` /
-`trust` are applied as stored. A stored choice is applied as stored, a grant already on the slot is
+`trust` are applied as stored. `POST /api/agents` takes the same optional
+`approval_mode` (one of `MEMBER_APPROVAL_MODES`, else 400
+`invalid_approval_mode` before any write) and stores it in the create's own
+write, so a caller that must never leave a new crewmate in `trust` pins it there
+instead of in a later PUT. A stored choice is applied as stored, a grant already on the slot is
 kept, and the seed runs once per in-memory slot (`_member_approval_seeded`).
 YOLO is never a crewmate setting: it is process-global.
 The permission PUT is compare-and-set: the profile sends
@@ -1928,7 +1930,7 @@ hairline, transparent background, no hover and no pointer; never dashed, which i
 this card's empty language (Sessions empty) and would make a
 set binding read as not set up — while Workspace keeps the filled clickable-card
 treatment with its hover. Notes, Permissions, and Model follow.
-The pencil, Permissions, and Model entries open the existing `CrewEditorDialog`;
+The pencil, Permissions, and Model entries open `CrewEditorModal`;
 the card introduces no configuration writer. Memory is a non-interactive binding
 readout — it never opens the unrelated generated Dashboard. The Workspace tile's
 label is the crew record's `workspace` field shown as-is: that field is the
@@ -2316,9 +2318,9 @@ The chat SidePanel has two standing entries on this page: the leading
 dashboard (`CrewDashboardTab`, read from `GET /api/members/{slug}/dashboard`) for
 every reader: the page fills the tab, with no summary card, Contained bar, Expand
 control, identity row or Command Center around it. A crewmate with no adopted
-page (the read answers `state: "empty"` with the generic default, no bound
-package, and no shipped page named for its slug) shows the SUGGESTIONS page
-instead of the default template the read still carries (`CrewDashboardEmpty`): the
+page (the read answers `state: "empty"` with no template, no bound package, and
+no shipped page named for its slug) has no page in force and shows the
+SUGGESTIONS page (`CrewDashboardEmpty`): the
 crewmate's face under a first-person bubble and three prompts that only fill its
 chat box (`onAct`); a staged preview and a root session's Overview are not
 affected. A refresh opens the Dashboard tab rather than the strip's persisted

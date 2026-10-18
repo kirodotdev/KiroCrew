@@ -34,7 +34,17 @@ from kiro_crew.dashboard.chat import api_chat_slot_turn_timeout
 from kiro_crew.dashboard.chat_persistence import _validate_turn_timeout_secs
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.session_surface import set_dashboard_surfaced
 from kiro_crew.turn_limit import TURN_LIMIT_SECS, current_turn_limit_secs
+
+
+@pytest.fixture(autouse=True)
+def _reset_surface_registry():
+    """The slots these tests open publish to the process-global dashboard-surface
+    registry; reset it so their keys never leak into other tests."""
+    set_dashboard_surfaced(())
+    yield
+    set_dashboard_surfaced(())
 
 
 @contextlib.contextmanager

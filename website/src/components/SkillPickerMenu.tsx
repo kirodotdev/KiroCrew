@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Lock, Sparkles } from 'lucide-react'
-import { api } from '../api/client'
+import { usePickerSource } from './dashboardPickerSource'
+import { pickerQueryKey } from '../chat-core/composer/pickerSource'
 import { unwrapSkills } from '../lib/skillsPayload'
 import type { SkillsPayload } from '../lib/skillsPayload'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
@@ -92,10 +93,11 @@ export default function SkillPickerMenu({
   // menu lazy — the focus-prefetch warms the same key separately.
   // `loading` below is `isLoading && open` and isLoading clears only on settle,
   // so an unbounded fetch leaves "Loading skills…" up forever.
+  const source = usePickerSource()
   const { data, isLoading, isFetching, isError } = useQuery<SkillsPayload<SkillItem>>({
-    queryKey: ['skills', slotKey ?? null, project ?? null, agent ?? null],
-    queryFn: ({ signal }) => api.skills(slotKey, agent, signal),
-    enabled: open,
+    queryKey: pickerQueryKey(source, ['skills', slotKey ?? null, project ?? null, agent ?? null]),
+    queryFn: ({ signal }) => source.skills!(slotKey, agent, signal) as Promise<SkillsPayload<SkillItem>>,
+    enabled: open && !!source.skills,
     staleTime: skillsCacheStaleTime(project),
   })
   const loading = isLoading && open

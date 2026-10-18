@@ -1178,18 +1178,19 @@ async def test_claude_saved_projection_requires_consumed_matching_spec(
         with pytest.raises(CapabilityStartupError, match="unverified"):
             loaded_stamp(provider, prepared)
         return
-    await asyncio.wait_for(client._initialize_session(), 30)
-    assert sent[1][0] == ("session/load" if resume else "session/new")
     if fault:
-        # The session exists and holds the array; the projection it consumed is what
-        # refuses it -- the refusal is the confirmation's, not a failed session start.
-        with pytest.raises(AcpError):
-            await client.confirm_member_projection()
+        # The session was created and holds the array; the projection it consumed is
+        # what refuses it, inside the start that made it, so the refusal is the
+        # confirmation's and not a failed session/new.
+        with pytest.raises(AcpError, match="saved spec projection could not be confirmed"):
+            await asyncio.wait_for(client._initialize_session(), 30)
+        assert sent[1][0] == ("session/load" if resume else "session/new")
         assert provider.loaded_capability_template == ""
         with pytest.raises(CapabilityStartupError, match="unverified"):
             loaded_stamp(provider, prepared)
         return
-    await client.confirm_member_projection()
+    await asyncio.wait_for(client._initialize_session(), 30)
+    assert sent[1][0] == ("session/load" if resume else "session/new")
     assert "mcpServers" in sent[1][1]
     assert provider.loaded_capability_template == prepared.template
     await asyncio.to_thread(verify_saved, prepared, str(project))

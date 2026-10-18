@@ -16,7 +16,7 @@ here the subject is each surface's wiring. The surfaces here reach the check
 through ``name_grant.refusal_for_event``; the dashboard is different — its
 rungs resolve their own module-level ``_name_grant_refusal_off_loop`` alias
 (the seam its existing tests stub), so its rung behaviour is exercised by the
-``test_name_grant.py`` / ``test_chat_runner_coverage.py`` dashboard tests,
+``test_name_grant.py`` / ``test_chat_runner_coverage_approval.py`` dashboard tests,
 while this file pins that the alias IS the promoted helper and that the
 chokepoint's decline-not-raise guard covers the dashboard seam too.
 """
@@ -706,6 +706,7 @@ class TestSpawnRungEventIdentity:
         discord_owners = [importlib.import_module(o) for o in discord_dispatch._OWNERS]
         for mod in (
             dispatch,
+            *(importlib.import_module(owner) for owner in dispatch._OWNERS),
             driver,
             slack_handler,
             slack_dispatch,

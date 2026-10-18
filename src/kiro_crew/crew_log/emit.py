@@ -124,7 +124,7 @@ _SRC_GATEWAY = "gateway"
 _DEFAULT_AGENT = "kirocrew"
 
 #: Characters per token, the repo's own estimate for a prompt it cannot tokenize
-#: exactly (``dashboard/handlers/usage.py`` applies the same 4.0). Restated here
+#: exactly (``dashboard/handlers/usage_sessions.py`` applies the same 4.0). Restated here
 #: rather than imported: that module is a dashboard handler and this one is
 #: imported BY the dashboard chat path, so importing it back would close an
 #: import cycle. Any block count derived from it is an ESTIMATE and the spec says

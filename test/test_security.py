@@ -6352,7 +6352,7 @@ class TestIsSensitivePath:
 
     def test_rotated_security_event_segments(self) -> None:
         # A rotated segment holds exactly the same audit records the live log
-        # does (sel.py closes the log at a size cap and renames it into this
+        # does (sel_rotation.py closes the log at a size cap and renames it into this
         # dir), so rotation must not become the way around the fence.
         assert is_sensitive_path("~/.kiro/crew/security_events.d") is True
         assert (

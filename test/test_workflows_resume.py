@@ -19,6 +19,7 @@ import asyncio
 
 import pytest
 
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 from kiro_crew.workflows.runner import WorkflowRunner
 from kiro_crew.workflows.service import WorkflowService
 from kiro_crew.workflows.store import WorkflowRunStore
@@ -176,15 +177,12 @@ class FakeSessions:
         pass
 
 
-async def _wait(svc, rid, timeout=3.0):
-    t = 0.0
-    while t < timeout:
+async def _wait(svc, rid):
+    def _done():
         s = svc.status(rid)
-        if s and s["status"] != "running":
-            return s
-        await asyncio.sleep(0.02)
-        t += 0.02
-    raise AssertionError("run did not finish")
+        return s if s and s["status"] != "running" else None
+
+    return await async_wait_until(_done, describe=lambda: f"run {rid}: {svc.status(rid)}")
 
 
 async def test_service_rerun_subtree_from_index(monkeypatch) -> None:
@@ -278,7 +276,7 @@ def _logging_agent(log: list, hold_a: "asyncio.Event | None" = None):
             if prompt == "refine:R(draft:B)":
                 hold_a.set()
             if prompt == "draft:A":
-                await asyncio.wait_for(hold_a.wait(), timeout=5)
+                await await_until(hold_a, what="hold_a")
         return "R(" + prompt + ")"
 
     return fn
@@ -307,7 +305,7 @@ def guards_in_start_order(monkeypatch):
         try:
             await real_validate(self)
             for event in earlier:
-                await asyncio.wait_for(event.wait(), timeout=5)
+                await await_until(event, what="event")
         finally:
             done.set()
 
@@ -393,7 +391,7 @@ async def test_rerun_gives_each_branch_its_own_result_for_the_same_call(
 
     async def answers_in_start_order(prompt: str, opts: dict):
         if prompt == "first:A":
-            await asyncio.wait_for(b_same_started.wait(), timeout=5)
+            await await_until(b_same_started, what="b_same_started")
         if prompt == "same":
             answers.append(prompt)
             b_same_started.set()
@@ -433,7 +431,7 @@ async def test_restart_of_a_run_a_gateway_restart_interrupted_replays_its_finish
     async def blocks_on_third(prompt: str, opts: dict):
         if prompt == "third":
             third_started.set()
-            await asyncio.wait_for(never.wait(), timeout=10)
+            await await_until(never, what="never")
         return "R(" + prompt + ")"
 
     agents["fn"] = blocks_on_third
@@ -443,7 +441,7 @@ async def test_restart_of_a_run_a_gateway_restart_interrupted_replays_its_finish
     handle = before.registry.get(rid)
     try:
         # The calls run in order, so "third" starts only after the first two settled.
-        await asyncio.wait_for(third_started.wait(), timeout=10)
+        await await_until(third_started, what="third_started")
         assert sorted(handle.agent_results) == [0, 1]
         # The registry's own checkpoint write, then the next boot reading it back.
         await before.registry.persist_async(rid)
@@ -467,7 +465,7 @@ async def test_restart_of_a_run_a_gateway_restart_interrupted_replays_its_finish
         task = getattr(handle, "task", None)
         if task is not None and not task.done():
             task.cancel()
-            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=10)
+            await finished(asyncio.gather(task, return_exceptions=True), "task cleanup")
     assert rerun_live == [
         "third"
     ], f"restarting the interrupted run at call 2 ran these calls live: {rerun_live}"

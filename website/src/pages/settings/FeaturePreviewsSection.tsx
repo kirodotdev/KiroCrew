@@ -5,6 +5,10 @@ import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
 import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
 import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import ErrorBoundary from '../../components/ErrorBoundary'
+import { KasBundleCard } from '../developer/KasBundleCard'
+import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
+import { useConfigSchema } from '../../components/settingRef/useConfigSchema'
 import { DecisionsCard } from './DecisionsCard'
 import { i18nT } from '../../i18n/t'
 
@@ -134,6 +138,11 @@ export function FeaturePreviewsSection() {
   const remoteCrewChat = useRemoteCrewChat()
   const layoutHarness = usePreviewFlag(PREVIEW_LAYOUT_HARNESS)
   const folderConductor = usePreviewFlag(PREVIEW_FOLDER_CONDUCTOR)
+  // The KAS engine card is for a deployment that can select KAS at all: the same
+  // gate its old mount used, read from the schema's `agent.acp_backend` enum. An
+  // unanswered schema hides nothing, as on the harness tab.
+  const acpBackends = useConfigSchema()?.get('agent.acp_backend')?.enum
+  const kasOffered = !acpBackends || acpBackends.includes(KIRO_SIGN_IN_BACKEND)
 
   return (
     // The wrapper exists for the legacy redirect: `?highlight=key:<anchor>`
@@ -311,6 +320,21 @@ export function FeaturePreviewsSection() {
           onChange={v => setPreviewFlag(PREVIEW_FOLDER_CONDUCTOR, v)}
         />
       </SettingsCard>
+      {/* The built-in KAS engine (`agent.kas_bundle`), the whole card: its switch
+          and the Install button for the pinned engine. It lives here, not on the
+          KAS harness row, while the route is in shadow testing, so the one click
+          that moves every new session onto an engine still being tested is not in
+          plain view of every KAS user. Unlike the cards above, the switch is a
+          server config value, not a per-device flag; the card writes it through
+          the same config PATCH it always did. Isolated so a throwing card cannot
+          take the section down. */}
+      {kasOffered && (
+        <SettingsCard>
+          <ErrorBoundary scope="feature-preview-kas-bundle" fallback={null}>
+            <KasBundleCard />
+          </ErrorBoundary>
+        </SettingsCard>
+      )}
       {/* LAST, and the only card here whose switch is not a per-device flag: it
           writes the KEYSTONE `decisions_consent.json`, not a config path. It lives in
           `DecisionsCard.tsx` because it is a list and a detail rather than one row,

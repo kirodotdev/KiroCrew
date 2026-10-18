@@ -225,6 +225,22 @@ def _kick_session_search_index(state: DashboardState) -> None:
                 "search falls back to scanning the transcripts"
             )
 
+    def _warm_search() -> None:
+        """Pay the first search's query-independent cost before a user does.
+
+        Runs once the index schema is current, off the loop and after readiness,
+        so a cold gateway's first searches do not each start from an unread
+        session list and an unopened index. Best effort: a failure only means
+        the first search pays that cost itself.
+        """
+        log = state.conversation_log
+        if log is None:
+            return
+        try:
+            log.warm_search()
+        except Exception:  # noqa: BLE001 — a warm-up must never stop indexing
+            logger.warning("Session search warm-up failed", exc_info=True)
+
     async def _session_index_supervisor() -> None:
         log = state.conversation_log
         if log is None:
@@ -250,6 +266,7 @@ def _kick_session_search_index(state: DashboardState) -> None:
             # improve by retrying, such as a transcript directory that is not
             # there, sets ``gave_up`` inside ``start`` and so exits immediately.
             await asyncio.to_thread(supervisor.start)
+            await asyncio.to_thread(_warm_search)
             while not supervisor.gave_up:
                 wait_secs = await asyncio.to_thread(supervisor.poll)
                 await asyncio.sleep(wait_secs)

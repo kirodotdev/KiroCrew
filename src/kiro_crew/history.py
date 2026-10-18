@@ -389,6 +389,9 @@ class ConversationLog:
     # a missing entry must always mean "generation 0", not "forgotten bump".
     _cache_gens: dict[tuple[str, str], int] = {}
     _cache_gens_guard = threading.Lock()
+    #: Per transcript directory, the total of every bump above: one int per
+    #: directory, moved under ``_cache_gens_guard`` with the bumps it sums.
+    _dir_write_epochs: dict[str, int] = {}
 
     def __init__(
         self,
@@ -699,6 +702,9 @@ class ConversationLog:
     ) -> list[dict]:
         return self._catalog_projection.search_sessions(query, limit, keys=keys)
 
+    def warm_search(self) -> None:
+        self._catalog_projection.warm_search()
+
     def _folded_content(self, key: str) -> tuple[int, str]:
         return self._catalog_projection._folded_content(key)
 
@@ -947,6 +953,9 @@ class ConversationLog:
 
     def _bump_cache_gen(self, key: str, idents: tuple[str, ...]) -> None:
         self._cache_coordinator._bump_cache_gen(key, idents)
+
+    def _dir_write_epoch(self) -> int:
+        return self._cache_coordinator._dir_write_epoch()
 
     def _publish_if_current(
         self,

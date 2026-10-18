@@ -520,7 +520,7 @@ class TestTheMcpServerLaunchesOnEveryPlatform:
 
     Review proposed `"python"`. That is better but still not right, for a reason this repo has
     already written down twice:
-      * `mcp_gateway/rewriter.py` bakes `sys.executable` into its stub entry precisely because
+      * `mcp_gateway/rewriter_spec.py` bakes `sys.executable` into its stub entry precisely because
         "a `python3` on PATH that can import `kiro_crew` is [not] guaranteed" — kiro-cli strips
         env when spawning MCP subprocesses, so PATH resolution can find an interpreter that
         cannot import the package at all.

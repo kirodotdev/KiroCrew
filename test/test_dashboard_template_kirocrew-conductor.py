@@ -140,3 +140,18 @@ def test_it_has_a_light_theme_and_fits_a_narrow_pane() -> None:
     # One column at 320px: the card grid's minimum never exceeds the pane.
     assert "minmax(min(100%, 240px), 1fr)" in style
     assert not re.search(r"(?<![-\w])width:\s*\d{3,}px", style)
+
+
+def test_refresh_motion_is_tied_to_new_state_not_each_redraw() -> None:
+    """A refill keeps the page document; its own renderer must do the same."""
+    style = _style()
+    script = _script()
+    assert ".cb .band {" in style and "animation: cb-glow" in style
+    assert ".cb .dot {" in style and "animation: cb-blink" in style
+    assert "var taskNodes = {};" in script
+    assert "if (signature === youSignature) return;" in script
+    assert "if (freshTrack)" in script
+    assert "window.addEventListener('DOMContentLoaded', render, { once: true });" in script
+    assert "window.addEventListener('kirocrew-dashboard', render);" in script
+    assert "window.addEventListener('load', render);" not in script
+    assert "window.addEventListener('message'" not in script

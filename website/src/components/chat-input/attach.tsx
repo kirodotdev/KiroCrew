@@ -7,7 +7,7 @@ import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { GuideRevealScope } from '../../guide/GuideRevealScope'
 import type { ComposerControl } from '../composerControl'
-import type { useComposerPickers } from './pickers'
+import type { useComposerPickers } from '../../chat-core/composer/pickers'
 import type { ChatInputProps } from './props'
 
 /* The attach control at the head of the bottom row: the "+" drop-up (upload,

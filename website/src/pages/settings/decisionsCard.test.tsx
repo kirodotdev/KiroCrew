@@ -214,6 +214,17 @@ function stubGateway(
   // and never holds the credential. Stubbed in every case so no test reaches the
   // network for a field most of them do not open.
   vi.spyOn(api, 'secretsList').mockResolvedValue({ names: [] } as never)
+  // The KAS engine card shares this section; answered so its own read-failure
+  // notice does not add a second alert beside this card's.
+  vi.spyOn(api, 'kasBundleStatus').mockResolvedValue({
+    enabled: false,
+    pinned_version: '0.66.33',
+    runs_version: '0.66.33',
+    installed: null,
+    installing: false,
+    progress: { done: 0, total: 0 },
+    error: '',
+  } as never)
   // The provider picker's own read answers "no such route" unless a case stubs a
   // provider, so the cases below see the card as an older gateway draws it.
   vi.spyOn(api, 'getDecisionsProvider').mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }))
@@ -1209,9 +1220,12 @@ describe('Decisions (Jev) preview card', () => {
     expect(screen.getByText(/Turn this off and on again/i)).toBeInTheDocument()
     // Styled as a warning, not a paragraph: the switch is on and the truth is
     // "nothing is sent", so the state must read as wrong before it is read.
-    const alert = screen.getByRole('alert')
+    // Picked by text: the section also draws the KAS engine card, whose restart pill
+    // reports its own unreadable schema as an alert in this unstubbed render.
+    const alert = screen.getAllByRole('alert').find(el => /nothing is being sent/i.test(el.textContent ?? ''))
+    expect(alert).toBeDefined()
     expect(alert).toHaveTextContent(/nothing is being sent/i)
-    expect(alert.className).toContain('text-warn')
+    expect(alert?.className).toContain('text-warn')
   })
 
   it('shows no moved-address notice while consent is off or matches', async () => {

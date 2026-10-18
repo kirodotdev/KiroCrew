@@ -953,6 +953,7 @@ def _corpus_events() -> tuple[tuple[str, PatchSite], ...]:
     )
 
 
+@functools.lru_cache(maxsize=1)
 def _corpus_patched_names() -> dict[str, set[str]]:
     """Facade -> every name the test trees patch through it (:func:`routed_patched_names`)."""
     return routed_patched_names(
@@ -960,6 +961,60 @@ def _corpus_patched_names() -> dict[str, set[str]]:
         _SPELLINGS_FOUND,
         lambda path, _text: _events_of(path, _SCAN_SPELLINGS),
     )
+
+
+def one_facade_patched_names(
+    text: str, facade: str, spellings: Mapping[str, str], table: Mapping[str, str]
+) -> set[str]:
+    """The names *text* patches through the one facade *facade*, read by both readers.
+
+    *spellings* holds *facade*'s own spellings and *table* the whole spelling table.
+    :func:`text_patched_names` reads each spelling on its own, so the regular expressions
+    run with *spellings* alone. A file holding none of their leaves spells nothing either
+    reader resolves to *facade*; every other file is also parsed with *table*, the
+    spellings the corpus scan parses with, so no routing decides what the tree sees.
+    """
+    if not any(spelling.rpartition(".")[2] in text for spelling in spellings):
+        return set()
+    names = text_patched_names(text, spellings).get(facade, set())
+    try:
+        events = patch_events(text, table)
+    except SyntaxError:
+        return names
+    return names | names_by_target(events, [facade]).get(facade, set())
+
+
+def facade_patched_names(facade: str) -> set[str]:
+    """Every name the test trees patch through *facade* (:func:`one_facade_patched_names`
+    of each test-tree file): one facade's share of :func:`_corpus_patched_names`, without
+    reading every file for every facade's spellings."""
+    spellings = {
+        spelling: target for spelling, target in _SPELLINGS_FOUND.items() if target == facade
+    }
+    table = dict(_SCAN_SPELLINGS)
+    found: set[str] = set()
+    for path in _test_tree_files():
+        text = path.read_text(encoding="utf-8", errors="replace")
+        found |= one_facade_patched_names(text, facade, spellings, table)
+    return found
+
+
+def test_the_one_facade_read_answers_both_ways() -> None:
+    """Both readers run on a file holding the facade's leaf: the regular expressions read
+    the alias patch, the tree reads the attribute chain they cannot see, and another
+    module's patch adds nothing."""
+    table = {**_SPELLINGS, "pkg.other": "pkg.other"}
+    source = (
+        "import pkg.handler as h\nimport pkg.other as o\nfrom pkg import facade as fa\n"
+        "def test_x(monkeypatch):\n"
+        "    monkeypatch.setattr(fa, 'a', 1)\n"
+        "    h.facade.b = 2\n"
+        "    o.c = 3\n"
+    )
+    assert "b" not in text_patched_names(source, _SPELLINGS).get(_FACADE_NAME, set())
+    assert one_facade_patched_names(source, _FACADE_NAME, _SPELLINGS, table) == {"a", "b"}
+    other_only = "import pkg.other as o\no.c = 3\n"
+    assert one_facade_patched_names(other_only, _FACADE_NAME, _SPELLINGS, table) == set()
 
 
 def unreached_readers(index: _facade_mirror.MirrorIndex, sources: Mapping[str, str]) -> list[str]:
@@ -1056,6 +1111,13 @@ def test_every_name_the_test_trees_patch_through_a_facade_reaches_its_readers() 
         assert patch_reach_failures(facade, reach_sample(names, index)) == [], name
 
 
+def test_the_corpus_reads_patches_through_an_alias_of_a_module_binding_the_facade() -> None:
+    """``test/test_mcp_browser_tool.py`` patches these only as ``mod.mcp_core.<name>``,
+    with ``mod`` bound to ``kiro_crew.mcp_tools.browser``."""
+    corpus = _corpus_patched_names().get("kiro_crew.mcp_core", set())
+    assert {"_vet_browse_governance", "_session_token_header"} <= corpus
+
+
 #: Patches only the syntax tree reads, one per blind spot of the regular expressions:
 #: (source, the name it patches through ``pkg.facade``).
 _SYNTAX_ONLY_CASES = (
@@ -1074,6 +1136,13 @@ _SYNTAX_ONLY_CASES = (
     ("import pkg.facade as fa\nvars(fa).update({'i': 1})\n", "i"),
     ("from unittest import mock\nmock.patch.dict('pkg.facade.__dict__', {'j': 1})\n", "j"),
     ("import pytest\nfa = pytest.importorskip('pkg.facade')\nfa.k = 1\n", "k"),
+    ("from pkg import handler as mod\nmod.facade.l = 1\n", "l"),
+    (
+        "def test_x(monkeypatch):\n    from pkg import handler as mod\n"
+        "    monkeypatch.setattr(mod.facade, 'm', None)\n",
+        "m",
+    ),
+    ("import pkg.handler as mod\nmod.facade.n = 1\n", "n"),
 )
 
 
@@ -1108,6 +1177,8 @@ def test_a_file_the_regular_expressions_fully_read_is_never_parsed() -> None:
     )
     assert not needs_syntax_tree(readable, _SPELLINGS)
     assert not needs_syntax_tree("x = 1\n", _SPELLINGS), "a file naming no facade"
+    other_leaf = "from pkg import handler as mod\nmod.run()\nmod.facade_x = 1\nxmod.facade.y = 2\n"
+    assert not needs_syntax_tree(other_leaf, _SPELLINGS), "the alias never reaches the facade"
 
     def never(path: str, text: str) -> list[PatchSite]:
         raise AssertionError(f"{path} was parsed")

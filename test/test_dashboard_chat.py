@@ -21,7 +21,7 @@ import pytest
 from chat_test_helpers import _make_state
 from dashboard_chat_helpers import _provider_mock
 
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import await_until, until_parked
 
 # ── Tests: AcpProcessDied handler in _run_chat ──
 
@@ -412,7 +412,9 @@ class TestRunChatModelFallback:
         await slot._model_pick_lock.acquire()
         try:
             task = asyncio.create_task(_fallback_swap_for_turn(slot, client))
-            await asyncio.sleep(0.05)
+            # The swap takes the session lock, then parks on the held pick lock;
+            # wait until it is parked there rather than guessing with a sleep.
+            await until_parked(slot._model_pick_lock, count=1)
             # Lock held ⇒ the swap must not have reached set_model yet.
             assert not entered.is_set()
             assert not task.done()
@@ -461,7 +463,9 @@ class TestRunChatModelFallback:
         await _session_lock.acquire()
         try:
             task = asyncio.create_task(_fallback_swap_for_turn(slot, client))
-            await asyncio.sleep(0.05)
+            # The swap takes the session lock first, so it parks on the held one;
+            # wait until it is parked there rather than guessing with a sleep.
+            await until_parked(_session_lock, count=1)
             # Session lock held ⇒ the swap must not have reached set_model yet.
             assert not entered.is_set()
             assert not task.done()

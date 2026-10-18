@@ -19,7 +19,7 @@ with the damage only surfacing later as fabricated numbers in an aggregation.
 A reviewer cannot be expected to catch the 17th occurrence by eye, so this is
 enforced structurally instead.
 
-The fix pattern (see ``dashboard/handlers/usage.py`` for the reference, and
+The fix pattern (see ``dashboard/handlers/usage_store.py`` for the reference, and
 ``instances/registry.py`` / ``sel.py`` / ``history_files.py`` for prior art)::
 
     _SOME_DIR: Path | None = None          # explicit override hook, None = live

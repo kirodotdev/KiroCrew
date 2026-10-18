@@ -79,7 +79,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "absorb_orphaned_release": ("function", False, "1eda252b53bd", "turn_stop"),
     "adopt_turn": ("function", False, "958babeb61c8", "turn_stop"),
     "await_replay_gap": ("function", True, "958babeb61c8", "turn_stop"),
-    "cancel_current": ("function", True, "bb92c20b501c", "turn_stop"),
+    "cancel_current": ("function", True, "9859e2116ea5", "turn_stop"),
     "cancel_owned_turn": ("function", True, "86bfc9daa5fd", "turn_stop"),
     "close_all": ("function", True, "9679ccba1fac", "fleet"),
     "close_replay_gap": ("function", False, "958babeb61c8", "turn_stop"),

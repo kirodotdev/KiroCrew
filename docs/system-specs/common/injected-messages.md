@@ -40,7 +40,10 @@ was reachable. `dashboard/handlers/messaging.py` wraps the text:
   wrapper. The text wrapper stays in `content` because that is what the model
   reads.
 - If the slot is mid-turn the message is queued as `queued` and drained later; a
-  queue at capacity evicts its oldest entry rather than growing without bound. An
+  queue at capacity evicts its oldest entry rather than growing without bound. Its
+  waiting card names the entry in `meta.queueId`, the id the drain's `queue_pop`
+  frame carries, so the card comes down when the message starts its turn
+  (`cron_inject.queue_cron_notification`, which a script cron's result uses too). An
   idle slot instead gets an immediate guarded turn.
 - When the origin slot is not in memory it is rehydrated from history. A session
   that is genuinely gone (never persisted, deleted, or closed) resolves to nothing

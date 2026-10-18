@@ -73,11 +73,11 @@ from kiro_crew.security import (
     is_denied,
     is_denied_synthesized_target,
     is_sensitive_bash_command,
-    is_sensitive_write_path,
     is_unverifiable_path_refusal,
     redact_credentials,
     redact_exfiltration_urls,
     sensitive_path_refusal,
+    sensitive_write_path_refusal,
 )
 from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
 from kiro_crew.sel import sel as _sel
@@ -330,19 +330,59 @@ def acp_error_is_transient(exc: BaseException) -> bool:
 
 
 def acp_error_is_session_not_found(exc: BaseException) -> bool:
-    """True when a live backend says it holds no session under the id it was sent.
+    """True when the live backend cannot serve this chat and only a fresh process can.
 
-    The process answered, so nothing marks it dead and the dead-provider
-    eviction never fires; the binding keeps naming a session the backend has
-    dropped, and every later prompt draws the same answer. The backend
-    session's transcript is usually intact, so the remedy is a fresh process
-    that re-loads the SAME id -- not a retry on this one.
+    Two raw answers share that remedy, so both read True here:
+
+    - A live backend holds no session under the id it was sent (the phrase is
+      the adapter's own answer to a prompt). The process answered, so nothing
+      marks it dead and the dead-provider eviction never fires; the binding
+      keeps naming a session the backend has dropped, and every later prompt
+      draws the same answer. The backend session's transcript is usually
+      intact, so the remedy is a fresh process that re-loads the SAME id --
+      not a retry on this one.
+    - The frame names ``cloud_credential_error`` (``AcpError.credential_reload``,
+      set from the structured ``data.errorKind`` in
+      ``acp.transport_errors._raise_acp_error``): the process cached
+      credentials it cannot re-load, so a retry on THIS process
+      re-draws the answer while a chat started fresh in the same window works.
+      The remedy is the same fresh process, so the tag rides this same
+      reset-and-reload-once path with its one-retry budget and the
+      no-replay-after-tool-activity rule intact.
 
     Scoped to ``AcpError``: the phrase is the adapter's own answer to a prompt,
     and an unrelated exception that mentions a missing session elsewhere (an
     HTTP 404 body, a dashboard lookup) must never reset a chat.
     """
-    return isinstance(exc, AcpError) and "session not found" in str(exc).lower()
+    if not isinstance(exc, AcpError):
+        return False
+    if "session not found" in str(exc).lower():
+        return True
+    return acp_error_needs_fresh_credentials(exc)
+
+
+def acp_error_needs_fresh_credentials(exc: BaseException) -> bool:
+    """True when *exc* is the provider's ``cloud_credential_error`` answer.
+
+    The cause half of :func:`acp_error_is_session_not_found`: a surface that
+    recycles the process reads this to word its notices for credentials, not
+    for a lost session, and to hand the provider's own remedy to the user.
+    """
+    return isinstance(exc, AcpError) and getattr(exc, "credential_reload", False) is True
+
+
+def credential_give_up_text(exc: BaseException | str) -> str:
+    """The dead end of a credential failure that the fresh process drew too.
+
+    The helper itself is broken (an expired SSO login, a revoked role), so no
+    restart or new chat can fix it: the provider's own instruction is the only
+    actionable line, and it is carried verbatim. Each surface appends its own
+    next step.
+    """
+    return (
+        "The agent still could not load its cloud credentials after a restart. "
+        f"Fix them first. The provider said: {exc}"
+    )
 
 
 #: Set by :func:`stream_and_collect` on an ``AcpError`` it propagates: True when a
@@ -357,6 +397,10 @@ def acp_error_after_tool_activity(exc: BaseException) -> bool:
 
 #: Shown once by a surface that re-loads a lost session and retries the turn.
 SESSION_NOT_FOUND_RETRY_NOTICE = "⟳ The agent lost its session — reconnecting…"
+#: The same one retry, when the cause is credentials the process could not load.
+CREDENTIAL_RELOAD_RETRY_NOTICE = (
+    "⟳ The agent could not load its cloud credentials — restarting it to load them again…"
+)
 #: The error a surface ends on when the one reconnect did not give it a usable session.
 SESSION_NOT_FOUND_GIVE_UP_TEXT = "Could not reconnect the agent's session."
 #: A session lost after the turn started working: replaced, but not replayed,
@@ -1557,8 +1601,10 @@ def _edit_target_denial(
             "",
         )
     for path in candidates:
-        if is_sensitive_write_path(path):
-            return ("path", f"Blocked: write to protected path: {path}", path)
+        # ``sensitive_write_path_refusal`` is ``is_sensitive_write_path`` as a
+        # reason: a stall still refuses, worded as a timed-out check.
+        if reason := sensitive_write_path_refusal(path):
+            return ("path", reason, path)
     return None
 
 

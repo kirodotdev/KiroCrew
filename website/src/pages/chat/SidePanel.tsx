@@ -2101,6 +2101,19 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
       // Guard on e.target so Enter/Space on the nested transfer/close buttons
       // activates them natively instead of also selecting the tab.
       onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onSelect() } }}
+      // Chromium on Windows enters middle-click autoscroll on the middle-button
+      // MOUSEDOWN when the target sits in a scroll container, and once it does,
+      // `auxclick` never reaches the page, so the close below never runs. Each
+      // tab group is `overflow-x-auto` (which computes overflow-y to auto too),
+      // and the active chip's corner pieces (`.side-tab-active::before/::after`,
+      // bottom:-1px in index.css) overflow its group by 1px, so the group
+      // holding the ACTIVE chip is always scrollable: middle-clicking a file tab
+      // while a file tab is active opened autoscroll instead of closing (#9406).
+      // Cancelling mousedown is the only place that stops it, the same guard the
+      // chat sidebar rows carry (SessionRow.tsx). Every chip, closable or not: a
+      // pinned chip has no middle-button behaviour to keep. Middle button only:
+      // the primary button's pointer sequence belongs to the reorder drag.
+      onMouseDownCapture={(e) => { if (e.button === 1) e.preventDefault() }}
       onAuxClick={(e) => { if (closable && e.button === 1) { e.preventDefault(); onClose() } }}
       // Pinned and host chips carry an explicit accessible name, so a badge
       // after the label never becomes part of the tab's name.

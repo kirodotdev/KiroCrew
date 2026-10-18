@@ -2325,7 +2325,10 @@ class TestSanitizeInvariant:
         cause failed it for the wrong reason -- the single assignment site was
         still intact, only the expression had changed.
         """
-        source = Path(job_sdk.__file__).read_text(encoding="utf-8")
+        source = "".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(Path(job_sdk.__file__).parent.glob("job_sdk*.py"))
+        )
         # ``interrupted_from`` is only ever assigned the record's own status, and
         # ``interrupt_cause`` only ever a CAUSE_* constant -- one site each.
         assert source.count("run.interrupted_from = ") == 1
@@ -2960,7 +2963,10 @@ class TestInterruptionRecordsBothAxes:
         drift, which is the failure the lookup table replaced -- and a behaviour
         test cannot see a second site that happens to agree today.
         """
-        source = Path(job_sdk.__file__).read_text(encoding="utf-8")
+        source = "".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(Path(job_sdk.__file__).parent.glob("job_sdk*.py"))
+        )
         # One definition, one call. `reconcile` is the only caller.
         assert source.count("_interrupt_error(") == 2
         # The templates exist only in the table: no other line builds a sentence.

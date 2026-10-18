@@ -1275,6 +1275,7 @@ def _channel_dispatch_files() -> list[Path]:
     """
     files = sorted(_SRC.glob("*/transport_dispatch.py"))
     files.append(_SRC / "messaging" / "dispatch.py")
+    files.extend(sorted((_SRC / "messaging").glob("dispatch_*.py")))
     # A composed dispatcher's owners (``<channel>/dispatch/``) end turns too: Telegram's
     # callback, command and spawn-approval arms catch ``Exception`` there.
     owners = sorted(_SRC.glob("*/dispatch/*.py"))
@@ -1548,7 +1549,7 @@ def test_a_hand_over_forgets_the_streak_it_transferred():
     """
     sites = {
         "slack/handler.py": ("reset", None),
-        "messaging/dispatch.py": ("reset", None),
+        "messaging/dispatch_recovery.py": ("reset", None),
         "slack/gateway_runtime/runtime_charge.py": (None, "consecutive_failures"),
     }
     for rel, (actuator_call, actuator_attr) in sites.items():

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { matchPath, useLocation, useNavigate } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch } from '../store'
 import { createSlot } from '../store/chatSlice'
 import { X, Plus } from 'lucide-react'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
+import { safeSetSessionItem } from '../utils/safeStorage'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import {
   TAB_STATUS_COLOR,
@@ -28,6 +29,23 @@ interface EmbedTabsWindow extends Window {
 
 const STORAGE_KEY = 'kirocrew-embed-tabs'
 const STORAGE_INDEX_KEY = 'kirocrew-embed-active-index'
+
+/**
+ * The tabs to open with. A chat the page was opened on (`/embed/chat/:slug`)
+ * is always the active tab: an open tab holding it is selected, a Sessions tab
+ * becomes it, and otherwise it is added. Without this the mount navigation
+ * below would replace the deep link with the restored tab's URL.
+ */
+function initialTabs(activeSlot: string | null, linkedSlug: string | null): { tabs: Tab[]; index: number } {
+  const restored = loadTabs(activeSlot)
+  if (!linkedSlug) return restored
+  const open = restored.tabs.findIndex(t => t.slug === linkedSlug)
+  if (open !== -1) return { tabs: restored.tabs, index: open }
+  if (restored.tabs[restored.index]?.slug === '') {
+    return { tabs: restored.tabs.map((t, i) => i === restored.index ? { slug: linkedSlug } : t), index: restored.index }
+  }
+  return { tabs: [...restored.tabs, { slug: linkedSlug }], index: restored.tabs.length }
+}
 
 function loadTabs(activeSlot: string | null): { tabs: Tab[]; index: number } {
   // Priority: sessionStorage > window.__kirocrewTabs > activeSlot > empty
@@ -52,8 +70,13 @@ export default function EmbedTabStrip() {
   const slots = useAppSelector(s => s.dashboard.slots)
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
 
-  const [tabs, setTabs] = useState<Tab[]>(() => loadTabs(activeSlot).tabs)
-  const [activeIndex, setActiveIndex] = useState(() => loadTabs(activeSlot).index)
+  const { pathname } = useLocation()
+  const [initial] = useState(() => {
+    const linkedSlug = matchPath('/embed/chat/:slug', pathname)?.params.slug || null
+    return { ...initialTabs(activeSlot, linkedSlug), linked: !!linkedSlug }
+  })
+  const [tabs, setTabs] = useState<Tab[]>(initial.tabs)
+  const [activeIndex, setActiveIndex] = useState(initial.index)
 
   const tabsRef = useRef(tabs)
   tabsRef.current = tabs
@@ -67,6 +90,8 @@ export default function EmbedTabStrip() {
     didMountNav.current = true
     const tab = tabs[activeIndex]
     if (!tab) return
+    // A deep link may have changed the restored tabs: store what is shown.
+    if (initial.linked) persist(tabs, activeIndex)
     if (tab.slug) navigate(`/embed/chat/${tab.slug}?sid=${tab.slug}`, { replace: true })
     else navigate('/embed/sessions', { replace: true })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -88,8 +113,10 @@ export default function EmbedTabStrip() {
   // Persist to sessionStorage + notify plugin on every change
   const persist = useCallback((newTabs: Tab[], newIndex: number) => {
     const slugs = newTabs.map(t => t.slug)
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(slugs))
-    sessionStorage.setItem(STORAGE_INDEX_KEY, String(newIndex))
+    // Storage can be full or denied in a host iframe; the host event and the
+    // navigation that follow must still happen.
+    safeSetSessionItem(STORAGE_KEY, JSON.stringify(slugs))
+    safeSetSessionItem(STORAGE_INDEX_KEY, String(newIndex))
     window.dispatchEvent(new CustomEvent('kirocrew-tab-update', {
       detail: { tabs: slugs, activeIndex: newIndex }
     }))

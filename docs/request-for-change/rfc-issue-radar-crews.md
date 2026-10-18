@@ -530,7 +530,7 @@ wait.
 
 **Nothing caps concurrency.** As measured for this RFC, chat slots and
 concurrent turns were uncapped; the nearest analogue, terminal sessions, caps at
-12 (`_MAX_SESSIONS` in `dashboard/handlers/terminal.py`). The cold-start ceiling is
+12 (`_MAX_SESSIONS` in `dashboard/handlers/terminal_session.py`). The cold-start ceiling is
 `new_cold_start_semaphore` in `session_allocation.py` — a `PrioritySemaphore` of
 4 background permits plus 1 foreground reserve — and host memory. Unattended
 app-owned turns are capped by `DashboardState.MAX_BACKGROUND_TURNS`. Add a
@@ -622,7 +622,7 @@ as measured when this RFC was written; the cited symbol is the live source.
 | Dashboard approval wait | 7200s, hardcoded | `DashboardState.approval_timeout_for` |
 | Background approval wait (unreachable here) | 180s | `DashboardState._BACKGROUND_APPROVAL_TIMEOUT_SECS` |
 | Agent cold-start concurrency | 4 + 1 foreground reserve | `new_cold_start_semaphore` in `session_allocation.py` |
-| Terminal session cap (contrast) | 12 | `_MAX_SESSIONS` in `handlers/terminal.py` |
+| Terminal session cap (contrast) | 12 | `_MAX_SESSIONS` in `handlers/terminal_session.py` |
 | Idle cleanup threshold | 3 days | `api_chat_slots_cleanup` |
 | `auto_research` trust TTL | 24h | `auto_research/campaign/watchdog.py` |
 | Repository labels | 34 total; `crew: ` is the crew-writable set | `gh label list` |

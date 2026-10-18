@@ -681,7 +681,12 @@ async def _inject_subagent_into_channel_parent(
         finally:
             if _acquired:
                 try:
-                    await self.sessions.cancel_current(parent_key)
+                    # Only this injection's own prompt: after the timeout
+                    # arm's reset the key may hold a successor whose live
+                    # turn (the parent's next message) is not ours to cancel.
+                    await self.sessions.cancel_current(
+                        parent_key, owner_task=asyncio.current_task()
+                    )
                 except Exception:
                     logger.debug(
                         "Failed to cancel parent prompt for %s",
@@ -793,7 +798,11 @@ async def _finish_subagent_cron_or_notify(
         finally:
             if acquired:
                 try:
-                    await self.sessions.cancel_current(parent_key)
+                    # Same fence as the channel route: never the live turn
+                    # of a successor that claimed the key after a reset.
+                    await self.sessions.cancel_current(
+                        parent_key, owner_task=asyncio.current_task()
+                    )
                 except Exception:
                     logger.debug(
                         "Failed to cancel parent prompt for cron %s", info.id, exc_info=True

@@ -13,14 +13,18 @@ from types import SimpleNamespace
 
 import pytest
 from external_logout_detection_helpers import _private_sel_root_per_test  # noqa: F401
-from external_logout_detection_helpers import _DeadProvider, _FakeProvider, _FakeRuntime
+from external_logout_detection_helpers import (
+    _DeadProvider,
+    _FakeProvider,
+    _FakeRuntime,
+)
 
 from kiro_crew import kiro_prerequisite as kp
 from kiro_crew.session_allocation import (
     FOREGROUND_COLD_START_RESERVE as _COLD_START_RESERVE_FOR_TEST,
 )
 from kiro_crew.session_allocation import MAX_CONCURRENT_COLD_STARTS as _MAX_COLD_STARTS_FOR_TEST
-from kiro_crew.testing.wait import async_wait_until, until_parked
+from kiro_crew.testing.wait import async_wait_until, await_until, until_parked
 
 
 class TestProviderMembership:
@@ -722,7 +726,7 @@ class TestRetirementCoverage:
             StartPriority.FOREGROUND
         ] * _COLD_START_RESERVE_FOR_TEST
         for priority in holds:
-            await asyncio.wait_for(smap._start_sem.acquire(priority), timeout=5.0)
+            await await_until(asyncio.ensure_future(smap._start_sem.acquire(priority)))
 
         first = asyncio.create_task(smap.retire_kiro_identity_sessions())
         second = asyncio.create_task(smap.retire_kiro_identity_sessions())
@@ -740,7 +744,7 @@ class TestRetirementCoverage:
             smap._start_sem.release(priority)
             await asyncio.sleep(0)
 
-        results = await asyncio.wait_for(asyncio.gather(first, second), timeout=5.0)
+        results = await await_until(asyncio.ensure_future(asyncio.gather(first, second)))
         assert all(complete for _, complete in results)
         # Every permit returned, so later cold starts are unaffected.
         assert smap._start_sem._value == smap._start_sem._limit
@@ -757,7 +761,7 @@ class TestRetirementCoverage:
         from kiro_crew.start_priority import StartPriority
 
         smap = self._manager()
-        await asyncio.wait_for(smap._start_sem.acquire(StartPriority.BACKGROUND), timeout=5.0)
+        await await_until(asyncio.ensure_future(smap._start_sem.acquire(StartPriority.BACKGROUND)))
 
         task = asyncio.create_task(smap.retire_kiro_identity_sessions())
         # The sweep has started its drain and is waiting for the held permit.
@@ -768,7 +772,7 @@ class TestRetirementCoverage:
         assert not task.done(), "the sweep scanned while a cold start was in flight"
 
         smap._start_sem.release(StartPriority.BACKGROUND)
-        retired, complete = await asyncio.wait_for(task, timeout=2.0)
+        retired, complete = await await_until(task)
         assert complete is True
         assert retired == []
 
@@ -1075,7 +1079,7 @@ class TestRetirementCoverage:
         smap._session_map.set("doomed", "sid-account-a")
 
         first = asyncio.create_task(smap.retire_kiro_identity_sessions("fp-b"))
-        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        await await_until(entered)
 
         # A busy successor registers under B while that shutdown is pending, then
         # the account moves on to C.
@@ -1089,7 +1093,7 @@ class TestRetirementCoverage:
         assert smap.pending_identity_sweep_fingerprint == "fp-c"
 
         released.set()
-        retired, first_complete = await asyncio.wait_for(first, timeout=5.0)
+        retired, first_complete = await await_until(first)
 
         assert retired == ["doomed"]
         assert first_complete is False, "an older sweep claimed a newer change was handled"

@@ -327,7 +327,17 @@ class TestTheGradeNeverRunsOnTheEventLoop:
 
     def test_no_telegram_coroutine_calls_a_scanner_directly(self) -> None:
         """Each rotation site, not just one of them, hands its cut to a thread."""
-        tree = ast.parse((SRC / "telegram" / "renderer.py").read_text(encoding="utf-8"))
+        # The facade and the owners its methods are bound from, read as one module.
+        paths = [
+            SRC / "telegram" / "renderer.py",
+            *sorted((SRC / "telegram").glob("renderer_*.py")),
+        ]
+        tree = ast.Module(
+            body=[
+                node for path in paths for node in ast.parse(path.read_text(encoding="utf-8")).body
+            ],
+            type_ignores=[],
+        )
         offenders = [
             f"{node.name} -> {_name_of(call.func)}"
             for node in ast.walk(tree)

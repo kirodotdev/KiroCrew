@@ -158,7 +158,7 @@ _GATEWAYD_MODULE = "kiro_crew.mcp_gateway.gatewayd"
 # session.
 #
 # We deliberately do NOT scrub ``sandbox._AGENT_DENIED_ENV_KEYS``
-# (SLACK_BOT_TOKEN/APP/USER, KIROCREW_OWNER_ID). config/loader.py seeds those
+# (SLACK_BOT_TOKEN/APP/USER, KIROCREW_OWNER_ID). config/loader_config.py seeds those
 # into os.environ specifically so TRUSTED children — the gateway, its pooled
 # MCP backends, and cron — inherit them (a pooled slack-mcp needs its Slack
 # token). The sandbox strips those keys from the LLM *agent* subprocess via

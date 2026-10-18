@@ -2514,7 +2514,7 @@ class TestWorkerConversationRecycle:
 class _ReapProbe:
     """A PIPE-stdio child double that records how it is reaped.
 
-    Mirrors the pin ``test_source_providers`` uses for the same class. A killed
+    Mirrors the pin ``test_source_providers_provider_cli`` uses for the same class. A killed
     child blocked writing into a full pipe -- or a surviving descendant still
     holding the pipes open -- makes a bare ``await proc.wait()`` hang the caller
     forever, so the bounded reap must drain via ``communicate()`` and never touch
@@ -2602,7 +2602,7 @@ class TestCCWorkerReapsTheProcessTree:
             worker._reader_task.cancel()
 
         # Both halves of the platform_compat recipe, asserted the way
-        # test_source_providers does: the POSIX flag is IS_POSIX (not an
+        # test_source_providers_provider_cli does: the POSIX flag is IS_POSIX (not an
         # unconditional True -- on Windows setsid does not exist and the value is
         # legitimately False), and the Windows flag is what makes the child tree
         # `taskkill /T`-reapable there. Asserting membership separately keeps this

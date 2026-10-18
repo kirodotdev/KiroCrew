@@ -845,7 +845,7 @@ class TestSidecarNaming:
 
 def _load_config_from_dict(data: object):
     """Write ``data`` to a temp config file and load it through the real
-    ``KiroCrewConfig.load()`` parse path (mirrors ``test_config_loader``)."""
+    ``KiroCrewConfig.load()`` parse path (mirrors ``config_loader_helpers``)."""
     import tempfile
     import unittest.mock
     from pathlib import Path

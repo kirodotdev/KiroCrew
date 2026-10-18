@@ -42,7 +42,7 @@ Push (new): gateway rekey() ─────────────────�
 ```
 
 1. **Register carries `ancestor_pids` and, for gateway-injected entries,
-   `stub_session_token`** (`stub.py`). The ancestor chain is nearest first. It
+   `stub_session_token`** (`stub_register.py`). The ancestor chain is nearest first. It
    matters because the PID recorded for a runtime can sit several layers above
    the stub's immediate parent. The token names one ACP session on a runtime
    that may host several; without it a shared-session sub-agent is
@@ -121,8 +121,8 @@ claim-path involvement.
 - `src/kiro_crew/mcp_gateway/daemon/identity.py` — `_StubConn`, `_CONN_INDEX`;
   `daemon/control.py` — `_apply_claim`, claim first-frame dispatch;
   `daemon/connection.py` — per-frame caller pickup
-- `src/kiro_crew/mcp_gateway/stub.py` — `ancestor_pids` on register; unbounded
-  backoff recaller
+- `src/kiro_crew/mcp_gateway/stub_register.py` — `ancestor_pids` on register;
+  `src/kiro_crew/mcp_gateway/stub.py` — unbounded backoff recaller
 - `src/kiro_crew/acp/client_lifecycle.py`, `src/kiro_crew/acp/session_provider.py` —
   `rekey()` claim hooks
 - `test/test_mcp_gateway_claim.py` — functional + unit coverage

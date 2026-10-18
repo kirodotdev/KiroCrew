@@ -1800,6 +1800,20 @@ async def test_the_installed_listing_puts_kirocrew_first(monkeypatch: pytest.Mon
     assert [row["name"] for row in json.loads(response.body)] == ["kirocrew", "a", "b", "k"]
 
 
+@pytest.mark.asyncio
+async def test_the_installed_listing_withholds_markdown_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flag means something only beside a harness, which this global listing lacks."""
+    from kiro_crew.agent_discovery import AgentInfo
+
+    row = AgentInfo(name="md", filename="md.md", description="", model="", markdown_only=True)
+    monkeypatch.setattr(agents, "list_agents", lambda: iter([row]))
+    response = await agents.api_agents_installed(make_mocked_request("GET", "/x"))
+    [body] = json.loads(response.body)
+    assert body["name"] == "md" and "markdown_only" not in body
+
+
 def _sync_config() -> Any:
     from kiro_crew.config.loader import KiroCrewConfig
 

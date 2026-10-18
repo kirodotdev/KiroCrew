@@ -1027,10 +1027,12 @@ class AcpClient:
     async def confirm_member_projection(self) -> None:
         """Confirm the projection this session consumed. Blocking.
 
-        Called from the adapter-only arm of the client startup path, AFTER
-        ``ensure_ready`` returned, so a session whose array was withheld, whose saved
-        intent cannot be read, or whose saved intent is not the spec the array was
-        built from is refused before its first prompt. A host that sends no array
+        Called from the adapter-only arm of ``_initialize_session``, so every
+        session ``ensure_ready`` creates is judged before it returns, and again by
+        the provider after it returns (a no-op for a session already confirmed). A
+        session whose array was withheld, whose saved intent cannot be read, or whose
+        saved intent is not the spec the array was built from is refused before its
+        first prompt. A host that sends no array
         (kiro-cli, which receives its servers through ``--agent``) and a session with
         no saved intent are both no-ops -- and because the call sits on that arm and
         not on a step of the shared construction path, Kiro's startup gains no

@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
 import { FileText, Folder, Eye } from 'lucide-react'
-import { api } from '../api/client'
+import { usePickerSource } from './dashboardPickerSource'
+import { pickerQueryKey, type FileKind, type FileResult, type FileSearchResponse } from '../chat-core/composer/pickerSource'
 import ErrorNotice from './ErrorNotice'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { splitPathToken } from './composerTokens'
@@ -12,38 +13,7 @@ import type { SendMode } from '../pages/chat/ChatSettings'
 import { i18nT } from '../i18n/t'
 import { fmtBytes, fmtDateFields, fmtRelative } from '../i18n/format'
 
-export type FileKind = 'file' | 'dir'
-
-interface FileResult {
-  path: string
-  name: string
-  size: number
-  mtime: number
-  /** Absent on responses from older backends — treated as 'file'. */
-  kind?: FileKind
-}
-
-interface FileSearchResponse {
-  results?: FileResult[]
-  root?: string
-  /**
-   * Path mode only: the directory prefix these rows were produced FOR.
-   *
-   * Rows and prefix have to travel together. `placeholderData` keeps the
-   * PREVIOUS payload on screen while a new key fetches, so a prefix read from
-   * anything outside the payload — the live token or even the debounced one —
-   * is one level deeper than the rows a user can still see and choose, and the
-   * accepted token comes out doubled (`./src/src/`).
-   */
-  dir?: string
-  /**
-   * Path mode only: `true` when the token resolved out of the project, which is the
-   * one thing zero rows cannot say for itself — an out-of-project token and an empty
-   * directory look identical from here. It rides in the payload with the rows it
-   * describes, so a placeholder answer cannot label the wrong ones.
-   */
-  outside?: boolean
-}
+export type { FileKind } from '../chat-core/composer/pickerSource'
 
 interface Props {
   /** @-mention query, or the whole `./`-token in `pathMode`. */
@@ -73,6 +43,20 @@ interface Props {
    * key, so the empty state must not name it as sending or as the held sender.
    */
   sendOnEnter?: SendMode
+  /**
+   * Show each row's FOLDER (relative to the search root when it is under it)
+   * cut from its start, so the end of the path, which is what tells same-named
+   * files apart, stays visible in a narrow menu. Off by default: the dashboard
+   * composers keep the full path cut at its end.
+   */
+  pathTail?: boolean
+}
+
+/** The folder a row sits in, relative to `root` when it is under it. */
+export function rowFolder(path: string, root: string): string {
+  const rel = makeRelative(path, root)
+  const cut = rel.replace(/[\\/]+$/, '').search(/[\\/][^\\/]*$/)
+  return cut <= 0 ? (rel === path ? path : './') : rel.slice(0, cut + 1)
 }
 
 const formatSize = (bytes: number): string => fmtBytes(bytes)
@@ -122,7 +106,7 @@ export function selectionFor(f: FileResult, root: string, dirPrefix?: string): {
   }
 }
 
-export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClose, onFileOpen, project, pathMode = false, sendOnEnter = 'enter' }: Props) {
+export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClose, onFileOpen, project, pathMode = false, sendOnEnter = 'enter', pathTail = false }: Props) {
   const rootRef = useRef('')
   const resultsRef = useRef<FileResult[]>([])
   const onFileOpenRef = useRef(onFileOpen)
@@ -154,19 +138,21 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // the queryFn `signal` aborts stale requests; `placeholderData` keeps the prior
   // results on screen while the next query resolves so the list doesn't flicker
   // to empty.
+  const source = usePickerSource()
+  const load = pathMode ? source.pathComplete : source.fileSearch
   const { data, isFetching, isError } = useQuery<FileSearchResponse>({
-    queryKey: pathMode
+    queryKey: pickerQueryKey(source, pathMode
       ? ['path-complete', project, scope.dir, scope.partial]
-      : ['file-search', debounced, project],
+      : ['file-search', debounced, project]),
     queryFn: async ({ signal }) => pathMode
       // Stamped with the prefix it was asked for, which is what makes a
       // placeholder payload self-describing rather than merely stale.
-      ? { ...(await api.pathComplete(project ?? '', scope.dir, scope.partial, signal)), dir: scope.dir }
-      : api.fileSearch(debounced, project, signal),
+      ? { ...(await source.pathComplete!(project ?? '', scope.dir, scope.partial, signal)), dir: scope.dir }
+      : source.fileSearch!(debounced, project, signal),
     // An empty `scope.dir` means the debounced token is not a path token yet —
     // the tick right after the menu opens. Fetching there would ask for the
     // project root under a token that names something else.
-    enabled: open && (pathMode ? scope.dir !== '' : debounced.length >= 2),
+    enabled: open && !!load && (pathMode ? scope.dir !== '' : debounced.length >= 2),
     placeholderData: prev => prev,
     staleTime: 10_000,
   })
@@ -339,7 +325,11 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
             : <FileText size={14} className="shrink-0 lucide-inline" />}
           <div className="flex-1 min-w-0">
             <div className="text-[13px] font-mono font-semibold truncate">{isDir ? f.name + '/' : f.name}</div>
-            <div className="text-[11px] text-muted truncate">{f.path}</div>
+            {pathTail
+              // rtl on the box puts the ellipsis at the START; the inner
+              // ltr bdi keeps the path itself reading left to right.
+              ? <div dir="rtl" data-testid="file-picker-row-folder" className="text-[11px] text-muted truncate text-left"><bdi dir="ltr">{rowFolder(f.path, rootRef.current)}</bdi></div>
+              : <div className="text-[11px] text-muted truncate">{f.path}</div>}
           </div>
           <span className="text-[11px] text-muted shrink-0 whitespace-nowrap">
             {isDir ? `${i18nT('components.filePickerMenu.folder_kind')} · ${formatAge(f.mtime)}` : `${formatSize(f.size)} · ${formatAge(f.mtime)}`}

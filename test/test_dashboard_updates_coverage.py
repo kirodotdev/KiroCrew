@@ -1029,7 +1029,7 @@ class TestPipInstallFailureReport:
 
         state = MagicMock()
 
-        def fake_sync(repo, target_py, emit=None, timeout=None):
+        def fake_sync(repo, target_py, emit=None, timeout=None, **_kw):
             # dep_sync passes pip's captured output through verbatim; the cap is
             # this endpoint's job because it is the one publishing it.
             emit("x" * 4000, True)
@@ -2133,6 +2133,29 @@ class TestDashboardStream:
         assert payload["version"] == updates._local_version
         # The per-client queue is always handed back, disconnect or not.
         req.app["state"].unregister_sse.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("is_dashboard_user", [True, False])
+    async def test_only_a_dashboard_reader_gets_pin_ranks_on_sse(
+        self, monkeypatch, is_dashboard_user
+    ):
+        """A rank is a place in the person's whole order; a scoped reader gets none."""
+        writes = _stub_stream(monkeypatch)
+        slots = json.dumps([{"key": "a", "pin_rank": 0}])
+        req = self._request_with_queue(
+            [{"_type": "slots", "slots": slots}], is_dashboard_user=is_dashboard_user
+        )
+        task = asyncio.ensure_future(updates.api_stream(req))
+        await async_wait_until(
+            lambda: any(w.startswith(b"event: slots") for w in writes),
+            describe=lambda: f"writes={writes!r}",
+        )
+        updates.shutdown_event.set()
+        await await_until(task, what="the stream handler returning on shutdown")
+        frames = [w.decode() for w in writes if w.startswith(b"event: slots")]
+        assert frames, "no slots frame was written"
+        rows = json.loads(frames[0].split("data: ", 1)[1].strip())
+        assert ("pin_rank" in rows[0]) is is_dashboard_user
 
     @pytest.mark.asyncio
     async def test_the_sse_chat_message_frame_carries_the_rows_identity(self, monkeypatch):

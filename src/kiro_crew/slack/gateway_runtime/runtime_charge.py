@@ -329,7 +329,9 @@ async def _inject_with_retry(
             )
             try:
                 assert self.sessions is not None
-                await self.sessions.cancel_current(parent_key)
+                # Fenced to this task's lease: a turn that claimed the key
+                # after a reset is the parent's own and must run on.
+                await self.sessions.cancel_current(parent_key, owner_task=asyncio.current_task())
             except Exception:
                 logger.debug(
                     "Failed to cancel parent prompt for %s",

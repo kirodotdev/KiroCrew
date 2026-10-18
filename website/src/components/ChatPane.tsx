@@ -171,6 +171,18 @@ export default function ChatPane({
   // has_more freezes at mount while a later bounded warm can truncate the cache.
   const warmHasMore = useAppSelector((s) => s.chat.slotPaneHasMore?.[slotKey])
   const paneSlot = useAppSelector((s) => s.dashboard.slots.find((x) => x.key === slotKey))
+  // A stop is under way on this pane's turn: the stream state's own `stopping`
+  // phase, or a Stop pressed from another tab that reaches this pane only as
+  // the slots frame's `stopping` flag. This is the footer's and composer's
+  // signal unchanged (`<ChatFooter stopping=...>` / `isQueued=` below), so a
+  // stop that arrives while this pane's own stream state is still idle keeps
+  // showing "Stopping…" there as it always did.
+  const stopUnderWay = streamState === 'stopping' || !!paneSlot?.stopping
+  // The HEADER (dot + caption) additionally requires `running`: the caption is
+  // rendered only while running, so gating the dot the same way keeps the two
+  // consistent — a stale `paneSlot.stopping` on an idle pane can never paint a
+  // red dot beside an absent caption (#20397).
+  const headerStopUnderWay = running && stopUnderWay
   // Older history for the ACTIVE slot. That slot reads the store's main list,
   // which `switchSlot` loads one bounded page of; the full chat page walks the
   // rest with `loadOlderMessages`, and a pane showing the active slot (the
@@ -587,7 +599,10 @@ export default function ChatPane({
               `control` renders the toggle inline ahead of the title. */}
           {leading?.inset && <span aria-hidden="true" data-pane-leading-divider className="absolute left-[41px] top-1/2 -translate-y-1/2 w-px h-5 bg-border" />}
           {leading?.control}
-          <span className={`w-2 h-2 rounded-full shrink-0 ${running ? 'bg-ok animate-pulse' : 'bg-accent'}`} />
+          {/* Danger while a stop is under way, so the dot agrees with the
+              footer's "Stopping…" caption and the composer instead of staying
+              green as if the turn were working normally (#20397). */}
+          <span data-testid="chat-pane-status-dot" className={`w-2 h-2 rounded-full shrink-0 ${headerStopUnderWay ? 'bg-danger animate-pulse' : running ? 'bg-ok animate-pulse' : 'bg-accent'}`} />
           {/* Same rename / regenerate control as the single-session header
               (#9727): the title row is the `group/header` hover target that
               reveals the Pen and the Sparkles button. */}
@@ -607,7 +622,16 @@ export default function ChatPane({
             </span>
           )}
           <span className="flex-1" />
-          {running && <span className="shrink-0 text-[10px] text-ok font-mono">{streamState}</span>}
+          {running && (
+            headerStopUnderWay
+              // While a stop is under way the caption reads a localized
+              // "Stopping…" ("Killing…" once the force stop runs) in danger,
+              // so it agrees with the dot beside it and stays in step with the
+              // footer and ChatEmbed through both phases, instead of showing
+              // the green run-state token (#20397).
+              ? <span data-testid="chat-pane-status-caption" className="shrink-0 text-[10px] text-danger font-mono">{i18nT(paneStopState === 'killing' ? 'components.chatInput.killing' : 'pages.chat.chatFooter.stopping')}</span>
+              : <span data-testid="chat-pane-status-caption" className="shrink-0 text-[10px] text-ok font-mono">{streamState}</span>
+          )}
           {onSplitRight && (
             <button onClick={onSplitRight} title={i18nT('components.chatPane.split_right_d')} aria-label={i18nT('components.chatPane.split_right')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
               <SplitGlyph />
@@ -766,7 +790,7 @@ export default function ChatPane({
                 : (
                   <ChatFooter
                     running={running || !!paneSlot?.running}
-                    stopping={streamState === 'stopping' || !!paneSlot?.stopping}
+                    stopping={stopUnderWay}
                     state={streamState}
                     lastRole={messages[messages.length - 1]?.role ?? ''}
                     streamTick={
@@ -950,7 +974,7 @@ export default function ChatPane({
           hiddenCommands={paneHiddenCommands}
           isRunning={composerBusy}
           onStop={onStop}
-          isQueued={streamState === 'stopping' || !!paneSlot?.stopping}
+          isQueued={stopUnderWay}
           stopState={paneStopState}
           // Resume for an interrupted turn, as ChatPage composes it: safe to
           // continue AND the transcript shows the turn ending badly, minus the

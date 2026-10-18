@@ -37,6 +37,7 @@ from kiro_crew.history import (
     ConversationLog,
     HistoryConsolidator,
 )
+from kiro_crew.testing.wait import await_until, finished
 
 KEY = "dashboard:chat-retry"
 
@@ -60,7 +61,7 @@ async def test_consolidation_captures_execution_off_loop(tmp_path, monkeypatch, 
     monkeypatch.setattr(execution_context, "read_session_execution", read)
     consolidator = _make_consolidator(_seed_log(tmp_path, count=0))
     consolidator._call_llm = AsyncMock()
-    result = await asyncio.wait_for(consolidator._consolidate(KEY), 10)
+    result = await finished(consolidator._consolidate(KEY), "consolidation")
     # count=0 leaves no transcript on disk, so the lease (which requires an
     # existing session) is refused before any snapshot.
     assert result is (_CONSOLIDATION_BUSY if mode == "persistent" else _CONSOLIDATION_REFUSED)
@@ -113,7 +114,7 @@ class TestTheLineIsValidatedWithTheRows:
         # before the rows are read under it, after the privacy pre-checks ran.
         self._tighten_before(log, "_locked", monkeypatch, mode=mode)
 
-        outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
+        outcome = await finished(c._consolidate(KEY, include_history=True), "consolidation")
 
         assert outcome is _CONSOLIDATION_REFUSED
         c._call_llm.assert_not_awaited()
@@ -139,7 +140,7 @@ class TestTheLineIsValidatedWithTheRows:
             return {"history_entry": "derived from rows now under a restricted line"}
 
         with patch.object(c, "_call_llm", AsyncMock(side_effect=response)):
-            outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
+            outcome = await finished(c._consolidate(KEY, include_history=True), "consolidation")
 
         assert outcome is _CONSOLIDATION_REFUSED
         c._memory.append_history.assert_not_called()
@@ -174,7 +175,7 @@ class TestTheLineIsValidatedWithTheRows:
         c._call_llm = AsyncMock(return_value={"history_entry": "must not persist"})
         fired = self._tighten_at_publication(log, monkeypatch)
 
-        outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
+        outcome = await finished(c._consolidate(KEY, include_history=True), "consolidation")
 
         assert fired["done"], "the history publication interleaving did not occur"
         assert outcome is _CONSOLIDATION_REFUSED
@@ -212,7 +213,7 @@ class TestTheLineIsValidatedWithTheRows:
         c._call_llm = AsyncMock(return_value={"history_entry": "must not persist"})
         fired = self._tighten_at_publication(log, monkeypatch)
 
-        outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
+        outcome = await finished(c._consolidate(KEY, include_history=True), "consolidation")
 
         assert fired["done"], "the member publication interleaving did not occur"
         assert outcome is _CONSOLIDATION_REFUSED
@@ -247,7 +248,7 @@ class TestTheLineIsValidatedWithTheRows:
         monkeypatch.setattr(type(log), "snapshot_for_consolidation", _snapshot_then_unreadable)
         monkeypatch.setattr(type(log), "_read_metadata_status", _status)
 
-        outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
+        outcome = await finished(c._consolidate(KEY, include_history=True), "consolidation")
 
         assert outcome is _CONSOLIDATION_REFUSED
         c._call_llm.assert_not_awaited()
@@ -294,7 +295,7 @@ async def test_persistence_disabled_after_extraction_refuses_before_marking(
     mark_consolidated = MagicMock(wraps=log.mark_consolidated)
     monkeypatch.setattr(log, "mark_consolidated", mark_consolidated)
 
-    outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
+    outcome = await finished(c._consolidate(KEY, include_history=True), "consolidation")
 
     assert outcome is _CONSOLIDATION_REFUSED
     mark_consolidated.assert_not_called()
@@ -329,7 +330,7 @@ async def test_persistence_flip_after_first_commit_finishes_the_run(tmp_path, mo
     mark_consolidated = MagicMock(wraps=log.mark_consolidated)
     monkeypatch.setattr(log, "mark_consolidated", mark_consolidated)
 
-    outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
+    outcome = await finished(c._consolidate(KEY, include_history=True), "consolidation")
 
     assert outcome is None
     c._memory.append_history.assert_called_once_with("committed history")
@@ -367,7 +368,7 @@ async def test_cas_refused_first_publication_does_not_arm_commit_latch(tmp_path,
     mark_consolidated = MagicMock(wraps=log.mark_consolidated)
     monkeypatch.setattr(log, "mark_consolidated", mark_consolidated)
 
-    outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
+    outcome = await finished(c._consolidate(KEY, include_history=True), "consolidation")
 
     assert outcome is _CONSOLIDATION_REFUSED
     c._memory.write_preferences.assert_called_once_with(
@@ -435,7 +436,7 @@ async def test_a_refused_hold_after_the_first_commit_marks_the_span(
     monkeypatch.setattr(log, "mark_consolidated", mark_consolidated)
 
     with caplog.at_level("WARNING", logger="kiro_crew.history"):
-        outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
+        outcome = await finished(c._consolidate(KEY, include_history=True), "consolidation")
 
     assert outcome is None
     assert calls["n"] == 2, "publication continued past the refused hold"
@@ -479,7 +480,7 @@ async def test_a_refused_hold_before_the_first_commit_still_refuses_the_run(
 
     from kiro_crew.history_consolidation import _CONSOLIDATION_REFUSED
 
-    outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
+    outcome = await finished(c._consolidate(KEY, include_history=True), "consolidation")
 
     assert outcome is _CONSOLIDATION_REFUSED
     assert calls["n"] == 1
@@ -509,7 +510,7 @@ async def test_a_marker_failure_after_a_refused_later_hold_is_charged(tmp_path, 
     )
 
     with pytest.raises(history_mod.HistoryLockTimeout):
-        await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
+        await finished(c._consolidate(KEY, include_history=True), "consolidation")
 
     c._memory.append_history.assert_called_once_with("committed history")
     assert int(log.get_metadata(KEY).get("consolidation_attempts", 0)) == 1
@@ -554,7 +555,7 @@ async def test_persistence_rechecked_inside_member_publication_hold(tmp_path, mo
     mark_consolidated = MagicMock(wraps=log.mark_consolidated)
     monkeypatch.setattr(log, "mark_consolidated", mark_consolidated)
 
-    outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
+    outcome = await finished(c._consolidate(KEY, include_history=True), "consolidation")
 
     assert outcome is _CONSOLIDATION_REFUSED
     vectors.apply_consolidation.assert_not_called()
@@ -607,7 +608,7 @@ async def test_persistence_rechecked_inside_v1_vector_publication_hold(
     mark_consolidated = MagicMock(wraps=log.mark_consolidated)
     monkeypatch.setattr(log, "mark_consolidated", mark_consolidated)
 
-    outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
+    outcome = await finished(c._consolidate(KEY, include_history=True), "consolidation")
 
     assert outcome is _CONSOLIDATION_REFUSED
     getattr(vectors, blocked_writer).assert_not_called()
@@ -657,7 +658,7 @@ async def test_persistence_rechecked_inside_skill_publication_hold(tmp_path, mon
     mark_consolidated = MagicMock(wraps=log.mark_consolidated)
     monkeypatch.setattr(log, "mark_consolidated", mark_consolidated)
 
-    outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
+    outcome = await finished(c._consolidate(KEY, include_history=True), "consolidation")
 
     assert calls == 2, "the skill-candidate publication interleaving did not occur"
     assert outcome is _CONSOLIDATION_REFUSED
@@ -717,7 +718,7 @@ async def test_consolidate_refuses_a_channel_thread_whose_map_entry_was_pruned(
         c.consolidate_session(live_key)
         tasks = list(c._tasks)
         assert len(tasks) == 1, "premise: the session-end hook scheduled one pass"
-        await asyncio.wait_for(tasks[0], 10)
+        await await_until(tasks[0], what="consolidation task")
         assert len(outcomes) == 1, "premise: the session-end hook ran one pass"
         result = outcomes[0]
     finally:
@@ -794,7 +795,8 @@ async def test_a_legacy_privacy_flag_is_kept_by_prune_and_stamped_by_the_startup
         header_only = _make_consolidator(log, sessions=None)
         header_only._call_llm = AsyncMock(return_value={"history_entry": "x"})
         assert (
-            await asyncio.wait_for(header_only._consolidate(live_key), 10) is _CONSOLIDATION_REFUSED
+            await finished(header_only._consolidate(live_key), "consolidation")
+            is _CONSOLIDATION_REFUSED
         )
         header_only._call_llm.assert_not_awaited()
     finally:

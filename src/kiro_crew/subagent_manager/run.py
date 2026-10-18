@@ -3543,7 +3543,7 @@ class RunEventCoordinator(ManagerComponent):
         # it, so a cancel, the shutdown or a wedged FS can never hold one.
         try:
             # circular import: reached while kiro_crew.slack.handler is still
-            # initialising (dashboard/handlers/files.py imports is_tracked_channel
+            # initialising (dashboard/file_api/channel_upload.py imports is_tracked_channel
             # from it), so a module-scope import raises ImportError under the
             # suite's import order.
             from kiro_crew.dashboard.handlers.usage import (

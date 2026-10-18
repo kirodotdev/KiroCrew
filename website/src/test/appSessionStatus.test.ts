@@ -82,7 +82,7 @@ describe('api.appSessionStatus', () => {
   })
 
   it('leaks no placeholder junk into either prefix', async () => {
-    // `ApiClient.coverage.test.tsx` applies these checks to every api method by
+    // `ApiClient.coverage.methods.test.tsx` applies these checks to every api method by
     // probing it with generic positional args. This method opts out of that table
     // (a boolean 4th arg cannot survive a string probe), so the checks it gives
     // up are asserted here instead — a forgotten argument or a botched template

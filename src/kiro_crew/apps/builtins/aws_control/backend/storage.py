@@ -34,54 +34,54 @@ gate. The functions are sync (subprocess-bound) — call via
 ``asyncio.to_thread``.
 """
 
+# This module is the drive storage engine's facade and keeps its object operations:
+# every name is reached as ``kiro_crew.apps.builtins.aws_control.backend.storage.<name>``.
+# A read is served by the owner that binds the name, and a write -- ``monkeypatch.setattr``,
+# ``mock.patch`` -- reaches every owner holding it (:mod:`kiro_crew._facade_mirror`), so a
+# test patches this module and never an owner. Owners never import this module. New
+# work goes to the owner of its responsibility, or here for an object operation:
+#
+#   ``storage_drive`` -- the bucket's naming scheme and tags, the sections and their key
+#       prefixes, and discovery and creation by tag
+#   ``storage_staging`` -- the agent-masked staging root and the ranged read a preview
+#       stages
+#   ``storage_versions`` -- version ids, batched deletes, and the version listing and
+#       erasure the retention sweep runs
+
 from __future__ import annotations
 
-import contextlib
+import importlib as _importlib
 import json
 import logging
 import mimetypes
 import os
 import re
-import secrets
-import shutil
 import stat
-import tempfile
-from collections.abc import Iterator
-from pathlib import Path
-from typing import Any, Optional
+import sys as _sys
+from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import quote
 
-from kiro_crew import platform_compat
-from kiro_crew.config.paths import data_home
-from kiro_crew.deploy import engine
-from kiro_crew.deploy.engine import AWSError, _checked, _harden_bucket
-from kiro_crew.platform_compat import is_link_or_junction
-from kiro_crew.sandbox import (
-    carveout_shadowed_by_foreign_mask,
-    crew_home_visible_spellings,
-    effective_sandbox_mode,
+from kiro_crew import _facade_mirror, platform_compat
+from kiro_crew.apps.builtins.aws_control.backend.storage_drive import (
+    _MAX_KEY_LEN,
+    SECTION_PREFIXES,
+    section_key,
 )
+from kiro_crew.apps.builtins.aws_control.backend.storage_versions import (
+    _DELETE_BATCH_MAX,
+    _MAX_VERSION_ID_LEN,
+    DeleteObjectsPartialFailure,
+    PartialVersionDelete,
+    _delete_batches,
+    _raise_on_delete_errors,
+    validate_version_id,
+)
+from kiro_crew.deploy import engine
+from kiro_crew.deploy.engine import AWSError, _checked
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
 
-BUCKET_PREFIX = "kirocrew-drive-"
-#: The complete naming scheme new_bucket_name() produces: prefix + 12 hex
-#: chars. Discovery requires a FULL match so a similarly-prefixed foreign
-#: bucket can never be adopted as the drive.
-_BUCKET_NAME_RE = re.compile(r"kirocrew-drive-[0-9a-f]{12}")
-TAG_DRIVE = "kirocrew:drive"
-#: One drive per account for now; the tag VALUE is reserved for a future
-#: multi-drive world so discovery never has to change shape.
-DRIVE_ID = "default"
-
-#: Console section → key prefix. The section name is the API-level concept;
-#: handlers map it here and a raw prefix never crosses the HTTP boundary.
-SECTION_PREFIXES: dict[str, str] = {
-    "library": "artifacts/",
-    "drive": "drive/",
-    "backup": "backup/",
-}
 
 #: SigV4's own ceiling. Real expiry can be SHORTER: a URL signed with
 #: temporary credentials (SSO / assumed role) dies when that session ends.
@@ -93,20 +93,6 @@ PRESIGN_MAX_SECS = 7 * 24 * 3600
 #: segment, no leading slash, bounded length. S3 allows far more; the drive
 #: does not need to.
 _KEY_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()+@=-]{0,254}$")
-
-#: Version ids are OPAQUE: S3 documents them as URL-ready strings with no internal
-#: structure, and the ids it mints draw on the full base64 alphabet, so ``+``, ``/``
-#: and ``=`` all occur in real ones. This admits any printable ASCII without
-#: whitespace; the one character that cannot lead is handled separately in
-#: :func:`validate_version_id`, so each rule states its own reason. Length is bounded
-#: by :data:`_MAX_VERSION_ID_LEN` so one number governs it.
-#:
-#: Applied with ``fullmatch`` and carrying no anchors, because ``$`` also matches
-#: BEFORE a trailing newline: anchored with ``$`` this pattern accepts ``"abc\n"``
-#: and sends a whitespace-bearing id to the CLI, which is the one thing it exists to
-#: prevent.
-_VERSION_ID_RE = re.compile(r"[\x21-\x7e]+")
-_MAX_KEY_LEN = 900
 
 
 def validate_key(key: str) -> Optional[str]:
@@ -124,249 +110,6 @@ def validate_key(key: str) -> Optional[str]:
                 "digits, spaces, and ._()+@=- (max 255 chars each)"
             )
     return None
-
-
-def validate_version_id(value: Any) -> Optional[str]:
-    """Return an error string when ``value`` cannot be passed as a ``--version-id``.
-
-    This is a question about SYNTAX, not about identity. Whether a syntactically
-    valid id names bytes this install can claim is a different question, decided by
-    the caller against its own upload record -- ``backup._is_provable_version_id``
-    is the one that rejects ``"null"``, which is well-formed here and names a
-    version SLOT rather than one version. Two checks because they are two
-    questions; one of them passing says nothing about the other.
-
-    What makes the syntax check load-bearing is where the value lands.
-    :func:`get_file` passes it as its own argv element directly after
-    ``--version-id``, and that is the first place in this module a version id
-    becomes a bare argument rather than a field inside a JSON document (the delete
-    path puts it in ``{"Key": ..., "VersionId": ...}``, where nothing can read it
-    as anything else). There is no shell involved -- ``engine.run_aws`` spawns a
-    fixed argv -- so this is not about shell metacharacters, which an argv list
-    already neutralises. It is about the AWS CLI's OWN option grammar: its parser
-    reads a leading ``-`` as the start of another option, so a stored id of
-    ``--profile`` would silently repoint the call instead of naming a version.
-    Refusing a leading ``-`` is what closes that, and a quoted argv cannot.
-
-    The id arrives from ``backup.json``, which is local state this install wrote and
-    which is NOT agent-writable: ``apps/aws-control/data`` sits behind the agent
-    file-tool floor (``security._CREW_SECRET_LEAVES``) and is bind-masked from every
-    agent sandbox (``sandbox._CREW_HIDDEN_LEAVES``). So this check is not standing
-    between an agent and the CLI. It is here because the value crosses into an argv
-    element where a leading ``-`` changes what the command MEANS, and a stored id is
-    read back long after it was written, by which time a truncated or partially
-    rewritten file is the ordinary way it goes wrong.
-
-    The shape is as WIDE as S3's own contract and no wider. Version ids are opaque
-    URL-ready strings drawn from the full base64 alphabet, so ``+``, ``/`` and ``=``
-    all appear in real ones and a narrower alphabet would refuse the recovery read
-    for genuine ids -- silently turning this whole path back into the refusal it
-    exists to avoid. Printable ASCII without whitespace is the bound, because a
-    control character or a newline is not something S3 mints and has no business
-    reaching a log line or an argv element. Everything past the first character is
-    inert as argv data, so the leading ``-`` is the entire security question and it
-    gets its own check below.
-    """
-    if not isinstance(value, str) or not value:
-        return "version id must be a non-empty string"
-    # Reuses the module's existing ceiling rather than restating a number in the
-    # pattern, so there is exactly one value to change. `_MAX_VERSION_ID_LEN` is
-    # defined further down this module, beside the row-length bounds its other two
-    # callers use; a module-level name is resolved when this runs, not when it is
-    # defined, so reading it from above is fine.
-    if len(value) > _MAX_VERSION_ID_LEN:
-        return f"version id must be at most {_MAX_VERSION_ID_LEN} characters"
-    # Its own check rather than a clause in the pattern, because it is the one rule
-    # here that is about safety rather than about shape, and a reader should not
-    # have to decode a character class to find it.
-    if value.startswith("-"):
-        return "version id must not start with '-'"
-    if not _VERSION_ID_RE.fullmatch(value):
-        return "version id must be printable ASCII with no spaces"
-    return None
-
-
-def section_key(section: str, key: str) -> str:
-    """The full object key for ``key`` inside ``section`` (validated)."""
-    prefix = SECTION_PREFIXES[section]
-    return f"{prefix}{key}"
-
-
-def new_bucket_name() -> str:
-    return f"{BUCKET_PREFIX}{secrets.token_hex(6)}"
-
-
-# --- discovery (stateless-by-tag) ------------------------------------------
-
-
-def find_drive(profile: str, region: str, *, account: str) -> Optional[str]:
-    """Resolve the account's drive bucket by tags, or None when absent.
-
-    Same trust posture as deploy-web's ``find_site_by_tag``: both tags ANDed,
-    naming scheme required, ambiguity fails loud.
-
-    ``account`` is the identity the caller verified, and the bucket that comes
-    back is checked against it before it is returned. Discovery goes through the
-    tagging API with a PROFILE, and a profile is a name resolved by a child CLI
-    process -- repointed from A to B it discovers B's bucket, and a request for
-    ``/drive/A`` would then read and write B's drive without B's owner ever
-    consenting. The tags cannot carry that binding (they are attacker-writable in
-    the same way the config file is), so the binding is asserted against S3
-    itself. Every drive route resolves its bucket through here, which is why one
-    assertion at this choke point binds the whole surface.
-    """
-    out = _checked(
-        [
-            "resourcegroupstaggingapi",
-            "get-resources",
-            "--tag-filters",
-            f"Key={TAG_DRIVE},Values={DRIVE_ID}",
-            f"Key={engine.TAG_MANAGED},Values=true",
-            "--resource-type-filters",
-            "s3:bucket",
-            "--region",
-            region or engine.DEFAULT_REGION,
-            "--output",
-            "json",
-        ],
-        profile,
-        action="tag:GetResources",
-    )
-    try:
-        data = json.loads(out or "{}")
-    except json.JSONDecodeError:
-        return None
-    buckets: list[str] = []
-    for mapping in data.get("ResourceTagMappingList", []):
-        arn = mapping.get("ResourceARN", "")
-        # Match the SERVICE, not the partition. An S3 bucket ARN is
-        # ``arn:<partition>:s3:::<name>`` and the partition is not always
-        # ``aws``: GovCloud tags come back as ``arn:aws-us-gov:s3:::...`` and
-        # China as ``arn:aws-cn:s3:::...``. A hardcoded ``arn:aws:s3:::`` prefix
-        # silently drops the drive we ourselves created on those partitions, so
-        # the console reports no drive and a second confirm mints a second
-        # billable bucket. Anchoring on ``:s3:::`` is partition-independent and
-        # still rejects any other service's ARN.
-        if ":s3:::" not in arn or not arn.startswith("arn:"):
-            continue
-        candidate = arn.split(":s3:::", 1)[1]
-        # Full naming-scheme match, not a prefix: a bucket named
-        # "kirocrew-drive-company-data" that somehow carries both tags must
-        # not become the mutation target. Our names are always
-        # BUCKET_PREFIX + token_hex(6) (see new_bucket_name).
-        if _BUCKET_NAME_RE.fullmatch(candidate):
-            buckets.append(candidate)
-    if len(buckets) > 1:
-        raise AWSError(
-            f"ambiguous drive: {len(buckets)} buckets carry the drive tags — "
-            "refusing to guess; remove the tag from the impostor"
-        )
-    if not buckets:
-        return None
-    # The tags said which bucket; S3 says whose it is. Only the second is
-    # trustworthy, and it is asked BEFORE the name is handed to any caller.
-    _assert_owned_by(buckets[0], profile, account)
-    return buckets[0]
-
-
-# --- creation ---------------------------------------------------------------
-
-
-def _assert_owned_by(bucket: str, profile: str, account: str) -> None:
-    """Refuse to continue unless ``bucket`` really is owned by ``account``.
-
-    The caller verifies the account by probing the profile's live identity, but
-    ``create-bucket`` then runs in a FRESH CLI process that resolves the profile
-    itself against a config file any local writer can change. No amount of
-    re-ordering closes that: the two resolutions are separate processes, so the
-    only way to know which account the bucket landed in is to ask about the
-    bucket.
-
-    ``head-bucket --expected-bucket-owner`` is that question -- S3 answers 403
-    when the bucket is not owned by the id passed in. Binding credentials
-    instead (resolving the profile once and reusing the material for both calls)
-    would make this app read credential material, which the names-only invariant
-    forbids for exactly the reasons that invariant exists.
-
-    On mismatch this raises WITHOUT deleting the bucket. Two reasons: a delete is
-    a blind destructive call into an account we just failed to identify, and it
-    is not needed for safety -- the discovery tags have not been written yet, so
-    the bucket is not a drive, is never returned by discovery, and never receives
-    a single object. What is left behind is an empty, untagged, unbilled bucket,
-    named in the error so the owner can remove it deliberately.
-    """
-    rc, _out, err = engine.run_aws(
-        [
-            "s3api",
-            "head-bucket",
-            "--bucket",
-            bucket,
-            "--expected-bucket-owner",
-            account,
-        ],
-        profile,
-        30,
-    )
-    if rc == 0:
-        return
-    # Ambiguity is treated exactly like mismatch. A throttle or a network blip
-    # leaves us unable to say which account this is, and proceeding to tag it
-    # would turn "unknown" into "this is your drive".
-    # _trimmed_stderr, never a raw slice: it redacts BEFORE truncating. Cutting
-    # first can split a credential across the boundary, and a half-token matches
-    # no redactor pattern downstream, so the fragment would travel into this
-    # response and the audit log looking harmless.
-    raise AWSError(
-        f"bucket {bucket} could not be confirmed to belong to account {account}; "
-        f"refusing to use it. If it was just created it is empty and untagged, is "
-        f"not a drive, and can be removed. ({engine._trimmed_stderr(err)})"
-    )
-
-
-def create_drive(profile: str, region: str, account: str) -> str:
-    """Create + harden the drive bucket, versioning ON. Returns the name.
-
-    Caller holds the confirm gate; by the time this runs a human has approved
-    the resource. ``account`` is the identity the caller verified, and is
-    re-checked against the bucket itself once it exists -- see
-    :func:`_assert_owned_by`.
-
-    Recovery-safe: if a prior attempt created the bucket but died before
-    tagging, discovery misses it — acceptable at this stage because the opaque
-    name never collides and hardening puts are idempotent.
-    """
-    bucket = new_bucket_name()
-    create = ["s3api", "create-bucket", "--bucket", bucket, "--region", region]
-    if region != "us-east-1":
-        create += ["--create-bucket-configuration", f"LocationConstraint={region}"]
-    _checked(create, profile, action="s3:CreateBucket")
-    # BEFORE anything makes this bucket usable or findable: confirm whose it is.
-    _assert_owned_by(bucket, profile, account)
-    # Versioning BEFORE the discovery tags (the drive's delta from
-    # deploy-web): tags are what make the bucket discoverable, so everything
-    # a discovered drive promises must already hold by the time they land.
-    # A crash or missing permission here leaves an untagged bucket that
-    # discovery never returns — an orphan to clean up, never a
-    # half-configured drive that silently loses overwrite history.
-    _checked(
-        [
-            "s3api",
-            "put-bucket-versioning",
-            "--bucket",
-            bucket,
-            "--versioning-configuration",
-            "Status=Enabled",
-        ],
-        profile,
-        action="s3:PutBucketVersioning",
-    )
-    _harden_bucket(
-        bucket,
-        profile,
-        f"TagSet=[{{Key={engine.TAG_MANAGED},Value=true}},"
-        f"{{Key={TAG_DRIVE},Value={DRIVE_ID}}}]",
-    )
-    return bucket
 
 
 # --- object I/O -------------------------------------------------------------
@@ -933,348 +676,6 @@ def get_file(
     )
 
 
-#: Gateway-owned transfer staging, a TOP-LEVEL leaf of the data home. Every
-#: agent sandbox bind-masks it and the shared file-tool gate refuses it
-#: (``sandbox._CREW_HIDDEN_LEAVES`` / ``security._CREW_SECRET_LEAVES`` carry the
-#: matching entry -- a test pins the three together, because moving the staging
-#: root out of that directory would silently un-fence it). Top-level rather than
-#: under ``apps/aws-control/``: a mask covers the leaf, not its ancestors, and an
-#: agent-writable ancestor (``apps/``, ``apps/aws-control/``) could be renamed
-#: out from under it mid-transfer so the CLI's path resolves through a planted
-#: link. At the top level the only ancestors are the data home and ``$HOME``,
-#: the same residual every other fenced leaf (the credential staging included)
-#: already stands on. It is NOT the app's ``data`` directory either: that one
-#: holds the owner-authorization bits and must stay masked from the CLI spawn,
-#: whereas this one is exactly what that spawn is granted.
-STAGING_DIR_LEAF = "aws-control-staging"
-
-#: Read-back chunk for the staged preview file. The window is a few hundred
-#: KB at most, so this is about not asking for one oversized buffer, not about
-#: throughput.
-_STAGING_READ_CHUNK = 64 * 1024
-
-#: S3's error code for a byte range that starts past the end of the object --
-#: the only way a ``bytes=0-N`` range fails, which means the object is empty.
-_S3_INVALID_RANGE_CODE = "InvalidRange"
-
-
-def staging_root() -> Path:
-    """The agent-masked root that every AWS Control staging directory is cut under.
-
-    Shared by the preview staging (:func:`_preview_staging_parent`) and by the
-    backup archive staging, because both need the same property and there should
-    be one place that establishes it: a directory a SIBLING agent cannot reach.
-    The system temp directory is not that place -- it is shared, same-UID
-    writable, and carries no mask -- so an archive staged there can be rewritten
-    in place between being built and being uploaded, and a descriptor pin does not
-    help because pinning fixes which inode a name reaches, not that inode's bytes.
-
-    On a sandboxed host the root already exists by the time any agent runs: the
-    sandbox materialises it before every namespace spawn
-    (``sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES``), because a mask can only bind
-    over a name that exists, and a root created lazily here would appear inside
-    an already-running sandbox's view. The ``mkdir`` below therefore matters only
-    where no sandbox is masking anything (sandbox off, Windows) and is a no-op
-    otherwise.
-
-    Guarded the way the backup restore staging is: the directory itself must be
-    a real directory -- a link planted at the root would put every staged file
-    outside the fence, which no per-file check can see. One function so a test
-    can point it at a temp dir.
-    """
-    base = data_home()
-    staging = base / STAGING_DIR_LEAF
-    if is_link_or_junction(staging):
-        raise ValueError("preview staging directory is not a real directory")
-    # No parents=True: the leaf sits directly under the data home, which exists
-    # for as long as the gateway does. A missing parent is a real error here,
-    # not something to paper over with a freshly minted tree.
-    staging.mkdir(exist_ok=True)
-    # Re-check after mkdir: exist_ok=True happily accepts a pre-existing link,
-    # and resolving both sides is what catches a component swapped higher up.
-    if staging.resolve() != (base.resolve() / STAGING_DIR_LEAF):
-        raise ValueError("preview staging directory resolves outside the data home")
-    if not staging.is_dir():
-        raise ValueError("preview staging directory is not a real directory")
-    if platform_compat.IS_POSIX:
-        platform_compat.chmod_safe(str(staging), 0o700)
-    else:
-        platform_compat.restrict_dir_to_owner(str(staging))
-    return staging
-
-
-def _preview_staging_parent() -> Path:
-    """The root preview staging directories are cut under. See :func:`staging_root`.
-
-    Kept as its own name because the preview path is what the sandbox-mask tests
-    address, and because the two callers are otherwise unrelated -- a change to
-    where previews stage should not silently move where backups stage.
-    """
-    return staging_root()
-
-
-@contextlib.contextmanager
-def pinned_staging(prefix: str) -> Iterator[tuple[Path, int]]:
-    """Cut a private staging directory under :func:`staging_root`, PIN it, and
-    yield ``(path, dir_fd)`` for the scope; release both on exit.
-
-    Every upload body this app stages goes through here, because the pin is the
-    whole basis on which :func:`put_file` may hand the AWS CLI a NAME. Where no
-    descriptor can be passed to the child -- Windows has no ``/dev/stdin`` -- the
-    name is all the child gets, and a name is re-resolved at the child's open. A
-    pinned directory cannot be renamed or deleted, and neither can any directory
-    above it, so the path the child walks cannot be re-pointed at a planted
-    junction between our check and its open.
-
-    Two properties, and a caller needs both:
-
-    * the masked root removes the WRITER -- a sibling agent's namespace has an
-      empty directory bound over that leaf, so the body has no name there to
-      rewrite in place, which no pin can prevent. Detection is not an
-      alternative: a rewrite of the held inode is read by every later check as
-      well as by the upload, so the digests and the bytes sent agree with each
-      other and the run records a successful upload of a body it never built;
-    * the pin fixes the PATH -- on POSIX the descriptor is a resolution root for
-      our own opens, and on Windows holding the directory is what blocks the
-      rename.
-
-    ``mkdtemp`` for the unique name and the 0700 mode, then
-    :func:`platform_compat.pin_directory`, which refuses a link or reparse point
-    at the name rather than following it. On exit the descriptor is closed
-    before the tree is removed: on Windows the pin is exactly what would make
-    the removal fail.
-
-    The staging ROOT is pinned FIRST, before ``mkdtemp`` names a child under it
-    -- as :func:`get_object_head_bytes` does. ``mkdtemp(dir=...)`` re-resolves
-    the root by name, so without this a watcher that swaps the root for a link
-    (or, on Windows, a reparse point to a remote share) between validation and
-    this call would have the child created under the planted target. Holding the
-    root open refuses a link at its name and blocks its rename for the scope, so
-    the child is cut under the directory we checked. The root descriptor is held
-    until the tree is removed, released in the same ``finally``.
-    """
-    root_fd = platform_compat.pin_directory(str(staging_root()))
-    try:
-        tmp = tempfile.mkdtemp(prefix=prefix, dir=str(staging_root()))
-    except BaseException:
-        os.close(root_fd)
-        raise
-    try:
-        dir_fd = platform_compat.pin_directory(tmp)
-    except BaseException:
-        os.close(root_fd)
-        shutil.rmtree(tmp, ignore_errors=True)
-        raise
-    try:
-        yield Path(tmp), dir_fd
-    finally:
-        if dir_fd >= 0:
-            os.close(dir_fd)
-        os.close(root_fd)
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
-def get_object_head_bytes(
-    profile: str,
-    region: str,
-    bucket: str,
-    section: str,
-    key: str,
-    *,
-    account: str,
-    max_bytes: int,
-) -> tuple[bytes, int]:
-    """The first ``max_bytes`` of ``section/key`` plus the object's FULL size.
-
-    Exists for the gateway-proxied text preview: the browser cannot fetch a
-    presigned URL itself because the bucket carries no CORS configuration, so
-    the gateway reads on its behalf. A ``--range`` bounds the transfer to the
-    preview window — S3 answers with the whole object when it is smaller than
-    the range, which is the desired behaviour, not an error.
-
-    The full size comes from the same response (``ContentRange``'s total,
-    falling back to ``ContentLength``), so the caller can tell a truncated
-    preview from a complete one without a second round trip. Owner-pinned
-    like every other transfer, for :func:`put_file`'s name-reuse reason.
-
-    The CLI only writes to a path, and a path in a shared temp directory is
-    attacker-influenceable: a same-UID process watching that directory can
-    swap the file for a link between our create and the CLI's open, and the
-    CLI — writing with the gateway's reach — then lands the object bytes on
-    whatever the link names. So the file is staged in a fresh private
-    directory under :data:`STAGING_DIR_LEAF`, which every agent sandbox masks
-    and the shared file-tool gate refuses. That mask would hide the directory
-    from the sandboxed CLI as well, so the per-call directory is named in
-    ``extra_visible_dirs`` — lifting the mask for this one fixed-argv spawn,
-    never for the agent. It is named in EVERY spelling the masks use for the
-    crew data home (:func:`sandbox.crew_home_visible_spellings`): the mask list
-    carries both ``$HOME``-joined crew-home prefixes as well as the resolved
-    ``config_dir()`` path, the lift is decided lexically, and under a symlinked
-    ``$HOME`` those are different strings for one directory — so naming only the
-    resolved one leaves a surviving mask to bind an empty directory straight back
-    over the staged file, and the CLI reports ``ENOENT`` on a path the gateway
-    just created.
-
-    Each spelling's staging ROOT is checked before the spawn
-    (:func:`sandbox.carveout_shadowed_by_foreign_mask`). That root is the mask
-    entry the lift cancels, so the guard's equality rule exempts it and only
-    some OTHER masked ancestor refuses — a data home relocated beneath one
-    (``KIROCREW_HOME`` under ``~/.gnupg``) would hand this child that whole tree,
-    so the transfer is refused instead of run. One shadowed spelling refuses the
-    call: the CLI needs every spelling, not a surviving subset. The check is
-    skipped only where no mask can exist for reasons that cannot change before
-    the spawn — a non-POSIX host, or an ``off`` tier — never on the backend probe,
-    whose transient failures are uncached by design and would otherwise skip the
-    refusal for a spawn that still applies the lift.
-
-    The mask is a Linux/macOS mechanism; Windows has no sandbox, so there the
-    destination is pinned by IDENTITY instead of by hiding, and the pin covers
-    the whole path, not just the file. The staging root and then the per-call
-    directory are each opened and held (:func:`platform_compat.pin_directory`,
-    which refuses a link or reparse point at the name) before anything inside
-    them is named: a held directory can be neither renamed nor deleted, nor can
-    any directory above it, so the path the CLI writes through cannot be
-    re-pointed at a planted junction. Inside it the gateway creates the
-    destination itself, exclusively (``O_EXCL`` refuses a name something else
-    planted first — a hard link to a sensitive file included) and holds that
-    handle open across the CLI call too. After the call the path is re-checked
-    against the held file handle (device, inode, link count) and the bytes are
-    read back through that handle rather than by reopening the path, so a link
-    that appeared anyway is refused rather than followed. The directory is
-    removed before returning — nothing of the object outlives the call.
-    """
-    staging_parent = _preview_staging_parent()
-    # Pin the root BEFORE cutting the per-call directory, then pin that
-    # directory before naming anything inside it. Each pin refuses a link or
-    # reparse point at the name, and on Windows -- where no mask hides the
-    # tree -- a pinned directory can be neither renamed nor deleted, and
-    # neither can anything above it. So by the time the destination is created
-    # below, every component of the path the CLI will write through is held
-    # in place: a watcher cannot rename the directory away and plant a
-    # junction at its name between our create and the CLI's open.
-    root_fd = platform_compat.pin_directory(staging_parent)
-    dir_fd = -1
-    fd = -1
-    tmp_dir = ""
-    try:
-        tmp_dir = tempfile.mkdtemp(prefix="drive-preview-", dir=str(staging_parent))
-        dir_fd = platform_compat.pin_directory(tmp_dir)
-        if platform_compat.IS_POSIX:
-            platform_compat.chmod_safe(tmp_dir, 0o700)
-        else:
-            platform_compat.restrict_dir_to_owner(tmp_dir)
-        staging_spellings = crew_home_visible_spellings(tmp_dir)
-        # Skipped only where no mask can exist, and only on facts that cannot
-        # flip between here and the spawn: a non-POSIX host has no sandbox
-        # backend at all, and an "off" tier makes ``wrap_argv`` ignore
-        # ``extra_visible_dirs`` outright. Deliberately NOT the backend probe:
-        # ``detect_backend`` leaves a TRANSIENT "none" uncached on purpose, so a
-        # momentary fork failure asked here would skip the refusal while the
-        # spawn's own re-probe still applies the lift. A permanent no-backend
-        # POSIX host therefore pays a refused preview instead, which is the
-        # direction every other rule on this path already fails in.
-        if platform_compat.IS_POSIX and effective_sandbox_mode("standard") != "off":
-            for spelling in staging_spellings:
-                # Asked of the staging ROOT, which is the mask entry this lift
-                # cancels and therefore equality-exempt, so only some OTHER masked
-                # ancestor refuses. Asking about the per-call dir would refuse on
-                # every layout.
-                if carveout_shadowed_by_foreign_mask(os.path.dirname(spelling), mode="standard"):
-                    raise ValueError(
-                        "preview staging sits beneath an independently masked "
-                        "directory; carving it out for the CLI would unmask that tree"
-                    )
-        tmp_path = os.path.join(tmp_dir, "object")
-        # Ours, exclusively, before the CLI ever sees the name. A pre-planted
-        # entry of any kind fails the create instead of becoming the target.
-        # Created RELATIVE to the pinned directory where the platform allows,
-        # so even our own open cannot be steered by a re-resolved path.
-        create_flags = (
-            os.O_RDWR
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_BINARY", 0)
-        )
-        if os.open in os.supports_dir_fd:
-            fd = os.open("object", create_flags, 0o600, dir_fd=dir_fd)
-        else:
-            fd = os.open(tmp_path, create_flags, 0o600)
-        created = os.fstat(fd)
-        try:
-            out = _checked(
-                [
-                    "s3api",
-                    "get-object",
-                    "--bucket",
-                    bucket,
-                    "--key",
-                    section_key(section, key),
-                    "--range",
-                    f"bytes=0-{max_bytes - 1}",
-                    "--expected-bucket-owner",
-                    account,
-                    "--output",
-                    "json",
-                    tmp_path,
-                ],
-                profile,
-                action="s3:GetObject",
-                timeout=60,
-                extra_visible_dirs=staging_spellings,
-            )
-        except AWSError as exc:
-            # A byte range is unsatisfiable against a 0-byte object, and S3
-            # says so with 416 InvalidRange rather than an empty body. The
-            # file is perfectly readable and simply empty -- an empty object
-            # can be created out-of-band by any tool the bucket name reaches --
-            # so that one answer is the empty preview, not a failure.
-            if _S3_INVALID_RANGE_CODE in str(exc):
-                return b"", 0
-            raise
-        # The CLI wrote through the PATH; the bytes are read through the
-        # HANDLE. The two must still be the same file, and that file must
-        # have exactly the one name we gave it.
-        landed = os.stat(tmp_path)
-        if (landed.st_dev, landed.st_ino) != (created.st_dev, created.st_ino):
-            raise ValueError("preview staging file was replaced during the transfer")
-        if landed.st_nlink != 1:
-            raise ValueError("preview staging file has been linked elsewhere")
-        os.lseek(fd, 0, os.SEEK_SET)
-        chunks: list[bytes] = []
-        while True:
-            chunk = os.read(fd, _STAGING_READ_CHUNK)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        data = b"".join(chunks)
-    finally:
-        # Handles go before the rmtree: on Windows the pins are exactly what
-        # would make the removal fail.
-        for handle in (fd, dir_fd, root_fd):
-            if handle >= 0:
-                os.close(handle)
-        # The preview must not fail over a leftover staging directory.
-        if tmp_dir:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-    try:
-        meta = json.loads(out or "{}") or {}
-    except json.JSONDecodeError:
-        meta = {}
-    size = 0
-    content_range = str(meta.get("ContentRange", ""))
-    if "/" in content_range:
-        try:
-            size = int(content_range.rsplit("/", 1)[1])
-        except ValueError:
-            size = 0
-    if not size:
-        size = int(meta.get("ContentLength", 0) or 0)
-    # A garbled response must not report a shorter object than the bytes in
-    # hand — that would read as "not truncated" on a truncated preview.
-    return data, max(size, len(data))
-
-
 def copy_object(
     profile: str,
     region: str,
@@ -1341,408 +742,6 @@ def delete_key(
         profile,
         action="s3:DeleteObject",
     )
-
-
-#: ``delete-objects`` accepts at most 1000 keys per request (a hard S3 API
-#: limit, not a tunable). A folder with more objects than that MUST be paged,
-#: so the constant is the batch size the caller walks the listing in — never an
-#: assumption that one call clears the whole prefix.
-_DELETE_BATCH_MAX = 1000
-
-#: Byte ceiling for the serialized ``--delete`` document, which travels as ONE
-#: argv element. Two limits bound it, and the tighter one wins:
-#:
-#:   * Linux caps a single argument at MAX_ARG_STRLEN (128 KiB).
-#:   * Windows caps the WHOLE command line near 32 KiB (32767 chars) - and
-#:     ``subprocess`` builds that line with ``list2cmdline``, which escapes every
-#:     ``"`` as ``\"``. An S3 key may legitimately contain quotes (nothing stops
-#:     another tool writing one), and a JSON document is quote-dense by
-#:     construction, so a batch can DOUBLE on the way to CreateProcess.
-#:
-#: So the budget is set for the worst case rather than the typical one:
-#: 12 KiB * 2 (every byte escaped) + roughly 300 bytes of fixed argv is about
-#: 25 KiB, comfortably inside 32767. ``_WINDOWS_CMDLINE_MAX`` and the test that
-#: multiplies these together keep the relationship honest if the cap is ever
-#: raised - 1000 keys of 1024 chars would otherwise serialize to ~1 MB and fail
-#: to spawn at all, which is an OSError and a 500 rather than a delete.
-_DELETE_PAYLOAD_MAX_BYTES = 12 * 1024
-
-#: The ceiling the budget above is derived from. Not a tunable: it is the
-#: documented CreateProcess command-line limit.
-_WINDOWS_CMDLINE_MAX = 32767
-
-
-def _delete_entry_batches(entries: list[dict[str, str]]) -> list[list[dict[str, str]]]:
-    """Split ``delete-objects`` entries into batches fitting S3's cap and argv limits.
-
-    An entry is the document S3 itself receives -- ``{"Key": k}`` to remove the
-    current version, ``{"Key": k, "VersionId": v}`` to erase one specific
-    version -- so the budget is measured on the bytes that actually travel. That
-    matters here rather than being pedantry: a version id is another ~32
-    characters plus its field name, so a batch of version-pinned entries is
-    roughly twice the size of the same keys alone, and a budget derived from the
-    keys would under-count it.
-
-    Order is preserved and every entry appears exactly once: a split that dropped
-    or duplicated one would under-delete (leaving objects behind) or make the
-    reported count a lie. A single entry that alone exceeds the budget still gets
-    its own batch - refusing it here would silently skip an object the caller
-    asked to remove, so the spawn is attempted and any failure surfaces.
-    """
-    batches: list[list[dict[str, str]]] = []
-    current: list[dict[str, str]] = []
-    # {"Objects":[],"Quiet":true} plus each entry's own serialized wrapper.
-    overhead = len(json.dumps({"Objects": [], "Quiet": True}, separators=(",", ":")))
-    size = overhead
-    for obj in entries:
-        cost = len(json.dumps(obj, separators=(",", ":")).encode()) + 1
-        too_big = size + cost > _DELETE_PAYLOAD_MAX_BYTES
-        if current and (too_big or len(current) >= _DELETE_BATCH_MAX):
-            batches.append(current)
-            current, size = [], overhead
-        current.append(obj)
-        size += cost
-    if current:
-        batches.append(current)
-    return batches
-
-
-def _delete_batches(keys: list[str]) -> list[list[str]]:
-    """Batch plain keys for ``delete-objects``. See :func:`_delete_entry_batches`."""
-    wrapped = _delete_entry_batches([{"Key": key} for key in keys])
-    return [[str(entry["Key"]) for entry in batch] for batch in wrapped]
-
-
-class DeleteObjectsPartialFailure(AWSError):
-    """``delete-objects`` answered 200 and named entries it could not remove.
-
-    Carries how many it named. ``Quiet`` is set at every call site, so the
-    response lists ONLY failures: a caller holding the batch can subtract and know
-    exactly how many entries that batch DID erase. On the version-delete path that
-    subtraction is the difference between auditing erased bytes and auditing zero.
-
-    Still an :class:`AWSError`, so the folder sweep keeps catching it unchanged.
-    """
-
-    def __init__(self, message: str, failures: int) -> None:
-        super().__init__(message)
-        self.failures = failures
-
-
-def _raise_on_delete_errors(out: str) -> None:
-    """Turn a per-key DeleteObjects failure into an ``AWSError``.
-
-    ``delete-objects`` answers 200 with an ``Errors`` array when it could not
-    remove some keys, so the CLI exits 0 and the caller would otherwise count
-    them as deleted.
-
-    An EMPTY body is success: with ``Quiet`` a fully successful call returns
-    nothing. A non-empty body that will not parse is NOT success - the call site
-    pins ``--output json``, so unparseable output means something unexpected
-    happened, and on a destructive path the honest answer is to report failure
-    rather than to assume the objects are gone.
-    """
-    if not (out or "").strip():
-        return
-    try:
-        parsed = json.loads(out) or {}
-    except json.JSONDecodeError:
-        raise AWSError(
-            "delete-objects returned a response that could not be read as JSON; "
-            "refusing to report the folder as deleted"
-        ) from None
-    errors = parsed.get("Errors") or []
-    if not errors:
-        return
-    first = errors[0] if isinstance(errors[0], dict) else {}
-    code = first.get("Code", "unknown")
-    key = first.get("Key", "?")
-    raise DeleteObjectsPartialFailure(
-        f"delete-objects could not remove {len(errors)} object(s) — "
-        f"first: {key} ({code}); the folder is only partially deleted",
-        len(errors),
-    )
-
-
-#: One version-listing window per round-trip, the same client-side pagination the
-#: drive's other walks use. This is what bounds the response the CLI builds in
-#: memory for a single call; an auto-paginated listing bounds nothing, because the
-#: CLI joins every page before this process sees a byte of it.
-_VERSION_PAGE_ITEMS = 1000
-
-#: The most version rows one folder listing will retain, as ten full delete
-#: batches. A folder needing more than ten batches to clear is past what this app
-#: should sweep object by object, and the answer there is a bucket lifecycle rule
-#: rather than a larger buffer inside the gateway.
-_VERSION_ROWS_MAX = 10 * _DELETE_BATCH_MAX
-
-#: S3's own ceiling for a version id. A longer value cannot name a real version.
-#: Two readers share it. For a retained row it pairs with :data:`_MAX_KEY_LEN` and
-#: :data:`_MAX_MODIFIED_LEN` to bound the row's unbounded-length fields, and none is
-#: ever shortened to fit: a truncated key or version id names a DIFFERENT object, so
-#: an over-long row is dropped instead of trimmed. :func:`validate_version_id`
-#: applies the same ceiling on the way OUT, to an id this install recorded earlier
-#: and is about to pass to the CLI. It is one fact about S3 in both places, so it is
-#: one number; the row-shape pairing above describes rows alone and does not
-#: enumerate the callers.
-_MAX_VERSION_ID_LEN = 1024
-
-#: The third retained variable-length field. An ISO-8601 instant needs about 25
-#: characters, so this is loose and still bounds the value; it exists because the
-#: pairing above claimed to cover every field a row retains and did not.
-_MAX_MODIFIED_LEN = 64
-
-
-def list_object_versions(
-    profile: str, region: str, bucket: str, section: str, subpath: str, *, account: str
-) -> list[dict[str, Any]]:
-    """Every version AND delete marker under ``section/subpath/``.
-
-    The drive has versioning ENABLED (see the module docstring), and that one
-    fact is why this listing exists beside :func:`list_section`.
-    ``list-objects-v2`` answers only about CURRENT versions, so a caller that
-    deletes what it returns reclaims nothing: :func:`delete_key` without a
-    version id writes a delete MARKER, the bytes stay behind it as a noncurrent
-    version, and the bucket goes on being billed for every one of them. This is
-    the listing a caller needs in order to remove bytes rather than hide them,
-    because it names the ``VersionId`` of each version -- the only form
-    :func:`delete_object_versions` can actually erase.
-
-    Delete markers come back TAGGED rather than filtered out. A key whose newest
-    entry is a marker is not a live object, and a caller that could not see the
-    marker would read the older version underneath it as live.
-
-    Keys are section-RELATIVE, like :func:`list_section` and every key this
-    package passes around, so a caller can compare one against a key it wrote.
-    They are RAW, unlike :func:`list_section`: this is an identity read whose
-    answers are compared against keys and then deleted, and a redacted name
-    matches no key -- so a caller fed the display listing could read an archive
-    that exists as absent.
-
-    ``subpath`` must name a folder. Every caller of this is about to delete, and
-    a whole-section version listing is not a blast radius this function hands
-    out. The prefix is anchored on :data:`SECTION_PREFIXES` and closed with a
-    trailing ``/``, so listing ``snapshots/abc`` cannot reach a sibling
-    ``snapshots/abcdef/``.
-
-    Paged with ``--max-items`` and walked to the end of the token chain, so the
-    answer is still the COMPLETE set or a raised error, never a first page a
-    caller could mistake for the whole prefix. Bounding the PAGE is what keeps the
-    peak in memory bounded; bounding the ANSWER is not on offer here, so a prefix
-    holding more than :data:`_VERSION_ROWS_MAX` versions RAISES rather than
-    returning what fits. An unreadable response raises for the same reason, unlike
-    :func:`usage`: an empty list here reads as "nothing worth keeping", and a
-    caller acting on that would delete on a view it never had.
-    """
-    # Whitespace as well as slashes: `validate_key` requires a segment to START
-    # alphanumeric, so no legitimate folder is changed by the strip, and a value
-    # that is nothing but spaces would otherwise build the prefix `backup/   /`
-    # and list a folder nobody named.
-    leaf = subpath.strip().strip("/").strip()
-    if not leaf:
-        raise ValueError(
-            "list_object_versions needs a folder; a whole-section version listing "
-            "is not offered here"
-        )
-    prefix = f"{SECTION_PREFIXES[section]}{leaf}/"
-    rows: list[dict[str, Any]] = []
-    token = ""
-    while True:
-        args = [
-            "s3api",
-            "list-object-versions",
-            "--bucket",
-            bucket,
-            "--prefix",
-            prefix,
-            "--max-items",
-            str(_VERSION_PAGE_ITEMS),
-            "--expected-bucket-owner",
-            account,
-            "--output",
-            "json",
-        ]
-        if token:
-            args += ["--starting-token", token]
-        out = _checked(
-            args,
-            profile,
-            action="s3:ListBucketVersions",
-            timeout=60,
-        )
-        try:
-            data = json.loads(out or "{}") or {}
-        except json.JSONDecodeError:
-            raise AWSError(
-                "the version listing returned a response that could not be read as JSON; "
-                "refusing to report the folder as empty"
-            ) from None
-        if not isinstance(data, dict):
-            raise AWSError(
-                "the version listing returned a document that is not an object; "
-                "refusing to report the folder as empty"
-            )
-        for field, is_marker in (("Versions", False), ("DeleteMarkers", True)):
-            page = data.get(field) or []
-            if not isinstance(page, list):
-                continue
-            for obj in page:
-                if not isinstance(obj, dict):
-                    continue
-                key, version = obj.get("Key"), obj.get("VersionId")
-                # Both halves or nothing. A row missing either one cannot be deleted
-                # by version, and filling in the missing half by guessing is how a
-                # delete lands on an object the caller never named.
-                if not isinstance(key, str) or not isinstance(version, str):
-                    continue
-                if not version or not key.startswith(prefix):
-                    continue
-                # Length is checked before the row is retained, and an over-long
-                # field drops the row rather than being cut to fit. Nothing this
-                # install wrote can reach either bound, because `validate_key`
-                # holds every key it accepts under the same one, so the rows this
-                # drops are rows retention could not have owned anyway.
-                if len(key) > _MAX_KEY_LEN or len(version) > _MAX_VERSION_ID_LEN:
-                    continue
-                modified_raw = obj.get("LastModified")
-                # `modified` is retained too, so the same rule reaches it: this is the
-                # third field in this row, not a second mechanism. It DROPS rather than
-                # emptying, because an empty timestamp sorts as oldest and would make
-                # the row a likelier deletion candidate -- the unsafe direction for a
-                # value that arrived malformed.
-                if isinstance(modified_raw, str) and len(modified_raw) > _MAX_MODIFIED_LEN:
-                    continue
-                if len(rows) >= _VERSION_ROWS_MAX:
-                    raise AWSError(
-                        f"this folder holds more than {_VERSION_ROWS_MAX} object "
-                        "versions; refusing to answer with the part that fits, "
-                        "because a caller would delete on it. Clear the history "
-                        "with a bucket lifecycle rule"
-                    )
-                modified = modified_raw
-                size = obj.get("Size")
-                rows.append(
-                    {
-                        "key": key[len(SECTION_PREFIXES[section]) :],
-                        "versionId": version,
-                        "modified": modified if isinstance(modified, str) else "",
-                        "size": (
-                            size if isinstance(size, int) and not isinstance(size, bool) else 0
-                        ),
-                        # S3's own answer about which version a plain GET would
-                        # return, rather than one inferred from timestamps.
-                        "latest": bool(obj.get("IsLatest")),
-                        "deleteMarker": is_marker,
-                    }
-                )
-        token = data.get("NextToken", "")
-        if not isinstance(token, str) or not token:
-            return rows
-
-
-class PartialVersionDelete(RuntimeError):
-    """A batched version delete that failed AFTER erasing some versions.
-
-    :func:`delete_object_versions` reports its count by RETURNING it, and on this
-    path that count is the only record that bytes are gone. A bare raise carries
-    no count, so a caller auditing the failure would file "nothing was deleted"
-    over versions that are already erased -- the one shape the retention audit
-    exists to prevent. This class carries the count across the raise instead.
-
-    Raised only when at least one batch has already completed. A first-batch
-    failure erases nothing, so there the original error is the honest signal and
-    is re-raised untouched rather than dressed up as a partial.
-
-    ``removed`` counts VERSIONS, not keys: batches are filled to the API's limit
-    without regard to key boundaries, so the erased set does not map to a clean
-    number of keys and this class does not invent one.
-    """
-
-    def __init__(self, removed: int, cause: BaseException) -> None:
-        super().__init__(f"{removed} version(s) erased before the failure: {cause}")
-        self.removed = removed
-
-
-def delete_object_versions(
-    profile: str,
-    region: str,
-    bucket: str,
-    section: str,
-    versions: list[tuple[str, str]],
-    *,
-    account: str,
-) -> int:
-    """Erase specific object VERSIONS. Returns the number removed.
-
-    Unlike :func:`delete_key` and :func:`delete_prefix`, this removes bytes. A
-    delete pinned to a ``VersionId`` erases that version and leaves NO delete
-    marker behind, which on this versioned bucket is the whole difference between
-    reclaiming storage and hiding an object that keeps billing.
-
-    It is therefore unrecoverable at the S3 layer, and that is why WHICH versions
-    is entirely the caller's decision: this function anchors the section prefix
-    and does nothing else. There is deliberately no prefix argument that could
-    widen to "every version under a folder" -- the caller passes the exact
-    (key, version) pairs it means, having listed them with
-    :func:`list_object_versions`.
-
-    Owner-pinned like every other write, for the same bucket-name-reuse reason.
-    Per-key failures arrive inside a 200 response, so the same
-    :func:`_raise_on_delete_errors` check the folder sweep uses runs here: a
-    count returned by this function means those versions are gone.
-
-    A failure partway through a multi-batch delete raises
-    :class:`PartialVersionDelete` instead, carrying the count already erased --
-    the count is this function's only report, so discarding it would leave the
-    caller auditing erased bytes as nothing.
-    """
-    entries = [
-        {"Key": section_key(section, key), "VersionId": version}
-        for key, version in versions
-        if key and version
-    ]
-    if not entries:
-        return 0
-    removed = 0
-    for batch in _delete_entry_batches(entries):
-        payload = json.dumps({"Objects": batch, "Quiet": True}, separators=(",", ":"))
-        try:
-            out = _checked(
-                [
-                    "s3api",
-                    "delete-objects",
-                    "--bucket",
-                    bucket,
-                    "--delete",
-                    payload,
-                    "--expected-bucket-owner",
-                    account,
-                    # The error check below reads this as JSON; a user's
-                    # `output = text` in ~/.aws/config would otherwise turn the
-                    # check into a no-op on their machine only.
-                    "--output",
-                    "json",
-                ],
-                profile,
-                action="s3:DeleteObjectVersion",
-            )
-            _raise_on_delete_errors(out)
-        except Exception as exc:
-            # A mixed batch answers 200 and names ONLY the entries it could not
-            # remove, so the rest of that batch is erased and has to be counted --
-            # otherwise a first batch that half succeeded reports zero. When the
-            # CLI itself failed there is no response to subtract from, so that
-            # batch contributes nothing rather than a guess.
-            if isinstance(exc, DeleteObjectsPartialFailure):
-                removed += max(0, len(batch) - exc.failures)
-            # The count is this function's only report, so raising past it would
-            # tell the caller nothing happened while bytes are already gone.
-            # Nothing erased yet means there is no partial to report.
-            if removed:
-                raise PartialVersionDelete(removed, exc) from exc
-            raise
-        removed += len(batch)
-    return removed
 
 
 def folder_placeholder_key(section: str, path: str) -> str:
@@ -2159,3 +1158,66 @@ def search_keys(
         token = data.get("NextToken", "")
         if not token:
             return results, False
+
+
+# The two partial-failure errors name this module as their home, so a traceback and a
+# logged error type read the same whichever module raises them.
+for _moved in (DeleteObjectsPartialFailure, PartialVersionDelete):
+    _moved.__module__ = __name__
+del _moved
+
+#: Owner modules, lowest layer first: the first holder of a name answers its reads.
+_OWNERS = (
+    "kiro_crew.apps.builtins.aws_control.backend.storage_drive",
+    "kiro_crew.apps.builtins.aws_control.backend.storage_staging",
+    "kiro_crew.apps.builtins.aws_control.backend.storage_versions",
+)
+for _owner in _OWNERS:
+    _importlib.import_module(_owner)
+#: Name the facade serves but does not bind -> the owner that answers a read of it.
+_EXPORTS: dict[str, str] = {}
+_EXPORTS.update(_facade_mirror.install(_sys.modules[__name__], _OWNERS, excluded=()).served)
+_sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
+#: What a star import binds: every public name of the unsplit module's namespace.
+__all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
+
+if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.apps.builtins.aws_control.backend.storage_drive import (  # noqa: F401
+        _BUCKET_NAME_RE,
+        BUCKET_PREFIX,
+        DRIVE_ID,
+        TAG_DRIVE,
+        _assert_owned_by,
+        create_drive,
+        find_drive,
+        new_bucket_name,
+    )
+    from kiro_crew.apps.builtins.aws_control.backend.storage_staging import (  # noqa: F401
+        _S3_INVALID_RANGE_CODE,
+        _STAGING_READ_CHUNK,
+        STAGING_DIR_LEAF,
+        _preview_staging_parent,
+        get_object_head_bytes,
+        pinned_staging,
+        staging_root,
+    )
+    from kiro_crew.apps.builtins.aws_control.backend.storage_versions import (  # noqa: F401
+        _DELETE_PAYLOAD_MAX_BYTES,
+        _MAX_MODIFIED_LEN,
+        _VERSION_ID_RE,
+        _VERSION_PAGE_ITEMS,
+        _VERSION_ROWS_MAX,
+        _WINDOWS_CMDLINE_MAX,
+        _delete_entry_batches,
+        delete_object_versions,
+        list_object_versions,
+    )
+
+
+if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew.config.paths import data_home  # noqa: F401
+    from kiro_crew.deploy.engine import _harden_bucket  # noqa: F401
+    from kiro_crew.platform_compat import is_link_or_junction  # noqa: F401
+    from kiro_crew.sandbox import carveout_shadowed_by_foreign_mask  # noqa: F401
+    from kiro_crew.sandbox import crew_home_visible_spellings  # noqa: F401
+    from kiro_crew.sandbox import effective_sandbox_mode  # noqa: F401

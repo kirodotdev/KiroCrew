@@ -81,7 +81,7 @@ describe('resolveAppQueryKey', () => {
     // THE hard constraint of this change: the resulting key must be
     // byte-identical to what AWS Control writes by hand today, or its existing
     // `invalidateQueries` calls stop matching its own queries. Written as the
-    // literal from `DrivePage.tsx` rather than built from the appId, so a change
+    // literal from `DrivePageLibrary.tsx` rather than built from the appId, so a change
     // to the prefix SHAPE fails here.
     expect(resolveAppQueryKey('aws-control', ['drive', 'default'])).toEqual([
       'aws-control',

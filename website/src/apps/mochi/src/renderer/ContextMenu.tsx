@@ -62,7 +62,7 @@ export function ContextMenu({ x, y, items, reportHitbox, onAction, onClose }: Pr
    * item navigation (#6231, #5851).
    *
    * `useMenuKeyboard` is the shared spelling of that contract (extracted from
-   * `MenuBtn` in DevFleetPage) — ArrowDown/ArrowUp with wrap at both ends,
+   * `MenuBtn` in DevFleetPageMenus.tsx) — ArrowDown/ArrowUp with wrap at both ends,
    * Home/End to the boundary rows, Tab/Shift-Tab contained inside the menu
    * (#2533), and an IME composition latch so a candidate-list arrow is not
    * stolen from the input method. `enabled` is a literal `true` because this

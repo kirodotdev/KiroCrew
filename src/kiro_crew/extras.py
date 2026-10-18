@@ -38,7 +38,7 @@ from kiro_crew import platform_compat
 REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "otlp": ("opentelemetry-exporter-otlp-proto-http==1.44.0",),
     "perf": ("py-spy>=0.3,<1",),
-    "teams": ("PyJWT[crypto]==2.13.0",),
+    "teams": ("PyJWT[crypto]==2.15.0",),
     "whatsapp": ("neonize==0.4.3.post0",),
     "feishu": ("lark-oapi>=1.4,<2",),
     "voice-aws": ("boto3>=1.34,<2", "amazon-transcribe>=0.6.3,<1"),

@@ -141,6 +141,9 @@ jobs:
               - "src/kiro_crew/dashboard/file_api/**"
               - "test/test_safe_read_file_bytes_descriptor.py"
               - "test/test_theme_install.py"
+              - "test/test_theme_install_declarations.py"
+              - "test/test_theme_install_identity.py"
+              - "test/theme_install_helpers.py"
               # Credential redaction withholds the id macOS's confstr reports for
               # the per-user temp dir; its one real-platform test skips elsewhere.
               - "src/kiro_crew/security/redaction.py"
@@ -176,6 +179,12 @@ jobs:
               - "src/kiro_crew/pod/**"
               # darwin PTY behaviour.
               - "src/kiro_crew/dashboard/handlers/terminal.py"
+              - "src/kiro_crew/dashboard/handlers/terminal_complete.py"
+              - "src/kiro_crew/dashboard/handlers/terminal_lifecycle.py"
+              - "src/kiro_crew/dashboard/handlers/terminal_routes.py"
+              - "src/kiro_crew/dashboard/handlers/terminal_session.py"
+              - "src/kiro_crew/dashboard/handlers/terminal_shell.py"
+              - "src/kiro_crew/dashboard/handlers/terminal_transport.py"
               - "src/kiro_crew/dashboard/terminal_commands.py"
               - "src/kiro_crew/subagent_manager/terminal.py"
               # The contracts themselves, and the two darwin gap lists a change

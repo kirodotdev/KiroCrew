@@ -787,7 +787,7 @@ class TestInlinePayloadNamesTheMintSurface:
                 if used & file_names:
                     readers.append((mod, node.name))
         # The derivation reaches the two readers the gate was narrowed past.
-        assert ("kiro_crew.config.loader", "read_local_secret") in readers, readers
+        assert ("kiro_crew.config.loader_locations", "read_local_secret") in readers, readers
         assert ("kiro_crew.instances.run_marker", "read_secret") in readers, readers
         # Namers that hand no credential to a caller.  A NEW name landing here has to be
         # added with its reason, or carry ``secret`` / ``token`` so the gate covers it.

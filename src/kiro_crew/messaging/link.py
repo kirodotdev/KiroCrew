@@ -446,7 +446,7 @@ def parse_session_key(key: str) -> ParsedSessionKey | None:
 
     Consumers must treat a ``None`` as "not addressable by grammar", never as
     an error: the dispatch pipeline itself stays address-agnostic and does not
-    call this (pinned in ``dispatch.py`` docstrings).
+    call this (pinned in ``dispatch_contract.py`` docstrings).
     """
     if not key:
         return None

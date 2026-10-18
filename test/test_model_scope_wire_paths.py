@@ -13,7 +13,6 @@ which harnesses have run.
 from __future__ import annotations
 
 import ast
-import inspect
 import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -168,8 +167,11 @@ class TestTheFactorySelection:
 class TestTheDisplayResolver:
     """The model chip must name the model the next turn will actually run."""
 
-    def test_the_resolver_has_no_unused_backend_override(self) -> None:
-        assert "backend" not in inspect.signature(resolve_effective_model).parameters
+    def test_a_named_backend_scopes_the_tiers_to_that_harness(self, both_warm: None) -> None:
+        """The session layer names the per-session backend; the chip names none."""
+        cfg = _cfg(ACP_BACKEND_CODEX, CLAUDE_PIN)
+        assert resolve_effective_model(cfg, None, backend=ACP_BACKEND_CLAUDE) == CLAUDE_PIN
+        assert resolve_effective_model(cfg, None) == ""
 
     def test_the_chip_drops_a_pin_the_active_harness_cannot_claim(self, both_warm: None) -> None:
         cfg = _cfg(ACP_BACKEND_CODEX, CLAUDE_PIN)

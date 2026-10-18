@@ -27,6 +27,7 @@ from kiro_crew.config.live import (
     flatten_config,
 )
 from kiro_crew.config.loader import KiroCrewConfig, update_config_locked
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -160,10 +161,7 @@ class TestRefreshNow:
         w.subscribe("agent.model", callback=lambda c: got.append(c.changed), name="m")
         await w.start(initial=booted)
         try:
-            for _ in range(40):
-                if got:
-                    break
-                await asyncio.sleep(0.05)
+            await async_wait_until(lambda: got, describe=lambda: "got not yet populated")
             assert got and "agent.model" in got[0]
             assert w.snapshot() is not None and w.snapshot().agent.model == "model-boot-edit"
         finally:
@@ -189,10 +187,7 @@ class TestRefreshNow:
                 assert got == []
                 # The "rollback": the transaction ends on a different value.
                 _write(cfg_file, {"agent": {"model": "model-committed", "log_level": "INFO"}})
-            for _ in range(40):
-                if got:
-                    break
-                await asyncio.sleep(0.05)
+            await async_wait_until(lambda: got, describe=lambda: "got not yet populated")
             assert got == ["model-committed"]
         finally:
             await w.stop()
@@ -230,10 +225,7 @@ class TestRefreshNow:
             assert w.snapshot() is not None and w.snapshot().agent.model != "model-intermediate"
             _write(cfg_file, {"agent": {"model": "model-committed", "log_level": "INFO"}})
             held.__exit__(None, None, None)
-            for _ in range(40):
-                if got:
-                    break
-                await asyncio.sleep(0.05)
+            await async_wait_until(lambda: got, describe=lambda: "got not yet populated")
             assert got == ["model-committed"]
         finally:
             await w.stop()
@@ -821,7 +813,7 @@ class TestLifecycle:
         try:
             _write(cfg_file, {"agent": {"model": "model-kicked", "log_level": "INFO"}})
             live.notify_config_written()
-            assert await asyncio.wait_for(got.get(), timeout=5.0) == "model-kicked"
+            assert await await_until(asyncio.ensure_future(got.get())) == "model-kicked"
         finally:
             await w.stop()
 
@@ -1277,16 +1269,17 @@ class TestServerAppliers:
         apply = self._register(state)["agent.provider"].callback()
         cfg = KiroCrewConfig()
         with patch("kiro_crew.agent.rebuild_agent_config", lambda: None):
-            await asyncio.wait_for(
-                apply(
-                    ConfigChange(
-                        old=KiroCrewConfig(), new=cfg, changed=frozenset({"agent.provider"})
+            await await_until(
+                asyncio.ensure_future(
+                    apply(
+                        ConfigChange(
+                            old=KiroCrewConfig(), new=cfg, changed=frozenset({"agent.provider"})
+                        )
                     )
-                ),
-                timeout=1.0,
+                )
             )
             assert len(state._background_tasks) == 1, "the switch is a tracked task"
-            await asyncio.wait_for(entered.wait(), timeout=2.0)
+            await await_until(entered)
             assert calls == [cfg], "the switch runs once, with the changed config"
             assert slot.model == "claude-x", "slot models clear only after the reload"
             release.set()

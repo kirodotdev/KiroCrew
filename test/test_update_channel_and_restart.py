@@ -578,6 +578,51 @@ class TestUpdateRevalidate:
         assert resp.status == 403
         assert called == []
 
+    def test_kernel_attested_unix_peer_is_admitted(self, _isolated_channel_home):
+        """The CLI's owner-verified send prefers the owner-only AF_UNIX socket,
+        where ``request.remote`` is empty; a same-user peer the kernel confirms
+        (``check_peer_is_self`` MATCH) is admitted, the secret still required."""
+        from kiro_crew.mcp_gateway.socketsec import PeerCredResult
+
+        called: list[str] = []
+
+        async def _fake_check() -> None:
+            called.append("recheck")
+
+        with (
+            patch("kiro_crew.dashboard.token_auth.request_is_unix_socket", lambda _r: True),
+            patch(
+                "kiro_crew.dashboard.handlers.core.check_peer_is_self",
+                lambda _s: PeerCredResult.MATCH,
+            ),
+            patch.object(updates, "_invalidate_update_check", lambda ch: called.append("inv")),
+            patch.object(updates, "_do_update_check", _fake_check),
+        ):
+            resp = asyncio.run(
+                updates.api_update_revalidate(self._cli_request("s3cret", remote=""))
+            )
+        assert resp.status == 200
+        assert called == ["inv", "recheck"]
+
+    def test_foreign_unix_peer_is_refused(self, _isolated_channel_home):
+        from kiro_crew.mcp_gateway.socketsec import PeerCredResult
+
+        called: list[str] = []
+        with (
+            patch("kiro_crew.dashboard.token_auth.request_is_unix_socket", lambda _r: True),
+            patch(
+                "kiro_crew.dashboard.handlers.core.check_peer_is_self",
+                lambda _s: PeerCredResult.MISMATCH,
+            ),
+            patch.object(updates, "_invalidate_update_check", lambda ch: called.append("inv")),
+        ):
+            resp = asyncio.run(
+                updates.api_update_revalidate(self._cli_request("s3cret", remote=""))
+            )
+        assert resp.status == 403
+        assert json.loads(resp.body.decode())["code"] == "loopback_only"
+        assert called == []
+
     def test_non_ascii_secret_is_refused_not_crashed(self, _isolated_channel_home):
         """A non-ASCII X-Local-Secret must be an audited 403, never a TypeError/500.
 

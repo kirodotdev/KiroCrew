@@ -32,7 +32,6 @@
 3 src/kiro_crew/cli_chat.py
 3 src/kiro_crew/cli_doctor.py
 1 src/kiro_crew/cli_setup.py
-1 src/kiro_crew/config/loader.py
 1 src/kiro_crew/connections/mint.py
 3 src/kiro_crew/dashboard/chat_handlers.py
 3 src/kiro_crew/dashboard/chat_runner.py

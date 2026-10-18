@@ -1,8 +1,8 @@
 """The message that started a Slack thread, for a session born inside it.
 
 A Slack-born session opened by a reply in a thread it did not start -- the owner
-answering a DM an agent sent with ``send_message(session="slack")``, a reply
-under a cron post, a mention in someone else's channel thread -- begins with no
+answering a DM an agent sent with ``send_message(session="slack")``, a mention
+in someone else's channel thread -- begins with no
 record of what the reply answers. :func:`fetch_thread_parent` reads that first
 message once, and it reaches two readers:
 
@@ -26,6 +26,11 @@ neutralizers.
 
 "Did not start" is judged by the transcript: a session with no user or assistant
 row yet. A session with prior turns fetches nothing and records nothing.
+
+A reply under a cron post is routed to the cron's own session, which owns the
+thread (:func:`is_cron_owned`). That session starts fresh after every run, so a
+fresh one reads the parent for the prompt whatever its transcript holds, and
+records no row.
 """
 
 from __future__ import annotations
@@ -85,6 +90,19 @@ class ThreadParent:
 def is_slack_born(session_key: str) -> bool:
     """True for a conversation keyed by Slack itself, not a dashboard link or an asker."""
     return session_key.startswith(f"{SLACK_NAMESPACE}:")
+
+
+def is_cron_owned(session_key: str) -> bool:
+    """True for a cron's session (``cron:<id>`` or ``cron:<id>:<run>``).
+
+    A cron claims the Slack thread it posts, so a reply under the post runs in
+    the cron's session rather than a Slack-born one. That session is reset after
+    every run, and its transcript, when it has one, holds earlier results rather
+    than the one post being answered, so the reply's first turn on a fresh
+    session reads the post like any other thread parent. Prompt only: the
+    transcript of a visible cron already shows its results.
+    """
+    return session_key.startswith("cron:")
 
 
 async def has_prior_turns(conversation_log: "ConversationLog | None", session_key: str) -> bool:

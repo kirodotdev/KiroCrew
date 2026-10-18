@@ -47,6 +47,11 @@ FORBIDDEN_WHEN_BRIDGING = (
     "kiro_crew.mcp_gateway.manager",
     "kiro_crew.mcp_gateway.backend",
     "kiro_crew.mcp_gateway.rewriter",
+    # The rewriter's owner modules, which hold its code beside the facade above.
+    "kiro_crew.mcp_gateway.rewriter_env",
+    "kiro_crew.mcp_gateway.rewriter_launch",
+    "kiro_crew.mcp_gateway.rewriter_overlay",
+    "kiro_crew.mcp_gateway.rewriter_spec",
     "kiro_crew.metrics.events",
     "kiro_crew.jsonl_util",
     "kiro_crew.security",

@@ -169,8 +169,9 @@ the shape the rest should have.
 **This subsection was structurally wrong in v3 and is rewritten.** It cited
 `acp/types.py` as the home of the backend constants and "seven opt-in
 frozensets in the same file". `acp/types.py` holds **zero** of either. Every
-backend id, every capability set and the `Routing` tables live in
-`src/kiro_crew/agent_sdk/backends.py` (PR 3a), and the tool-gate verdict lives in
+backend id lives in `src/kiro_crew/agent_sdk/backends.py` (PR 3a), which re-exports
+every capability set and the `Routing` tables from the `backends_*` owner that
+defines each, and the tool-gate verdict lives in
 `src/kiro_crew/agent_sdk/tool_gate.py` (PR 3). `src/kiro_crew/acp_backends.py` and
 `src/kiro_crew/acp_tool_gate.py` are re-export shims, and `acp/types.py` re-exports
 the ids, so existing call sites keep their import path.
@@ -733,7 +734,7 @@ privilege when it is absent.
 | `health`, pool operations | §5.4. |
 
 `SessionRequest` is one frozen record, replacing the 19-kwarg
-`AcpProvider.__init__` and the two `_acp` closures in `config/loader.py`. Its
+`AcpProvider.__init__` and the two `_acp` closures in `config/loader_config.py`. Its
 field list is taken from the only factory that has been exercised against a
 foreign vendor (the companion’s session factory) rather than
 invented: `session_key`, `agent`, `channel_id`, `cwd`, `extra_env`, plus a
@@ -1083,7 +1084,7 @@ What moved:
   translation of a table that already existed, so no membership changed.
   `AcpProvider.capabilities` is where a live session's record comes from.
 - Each of the six identity checks now reads a field: the model-id namespace
-  (`config/loader.py`, `dashboard/chat_handlers.py`), whether the backend's own
+  (`config/loader_config.py`, `dashboard/chat_handlers.py`), whether the backend's own
   advertised list must be read back (`dashboard/handlers/agents.py`,
   `dashboard/chat_turn/model_fallback.py`'s pinned-model verdict), which provider seam serves
   the session (`dashboard/chat_runner.py`'s billing label, `subagent.py`'s
@@ -1114,7 +1115,7 @@ Codex rather than translated. It is pinned by enclosing function in
   importing them from `acp_backends.py` satisfies it while changing nothing.
 - Exit: the six surviving identity checks outside the boundary are gone, each
   replaced by a capability question, not relocated:
-  `config/loader.py` (`== ACP_BACKEND_CLAUDE` off a config load),
+  `config/loader_config.py` (`== ACP_BACKEND_CLAUDE` off a config load),
   `dashboard/chat_handlers.py` (`provider.is_claude_backend`),
   `dashboard/chat_runner.py` (`getattr(client, "is_claude_backend", False)`) and `is_claude_backend(client)`), and
   `knowledge/llm_pool.py` — which reads `AcpClient`'s **private** `_is_claude`
@@ -1233,8 +1234,8 @@ chase `kiro_crew.acp`, PR 6 arrives with that whole half still pointing at a
 package it is supposed to delete. The gate prints the live split on every run —
 read it there rather than from this paragraph.
 
-One spelling deserves naming because it is easy to miss: `config/loader.py`
-constructs `AcpProvider` directly, and that construction **is**
+One spelling deserves naming because it is easy to miss: `config/loader_config.py`
+constructs `AcpProvider` (through `agent_sdk.acp_provider_class()`), and that construction **is**
 `create_provider_factory`. Other files import the name without constructing it,
 so "route it through the factory" is already true — what PR 5 has to change is
 which module they import the name *from*, not how they build it.

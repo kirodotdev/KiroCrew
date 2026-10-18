@@ -3888,7 +3888,10 @@ class TestStreamIsForwardedUnscanned:
         streaming path brings back both the U+FFFD corruption and the false
         positives, and leaves two places in the module each claiming to be the
         credential boundary — so the count is pinned rather than reviewed."""
-        src = pathlib.Path(terminal.__file__).read_text(encoding="utf-8")
+        src = "\n".join(
+            pathlib.Path(m.__file__).read_text(encoding="utf-8")
+            for m in (terminal, *(sys.modules[o] for o in terminal._OWNERS))
+        )
         # The import lists these names without a paren, so a paren-suffixed
         # count counts call sites and never the import.
         assert src.count("redact_credentials(") == 1
@@ -3930,7 +3933,10 @@ class TestStreamIsForwardedUnscanned:
         reconnect to. Every send must go through a captured local that was
         revalidated after the await, so the pattern `sess.ws.send` must not exist
         anywhere in this module."""
-        src = pathlib.Path(terminal.__file__).read_text(encoding="utf-8")
+        src = "\n".join(
+            pathlib.Path(m.__file__).read_text(encoding="utf-8")
+            for m in (terminal, *(sys.modules[o] for o in terminal._OWNERS))
+        )
         assert "sess.ws.send" not in src
         # And the read loop's send must revalidate the capture after the lock.
         assert src.count("if sess.ws is not live or live.closed:") == 1

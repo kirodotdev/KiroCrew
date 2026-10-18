@@ -1373,7 +1373,8 @@ class TestUnscopedDetailReadStaysOffTheEventLoop:
         answers identically whichever thread read the file, and only slow storage
         tells them apart. Nested ``def``s are pruned — those are the executor jobs,
         which is exactly where the work belongs."""
-        tree = ast.parse(Path(_prompts_mod.__file__).read_text(encoding="utf-8"))
+        owner = Path(_prompts_mod.__file__).with_name("prompts_authoring.py")
+        tree = ast.parse(owner.read_text(encoding="utf-8"))
         handler = next(
             node
             for node in ast.walk(tree)

@@ -21,6 +21,7 @@ from aiohttp.test_utils import make_mocked_request
 from overload_fakes import Clock, open_task_store
 
 from kiro_crew.dashboard import session_health
+from kiro_crew.dashboard.handlers import spawn_resume
 from kiro_crew.dashboard.handlers import tasks as tasks_mod
 from kiro_crew.taskq import model
 from kiro_crew.taskq.adapters import runner as taskq_runner
@@ -894,6 +895,39 @@ async def test_summary_merges_adaptive_caps_and_degrade_reason(
     assert lanes["spawn_gate"] == {"effective": 3, "user_max": 8}
     assert body["degrade_reason"] == "loop_lag=410ms,timeouts=0.4"
     assert body["adaptive"]["effective_exec_cap"] == 2
+
+
+@pytest.mark.asyncio
+async def test_summary_gate_lane_carries_the_chips_start_value(
+    store: TaskStore, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate lane names the value a fresh process starts it at, the one the
+    chat header's chip counts a cut against, read from the same live policy."""
+    _seed(store, clock)
+    fake_adaptive = {
+        "enabled": True,
+        "mode": "aimd",
+        "effective_exec_cap": 8,
+        "exec_ceiling": 8,
+        "spawn_gate_capacity": 6,
+        "gate_ceiling": 8,
+        "paused": False,
+        "probing": False,
+        "last": None,
+    }
+    monkeypatch.setattr(tasks_mod.resource_status, "adaptive_state", lambda: fake_adaptive)
+    params = SimpleNamespace(exec_start=8, gate_start=4)
+    ctl = SimpleNamespace(policy=SimpleNamespace(params=params))
+    monkeypatch.setattr("kiro_crew.adaptive.controller.current", lambda: ctl)
+    body = _body(
+        await tasks_mod.api_tasks_summary(_req("GET", "/api/tasks/summary", _state(store)))
+    )
+    assert body["lanes"]["spawn_gate"] == {"effective": 6, "user_max": 8, "start": 4}
+    # Read through the chip's own helper: one start value for both surfaces.
+    view = spawn_resume.throttle_view(fake_adaptive, exec_start=8, gate_start=4)
+    assert view["gate"]["configured"] == body["lanes"]["spawn_gate"]["start"]
+    assert view["gate"]["cut"] is False
+    assert "start" not in body["lanes"]["subagents"]
 
 
 @pytest.mark.asyncio

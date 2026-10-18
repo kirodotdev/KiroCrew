@@ -254,6 +254,20 @@ describe('SessionTabStrip interaction', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
+  it('cancels a middle-button mousedown so Windows autoscroll cannot swallow the close', () => {
+    // Chromium on Windows starts autoscroll from the middle-button MOUSEDOWN
+    // when the strip is a scroll container, and then no auxclick ever fires.
+    // jsdom has no autoscroll: this pins the cancellation, not autoscroll itself.
+    renderStrip({ tabs: ['chat-1', 'chat-2'] })
+    const tab = screen.getByTestId('session-tab-chat-2')
+    const middle = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 1 })
+    fireEvent(tab, middle)
+    expect(middle.defaultPrevented).toBe(true)
+    const primary = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 })
+    fireEvent(tab, primary)
+    expect(primary.defaultPrevented).toBe(false)
+  })
+
   it('marks a tab whose session was swapped in place, then clears the mark', () => {
     // A plain sidebar click keeps the tab's POSITION and changes only its label,
     // so without a cue the tab the user deliberately opened is not perceived as

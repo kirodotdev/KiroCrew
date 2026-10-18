@@ -722,7 +722,7 @@ caller's ACP session id is also frozen onto the child at this mint
 lineage cites the creator that was live when it was made rather than a
 replacement that may take the creator's slot before the child's first turn. The
 id is backend-authored, so it is bounded where it is retained: one past
-`MAX_ACP_SESSION_ID_LEN` (`kiro_crew/validation.py`, the constant every store of a
+`MAX_ACP_SESSION_ID_LEN` (`kiro_crew/validation_parts/input_bounds.py`, the constant every store of a
 backend session id shares) is dropped at mint, never truncated -- the sid
 is optional and absent is a legal record. The mint also sets `_lineage_minted`, the
 in-memory witness that THIS process stamped both fields; neither the witness nor

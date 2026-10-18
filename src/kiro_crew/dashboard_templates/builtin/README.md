@@ -17,10 +17,11 @@ further down, then `office` in "A desk that ships decks and mail", two in
 | `work-kanban` | `work` | that same board as columns, including the one waiting on the conductor's own verdict |
 | `session-ledger` | `ledger` | what a long-running session is carrying, and what it would resume from |
 
-`project-report` is the DEFAULT: a crewmate that never adopted a template, and has no
-page named for it (see "A page named for its crewmate"), renders it,
-so the first thing anybody sees is the report rather than an empty frame
-(`kiro_crew.dashboard_templates.instance.DEFAULT_TEMPLATE_ID`). The three round-3 pages
+`project-report` is a ROOT session's default: a root session that never adopted a
+template renders it in its Overview
+(`kiro_crew.dashboard_templates.instance.DEFAULT_TEMPLATE_ID`). A crewmate renders it only
+once the page is adopted; one that adopted nothing, and has no page named for it (see
+"A page named for its crewmate"), shows no page. The three round-3 pages
 it replaced -- `crewmate-overview`, `work-map`, `spend-and-tools` -- were each one slice
 of the same question asked three ways, and a reader had to assemble the answer from
 three pages of engineering counters. One page answering the four questions in order
@@ -341,7 +342,7 @@ rather than a page one. `test_dashboard_template_views.py` asserts neither page 
 | `kirocrew-conductor` | `work`, `panel` | what is my conductor running, and what does it need from me | `needs_you` |
 
 A crewmate that adopted nothing gets the page whose id is its own slug, when one ships,
-and `project-report` otherwise (`instance.default_template_id`). This is the crew
+and no page otherwise (`instance.default_template_id`). This is the crew
 panel's rule that a template named after a crew is that crew's view, so a crewmate
 named like a shipped page gets that page. No page here may be named `default`: a
 crewmate can be.

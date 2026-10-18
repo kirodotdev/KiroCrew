@@ -20,7 +20,6 @@ from __future__ import annotations
 import json
 import os
 import threading
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -108,28 +107,59 @@ class TestFavoriteProjectsStore:
         assert ch._load_favorite_projects() == [str(second), str(first)]
 
     def test_overlapping_writes_lose_neither_change(self, _home):
-        # Two dashboard tabs adding different projects at once. A load that lingers
-        # makes both read the same empty snapshot unless the transaction is locked,
-        # so without the lock the second write would drop the first project.
+        # Two dashboard tabs adding different projects at once. The add transaction
+        # loads the snapshot, appends, and writes it back under _favorite_projects_lock;
+        # without that lock both adds load the same empty snapshot and the second write
+        # drops the first project. This proves the lock closes that window.
+        #
+        # The interleaving is driven by signals, not a sleep or a timeout. The first add
+        # to load signals ``first_loaded`` and parks on ``release``; the main thread then
+        # asserts _favorite_projects_lock is HELD -- which it is only because the lock
+        # serializes the read-modify-write, so this assertion is itself the regression
+        # detector: drop the lock and a reader reaches this point with nothing held. The
+        # main thread releases immediately, so the passing run finishes in milliseconds;
+        # the bounded join is the only lost-run ceiling. With the lock the second add is
+        # still blocked acquiring it, loads after the first has written, and both land;
+        # without it both wrote from the empty snapshot and the second clobbers the first,
+        # which the final assertion catches on every host.
         first, second = _home / "a", _home / "b"
         first.mkdir()
         second.mkdir()
-        real_load = ch._load_favorite_projects
 
-        def slow_load(**kwargs):
+        real_load = ch._load_favorite_projects
+        first_loaded = threading.Event()
+        release = threading.Event()
+        claimed = threading.Lock()
+        is_claimed = [False]
+
+        def handshake_load(**kwargs):
             snapshot = real_load(**kwargs)
-            time.sleep(0.05)
+            with claimed:
+                park = not is_claimed[0]
+                is_claimed[0] = True
+            if park:
+                first_loaded.set()
+                assert release.wait(timeout=10), "the main thread never released the first load"
             return snapshot
 
-        with patch(f"{MOD}._load_favorite_projects", side_effect=slow_load):
+        with patch(f"{MOD}._load_favorite_projects", side_effect=handshake_load):
             threads = [
                 threading.Thread(target=ch._add_favorite_project, args=(str(p),))
                 for p in (first, second)
             ]
             for t in threads:
                 t.start()
+            try:
+                assert first_loaded.wait(timeout=10), "no add ever loaded its snapshot"
+                # The lock is held across the first add's load-modify-write only because
+                # it serializes the transaction; a dropped lock lets a reader park here
+                # with nothing held, so this is the regression detector, not a timing bet.
+                assert ch._favorite_projects_lock.locked(), "the transaction did not hold the lock"
+            finally:
+                release.set()  # always free the parked load, even if an assertion fired
             for t in threads:
-                t.join()
+                t.join(timeout=30)
+            assert not any(t.is_alive() for t in threads), "an add thread never returned"
         assert sorted(ch._load_favorite_projects()) == sorted([str(first), str(second)])
 
     def test_an_add_past_a_hundred_still_lands(self, _home):

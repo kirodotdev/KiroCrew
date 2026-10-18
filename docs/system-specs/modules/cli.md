@@ -52,6 +52,22 @@ store through a template, display-name change or arbitrary database path. This
 development-stage V2 contract has no old V2 data migration or compatibility mode.
 Global and named V1 memory retain their existing behavior independently.
 
+`--model <id>` on `agent create` and `agent update` writes the member's
+`agents.<name>.model`, the field `_session_model` reads first. Omitted, `update`
+leaves the pin alone; `""` or `auto` stores `""` (inherit), through
+`normalize_agent_model`. An update publishes only the fields it was given
+(`persist_member_config(changed_fields=...)`), so a concurrent edit to another
+field survives. The value is judged on shape (`validation._MODEL_NAME_RE`, as
+the cron job `--model` flag is), then, unless the provider is `claude_code`, refused
+when `model_registry.acp_id_correction` maps it to another served id or when
+`_model_rejected_reason` finds it display-only for the harness
+`_pin_entitlement_backend` picks. These are the two checks the crew editor's
+`_model_pin_rejected` runs before entitlement, so a canonical key the harness
+translates is accepted here as it is there. Entitlement needs a live
+session's advertised list, which the offline CLI does not have, so an unknown
+id is accepted, as `_validate_role_model` accepts with no evidence.
+`agent list` prints a `MODEL` column: the pin, or `(inherit)`.
+
 `kirocrew doctor` reports the configured member, store and integrity failures
 without provisioning, repairing or replacing databases. A missing, corrupt or
 wrong-member database requires explicit recovery; ordinary opening never creates
@@ -531,7 +547,11 @@ module outside the snapshot family imports an owner.
 
 `kirocrew token` has a **machine-readable stdout contract**: stdout carries only
 the dashboard URL(s), and every failure reason (invalid TTL, gateway not running,
-gateway unreachable, gateway refused, empty token) goes to **stderr**.
+gateway not verified on this port, gateway unreachable, gateway refused, empty
+token) goes to **stderr**. "Gateway not verified on this port" means the listener
+on the resolved port could not be proven to be this install's gateway, so the
+token-minting secret is withheld — distinct from "gateway not running", which
+means no listener was reachable at all.
 
 A gateway that ANSWERS with an HTTP error is reported as a refusal carrying the
 gateway's own reason (`Gateway refused the token request (HTTP 403): <error
@@ -1302,9 +1322,10 @@ order is the one `test_cli_doctor_refactor_report.py` freezes.
 18. **Live-target pointer (Linux only, silent when fit)**: reports a `live_target.json` that will make the launcher REFUSE every agent spawn — a symlink (dangling or resolving), a non-regular file, or a second hard link. `sandbox._materialize_live_target_mask_target` is fail-closed on those shapes because a bind mask covers a NAME rather than an inode, so any of them leaves a writable path to the bytes the gateway `execve`s into inside every agent namespace (the full contract is in [security](security.md), *Live-target pointer*). This section exists because that refusal is correct but arrives too late and in the wrong place: the operator's only notice was a failed spawn plus a `logger.warning` in the gateway log, and the shapes are ORDINARY operation for something else on the host — `cp -al`, rsnapshot and other hard-link snapshot tools raise link counts on config files, and a dotfile manager may keep the pointer as a link into its own tree — so nobody did anything wrong and the first symptom is that every agent stops starting. The read is `sandbox.live_target_pointer_unfitness()`, which classifies the pointer the way a spawn would WITHOUT spawning, and doctor prints that function's own sentence rather than a paraphrase, so an operator who sees this line and later hits the refusal reads one diagnosis instead of two (pinned by the drift guard in `test_live_target_pointer_visibility.py`). An unfit pointer IS an issue and changes doctor's exit code — but only on a host that actually confines a spawn: `_materialize_live_target_mask_target` runs on the launcher path, which `wrap_argv` reaches only when it WRAPS the child, so on a host that hands back an unwrapped command the pointer is unfit and NOTHING is currently refused. The question is asked with `sandbox.credential_mask_applies`, which lives beside those branches so a caller whose argument depends on the mask cannot drift from them, and which counts BOTH unwrapped outcomes — the `off` tier and a host with no available backend — where reading the configured mode alone sees only the first. Doctor still reports the pointer there, as a latent outage that begins the moment the host starts confining spawns, but drops the "spawns will be REFUSED" wording, says only that this pointer is not what stops a spawn here and points at the *Sandbox* section for whether agents start at all — the predicate answers False for a host that hands the command over unwrapped AND for one with no backend, which may be refusing every spawn for its own reason, so claiming "nothing is refused" would be a second false statement in place of the first — and does not count it as an issue; claiming a current outage there would be the same false promise as reporting this on macOS, and confinement is simply the second axis of that one rule. A predicate this process cannot evaluate fails towards reporting the refusal. A probe that itself fails reports `could not check` and is not an issue, because doctor must not turn its own failure into a verdict about the host — that includes a pointer that EXISTS but cannot be `lstat`'d, whose `OSError` propagates out of the probe rather than reading as fit, so an unclassifiable pointer is never rendered as silence the operator would read as a clean bill of health. Every value doctor prints in this section is terminal-escaped by the formatter that built it (see [security](security.md), *Live-target pointer*), because a symlink target is attacker-chosen bytes. Linux only: a macOS Seatbelt profile denies by path rule and needs no mount target, so naming it there would promise a spawn outage that cannot happen. Absent is fit — the launcher publishes the absent-equivalent stub for it.
 19. **Masked credential leaves (Linux and macOS, silent when clean)**: reports a masked leaf whose bytes are a credential and which carries a second HARD LINK, because the launcher refuses every agent spawn on that shape — a mask binds a PATH rather than an inode, so the second name reaches the same bytes unmasked for reading and for writing (the full contract is in [security](security.md), *the masked-leaf alias pass*). It exists for the same reason as the *Live-target pointer* section above and answers the same objection: `cp -al`, rsnapshot and other hard-link snapshot tools raise link counts on files in the home as ordinary operation, so the condition arrives without anybody doing anything wrong and the first symptom is that agents stop starting. The read is `sandbox.masked_credential_leaf_aliases()`, which stats the leaves without spawning and reports a data home it cannot resolve as nothing rather than as a fault. A leaf whose every other name was LOCATED is masked for each spawn and nothing is refused, so doctor prints the `find -samefile` remedy alone (`sandbox._masked_leaf_alias_search_hint`); a leaf with a name the pass could not locate is the one a spawn refuses on, and doctor prints that leaf's own refusal sentence from `sandbox._masked_leaf_multilink_detail` rather than a paraphrase, so an operator who reads this line and later meets the refusal reads one diagnosis instead of two. Both go through `_print_wrapped` so the remedy survives on one line. An aliased leaf IS an issue and changes doctor's exit code only on a host that actually confines a spawn (`sandbox.credential_mask_applies`, which counts both unwrapped outcomes — the `off` tier and a host with no backend — exactly as the pointer's section does) AND only for an unlocated name in the live data home; elsewhere it is reported as a latent outage that begins the moment the host starts confining spawns, without the "will be REFUSED" wording and without counting as an issue. An unreadable mode reports the leaf rather than hiding it. A probe that itself fails prints `could not check` and is not an issue, because doctor must not turn its own failure into a verdict about the host. Linux and macOS, because both launch paths run the refusal: a Seatbelt profile denies by PATH rule, which says nothing about a second hard link to the same inode, so `sandbox_exec_argv` calls the same pass the namespace launcher does and a macOS operator meets the same refusal. Windows has no confining launcher, so the probe is skipped there rather than promising an outage that cannot happen.
 20. **Agents directory**: reports the aged orphaned atomic-write temps and stale backups a sweep would reclaim in the shared kiro agents directory, plus the skill-view census (`doctor_checks/resources._doctor_agents_janitor`; see [acp-client](acp-client.md)). Report only: deletion is left to the boot sweep, and backups are counted only when `agent.sweep_agents_backups` is on.
-21. **Installed skill currency**: names installed skills that are behind the source tree the sync selects for them, edited locally, or unverifiable (`doctor_checks/install._doctor_skill_currency`). It makes no network call, so "behind" means out of step with this install's own source, never with a remote revision. POSIX only; on Windows the check does not run.
+21. **Installed skill currency**: names installed skills that are behind the source tree the sync selects for them, edited locally, or unverifiable (`doctor_checks/install._doctor_skill_currency`). It makes no network call, so "behind" means out of step with this install's own source, never with a remote revision. Bytecode caches (`__pycache__`) are left out of that comparison, so a copy synced by a source checkout and checked by an app build of the same sources reads in step. POSIX only; on Windows the check does not run.
 22. **Hook auto-approve platform scope**: reports whether a name-based auto-approve can be satisfied on this host, read off the same `name_grant.platform_scope_notice` and `name_grant.windows_environment_refusal` helpers `name_grant.name_grant_refusal` consults, so the row cannot describe a posture the check does not hold. Three answers, all printed with the source explanation because the only other trace is a decline line in `gateway.log` per invocation and what a user would have to read to tell the states apart is the source of `name_grant`: `⏹ declined on this host (windows_lookup_not_modelled)` when `platform_scope_notice` names the one Windows host state the model cannot run in — Windows could not report where the user's Documents folder is, so whether a PowerShell profile runs before the command cannot be established, a property of the host and not the user's configuration; `⚠ declined while a PowerShell profile exists (ambiguous_env)` when a per-user PowerShell profile is present at one of the paths derived from Documents, printed with the file that is doing it so the user can act on it (kiro-cli starts the shell without `-NoProfile`, so that profile runs before every command and a function it defines resolves ahead of any program on `PATH` — the same threat `BASH_ENV` poses on POSIX); and `✅ name grants can be satisfied on this platform` otherwise, which is what macOS and Linux always print because neither can enter the Windows-only refusals above. Never an issue and never part of the exit code: each fail-closed answer is the intended posture, since the POSIX tokenizer does not preserve a backslash path and `cmd.exe` searches the command's own directory before `PATH`, so resolving names loosely there is the planted-shim attack the refusal exists to stop. The same platform-scope classification bounds the log on the three surfaces that consult it: `name_grant.should_log_decline` gates the human-facing warning to once per session, for a code that describes the platform rather than the command, at the agent hook webhook, the dashboard chat runner and `llm_helpers`. The Slack gateway and handler, the messaging driver, `channel`, the subagent runner and the task runner call `name_grant.log_decline` without consulting that gate, so those warn on every decline. `name_grant.log_decline` itself writes the SEL audit row for every decline on every surface, because declining is a security decision and only the human-facing line is ever deduplicated.
 23. **ACP runtimes (Linux only, advisory)**: how many ACP runtimes are alive, whether the running gateway owns them, and what their backends cost in CPU, so a runtime that outlives its session and keeps a core busy is named in the health pass instead of found with `ps` once the host is overloaded (`doctor_checks/resources._doctor_acp_runtimes`). A runtime is a root `kiro_session_pids.txt` records (`session_pid.tracked_session_roots`), counted only while a process with that pid and the recorded start identity is alive, plus a harness outside every recorded root that the reaper's own report calls untracked (`session_pid._is_untracked_managed_agent_orphan` against both pid files) and that names this data home in `KIROCREW_SPAWN_HOME`, the pairing the leaked-runtime reclaim makes, so a pod's or a second install's runtimes and a user's own `kiro-cli` are left out. An untracked runtime the running gateway is still an ancestor of counts as that gateway's. Its backend is the root plus each path from it down through wrappers into a run of harness processes (`session_pid._cmdline_names_a_harness`): the sandbox launcher and the `kiro-cli`/`kiro-cli-chat` pair, never the tool commands or MCP servers below the harness, so a session running a build does not read as a spinning backend. CPU is the change in each backend's `stat` utime+stime (`ProcStat.cpu_ticks`) across a one-second window, and a process that exits or is replaced inside the window adds nothing. Owner is the running gateway when it recorded the runtime; another live process when the recorder is not the gateway but is still the runtime's ancestor (`kirocrew chat` records its own runtime under its own pid, and asking the tree rather than whether the pid exists keeps a recycled recorder pid from reading as an owner); and nobody when the recorder is not an ancestor, or for an untracked runtime the running gateway does not parent. A backend at or above 25% of a core is named by pid, share, age and owner; one nobody owns is also named on a `no owner:` row, because no turn can be in flight on it. Doctor cannot see whether a turn is in flight on a runtime the running gateway owns, and says so. No command line is printed, since argv can carry a token. The census reads at most 65,536 processes from the host table and walks at most 4,096 per runtime, the tree cap checked at every insertion; anything past either cap is counted on a `read cap:` or `tree cap:` row, and a process a capped walk refused is still recognised as inside its runtime by its parent edges. Never an issue and never part of the exit code; an unreadable registry or process table, or a probe that raises, prints a skipped line. Off Linux the row says it was not measured.
+24. **Ledgers (advisory)**: one count of every entry `kirocrew ledger-sweep` lists with its default 30-day window (`ledger_sweep.DEFAULT_OLDER_THAN_DAYS`): finished stores plus unreadable, linked or unaddressable stores listed for a human. The `ledgers:` row says the command lists N ledgers (or nothing), without claiming every entry is finished or idle, and names the command to review them (`doctor_checks/workload._doctor_ledger_backlog`). It calls the read-only `ledger_sweep.scan()`, never purges and prints no per-ledger detail, which stays in the dry run. It takes no `issues` list, so a listed ledger never fails doctor, and a ledger root that cannot be read prints one `could not check` row instead of ending the run.
 
 One flag is a MODE rather than a check and short-circuits before the list above runs, because it does not answer "is this install healthy": `--bundle` collects the redacted diagnostics zip and prints no health report. It ends with a prefilled `Open a GitHub issue` link whose `version`, `channel` dropdown answer and create-time `channel:` label all come from ONE resolver, `release_channel.provenance()` (shared with the dashboard's Report-a-problem link, which prints the same fields plus the free-form ones): the version is the PUBLIC release version — a repackager's four-part `BUILD_VERSION` stamp such as `0.7.0.5` is folded onto `0.7.0` (`changelog.release_of_build`), while the release pipeline's own spellings (`0.7.0-insider.4`, `0.7.0rc7`, a nightly stamp) are the public identity and stay — and the channel is the lane the build can PROVE from three sources that must agree: the `$KIROCREW_HOME/channel` record when it names a lane, a prerelease marker in the installed distribution's metadata version when it describes the same release (a repackaged insider build keeps its `rc` marker there after the stamp has removed it from `__version__`; PLAIN metadata proves nothing, because the desktop lanes pip-install the checkout and stamp only `__version__`, leaving `pyproject.toml`'s bare version in the dist-info of every lane), and `__version__` itself unless it is a build stamp, which says nothing about its lane. No claim, or claims that disagree (a stable record over a promoted `rc` build, a lane switch not yet updated onto), prefills the form's own `Not sure` and attaches NO `channel:` label, because a create-time label outlives whatever the reporter later picks and a guessed Stable is exactly how packaged insider reports arrived mislabelled (#13168). The raw stamp, the distribution version and the record are recorded in the bundle's private `versions.txt` and `manifest.json` instead. Doctor is otherwise read-only, which is why the ledger cleanup sweep is its own command (`kirocrew ledger-sweep`, see the command table and [session-work-ledger](session-work-ledger.md#cleanup)) rather than a second mode here.
 
@@ -1369,9 +1390,13 @@ One flag is a MODE rather than a check and short-circuits before the list above 
 3. Reinstalls backend via `pip install -e .`
 4. Refreshes the agent config, then, best-effort, asks a running gateway to
    re-check for updates (`POST /api/update/revalidate`) so its update badge
-   reconciles at once. It does so only when this gateway owns the port it would
-   dial (`_gateway_owns_port`) and holds its local secret; no gateway, a refusal
-   or an error prints at most one line and never changes the exit code.
+   reconciles at once. The local secret rides `_owner_verified_secret_urlopen`
+   (see [Owner-verified secret sends](#owner-verified-secret-sends)), so it is
+   written only after the connected peer is proven to be this install's
+   recorded gateway; there is no separate port-ownership pre-check. This runs
+   on every platform, Windows included (TCP arm). No gateway, a refused peer
+   (`_GatewayPeerRefused`), a refusal or an error prints at most one line and
+   never changes the exit code.
 
 A wheel install (no git checkout) takes a different path by install shape
 (`cli_server._update_wheel`): a managed venv updates through its own engine; a
@@ -1418,9 +1443,12 @@ are talking to:
    keep it from being a guess:
    - **Ownership, not reachability** — `clear_marker()` only runs on graceful
      shutdown, so a crash leaves a stale marker behind and an unrelated process
-     may since have bound that port. Because `_token` / `_logout` send
-     `X-Local-Secret` to whatever answers, a bare "is something listening" probe
-     would walk the local secret into that process. A command-line check is not
+     may since have bound that port. Discovery only picks the port; the
+     secret-bearing sends then prove the connected peer on their own
+     ([Owner-verified secret sends](#owner-verified-secret-sends)), so this
+     guard is not what keeps the local secret from a squatter. It keeps
+     discovery from naming a port that a squatter now holds, which a bare "is
+     something listening" probe would do. A command-line check is not
      enough either — argv is attacker-chosen, so a listener started as
      `/tmp/kirocrew gateway` would pass it. `_gateway_owns_port()` therefore
      requires three things, none sufficient alone:
@@ -1492,6 +1520,81 @@ IPv6 squatter from the real IPv4 gateway), so a name-based URL could deliver
 *printed* for the browser still uses `resolve_dashboard_host()` (`localhost`) —
 that must not change, because the SPA's per-origin `localStorage` is keyed on it.
 
+## Owner-verified secret sends
+
+Six CLI sends carry `X-Local-Secret`: `kirocrew token` (`_token`), the
+post-restart token URL (`_print_token_url`), `kirocrew logout` (`_logout`),
+`kirocrew update approve` (`_update_approve`), the `stop` API fallback
+(`_request_gateway_shutdown`) and the post-update badge poke
+(`_revalidate_gateway_update_check`). All six go through
+`cli_server._owner_verified_secret_urlopen`. It runs a `verify_peer` hook on
+the CONNECTED socket, after connect and before the first byte is written, so
+the proof and the send share one connection. A peer cannot be swapped between
+the check and the send, which a port snapshot taken on a separate connection
+(the old `_gateway_owns_port` pre-check) could not rule out.
+
+Both arms start from the same record: `_recorded_gateway_pid(port)` reads
+`run/gateway-<port>.pid` and its `.start` token, and returns the pid only when
+the token still matches the live pid's (`run_marker.pid_start_token`). A
+missing record, an empty token or a recycled pid gives no pid, and the send is
+refused.
+
+- **Unix arm** — taken whenever `dashboard_socket_path(port)` exists. The send
+  uses `unix_socket_urlopen`, which has no TCP handler, so a stale or refused
+  socket raises `URLError` and is never retried over TCP. The hook requires
+  `check_peer_is_self` to return `MATCH` (`SO_PEERCRED` on Linux,
+  `LOCAL_PEERCRED` on macOS; `UNVERIFIABLE` refuses) AND the socket's peer pid
+  (`get_peer_pid`) to equal the recorded pid
+  (`_connected_unix_peer_is_recorded_gateway`).
+- **TCP arm** — taken when there is no socket (a TCP-only gateway, native
+  Windows, which has no `AF_UNIX`). The send uses `tcp_verified_urlopen`
+  (`ProxyHandler({})`, so no proxy is consulted), and the hook runs inside
+  `connect()`; on any exception the fd is closed. `_connected_peer_verdict`
+  resolves the pid that owns the GATEWAY's end of this exact 4-tuple via
+  `platform_compat.get_tcp_peer_pid` (`/proc` on Linux, `lsof` on macOS,
+  `GetExtendedTcpTable` on Windows), retrying for up to 1 s while the
+  connection is still in the accept queue. That pid must equal the recorded
+  pid and be owned by this account: uid on POSIX, access-token owner SID on
+  Windows. Every other outcome, including any exception, is `MISMATCH`.
+
+**Refusal on mismatch.** A failed proof emits a SEL `denied` event and raises
+`_GatewayPeerRefused` before the secret is written; a passed proof emits SEL
+`allowed`. `_GatewayPeerRefused` is not an `OSError`, so urllib does not wrap
+it into `URLError` and the caller never reports a live-but-refused gateway as
+"not running". Each refusal message ends with the remedy to restart the
+gateway so it re-publishes `run/gateway-<port>.pid`. Callers:
+
+| Caller | On refusal |
+|---|---|
+| `_token`, `_logout`, `_update_approve` | ownership message on stderr, exit 1 |
+| `_print_token_url` | caught in its retry loop, then the `kirocrew token` hint |
+| `_request_gateway_shutdown` | returns `False`; `stop` keeps its no-target diagnostic |
+| `_revalidate_gateway_update_check` | prints its one fallback line |
+
+**Fails closed.** These all refuse rather than send: no socket on Windows plus
+an unresolvable TCP peer; a missing pid record or start token (for example, the
+marker lock was busy at boot); `get_peer_pid` returning `None` (FreeBSD and
+other platforms); macOS with no trusted `lsof`; `/proc` restricted by
+`hidepid`, or a socket inode held by more than one process; a failed SID read;
+a peer still in the accept queue after 1 s.
+
+**Gateway side.** `/api/logout`, `/api/shutdown` and `/api/update/revalidate`
+admit a kernel-attested same-user unix peer (`_unix_peer_is_self`, kernel
+`MATCH` only), as `/api/token/local` already did. The `X-Local-Secret`
+comparison is unchanged.
+
+**Upgrade window.** A gateway still running pre-change code admits only
+loopback peers on those three routes, and a unix request has no remote
+address. Until it restarts, a new CLI gets `HTTP 403` from `logout`, the `stop`
+API fallback reports its no-target diagnostic, and the badge poke prints its
+fallback line. This fails closed and ends at the next gateway restart.
+
+**Out of scope.** The same value is also the gateway's `X-Internal-Secret`.
+Other senders of it do not yet use this proof: `cli_commands.py` spawn,
+spawn-run and spawn poll, `_artifact`, the no-socket arm of
+`_file_delivery_approve`, `pod/runtime_client.py`'s Windows mint and
+`app_lifecycle_client.py`. Those are tracked as follow-ups.
+
 ## Gateway PID Command
 
 `kirocrew gateway-pid` is a read-only probe that prints who holds this home's
@@ -1561,10 +1664,16 @@ no signal and exit 1. Without `--expect-pid` the command is unchanged:
    `reason=<tool>_outside_trusted_dirs`, distinct from `<tool>_not_found`, so
    the two are separable in the audit log.
    When the trusted lookup tool exists but returns no pid, stop makes one
-   fixed-loopback `POST /api/shutdown` request carrying the gateway generation's
-   local secret. That handler independently requires loopback origin and a
-   constant-time secret match, then triggers the same graceful shutdown event as
-   SIGTERM. The acknowledgement body is capped at 4 KiB before JSON parsing;
+   `POST /api/shutdown` request carrying the gateway generation's local secret,
+   through `_owner_verified_secret_urlopen`
+   ([Owner-verified secret sends](#owner-verified-secret-sends)). It prefers the
+   gateway's owner-only unix socket with the connected-peer proof, which needs
+   no port tool; with no socket it falls back to loopback TCP with the
+   connected-peer proof. A peer that cannot be proven gets nothing and the
+   request returns `False`. The handler independently requires a same-machine
+   peer (a loopback address, or a kernel-attested same-user unix peer via
+   `_unix_peer_is_self`) and a constant-time secret match, then triggers the
+   same graceful shutdown event as SIGTERM. The acknowledgement body is capped at 4 KiB before JSON parsing;
    excessive nesting is treated as malformed input. A successful acknowledgement
    ends the stop command; a missing secret, refusal, malformed response, or
    transport failure retains the ordinary no-gateway diagnostic. This fallback never converts the pid sidecar into

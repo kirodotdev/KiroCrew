@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         resolved_row_identity,
         sel,
         slot_history_key,
+        slot_not_found,
     )
 
 
@@ -49,7 +50,7 @@ async def api_chat_slot_source_links(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     slot = state._slots.get(request.match_info["slot"])
     if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
 
     # App ownership check (App Kit §5.2): deny-by-default for app tokens. An app
     # token scoped to /api/chat/slots/* would otherwise name any slot the list
@@ -243,7 +244,7 @@ async def _apply_source_link_unlink(request: web.Request) -> web.Response:
         # Same indistinguishable 404 + code as the GET path, so the response
         # cannot serve as a probe for which slots exist.
         return _reject(
-            web.json_response({"error": "not found", "code": "slot_not_found"}, status=404),
+            slot_not_found(),
             error="slot_not_found",
             phase="lookup",
         )

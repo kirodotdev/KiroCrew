@@ -180,7 +180,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     # calling the module's own `register_agent_panel_routes`: that call would
     # import the module at boot, which is what the boot-path rule forbids for an
     # optional subsystem. The paths are duplicated from that function, and
-    # `test_agent_panel_routes` pins both spellings against each other.
+    # `test_agent_panel_routes_allocation` pins both spellings against each other.
     app.router.add_get(
         "/api/agent-panel/templates", _deferred("agent_panel", "api_agent_panel_templates")
     )

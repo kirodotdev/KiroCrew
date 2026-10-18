@@ -12,7 +12,7 @@ import { deepActiveElement, isEditableElement } from '../utils/editableTarget'
  * (and what "close" means — restore focus, toggle state — differs per host).
  *
  * This is the extraction of `MenuBtn`'s roving-focus keydown logic
- * (DevFleetPage.tsx, landed via #6226) so the sibling `role="menu"` surfaces
+ * (DevFleetPageMenus.tsx, landed via #6226) so the sibling `role="menu"` surfaces
  * can honour the same contract without a per-surface re-spelling (#6231).
  * `MenuBtn` itself consumes `handleMenuKeydown` from its existing
  * document-level listener; popover-style hosts use the `useMenuKeyboard` hook.

@@ -64,7 +64,8 @@ can still surface a line from a day the dated read would have collapsed to a
 count.
 
 A new session carries none of these bodies either way. It carries a bounded index
-of the last three days' headings, and the body arrives only when `memory_recall`
+of excerpts from the last three days (headings, bullets and each paragraph's
+first line), and the body arrives only when `memory_recall`
 asks for it.
 
 ### Lessons

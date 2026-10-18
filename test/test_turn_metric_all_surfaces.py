@@ -219,7 +219,12 @@ def test_the_emit_has_exactly_one_site_per_owner() -> None:
     Hence exactly ONE ``_emit_turn_metric`` site and two persists, both opting
     out.
     """
-    tree = ast.parse((SRC / "dashboard" / "handlers" / "usage.py").read_text(encoding="utf-8"))
+    handlers_dir = SRC / "dashboard" / "handlers"
+    usage_src = "\n".join(
+        usage_file.read_text(encoding="utf-8")
+        for usage_file in [handlers_dir / "usage.py", *sorted(handlers_dir.glob("usage_*.py"))]
+    )
+    tree = ast.parse(usage_src)
     emits = [
         n
         for n in ast.walk(tree)

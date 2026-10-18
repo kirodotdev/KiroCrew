@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import { hideMateWithoutPreview } from '../lib/assistantMember'
+import { withMarkdownBlocks } from '../lib/markdownAgents'
 import { PREVIEW_CREW } from '../utils/previewFlags'
 import { usePreviewFlag } from './usePreviewFlag'
 
@@ -110,8 +111,12 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
     }
     api.agentCatalog(sessionKey).then(d => {
       if (cancelled) return
-      setChoices(d.agents || [])
-      setDisplayChoices(d.agents || [])
+      // Stamped here, once, so every picker that renders these rows shows the
+      // same "KAS only" pill: the catalog was asked for THIS chat, so its
+      // `session_backend` is the harness this chat runs.
+      const rows = withMarkdownBlocks(d.agents || [], d)
+      setChoices(rows)
+      setDisplayChoices(rows)
       setDefaultAgent(d.default_agent || '')
       setError(false)
       setReloading(false)

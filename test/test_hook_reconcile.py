@@ -23,6 +23,7 @@ import pytest
 import kiro_crew.apps.hook_reconcile as hr
 import kiro_crew.apps.hooks_integration as hi
 import kiro_crew.apps.teardown as teardown
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.fixture(autouse=True)
@@ -51,20 +52,9 @@ def _app_info(name: str, *, enabled: bool = True, version: str = "1.0.0", hooks:
     }
 
 
-async def _await_until(predicate, *, timeout: float = 5.0, message: str = "") -> None:
-    """Poll ``predicate`` until true, failing loudly past a generous deadline.
-
-    The wall-clock-races convention: a watchdog window patched tight enough to
-    trip the genuinely-hung app is a real deadline for the fast app too on a
-    loaded runner, so assertions about the fast app's OUTCOME must await the
-    observable state rather than race that window (the tripped task is never
-    cancelled and always finishes on its own).
-    """
-    loop = asyncio.get_running_loop()
-    give_up_at = loop.time() + timeout
-    while not predicate():
-        assert loop.time() < give_up_at, message or "condition never became true"
-        await asyncio.sleep(0.01)
+async def _await_until(predicate, *, message: str = "") -> None:
+    """Poll ``predicate`` until true under a lost-run bound."""
+    await async_wait_until(predicate, describe=lambda: message)
 
 
 @pytest.fixture
@@ -288,7 +278,7 @@ async def test_hung_teardown_does_not_wedge_the_pass(_harness, monkeypatch):
 
     # The pass must RETURN despite hang never finishing (watchdog), within a bound
     # well under hang's 3600s sleep.
-    await asyncio.wait_for(hr.reconcile_once([]), timeout=2.0)
+    await await_until(asyncio.ensure_future(hr.reconcile_once([])))
 
     # quick was reconciled; hang's teardown was left running, NOT cancelled.
     # The zero watchdog returns the pass before EITHER spawned task reaches
@@ -355,12 +345,12 @@ async def test_hung_teardown_is_not_respawned_next_tick(_harness, monkeypatch):
     # still short of its two to_thread hops, and ticking straight away would
     # exercise the skip against a task that has not started rather than against a
     # teardown hung in on_shutdown holding the lock, which is the documented case.
-    await asyncio.wait_for(hr.reconcile_once([]), timeout=2.0)
+    await await_until(asyncio.ensure_future(hr.reconcile_once([])))
     await _await_until(lambda: len(calls) >= 1, message="teardown was never spawned")
 
     # Two further ticks while that teardown stays hung.
     for _ in range(2):
-        await asyncio.wait_for(hr.reconcile_once([]), timeout=2.0)
+        await await_until(asyncio.ensure_future(hr.reconcile_once([])))
 
     # Exactly ONE teardown was ever spawned; the later ticks skipped the live app.
     assert spawned == ["hang"], "hung app must not be re-spawned each tick"
@@ -387,7 +377,7 @@ async def test_stop_final_drain_is_bounded(monkeypatch):
 
     hr.init_hook_reconciler()
     # stop must return well under the hung pass's 3600s despite the drain hanging.
-    await asyncio.wait_for(hr.stop_hook_reconciler(), timeout=2.0)
+    await await_until(asyncio.ensure_future(hr.stop_hook_reconciler()))
 
 
 @pytest.mark.asyncio
@@ -411,10 +401,10 @@ async def test_stop_does_not_reawait_a_hung_in_flight_pass(monkeypatch):
 
     hr.init_hook_reconciler()
     try:
-        await asyncio.wait_for(entered.wait(), timeout=2.0)  # a pass is now hung in flight
+        await await_until(entered)  # a pass is now hung in flight
         # Two drain budgets (0.2s each) + a final drain; must be well under the
         # 3600s hang and under the 60s pass watchdog. 3.0s is generous headroom.
-        await asyncio.wait_for(hr.stop_hook_reconciler(), timeout=3.0)
+        await await_until(asyncio.ensure_future(hr.stop_hook_reconciler()))
     finally:
         await hr.stop_hook_reconciler()
 
@@ -443,7 +433,7 @@ async def test_stop_drains_in_flight_pass_without_cancelling_it(monkeypatch):
 
     hr.init_hook_reconciler()
     try:
-        await asyncio.wait_for(entered.wait(), timeout=2.0)  # a pass is now running
+        await await_until(entered)  # a pass is now running
         await hr.stop_hook_reconciler()  # called mid-pass
         # The in-flight pass finished (not cancelled); the final drain adds one more.
         assert completed and completed[0] == "done", "in-flight pass must finish, not be cancelled"

@@ -28,6 +28,18 @@ the `radar` fold of those entries (`crew_log/projection_radar.py`, registered in
 fold registry as a SLOT-keyed fold). The store module (`crew_store.py`) keeps the same
 function names its callers had; what they do is fold.
 
+`crew_store.py` is a mirror façade (`kiro_crew._facade_mirror`): callers and tests reach
+`crew_store.<name>`, and a patch through it reaches every owner binding the name. The
+code is in six owners beside it: `crew_store_records` (the record schema with its
+phases, event kinds and skip scopes, the number guards, the crew-id rules and paths, the
+settings, and the crew records), `crew_store_unit_order` (the `.unit-order` file and the
+no-follow holds it is read and written through), `crew_store_log` (the ledger's entry
+type and fold, the per-crew write lock and undrained receipts, the landed check, the
+ledger's error classes, a crew's units and the fold checkpoint), `crew_store_carry`
+(carrying the pre-projection files forward), `crew_store_ledger` (the folded reads and
+the two writes) and `crew_store_fabric` (the fabric fold). New crew-store code goes to
+the owner of its responsibility, and an owner never imports the façade.
+
 ```
 <data home>/crew-log/session/<unit>/                     # one unit per ACP session the
                                                           # crew's slot ran under
@@ -194,7 +206,7 @@ for disk reasons is a choice made knowing what else it shortens.
 carries its message bodies, so the fold is continued rather than redone. The warm
 fold is the crew log's shared slot memo (`crew_log.projection.fold_slot_warm`, keyed
 by the crew's slot), the same one every other slot-keyed reader uses, so the rules
-live in one implementation (`crew_store._fold_checkpoint`). It continues the cached
+live in one implementation (`crew_store_log._fold_checkpoint`). It continues the cached
 cell over the entries that arrived since and refolds cold for every shape that
 cannot be carried, each of which would otherwise be a wrong answer rather than a
 slow one: a different unit list, a unit whose log was removed and recreated under
@@ -792,7 +804,7 @@ numberless call takes none of the work-item fields (they patch an item this call
 does not create, so they are refused rather than dropped). A present-but-invalid
 number stays a 400 and is never reinterpreted as "no issue".
 
-Validation lives in `validation.py` alongside the existing schemas. The handler
+Validation lives in `kiro_crew/validation_parts/app_schemas.py` alongside the existing schemas. The handler
 sends `owner`/`repo` explicitly so a same-numbered issue in another repo cannot
 overwrite this record, and refuses a second item entering an editing phase.
 

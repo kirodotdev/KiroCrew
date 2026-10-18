@@ -186,7 +186,21 @@ never drift. Notable terminal (non-retryable) classes:
   with a reconnect notice, armed as `ReplayFamily.SESSION_NOT_FOUND`. A Stop that
   already resolved suppresses it; the drain and consume seams veto it on a later
   Stop, a queued follow-up or steer, or a rebind (with a cancel notice), refunding
-  the one-shot. A second loss on the same turn ends with the give-up text.
+  the one-shot. A second loss on the same turn ends with the give-up text. The
+  predicate matches a second raw answer with the same fresh-process remedy: a
+  frame whose `data` names `errorKind: cloud_credential_error` —
+  `_raise_acp_error` reads it structurally, tags the `AcpError`
+  `credential_reload`, and pins it non-transient, because the process's cached
+  credentials cannot be re-loaded and a retry on THAT process only draws the
+  failure again. It rides the reset-and-retry-once path unchanged, under the
+  same one-retry budget and tool-activity gates, and is deliberately not
+  `auth_required`: that tag offers the Kiro sign-in card, which signs in the
+  wrong identity for a harness that loads its own credentials. The dashboard
+  and channel surfaces word the retry for credentials
+  (`CREDENTIAL_RELOAD_RETRY_NOTICE`), and when the fresh process fails too (the
+  helper itself is broken: an expired SSO login, a revoked role) the give-up
+  line carries the provider's own message (`credential_give_up_text`) instead
+  of "start a new chat", which would fail the same way.
 - **Preserved-thinking binding mismatch**: `AcpConversationBindingMismatch`
   (non-transient) means the stored native conversation carries thinking bound to
   another conversation prefix. A dashboard outer turn with no reply, thought or
@@ -247,7 +261,20 @@ never drift. Notable terminal (non-retryable) classes:
   conversation-discard recovery above is for a rejected image, not for a
   request that is merely too big.
 - **Usage limit** and **model not entitled**: allowance spent, or the plan lacks
-  the model; also terminal, with guidance to switch model or tier.
+  the model; also terminal, with guidance to switch model or tier. `_RE_USAGE_LIMIT`
+  covers two vocabularies, because a Claude seat (`claude-agent-acp`) does not go
+  through Bedrock and words a spent allowance in Anthropic's terms, not AWS's: the
+  window-named limits (`monthly`/`daily`/`weekly`, plus the rolling `session` limit
+  and its `5-hour`/`five-hour` spelling), and the named exceptions
+  (`MonthlyLimitError`, `FreeTierLimitExceeded`). The window must be one of those
+  NAMED spellings, not any word before "limit", so a genuine "hit your rate limit"
+  stays a retryable throttle. The formatter quotes the provider's own sentence
+  verbatim (`_provider_detail`), so the reset time Anthropic appends ("· resets
+  5:50pm", "It resets Monday at 9am") reaches the user unparaphrased. A bare
+  `rate_limit_error` / HTTP 429 WITHOUT that limit wording is deliberately NOT a
+  usage limit: a short-term rate limit clears on its own, so it stays a retryable
+  throttle — it is the named-window wording, not the 429, that marks a spent
+  allowance a retry cannot recover.
 
 The auth family has exactly ONE transient member, **credential propagation**.
 Bedrock refuses a freshly minted credential with "The security token included in
@@ -283,6 +310,16 @@ the hint is its only transient marker). Onboarding a backend means auditing that
 alternation. The kiro-cli mid-stream envelope ("Encountered an error in the
 response stream: …") is deliberately NOT a hint — matching it would make the
 branch a catch-all that discards the real cause.
+
+The **throttle** branch is retryable on every backend, but its wording is
+positive-identity per `AGENTS.md` "Harness parity": only kiro-cli reaches the
+model through Bedrock (`ACP_BACKEND_KIRO`, the empty-string id), so an inline
+`backend == ACP_BACKEND_KIRO` check names Bedrock for it alone and "The model
+provider" for every other harness — a Claude seat, Codex, goose and the rest
+never touch AWS, so naming Bedrock sent their users chasing throttling that does
+not exist. The verb stays "throttling" in both forms so
+`llm_helpers._TRANSIENT_MARKERS` ("throttl") still classifies the formatted
+message as transient; the retry verdict is unchanged, only the subject noun moves.
 
 A **network-path drop** is the one transient class that waits by time rather
 than by count. `AcpError.connection_failure` is set from the raw frame when the

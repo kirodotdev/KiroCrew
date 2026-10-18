@@ -633,7 +633,7 @@ PEEK_CALLERS: "dict[str, str]" = {
         "its policy failed to compose — is handled separately by withholding "
         "the line's text (LOG_WITHHELD_PLACEHOLDER)."
     ),
-    "platform/governance.py::active_policy_distribution": (
+    "platform/governance_parts/carriers.py::active_policy_distribution": (
         "no-context answer is an unconfigured PolicyDistribution, i.e. no "
         "central fetch. It is reached only when boot never installed a context, "
         "and then this process holds no ceiling to refresh and runs no refresher "

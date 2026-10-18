@@ -24,6 +24,7 @@ from conftest import requires_symlinks
 from kiro_crew import sandbox, sandbox_plan
 from kiro_crew.decisions import local_models
 from kiro_crew.decisions import local_runtime as lr
+from kiro_crew.testing.wait import wait_until
 
 _LAYA = local_models.get("laya")
 
@@ -161,14 +162,14 @@ class _Harness:
         return stop.wait(0.01)
 
 
-def _wait_for(runtime, *states, timeout=5.0) -> dict:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+def _wait_for(runtime, *states, timeout: float | None = None) -> dict:
+    def _check() -> dict | None:
         s = runtime.status()
-        if s["state"] in states:
-            return s
-        time.sleep(0.01)
-    raise AssertionError(f"runtime stayed {runtime.status()}")
+        return s if s["state"] in states else None
+
+    return wait_until(
+        _check, timeout=timeout, describe=lambda: f"runtime stayed {runtime.status()}"
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -403,9 +404,9 @@ class TestSupervision:
         h = _Harness(tmp_path, proc_factory=lambda: next(procs))
         h.runtime.activate(_model(), 41021)
         _wait_for(h.runtime, "running")
-        deadline = time.monotonic() + 5
-        while len(h.spawns) < 2 and time.monotonic() < deadline:
-            time.sleep(0.01)
+        wait_until(
+            lambda: len(h.spawns) >= 2, timeout=5, describe=lambda: f"spawns={len(h.spawns)}"
+        )
         assert len(h.spawns) == 2
         _wait_for(h.runtime, "running")
         h.runtime.deactivate(wait=True)
@@ -481,9 +482,7 @@ class TestStop:
         h.runtime._health = lambda port, nonce: (nonces.append(nonce), False)[1]
         h.runtime.activate(_model(), 8102)
         _wait_for(h.runtime, lr.STATE_STARTING)
-        deadline = time.monotonic() + 2
-        while not nonces and time.monotonic() < deadline:
-            time.sleep(0.01)
+        wait_until(lambda: nonces, timeout=2, describe=lambda: "nonces not yet populated")
         # The probe carries the secret the server was launched with, and a listener
         # that does not echo it never reaches RUNNING.
         assert nonces and nonces[0] == h.spawn_env[0][lr.ATTEST_ENV]
@@ -518,13 +517,11 @@ class TestStop:
 
         h.download_hook = _stop_then_report
         rt.activate(_model(), 8102)
-        deadline = time.monotonic() + 5
-        while len(outcome) < 2 and time.monotonic() < deadline:
-            time.sleep(0.01)
+        wait_until(lambda: len(outcome) >= 2, timeout=5, describe=lambda: f"outcome={outcome}")
         assert outcome == [False, "_Cancelled"]
-        deadline = time.monotonic() + 5
-        while not rt.remove(_model()) and time.monotonic() < deadline:
-            time.sleep(0.01)
+        wait_until(
+            lambda: rt.remove(_model()), timeout=5, describe=lambda: "model not yet removable"
+        )
         assert not (tmp_path / "laya").exists(), "the worker let go and remove went through"
         assert h.commands == [] and h.spawns == [], "nothing ran after the stop"
 
@@ -540,9 +537,7 @@ class TestStop:
 
         h.download_hook = _slow
         rt.activate(_model(), 8102)
-        deadline = time.monotonic() + 5
-        while not entered and time.monotonic() < deadline:
-            time.sleep(0.01)
+        wait_until(lambda: entered, timeout=5, describe=lambda: "download not yet started")
         rt.deactivate()
         rt.activate(_model(), 8102)
         time.sleep(0.3)

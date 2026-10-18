@@ -111,8 +111,8 @@ Cached overrides keep the existing synchronous no-I/O fast path.
 
 **Thread parent for a new Slack-born session.** A reply can open a Slack-born
 session (`slack:<ts>`) in a thread it did not start: the owner answering an
-agent's `send_message(session="slack")` DM, a reply under a cron post, a reply
-in someone else's channel thread. When that session is fresh and its transcript
+agent's `send_message(session="slack")` DM, a reply in someone else's channel
+thread. When that session is fresh and its transcript
 has no user or assistant row yet, both dispatch paths read the thread's first
 message once (`slack/thread_parent.py`, via `SlackClientOps.fetch_message_detail`;
 the native path asks through `slack/handler_runtime/turn_context.py`):
@@ -130,7 +130,14 @@ the native path asks through `slack/handler_runtime/turn_context.py`):
   parent's text is withheld from the row too, and the row's text goes through the
   prompt block's marker neutralizers. Incognito and temporary sessions get no row.
 
-Dashboard-linked threads and sessions with prior turns fetch and record nothing.
+A cron claims the thread it posts, so a reply under a cron post runs in the
+cron's own session (`cron:<id>` or `cron:<id>:<run>`), not a Slack-born one. That
+session is reset after every run, so on a fresh one the transport path reads the
+parent for the same fenced block whatever the transcript holds, and records no
+`notice` row (`thread_parent.is_cron_owned`).
+
+Dashboard-linked threads and Slack-born sessions with prior turns fetch and
+record nothing.
 The transport path persists the user's row at receipt, so it builds the prompt
 with `exclude_last_n=1`; otherwise the history fallback replays the reply as the
 thread's history.
@@ -637,9 +644,13 @@ installer's own 300 s timeout.
 
 Not covered here:
 
-- The git route reinstalls through `dep_sync.sync_or_reinstall` in an executor
-  thread, and a cancelled await does not stop that thread, so its pip can
-  outlive a shutdown.
+- The git route reinstalls through `dep_sync.sync_or_reinstall_supervised` in an
+  executor thread. A shutdown's cancel reaches it, so an install still queued,
+  or cancelled before its last check ahead of pip, never starts pip (the
+  dependency-only branch probes once more after that check). A pip already running is left to finish
+  and can outlive the shutdown: killing it mid-install would leave the venv half
+  rewritten, and stopping it safely needs a staged (build-then-swap) install,
+  which is not done yet.
 - A policy apply started by `POST /api/update` runs in the request handler. The
   shutdown does not stop it first.
 

@@ -262,6 +262,12 @@ export const sidebarCollision: CollisionDetection = (args) => {
     if (d?.type === 'pinned-session') {
       return activeData?.pinned === true && d.container === activeData.container
     }
+    // An unpinned row is a manual-order target for unpinned drags in its own
+    // container only: over another folder's rows the drag resolves to that
+    // folder's block, so the drop files the session there, as it always did.
+    if (d?.type === 'manual-session') {
+      return activeData?.pinned !== true && d.container === activeData?.container
+    }
     return true
   })
   // A sticky folder header pinned over a descendant block: the pointer on that

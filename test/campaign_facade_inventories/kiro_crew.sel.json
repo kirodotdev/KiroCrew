@@ -1,0 +1,30 @@
+{
+ "base_public_names": [
+  "AWS_KEY_ID_PREFIXES",
+  "SecurityEvent",
+  "SecurityEventLog",
+  "SelChainContention",
+  "SelVerification",
+  "atomic_write",
+  "audit_sources",
+  "config_dir",
+  "current_request_forwarded",
+  "flush_audit_queue",
+  "flush_audit_queue_before_hard_exit",
+  "logger",
+  "platform_compat",
+  "sel",
+  "sel_hmac_key_path",
+  "sel_is_warm",
+  "subprocess_executor",
+  "warm_sel_singleton"
+ ],
+ "rebound": {
+  "AWS_KEY_ID_PREFIXES": "kiro_crew.credential_patterns",
+  "atomic_write": "kiro_crew.atomic_write",
+  "config_dir": "kiro_crew.config.paths",
+  "current_request_forwarded": "kiro_crew.sel_request_provenance",
+  "platform_compat": "kiro_crew",
+  "subprocess_executor": "kiro_crew.executors"
+ }
+}

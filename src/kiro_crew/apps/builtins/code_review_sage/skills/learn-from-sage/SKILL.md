@@ -13,8 +13,10 @@ the reviewer catches the next one.
 Two files, one rule each:
 - **`learned-patterns.md`** — the canonical, consolidated ruleset. The **only**
   file a review loads as heuristics. Human-editable.
-- **`learned-patterns.candidate.md`** — append-only **staging** for new learnings.
-  Reviews do NOT read it. It is merged into `learned-patterns.md` only when a
+- **`learned-patterns.candidate.md`** — **staging** for new learnings. Staging an
+  exact equivalent (same title, scope, impact and guidance) adds
+  `<!-- seen:N -->` and `<!-- last:<date> -->` to the existing entry instead of
+  appending; anything else is appended. Reviews do NOT read it. It is merged into `learned-patterns.md` only when a
   human triggers **consolidation** (a one-shot AI merge), after which it's cleared.
 
 ## The interpreter in every command below
@@ -97,7 +99,8 @@ review** (not a separate pass):
    store sets) are written to disk; `dimension` guides your gate but is not
    persisted.
    The `guidance` is the entire durable heuristic — code-agnostic and self-contained.
-   This **appends to the candidate file** — it does not touch the live ruleset.
+   This **stages into the candidate file** (an exact equivalent bumps its `seen`
+   count) — it does not touch the live ruleset.
    Omit `--namespace` to stage into the default namespace.
 
 ## Consolidate (human-triggered — the one-shot AI merge)

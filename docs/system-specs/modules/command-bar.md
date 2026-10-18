@@ -59,9 +59,10 @@ carries no Folders tab. Reaching a folder by name is a launcher capability, so t
 it: the alternative is two implementations of the same gesture, one in the app and one in the
 surface the app replaces, differing over ranking and reveal and answering to nobody. The corpus
 is hook-free for the same reason the session and artifact engines are — the React-Query fetch and
-the `usePaletteActions` route change are wired in `CommandBarOverlay`, which is the only thing
-holding this app's seams. It still renders the host's `Result` row contract, because forking the
-row shape would fork the Enter matrix with it.
+the `usePaletteActions` route change are wired in `CommandBarOverlay` (its
+`useCommandBarOverlayEngines` owner), which is the only thing holding this app's seams. It still
+renders the host's `Result` row contract, because forking the row shape would fork the Enter
+matrix with it.
 
 The crewmates view (`apps/command-bar/matesProvider.ts`) reaches the reader's own crew: typing
 filters the roster by fuzzy name and Enter lands on that mate's pinned DM thread
@@ -152,10 +153,29 @@ eviction.
    the sessions, artifacts, folders, and crewmates views; when no root row matches, also offer
    the app page that can disable Command Bar
 
+## Source layout
+
+`website/src/apps/command-bar/CommandBarOverlay.tsx` is the overlay's only import path (the
+`overlayRegistry.ts` lazy entry, the specs that mount it). It keeps the dialog: the navigation
+state, the lifecycle effects, copy, the argument state, the key handler and the rendered panel.
+It calls each owner hook at the point its code sits in the component's hook order; owners never
+import the facade, and nothing else imports an owner.
+
+| File | Holds | New work for… |
+|---|---|---|
+| `commandBarOverlayModel.ts` | `Scope`, `Slot`, the view limits, the row, header and footer labels | a slot tag, scope, limit or label |
+| `CommandBarOverlayRootRows.tsx` | the root's rows and their ranking | a root row or group |
+| `useCommandBarOverlayEngines.ts` | every view's engine (the sessions search and listing, artifacts, folders, crewmates), the cache entries read without fetching | a view's engine, a cache entry the bar reads |
+| `useCommandBarOverlaySlots.ts` | each view's read, `rowsAnswerTheQuery`, the slot list and its loading state | a view's read or a tail row |
+| `useCommandBarOverlayActivation.ts` | what Enter and a click do, the session seeding, the stale-Enter latch | a slot's activation |
+| `CommandBarOverlaySlot.tsx` | how one slot renders | a slot's look |
+
+`CommandBarOverlay.owners.test.tsx` pins this shape.
+
 ## The overlay seam
 
 `ui.overlays` is a manifest array of `{id, replaces}`; both fields are required and
-kebab-validated (`_OVERLAY_SLUG_RE` in `apps/manifest.py`). `replaces` names a HOST SLOT, and
+kebab-validated (`_OVERLAY_SLUG_RE` in `apps/manifest_sections.py`). `replaces` names a HOST SLOT, and
 the only slot that exists is `quick-search` (`HOST_OVERLAY_SLOTS` in
 `website/src/apps/overlayRegistry.ts`).
 
@@ -461,7 +481,7 @@ A contribution is **data, not code**:
 | `argument` | the ONE value the command collects: `kind` (`url` / `text`), `hosts` for `url`, plus `placeholder`, `hint`, `patternError` |
 | `prompt` | the action — the text a new session is seeded with, interpolating `{argument}` |
 | `autoSend` | send that text immediately rather than leaving it in the composer |
-| `agent` | the agent the seeded session runs as (`createSlot({ agent, agent_kind: 'template', appAgentOwner })`; the backend stamps `app_agent_owner` and refuses any turn on which the bare name resolves to another spec, by declared name or filename stem, in the session's project or, with none, in every directory the provider falls back to); install refuses one the app does not itself ship, `list_apps` drops one its agent files do not register, and the launcher clamps anything outside `[A-Za-z0-9._-]{1,120}` to the default |
+| `agent` | the agent the seeded session runs as (`createSlot({ agent, agent_kind: 'template', appAgentOwner })`; the backend stamps `app_agent_owner`, refuses any turn whose backend does not launch from the agent spec (`Routing.AGENT_SPEC`: KAS and Kiro), and refuses any turn on which the bare name resolves to another spec, by declared name or filename stem, in the session's project or, with none, in every directory the provider falls back to); install refuses one the app does not itself ship, `list_apps` drops one its agent files do not register, and the launcher clamps anything outside `[A-Za-z0-9._-]{1,120}` to the default |
 
 **No app-supplied code, and no app-supplied image.** A contributed function would be
 third-party JavaScript running inside the host's own surface, on every keystroke,

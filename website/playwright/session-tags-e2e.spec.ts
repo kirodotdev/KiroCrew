@@ -585,7 +585,7 @@ test.describe('E2E: sidebar tag columns', () => {
     expect(matched).toEqual([plannedSlot.key, untaggedSlot.key].sort())
   })
 
-  test('25. include_untagged on an unfiltered column (no tag_ids) keeps rendering all sessions (flag is additive)', async ({ page, request }) => {
+  test('25. include_untagged on an empty tag filter is the "Untagged" column: untagged sessions only', async ({ page, request }) => {
     await page.addInitScript(() => {
       const cfg = JSON.parse(localStorage.getItem('mc-chat-config') || '{}')
       cfg.tagColumnsEnabled = true
@@ -595,15 +595,20 @@ test.describe('E2E: sidebar tag columns', () => {
     const plannedKey = await seedSlotWithTag(request, 'E2E-25 planned', 'Planned')
     const untaggedSlot = await (await request.post('/api/chat/slots', { data: { agent: 'default' } })).json()
     await request.patch(`/api/chat/slots/${untaggedSlot.key}/title`, { data: { title: 'E2E-25 untagged' } })
-    // Column with empty tag_ids behaves as "All sessions"; adding include_untagged shifts its meaning to... still "All sessions" since tag_ids=[] already matches everything.
-    // What we actually want: a DEDICATED "untagged" column must have tag_ids=[] AND mode='none' AND some real tag id? Simpler API design: include_untagged is additive only.
-    // Here we verify: when column has tag_ids=[], every slot matches (pre-existing behavior); include_untagged does not narrow.
+    // Empty tag_ids with include_untagged on is the "Untagged" column (the header
+    // label boardLane renders for exactly this shape). It must show untagged
+    // sessions ONLY — the label and the filter have to agree (#21048). An empty
+    // tag filter WITHOUT the flag is "All sessions" and still matches everything.
     const col = await (await request.post('/api/chat/tag-columns', { data: { tag_ids: [], mode: 'any', include_untagged: true } })).json()
     await page.goto('/chat')
     await page.waitForSelector(`[data-testid="column-${col.id}"]`)
-    // Both rows appear (empty tag filter = match everything)
-    await expect(page.locator(`[data-testid="column-${col.id}"] [data-slot-key="${plannedKey}"]`)).toBeVisible()
+    // The untagged row appears; the tagged (Planned) row does not.
     await expect(page.locator(`[data-testid="column-${col.id}"] [data-slot-key="${untaggedSlot.key}"]`)).toBeVisible()
+    await expect(page.locator(`[data-testid="column-${col.id}"] [data-slot-key="${plannedKey}"]`)).toHaveCount(0)
+    // The checkbox label is mode-aware: with no tag filter it reads "Untagged
+    // only" (it narrows), not "Include untagged sessions" (which would add).
+    await page.locator(`[data-testid="column-edit-${col.id}"]`).click()
+    await expect(page.getByText('Untagged only')).toBeVisible()
   })
 
   test('26. folders render inside a column when they contain matching slots', async ({ page, request }) => {

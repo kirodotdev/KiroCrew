@@ -228,6 +228,7 @@ async def extract_outbound_with_audit(
     *,
     within_root: str,
     audit_caller: str,
+    scratch_root: str = "",
 ) -> tuple[str, list[OutboundFile], str]:
     """Extract local image refs for upload, writing the mandatory SEL audit.
 
@@ -244,7 +245,7 @@ async def extract_outbound_with_audit(
     """
     try:
         result = await extract_local_refs_off_loop(
-            text, within_root=within_root, limits=UPLOAD_LIMITS
+            text, within_root=within_root, limits=UPLOAD_LIMITS, scratch_root=scratch_root
         )
     except Exception:
         logger.warning("slack: outbound file extraction failed", exc_info=True)

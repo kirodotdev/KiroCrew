@@ -10,7 +10,7 @@ No such test existed before this feature.
 
 Two properties are security-critical rather than merely tidy:
 
-* **The managed spec carries NO ``autoApprove`` key.** ``mcp_gateway/rewriter.py``
+* **The managed spec carries NO ``autoApprove`` key.** ``mcp_gateway/rewriter_spec.py``
   keeps ``autoApprove`` on the wrapper precisely so kiro-cli reads it, and an
   autoApproved MCP tool is approved LOCALLY by kiro-cli: it emits no permission
   request and therefore **never reaches ``hooks.on_tool_call``**. Auto-approving

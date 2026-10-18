@@ -24,7 +24,7 @@ export const SESSION_SORT_CONFIG_PATH = 'dashboard.session_sort'
 export const LEGACY_SESSION_SORT_STORAGE_KEY = 'mc-session-sort'
 // Mirrors SESSION_SORT_MODES in src/kiro_crew/config/sections.py.
 const SORT_KEYS = new Set<SortKey>([
-  'date-desc', 'date-asc', 'created-desc', 'created-asc', 'name-asc', 'name-desc',
+  'date-desc', 'date-asc', 'created-desc', 'created-asc', 'name-asc', 'name-desc', 'manual',
 ])
 
 function isSessionSortKey(raw: unknown): raw is SortKey {
@@ -49,7 +49,20 @@ export function readLegacySessionSortKey(): SortKey | null {
   return isSessionSortKey(stored) ? stored : null
 }
 
-export type SortKey = 'date-desc' | 'date-asc' | 'created-desc' | 'created-asc' | 'name-asc' | 'name-desc'
+/** `manual` is the person's own drag order, kept on the gateway (each slot row
+ *  carries its place as `manual_rank`). */
+export type SortKey = 'date-desc' | 'date-asc' | 'created-desc' | 'created-asc' | 'name-asc' | 'name-desc' | 'manual'
+
+/** Catalog key per sort option, the label the sort menu shows for it. */
+export const SORT_LABEL_KEY: Record<SortKey, string> = {
+  'date-desc': 'pages.chatSidebar.sort_newest',
+  'date-asc': 'pages.chatSidebar.sort_oldest',
+  'created-desc': 'pages.chatSidebar.sort_created_newest',
+  'created-asc': 'pages.chatSidebar.sort_created_oldest',
+  'name-asc': 'pages.chatSidebar.sort_name_asc',
+  'name-desc': 'pages.chatSidebar.sort_name_desc',
+  manual: 'pages.chatSidebar.sort_manual',
+}
 
 /** The subset of a session either surface needs in order to rank it. Active
  *  slots carry ISO `last_turn_ts` / `last_ts`; history items carry epoch-seconds
@@ -61,6 +74,29 @@ export interface Sortable {
   last_turn_ts?: string
   last_ts?: string
   modified?: number
+  /** Place in the gateway's manual order, or null/absent when it has none. */
+  manual_rank?: number | null
+}
+
+/**
+ * The manual order: sessions with no place first (a new session shows at the
+ * top), newest created first among them, then the placed ones by place. `rank`
+ * reads a session's place; the default reads the row's own `manual_rank`, and
+ * the sidebar passes the order it is drawing, which may be a gesture the
+ * gateway has not answered yet.
+ */
+export function compareManual(
+  a: Sortable,
+  b: Sortable,
+  rank: (item: Sortable) => number | undefined = item => item.manual_rank ?? undefined,
+): number {
+  const ra = rank(a)
+  const rb = rank(b)
+  if (ra === undefined || rb === undefined) {
+    if (ra !== rb) return ra === undefined ? -1 : 1
+    return compareBySort(a, b, 'created-desc')
+  }
+  return ra - rb
 }
 
 /** Settled activity instant of an ACTIVE slot, as the ISO string the backend
@@ -104,6 +140,7 @@ export function lastActivityEpoch(item: Sortable): number {
 
 /** Shared comparator for both active sessions and history items. */
 export function compareBySort(a: Sortable, b: Sortable, key: SortKey): number {
+  if (key === 'manual') return compareManual(a, b)
   if (key === 'name-asc' || key === 'name-desc') {
     // Session titles are free text, so ordering follows the app language:
     // `compareText` is case- and accent-insensitive with numeric collation, so

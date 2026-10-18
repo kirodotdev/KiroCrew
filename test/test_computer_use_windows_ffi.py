@@ -429,7 +429,7 @@ class TestWalkBoundedHonoursItsBudgets:
         import ast
         import pathlib
 
-        source = pathlib.Path(ffi.__file__).read_text(encoding="utf-8")
+        source = pathlib.Path(inspect.getfile(ffi.walk_bounded)).read_text(encoding="utf-8")
         module = ast.parse(source)
         target = next(
             (

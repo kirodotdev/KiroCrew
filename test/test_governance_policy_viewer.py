@@ -436,7 +436,7 @@ class TestScopeAttribution:
         # The fail-safe branch is a separate literal, so it needs its own check —
         # the frontend reads the key unconditionally.
         #
-        # Patch the name BOUND IN THE HANDLER: security.py does `from ... import
+        # Patch the name BOUND IN THE HANDLER: security_governance_policy.py does `from ... import
         # resolve_active_scope`, so patching governance_profiles' own attribute
         # leaves the handler calling the original and the snapshot SUCCEEDS —
         # which would make this test pass vacuously against the success branch.

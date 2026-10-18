@@ -362,7 +362,29 @@ def _url_payload_command(n: int) -> str:
 #: made a text that repeats the header quadratic. 56 lines are the new ``pem_scan`` module
 #: (the spellings and the last-END-marker lookup) and 25 the choice between the two
 #: patterns in ``_credential_search``. No credential branch, match or pass moved.
-_PACKAGE_LINE_BUDGET = 29_573
+#:
+#: Raised again, from 29,573, for the one ``pinned-order`` entry in
+#: ``paths._CREW_SECRET_LEAVES``: the person's pinned-session order is fenced from
+#: agent file tools like ``tag-grants`` beside it.
+#:
+#: Raised again, from 29,574, for the write tier's reason-or-None spelling and the
+#: stall wording that names the stalled prefix and the cooldown left: a
+#: stall still refuses everywhere it did; only the words a refused agent reads moved.
+#: The prefix is named only while its cooldown is open, since most stall raises never
+#: charge it.
+#:
+#: Raised again, from 29,607, for the chat segment save: the link pass can hand
+#: back the addresses it replaced and the credential records take the per-delta
+#: ``defer_token_param``, so the save can check each value a streamed delta's
+#: redaction removed. No matcher moved. Seven more lines rewrite the blocked links
+#: longest first, so a blocked link that prefixes a longer one cannot leave the
+#: longer one's tail in the text.
+#:
+#: Raised again, from 29,623, for ``rm_floor``: the small seatbelt behind the two
+#: recursive-force rm rows (segments from the shared split, words from the shared
+#: ``_shell_tokens``, flags and an exact root/home target) and its gated branch at the
+#: end of ``is_denied``. No pattern moved.
+_PACKAGE_LINE_BUDGET = 29_751
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

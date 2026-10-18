@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from kiro_crew.testing.wait import async_wait_until, await_until
+
 
 @pytest.mark.asyncio
 async def test_watchdog_shuts_down_when_assets_vanish():
@@ -32,9 +34,11 @@ async def test_watchdog_shuts_down_when_assets_vanish():
         side_effect=_mock_assets_present,
     ):
         # Short interval/delay so the test is fast
-        fired = await asyncio.wait_for(
-            run_stale_asset_watchdog(shutdown, interval=0.05, confirm_delay=0.01),
-            timeout=5.0,
+        fired = await await_until(
+            asyncio.ensure_future(
+                run_stale_asset_watchdog(shutdown, interval=0.05, confirm_delay=0.01)
+            ),
+            what="watchdog completed",
         )
 
     assert shutdown.is_set()
@@ -67,9 +71,11 @@ async def test_watchdog_survives_transient_asset_gap():
         "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
         side_effect=_mock_assets_present,
     ):
-        fired = await asyncio.wait_for(
-            run_stale_asset_watchdog(shutdown, interval=0.05, confirm_delay=0.01),
-            timeout=5.0,
+        fired = await await_until(
+            asyncio.ensure_future(
+                run_stale_asset_watchdog(shutdown, interval=0.05, confirm_delay=0.01)
+            ),
+            what="watchdog completed",
         )
 
     # Shutdown was set by the test (normal-shutdown path), not the watchdog:
@@ -105,16 +111,18 @@ async def test_watchdog_drains_in_flight_before_shutdown():
         "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
         side_effect=_mock_assets_present,
     ):
-        await asyncio.wait_for(
-            run_stale_asset_watchdog(
-                shutdown,
-                interval=0.05,
-                confirm_delay=0.01,
-                count_in_flight=_count,
-                drain_timeout=5.0,
-                drain_poll=0.01,
+        await await_until(
+            asyncio.ensure_future(
+                run_stale_asset_watchdog(
+                    shutdown,
+                    interval=0.05,
+                    confirm_delay=0.01,
+                    count_in_flight=_count,
+                    drain_timeout=5.0,
+                    drain_poll=0.01,
+                )
             ),
-            timeout=5.0,
+            what="watchdog completed",
         )
 
     # Shutdown still fired (the prune is permanent) but only after the drain
@@ -141,16 +149,18 @@ async def test_watchdog_drain_respects_timeout():
         "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
         side_effect=_mock_assets_present,
     ):
-        await asyncio.wait_for(
-            run_stale_asset_watchdog(
-                shutdown,
-                interval=0.05,
-                confirm_delay=0.01,
-                count_in_flight=lambda: 3,  # permanently busy
-                drain_timeout=0.1,
-                drain_poll=0.02,
+        await await_until(
+            asyncio.ensure_future(
+                run_stale_asset_watchdog(
+                    shutdown,
+                    interval=0.05,
+                    confirm_delay=0.01,
+                    count_in_flight=lambda: 3,  # permanently busy
+                    drain_timeout=0.1,
+                    drain_poll=0.02,
+                )
             ),
-            timeout=5.0,
+            what="watchdog completed",
         )
 
     assert shutdown.is_set()
@@ -173,16 +183,19 @@ async def test_watchdog_no_drain_when_no_work():
         "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
         side_effect=_mock_assets_present,
     ):
-        await asyncio.wait_for(
-            run_stale_asset_watchdog(
-                shutdown,
-                interval=0.05,
-                confirm_delay=0.01,
-                count_in_flight=lambda: 0,
-                drain_timeout=30.0,  # large: would hang the test if drained
-                drain_poll=0.01,
+        await await_until(
+            asyncio.ensure_future(
+                run_stale_asset_watchdog(
+                    shutdown,
+                    interval=0.05,
+                    confirm_delay=0.01,
+                    count_in_flight=lambda: 0,
+                    drain_timeout=30.0,  # large: would hang the test if drained
+                    drain_poll=0.01,
+                )
             ),
-            timeout=5.0,
+            what="watchdog completed (no drain expected)",
+            timeout=5,
         )
 
     assert shutdown.is_set()
@@ -208,16 +221,19 @@ async def test_watchdog_drain_predicate_failure_does_not_block_shutdown():
         "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
         side_effect=_mock_assets_present,
     ):
-        await asyncio.wait_for(
-            run_stale_asset_watchdog(
-                shutdown,
-                interval=0.05,
-                confirm_delay=0.01,
-                count_in_flight=_boom,
-                drain_timeout=30.0,
-                drain_poll=0.01,
+        await await_until(
+            asyncio.ensure_future(
+                run_stale_asset_watchdog(
+                    shutdown,
+                    interval=0.05,
+                    confirm_delay=0.01,
+                    count_in_flight=_boom,
+                    drain_timeout=30.0,
+                    drain_poll=0.01,
+                )
             ),
-            timeout=5.0,
+            what="watchdog completed (predicate-failure path)",
+            timeout=5,
         )
 
     assert shutdown.is_set()
@@ -234,9 +250,9 @@ async def test_watchdog_does_not_arm_when_assets_never_existed():
         "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
         return_value=False,
     ):
-        await asyncio.wait_for(
-            run_stale_asset_watchdog(shutdown, interval=60),
-            timeout=5.0,
+        await await_until(
+            asyncio.ensure_future(run_stale_asset_watchdog(shutdown, interval=60)),
+            what="watchdog completed (no-arm path)",
         )
 
     # The watchdog returned without setting shutdown — it's not armed.
@@ -256,9 +272,9 @@ async def test_watchdog_exits_cleanly_on_normal_shutdown():
     ):
         # Set shutdown after a brief delay
         asyncio.get_running_loop().call_later(0.05, shutdown.set)
-        fired = await asyncio.wait_for(
-            run_stale_asset_watchdog(shutdown, interval=60),
-            timeout=5.0,
+        fired = await await_until(
+            asyncio.ensure_future(run_stale_asset_watchdog(shutdown, interval=60)),
+            what="watchdog completed (normal shutdown)",
         )
 
     assert shutdown.is_set()
@@ -334,10 +350,10 @@ async def test_real_vanish_task_maps_to_nonzero_exit():
         task = asyncio.create_task(
             run_stale_asset_watchdog(shutdown, interval=0.05, confirm_delay=0.01)
         )
-        await asyncio.wait_for(shutdown.wait(), timeout=5.0)
+        await await_until(shutdown, what="watchdog set shutdown")
         # Mirrors the gateway: the watchdog returns right after setting the
         # event, so by the time the gateway reads the task it is done.
-        await asyncio.wait_for(task, timeout=1.0)
+        await await_until(task, what="watchdog task done")
 
     assert shutdown_exit_code(task) == STALE_ASSET_EXIT_CODE
 
@@ -400,8 +416,10 @@ def test_token_probe_warns_on_stale_dashboard():
 
     stderr_capture = io.StringIO()
 
-    with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp), \
-         patch("sys.stderr", stderr_capture):
+    with (
+        patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp),
+        patch("sys.stderr", stderr_capture),
+    ):
         _probe_dashboard_health(7777)
 
     assert "stale dashboard" in stderr_capture.getvalue()
@@ -419,8 +437,10 @@ def test_token_probe_silent_on_healthy_dashboard():
 
     stderr_capture = io.StringIO()
 
-    with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp), \
-         patch("sys.stderr", stderr_capture):
+    with (
+        patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp),
+        patch("sys.stderr", stderr_capture),
+    ):
         _probe_dashboard_health(7777)
 
     assert stderr_capture.getvalue() == ""
@@ -432,8 +452,10 @@ def test_token_probe_silent_on_network_error():
 
     stderr_capture = io.StringIO()
 
-    with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=OSError("connection refused")), \
-         patch("sys.stderr", stderr_capture):
+    with (
+        patch("kiro_crew.cli_server.loopback_urlopen", side_effect=OSError("connection refused")),
+        patch("sys.stderr", stderr_capture),
+    ):
         _probe_dashboard_health(7777)
 
     assert stderr_capture.getvalue() == ""
@@ -481,16 +503,18 @@ async def test_watchdog_survives_asset_gap_that_heals_while_draining(caplog):
         "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
         side_effect=_mock_assets_present,
     ):
-        await asyncio.wait_for(
-            run_stale_asset_watchdog(
-                shutdown,
-                interval=0.05,
-                confirm_delay=0.01,
-                count_in_flight=_count_in_flight,
-                drain_timeout=5.0,
-                drain_poll=0.01,
+        await await_until(
+            asyncio.ensure_future(
+                run_stale_asset_watchdog(
+                    shutdown,
+                    interval=0.05,
+                    confirm_delay=0.01,
+                    count_in_flight=_count_in_flight,
+                    drain_timeout=5.0,
+                    drain_poll=0.01,
+                )
             ),
-            timeout=5.0,
+            what="watchdog completed",
         )
 
     assert pending == 0, "the drain must have actually run"
@@ -499,9 +523,9 @@ async def test_watchdog_survives_asset_gap_that_heals_while_draining(caplog):
     assert checks >= 5
     # A run that heals must not have announced a shutdown it then abandoned:
     # the CRITICAL belongs after the post-drain re-check, not before the drain.
-    assert not [r for r in caplog.records if r.levelno >= logging.CRITICAL], (
-        "healed run logged a misleading graceful-shutdown CRITICAL"
-    )
+    assert not [
+        r for r in caplog.records if r.levelno >= logging.CRITICAL
+    ], "healed run logged a misleading graceful-shutdown CRITICAL"
 
 
 # --- update stand-down ------------------------------------------------------------
@@ -532,7 +556,10 @@ async def _run(shutdown, **kwargs):
 
     kwargs.setdefault("interval", 0.01)
     kwargs.setdefault("confirm_delay", 0.01)
-    return await asyncio.wait_for(run_stale_asset_watchdog(shutdown, **kwargs), timeout=5.0)
+    return await await_until(
+        asyncio.ensure_future(run_stale_asset_watchdog(shutdown, **kwargs)),
+        what="watchdog completed",
+    )
 
 
 def _records(caplog, *, level=None, text=None):
@@ -622,10 +649,13 @@ async def test_a_step_live_at_arm_time_is_waited_out_then_the_watchdog_arms():
     def _owner():
         return "the policy apply command" if reads["n"] < 3 else None
 
-    with patch(
-        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
-        side_effect=_assets_present,
-    ), _owner_is(_owner):
+    with (
+        patch(
+            "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+            side_effect=_assets_present,
+        ),
+        _owner_is(_owner),
+    ):
         fired = await _run(shutdown)
 
     assert fired is True
@@ -647,10 +677,13 @@ async def test_a_gap_a_boot_time_step_leaves_behind_arms_the_watchdog(caplog):
         owner_reads["n"] += 1
         return "the policy apply command" if owner_reads["n"] <= 2 else None
 
-    with patch(
-        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
-        return_value=False,
-    ), _owner_is(_owner):
+    with (
+        patch(
+            "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+            return_value=False,
+        ),
+        _owner_is(_owner),
+    ):
         fired = await _run(shutdown)
 
     assert fired is True
@@ -670,7 +703,7 @@ async def test_a_restart_into_an_update_is_not_raced(caplog):
     @update_ownership.owning(update_ownership.Step.RESTART)
     async def _restart():
         # The teardown: wait until the watchdog has looked at the gap at least once.
-        await asyncio.wait_for(teardown_seen.wait(), timeout=5.0)
+        await await_until(teardown_seen, what="watchdog saw teardown")
         shutdown.set()  # stands for the exec
 
     async def _apply_then_restart():
@@ -690,7 +723,9 @@ async def test_a_restart_into_an_update_is_not_raced(caplog):
 
     with _gap(), _owner_is(_owner):
         watchdog = asyncio.ensure_future(_run(shutdown))
-        await asyncio.wait_for(_apply_then_restart(), timeout=5.0)
+        await await_until(
+            asyncio.ensure_future(_apply_then_restart()), what="apply_then_restart done"
+        )
         fired = await watchdog
 
     assert fired is False
@@ -717,7 +752,7 @@ async def test_a_step_wedged_past_its_maximum_no_longer_holds_the_watchdog(caplo
 
     restart = asyncio.ensure_future(_wedged_restart())
     try:
-        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        await await_until(entered, what="wedged restart entered")
         with _gap():
             fired = await _run(shutdown)
     finally:
@@ -726,7 +761,9 @@ async def test_a_step_wedged_past_its_maximum_no_longer_holds_the_watchdog(caplo
 
     assert fired is True
     assert [
-        r for r in caplog.records if r.name == "kiro_crew.update_ownership" and "maximum" in r.getMessage()
+        r
+        for r in caplog.records
+        if r.name == "kiro_crew.update_ownership" and "maximum" in r.getMessage()
     ]
 
 
@@ -764,8 +801,9 @@ async def _run_until(shutdown, done: asyncio.Event, **kwargs):
     task = asyncio.ensure_future(_run(shutdown, **kwargs))
     fired = asyncio.ensure_future(done.wait())
     try:
-        await asyncio.wait_for(
-            asyncio.wait({task, fired}, return_when="FIRST_COMPLETED"), timeout=5.0
+        await async_wait_until(
+            lambda: done.is_set() or task.done(),
+            describe=lambda: "neither done event set nor watchdog finished",
         )
     finally:
         shutdown.set()
@@ -1010,7 +1048,9 @@ async def test_an_update_that_stayed_up_keeps_a_managed_gateway_up_without_a_che
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("standing", [False, True], ids=["first-gap", "lifting-a-refusal"])
-async def test_a_refusal_recorded_during_the_drain_is_seen_before_the_signal(caplog, standing, managed):
+async def test_a_refusal_recorded_during_the_drain_is_seen_before_the_signal(
+    caplog, standing, managed
+):
     """Read with no await before the signal, even right after a refusal was lifted."""
     from kiro_crew import update_ownership
 
@@ -1147,8 +1187,12 @@ async def test_a_turn_admitted_during_the_check_is_drained_before_the_signal():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reentry_check", [None, lambda: _verdict("REENTERABLE")], ids=["no-check", "check"])
-async def test_a_wedged_turn_holds_the_signal_for_one_drain_budget_not_two(monkeypatch, reentry_check):
+@pytest.mark.parametrize(
+    "reentry_check", [None, lambda: _verdict("REENTERABLE")], ids=["no-check", "check"]
+)
+async def test_a_wedged_turn_holds_the_signal_for_one_drain_budget_not_two(
+    monkeypatch, reentry_check
+):
     """The drain after the check gets what the first drain left, nothing more."""
     from kiro_crew.dashboard import stale_asset_watchdog
 

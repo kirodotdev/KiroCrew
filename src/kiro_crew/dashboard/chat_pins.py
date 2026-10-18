@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from aiohttp import web
 
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.slot_ownership import slot_not_found
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -30,13 +31,15 @@ def _authorize_app_slot(
     slot_key: str,
     operation: str,
     *,
-    missing_code: str = "slot_not_found",
+    missing_code: str | None = None,
 ) -> web.Response | None:
     """Deny app tokens access to unscoped or foreign chat slots.
 
     Dashboard callers have no app claim and retain owner-wide access. App
     callers receive an indistinguishable 404 so they cannot enumerate slots
-    owned by the dashboard or another app (App Kit §5.2 / CWE-204).
+    owned by the dashboard or another app (App Kit §5.2 / CWE-204). The denial
+    is ``slot_not_found()`` unless ``missing_code`` names the caller's own
+    not-found code, so a pin-id route keeps answering like a missing pin.
     """
     request_app = request.get("app", "")
     if not request_app:
@@ -64,6 +67,8 @@ def _authorize_app_slot(
         resources=f"slot={slot_key}",
         error=reason,
     )
+    if missing_code is None:
+        return slot_not_found()
     return web.json_response({"error": "not found", "code": missing_code}, status=404)
 
 

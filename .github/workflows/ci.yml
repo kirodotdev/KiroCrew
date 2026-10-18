@@ -1736,6 +1736,7 @@ jobs:
             test/test_script_hooks.py \
             test/test_cron_script.py \
             test/test_snapshot_read_only_real_view.py \
+            test/test_pinned_order_real_sandbox.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py \
@@ -2896,11 +2897,12 @@ jobs:
       - name: Install dependencies
         working-directory: website/electron
         # Belt-and-braces: this pin currently downloads no Electron binary
-        # anyway (electron 43's package ships no install script), so the var is
-        # inert today — it is set so a future version that reintroduces the
-        # ~100MB postinstall download cannot silently slow this job down. The
-        # tests require() only main-process modules and the stdlib test runner,
-        # so the binary is never needed.
+        # anyway (the electron package ships no install script — still true of
+        # the pinned 44.x, checked with `npm view electron@<ver> scripts`), so
+        # the var is inert today — it is set so a future version that
+        # reintroduces the ~100MB postinstall download cannot silently slow
+        # this job down. The tests require() only main-process modules and the
+        # stdlib test runner, so the binary is never needed.
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: npm ci --no-audit --no-fund

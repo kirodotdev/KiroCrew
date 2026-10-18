@@ -8,7 +8,7 @@ choice is a separate field, `agent.acp_backend`. The public baseline currently
 selects kiro-cli (`ACP_BACKEND_KIRO`, the empty string), Claude, KAS, Codex,
 OpenCode, Pi, goose and DeepSeek -- every id in `ACP_BACKENDS_KNOWN`. DeepSeek is
 selectable because Crew's gate plugin routes its tool calls through the host
-permission gate (`Routing.VERIFIED_GATE_EXTENSION`, `agent_sdk/backends.py`).
+permission gate (`Routing.VERIFIED_GATE_EXTENSION`, `agent_sdk/backends_routing.py`).
 `test_baseline_ships_every_known_backend` pins the baseline as
 `ACP_BACKENDS_KNOWN - NOT_SHIPPED_SELECTABLE`, where `NOT_SHIPPED_SELECTABLE` is a
 test-side set of known-but-unshipped ids, not a product allowlist; it is empty.
@@ -83,6 +83,17 @@ Both operator-facing surfaces read that one verdict:
   `hides a backend the deployment may not select, rather than dimming it`,
   `keeps the current backend listed even if it reads as unselectable` and
   `saves the Claude Code selection the shipped build offers`.
+
+### Stale cloud credentials
+
+When the adapter answers a prompt with `data.errorKind: cloud_credential_error`
+(Bedrock credentials the process cached can no longer be loaded), every turn
+surface recycles the process once and replays the turn, the same way it
+recovers a lost session; if the fresh process fails too, the give-up line shows
+the provider's own remedy. See the Lost backend session entry in
+[error handling](../common/error-handling.md). The trigger is the provider's
+`errorKind`, not a harness check, so any backend that emits that kind is
+recycled the same way.
 
 ### What Crew gates on this harness, and what a pre-approval skips
 

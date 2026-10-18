@@ -1011,7 +1011,7 @@ def _ensure_crew_log_root(home: Path, restrict: Callable[[Path], None]) -> None:
         # every crew log path beneath it would pass while living outside this tree.
         # Establishing them here is what the argument above makes for the root --
         # a name that does not exist has no mode to inherit and is skipped by the
-        # sandbox mask. The names are the spellings ``crew_log/store.py::_ROOT_DIR``
+        # sandbox mask. The names are the spellings ``crew_log/store_paths.py::_ROOT_DIR``
         # maps its kinds to; this module imports no ``kiro_crew`` package at module
         # scope, so they are stated rather than read.
         for leaf in ("crews", "sessions"):
@@ -1202,7 +1202,7 @@ def kiro_home() -> Path:
     WHOLE user directory (agents, prompts, skills, steering, settings, sessions),
     but KiroCrew currently resolves the host ``~/.kiro`` for most of those readers
     (session transcripts in ``session_map.py`` / ``acp/*`` / ``providers/acp_*.py``
-    / ``dashboard/handlers/usage.py``, and the ``settings/mcp.json`` registry).
+    / ``dashboard/handlers/usage_sessions.py``, and the ``settings/mcp.json`` registry).
     Setting ``KIRO_HOME`` therefore moves where kiro-cli WRITES sessions without
     moving where KiroCrew READS them, which breaks session resume. Only the agents
     directory follows it today, so this is not yet a supported way to isolate an

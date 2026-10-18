@@ -8,7 +8,7 @@ under ``/api/apps/<name>``). The MCP server process holds the internal secret;
 the agent never sees a credential. Four planes must stay mutually consistent, and
 each has a failure mode this module pins:
 
-- the **schema** in ``validation.py`` — field types/lengths and ``status``
+- the **schema** in ``validation_parts/app_schemas.py`` — field types/lengths and ``status``
   restricted to the one forward-progress value. The id grammar and the
   ``text or status`` rule are the backend's (``_h_thread``), not restated
   here, so this module does not test the schema for them;

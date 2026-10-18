@@ -120,7 +120,13 @@ function mountControllable(onClose = vi.fn()) {
 const rowByText = (text: string) =>
   screen.getByText(text).closest('[role="option"]') as HTMLElement
 
-/** Mirrors the overlay's own query debounce (CommandBarOverlay.tsx DEBOUNCE_MS).
+/** The overlay's whole source: the facade and every owner beside it, the file
+ *  family `CommandBarOverlay.owners.test.tsx` pins. */
+const overlaySource = () =>
+  readdirSync(__dirname).filter(f => /^(?:use)?[Cc]ommandBarOverlay\w*\.tsx?$/.test(f)).sort()
+    .map(f => readFileSync(path.join(__dirname, f), 'utf-8')).join('\n')
+
+/** Mirrors the overlay's own query debounce (commandBarOverlayModel.ts DEBOUNCE_MS).
  *  The latch-close/pointer tests advance a fake clock by this to settle the
  *  debounced refetch deterministically instead of waiting on wall-clock time. */
 const DEBOUNCE_MS = 150
@@ -417,10 +423,7 @@ describe('CommandBarOverlay rows', () => {
     // install merely opening the root issued listInstances(). The provider is now
     // constructed inert and activated by entering the scope, and the assertion is on
     // the call site because the leak was the construction, not the search.
-    const src = readFileSync(
-      path.join(__dirname, 'CommandBarOverlay.tsx'),
-      'utf-8',
-    )
+    const src = overlaySource()
     expect(src).toContain("useSessionsProvider({ active: scope === 'sessions' })")
     expect(src).not.toMatch(/useSessionsProvider\(\{\s*\}\)/)
   })
@@ -466,10 +469,7 @@ describe('CommandBarOverlay rows', () => {
     // What it paints is a NEUTRAL hairline. An accent ring around the one element
     // that is always focused was the loudest thing on a surface whose visual weight
     // is supposed to sit on the selected row.
-    const src = readFileSync(
-      path.join(__dirname, 'CommandBarOverlay.tsx'),
-      'utf-8',
-    )
+    const src = overlaySource()
     expect(src).toContain("rowCount === 0 ? ' focus-visible:ring-1 focus-visible:ring-border-strong' : ''")
     expect(src).not.toContain('focus-visible:ring-accent/40\' : \'\'')
     // Unconditional forms are what produced the permanent box.
@@ -491,7 +491,7 @@ describe('CommandBarOverlay rows', () => {
     expect(rowByText('Toggle Theme').textContent).toContain('Command')
     // The arrow needs a slot on EVERY row: rendered inline it pushed a `view` row's
     // label left by its own width and the labels stopped sharing a right edge.
-    const src = readFileSync(path.join(__dirname, 'CommandBarOverlay.tsx'), 'utf-8')
+    const src = overlaySource()
     expect(src).toContain('shrink-0 w-[13px] flex justify-end')
   })
 
@@ -881,7 +881,7 @@ describe('CommandBarOverlay rows', () => {
     expect(new Set(glyphs).size).toBe(3)
     // App rows resolve through the SAME chain the rail and the palette use; a second
     // copy of it is how one surface silently falls through to the generic outline.
-    const src = readFileSync(path.join(__dirname, 'CommandBarOverlay.tsx'), 'utf-8')
+    const src = overlaySource()
     expect(src).toContain('icon: appIcon(target)')
   })
 
@@ -889,7 +889,7 @@ describe('CommandBarOverlay rows', () => {
     // Same leak class as the sessions provider: a listing engine that fetches on
     // construction would put a request behind merely opening the root, which is the
     // one thing this surface promises not to do.
-    const src = readFileSync(path.join(__dirname, 'CommandBarOverlay.tsx'), 'utf-8')
+    const src = overlaySource()
     expect(src).toContain('enabled: listingArmed')
     expect(src).toMatch(/const listingArmed = scope === 'sessions' && !searchArmed/)
   })
@@ -1089,7 +1089,7 @@ describe('CommandBarOverlay rows', () => {
     // a long tool name collapsed the title on a 320px viewport, inverting that. Only
     // the pill and the dot stay unshrinkable -- they are the signal and a few pixels
     // wide -- and the detail drops outright below the `sm` breakpoint.
-    const src = readFileSync(path.join(__dirname, 'CommandBarOverlay.tsx'), 'utf-8')
+    const src = overlaySource()
     const accessory = src.slice(src.indexOf('function statusAccessory'))
     const body = accessory.slice(0, accessory.indexOf('\n}\n'))
     expect(body).not.toMatch(/shrink-0 flex items-center/)
@@ -1216,7 +1216,7 @@ describe('CommandBarOverlay rows', () => {
     // a 1440 screen, which is the one thing that column exists to prevent. The
     // entrance is the shell's standard scale-in because a launcher that hard-cuts into
     // place reads as a repaint rather than as a surface arriving.
-    const src = readFileSync(path.join(__dirname, 'CommandBarOverlay.tsx'), 'utf-8')
+    const src = overlaySource()
     expect(src).toContain('max-w-[680px]')
     expect(src).not.toContain('max-w-xl')
     expect(src).toContain('animate-scale-in')

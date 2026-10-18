@@ -1,0 +1,41 @@
+{
+ "base_public_names": [
+  "APP_NAME",
+  "AWSError",
+  "Handler",
+  "JobError",
+  "LoopBoundLock",
+  "UnknownJobKind",
+  "accounts_mod",
+  "aws_consent",
+  "backup_mod",
+  "costs_mod",
+  "deploy_profiles",
+  "get_job_sdk",
+  "is_app_enabled",
+  "is_owner_dashboard_request",
+  "library_mod",
+  "logger",
+  "publish_denied_reason",
+  "redact_credentials",
+  "redact_exfiltration_urls",
+  "register_routes",
+  "sel",
+  "shares_mod",
+  "storage_mod"
+ ],
+ "note": "Frozen at the split into routes_parts owners; register_routes stays defined here.",
+ "rebound": {
+  "AWSError": "kiro_crew.deploy.engine",
+  "JobError": "kiro_crew.apps.job_sdk",
+  "LoopBoundLock": "kiro_crew.loop_lock",
+  "UnknownJobKind": "kiro_crew.apps.job_sdk",
+  "aws_consent": "kiro_crew",
+  "is_app_enabled": "kiro_crew.apps.manager",
+  "is_owner_dashboard_request": "kiro_crew.dashboard.handlers.source_providers",
+  "publish_denied_reason": "kiro_crew.publish_governance",
+  "redact_credentials": "kiro_crew.security",
+  "redact_exfiltration_urls": "kiro_crew.security",
+  "sel": "kiro_crew.sel"
+ }
+}

@@ -105,7 +105,7 @@ def _make_request(
         """Mock delete_session returning canned values per key.
 
         The skip_pinned invariant (pinned/unreadable/raising -> None) is
-        already tested by 4 real-lock tests in test_history.py. Here we
+        already tested by 4 real-lock tests in test_history_retention.py. Here we
         just return canned values so api_sessions_clear's counting is
         exercised.
         """

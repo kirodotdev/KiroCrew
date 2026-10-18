@@ -3409,7 +3409,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    squares (the min-width matches the height); labeled buttons keep their
    padding-driven width. The version select is a Radix trigger inside a
    wrapper div, so this selector cannot reach it -- it takes the same 32px
-   through its own className (TOOLBAR_SELECT_CLASS in ArtifactDetailPage). A
+   through its own className (TOOLBAR_SELECT_CLASS in ArtifactDetailPageHeader). A
    button wrapped in HoverTip (`[data-hover-tip]`) is one level deeper and is
    matched explicitly. */
 .mc-art-toolbar > button,

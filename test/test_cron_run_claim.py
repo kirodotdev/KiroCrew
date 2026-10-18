@@ -35,6 +35,7 @@ from test_cron_reaper import (
 from kiro_crew import cron_script, platform_compat
 from kiro_crew.cron import _JOB_TIMEOUT_SECS, CronJob, CronSchedule, CronService, _RunClaim
 from kiro_crew.cron_history import CronHistoryStore
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture(autouse=True)
@@ -304,7 +305,7 @@ class TestASecondTeardownLeavesTheFirstAlone:
 
         with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"):
             first = asyncio.get_running_loop().create_task(svc.cancel("j1"))
-            await asyncio.wait_for(parked.wait(), timeout=5)
+            await await_until(parked, what="parked")
             assert claim.taken and svc._claims["j1"] is claim
             assert claim.cancelled
 
@@ -321,7 +322,7 @@ class TestASecondTeardownLeavesTheFirstAlone:
             assert resets == 1
 
             release.set()
-            assert await asyncio.wait_for(first, timeout=5) is True
+            assert await await_until(first, what="first cancel") is True
 
         assert "j1" not in svc._claims
         task.cancel.assert_called_once()
@@ -454,7 +455,7 @@ class TestAnAbortedTeardownStillFinishesItsClaim:
 
         with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"):
             handler = asyncio.get_running_loop().create_task(svc.cancel("j1"))
-            await asyncio.wait_for(parked.wait(), timeout=5)
+            await await_until(parked, what="parked")
             assert claim.taken and svc._claims["j1"] is claim
             handler.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -575,7 +576,7 @@ class TestTheSweepReapsOnlyTheClaimItMeasured:
         caplog.set_level(logging.WARNING, logger="kiro_crew.cron")
         with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"), _one_sweep():
             sweep = asyncio.get_running_loop().create_task(svc._reaper_loop())
-            await asyncio.wait_for(parked.wait(), timeout=5)
+            await await_until(parked, what="parked")
             assert claim_a.taken and svc._claims["j1"] is claim_a
             # While job A's reap awaits its reset, job B's run ends on its own
             # and the due-scan claims the job again: a fresh run, seconds old.
@@ -586,7 +587,7 @@ class TestTheSweepReapsOnlyTheClaimItMeasured:
             replacement.task = _live_task()
             release.set()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(sweep, timeout=5)
+                await await_until(sweep, what="sweep")
 
         assert (
             svc._claims.get("j2") is replacement

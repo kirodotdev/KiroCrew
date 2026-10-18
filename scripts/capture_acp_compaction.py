@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive a harness through ``/compact`` and MEASURE whether its context shrank.
 
-``ACP_BACKENDS_COMPACT`` in ``src/kiro_crew/agent_sdk/backends.py`` admits a harness
+``ACP_BACKENDS_COMPACT`` in ``src/kiro_crew/agent_sdk/backends_turns.py`` admits a harness
 on a DRIVEN capture rather than on its source: the bar opencode and goose met is a live
 session whose ``usage_update.used`` was seen to fall below its pre-compact peak. pi
 finishes a compaction inline according to its own code and is not a member, because

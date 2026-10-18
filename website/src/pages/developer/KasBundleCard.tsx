@@ -72,7 +72,7 @@ export function KasBundleCard() {
     // The same recovery the tab offers when its own config read fails: a read
     // that failed once is not a dead end, and a page reload is not the remedy.
     return statusQ.isError ? (
-      <div className="space-y-2 pt-2 border-t border-border" data-testid="kas-bundle-card">
+      <div className="space-y-2" data-testid="kas-bundle-card">
         <ErrorNotice
           message={i18nT('pages.developer.kasBundleCard.status_unavailable')}
           variant="inline"
@@ -99,7 +99,7 @@ export function KasBundleCard() {
       : i18nT('pages.developer.kasBundleCard.installing', { version: status.runs_version })
 
   return (
-    <div className="space-y-2 pt-2 border-t border-border" data-testid="kas-bundle-card">
+    <div className="space-y-2" data-testid="kas-bundle-card">
       <div className="flex flex-wrap items-center gap-2">
         <div className="min-w-0 flex-1">
           <SettingsToggle
@@ -111,7 +111,12 @@ export function KasBundleCard() {
             disabled={toggleMut.isPending || (!status.enabled && !canTurnOn)}
           />
         </div>
-        <SchemaRestartBadge configKey={KAS_BUNDLE_CONFIG_KEY} />
+        {/* Its own notice below says what is pending once a save lands, so the
+            generic pill is hidden then. Hidden in place, not unmounted: the row
+            keeps its width and the switch does not move under the pointer. */}
+        <span className={restartPending ? 'invisible' : undefined} aria-hidden={restartPending || undefined} data-testid="kas-bundle-restart-pill">
+          <SchemaRestartBadge configKey={KAS_BUNDLE_CONFIG_KEY} />
+        </span>
       </div>
 
       {restartPending && (
@@ -133,11 +138,13 @@ export function KasBundleCard() {
           </>
         ) : installed ? (
           <>
-            {/* Green only while the engine is what runs: under an OFF switch a green
-                tick beside "not used" reads as two answers to one question. */}
+            {/* Green only while the engine is what runs: under an OFF switch, or
+                after a save the gateway has not restarted onto yet, a green tick
+                says "running" before it is true. */}
             <CheckCircle2
-              className={`lucide-inline ${status.enabled ? 'text-ok' : 'text-muted'}`}
+              className={`lucide-inline ${status.enabled && !restartPending ? 'text-ok' : 'text-muted'}`}
               aria-hidden="true"
+              data-testid="kas-bundle-installed-tick"
             />
             <span>
               {installed.bundled

@@ -38,7 +38,7 @@ async def api_chat_slot_summary(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
 
     # App ownership check (App Kit §5.2), mirroring api_chat_slot_delete: a
     # summary is derived conversation content, so a slot merely existing must
@@ -141,7 +141,7 @@ async def api_chat_slot_summary_generate(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
 
     # Same App Kit §5.2 isolation as the GET: generating is strictly more
     # privileged than reading, so it can never be the laxer of the two.

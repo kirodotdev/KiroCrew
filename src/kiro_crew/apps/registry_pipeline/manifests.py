@@ -375,7 +375,10 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
 #
 # Display fields are deliberately ABSENT: they come from the fetched
 # ``app.json`` below, so an index cannot publish display copy for an app whose
-# manifest says otherwise. Install-status and trust fields are also absent —
+# manifest says otherwise. The one exception is ``version`` on an external row,
+# which the index may RAISE after this merge (``_append_external_registry_apps``)
+# because an installed app's manifest is read from its own installed checkout.
+# Install-status and trust fields are also absent —
 # ``_enrich_with_install_status`` and ``_apply_trust_fields`` run after this
 # and stamp them server-side.
 

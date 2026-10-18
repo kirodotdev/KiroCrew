@@ -665,6 +665,54 @@ class TestLogout:
         assert json.loads(resp.body)["error"] == "invalid secret"
 
     @pytest.mark.asyncio
+    async def test_unix_peer_match_is_admitted_and_revokes(self, monkeypatch, fake_sel) -> None:
+        """A kernel-verified same-principal AF_UNIX peer is admitted.
+
+        `kirocrew logout` reaches the gateway over the owner-only unix socket,
+        where ``request.remote`` is EMPTY -- the loopback test alone would 403
+        the transport. The positive `check_peer_is_self` MATCH (plus the
+        unchanged secret) must revoke, like /api/token/local.
+        """
+        from kiro_crew.mcp_gateway.socketsec import PeerCredResult
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: False)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.token_auth.request_is_unix_socket", lambda _r: True
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.core.check_peer_is_self",
+            lambda _s: PeerCredResult.MATCH,
+        )
+        revoke = MagicMock()
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions", revoke)
+        resp = await core_mod.api_logout(
+            _req(remote="", app={"local_secret": "right"}, headers={"X-Local-Secret": "right"})
+        )
+        assert resp.status == 200
+        assert json.loads(resp.body) == {"ok": True}
+        revoke.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_unix_peer_mismatch_is_refused(self, monkeypatch, fake_sel) -> None:
+        """A foreign-principal AF_UNIX peer is refused before the secret, so the
+        unix admission cannot widen the gate beyond a same-user caller."""
+        from kiro_crew.mcp_gateway.socketsec import PeerCredResult
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: False)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.token_auth.request_is_unix_socket", lambda _r: True
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.core.check_peer_is_self",
+            lambda _s: PeerCredResult.MISMATCH,
+        )
+        resp = await core_mod.api_logout(
+            _req(remote="", app={"local_secret": "right"}, headers={"X-Local-Secret": "right"})
+        )
+        assert resp.status == 403
+        assert json.loads(resp.body)["error"] == "loopback only"
+
+    @pytest.mark.asyncio
     async def test_revocation_persist_failure_reports_a_coded_error(
         self, monkeypatch, fake_sel
     ) -> None:
@@ -695,6 +743,53 @@ class TestLogout:
         assert json.loads(resp.body) == {"ok": True}
         revoke.assert_called_once()
         assert fake_sel.log_api_access.call_args.kwargs["outcome"] == "success"
+
+
+class TestShutdownUnixPeer:
+    """``POST /api/shutdown`` admits a kernel-attested same-user AF_UNIX peer.
+
+    ``kirocrew stop``'s authenticated fallback sends over the owner-only
+    socket when it exists, where ``request.remote`` is EMPTY; the
+    loopback test alone would 403 it. The secret check is unchanged.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unix_peer_match_is_admitted(self, monkeypatch, fake_sel) -> None:
+        from kiro_crew.mcp_gateway.socketsec import PeerCredResult
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: False)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.token_auth.request_is_unix_socket", lambda _r: True
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.core.check_peer_is_self",
+            lambda _s: PeerCredResult.MATCH,
+        )
+        event = MagicMock()
+        monkeypatch.setattr("kiro_crew.shutdown_event", event)
+        resp = await core_mod.api_shutdown(
+            _req(remote="", app={"local_secret": "right"}, headers={"X-Local-Secret": "right"})
+        )
+        assert resp.status == 200
+        assert json.loads(resp.body) == {"ok": True, "shutting_down": True}
+
+    @pytest.mark.asyncio
+    async def test_unix_peer_mismatch_is_refused(self, monkeypatch, fake_sel) -> None:
+        from kiro_crew.mcp_gateway.socketsec import PeerCredResult
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: False)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.token_auth.request_is_unix_socket", lambda _r: True
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.core.check_peer_is_self",
+            lambda _s: PeerCredResult.MISMATCH,
+        )
+        resp = await core_mod.api_shutdown(
+            _req(remote="", app={"local_secret": "right"}, headers={"X-Local-Secret": "right"})
+        )
+        assert resp.status == 403
+        assert json.loads(resp.body)["error"] == "loopback only"
 
 
 class TestAppSecretExchange:

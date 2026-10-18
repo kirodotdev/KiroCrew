@@ -472,7 +472,7 @@ class OpenCodeMirror(AgentConfigMirror):
                 "into a per-tool `deny` rule in the harness's own `permission` "
                 "config, which Crew already seeds on OPENCODE_CONFIG_CONTENT for the "
                 'permission routing: `{"*": "ask", "<server>_<tool>": '
-                '"deny"}`, the tool id spelled the way the harness names an MCP '
+                '{"*": "deny"}}`, the tool id spelled the way the harness names an MCP '
                 "tool (opencode_tool_id). Measured on opencode 1.18.30, the rule "
                 "removes that one tool from the model's tool list, while the server's "
                 "other tools stay listed and still ask per call -- so a narrowed "

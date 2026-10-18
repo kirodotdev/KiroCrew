@@ -257,7 +257,7 @@ function SlotPopover({ slotKey, slots, filled, anchorRect, onSelectFile, onUseSa
     // Escape is REQUIRED here, not a nicety: the shared contract contains Tab
     // inside the menu (#2533), so without an explicit dismissal a keyboard user
     // who opened this popover would be TRAPPED cycling its rows. Escape plus
-    // focus-restore-to-opener mirrors MenuBtn's posture (DevFleetPage), and the
+    // focus-restore-to-opener mirrors MenuBtn's posture (DevFleetPageMenus.tsx), and the
     // restore matters because the row that holds focus is about to unmount.
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return

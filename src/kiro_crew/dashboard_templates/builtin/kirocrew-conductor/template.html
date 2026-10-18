@@ -154,7 +154,10 @@
       }
       function applyStatic() {
         var nodes = document.querySelectorAll('[data-i18n]');
-        for (var i = 0; i < nodes.length; i++) nodes[i].textContent = i18n(nodes[i].getAttribute('data-i18n'));
+        for (var i = 0; i < nodes.length; i++) {
+          var value = i18n(nodes[i].getAttribute('data-i18n'));
+          if (nodes[i].textContent !== value) nodes[i].textContent = value;
+        }
       }
 
       function text(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
@@ -218,10 +221,13 @@
         return b;
       }
 
+      // Refill events can carry an unchanged action list. Keep that subtree so a
+      // timestamp-only refresh cannot restart its warning glow.
+      var youSignature = null;
+
       function drawYou(list) {
         var host = document.getElementById('cb-you');
         if (!host) return;
-        host.textContent = '';
         var said = Array.isArray(bag().needs_you) ? bag().needs_you.filter(function (x) { return !!text(x); }) : [];
         // A task the conductor already wrote a line about is not listed again.
         var asking = list.filter(function (it) {
@@ -229,7 +235,16 @@
           var title = text(it.title);
           return !(title && said.some(function (s) { return s.indexOf(title) !== -1; }));
         });
+        var signature = JSON.stringify({
+          locale: locale(), said: said, asking: asking.map(function (it) {
+            return [it.item_id, it.title, it.status, it.reason, it.summary];
+          })
+        });
+        if (signature === youSignature) return;
+        youSignature = signature;
+        host.textContent = '';
         if (!said.length && !asking.length) { host.appendChild(el('p', 'calm', i18n('calm'))); return; }
+        // Rebuilding this node means the request set changed, so its glow is new.
         var band = el('div', 'band');
         var k = el('span', 'k', i18n('needs_you'));
         if (said.length && written('needs_you')) k.appendChild(el('span', 'tag', i18n('wrote')));
@@ -265,7 +280,6 @@
       function drawMeter(list) {
         var host = document.getElementById('cb-meter');
         if (!host) return;
-        host.textContent = '';
         var done = 0, run = 0, review = 0;
         for (var i = 0; i < list.length; i++) {
           var t = tone(list[i])[0];
@@ -279,90 +293,161 @@
         // forgot, the way goal-board counts them. `omitted` counts dropped log
         // ENTRIES, not tasks, so it is not added.
         var total = list.length + gone.items;
-        var row = el('div', 'row');
-        row.appendChild(el('b', null, i18n('done_of', { d: done, n: total })));
-        row.appendChild(el('span', null, i18n('running', { n: run }) +
-          (review ? ' \u00b7 ' + i18n('reviewing', { n: review }) : '')));
-        host.appendChild(row);
-        if (!total) return;
-        var track = el('div', 'track');
-        track.setAttribute('role', 'progressbar');
-        track.setAttribute('aria-label', i18n('done_of', { d: done, n: total }));
+        var doneText = i18n('done_of', { d: done, n: total });
+        var runText = i18n('running', { n: run }) +
+          (review ? ' \u00b7 ' + i18n('reviewing', { n: review }) : '');
+        var row = host.querySelector('.row');
+        if (!row) {
+          row = el('div', 'row');
+          row.appendChild(el('b'));
+          row.appendChild(el('span'));
+          host.appendChild(row);
+        }
+        if (row.children[0].textContent !== doneText) row.children[0].textContent = doneText;
+        if (row.children[1].textContent !== runText) row.children[1].textContent = runText;
+        var track = host.querySelector('.track');
+        if (!total) {
+          if (track) track.remove();
+          return;
+        }
+        var freshTrack = false;
+        if (!track) {
+          freshTrack = true;
+          track = el('div', 'track');
+          track.setAttribute('role', 'progressbar');
+          track.appendChild(el('div', 'fill'));
+          host.appendChild(track);
+        }
+        track.setAttribute('aria-label', doneText);
         track.setAttribute('aria-valuemin', '0');
         track.setAttribute('aria-valuemax', String(total));
         track.setAttribute('aria-valuenow', String(done));
-        var fill = el('div', 'fill');
-        track.appendChild(fill);
-        host.appendChild(track);
+        var fill = track.querySelector('.fill');
         var pct = (done / total * 100).toFixed(2) + '%';
-        // Set after first paint so the width eases in; reduced motion jumps there.
-        requestAnimationFrame(function () { requestAnimationFrame(function () { fill.style.width = pct; }); });
+        if (freshTrack) {
+          // Keep the useful first-paint ease. Reduced motion disables its transition.
+          requestAnimationFrame(function () { requestAnimationFrame(function () { fill.style.width = pct; }); });
+        } else {
+          // The fill stays mounted. A real progress change eases from its old width;
+          // an unchanged refill never jumps back to zero first.
+          fill.style.width = pct;
+        }
       }
 
       // The conductor's last panel_publish, from its OWN record. A page that shows
       // it says who wrote it.
+      // Notes usually do not move with the work fold. Keep their DOM when they do
+      // not, so a task-only refill repaints only the task that changed.
+      var noteSignature = null;
+
       function drawNote() {
         var host = document.getElementById('cb-note');
         if (!host) return;
-        host.textContent = '';
         var note = bag().note;
-        if (!note || typeof note !== 'object' || Array.isArray(note)) return;
-        var next = text(note.next);
-        // Only `next`. Needs-you has one home, the band above, so the note's own
-        // needs_you line is never drawn beside it.
+        var next = note && typeof note === 'object' && !Array.isArray(note) ? text(note.next) : null;
+        var at = text(bag().note_at);
+        var signature = JSON.stringify([locale(), next, at]);
+        if (signature === noteSignature) return;
+        noteSignature = signature;
+        host.textContent = '';
         if (!next) return;
         var box = el('div', 'note');
         var k = el('span', 'k', i18n('note'));
         k.appendChild(el('span', 'tag', i18n('wrote')));
         box.appendChild(k);
-        if (next) {
-          var np = el('p');
-          np.appendChild(el('span', 'lbl', i18n('next') + ': '));
-          np.appendChild(document.createTextNode(next));
-          box.appendChild(np);
-        }
-        var at = text(bag().note_at);
+        var np = el('p');
+        np.appendChild(el('span', 'lbl', i18n('next') + ': '));
+        np.appendChild(document.createTextNode(next));
+        box.appendChild(np);
         if (at) box.appendChild(el('p', 'sub', i18n('note_at', { t: when(at) })));
         host.appendChild(box);
       }
 
-      // Ids already drawn once, so a host refill does not replay the pop-in.
+      // Task nodes live for this document's lifetime. A refill changes only cards
+      // whose visible reading changed; new ids still get one useful pop-in.
       var seen = {};
+      var taskNodes = {};
+      var taskSignatures = {};
 
       function drawTasks(list) {
         var host = document.getElementById('cb-tasks');
         if (!host) return;
-        host.textContent = '';
         // Tasks that need the reader come first; the rest keep the ledger's order.
         list = list.filter(function (it) { return tone(it)[0] === 'you'; })
           .concat(list.filter(function (it) { return tone(it)[0] !== 'you'; }));
+        var keep = {};
         for (var i = 0; i < list.length; i++) {
           var it = list[i];
           var id = text(it.item_id) || String(i);
           var reading = tone(it);
-          var card = el('li', 'card tone-' + reading[0] + (seen[id] ? '' : ' pop'));
-          if (!seen[id]) card.style.animationDelay = (Math.min(i, 12) * 45) + 'ms';
-          seen[id] = true;
-          var top = el('div', 'top');
-          top.appendChild(el('p', 't', text(it.title) || i18n('untitled')));
-          var pill = el('span', 'pill');
-          if (reading[0] === 'run') {
-            var dot = el('span', 'dot');
-            dot.setAttribute('aria-hidden', 'true');
-            pill.appendChild(dot);
+          var signature = JSON.stringify([
+            locale(), it.title, it.state, it.status, it.reason, it.pr, it.summary
+          ]);
+          var card = taskNodes[id];
+          if (!card) {
+            card = el('li', 'card');
+            taskNodes[id] = card;
           }
-          pill.appendChild(document.createTextNode(label(reading[1])));
-          top.appendChild(pill);
-          card.appendChild(top);
-          var pr = num(it.pr);
-          if (pr) card.appendChild(el('span', 'sub', i18n('pr', { n: pr })));
-          var summary = text(it.summary);
-          if (summary) card.appendChild(el('span', 'sub', summary));
-          // The same Reply the band gives this task, so either copy can be acted on.
-          if (reading[0] === 'you') card.appendChild(replyFor(text(it.title) || text(it.item_id) || DASH));
-          host.appendChild(card);
+          if (taskSignatures[id] !== signature) {
+            var first = !seen[id];
+            card.className = 'card tone-' + reading[0] + (first ? ' pop' : '');
+            card.style.animationDelay = first ? (Math.min(i, 12) * 45) + 'ms' : '';
+            card.textContent = '';
+            var top = el('div', 'top');
+            top.appendChild(el('p', 't', text(it.title) || i18n('untitled')));
+            var pill = el('span', 'pill');
+            if (reading[0] === 'run') {
+              var dot = el('span', 'dot');
+              dot.setAttribute('aria-hidden', 'true');
+              pill.appendChild(dot);
+            }
+            pill.appendChild(document.createTextNode(label(reading[1])));
+            top.appendChild(pill);
+            card.appendChild(top);
+            var pr = num(it.pr);
+            if (pr) card.appendChild(el('span', 'sub', i18n('pr', { n: pr })));
+            var summary = text(it.summary);
+            if (summary) card.appendChild(el('span', 'sub', summary));
+            // The same Reply the band gives this task, so either copy can be acted on.
+            if (reading[0] === 'you') card.appendChild(replyFor(text(it.title) || text(it.item_id) || DASH));
+            taskSignatures[id] = signature;
+            seen[id] = true;
+          }
+          keep[id] = true;
+          // Move only when order changed. Re-appending every stable card still
+          // detaches and inserts the whole list, causing a visible repaint.
+          if (host.children[i] !== card) host.insertBefore(card, host.children[i] || null);
         }
-        if (!list.length) host.appendChild(el('li', 'empty', i18n('empty')));
+        Object.keys(taskNodes).forEach(function (id) {
+          if (keep[id]) return;
+          taskNodes[id].remove();
+          delete taskNodes[id];
+          delete taskSignatures[id];
+        });
+        var empty = host.querySelector('.empty');
+        if (list.length && empty) empty.remove();
+        if (!list.length && !empty) host.appendChild(el('li', 'empty', i18n('empty')));
+      }
+
+      var moreSignature = null;
+      function drawMore() {
+        var more = document.getElementById('cb-more');
+        if (!more) return;
+        var omitted = num(bag().omitted) || 0;
+        var signature = locale() + ':' + omitted;
+        if (signature === moreSignature) return;
+        moreSignature = signature;
+        more.hidden = !(omitted > 0);
+        var old = more.querySelectorAll('button.reply, .hint');
+        for (var o = 0; o < old.length; o++) old[o].remove();
+        if (!more.hidden) {
+          var ask = el('button', 'reply', i18n('ask_all'));
+          ask.type = 'button';
+          ask.title = i18n('reply_title');
+          ask.addEventListener('click', function () { act(i18n('ask_all_say')); });
+          more.appendChild(ask);
+          more.appendChild(el('span', 'sub hint', ' ' + i18n('how')));
+        }
       }
 
       function render() {
@@ -387,26 +472,16 @@
         drawMeter(list);
         drawNote();
         drawTasks(list);
-        // A list the fold did not cut needs no line saying so.
-        var more = document.getElementById('cb-more');
-        if (more) {
-          more.hidden = !(num(bag().omitted) > 0);
-          var old = more.querySelectorAll('button.reply, .hint');
-          for (var o = 0; o < old.length; o++) old[o].remove();
-          if (!more.hidden) {
-            var ask = el('button', 'reply', i18n('ask_all'));
-            ask.type = 'button';
-            ask.title = i18n('reply_title');
-            ask.addEventListener('click', function () { act(i18n('ask_all_say')); });
-            more.appendChild(ask);
-            more.appendChild(el('span', 'sub hint', ' ' + i18n('how')));
-          }
-        }
+        drawMore();
       }
 
-      render();
-      window.addEventListener('load', render);
-      window.addEventListener('message', function () { setTimeout(render, 0); });
+      // The frame bootstrap registered first and fills bound cells on this event.
+      // Draw after that fill, so formatting such as timestamps is not overwritten.
+      if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', render, { once: true });
+      else render();
+      // The composed frame dispatches this after it applies a Dashboard refill.
+      // Listening to every message redrew the page for unrelated frame traffic.
+      window.addEventListener('kirocrew-dashboard', render);
     }());
   </script>
 </div>

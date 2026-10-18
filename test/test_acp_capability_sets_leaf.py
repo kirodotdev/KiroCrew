@@ -87,7 +87,13 @@ def test_defined_in_the_leaf_not_in_the_acp_package(name: str) -> None:
     shim would be readable without ever crossing the boundary, which is what the
     move was for.
     """
-    leaf = (SRC / "agent_sdk" / "backends.py").read_text(encoding="utf-8")
+    leaf = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            SRC / "agent_sdk" / "backends.py",
+            *sorted(SRC.glob("agent_sdk/backends_*.py")),
+        )
+    )
     types_mod = (SRC / "acp" / "types.py").read_text(encoding="utf-8")
     shim = (SRC / "acp_backends.py").read_text(encoding="utf-8")
 

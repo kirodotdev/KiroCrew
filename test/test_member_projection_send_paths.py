@@ -9,13 +9,18 @@ Each send path below must refuse before the client is asked to send anything.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.transport_errors import AcpError
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_KIRO,
+)
 from kiro_crew.providers.acp import AcpProvider
 
 
@@ -121,3 +126,95 @@ def test_every_send_path_is_covered():
             ):
                 senders.add(fn.name)
     assert senders == {p.id for p in SEND_PATHS}
+
+
+def _starting_client(
+    tmp_path, monkeypatch, backend: str, *, refusal: BaseException | None
+) -> tuple[AcpClient, list[str]]:
+    """A member client with no live child, so ensure_ready runs the real start."""
+    calls: list[str] = []
+    sent: list[str] = []
+    client = AcpClient(work_dir=tmp_path, agent="saved-member", acp_backend=backend)
+    client.member_context = True
+
+    async def spawn():
+        calls.append("spawn")
+        proc = MagicMock(returncode=None)
+        proc.stdin.drain = AsyncMock()
+        client._process = proc
+
+    async def send(method, _params):
+        sent.append(method)
+        return len(sent)
+
+    async def wait(req_id, *_args, **_kwargs):
+        if sent[req_id - 1] == "session/new":
+            return {"sessionId": f"s{calls.count('spawn')}"}
+        return {"protocolVersion": 1, "agentCapabilities": {}}
+
+    async def confirm():
+        calls.append("confirm")
+        if refusal is not None:
+            raise refusal
+
+    async def cleanup():
+        calls.append("teardown")
+
+    monkeypatch.setattr(client, "_spawn", spawn)
+    monkeypatch.setattr(client, "_send_request", send)
+    monkeypatch.setattr(client, "_wait_for_response", wait)
+    monkeypatch.setattr(client, "_drain_notifications", AsyncMock())
+    monkeypatch.setattr(client, "_snapshot_process_tree", AsyncMock())
+    monkeypatch.setattr(client, "confirm_member_projection", confirm)
+    monkeypatch.setattr(client, "_cleanup_failed_live_spawn", cleanup)
+    return client, calls
+
+
+@pytest.mark.asyncio
+async def test_a_respawn_inside_the_client_confirms_before_it_returns(tmp_path, monkeypatch):
+    """``stream_events`` runs ``ensure_ready`` again after the provider's gate, and a
+    child that died in between is respawned there. The new session is confirmed
+    inside the start itself, so no send can follow an unconfirmed respawn."""
+    client, calls = _starting_client(tmp_path, monkeypatch, ACP_BACKEND_DEEPSEEK, refusal=None)
+    await client.ensure_ready()
+    assert calls == ["spawn", "confirm"]
+    assert client._session_id == "s1"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_respawn_is_torn_down_not_left_warm(tmp_path, monkeypatch):
+    """A refusal ends the child, so the next ``ensure_ready`` judges a fresh session
+    instead of taking the warm return into the refused one."""
+    refusal = AcpError(
+        "capability_runtime_unverified: saved spec projection could not be confirmed"
+    )
+    client, calls = _starting_client(tmp_path, monkeypatch, ACP_BACKEND_DEEPSEEK, refusal=refusal)
+    with pytest.raises(AcpError, match="capability_runtime_unverified"):
+        await client.ensure_ready()
+    assert calls == ["spawn", "confirm", "teardown"] * 2
+    assert client._session_id is None
+    with pytest.raises(AcpError, match="capability_runtime_unverified"):
+        await client.ensure_ready()
+    assert calls.count("confirm") == 4
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_confirmation_is_torn_down_not_left_warm(tmp_path, monkeypatch):
+    """A cancel skips ensure_ready's error handler, so the start tears down itself."""
+    client, calls = _starting_client(
+        tmp_path, monkeypatch, ACP_BACKEND_DEEPSEEK, refusal=asyncio.CancelledError()
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await client.ensure_ready()
+    assert calls == ["spawn", "confirm", "teardown"]
+    assert client._session_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_kiro_start_gains_no_confirmation_call(tmp_path, monkeypatch):
+    """harness-parity H13: the kiro construction path gains no call in service of
+    an adapter, member or not."""
+    client, calls = _starting_client(tmp_path, monkeypatch, ACP_BACKEND_KIRO, refusal=None)
+    await client.ensure_ready()
+    assert calls == ["spawn"]
+    assert client._session_id == "s1"

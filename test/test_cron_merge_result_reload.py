@@ -26,6 +26,7 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew.cron import CronJob, CronService, CronStoreBusy
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _ADMITTED = SimpleNamespace(admitted=True, reason="")
 _LONG_AGO = 7200.0
@@ -75,7 +76,7 @@ async def _service(tmp_path, runs: list[str], on_run=None) -> CronService:
     if task is not None:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5.0)
+            await await_until(task, what="timer task")
     return service
 
 
@@ -84,7 +85,7 @@ async def _tick(service: CronService, job_id: str) -> None:
     await service._on_timer()
     claim = service._claims.get(job_id)
     if claim is not None and claim.task is not None:
-        await asyncio.wait_for(claim.task, timeout=5.0)
+        await await_until(claim.task, what="claim task")
 
 
 def _other_writer(tmp_path) -> None:
@@ -127,11 +128,7 @@ def _held_record(service: CronService, job_id: str) -> CronJob:
 
 
 async def _until(predicate) -> None:
-    async def poll() -> None:
-        while not predicate():
-            await asyncio.sleep(0.01)
-
-    await asyncio.wait_for(poll(), timeout=5.0)
+    await async_wait_until(predicate)
 
 
 def _assert_run_recorded(tmp_path, job: CronJob, record: CronJob) -> None:
@@ -342,7 +339,7 @@ async def test_a_manual_run_after_a_busy_merge_leaves_the_record_on_disk(tmp_pat
 
     async def hold_the_manual_run() -> None:
         if len(runs) == 2:
-            await asyncio.wait_for(release.wait(), timeout=5.0)
+            await await_until(release, what="release")
 
     service = await _service(tmp_path, runs, on_run=hold_the_manual_run)
     job = await _every_job(service)
@@ -364,7 +361,7 @@ async def test_a_manual_run_after_a_busy_merge_leaves_the_record_on_disk(tmp_pat
     finally:
         release.set()
         if manual is not None:
-            await asyncio.wait_for(manual, timeout=5.0)
+            await await_until(manual, what="manual run")
         store.scope = "off"
         await service.stop()
 
@@ -422,7 +419,7 @@ async def test_a_user_resume_after_a_busy_merge_reaches_disk(tmp_path):
     if task is not None:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5.0)
+            await await_until(task, what="timer task")
     job = await _every_job(service)
     store = _BusyStore(service)
     try:

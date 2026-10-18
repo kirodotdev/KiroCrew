@@ -99,7 +99,7 @@ def test_restore_reads_transcript_before_backfilling_tab_id(tmp_path, monkeypatc
     the read completes while the file is quiescent, so nothing is ever armed and
     every tab restores. Under the buggy order the armed read faults and the tab
     is dropped. The read-retry mechanics themselves are out of scope here (they
-    are exercised by test_history's sharing-violation tests); this pins the
+    are exercised by test_history_storage's sharing-violation tests); this pins the
     ordering that keeps the file quiescent for the read in the first place.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))

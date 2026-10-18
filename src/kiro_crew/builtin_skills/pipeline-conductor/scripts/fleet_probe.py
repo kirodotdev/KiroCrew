@@ -246,7 +246,9 @@ def _count_own_rows(raw: bytes) -> int:
 
 #: Error shapes observed in real worker tails, not shapes invented here.
 DEFAULT_ERR_RES = (
-    r"Bedrock is throttling",
+    # Both throttle wordings: "Bedrock is throttling ..." (kiro-cli) and
+    # "The model provider is throttling ..." (every other harness).
+    r"is throttling",
     r"dispatch failure",
     r"initialize timed out",
 )

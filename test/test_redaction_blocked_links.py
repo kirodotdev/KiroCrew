@@ -70,6 +70,24 @@ class TestCollectorRecordsMatchRedaction:
         assert _placeholder_count(cleaned) == 2
         assert len(records) == 1
 
+    @pytest.mark.parametrize("longer_first", [False, True])
+    def test_a_blocked_link_that_prefixes_a_longer_one_cannot_shelter_its_tail(
+        self, longer_first: bool
+    ) -> None:
+        """A blocked link, and the same link with a token appended: rewriting the
+        shorter one first must not leave the longer one's tail in the text."""
+        short = f"https://{_DOMAIN}/x?d={_LONG_QUERY_TAIL}"
+        longer = short + "&X-Amz-Security-Token=" + "T" * 120
+        first, second = (longer, short) if longer_first else (short, longer)
+
+        cleaned, _, records = redact_exfiltration_urls_with_records(f"see {first} and {second} .")
+
+        assert cleaned == (
+            f"see [REDACTED: suspicious URL to {_DOMAIN}] and "
+            f"[REDACTED: suspicious URL to {_DOMAIN}] ."
+        )
+        assert len(records) == 2
+
     def test_records_carry_no_positional_field(self) -> None:
         url = f"https://{_DOMAIN}/x?token={_LONG_QUERY_TAIL}"
 
@@ -538,9 +556,9 @@ class TestRecordsReachTheDisplayPath:
                 break
             body.append(ln)
         src = "\n".join(body)
-        assert "_redact_segment(slot, body)" in src
+        assert "_redact_segment(slot, turn.assistant_text)" in src
         assert "_segment_row_meta(slot, _blocked, _redactions)" in src
-        assert "redact_exfiltration_urls(body)" not in src
+        assert "redact_exfiltration_urls(" not in src
 
 
 class TestRecordsSurviveAReopenedSession:

@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 _MEDIA_CACHE_CONTROL = "private, max-age=60"
 
 #: The policy an untrusted SVG is served under. Byte-identical to the one
-#: ``handlers/files.py`` uses for an untrusted SVG read, deliberately: two
+#: ``file_api/editor.py`` uses for an untrusted SVG read, deliberately: two
 #: different policies on the same class of content is a drift waiting to happen,
 #: and this one is the house answer.
 _SVG_CSP = "script-src 'none'; style-src 'unsafe-inline'"
@@ -153,7 +153,7 @@ def _media_response(request: web.Request, body: bytes, content_type: str, **extr
     """A cacheable media response, or a 304 when the caller already has it.
 
     **A pack's SVG is third-party markup served from the dashboard's OWN
-    origin**, so it gets the same two headers ``handlers/files.py`` puts on an
+    origin**, so it gets the same two headers ``file_api/editor.py`` puts on an
     untrusted SVG read, for the same reason. An SVG is XML, not a bitmap: it can
     carry a ``<script>`` element, and while an ``<img src>`` will not run it,
     navigating straight to this URL — or framing it — renders it as a DOCUMENT on

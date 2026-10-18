@@ -1004,7 +1004,8 @@ async def decide(
     append starts, the value resolves to true after append-line commitment or false
     after a definitive refusal, even when the post-append retention sweep outlives the
     write budget. If neither outcome arrives within the bounded grace, it remains
-    ``None`` rather than claiming a refusal while the append is still running. A caller
+    ``None`` rather than claiming a refusal while the append is still running, and the
+    gate logs one warning naming the point, the row and the time waited. A caller
     that supplies no receipt returns when the write budget expires and pays no grace.
     This additive signal does not change ``None`` as the only failure return.
 
@@ -1088,6 +1089,7 @@ async def decide(
             # that needs a commit signal, so it is the only one that creates it.
             commit_event = threading.Event() if receipt is not None else None
             row_written = None
+            append_started = time.monotonic()
             append_task = asyncio.create_task(
                 asyncio.to_thread(_log.append, row)
                 if commit_event is None
@@ -1111,6 +1113,17 @@ async def decide(
                     row_written = True
                 elif append_task.done():
                     row_written = append_task.result() is True
+                else:
+                    # Neither outcome arrived, so the receipt stays unknown and a
+                    # caller that scores only a confirmed row (the wake judge's join
+                    # key) loses this one. The worker may still commit it, so the
+                    # receipt is not turned into a refusal: the loss is logged.
+                    logger.warning(
+                        "decisions: %s row %s commit unconfirmed after %.3fs; receipt left unknown",
+                        point,
+                        row.get("verdict_id") or row.get("ts"),
+                        time.monotonic() - append_started,
+                    )
                 if not commit_wait.done():
                     commit_wait.cancel()
         except Exception as exc:

@@ -64,9 +64,9 @@ def test_rewrite_agents_signature_is_pinned_to_fingerprint_inputs() -> None:
 # silently stale overlays, so every read reaching the pass must be a conscious
 # decision: either fingerprinted or documented output-neutral.
 #
-# Scope: top-level functions in ``rewriter.py`` only. ``defs`` is built from
-# the module body, so a method on a class or a helper in another module is NOT
-# scanned — the tripwire covers the in-module helper graph, not everything the
+# Scope: top-level functions in ``rewriter.py`` and its ``rewriter_*`` owner
+# modules only. ``defs`` is built from their module bodies, so a method on a class
+# or a helper in another module is NOT scanned — the tripwire covers the in-module helper graph, not everything the
 # pass can transitively touch. A NEW entry point added to the pass must also be
 # added to ``_REWRITE_PASS_ROOTS`` to be covered.
 #
@@ -241,7 +241,8 @@ def test_rewrite_pass_ambient_reads_match_pinned_allowlist() -> None:
     read that MOVED functions in a refactor shows up as one NEW + one STALE
     for the same channel (re-key the entry; no fingerprint change).
     """
-    tree = ast.parse(inspect.getsource(rewriter))
+    family = (rewriter.__name__, *rewriter._REWRITER_OWNERS)
+    tree = ast.parse("".join(inspect.getsource(sys.modules[name]) for name in family))
     defs: dict[str, ast.AST] = {
         node.name: node
         for node in tree.body

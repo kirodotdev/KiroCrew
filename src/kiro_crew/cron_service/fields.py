@@ -41,7 +41,7 @@ _CHAT_FOLDER_NEEDS_PERSISTENT = (
 # Table-driven string-field caps for the persistence chokepoint. Every
 # caller-supplied string field persisted by _build_job/_update_job_locked
 # is listed here with its cap matching the REST/MCP boundary schemas
-# (CRON_ADD_SCHEMA / cron_update ToolSchema in validation.py). A helper
+# (CRON_ADD_SCHEMA / cron_update ToolSchema in validation_parts/cron_schemas.py). A helper
 # iterates this table so adding a field requires ONE edit, not two.
 _CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
     ("name", MAX_SHORT_STRING),

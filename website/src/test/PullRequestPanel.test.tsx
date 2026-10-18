@@ -1,8 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { PullRequestSource, PullRequestStatus } from '../types'
-import { MAX_PULL_REQUEST_SOURCES } from '../utils/pullRequestLinks'
+import {
+  MAX_PULL_REQUEST_SOURCES,
+  registerSourceProvider,
+  resetSourceProvidersForTests,
+} from '../utils/pullRequestLinks'
 
 const mockApi = vi.hoisted(() => ({
   pullRequestChecks: vi.fn(),
@@ -1180,5 +1184,158 @@ describe('source tab project disambiguation', () => {
     expect(labels.some(text => text.includes('MR !2'))).toBe(true)
     // The project path never leaks into a single-project tab label.
     for (const text of labels) expect(text).not.toContain('group-a/service')
+  })
+})
+
+describe('PullRequestPanel with a review that has several revisions', () => {
+  // A registered provider that keeps the revision in its canonical url.
+  // Revision 1 is OPEN; revision 2 shipped, so the review is merged.
+  const CR = 'https://review.acme.example/cr/123'
+  const REV_1 = `${CR}/revisions/1`
+  const REV_2 = `${CR}/revisions/2`
+  const revision = (url: string): PullRequestSource => url === REV_2
+    ? { ...github, provider: 'acme', url, number: 123, title: 'Widen the seam', state: 'merged', mergedAt: '2026-10-16T09:00:00Z', additions: 30, updatedAt: '2026-10-16T09:00:00Z' }
+    : { ...github, provider: 'acme', url, number: 123, title: 'Widen the seam', state: 'OPEN', mergedAt: '', additions: 20 }
+
+  beforeEach(() => {
+    registerSourceProvider({
+      id: 'acme',
+      displayName: 'Acme Review',
+      parse(url) {
+        const match = /^\/cr\/(\d+)(\/revisions\/\d+)?$/.exec(url.pathname)
+        if (url.hostname !== 'review.acme.example' || !match) return null
+        return { url: url.href, provider: 'acme', number: Number(match[1]), repo: 'acme', kind: 'change' }
+      },
+      chipLabel: link => `CR-${link.number}`,
+      refLabel: n => `CR-${n}`,
+      capabilities: { checks: true, mergeState: true, resolveThreads: true, comment: true },
+    })
+    mockApi.pullRequestSource.mockImplementation((url: string) =>
+      Promise.resolve(url === github.url ? github : revision(url)))
+  })
+  afterEach(() => resetSourceProvidersForTests())
+
+  it('keeps reply and comment drafts mounted while the same review advances revisions', async () => {
+    let resolveRevision!: (value: PullRequestSource) => void
+    const nextRevision = new Promise<PullRequestSource>(resolve => { resolveRevision = resolve })
+    mockApi.pullRequestSource.mockImplementation((url: string) =>
+      url === REV_2 ? nextRevision : Promise.resolve(revision(url)))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const panel = (url: string) => (
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[{ url, provider: 'acme', number: 123, repo: 'acme', kind: 'change' }]}
+          selectedUrl={url}
+          onSelect={() => {}}
+        />
+      </QueryClientProvider>
+    )
+    const { rerender } = render(panel(REV_1))
+    await screen.findByText('Widen the seam', {}, { timeout: 5000 })
+    fireEvent.click(screen.getByRole('tab', { name: /Reviews 3/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reply', exact: true }))
+    const reply = screen.getByRole('textbox', { name: 'Reply', exact: true })
+    fireEvent.change(reply, { target: { value: 'Keep this unsent reply.' } })
+    fireEvent.click(screen.getByRole('button', { name: /Comment on this pull request/i }))
+    const comment = screen.getByRole('textbox', { name: /Comment on this pull request/i })
+    fireEvent.change(comment, { target: { value: 'Keep this unsent comment.' } })
+
+    // Revision 1 is open, so its payload offers the merge-state write.
+    expect(screen.getByRole('button', { name: /Enable auto-merge/i })).toBeInTheDocument()
+    const replySend = within(reply.parentElement!).getByRole('button', { name: 'Reply', exact: true })
+    const commentSend = within(comment.parentElement!).getByRole('button', { name: /Comment on this pull request/i })
+    expect(replySend).toBeEnabled()
+    expect(commentSend).toBeEnabled()
+
+    rerender(panel(REV_2))
+    await waitFor(() => expect(mockApi.pullRequestSource).toHaveBeenCalledWith(REV_2, false), { timeout: 5000 })
+    expect(screen.getByRole('tab', { name: /Reviews 3/i })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('textbox', { name: 'Reply', exact: true })).toBe(reply)
+    expect(reply).toHaveValue('Keep this unsent reply.')
+    expect(screen.getByRole('textbox', { name: /Comment on this pull request/i })).toBe(comment)
+    expect(comment).toHaveValue('Keep this unsent comment.')
+    // The panel still shows revision 1's open payload, but nothing may write
+    // to revision 1's url while revision 2 loads.
+    expect(screen.getByText('Open')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Enable auto-merge/i })).not.toBeInTheDocument()
+    expect(replySend).toBeDisabled()
+    expect(commentSend).toBeDisabled()
+    // Busy, not dead: assistive tech hears that each paused write is waiting.
+    expect(replySend).toHaveAttribute('aria-busy', 'true')
+    expect(commentSend).toHaveAttribute('aria-busy', 'true')
+    for (const resolve of screen.getAllByRole('button', { name: /^Resolve$|^Reopen$/ })) {
+      expect(resolve).toBeDisabled()
+      expect(resolve).toHaveAttribute('aria-busy', 'true')
+    }
+
+    await act(async () => { resolveRevision(revision(REV_2)) })
+    // The merged badge proves the delayed revision payload has replaced the placeholder.
+    await screen.findByText('Merged', {}, { timeout: 5000 })
+    expect(screen.getByRole('tab', { name: /Reviews 3/i })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('textbox', { name: 'Reply', exact: true })).toBe(reply)
+    expect(reply).toHaveValue('Keep this unsent reply.')
+    expect(screen.getByRole('textbox', { name: /Comment on this pull request/i })).toBe(comment)
+    expect(comment).toHaveValue('Keep this unsent comment.')
+    // Revision 2 is merged, so it offers no auto-merge; the drafts can send again.
+    expect(screen.queryByRole('button', { name: /Enable auto-merge/i })).not.toBeInTheDocument()
+    expect(replySend).toBeEnabled()
+    expect(commentSend).toBeEnabled()
+    expect(replySend).not.toHaveAttribute('aria-busy', 'true')
+    expect(commentSend).not.toHaveAttribute('aria-busy', 'true')
+  })
+
+  it('does not show the previous review while a different review loads', async () => {
+    const otherUrl = 'https://review.acme.example/cr/456/revisions/1'
+    let resolveOther!: (value: PullRequestSource) => void
+    const otherReview = new Promise<PullRequestSource>(resolve => { resolveOther = resolve })
+    mockApi.pullRequestSource.mockImplementation((url: string) =>
+      url === otherUrl ? otherReview : Promise.resolve(revision(url)))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const panel = (url: string, number: number) => (
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[{ url, provider: 'acme', number, repo: 'acme', kind: 'change' }]}
+          selectedUrl={url}
+          onSelect={() => {}}
+        />
+      </QueryClientProvider>
+    )
+    const { rerender } = render(panel(REV_1, 123))
+    await screen.findByText('Widen the seam', {}, { timeout: 5000 })
+    fireEvent.click(screen.getByRole('tab', { name: /Reviews 3/i }))
+
+    rerender(panel(otherUrl, 456))
+    await waitFor(() => expect(mockApi.pullRequestSource).toHaveBeenCalledWith(otherUrl, false), { timeout: 5000 })
+    expect(screen.queryByText('Widen the seam')).not.toBeInTheDocument()
+    expect(screen.queryByText('Please cover this case.')).not.toBeInTheDocument()
+    await act(async () => { resolveOther({ ...revision(otherUrl), number: 456, title: 'Another review' }) })
+    await screen.findByText('Another review', {}, { timeout: 5000 })
+    expect(screen.getByRole('tab', { name: /Changes 1/i })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('shows the latest revision as merged when the remembered tab is revision 1', async () => {
+    const onReconcile = vi.fn()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets', kind: 'change' },
+            { url: REV_2, provider: 'acme', number: 123, repo: 'acme', kind: 'change' },
+          ]}
+          selectedUrl={REV_1}
+          onSelect={() => {}}
+          onReconcile={onReconcile}
+          onAddToChat={() => {}}
+        />
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('Widen the seam')).toBeInTheDocument()
+    expect(screen.getByText('Merged')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /auto-merge/i })).not.toBeInTheDocument()
+    expect(mockApi.pullRequestSource).toHaveBeenCalledWith(REV_2, false)
+    expect(mockApi.pullRequestSource).not.toHaveBeenCalledWith(REV_1, expect.anything())
+    expect(onReconcile).toHaveBeenCalledWith(REV_2)
   })
 })

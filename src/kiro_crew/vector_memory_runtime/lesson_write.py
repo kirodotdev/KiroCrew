@@ -22,7 +22,11 @@ from typing import TYPE_CHECKING
 
 from kiro_crew import memory_schema
 from kiro_crew.embeddings import PRIORITY_BULK
-from kiro_crew.lesson_validation import contains_volatile_lesson_fact, normalize_lesson_applies
+from kiro_crew.lesson_validation import (
+    contains_volatile_lesson_fact,
+    normalize_lesson_applies,
+    utf8_encodable,
+)
 from kiro_crew.project_scope import canonical_scope, scope_is_admissible
 from kiro_crew.validation import normalize_lesson_category
 from kiro_crew.vector_memory_runtime import lessons as _lessons
@@ -126,6 +130,15 @@ def write_lesson(
 
     if contains_volatile_lesson_fact(rule, negative):
         return LessonWriteResult(LessonWriteOutcome.REFUSED, "volatile_session_fact")
+    # A lone surrogate is JSON-legal (the model can emit ``\ud800`` in its
+    # output) but not UTF-8 encodable, and ``_lesson_key`` hashes the rule --
+    # and the scope with it -- via ``str.encode()`` below. Refuse it here, at
+    # the single derive site every caller shares (consolidation's native
+    # ``lessons`` array, its rerouted ``lesson.*`` semantic items, the JSONL
+    # fallback, MCP, dashboard), so a bad character skips the lesson instead of
+    # aborting the whole consolidation pass with a UnicodeEncodeError.
+    if not utf8_encodable(rule):
+        return LessonWriteResult(LessonWriteOutcome.REFUSED, "rule_not_utf8_encodable")
     rule_lower = rule.lower()
     # A whitespace-only clause is no clause. `--negative "   "` is truthy, so
     # without this it composed "<rule> — NOT:    " and REPLACED a real stored
@@ -160,6 +173,10 @@ def write_lesson(
         if not scope_is_admissible(repo_scope):
             return LessonWriteResult(LessonWriteOutcome.REFUSED, "scope_inadmissible")
     repo_scope = canonical_scope(repo_scope)
+    # Same reason as the rule above: the canonical scope is hashed with the
+    # rule in ``_lesson_key``, so a lone surrogate here would crash the pass.
+    if repo_scope is not None and not utf8_encodable(repo_scope):
+        return LessonWriteResult(LessonWriteOutcome.REFUSED, "scope_not_utf8_encodable")
     # The category is now part of the stored value, so an unusable one would be
     # scanned by validate_semantic and could REJECT the whole lesson -- turning a
     # bad label into lost guidance. Consolidation passes the LLM's own

@@ -304,7 +304,7 @@ def test_the_logout_recycle_set_is_projected_not_copied() -> None:
     # Published as a FUNCTION and nowhere as an ``ACP_BACKENDS_*`` set. That naming is
     # harness vocabulary, whose home is the backends module, and a derived answer is
     # not vocabulary -- ``scripts/check_harness_parity.py`` fails on a set defined
-    # outside that module, and the set could not be defined inside it either (it
+    # outside that module and its owners, and the set could not be defined inside it either (it
     # supplies the ids this table is keyed by). Asserted so the alias does not come
     # back as a convenience.
     for module in (host_auth, acp_types, acp_backends):

@@ -6,6 +6,7 @@ import pytest
 
 from kiro_crew import session_ledger
 from kiro_crew.dashboard.handlers import work_ledger as routes
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.fixture(autouse=True)
@@ -36,13 +37,8 @@ def _waiting_on(slot: str) -> int:
 
 
 async def _until_waiting(slot: str, count: int) -> None:
-    """Yield to the loop until *count* tasks wait on *slot*'s lock, for at most BOUND s."""
-
-    async def _poll() -> None:
-        while _waiting_on(slot) != count:
-            await asyncio.sleep(0)
-
-    await asyncio.wait_for(_poll(), BOUND)
+    """Poll until *count* tasks wait on *slot*'s lock."""
+    await async_wait_until(lambda: _waiting_on(slot) == count)
 
 
 @pytest.mark.asyncio
@@ -73,22 +69,22 @@ async def test_two_writers_to_one_board_still_take_turns():
         async with routes._board_lock("chat-one"):
             order.append("first in")
             first_in.set()
-            await asyncio.wait_for(let_first_go.wait(), BOUND)
+            await await_until(let_first_go)
             order.append("first out")
 
     async def second() -> None:
-        await asyncio.wait_for(first_in.wait(), BOUND)
+        await await_until(first_in)
         async with routes._board_lock("chat-one"):
             order.append("second in")
 
     a = asyncio.ensure_future(first())
     b = asyncio.ensure_future(second())
-    await asyncio.wait_for(first_in.wait(), BOUND)
+    await await_until(first_in)
     await _until_waiting("chat-one", 1)
     assert order == ["first in"]
     assert len(_board_entries()) == 1
     let_first_go.set()
-    await asyncio.wait_for(asyncio.gather(a, b), BOUND)
+    await await_until(asyncio.gather(a, b))
     assert order == ["first in", "first out", "second in"]
 
 
@@ -101,7 +97,7 @@ async def test_a_cancelled_waiter_takes_nothing_from_the_holder():
     async def holder() -> None:
         async with routes._board_lock("chat-one"):
             holder_in.set()
-            await asyncio.wait_for(release.wait(), BOUND)
+            await await_until(release)
 
     async def waiter() -> None:
         async with routes._board_lock("chat-one"):
@@ -112,7 +108,7 @@ async def test_a_cancelled_waiter_takes_nothing_from_the_holder():
             newcomer_in.set()
 
     h = asyncio.ensure_future(holder())
-    await asyncio.wait_for(holder_in.wait(), BOUND)
+    await await_until(holder_in)
     w = asyncio.ensure_future(waiter())
     await _until_waiting("chat-one", 1)
     w.cancel()
@@ -123,5 +119,5 @@ async def test_a_cancelled_waiter_takes_nothing_from_the_holder():
     await _until_waiting("chat-one", 1)
     assert not newcomer_in.is_set()
     release.set()
-    await asyncio.wait_for(asyncio.gather(h, n), BOUND)
+    await await_until(asyncio.gather(h, n))
     assert newcomer_in.is_set()

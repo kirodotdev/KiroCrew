@@ -20,7 +20,6 @@ import { useConfigSchema } from '../../components/settingRef/useConfigSchema'
 import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
 import { i18nT } from '../../i18n/t'
 import { clearCachedModels } from '../../providers/adapters/acp'
-import { KasBundleCard } from './KasBundleCard'
 import { KiroSignInCard } from './KiroSignInCard'
 import { KIRO_SIGN_IN_BACKEND } from './kiroSignInLink'
 
@@ -1521,14 +1520,6 @@ export function AgentBackendTab() {
                     {value === KIRO_SIGN_IN_BACKEND && offered.includes(KIRO_SIGN_IN_BACKEND) && (
                       <ErrorBoundary scope="developer-kiro-sign-in" fallback={null}>
                         <KiroSignInCard compact />
-                      </ErrorBoundary>
-                    )}
-                    {/* Kiro Crew's own engine for the same harness, under the sign-in it
-                        runs on: on this route the engine takes its credential from that
-                        card and nothing else. Same gate and the same isolation. */}
-                    {value === KIRO_SIGN_IN_BACKEND && offered.includes(KIRO_SIGN_IN_BACKEND) && (
-                      <ErrorBoundary scope="developer-kas-bundle" fallback={null}>
-                        <KasBundleCard />
                       </ErrorBoundary>
                     )}
                     {facts(value)}

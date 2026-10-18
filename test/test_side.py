@@ -41,6 +41,7 @@ from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _SIDE_QUESTION = "what is the difference between TCP and UDP?"
 _SIDE_ANSWER = "TCP is connection-oriented and UDP is not."
@@ -236,20 +237,19 @@ async def test_side_turn_returns_before_run_finishes(tmp_path, monkeypatch):
 
     async with TestClient(TestServer(app)) as client:
         await client.post("/api/chat/slots/parent/side/open", json={})
-        resp = await asyncio.wait_for(
-            client.post(
-                "/api/chat/slots/parent/side/turn",
-                json={"question": "blocking?"},
+        resp = await await_until(
+            asyncio.ensure_future(
+                client.post(
+                    "/api/chat/slots/parent/side/turn",
+                    json={"question": "blocking?"},
+                )
             ),
             timeout=5.0,
         )
         assert resp.status == 200
         assert started.is_set(), "_run_side_turn did not start before HTTP return"
         release.set()
-        for _ in range(50):
-            if not state._background_tasks:
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(lambda: not state._background_tasks)
 
 
 @pytest.mark.asyncio
@@ -361,16 +361,13 @@ async def test_side_run_id_never_leaks_to_main_channels(tmp_path, monkeypatch):
             json={"question": "q"},
         )
         side_run_id = (await turn_resp.json())["run_id"]
-        await asyncio.wait_for(side_started.wait(), timeout=5.0)
+        await await_until(side_started)
 
         state.broadcast_ws("chat_message", {"slot": "parent", "content": "main"})
         state.broadcast_ws("chat_done", {"slot": "parent"})
 
         side_release.set()
-        for _ in range(50):
-            if not state._background_tasks:
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(lambda: not state._background_tasks)
 
     main = [(t, p) for t, p in events if t in _MAIN_CHAT_EVENT_TYPES]
     for etype, payload in main:
@@ -1705,7 +1702,7 @@ async def test_side_stop_cancels_in_flight_turn_and_settles(tmp_path, monkeypatc
         await client.post("/api/chat/slots/parent/side/open", json={})
         turn = await client.post("/api/chat/slots/parent/side/turn", json={"question": "hangs?"})
         run_id = (await turn.json())["run_id"]
-        await asyncio.wait_for(started.wait(), timeout=5.0)
+        await await_until(started)
 
         slot = state._slots["parent"]
         assert slot._side.task is not None and not slot._side.is_complete
@@ -1766,7 +1763,7 @@ async def test_side_stop_cancels_the_backend_session(tmp_path, monkeypatch):
     async with TestClient(TestServer(app)) as client:
         await client.post("/api/chat/slots/parent/side/open", json={})
         await client.post("/api/chat/slots/parent/side/turn", json={"question": "hangs?"})
-        await asyncio.wait_for(started.wait(), timeout=5.0)
+        await await_until(started)
         stop = await client.post("/api/chat/slots/parent/side/stop", json={})
         assert (await stop.json()) == {"ok": True}
 
@@ -1811,7 +1808,7 @@ async def test_side_stop_does_not_clobber_a_replacement_turn(tmp_path, monkeypat
         await client.post("/api/chat/slots/parent/side/open", json={})
         turn = await client.post("/api/chat/slots/parent/side/turn", json={"question": "q1"})
         run_id = (await turn.json())["run_id"]
-        await asyncio.wait_for(started.wait(), timeout=5.0)
+        await await_until(started)
         slot = state._slots["parent"]
         side = slot._side
 
@@ -1891,17 +1888,17 @@ async def test_concurrent_side_stops_settle_the_row_exactly_once(tmp_path, monke
         await client.post("/api/chat/slots/parent/side/open", json={})
         turn = await client.post("/api/chat/slots/parent/side/turn", json={"question": "hangs?"})
         run_id = (await turn.json())["run_id"]
-        await asyncio.wait_for(started.wait(), timeout=5.0)
+        await await_until(started)
 
         # First stop: enters the await window and parks inside provider.cancel.
         first = asyncio.ensure_future(client.post("/api/chat/slots/parent/side/stop", json={}))
-        await asyncio.wait_for(in_cancel.wait(), timeout=5.0)
+        await await_until(in_cancel)
         # Second stop while the first is parked: must hit the claimed early-out.
         second = await client.post("/api/chat/slots/parent/side/stop", json={})
         assert (await second.json()) == {"ok": True}
         # Let the first finish.
         hold_cancel.set()
-        first_resp = await asyncio.wait_for(first, timeout=5.0)
+        first_resp = await await_until(first)
         assert (await first_resp.json()) == {"ok": True}
 
         slot = state._slots["parent"]
@@ -1963,7 +1960,7 @@ async def test_side_stop_appends_no_row_when_turn_ends_normally(tmp_path, monkey
         await client.post("/api/chat/slots/parent/side/open", json={})
         turn = await client.post("/api/chat/slots/parent/side/turn", json={"question": "q?"})
         run_id = (await turn.json())["run_id"]
-        await asyncio.wait_for(started.wait(), timeout=5.0)
+        await await_until(started)
         stop = await client.post("/api/chat/slots/parent/side/stop", json={})
         assert (await stop.json()) == {"ok": True}
         slot = state._slots["parent"]
@@ -2050,13 +2047,13 @@ async def test_a_submit_during_the_stop_window_does_not_replace_the_cancelled_tu
         await client.post("/api/chat/slots/parent/side/open", json={})
         turn = await client.post("/api/chat/slots/parent/side/turn", json={"question": "q1"})
         run_id = (await turn.json())["run_id"]
-        await asyncio.wait_for(started.wait(), timeout=5.0)
+        await await_until(started)
         slot = state._slots["parent"]
 
         # Stop R1: task.cancel() lands, the stub flips is_complete=True and parks
         # in its cancel-cleanup. The stop handler is now awaiting that cleanup.
         stop = asyncio.ensure_future(client.post("/api/chat/slots/parent/side/stop", json={}))
-        await asyncio.wait_for(in_cancel_cleanup.wait(), timeout=5.0)
+        await await_until(in_cancel_cleanup)
 
         # The exact GPT seam: is_complete is already True here, so WITHOUT the
         # is_stopping claim the busy gate would read idle and dispatch q2 as a
@@ -2068,7 +2065,7 @@ async def test_a_submit_during_the_stop_window_does_not_replace_the_cancelled_tu
 
         # Let the stop finish its cancel-cleanup + settle.
         hold_cancel_cleanup.set()
-        stop_resp = await asyncio.wait_for(stop, timeout=5.0)
+        stop_resp = await await_until(stop)
         assert (await stop_resp.json()) == {"ok": True}
 
     # Only the original turn was ever dispatched to _run_side_turn — the submit
@@ -2128,7 +2125,7 @@ async def test_side_stop_settles_the_client_when_cleanup_wedges(tmp_path, monkey
         await client.post("/api/chat/slots/parent/side/open", json={})
         turn = await client.post("/api/chat/slots/parent/side/turn", json={"question": "hangs?"})
         run_id = (await turn.json())["run_id"]
-        await asyncio.wait_for(started.wait(), timeout=5.0)
+        await await_until(started)
         slot = state._slots["parent"]
 
         stop = await client.post("/api/chat/slots/parent/side/stop", json={})

@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 import kiro_crew.config as config_pkg
-from kiro_crew.config import loader, migration, section_builders, sections
+from kiro_crew.config import loader, loader_builders, migration, section_builders, sections
 from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS, MAX_RUNTIME_CEILING_SECS
 
 # Every name each facade module held before the section/loader owners were split
@@ -481,8 +481,8 @@ class TestLoaderSeamsReachTheOwners:
         assert [n for n in moved if getattr(loader, n) is not getattr(section_builders, n)] == []
         loader_owned = sorted(
             n
-            for n, v in vars(loader).items()
-            if n.startswith("_build_") and getattr(v, "__module__", "") == loader.__name__
+            for n, v in vars(loader_builders).items()
+            if n.startswith("_build_") and getattr(v, "__module__", "") == loader_builders.__name__
         )
         assert loader_owned == [
             "_build_agent_config",

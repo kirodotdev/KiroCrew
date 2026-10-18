@@ -58,7 +58,7 @@ import re
 import sys
 from fractions import Fraction
 
-#: Server-side bounds (``validation.py`` FieldSpec for monitor_start/update).
+#: Server-side bounds (``validation_parts/core_agent_schemas.py`` FieldSpec for monitor_start/update).
 SERVER_MAX_CYCLES = 1000
 SERVER_MIN_INTERVAL_SECS = 15
 SERVER_MAX_INTERVAL_SECS = 86400

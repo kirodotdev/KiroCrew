@@ -34,7 +34,7 @@ which cell a measurement would pay for.
 Five things keep the exception from growing into the per-harness table this
 projection exists to remove:
 
-* an entry is admissible ONLY where the deciding set's own comment in ``backends.py``
+* an entry is admissible ONLY where the deciding set's own comment in its ``backends_*`` owner
   says the gap is evidence. ``test_backend_cards`` reads that comment and fails an
   entry the vocabulary does not support, so the table cannot drift away from the
   prose and the threshold is a gate rather than a convention to remember;
@@ -159,7 +159,7 @@ grows the other's fields.
 
 It cannot live in ``backends.py`` either: the ``vocabulary-home`` ratchet
 (``scripts/check_harness_parity.py``, H8) reserves the ``ACP_BACKENDS_*`` spelling
-for that module, so a projection over those sets is a function in a module of its
+for that module and its owners, so a projection over those sets is a function in a module of its
 own -- the same shape, and for the same reason, as
 ``host_auth.backends_retired_by_host_logout()``.
 """

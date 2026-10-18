@@ -1,6 +1,6 @@
 """Coverage for the Kiro Crew gateway's deterministic cron-execution paths.
 
-``test_slack_gateway.py``, ``test_cron_gateway_integration.py`` and
+``test_slack_gateway_cron.py``, ``test_cron_gateway_integration.py`` and
 ``test_cron_gateway_integration_llm.py`` drive the LLM (``message``) arm of
 ``_cron_callback`` thoroughly, but the two
 deterministic arms — ``job.command`` (shell) and ``job.script`` (Python
@@ -26,7 +26,7 @@ Everything is driven through mocked collaborators: the sandbox runners, the
 governance gate, SEL and the cron service are all patched, so no subprocess, no
 socket and no write outside the per-test ``KIROCREW_HOME`` (pinned by
 ``test/conftest.py``) happens. Style and patch seams mirror
-``test_slack_gateway.py`` / ``test_cron_gateway_integration.py``.
+``test_slack_gateway_cron.py`` / ``test_cron_gateway_integration.py``.
 """
 
 from __future__ import annotations
@@ -1568,7 +1568,7 @@ def _channel_transport() -> MagicMock:
     # OBJECT, not a number, so ``chunk_for_transport`` cannot compare it and the
     # send never happens. 0 = not byte-capped, which is the character path these
     # tests are about (Webex is the byte-capped one). Same reason the fakes in
-    # test_cross_surface_mirror.py and test_chat_runner_coverage.py declare it.
+    # test_cross_surface_mirror.py and test_chat_runner_coverage_output.py declare it.
     transport.capabilities = MagicMock(max_message_chars=4096, max_message_bytes=0)
     transport.send_message = AsyncMock(return_value="m1")
     transport.resolve_configured_target = AsyncMock(return_value=None)

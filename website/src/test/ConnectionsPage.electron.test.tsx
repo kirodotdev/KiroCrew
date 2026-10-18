@@ -18,7 +18,7 @@
 // shell is faked by seeding `window.kirocrew` in a hoisted block — the real
 // derivation in src/lib/electron.ts is what runs, exactly as
 // App.linuxElectron.test.tsx does it. The browser-side assertions live in
-// ConnectionsPage.coverage.test.tsx ("the approval tab") and are untouched by
+// ConnectionsPage.coverage.connect.test.tsx ("the approval tab") and are untouched by
 // this file; both must hold.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { StrictMode } from 'react'

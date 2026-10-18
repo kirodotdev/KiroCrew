@@ -22,7 +22,6 @@ if TYPE_CHECKING:
     import json
 
     from kiro_crew.slack.gateway import (
-        CRON_NOTIFICATION_KIND,
         CronClaimTimeDenied,
         CronJob,
         CronQueueTimeout,
@@ -459,10 +458,11 @@ async def _deliver_script_result(
                 wrapped = f'[Cron notification: "{label}"]\n{message}\n[/Cron notification]'
                 inject_cls = json.dumps({"cronLabel": label})
                 if slot.running:
-                    qid = slot.queue_append(wrapped, kind=CRON_NOTIFICATION_KIND)
-                    _cls = json.loads(inject_cls)
-                    _cls["queue_id"] = qid
-                    slot.append("queued", wrapped, json.dumps(_cls))
+                    # Imported here: this function runs on the facade's globals,
+                    # which a module-level import in this owner never reaches.
+                    from kiro_crew.dashboard.cron_inject import queue_cron_notification
+
+                    queue_cron_notification(slot, wrapped, label)
                 else:
                     # `cls` is not persisted for role `inject`, so the label
                     # must also ride in `meta`, which is — otherwise the row

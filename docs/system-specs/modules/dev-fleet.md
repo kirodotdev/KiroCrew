@@ -58,6 +58,25 @@ Destructive worktree operations retain the lock order `_wt_lock(name)` ->
 `_MAKE_LIVE_LOCK` -> `_GIT_MUTATION_LOCK`; changing either ordering can strand a build or
 deadlock removal against a live cutover.
 
+## Frontend component boundaries
+
+`website/src/pages/DevFleetPage.tsx` is the page and its only import path. It keeps
+the page's state, effects and actions (the sync and provision poll loops, the row
+actions, prune, restart and Make Live), the notification bus the page writes to,
+the log-window merge and the relative-time label. The owners beside it take new
+work for their part:
+
+- `devFleetPageModel.ts` owns the fleet payload types, the sync step-marker
+  protocol, the restart identity handshake and its route-independent watcher, the
+  provision progress model, the prune labels and the Switch back dismissal receipt.
+- `DevFleetPageMenus.tsx` owns the row-actions menu and the confirm popover.
+- `DevFleetPageRow.tsx` owns a row's action buttons, its Pull+Build and provision
+  steppers, the pod readout and the expanded detail panel.
+- `DevFleetPagePrune.tsx` owns the prune review and progress dialogs.
+- `DevFleetPageNotices.tsx` owns the notices between the header and the table.
+
+Every other module imports the page, never an owner.
+
 ## Main Checkout Discovery
 
 Every git operation is rooted at `MAIN_REPO`, the primary checkout whose worktrees the

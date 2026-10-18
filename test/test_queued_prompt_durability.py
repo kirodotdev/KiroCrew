@@ -53,6 +53,7 @@ from kiro_crew.history import (
     SLOT_OWNED_META_KEYS,
     ConversationLog,
 )
+from kiro_crew.testing.wait import async_wait_until
 
 #: The logger the durable-queue warning is emitted on, so a caplog assertion
 #: names the real emitter rather than the root logger.
@@ -662,7 +663,6 @@ class TestEnqueueStartsTheWriteImmediately:
 
     @pytest.mark.asyncio
     async def test_a_queued_prompt_reaches_disk_without_the_periodic_flush(self, tmp_path) -> None:
-        import asyncio as _asyncio
 
         from kiro_crew.dashboard.chat_delivery import queue_for_next_turn
 
@@ -672,16 +672,15 @@ class TestEnqueueStartsTheWriteImmediately:
 
         queue_for_next_turn(state, slot, "my follow-up", directive_user_origin=True)
         # Only the executor hand-off is awaited here; no flush loop is running.
-        for _ in range(50):
-            if _meta(state).get("queued_prompts"):
-                break
-            await _asyncio.sleep(0.02)
+        await async_wait_until(
+            lambda: _meta(state).get("queued_prompts"),
+            describe=lambda: "queued_prompts not yet persisted",
+        )
 
         assert [e["content"] for e in _meta(state)["queued_prompts"]] == ["my follow-up"]
 
     @pytest.mark.asyncio
     async def test_the_write_never_runs_on_the_event_loop(self, tmp_path) -> None:
-        import asyncio as _asyncio
         import threading
 
         from kiro_crew.dashboard.chat_delivery import queue_for_next_turn
@@ -700,10 +699,7 @@ class TestEnqueueStartsTheWriteImmediately:
         state.flush_slot_now = _record
 
         queue_for_next_turn(state, slot, "my follow-up", directive_user_origin=True)
-        for _ in range(50):
-            if seen:
-                break
-            await _asyncio.sleep(0.02)
+        await async_wait_until(lambda: seen, describe=lambda: "flush not yet called")
 
         assert seen and loop_thread not in seen
 
@@ -723,7 +719,6 @@ class TestEnqueueStartsTheWriteImmediately:
 
     @pytest.mark.asyncio
     async def test_a_failed_background_write_is_logged_not_raised(self, tmp_path, caplog) -> None:
-        import asyncio as _asyncio
 
         from kiro_crew.dashboard.chat_delivery import queue_for_next_turn
 
@@ -734,10 +729,12 @@ class TestEnqueueStartsTheWriteImmediately:
 
         with caplog.at_level("WARNING"):
             queue_for_next_turn(state, slot, "my follow-up", directive_user_origin=True)
-            for _ in range(50):
-                if any("Queued-prompt persist failed" in r.getMessage() for r in caplog.records):
-                    break
-                await _asyncio.sleep(0.02)
+            await async_wait_until(
+                lambda: any(
+                    "Queued-prompt persist failed" in r.getMessage() for r in caplog.records
+                ),
+                describe=lambda: f"caplog has {len(caplog.records)} records",
+            )
 
         assert any("Queued-prompt persist failed" in r.getMessage() for r in caplog.records)
         # Still owed, so the periodic flush retries it.
@@ -789,10 +786,10 @@ class TestOneWriterPerSlot:
         assert slot._queue_persist_owed is True
         release.set()
 
-        for _ in range(100):
-            if len(_meta(state).get("queued_prompts") or []) == 2:
-                break
-            await _asyncio.sleep(0.02)
+        await async_wait_until(
+            lambda: len(_meta(state).get("queued_prompts") or []) == 2,
+            describe=lambda: f"queued_prompts={_meta(state).get('queued_prompts')}",
+        )
 
         # One writer at a time, and the prompt that arrived mid-write is still
         # carried: the debt is settled by a follow-up pass, not dropped.
@@ -802,7 +799,6 @@ class TestOneWriterPerSlot:
 
     @pytest.mark.asyncio
     async def test_the_single_flight_is_released_after_a_failed_write(self, tmp_path) -> None:
-        import asyncio as _asyncio
 
         from kiro_crew.dashboard.chat_delivery import queue_for_next_turn
 
@@ -812,10 +808,10 @@ class TestOneWriterPerSlot:
         state.flush_slot_now = MagicMock(side_effect=OSError("disk gone"))
 
         queue_for_next_turn(state, slot, "mine", directive_user_origin=True)
-        for _ in range(50):
-            if not slot._queue_persist_inflight:
-                break
-            await _asyncio.sleep(0.02)
+        await async_wait_until(
+            lambda: not slot._queue_persist_inflight,
+            describe=lambda: f"inflight={slot._queue_persist_inflight}",
+        )
 
         # A failure that left the flag set would silence every later immediate
         # write for this slot's whole lifetime.
@@ -841,10 +837,10 @@ class TestOneWriterPerSlot:
         state.flush_slot_now = _count
 
         queue_for_next_turn(state, slot, "mine", directive_user_origin=True)
-        for _ in range(50):
-            if _meta(state).get("queued_prompts"):
-                break
-            await _asyncio.sleep(0.02)
+        await async_wait_until(
+            lambda: _meta(state).get("queued_prompts"),
+            describe=lambda: "queued_prompts not yet persisted",
+        )
         await _asyncio.sleep(0.1)
 
         # The follow-up is conditional on the queue still differing from disk, so

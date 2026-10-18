@@ -33,6 +33,7 @@ from kiro_crew.history import (
     _SESSION_MAX_BYTES,
     ConversationLog,
 )
+from kiro_crew.testing.wait import async_wait_until
 
 
 # ── Bug 1: cross-process advisory flock ──────────────────────────────────────
@@ -129,9 +130,7 @@ class TestCrossProcessLock:
         monkeypatch.setattr(history_mod, "_FLOCK_ACQUIRE_TIMEOUT_S", 30.0)
 
         def _no_sleep_on_loop(_secs: float) -> None:
-            raise AssertionError(
-                "on-loop acquire must never sleep/poll (blocks the event loop)"
-            )
+            raise AssertionError("on-loop acquire must never sleep/poll (blocks the event loop)")
 
         monkeypatch.setattr(history_mod._time, "sleep", _no_sleep_on_loop)
         log = ConversationLog(base_dir=tmp_path)
@@ -195,9 +194,7 @@ class TestCrossProcessLock:
 
         n = 200
         appender = ctx.Process(target=_mp_appender, args=(str(tmp_path), "k", n))
-        consolidator = ctx.Process(
-            target=_mp_consolidator, args=(str(tmp_path), "k", 400)
-        )
+        consolidator = ctx.Process(target=_mp_consolidator, args=(str(tmp_path), "k", 400))
         consolidator.start()
         appender.start()
         appender.join(timeout=60)
@@ -442,9 +439,7 @@ class TestOnLoopPersistDiscipline:
         asyncio.run(_run())
         # And the guard tripped BEFORE any write landed.
         fresh = ConversationLog(base_dir=tmp_path)
-        assert "un-offloaded" not in [
-            m["content"] for m in fresh._read_messages("k")
-        ]
+        assert "un-offloaded" not in [m["content"] for m in fresh._read_messages("k")]
 
     def test_metadata_mutator_on_loop_also_guarded(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -513,9 +508,7 @@ class TestOnLoopPersistDiscipline:
 
         asyncio.run(_run())
         fresh = ConversationLog(base_dir=tmp_path)
-        assert "vetted-on-loop" in [
-            m["content"] for m in fresh._read_messages("k")
-        ]
+        assert "vetted-on-loop" in [m["content"] for m in fresh._read_messages("k")]
 
     def test_offloaded_call_does_not_trip_guard(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -532,13 +525,10 @@ class TestOnLoopPersistDiscipline:
 
         async def _run() -> None:
             append_off_loop(log, "k", "assistant", "offloaded-ok")
-            for _ in range(50):
-                if any(
-                    m.get("content") == "offloaded-ok"
-                    for m in log.read_messages("k")
-                ):
-                    return
-                await asyncio.sleep(0.02)
+            await async_wait_until(
+                lambda: any(m.get("content") == "offloaded-ok" for m in log.read_messages("k")),
+                describe=lambda: f"messages: {log.read_messages('k')}",
+            )
 
         asyncio.run(_run())
         assert "offloaded-ok" in [m["content"] for m in log.read_messages("k")]
@@ -551,9 +541,7 @@ class TestOnLoopPersistDiscipline:
         monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_PERSIST", "1")
         log = ConversationLog(base_dir=tmp_path)
         log.append("k", "user", "off-loop-fine")  # no running loop
-        assert "off-loop-fine" in [
-            m["content"] for m in log.read_messages("k")
-        ]
+        assert "off-loop-fine" in [m["content"] for m in log.read_messages("k")]
 
     def test_production_mode_warns_and_proceeds_not_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -593,9 +581,7 @@ class TestOnLoopPersistDiscipline:
 
         # No raise, write landed, and the loud diagnostic fired.
         fresh = ConversationLog(base_dir=tmp_path)
-        assert "prod-on-loop" in [
-            m["content"] for m in fresh._read_messages("k")
-        ]
+        assert "prod-on-loop" in [m["content"] for m in fresh._read_messages("k")]
         assert any(
             "ON the event loop" in r.getMessage() for r in records
         ), "expected a loud on-loop diagnostic warning in production mode"
@@ -652,9 +638,7 @@ class TestOnLoopPersistDiscipline:
 
 # ── Bug 2: tab_id index invalidation + no permanent [] sentinel ───────────────
 class TestTabIdIndexInvalidation:
-    def test_chain_picks_up_session_created_after_first_read(
-        self, tmp_path: Path
-    ) -> None:
+    def test_chain_picks_up_session_created_after_first_read(self, tmp_path: Path) -> None:
         """A session opened under an existing tab_id AFTER the chain was first
         read must be linked in. An append that does not invalidate the
         cached index makes the second session's messages vanish from
@@ -680,9 +664,7 @@ class TestTabIdIndexInvalidation:
         log = ConversationLog(base_dir=tmp_path)
         log.append("dashboard_chat-2-1", "user", "a1", tab_id="G")
         # Prime the index for tab_id G.
-        assert [m["content"] for m in log.recent_chained("dashboard_chat-2-1")] == [
-            "a1"
-        ]
+        assert [m["content"] for m in log.recent_chained("dashboard_chat-2-1")] == ["a1"]
 
         # Second session starts WITHOUT the tab_id, then gets linked via metadata.
         log.append("dashboard_chat-2-2", "user", "b1")
@@ -825,9 +807,7 @@ class TestConsolidationOffsetAfterRotation:
         # …the consolidator now writes back its stale pre-rotation offset with
         # the generation it snapshotted. The generation mismatch must force a
         # reset instead of applying the shifted index.
-        log.mark_consolidated(
-            "k", total_at_snapshot, generation=generation_at_snapshot
-        )
+        log.mark_consolidated("k", total_at_snapshot, generation=generation_at_snapshot)
         assert log.get_metadata("k")["last_consolidated"] == 0
         assert log.unconsolidated_count("k") == retained
 
@@ -865,9 +845,7 @@ class TestConsolidationOffsetAfterRotation:
         log.mark_consolidated("k", 3, generation=0)
         assert log.get_metadata("k")["last_consolidated"] == 3
 
-    def test_snapshot_for_consolidation_is_atomic_over_rotation(
-        self, tmp_path: Path
-    ) -> None:
+    def test_snapshot_for_consolidation_is_atomic_over_rotation(self, tmp_path: Path) -> None:
         """``snapshot_for_consolidation`` returns messages, total and generation
         from ONE consistent point, so the (offset, generation) pair it yields
         can never straddle a rotation.
@@ -904,9 +882,7 @@ class TestConsolidationOffsetAfterRotation:
         assert log.get_metadata("k")["last_consolidated"] == 6
         assert log.unconsolidated_count("k") == 0
 
-    def test_snapshot_pairs_offset_and_generation_consistently(
-        self, tmp_path: Path
-    ) -> None:
+    def test_snapshot_pairs_offset_and_generation_consistently(self, tmp_path: Path) -> None:
         """Demonstrates the exact race the snapshot fixes: the OLD two-read
         pairing can hand mark_consolidated a PRE-rotation offset with a
         POST-rotation generation, which is then applied because the stored
@@ -1132,11 +1108,10 @@ class TestAppendOffLoop:
 
         async def _run() -> None:
             append_off_loop(log, "k", "assistant", "hi")
-            # Let the executor task finish.
-            for _ in range(50):
-                if "thread" in seen:
-                    break
-                await asyncio.sleep(0.02)
+            await async_wait_until(
+                lambda: "thread" in seen,
+                describe=lambda: f"seen={seen}",
+            )
 
         asyncio.run(_run())
         assert seen.get("thread") is not None
@@ -1187,20 +1162,15 @@ class TestUpdateMetadataOffLoop:
 
         async def _run() -> None:
             update_metadata_off_loop(log, "k", {"title": "async-title"})
-            for _ in range(50):
-                if "thread" in seen:
-                    break
-                await asyncio.sleep(0.02)
+            await async_wait_until(
+                lambda: "thread" in seen,
+                describe=lambda: f"seen={seen}",
+            )
 
         asyncio.run(_run())
         assert seen.get("thread") is not None
-        assert seen["thread"] != loop_thread, (
-            "update_metadata ran on the event loop thread"
-        )
-        assert (
-            ConversationLog(base_dir=tmp_path).get_metadata("k")["title"]
-            == "async-title"
-        )
+        assert seen["thread"] != loop_thread, "update_metadata ran on the event loop thread"
+        assert ConversationLog(base_dir=tmp_path).get_metadata("k")["title"] == "async-title"
 
 
 # ── async handler callers offload _locked ops off the event loop ─────────────
@@ -1232,9 +1202,7 @@ class TestOnLoopCallersOffload:
             return real_update_metadata(*args, **kwargs)  # type: ignore[arg-type]
 
         log.update_metadata_if = _spy  # type: ignore[method-assign]
-        monkeypatch.setattr(
-            chat_title, "slot_history_key", lambda _slot: "dashboard:t"
-        )
+        monkeypatch.setattr(chat_title, "slot_history_key", lambda _slot: "dashboard:t")
 
         state = MagicMock()
         state.conversation_log = log
@@ -1286,9 +1254,7 @@ class TestOnLoopCallersOffload:
         state._slots = {}
         state.push_slots_update = MagicMock()
         state.push_refresh = MagicMock()
-        monkeypatch.setattr(
-            sessions_mod, "_remove_slot_for_history_key", AsyncMock()
-        )
+        monkeypatch.setattr(sessions_mod, "_remove_slot_for_history_key", AsyncMock())
 
         request = MagicMock()
         request.get = {}.get  # the dashboard user: no app claim
@@ -1298,9 +1264,7 @@ class TestOnLoopCallersOffload:
         resp = asyncio.run(sessions_mod.api_session_delete(request))
 
         assert seen.get("thread") is not None
-        assert seen["thread"] != loop_thread, (
-            "delete_session ran on the event loop thread"
-        )
+        assert seen["thread"] != loop_thread, "delete_session ran on the event loop thread"
         assert b'"ok": true' in resp.body
         assert not log._path("gone").exists()
 
@@ -1356,9 +1320,9 @@ class TestMetadataRenameRetryNeedsTheOffload:
             f"the rename was not retried past the violation (attempts={seen['n']}); "
             f"one attempt means the write did not take the off-loop path"
         )
-        assert log.get_metadata(self.KEY).get("agent") == "writer", (
-            "the retried rename did not publish the metadata"
-        )
+        assert (
+            log.get_metadata(self.KEY).get("agent") == "writer"
+        ), "the retried rename did not publish the metadata"
 
     def test_on_loop_metadata_write_is_refused_by_the_same_violation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1511,14 +1475,14 @@ def _mp_appender(dir_str: str, key: str, n: int) -> None:
     log = ConversationLog(base_dir=Path(dir_str))
     for i in range(n):
         log.append(key, "user", f"a-{i}")
-        time.sleep(0.001)
+        time.sleep(0.001)  # flake-ok: deliberate write-pacing in a subprocess stress helper
 
 
 def _mp_consolidator(dir_str: str, key: str, iters: int) -> None:
     log = ConversationLog(base_dir=Path(dir_str))
     for _ in range(iters):
         log.mark_consolidated(key, 1)
-        time.sleep(0.0005)
+        time.sleep(0.0005)  # flake-ok: deliberate write-pacing in a subprocess stress helper
 
 
 # ── Bug 7: dashboard persistence save must hold _locked vs. append_off_loop ──
@@ -1713,9 +1677,9 @@ class TestDashboardSaveHoldsLock:
             "fast-path save dropped a previously-preserved cross-process append "
             f"(got {contents!r}) — cached foreign lines must be re-emitted"
         )
-        assert contents.count("cron-m3") == 1, (
-            f"cron-m3 duplicated across repeated fast-path saves (got {contents!r})"
-        )
+        assert (
+            contents.count("cron-m3") == 1
+        ), f"cron-m3 duplicated across repeated fast-path saves (got {contents!r})"
         assert contents.count("m1") == 1
         assert contents.count("m2") == 1
 
@@ -1751,9 +1715,7 @@ class TestDashboardSaveHoldsLock:
             "offset could then be applied against post-rotation messages"
         )
 
-    def test_foreign_append_content_identity_dedup_semantics(
-        self, tmp_path, monkeypatch
-    ):
+    def test_foreign_append_content_identity_dedup_semantics(self, tmp_path, monkeypatch):
         """Pin the LEGACY id-less fallback: the narrowed, timestamp-first
         foreign-append identity (GPT 5.6 HIGH + arbiter long-term item 2).
 
@@ -1780,9 +1742,7 @@ class TestDashboardSaveHoldsLock:
         """
         import json
 
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.state.config_dir", lambda: tmp_path
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard.chat_persistence import (
             _frozen_prefix_and_foreign_appends,
         )
@@ -1907,9 +1867,7 @@ class TestForeignFoldMidIdentity:
         slot._frozen_prefix_cache = None
         return _frozen_prefix_and_foreign_appends(slot, path, 0, window_entries)
 
-    def test_id_matched_durable_copy_folds_without_archive_churn(
-        self, tmp_path, monkeypatch
-    ):
+    def test_id_matched_durable_copy_folds_without_archive_churn(self, tmp_path, monkeypatch):
         """An injector's durable copy (fresh ts, SAME ``meta.mid`` as its window
         row) folds in pass 0 with an EMPTY ``dedup_dropped``: the ids matching
         exactly makes it unambiguous, so it must not be routed to the
@@ -1944,9 +1902,7 @@ class TestForeignFoldMidIdentity:
             f"the foreign-dedup archive (got {dedup_dropped!r})"
         )
 
-    def test_distinct_ids_with_identical_content_stay_distinct(
-        self, tmp_path, monkeypatch
-    ):
+    def test_distinct_ids_with_identical_content_stay_distinct(self, tmp_path, monkeypatch):
         """Two identical-content rows with DISTINCT ids resolve exactly: the
         window row's copy (same id) folds silently, the genuinely distinct row
         (different id) is preserved as foreign (consequence 2 — the
@@ -2028,13 +1984,9 @@ class TestForeignFoldMidIdentity:
             "a disk line whose id matches no window entry must be preserved as "
             "foreign regardless of body equality"
         )
-        assert dedup_dropped == [], (
-            "an id-settled foreign line is not an ambiguous drop"
-        )
+        assert dedup_dropped == [], "an id-settled foreign line is not an ambiguous drop"
 
-    def test_legacy_line_still_folds_into_id_carrying_window_entry(
-        self, tmp_path, monkeypatch
-    ):
+    def test_legacy_line_still_folds_into_id_carrying_window_entry(self, tmp_path, monkeypatch):
         """A restored legacy transcript: the on-disk line is id-less, but the
         restore minted the window row a fresh id. The exact (ts, role, content)
         tier must still fold the line — an id-carrying window entry stays
@@ -2064,9 +2016,7 @@ class TestForeignFoldMidIdentity:
         )
         assert dedup_dropped == [], "an exact fold is silent"
 
-    def test_mixed_id_and_idless_lines_in_one_ts_group_lose_nothing(
-        self, tmp_path, monkeypatch
-    ):
+    def test_mixed_id_and_idless_lines_in_one_ts_group_lose_nothing(self, tmp_path, monkeypatch):
         """Opus 5 review HIGH: an id-foreign line must keep its ``ts`` group
         AMBIGUOUS. If it were excluded from the disk-side counter, a group
         holding an id-carrying foreign line PLUS an id-less foreign line and
@@ -2110,9 +2060,7 @@ class TestForeignFoldMidIdentity:
         )
         assert dedup_dropped == []
 
-    def test_reused_mid_with_distinct_body_falls_back_conservatively(
-        self, tmp_path, monkeypatch
-    ):
+    def test_reused_mid_with_distinct_body_falls_back_conservatively(self, tmp_path, monkeypatch):
         """GPT 5.6 review HIGH: ``meta.mid`` is caller-suppliable
         (``_ChatSlot.append`` preserves a pre-existing id, and ``/api/chat``
         meta rides through), so bare id equality may pair two genuinely
@@ -2155,13 +2103,11 @@ class TestForeignFoldMidIdentity:
             "an uncorroborated id match must not silently drop a distinct "
             f"message (got {foreign_contents!r})"
         )
-        assert dedup_dropped == [], (
-            "the exact copy folds via the exact tier, not the archive tiebreak"
-        )
+        assert (
+            dedup_dropped == []
+        ), "the exact copy folds via the exact tier, not the archive tiebreak"
 
-    def test_id_match_corroborated_by_ts_folds_silently(
-        self, tmp_path, monkeypatch
-    ):
+    def test_id_match_corroborated_by_ts_folds_silently(self, tmp_path, monkeypatch):
         """The ``ts`` half of the corroboration rule: an id-matched line whose
         ``ts`` equals the entry's (an in-place edit of a durably-copied row —
         same id, same ts, superseded body) is the entry's own persisted copy
@@ -2258,6 +2204,7 @@ class TestForeignFoldMidIdentity:
         import logging
 
         from kiro_crew.dashboard.chat_persistence import _frozen_prefix_and_foreign_appends
+
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         caplog.set_level(logging.WARNING, logger="kiro_crew.dashboard.chat_persistence")
         slot = self._make_state(tmp_path).get_or_create_slot("kc_warn_foreign")
@@ -2410,21 +2357,22 @@ class TestOnLoopFdCleanupDeferred:
                 # This deliberately exercises the low-level on-loop primitive, so
                 # it bypasses the strict off-loop discipline guard.
                 from kiro_crew.history import allow_on_loop_persist
+
                 with allow_on_loop_persist():
                     log.append("k", "assistant", "on-loop-append")
-                for _ in range(50):
-                    if release_threads:
-                        break
-                    await asyncio.sleep(0.02)
+                await async_wait_until(
+                    lambda: bool(release_threads),
+                    describe=lambda: f"release_threads={release_threads}",
+                )
             finally:
                 platform_compat.release_lock = real_release  # type: ignore[assignment]
 
         asyncio.run(_run())
 
         assert release_threads, "release_lock was never called on the last exit"
-        assert all(t != loop_thread for t in release_threads), (
-            "descriptor release/close ran on the event-loop thread"
-        )
+        assert all(
+            t != loop_thread for t in release_threads
+        ), "descriptor release/close ran on the event-loop thread"
         # The on-loop append still persisted.
         assert any(
             m.get("content") == "on-loop-append"
@@ -2463,7 +2411,8 @@ class TestAppendIfAbsent:
         assert log.append_if_absent("k", "assistant", "ping") is True
         msgs = ConversationLog(base_dir=tmp_path).read_messages("k")
         assert [(m["role"], m["content"]) for m in msgs] == [
-            ("user", "ping"), ("assistant", "ping")
+            ("user", "ping"),
+            ("assistant", "ping"),
         ]
 
     def test_check_and_write_are_atomic_under_lock(
@@ -2512,7 +2461,9 @@ class TestAppendIfAbsent:
         first_wrote = log.append_if_absent("k", "assistant", dup)
         t.join(10)
 
-        contents = [m.get("content") for m in ConversationLog(base_dir=tmp_path)._read_messages("k")]
+        contents = [
+            m.get("content") for m in ConversationLog(base_dir=tmp_path)._read_messages("k")
+        ]
         assert first_wrote is True
         assert second_wrote.get("v") is False, "second append_if_absent should have skipped"
         assert contents.count(dup) == 1, f"duplicate result on disk: {contents!r}"
@@ -2536,10 +2487,10 @@ class TestAppendIfAbsent:
 
         async def _run() -> None:
             append_if_absent_off_loop(log, "k", "assistant", "hi")
-            for _ in range(50):
-                if "thread" in seen:
-                    break
-                await asyncio.sleep(0.02)
+            await async_wait_until(
+                lambda: "thread" in seen,
+                describe=lambda: f"seen={seen}",
+            )
 
         asyncio.run(_run())
         assert seen.get("thread") is not None

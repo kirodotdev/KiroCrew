@@ -807,7 +807,7 @@ mean nothing. The parameter exists and is tested for a caller that has a real
 system prompt; no ACP site supplies one.
 
 `context/composed` reports CHARACTERS as measured and tokens as an ESTIMATE, at
-four characters per token, the same figure `dashboard/handlers/usage.py` uses. The
+four characters per token, the same figure `dashboard/handlers/usage_sessions.py` uses. The
 entry says so in `tokens_estimated`. The only exact tokenizer available is the
 wrong one for the served model, and a fabricated exact count would be worse than
 an admitted estimate. Three blocks the design names -- steering, tool specs and
@@ -1227,8 +1227,8 @@ error code -- never the unit) per window, and demoted to debug inside the window
 broken crew log cannot flood the log; one `WarningBudget` governs the writer's reports and
 the emitter's alike. This matters at three sites: the approval decision resolves on the
 websocket handler task, so an exception there would break the click handler and hang the
-waiting turn; `_default_session_model` runs inside `asyncio.to_thread` behind a
-swallow-all `except`; and `_fallback_swap_for_turn` holds `slot._model_pick_lock`. The
+waiting turn; `_inherited_default_model` runs the session resolver inside
+`asyncio.to_thread`, behind that resolver's swallow-all `except`; and `_fallback_swap_for_turn` holds `slot._model_pick_lock`. The
 emitter is called from the callers of the last two, never inside them.
 
 ### Retention: a failed append is retried, a refused one is not

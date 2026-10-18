@@ -25,6 +25,7 @@ from test_subagent_continuable import continuation_runtime as _continuation_runt
 
 from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.execution_context import execution_for_store
+from kiro_crew.testing.wait import await_until
 from kiro_crew.validation import SPAWN_RUN_SCHEMA, ValidationError, validate_tool_args
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
@@ -655,7 +656,7 @@ class TestEffortDropReason:
 
 class TestNoSpawnSiteDropWarning:
     """The spawn path does not emit its own drop warning: the
-    provider factory's effort gate (config/loader.py) is the single warning
+    provider factory's effort gate (config/loader_config.py) is the single warning
     authority, covering spawn, dashboard slot, and cron alike. The tool-result
     verdict (effort_dropped/effort_applied) remains the caller-facing signal;
     the operator-facing log line now comes from the gate itself."""
@@ -1574,14 +1575,15 @@ class TestAllocatedEffortReceipt:
                             ),
                             replace_existing=True,
                         )
-                    await asyncio.wait_for(
-                        sessions.get_or_create(
-                            parent,
-                            agent="member-parent" if member else "worker",
-                            crew_agent="worker" if member else "",
-                            cwd=world.project,
+                    await await_until(
+                        asyncio.ensure_future(
+                            sessions.get_or_create(
+                                parent,
+                                agent="member-parent" if member else "worker",
+                                crew_agent="worker" if member else "",
+                                cwd=world.project,
+                            )
                         ),
-                        timeout=10,
                     )
                     sessions.release(parent)
                     assert sessions.get_agent_selection(parent) == (selection, "worker")
@@ -1621,7 +1623,7 @@ class TestAllocatedEffortReceipt:
                 assert response.status == 200, receipt
                 task = manager._tasks.get(receipt["id"])
                 if task is not None:
-                    await asyncio.wait_for(task, timeout=10)
+                    await await_until(task)
                 info = manager._agents[receipt["id"]]
                 assert info.done and not info.error, info.error
                 assert info.memory_mode == slot.memory_mode
@@ -1636,8 +1638,9 @@ class TestAllocatedEffortReceipt:
                     or role_model
                     or (member_model or template_model or global_model if member else global_model)
                 )
-                expected_override = None if template_model else expected_model
-                assert provider.model_override == expected_override
+                # The session's own ladder resolves the bound template's pin too,
+                # so the factory is handed the model rather than left to find it.
+                assert provider.model_override == expected_model
                 assert actual_inputs[key]["reasoning_effort_override"] == "high"
                 assert await asyncio.to_thread(private_memory_store_for_session, key) == store
 
@@ -1661,5 +1664,7 @@ class TestAllocatedEffortReceipt:
                 else:
                     assert expected_model in receipt["effort_dropped"]
             finally:
-                await asyncio.wait_for(manager.cancel_all(), timeout=10)
-                await asyncio.wait_for(sessions.close_all(drain_timeout=0), timeout=10)
+                await await_until(asyncio.ensure_future(manager.cancel_all()))
+                await await_until(
+                    asyncio.ensure_future(sessions.close_all(drain_timeout=0)), timeout=10
+                )

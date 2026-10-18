@@ -406,6 +406,13 @@ service-manager mechanics differ.
 | Memory / CPU ceiling | `MemoryMax` + `CPUQuota` (cgroup) | **not enforced** | memory + process cap (Job object); **no CPU cap** |
 | `pod api` / `pod token` | yes | yes | `token` yes, `api` **no** (needs an AF_UNIX dashboard socket) |
 
+Every backend keeps earlier starts' output: launchd and the Windows wrapper
+append each boot to the same `pod.out.log` / `pod.err.log`, and the user journal
+keeps the unit's past runs. So a failed `pod up` marks where this start begins
+(the files' sizes, or the time for `journalctl --since`) before it starts the
+pod, and shows only what this start wrote. An earlier start's `FATAL` stays in
+`pod logs`, not in this start's failure report.
+
 On a host with none of the three — a Linux box with no systemd on PATH, or any
 other platform — the verbs that touch a service manager **refuse with a single
 actionable line** and exit 1. They never raise a traceback, and `pod install`

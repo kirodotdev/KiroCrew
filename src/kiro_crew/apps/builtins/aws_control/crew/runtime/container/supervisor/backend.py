@@ -99,9 +99,10 @@ APPROVAL_MODE: str = "yolo"
 # vault stores.
 ENV_KIRO_IDENTITY: str = "KIRO_IDENTITY"
 
-# kiro-cli's own API-key credential (loader.py:366 CRED_KIRO_API_KEY). Nothing
-# delivers it and the backend must not receive it: it is re-injected into the
-# kiro-cli child (loader.py:1167/1182) and is not denied by the sandbox env filter
+# kiro-cli's own API-key credential (``config/loader_credentials.py``
+# ``CRED_KIRO_API_KEY``). Nothing delivers it and the backend must not receive it:
+# it is re-injected into the kiro-cli child (``config/loader_credentials.py``
+# ``inject_kiro_cli_api_key``) and is not denied by the sandbox env filter
 # (runtime.py:1251), so a value arriving here by any route would land in the
 # auto-approved worker's environment. It is withheld explicitly (below) rather than
 # left to the absence of a delivery path, because the backend env starts as a

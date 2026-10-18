@@ -1239,6 +1239,7 @@ def test_a_runner_turn_still_records_and_the_marker_is_the_runners_own(tmp_path,
     retires it, with the record, when it ends; and the messaging driver that runs
     channel turns never touches it -- pinned at the driver's source, so a driver
     that starts setting it reds this test rather than resurrecting the stale record."""
+    import importlib
     import inspect
 
     from turn_harness import Do, TurnScript, run_turn
@@ -1270,7 +1271,7 @@ def test_a_runner_turn_still_records_and_the_marker_is_the_runners_own(tmp_path,
     assert seen["inside"] is True, "the runner publishes its marker while the turn runs"
     assert seen["slot"]._active_turn_session_key == "", "the runner retires its marker"
     assert seen["slot"]._steer_audience_fences == {}, "the runner's teardown empties the record"
-    for module in (driver, dispatch):
+    for module in (driver, dispatch, *map(importlib.import_module, dispatch._OWNERS)):
         assert "_active_turn_session_key" not in inspect.getsource(module), module.__name__
     assert "_active_turn_session_key" in inspect.getsource(sc._in_runner_turn)
 

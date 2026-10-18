@@ -252,7 +252,7 @@ def test_register_generation_attestation_requires_managed_server_name(
 
 
 def test_the_stubs_owned_subcommand_set_is_the_managed_server_table() -> None:
-    """``_KIROCREW_MCP_SUBCOMMANDS`` is spelled out in ``stub.py`` so the stub's
+    """``_KIROCREW_MCP_SUBCOMMANDS`` is spelled out in ``stub_register.py`` so the stub's
     timed cold-start path never imports ``mcp_discovery``; this is the ratchet
     that keeps the copy honest.
 

@@ -626,7 +626,7 @@ class TestLedgerMutationsAreLocked(_Env):
         """Drive the exact interleaving deterministically: a new entry is appended DURING
         hygiene's read, in the window `_write_all` would otherwise clobber.
 
-        A real thread race would be flaky; patching `read_entries_for_update` (the
+        A real thread race would be flaky; patching `_read_counted_for_update` (the
         mutation-path read hygiene starts from) to append-then-return reproduces it every
         run. The lock does not prevent the interleaving here (same process, re-entrant
         open) — the assertion is that the appended entry SURVIVES, which it cannot if
@@ -638,17 +638,17 @@ class TestLedgerMutationsAreLocked(_Env):
         ledger.upsert(LedgerEntry.create(pattern="original", fix="f"))
         latecomer = LedgerEntry.create(pattern="arrived during hygiene", fix="f2")
 
-        real_read = ledger.read_entries_for_update
+        real_read = ledger._read_counted_for_update
         fired = {"done": False}
 
         def read_then_append():
-            rows = real_read()
+            read = real_read()
             if not fired["done"]:
                 fired["done"] = True
                 ledger._append(latecomer)  # the concurrent POST
-            return rows
+            return read
 
-        with mock.patch.object(ledger, "read_entries_for_update", read_then_append):
+        with mock.patch.object(ledger, "_read_counted_for_update", read_then_append):
             ledger.hygiene()
 
         patterns = {e.pattern for e in ledger.read_entries()}

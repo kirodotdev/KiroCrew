@@ -12,6 +12,7 @@ shrink -- no operation may add a path or raise a count.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 from pathlib import Path
 
@@ -412,7 +413,17 @@ class TestExemplarStaysClean:
         # dashboard/handlers/memory.py is the control case: it wraps every
         # store call in asyncio.to_thread while handlers/knowledge.py next door
         # does not. It must never appear in the baseline.
+        # The facade's owners (its ``_OWNERS``) hold the moved handlers, so each is read too.
         rel = "src/kiro_crew/dashboard/handlers/memory.py"
-        source = (ROOT / rel).read_text(encoding="utf-8")
-        assert gate._violations_in_source(source) == []
-        assert rel not in gate._read_baseline(BASELINE)
+        tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
+        owners = next(
+            ast.literal_eval(node.value)
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(getattr(target, "id", "") == "_OWNERS" for target in node.targets)
+        )
+        assert owners, "the memory facade names no owners -- the join went blind"
+        for path in (rel, *(f"src/{owner.replace('.', '/')}.py" for owner in owners)):
+            source = (ROOT / path).read_text(encoding="utf-8")
+            assert gate._violations_in_source(source) == []
+            assert path not in gate._read_baseline(BASELINE)

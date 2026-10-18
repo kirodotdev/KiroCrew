@@ -339,9 +339,15 @@ export function useColumnMatches({ subagentStartedCounts, subagentApprovalCounts
       })) === col.state_key
     }
     const slotTags = slot.tags || []
-    // "include untagged" OR'd on top of any tag filter
+    if (!col.tag_ids || col.tag_ids.length === 0) {
+      // No tag filter. With the flag on, this is the "Untagged" column and shows
+      // untagged sessions ONLY — the behaviour the issue's label promises, keyed
+      // on the filter fields alone (not the display name, so renaming never
+      // changes what a column shows). With the flag off it is "All sessions".
+      return col.include_untagged ? slotTags.length === 0 : true
+    }
+    // "include untagged" OR'd on top of a non-empty tag filter
     if (col.include_untagged && slotTags.length === 0) return true
-    if (!col.tag_ids || col.tag_ids.length === 0) return true
     const set = new Set(slotTags)
     if (col.mode === 'all') return col.tag_ids.every(t => set.has(t))
     if (col.mode === 'none') return !col.tag_ids.some(t => set.has(t))

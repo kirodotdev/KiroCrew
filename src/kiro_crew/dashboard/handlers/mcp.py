@@ -2383,7 +2383,7 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
     # accept a name this guard would reject, which is how a junk key — including
     # one written before this guard existed — can still be cleared. Guarding a
     # remover would strand exactly what the writer guard is meant to prevent.
-    # Same writer-validates / remover-does-not split that ``security.py``'s
+    # Same writer-validates / remover-does-not split that ``security_trusted_apps.py``'s
     # trusted-app grant and revoke pair documents.
     if not _is_valid_mcp_name(name):
         return web.json_response(
@@ -2455,7 +2455,7 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
 # the data home and defeats pod isolation, the lazy legacy-home migration and
 # test isolation. The name below is an opt-in override (None = live home) so
 # existing monkeypatch call sites keep working. See config.md "Data Home";
-# dashboard/handlers/usage.py is the reference implementation.
+# dashboard/handlers/usage_store.py is the reference implementation.
 _KIROCREW_MCP_JSON: Path | None = None
 
 

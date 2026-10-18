@@ -48,6 +48,7 @@ from kiro_crew.history_consolidation_memory import (
     _SEMANTIC_OMISSION_NOTICE,
     _bounded_semantic_table,
     _is_plausible_memory_file,
+    _reroute_lesson_semantic_keys,
     _session_facets,
     _withhold_unseen_deletes,
 )
@@ -799,6 +800,13 @@ async def _consolidate(
                 # is not a completed pass.
                 return _CONSOLIDATION_REFUSED
             return None
+
+        # A ``lesson.*`` key the model placed in the ``semantic`` array is moved
+        # to ``lessons`` here, once, on the shared result -- before it branches
+        # to the V1 (_write_structured_memory / _save_lessons) and V2
+        # (apply_consolidation) write paths -- so a misfiled lesson gets the
+        # lessons path's dedup and checks instead of a duplicate semantic row.
+        result = _reroute_lesson_semantic_keys(result, self._logger)
 
         # A pending model result cannot authorize writes from a deleted or
         # edited transcript, or outrank a newer user turn. Appended assistant

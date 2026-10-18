@@ -153,6 +153,8 @@ _SUPPLEMENTARY_WINDOWS: dict[str, int] = {
     "deepseek-3.2": 164_000,
     "minimax-m2.5": 196_000,
     "minimax-m2.1": 196_000,
+    "minimax-m3": 1_000_000,
+    "minimax-m2.7": 204_800,
     "glm-5": 200_000,
     "gpt-5.6-sol": 272_000,
     "gpt-5.6-terra": 272_000,

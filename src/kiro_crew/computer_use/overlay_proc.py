@@ -8,11 +8,11 @@ config, computes no paths, and never touches the accessibility or capture
 surfaces. Every "should we?" question was already answered by
 :mod:`kiro_crew.computer_use.overlay` before a byte reached this process.
 
-**Why this module owns its own ctypes, when ``macos_ffi`` is otherwise the only
-module allowed to.** That invariant exists so the FFI hazards of the AX/CG
+**Why this module owns its own ctypes, when ``macos_ffi`` and its owners are otherwise
+the only modules allowed to.** That invariant exists so the FFI hazards of the AX/CG
 surface — the segfault-on-missing-argtypes, the CFString lifetime discipline, the
-uncatchable ``CFArrayGetValueAtIndex`` abort — are audited in ONE file inside the
-gateway process. This module is not in the gateway process. It is a separate
+uncatchable ``CFArrayGetValueAtIndex`` abort — are audited in ONE module family inside
+the gateway process. This module is not in the gateway process. It is a separate
 executable whose entire address space is disposable: it touches the AppKit/ObjC
 runtime (a surface ``macos_ffi`` does not model at all), it needs a main-thread
 run loop that the gateway's main thread cannot provide because that thread is the

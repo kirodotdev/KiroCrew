@@ -389,6 +389,9 @@ def build_consolidation_task(
         "     <one paragraph of guidance on a single line>\n"
         "  5. Keep the file's leading markdown header. Write NOTHING else to the "
         "file — no commentary, no fences.\n"
+        "  6. A candidate header may end in <!-- seen:N --> <!-- last:<ISO8601Z> -->: "
+        "how often that lesson was staged. Weigh it, but never write either "
+        "comment into the merged file.\n"
         "Report in your final message how many patterns you kept, merged and "
         "dropped, and why anything was dropped."
     )

@@ -1525,7 +1525,10 @@ class TestTheRealPackagePath:
         the case where none does.
         """
         from kiro_crew import dashboard_package
+        from kiro_crew.dashboard_templates import instance
 
+        # On a template page: a crewmate that adopted none is shown no page at all.
+        instance.adopt("atlas", "project-report")
         self.gate(monkeypatch, resolved=None)
         got = self.read()
         assert got.state == dashboard_package.STATE_LIVE
@@ -1628,6 +1631,9 @@ class TestTheRealPackagePath:
         and answers ``live`` WITH a Model. Keying the write route's refusal on the state
         would refuse that too -- every write this product already serves.
         """
+        from kiro_crew.dashboard_templates import instance
+
+        instance.adopt("atlas", "project-report")
         self.gate(monkeypatch, resolved=None)
         got = self.read()
         assert got.model is not None
@@ -1788,7 +1794,9 @@ class TestTheRealGateAndStore:
         cases that DO refuse each name a record the listing proved is a dashboard.
         """
         from kiro_crew import dashboard_package
+        from kiro_crew.dashboard_templates import instance
 
+        instance.adopt("atlas", "project-report")
         store = self._store(monkeypatch, tmp_path)
         # A record of ANOTHER kind, damaged so its own metadata -- and therefore its
         # kind -- will not read. No dashboard package is stored for this member.

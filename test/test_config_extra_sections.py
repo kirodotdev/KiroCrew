@@ -2,8 +2,9 @@
 
 An edition-contributed top-level section (written by a companion) must survive
 the ``load()`` -> ``to_dict()`` -> ``save()`` round-trip instead of being
-silently dropped. See ``KiroCrewConfig._extra_sections`` /
-``_KNOWN_CONFIG_SECTIONS`` in ``config/loader.py``.
+silently dropped. See ``KiroCrewConfig._extra_sections`` in
+``config/loader_config.py`` and ``_KNOWN_CONFIG_SECTIONS`` in
+``config/resolution.py``.
 """
 
 from __future__ import annotations

@@ -972,7 +972,7 @@ async def api_chat_slot_slack_pause(request: web.Request) -> web.Response:
     name = request.match_info.get("name") or request.match_info.get("slot", "")
     slot = state.get_slot(name) or state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
 
     try:
         body = await request.json()

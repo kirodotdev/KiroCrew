@@ -5,7 +5,7 @@ another one, change its model, reload its agent process, and take another one un
 the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 36 of its tools, written for the agent that is about to use them.
+for all 37 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
@@ -18,7 +18,8 @@ The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
   `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`,
   `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
   `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`,
-  `chat_session_pin`. These organize what the person sees in the sidebar.
+  `chat_session_pin`, `chat_session_pin_move`. These organize what the person
+  sees in the sidebar.
 
 Everything a created session does is visible: it appears in the user's sidebar
 like any other tab, they can read it, take it over, and close it. This is how
@@ -801,6 +802,27 @@ step that removes the folder, and refuses rather than unfiling anything. Empty
 the folder first with `chat_folder_move` and `chat_folder_move_session`. The
 dashboard refuses an app agent or a crew member outright.
 
+## Pinned order
+
+Pinned sessions sit at the top of their folder (or of the top level), in an
+order the person sets by dragging them. The gateway stores that order, so every
+browser and every agent sees the same one.
+
+| Tool | Arguments | What it does |
+|---|---|---|
+| `chat_session_pin_move` | `session` (required), `before`, `after` | Move a pinned session next to another pinned session in the same sidebar group |
+
+Pass exactly one of `before` / `after`, naming a pinned session in the same group.
+`chat_folder_tree` lists each group's pinned sessions first, in the order the
+sidebar draws them, so read it to pick the anchor. Pinned sessions the person
+never reordered follow in most-recent-activity order, and the first call
+stores that order for every one of them: the person's own sidebar sort lives in
+their browser, where the gateway cannot read it. The call only reorders: it
+does not pin, unpin, or move a session between folders. The order is the
+person's own preference, so an app agent, a crew member, or an agent in a
+session a channel can reach is refused; the person can still reorder from the
+browser even when that session has a channel link.
+
 ## Tags
 
 One shared vocabulary of labels. A **status tag** is what a Trello-style column
@@ -947,10 +969,11 @@ An agent in a **Persistent Agent Channel** (the multi-agent channel in
 `CHANNEL_AGENT_BLOCKED_TOOLS`.
 Reading a dashboard transcript would pull a private conversation into a channel
 other humans can see, and sending would run channel text as a turn inside it.
-`chat_session_pin` is blocked there too, because it rearranges the person's
-sidebar the same way `session_adopt` and `session_release` do. The tool also
-refuses a `channel:` caller itself, before listing any session, so an
-auto-approved call that never reaches the permission prompt is still refused.
+`chat_session_pin` and `chat_session_pin_move` are blocked there too, because
+they rearrange the person's sidebar the same way `session_adopt` and
+`session_release` do. Each tool also refuses a `channel:` caller itself,
+before listing any session, so an auto-approved call that never reaches the
+permission prompt is still refused.
 `chat_tag_column_create`, `chat_tag_column_move` and `session_move_to_column`
 are blocked and refused at dispatch in the same way, because they rearrange the
 person's board.

@@ -6602,10 +6602,14 @@ class TestDenyMatchingIsQuoteNormalized:
         anything.
         """
         from kiro_crew import security
+        from kiro_crew.security import rm_floor
 
         monkeypatch.setattr(
             security, "_deny_segment_views", lambda segment, emit_self=True: (segment.lower(),)
         )
+        # The argv floor reads quote-removed argv on its own, so it is switched off
+        # here to keep this cross about the normalized VIEW alone.
+        monkeypatch.setattr(rm_floor, "_RM_FLOOR_BY_KIND", {})
         for cmd in self.RESPELLINGS:
             assert security.is_denied(cmd) is None, (
                 f"raw text now matches {cmd!r} on its own -- the cross above no longer "
@@ -7282,27 +7286,19 @@ class TestDenyMatchingIsQuoteNormalized:
         assert is_denied(r"$'dd\0junk' if=/dev/zero of=/dev/sda") is not None
         assert is_denied(r"$'mkfs\0junk' /dev/sda") is not None
 
-    def test_flag_interposition_is_a_catalog_gap_not_a_view_gap(self):
-        """DOCUMENTED GAP, with the evidence that places it outside this change.
+    def test_flag_interposition_is_caught_by_the_argv_floor(self):
+        """An interposed flag breaks the contiguous catalog text, not the argv.
 
         ``$'rm\\0junk' -rf --no-preserve-root /`` normalizes to exactly the command
-        bash runs -- the view is correct -- but the rule ``rm -rf /.*`` requires its
-        text contiguous and does not tolerate an interposed flag, so nothing matches.
-        The PLAIN spelling is allowed too, on base and here alike, which is what
-        shows this is the built-in rule's authoring rather than anything
-        normalization can reach: no view can make a non-matching pattern match.
-
-        Closing it means editing a shipped rule's regex, which changes matching for
-        the whole catalog and is a separate decision.  Pinned so the gap is findable;
-        when it is closed, the first assertion flips.
+        bash runs, and the rule ``rm -rf /.*`` requires its text contiguous, so no
+        view makes the pattern match. The recursive-force argv floor reads the flags
+        wherever they sit, so both spellings are refused.
         """
         from kiro_crew import security
 
-        # The catalog cannot see the flag-interposed form in ANY spelling...
-        assert is_denied("rm -rf --no-preserve-root /") is None
-        # ...while the contiguous shape the rule is authored for is refused.
+        assert is_denied("rm -rf --no-preserve-root /") is not None
+        assert is_denied(r"$'rm\0junk' -rf --no-preserve-root /") is not None
         assert is_denied("rm -rf /") is not None
-        # ...and the view for the escaped spelling IS the command bash runs.
         views = security._deny_segment_views(r"$'rm\0junk' -rf --no-preserve-root /")
         assert "rm -rf --no-preserve-root /" in views, views
 
@@ -10794,6 +10790,123 @@ class TestHostsFileWarmUp:
         assert _denied_by("ssh -o ConnectTimeout=10 backup@host uptime") is None
         assert _denied_by("ssh loopalias uptime") == self._RULE
 
+    def _publish_during_first_gate_parse(self, monkeypatch, addrs):
+        """The enrichment worker publishes *addrs* while the gate parses the file."""
+        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", False)
+        real_parse = _argv_floor._parse_hosts_file
+        parses: "list[bool]" = []
+
+        def _parse(*args, **kwargs):
+            parses.append(_argv_floor._NETLINK_ADDRS_PUBLISHED)
+            if len(parses) == 1:
+                _argv_floor._publish_netlink_addresses(addrs)
+            return real_parse(*args, **kwargs)
+
+        monkeypatch.setattr(_argv_floor, "_parse_hosts_file", _parse)
+        return parses
+
+    def test_a_cold_ssh_to_a_remote_alias_is_allowed_when_publication_lands_mid_parse(
+        self, monkeypatch
+    ):
+        # The first ssh on a cold worker: the enrichment worker's netlink
+        # publish (its real publish step) lands inside the gate's parse, as it
+        # does whenever that parse is slow.  The remote alias is judged again
+        # on the new key and allowed, not refused as ssh-to-self.
+        path = self._hosts(monkeypatch, "10.4.4.4 farbox\n")
+        parses = self._publish_during_first_gate_parse(monkeypatch, {"203.0.113.66"})
+        assert _denied_by("ssh farbox uptime") is None
+        assert parses == [False, True]
+        assert _argv_floor._HOSTS_FILE_CACHE[path][0][-2] is True
+        assert "kirocrew-hosts-warm" not in self.started
+
+    def test_the_second_judgement_uses_the_newly_published_own_set(self, monkeypatch):
+        # The address published mid-parse is this host's, and a line aliases
+        # a name to it: the retry judges that alias local, never remote.
+        self._hosts(monkeypatch, "10.4.4.4 farbox\n203.0.113.66 ownalias\n")
+        parses = self._publish_during_first_gate_parse(monkeypatch, {"203.0.113.66"})
+        # The first table, judged before publication, maps ownalias remote:
+        # only the own-state re-check stops that table from being served.
+        assert _argv_floor._hosts_file_verdict("ownalias") is True
+        assert parses == [False, True]
+        assert _denied_by("ssh ownalias uptime") == self._RULE
+        assert _denied_by("ssh farbox uptime") is None
+
+    def test_a_file_edited_during_the_gate_parse_is_pending_at_once(self, monkeypatch):
+        # Only a moved OWN state is judged again: a FILE that changes
+        # mid-parse is refused as pending after one parse, with the warm
+        # scheduled.
+        path = self._hosts(monkeypatch, "10.4.4.4 farbox\n")
+        real_parse = _argv_floor._parse_hosts_file
+        parses: "list[int]" = []
+
+        def _parse(*args, **kwargs):
+            parses.append(1)
+            table = real_parse(*args, **kwargs)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write("10.5.5.5 newbox\n")
+            return table
+
+        monkeypatch.setattr(_argv_floor, "_parse_hosts_file", _parse)
+        assert _argv_floor._hosts_file_verdict("farbox") is True
+        assert len(parses) == 1
+        assert _argv_floor._HOSTS_FILE_CACHE == {}
+        assert self.started.count("kirocrew-hosts-warm") == 1
+
+    def test_an_own_set_that_moves_before_a_remote_answer_is_judged_again(self, monkeypatch):
+        # The own set grows between the table's key and the remote answer's
+        # re-check: the gate judges again on the grown set and serves it.
+        self._hosts(monkeypatch, "10.4.4.4 farbox\n")
+        reads: "list[int]" = []
+
+        def _own():
+            reads.append(1)
+            grown = len(reads) > 2  # the key read and its re-check see the old set
+            return frozenset({"127.0.0.1"} | ({"198.51.100.9"} if grown else set()))
+
+        monkeypatch.setattr(_argv_floor, "_own_host_names", _own)
+        assert _argv_floor._hosts_file_verdict("farbox") is False
+        assert "kirocrew-hosts-warm" not in self.started
+
+    def test_a_key_still_moving_after_every_attempt_is_pending(self, monkeypatch):
+        # The bound: an own set that moves on every read is judged a fixed
+        # number of times, then a remote entry is refused as pending.
+        self._hosts(monkeypatch, "10.4.4.4 farbox\n")
+        reads = iter(range(10_000))
+        monkeypatch.setattr(
+            _argv_floor, "_own_host_names", lambda: frozenset({f"10.200.0.{next(reads) % 250}"})
+        )
+        real_parse = _argv_floor._parse_hosts_file
+        parses: "list[int]" = []
+
+        def _parse(*args, **kwargs):
+            parses.append(1)
+            return real_parse(*args, **kwargs)
+
+        monkeypatch.setattr(_argv_floor, "_parse_hosts_file", _parse)
+        assert _argv_floor._hosts_file_verdict("farbox") is True
+        assert len(parses) == _argv_floor._HOSTS_KEY_MOVED_ATTEMPTS == 3
+        assert _argv_floor._HOSTS_FILE_CACHE == {}
+        assert self.started.count("kirocrew-hosts-warm") == 1
+
+    def test_a_failed_re_stat_after_the_parse_is_pending_at_once(self, monkeypatch):
+        # The key cannot be re-read after a real parse: a read failure, not a
+        # moved own state, so the gate refuses at once, unretried.
+        self._hosts(monkeypatch, "10.4.4.4 farbox\n")
+        real_key = _argv_floor._hosts_file_key
+        calls: "list[int]" = []
+
+        def _key(path):
+            calls.append(1)
+            if len(calls) == 2:  # the re-stat after the parse
+                raise PermissionError(path)
+            return real_key(path)
+
+        monkeypatch.setattr(_argv_floor, "_hosts_file_key", _key)
+        assert _argv_floor._hosts_file_verdict("farbox") is True
+        assert len(calls) == 2
+        assert _argv_floor._HOSTS_FILE_CACHE == {}
+        assert self.started.count("kirocrew-hosts-warm") == 1
+
     def test_an_own_address_learned_later_re_marks_a_cached_alias(self, monkeypatch):
         self._hosts(monkeypatch, "198.51.100.44 lateownalias\n")
         _argv_floor._warm_hosts_file_cache()
@@ -10936,7 +11049,11 @@ class TestHostsFileWarmUp:
 
         self._fire_after_lookup(monkeypatch, _merge)
         assert _argv_floor._host_is_self("ownalias") is True
-        assert "kirocrew-hosts-warm" in self.started
+        # The gate judged the file again on the merged set, in the same call:
+        # the alias is cached local, so no pending warm was needed.
+        assert dict(_argv_floor._HOSTS_FILE_CACHE)[str(self.tmp_path / "hosts")][1] == {
+            "ownalias": True
+        }
 
     def test_publication_after_the_key_check_is_a_deny(self, monkeypatch):
         # A table judged before publication must not be read as authoritative
@@ -11233,3 +11350,86 @@ class TestHostsFileWarmUp:
         monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (big,))
         _argv_floor._hosts_file_warm_worker()
         assert _argv_floor._host_is_self("swapbox") is False
+
+
+class TestRecursiveForceRmFloor:
+    """The rm seatbelt: recursive + force against root or home itself."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "RM -fr /",
+            "RM -r -f /",
+            "RM -Rf /",
+            "RM --recursive --force /",
+            "RM -rf --no-preserve-root /",
+            "RM / -rf",
+            "RM -fr -- /",
+            "RM -fr /*",
+            "RM -fr '/'",
+            "/bin/RM -fr /",
+            "RM -fr ~",
+            "RM -fr ~/",
+            "RM -fr ~/*",
+            "RM -rf $HOME",
+            "RM -rf ${HOME}",
+            'RM -rf "$HOME"',
+            'RM -rf "${HOME}/"',
+            "X=1 RM -fr ~",
+            "cd /tmp && RM -fr ~",
+            "# clean up\nRM -fr ~",
+            "# don't keep old files\nRM -fr ~",
+            'echo "$(RM -fr ~)"',
+            "echo $(RM -fr /)",
+        ],
+    )
+    def test_a_recursive_force_wipe_of_root_or_home_is_denied(self, command):
+        assert is_denied(command.replace("RM", "rm")) is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "RM -fr /tmp/x",
+            "RM -rf $HOME/.cache",
+            "RM -rf ./build",
+            "RM -f /",
+            "RM -r /tmp/x",
+            "RM -fr $HOME_BACKUP",
+            "echo RM -fr /",
+            # Quoted text and heredoc bodies are data, not commands.
+            'git commit -m "pin floor; RM -fr / and RM -fr ~ are refused"',
+            'rg -n "RM -fr /|RM -fr ~" src/',
+            "cat > /tmp/body.md <<'EOF'\nRM -fr / is refused\nEOF",
+            "RM -rf dist build  # wipe artifacts / rebuild",
+            "RM -rf '$HOME'",
+            # The double quote resumes after a quoted substitution closes.
+            'git commit -m "$(date +%F): pin floor; RM -fr / and RM -fr ~ are refused"',
+            'echo "Cleaning $(pwd); RM -fr ~ is never run here"',
+            'gh pr create --body "Built from $(git rev-parse HEAD)\nRM -fr ~ and RM -r -f /"',
+            'printf "%s\\n" "$(printf example:) RM -fr ~"',
+            'RM -fr "~/"',
+        ],
+    )
+    def test_descendants_and_partial_flags_stay_allowed(self, command):
+        assert is_denied(command.replace("RM", "rm")) is None
+
+    def test_the_floor_reports_the_catalog_row(self):
+        reason = is_denied("rm -fr /")
+        assert reason is not None
+        assert "local-destructive-rm-rf-root" in reason
+
+    def test_a_disabled_row_disables_its_floor(self):
+        only_home = ["rm -rf ~.*"]
+        assert is_denied("rm -fr /", denied_regexes=only_home) is None
+        assert is_denied("rm -fr ~", denied_regexes=only_home) is not None
+
+    def test_a_floor_error_refuses_only_a_command_that_could_hold_rm(self, monkeypatch):
+        from kiro_crew.security import rm_floor
+
+        def _boom(_text):
+            raise RuntimeError("walk failed")
+
+        monkeypatch.setattr(rm_floor, "_rm_wipe_targets", _boom)
+        assert "could not read" in is_denied("rm -fr /")
+        assert is_denied("git status") is None
+        assert is_denied("echo $PATH") is None

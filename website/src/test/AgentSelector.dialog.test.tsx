@@ -14,9 +14,9 @@
  * exercised faithfully under happy-dom: Radix commits its layer interplay via
  * `ReactDOM.flushSync` dispatches that land inside Testing Library's event
  * batch (see the header of scripts/verify-crews-dialog-select.mjs, which
- * exists for exactly this reason for Radix Select). The end-to-end proof for
- * this component lives in scripts/verify-agent-selector-dialog.mjs — a real
- * browser against the built SPA. What is pinned HERE is the structure that
+ * exists for exactly this reason for Radix Select). The real-browser check for
+ * this component is scripts/verify-agent-selector-dialog.mjs, run on demand
+ * against the built SPA; no CI lane runs it. What is pinned HERE is the structure that
  * makes the fix work, so a regression back to a bare body portal fails fast
  * in unit tests too:
  *

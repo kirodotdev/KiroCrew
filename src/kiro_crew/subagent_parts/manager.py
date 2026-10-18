@@ -463,10 +463,18 @@ class SubagentManager:
         # agent_id -> the per-row answer of the Stop all batch that is
         # cancelling its row and has not reported it yet. A single ``cancel``
         # of such a row joins the batch instead of cancelling and reporting it
-        # again (``cancel_impl``), and a claim whose re-read the cancel may
-        # have overtaken waits for it and re-reads (``claim_and_start``): the
-        # row is in neither ``_queue`` nor ``_agents``.
+        # again (``cancel_impl``): the row is in neither ``_queue`` nor
+        # ``_agents``.
         self._batched_stops: dict[str, asyncio.Future[Any]] = {}
+        # agent_id -> the answer of the start ``claim_and_start`` has in flight
+        # for the row: filed before its ``admitted -> starting`` write is
+        # posted, ``True`` once the run is registered, ``False`` when the
+        # start was refused or retained. A single ``cancel`` that finds the
+        # row ``starting`` with no record yet joins it and then reaps the run
+        # (``cancel_impl``).
+        self._starting_claims: dict[str, asyncio.Future[bool]] = {}
+        # agent_id -> the parent of each start filed in ``_starting_claims``, so Stop all reaches it.
+        self._starting_claim_parents: dict[str, str] = {}
         # agent_id -> the parent of each row filed in ``_batched_stops``, for
         # as long as it is filed: a parent-end teardown's snapshot gates the
         # batch's report of a row that is in neither ``_queue`` nor ``_agents``.

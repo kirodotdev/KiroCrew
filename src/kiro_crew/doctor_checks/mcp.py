@@ -340,10 +340,14 @@ def _doctor_mcp_gateway_daemon(issues: list[str]) -> None:
     cause: a directive tool reports success while the gateway logs
     ``not_derivable``. This line puts the two revisions side by side and names
     the command that replaces the daemon. A mismatch IS an issue: nothing about
-    it is a valid configuration choice.
+    it is a valid configuration choice. The one exception is a daemon whose
+    fingerprint comes from the other rule (``code_fingerprint.same_scheme``):
+    while a live gateway owns it, it belongs to another install on this
+    machine, so it is reported as information and no restart from here is
+    prescribed.
     """
     try:
-        from kiro_crew.code_fingerprint import code_fingerprint
+        from kiro_crew.code_fingerprint import code_fingerprint, same_scheme
         from kiro_crew.mcp_gateway import daemon_control as dc
 
         probe = dc.describe_daemon_detailed()
@@ -367,6 +371,24 @@ def _doctor_mcp_gateway_daemon(issues: list[str]) -> None:
     )
     if info.fingerprint == mine:
         print(f"  mcp gateway daemon: ✅ pid {info.pid}, same code as this install ({owner})")
+        return
+    if info.fingerprint and not same_scheme(info.fingerprint, mine) and info.owner_alive:
+        # One side is a source checkout (a git revision) and the other an
+        # installed build (an mtime stamp), and a live gateway owns it: another
+        # install's daemon, which this install cannot judge. One with no live
+        # owner may have been adopted by this install's gateway, so it falls
+        # through to the issue below, where a restart does replace it.
+        print(
+            f"  mcp gateway daemon: ⏹ pid {info.pid} belongs to another install "
+            f"(runs {info.fingerprint}; this install is {mine}) ({owner})"
+        )
+        render._print_wrapped(
+            "A source checkout and an installed build stamp their code differently, "
+            "so the two cannot be compared. Run `kirocrew doctor` from the install "
+            f"whose gateway started the daemon to check it. If that gateway (pid "
+            f"{info.owner_pid}) should no longer run, stop it: the daemon exits "
+            "once its owner is gone."
+        )
         return
     theirs = info.fingerprint or "unknown (pre-fingerprint build)"
     print(

@@ -10,6 +10,7 @@ from member_memory_helpers import env as _member_env
 
 from kiro_crew.mcp_tools import learn
 from kiro_crew.memory_recall import MAX_RECALL_PAYLOAD_BYTES, _transport_size
+from kiro_crew.testing.wait import wait_until
 
 env = _member_env
 
@@ -127,7 +128,8 @@ def test_recall_switch_discards_all_old_space_ranking(env, monkeypatch, name, wh
                 tier._invalidate_episodic_scoring()
         finally:
             resume.set()
-        result = future.result(timeout=10)
+        wait_until(future.done)
+        result = future.result()
     assert "database backups restored safely" in result["episodic_context"]
     assert "baking bread" not in result["episodic_context"]
     assert all(row["retrieval"].get("cosine") is None for row in result["retrieval"]["facts"])
@@ -179,7 +181,8 @@ def test_lesson_tail_cannot_overwrite_a_later_owner_write(env, monkeypatch, name
             ).fetchone()
         finally:
             resume.set()
-        assert future.result(timeout=10)
+        wait_until(future.done)
+        assert future.result()
     after = tier.db.execute(
         "SELECT value_json, embedding, is_deleted FROM semantic_memory WHERE key=?", (key,)
     ).fetchone()
@@ -221,7 +224,8 @@ def test_lazy_lesson_backfill_cannot_overwrite_owner_edit(env, monkeypatch, sour
             tier._backfill_lesson_embeddings(pace=False)
         finally:
             resume.set()
-        assert future.result(timeout=10)
+        wait_until(future.done)
+        assert future.result()
     row = next(row for row in tier.get_lessons() if row["key"] == key)
     assert struct.unpack("2f", row["embedding"]) == (0.0, 1.0)
 
@@ -233,7 +237,9 @@ def test_recall_inference_does_not_hold_database_lock(env, name):
     with ThreadPoolExecutor(max_workers=1) as pool:
 
         def embed(text):
-            reads.append(pool.submit(tier.count_lessons).result(timeout=5))
+            _count_fut = pool.submit(tier.count_lessons)
+            wait_until(_count_fut.done)
+            reads.append(_count_fut.result())
             return [1.0, 0.0]
 
         tier.embed_fn = embed

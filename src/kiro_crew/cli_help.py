@@ -21,7 +21,7 @@ import argparse
 from typing import Any, Iterable, Iterator, Mapping
 
 # The dashboard port a default install binds. Duplicated as a STRING for help
-# text only; the runtime value is config/loader.py's ``_DEFAULT_PORT``.
+# text only; the runtime value is config/loader_credentials.py's ``_DEFAULT_PORT``.
 _DEFAULT_PORT_TEXT = "5476"
 
 # Ordered sections -> ordered (command, one-line summary) pairs. Order here is

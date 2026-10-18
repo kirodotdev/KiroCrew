@@ -570,6 +570,47 @@ class TestReviewLaneVerdictVisibility:
         assert "harness is absent" not in why, why
         assert "no leg reported" not in why, why
 
+    def test_a_base_table_that_still_requires_a_lane_still_answers(self, tmp_path: Path) -> None:
+        # The post step runs the table from the BASE blob the fold step staged, and a
+        # base can be a revision whose `conclude` still requires `--lane`. Handed none,
+        # that table exits 2 and `bash -e` ends the step before the fail-closed
+        # comment, so the run loses its reason to an argparse error. The case above
+        # runs this tree's lane-free table; this one runs that revision's shape: the
+        # same table, with its parser line back.
+        source = (ROOT / "scripts" / "scope_candidates.py").read_text(encoding="utf-8")
+        parser = (
+            '    c = sub.add_parser("conclude", '
+            'help="map the fold + model signals to ONE lane conclusion")\n'
+        )
+        assert parser in source, "the conclude parser line moved; rebuild the base shape"
+        lane_arg = '    c.add_argument("--lane", required=True, choices=["fork", "same-repo"])\n'
+        harness = tmp_path / "base-harness"
+        harness.mkdir()
+        (harness / "scope_candidates.py").write_text(
+            source.replace(parser, parser + lane_arg), encoding="utf-8"
+        )
+        shutil.copyfile(ROOT / "scripts" / "deny_diff.py", harness / "deny_diff.py")
+        lane = self._scope_lane()
+        _calls, result = self._run_step(
+            lane,
+            tmp_path,
+            existing_body=None,
+            kind="incomplete",
+            extra_env={
+                "HARNESS": str(harness),
+                "FOLDED": "none",
+                "ADJUDICATED": "false",
+                "VALIDATE_RESULT": "failure",
+                "ADJUDICATE_RESULT": "skipped",
+                "VALIDATE_REFUSAL": "corpus-credential",
+            },
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        lines = (tmp_path / "github-output.txt").read_text(encoding="utf-8").splitlines()
+        why = next(line for line in lines if line.startswith("why="))
+        assert "carries a credential shape" in why, why
+
     def _fork_scope_lane(self) -> dict:
         return next(entry for entry in _GUARDED_LANES if entry["id"] == "fork-security-scope")
 

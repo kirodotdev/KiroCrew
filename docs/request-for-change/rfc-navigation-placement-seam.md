@@ -32,7 +32,7 @@ rather than line numbers because every line reference taken from a checkout 962
 commits behind had moved:
 
 - **The manifest field exists and nothing reads it.**
-  `src/kiro_crew/apps/manifest.py::UISidebar` declares `section: str = "Apps"` and
+  `src/kiro_crew/apps/manifest_sections.py::UISidebar` declares `section: str = "Apps"` and
   `order: int = 10`, is a field of `UIConfig` (`UIConfig.sidebar`), round-trips
   through `to_dict`/`from_dict`, and the `ui` key is described in
   `src/kiro_crew/apps/manager.py`. A grep for `ui.sidebar` across `website/src`
@@ -160,7 +160,7 @@ being the only option.
 |---|---|---|---|
 | N1 | `appNav.ts`, `App.tsx` nav assembly | frontend only | yes, read-path only |
 | N2 | `surfaces/registry.ts`, `extensions.ts`, the `vite.config.ts` seam list, `extension-seams.md` | frontend + docs | yes |
-| N3 | `manifest.py` (`UIPage.labelKey`), `AppHost`, `appManifest.ts`, `navLabels.test.tsx` | backend field + frontend | yes, additive field |
+| N3 | `manifest_sections.py` (`UIPage.labelKey`), `AppHost`, `appManifest.ts`, `navLabels.test.tsx` | backend field + frontend | yes, additive field |
 
 N1 needs no data migration: an app that omits `ui.sidebar` gets today's behaviour
 exactly (`section='Apps'`, `order=10`, and with a single page the result is identical

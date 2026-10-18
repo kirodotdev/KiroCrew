@@ -1,4 +1,5 @@
-"""Who a cross-surface delivery may reach: the recipient principal ladder and the channel target."""
+"""Who a cross-surface delivery may reach and the delivery itself: the recipient principal
+ladder, the channel target, and the linked-Slack and cross-surface legs."""
 
 from __future__ import annotations
 
@@ -13,9 +14,15 @@ if TYPE_CHECKING:
         CHAT_TYPE_DIRECT,
         SLACK_NAMESPACE,
         admission_required,
+        channel_egress_parts,
         logger,
+        mirror_is_paused,
         parse_session_key,
+        redact_for_display,
+        redact_via_context,
         sel,
+        send_channel_parts,
+        slack_mirror_is_paused,
         verify_mirror_admission,
     )
 
@@ -568,3 +575,162 @@ def slack_publication_withheld(state: Any, slot: Any, channel_id: Any, thread_ts
     from kiro_crew.dashboard.session_control import publication_withheld
 
     return publication_withheld(state, slot, (None, str(thread_ts), str(channel_id)))
+
+
+async def _deliver_linked_slack_message(
+    state: Any,
+    slot: Any,
+    sessions: Any,
+    session_key: str,
+    message: str,
+) -> None:
+    """Mirror one system message to a linked Slack thread."""
+    slack_client = getattr(state, "slack_client", None)
+    if slack_client is None:
+        return
+    if slack_mirror_is_paused(state, session_key):
+        return
+    thread_ts = getattr(slot, "_slack_thread_ts", "")
+    channel_id = getattr(slot, "_slack_channel", "")
+    if (not thread_ts or not channel_id) and sessions is not None:
+        thread_ts, channel_id = sessions.get_slack_link(session_key)
+    if not (thread_ts and channel_id):
+        return
+    try:
+        await slack_client.post_message(channel_id, message, thread_ts)
+    except Exception:
+        logger.debug("Failed to deliver a message to the linked Slack thread", exc_info=True)
+
+
+async def _deliver_cross_surface_reply(
+    state: Any, session_key: str, assistant_text: str, *, slot: Any = None
+) -> None:
+    """Deliver a completed dashboard reply to a linked NON-Slack channel.
+
+    The channel-neutral leg of cross-surface sync: reads the session's outbound
+    mirror link, resolves the registered ``MessagingTransport`` for that channel
+    and pushes the reply via ``send_message`` — capability-gated on
+    ``supports_proactive_send``. Slack keeps its dedicated rich streaming mirror
+    inline in the turn loop, so it is skipped here. Silent no-op when the session
+    has no non-Slack mirror, the transport is not registered, or the channel
+    cannot send proactively (WhatsApp outside its 24-hour window). A channel whose
+    push is per-TARGET rather than blanket answers that in ``send_message`` itself
+    — WeCom pushes through ``aibot_send_msg`` but only into a conversation the user
+    has already written to. Best-effort: a delivery failure never disrupts the
+    dashboard turn.
+
+    The publish decision and the delivery rest on ONE read of the binding
+    (``get_mirror_link`` and ``get_slack_link``, through
+    ``session_control._read_mirror_binding``): the row is judged against the
+    admissions *slot*'s turn recorded (``session_control.publication_withheld``, the
+    audience fence) and the send resolves its transport from that same row. The
+    mirror-link writer runs off the loop (``chat_mirror._claim_binding`` under
+    ``asyncio.to_thread``), so a decision taken on one read and a send resolved from
+    another could straddle a retarget and publish a transcript the decision never
+    saw into the new room. An unreadable store delivers nothing. *slot* carries the
+    record; a caller with no slot has no turn and no admissions, and gets the plain
+    delivery.
+    """
+    if not assistant_text:
+        return
+    # Disconnected: the binding is retained so a reply there still resolves here,
+    # but turn output stops. Asked before resolving so a muted channel costs no
+    # transport lookup.
+    if mirror_is_paused(state, session_key):
+        return
+    # circular import: session_control imports this package's modules at module level.
+    from kiro_crew.dashboard.session_control import _read_mirror_binding, publication_withheld
+
+    sessions = getattr(state, "sessions", None)
+    if getattr(sessions, "get_mirror_link", None) is None:
+        return
+    binding = _read_mirror_binding(sessions, session_key)
+    if publication_withheld(state, slot, binding):
+        logger.info(
+            "withholding cross-surface reply for %s: %d unresolved audience "
+            "fence(s) (peer steers into, or transcript reads by, this turn)",
+            session_key,
+            len(slot._steer_audience_fences),
+        )
+        return
+    if binding is None:
+        logger.debug(
+            "cross-surface: mirror binding unreadable for %s; skipping mirror", session_key
+        )
+        return
+    target = _resolve_channel_target(state, session_key, binding[0])
+    if target is None:
+        return
+    link, transport = target
+    # Strip, display-redact, number the ``[OPTIONS:]`` choices (``send_message``
+    # takes none, so the mirror builds no button), chunk and send: the shared
+    # unattended-egress leg, ``messaging.egress``. Chunking keeps a long reply
+    # whole rather than hard-truncated by the transport (Telegram caps at 4096).
+    parts = await channel_egress_parts(assistant_text, transport.capabilities, number_options=True)
+    try:
+        await send_channel_parts(transport, link.channel_id, parts, thread_id=link.thread_id)
+        logger.info(
+            "cross-surface: mirrored reply to %s:%s (%d part(s))",
+            link.channel_type,
+            link.channel_id,
+            len(parts),
+        )
+    except Exception:
+        logger.debug("Failed to mirror reply to %s", link.channel_type, exc_info=True)
+
+
+async def _deliver_cross_surface_user_message(
+    state: Any, session_key: str, user_message: str
+) -> None:
+    """Mirror the user's dashboard message to a linked NON-Slack channel.
+
+    The user-message half of the channel-neutral cross-surface leg: before the
+    turn's reply is delivered, push what the user typed in the dashboard to the
+    linked channel so the remote conversation reads coherently (question then
+    reply), matching Slack's ``💬 _msg_`` echo. Capability-gated and best-effort,
+    mirroring ``_deliver_cross_surface_reply``. Slack is handled by its dedicated
+    streaming mirror; the caller guards out slash commands and recovery turns.
+    """
+    if not user_message:
+        return
+    # Same gate as the reply leg: these are the two sites that carry turn output,
+    # and a disconnect silences both or the remote conversation reads as a
+    # question with no answer.
+    if mirror_is_paused(state, session_key):
+        return
+    target = _resolve_mirror_target(state, session_key)
+    if target is None:
+        return
+    link, transport = target
+    try:
+        await transport.send_message(
+            link.channel_id,
+            f"💬 {_prepare_mirror_msg(user_message)}",
+            thread_id=link.thread_id,
+        )
+        logger.info(
+            "cross-surface: mirrored user message to %s:%s",
+            link.channel_type,
+            link.channel_id,
+        )
+    except Exception:
+        logger.debug("Failed to mirror user message to %s", link.channel_type, exc_info=True)
+
+
+def _prepare_mirror_msg(raw_user_message: str) -> str:
+    """Prepare a user message for the cross-surface / Slack mirror echo.
+
+    Redacts through the canonical ``redact_via_context`` egress shim over the
+    FULL text, then truncates — bounding first can cut a credential at the
+    boundary into fragments no redaction regex matches, so it would escape into
+    the mirrored echo. The shim's standalone fallback is the OSS baseline
+    ``security.redact``, so a standalone host keeps the previous redaction
+    behaviour.
+
+    Scanned in DISPLAY form as well, like the assistant leg above and the Slack
+    chokepoint: this echo goes to a channel without passing a renderer, and a
+    credential the user typed with markdown between its halves is whole once the
+    client renders the markup away.
+    """
+    safe, _ = redact_for_display(raw_user_message or "", redact_via_context)
+    return safe[:500]

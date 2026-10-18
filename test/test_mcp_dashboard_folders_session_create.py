@@ -304,6 +304,7 @@ class TestAdvertisedSet:
             "chat_tag_column_move",
             "session_move_to_column",
             "chat_session_pin",
+            "chat_session_pin_move",
             "session_create",
             "session_fork",
             "session_stop",

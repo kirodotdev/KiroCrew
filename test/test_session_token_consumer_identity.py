@@ -5,7 +5,7 @@
 consumers resolved identity on their own and were left on the pre-token sources:
 
 * ``mcp_caller.CallerContext.from_env`` — the client-side resolver. Its real inbound
-  caller is ``mcp_gateway/stub.py``'s register/recaller caller block, so the key it
+  caller is ``mcp_gateway/stub_register.py``'s register/recaller caller block, so the key it
   answers with is what gatewayd stamps on every forwarded call for that connection.
 * ``mcp_shared._resolve_tool_policy`` — the managed-tool-policy lookup, whose
   resolved key becomes the ``X-Session-Key`` of the policy request AND the key its

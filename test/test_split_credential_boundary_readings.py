@@ -123,7 +123,17 @@ class TestTheRepairIsJudgedByTheReadingThatRefusedTheCut:
     def test_the_slack_and_telegram_repairs_take_their_cutter(self) -> None:
         """The judging reading is the caller's own re-cut, so the caller names it."""
         for path in ("slack/renderer.py", "telegram/renderer.py"):
-            tree = ast.parse((SRC / path).read_text(encoding="utf-8"))
+            # Telegram's renderer is read with the owners its methods are bound from.
+            owners = sorted((SRC / "telegram").glob("renderer_*.py")) if "telegram" in path else []
+            paths = [SRC / path, *owners]
+            tree = ast.Module(
+                body=[
+                    node
+                    for source in paths
+                    for node in ast.parse(source.read_text(encoding="utf-8")).body
+                ],
+                type_ignores=[],
+            )
             calls = [
                 node
                 for node in ast.walk(tree)

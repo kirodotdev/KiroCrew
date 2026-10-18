@@ -125,6 +125,15 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ComputerUsePanel.tsx': 'computer-use',
   'InstancesPanel.tsx': 'instances',
   'SecurityPanel.tsx': 'security',
+  // SecurityPanel.tsx's section owners, mapped with it to the Security tab.
+  'SecurityPanelPosture.tsx': 'security',
+  'SecurityPanelApprovals.tsx': 'security',
+  'SecurityPanelDeniedCommands.tsx': 'security',
+  'SecurityPanelTailnet.tsx': 'security',
+  'SecurityPanelTrust.tsx': 'security',
+  'SecurityPanelRedaction.tsx': 'security',
+  'SecurityPanelLayers.tsx': 'security',
+  'SecurityPanelGovernance.tsx': 'security',
   'ConnectionsPanel.tsx': 'connections',
   'SecretsPanel.tsx': 'secrets',
   'NotificationsPanel.tsx': 'notifications',
@@ -199,11 +208,17 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // renders InstancesPanel.tsx's AddInstanceForm — both files map to the same
   // tab so a primitive added to either lands on the right deep link.
   'RemoteCrewPanel.tsx': 'instances',
+  // RemoteCrewPanel.tsx's component owners (the setup tab's cards, one crew row).
+  'RemoteCrewPanelLaunch.tsx': 'instances',
+  'RemoteCrewPanelCrewRow.tsx': 'instances',
   // Mounted from outside pages/settings, so each is also a root in panelRoots:
   // ImportPanel mounts PortabilityTab, FeaturePreviewsSection the gateway-wide
   // automatic-cards switch.
   'PortabilityTab.tsx': 'imports',
   'AutomaticCardSetting.tsx': 'developer',
+  // The built-in KAS engine card, which FeaturePreviewsSection mounts from
+  // pages/developer: its `agent.kas_bundle` switch is a Developer-tab row.
+  'KasBundleCard.tsx': 'developer',
   // The per-app model rows ChatPanel's Model page mounts. Each row is labelled
   // with the app's own name, a dynamic label the extractor skips, so the file
   // yields no entry today; mapped so a static control added to it lands on the
@@ -460,6 +475,7 @@ export function panelRoots(srcDir: string): ExtractRoot[] {
   return [
     { dir: path.join(srcDir, 'pages', 'settings') },
     { dir: path.join(srcDir, 'pages', 'overview'), file: 'PortabilityTab.tsx' },
+    { dir: path.join(srcDir, 'pages', 'developer'), file: 'KasBundleCard.tsx' },
     { dir: path.join(srcDir, 'pages', 'chat', 'command-center'), file: 'AutomaticCardSetting.tsx' },
   ]
 }

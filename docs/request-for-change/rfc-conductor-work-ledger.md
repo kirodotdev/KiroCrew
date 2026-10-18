@@ -438,7 +438,7 @@ into a `cache_dirty` refusal for readers.
 
 The record's authority to rebuild a board lasts exactly as long as the units that
 hold its entries. The crew log is on by default, and its retention sweep
-(`sweep_expired` in [`src/kiro_crew/crew_log/store.py`](../../src/kiro_crew/crew_log/store.py))
+(`sweep_expired` in [`src/kiro_crew/crew_log/store_retention.py`](../../src/kiro_crew/crew_log/store_retention.py))
 removes a finished session's unit once it is older than `session.archive_retention_days`.
 Retention must keep every unit an open board's entries live in, or checkpoint the fold
 before removing one, otherwise a rebuild after expiry folds only the survivors. That rule belongs to

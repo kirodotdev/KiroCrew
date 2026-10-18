@@ -85,7 +85,7 @@ class TestErrorFingerprint:
         would overwrite the real error with "Loop detected" and fail the step.
         Bracketed node-id params are lifted out before masking, so they stay
         distinct; this repo's own suite uses such ids (e.g. ``[20s]``,
-        ``[99999h]`` in ``test/test_instances.py``).
+        ``[99999h]`` in ``test/test_instances_token_mint.py``).
         """
         a = "Tests failed:\nFAILED test/test_x.py::test_y[1s] - boom"
         b = "Tests failed:\nFAILED test/test_x.py::test_y[2s] - boom"

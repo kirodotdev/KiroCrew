@@ -511,7 +511,7 @@ def test_runtime_pids_skips_dead_manager_runtimes() -> None:
     assert "Background runtime" not in keys
 
 
-# ── credits / turns (slot_spend — unified aggregator in usage.py) ──────────
+# ── credits / turns (slot_spend — unified aggregator in usage_spend.py) ────
 
 
 def test_slot_spend_sums_credits_and_counts_turns(

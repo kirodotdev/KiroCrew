@@ -116,6 +116,8 @@ from kiro_crew.llm_helpers import (
     SESSION_NOT_FOUND_NOT_REPLAYED_TEXT,
     SESSION_NOT_FOUND_RETRY_NOTICE,
     acp_error_is_session_not_found,
+    acp_error_needs_fresh_credentials,
+    credential_give_up_text,
     record_interaction_event,
     save_conversation_turn_off_loop,
 )
@@ -2464,6 +2466,12 @@ async def handle_message(
                 sessions.close_replay_gap(session_key)
             if _session_lost and (answer.accumulated or answer.task_counter):
                 answer.accumulated = f"⟳ {SESSION_NOT_FOUND_NOT_REPLAYED_TEXT}"
+            elif _session_lost and acp_error_needs_fresh_credentials(e):
+                # A broken helper fails the fresh process too: a new thread
+                # would fail alike, so the provider's remedy is the message.
+                answer.accumulated = (
+                    f"❌ {credential_give_up_text(e)} Then send your message again."
+                )
             elif _session_lost:
                 answer.accumulated = (
                     f"❌ {SESSION_NOT_FOUND_GIVE_UP_TEXT} Send your message again, "

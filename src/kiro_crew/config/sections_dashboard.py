@@ -823,9 +823,10 @@ class DashboardConfig:
             "Sidebar Session Order",
             "How the chat sidebar orders sessions: 'date-desc' / 'date-asc' by last "
             "activity, 'created-desc' / 'created-asc' by creation time, 'name-asc' / "
-            "'name-desc' by title. A view preference only; pinned sessions keep their "
-            "own order. Stored here (not only in the browser) so the choice follows "
-            "the user across browsers and the desktop app.",
+            "'name-desc' by title, 'manual' in the order the user drags them into. A "
+            "view preference only; pinned sessions keep their own order. Stored here "
+            "(not only in the browser) so the choice follows the user across browsers "
+            "and the desktop app.",
             enum=[
                 "date-desc",
                 "date-asc",
@@ -833,6 +834,7 @@ class DashboardConfig:
                 "created-asc",
                 "name-asc",
                 "name-desc",
+                "manual",
             ],
         ),
     )

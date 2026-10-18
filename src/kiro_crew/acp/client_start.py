@@ -1092,6 +1092,25 @@ async def _initialize_session(self: AcpClient) -> None:
                 f"(advertised modes: {self._available_mode_ids or 'none'}); {cause} "
                 f"Refusing to run the backend default mode in its place. {remedy}"
             )
+    else:
+        # An adapter's member session is confirmed against its saved spec in the
+        # start that created it, so a caller that sends after ensure_ready respawned
+        # the child (stream_events, the command paths) never reaches an unconfirmed
+        # session. The else of the kiro test above, so the kiro path gains no call
+        # and no failure point (harness-parity H13). A refusal is an ``AcpError``,
+        # so ensure_ready's handler ends the child and drops the session. A cancel
+        # skips that handler, so it is torn down here: otherwise the next
+        # ensure_ready would take the warm return into the unconfirmed session.
+        try:
+            await self.confirm_member_projection()
+        except asyncio.CancelledError:
+            try:
+                await self._cleanup_failed_live_spawn()
+            except Exception:
+                logger.warning("ACP member-confirm cleanup after a cancel failed", exc_info=True)
+            finally:
+                self._reset_state()
+            raise
 
     # 5. Set model — override if Kiro Crew config specifies non-default.
     await self._apply_startup_model()

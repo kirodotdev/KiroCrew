@@ -40,6 +40,18 @@ test_pid_lifecycle_tracking_integrity.py  # process-group semantics
 test_pid_sweep_helpers.py          # process-group semantics
 test_process_tree_kill.py          # killpg/getpgid semantics
 test_source_providers.py           # providers require the POSIX sandbox
+test_source_providers_app_contributors.py  # a test_source_providers.py topic part; same suite
+test_source_providers_chip_status.py  # a test_source_providers.py topic part; same suite
+test_source_providers_endpoints.py  # a test_source_providers.py topic part; same suite
+test_source_providers_fetch_cache.py  # a test_source_providers.py topic part; same suite
+test_source_providers_fetch_capacity.py  # a test_source_providers.py topic part; same suite
+test_source_providers_gitlab_host.py  # a test_source_providers.py topic part; same suite
+test_source_providers_issues.py    # a test_source_providers.py topic part; same suite
+test_source_providers_jira.py      # a test_source_providers.py topic part; same suite
+test_source_providers_mutations.py  # a test_source_providers.py topic part; same suite
+test_source_providers_payloads.py  # a test_source_providers.py topic part; same suite
+test_source_providers_provider_cli.py  # a test_source_providers.py topic part; same suite
+test_source_providers_reviews.py   # a test_source_providers.py topic part; same suite
 
 # Feature-parity gaps observed on the first Windows runs -- each is a
 # POSIX-shaped feature or test suite tracked as a Windows follow-up:
@@ -69,6 +81,8 @@ test_outbox_binary.py              # hardcoded /tmp outbox paths
 test_deploy_web_handlers.py        # deploy staging is POSIX-shaped (/tmp, uid)
 test_snapshot.py                   # replace-while-open (WinError 32) semantics
 test_theme_install.py              # POSIX readable/mode gate rejects NTFS modes
+test_theme_install_declarations.py  # a test_theme_install.py topic part; same suite
+test_theme_install_identity.py     # a test_theme_install.py topic part; same suite
 test_webapp_preview.py             # preview routes 404 on Windows backends
 test_file_raw.py                   # 0o600/0o644 mode-bit assertions
 test_file_download.py              # 0o600/0o644 mode-bit assertions

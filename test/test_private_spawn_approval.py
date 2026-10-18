@@ -23,6 +23,7 @@ from kiro_crew.dashboard.ws import api_ws
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.slack.gateway import GatewayOrchestrator
 from kiro_crew.subagent import SubagentManager
+from kiro_crew.testing.wait import await_until
 from kiro_crew.testing.workflow_memory_scenario import spawn_progress_summary
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
@@ -69,7 +70,7 @@ async def test_owner_socket_approves_only_returned_spawn_once(tmp_path, monkeypa
     state.subagents = manager
     first = manager.spawn("[[WF_E2E:WORK:A]]", keep=True)
     assert first is not None
-    await asyncio.wait_for(manager._tasks[first.id], 10)
+    await await_until(manager._tasks[first.id])
     assert (
         spawn_progress_summary({"done": first.done, "error": first.error})["terminal_reason"]
         == "no_approval_surface"
@@ -121,10 +122,13 @@ async def test_owner_socket_approves_only_returned_spawn_once(tmp_path, monkeypa
     try:
         async with TestServer(app, host="127.0.0.1") as server:
             client = await asyncio.to_thread(_Client, server.port, generate_token("local-app"))
-            _, spawn_id = await asyncio.wait_for(
-                _nested_with_owner_approval(client, "dashboard:owner", "synthetic workflow"), 20
+            _, spawn_id = await await_until(
+                asyncio.ensure_future(
+                    _nested_with_owner_approval(client, "dashboard:owner", "synthetic workflow")
+                ),
+                timeout=20,
             )
-            await asyncio.wait_for(run_tasks[0], 10)
+            await await_until(run_tasks[0])
             assert spawn_id == spawned[0].id
             assert "spawn:unrelated" in state._pending_approvals
             assert not other_approvals[0].done()
@@ -137,7 +141,7 @@ async def test_owner_socket_approves_only_returned_spawn_once(tmp_path, monkeypa
             # A fresh spawn still needs approval; allow-once did not promote trust.
             again = manager.spawn("[[WF_E2E:WORK:A]]", keep=True)
             task = manager._tasks[again.id]
-            await asyncio.wait_for(task, 10)
+            await await_until(task)
             assert again.done and again.error.startswith("spawn rejected")
             sessions.get_or_create.assert_awaited_once()
     finally:

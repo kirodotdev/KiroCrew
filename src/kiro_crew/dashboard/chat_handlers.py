@@ -195,6 +195,7 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     deny_session_approval_caller,
 )
 from kiro_crew.dashboard.chat_api.slot_create import (  # noqa: F401
+    _created_slot_row,
     _default_template_stamp,
     _persist_app_agent_owner,
     api_chat_slot_create,
@@ -474,6 +475,7 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     row_mid,
 )
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice  # noqa: F401
+from kiro_crew.dashboard.token_auth import folder_principal  # noqa: F401
 from kiro_crew.dashboard.turn_dispatch import (  # noqa: F401
     chat_turn_timeout_secs,
     spawn_guarded_turn,

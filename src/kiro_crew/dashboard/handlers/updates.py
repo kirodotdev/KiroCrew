@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
-import functools
 import hmac
 import json
 import logging
@@ -1708,21 +1707,22 @@ async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
         # handler below, which emits from arbitrary logger threads.
         loop.call_soon_threadsafe(_publish, "error" if error else "building", message)
 
-    rc = await loop.run_in_executor(
+    # Supervised: cancelling this coroutine (a gateway shutdown does) also cancels
+    # the install, so one still queued, or cancelled before its last check ahead
+    # of pip, never starts pip. A pip already running is left to finish (see
+    # dep_sync.sync_or_reinstall_supervised for the exact window).
+    rc = await dep_sync.sync_or_reinstall_supervised(
         subprocess_executor(),
-        functools.partial(
-            dep_sync.sync_or_reinstall,
-            Path(proj),
-            Path(sys.executable),
-            _emit,
-            # 600s rather than 120s on `pip install -e .`: the bound covers a
-            # dependency install that may be resolving and downloading a set this
-            # venv has never seen — and building a wheel for one of them — where
-            # 120s is a routine, not an exceptional, overrun.
-            # It is a real bound either way: dep_sync kills the pip child on
-            # expiry rather than letting the step hang on a wedged index.
-            timeout=600,
-        ),
+        Path(proj),
+        Path(sys.executable),
+        _emit,
+        # 600s rather than 120s on `pip install -e .`: the bound covers a
+        # dependency install that may be resolving and downloading a set this
+        # venv has never seen — and building a wheel for one of them — where
+        # 120s is a routine, not an exceptional, overrun.
+        # It is a real bound either way: dep_sync kills the pip child on
+        # expiry rather than letting the step hang on a wedged index.
+        timeout=600,
     )
     return rc == 0
 
@@ -2574,6 +2574,33 @@ async def api_logs(request: web.Request) -> web.StreamResponse:
 # ── Dashboard SSE ──
 
 
+def _without_pin_ranks(payload: str) -> str:
+    """The SSE slots frame with every row's pinned-order fields removed.
+
+    A rank is a place in the person's whole pinned order, which is the
+    person's own; a scoped stream client gets none of it, as on the app
+    WebSocket and the slots GET.
+    """
+    from kiro_crew.dashboard.pinned_session_order import PIN_ORDER_FIELDS
+
+    try:
+        rows = json.loads(payload)
+    except (TypeError, ValueError):
+        return payload
+    if not isinstance(rows, list):
+        return payload
+    return json.dumps(
+        [
+            (
+                {k: v for k, v in row.items() if k not in PIN_ORDER_FIELDS}
+                if isinstance(row, dict)
+                else row
+            )
+            for row in rows
+        ]
+    )
+
+
 async def api_stream(request: web.Request) -> web.StreamResponse:
     """SSE endpoint — pushes status + notifications to each connected client.
 
@@ -2610,6 +2637,8 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                     msg_type = note.get("_type", "")
                     if msg_type == "slots":
                         payload = note["slots"]
+                        if not is_dashboard_user:
+                            payload = _without_pin_ranks(payload)
                         await resp.write(f"event: slots\ndata: {payload}\n\n".encode())
                     elif msg_type == "slot_title":
                         payload = json.dumps({"key": note["key"], "title": note["title"]})
@@ -2831,9 +2860,14 @@ async def api_update_revalidate(request: web.Request) -> web.Response:
     ``X-Local-Secret``, compared in constant time. This is a CLI-only endpoint —
     the dashboard panel reconciles through ``GET /api/update/check`` — so it does
     NOT use the browser owner gate, whose identity the raw local-secret request
-    never carries.
+    never carries. A kernel-attested same-user AF_UNIX peer
+    (``core._unix_peer_is_self``) is admitted beside loopback, because the CLI's
+    owner-verified send prefers the dashboard's owner-only socket, where
+    ``request.remote`` is empty; the secret check is unchanged on both.
     """
-    if not is_loopback(request.remote or ""):
+    from kiro_crew.dashboard.handlers.core import _unix_peer_is_self
+
+    if not is_loopback(request.remote or "") and not _unix_peer_is_self(request):
         await _audit_update_event(
             request, operation="update.revalidate", outcome="denied", resources="non-loopback"
         )

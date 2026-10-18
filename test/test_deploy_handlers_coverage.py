@@ -309,6 +309,23 @@ class TestScanTree:
         _deny_stat(monkeypatch, "a.txt")
         assert handlers._compute_tree_size_global(src) == 0
 
+    def test_scan_tree_reports_the_shared_tree_size(self, tmp_path: Path, monkeypatch):
+        # The reported size and the deploy size checks must count the tree
+        # the same way, so _scan_tree takes its byte count from the helper.
+        src = tmp_path / "site"
+        src.mkdir()
+        (src / "index.html").write_text("<p>hi</p>", encoding="utf-8", newline="\n")
+        seen: list[Path] = []
+
+        def _size(root: Path) -> int:
+            seen.append(root)
+            return 4242
+
+        monkeypatch.setattr(handlers, "_compute_tree_size_global", _size)
+        _findings, size = handlers._scan_tree(src)
+        assert size == 4242
+        assert seen == [src]
+
     def test_compute_content_digest_ignores_unreadable_files(self, tmp_path: Path, monkeypatch):
         src = tmp_path / "site"
         src.mkdir()

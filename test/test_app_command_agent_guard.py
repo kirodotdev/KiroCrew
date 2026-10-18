@@ -7,6 +7,7 @@ with that other spec's tools. The turn is refused before the prompt is sent.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -15,10 +16,30 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app_with_agent_routes
 from dashboard_owner_helpers import as_owner
 from test_chat_agent_selection import _turn_state
-from turn_harness import SlotSpec, TurnScript, run_turn
+from turn_harness import ScriptedProvider, SlotSpec, TurnScript, run_turn
 
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.apps import bridges, manager
 from kiro_crew.config.loader import KiroCrewConfig
+
+
+class _KiroProvider(ScriptedProvider):
+    """A scripted provider whose capabilities are kiro-cli's."""
+
+    capabilities = capabilities_for(ACP_BACKEND_KIRO)
+
+
+class _KasProvider(ScriptedProvider):
+    """A scripted provider whose capabilities are KAS's."""
+
+    capabilities = capabilities_for(ACP_BACKEND_KAS)
+
+
+class _CodexProvider(ScriptedProvider):
+    """A scripted provider whose capabilities are codex's."""
+
+    capabilities = capabilities_for(ACP_BACKEND_CODEX)
 
 
 def _agents(tmp_path, monkeypatch):
@@ -332,8 +353,11 @@ def test_an_unregistered_app_agent_is_refused(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("provider", [_KiroProvider, _KasProvider], ids=["kiro", "kas"])
 @pytest.mark.parametrize("refused", [True, False])
-async def test_the_turn_is_refused_before_the_prompt_reaches_the_provider(monkeypatch, refused):
+async def test_the_turn_is_refused_before_the_prompt_reaches_the_provider(
+    monkeypatch, refused, provider
+):
     agent = KiroCrewConfig.load().default_agent
     seen = []
 
@@ -347,7 +371,9 @@ async def test_the_turn_is_refused_before_the_prompt_reaches_the_provider(monkey
         ctx.slot.agent = agent
         ctx.slot.app_agent_owner = f"pr-bulk-ops/{agent}"
 
-    record = await run_turn(TurnScript(message="deploy it", setup=bind), slot=SlotSpec())
+    record = await run_turn(
+        TurnScript(message="deploy it", setup=bind, provider=provider), slot=SlotSpec()
+    )
     assert seen == [("pr-bulk-ops", agent)]
     denials = [
         call.kwargs
@@ -367,6 +393,128 @@ async def test_the_turn_is_refused_before_the_prompt_reaches_the_provider(monkey
     else:
         assert not errors
         assert record.provider_calls
+
+
+def _bind_to_default_agent(ctx):
+    agent = KiroCrewConfig.load().default_agent
+    ctx.slot.agent = agent
+    ctx.slot.app_agent_owner = f"pr-bulk-ops/{agent}"
+
+
+def _refused_rows(record):
+    return [row for row in record.window if "app_agent_refused" in str(row)]
+
+
+def _sessions(record, name):
+    return [call for call in record.session_calls if call.name == name]
+
+
+def _denials(record):
+    return [
+        call.kwargs.get("outcome")
+        for call in record.audit_events
+        if call.name == "log_api_access"
+        and call.kwargs.get("operation") == "chat_runner.app_command_agent"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["codex", "claude", "opencode"])
+async def test_an_app_owned_turn_on_another_backend_is_refused_before_the_claim(
+    monkeypatch, backend
+):
+    # Only kiro-cli and KAS launch the app's spec, so any other configured backend
+    # refuses the turn before a session is allocated, and the name check that only
+    # means something on those two is not consulted.
+    monkeypatch.setattr(manager, "app_command_agent_refusal", lambda *a: pytest.fail("consulted"))
+    record = await run_turn(
+        TurnScript(message="deploy it", setup=_bind_to_default_agent, provider=_KiroProvider),
+        slot=SlotSpec(),
+        config={"agent": {"acp_backend": backend}},
+    )
+    assert not _sessions(record, "get_or_create")
+    assert not record.provider_calls
+    rows = _refused_rows(record)
+    assert rows and "only on the KAS or Kiro backend" in str(rows[0])
+    assert _denials(record) == ["denied"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider", [_CodexProvider, ScriptedProvider], ids=["codex", "no-capabilities"]
+)
+async def test_an_app_owned_turn_on_a_claimed_session_of_another_backend_is_refused_and_reset(
+    monkeypatch, provider
+):
+    # The configured selection allows the turn, but the session the claim returned
+    # does not launch from the agent spec (the selection moved, or a live session
+    # predates it), or carries no capabilities and so names no backend. The claimed
+    # provider is the authority: nothing is sent, and the session is reset so the
+    # next turn allocates from the current selection.
+    monkeypatch.setattr(manager, "app_command_agent_refusal", lambda *a: None)
+    record = await run_turn(
+        TurnScript(message="deploy it", setup=_bind_to_default_agent, provider=provider),
+        slot=SlotSpec(),
+    )
+    assert _sessions(record, "get_or_create")
+    assert not [call for call in record.provider_calls if call.name.startswith("stream")]
+    assert _refused_rows(record)
+    assert _denials(record) == ["denied"]
+    assert _sessions(record, "reset")
+
+
+@pytest.mark.asyncio
+async def test_an_unbound_turn_runs_on_any_backend(monkeypatch):
+    # The backend rule is the app binding's: a session the palette did not open for
+    # an app's agent runs on a provider of any backend as before.
+    record = await run_turn(TurnScript(message="hi"), slot=SlotSpec())
+    assert not _refused_rows(record)
+    assert record.provider_calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", [_KiroProvider, _KasProvider], ids=["kiro", "kas"])
+async def test_on_an_allowed_backend_the_turn_runs_only_while_the_namespaced_spec_is_the_one(
+    tmp_path, monkeypatch, provider
+):
+    # The real check, on each allowed backend: the turn runs while the app's own
+    # ``<app>--<agent>.json`` is the only spec declaring the name, and is refused
+    # once a second spec in ~/.kiro/agents declares it too.
+    agent = KiroCrewConfig.load().default_agent
+    agents_dir = tmp_path / "kiro-agents"
+    agents_dir.mkdir()
+    (agents_dir / f"pr-bulk-ops--{agent}.json").write_text(json.dumps({"name": agent}))
+    monkeypatch.setattr(bridges, "KIRO_AGENTS_DIR", agents_dir)
+    script = TurnScript(message="deploy it", setup=_bind_to_default_agent, provider=provider)
+    record = await run_turn(script, slot=SlotSpec())
+    assert not _refused_rows(record)
+    assert [call for call in record.provider_calls if call.name.startswith("stream")]
+
+    (agents_dir / "other.json").write_text(json.dumps({"name": agent}))
+    record = await run_turn(script, slot=SlotSpec())
+    assert _refused_rows(record)
+    assert not [call for call in record.provider_calls if call.name.startswith("stream")]
+
+
+def test_kas_is_handed_the_namespaced_spec_over_a_same_named_project_spec(tmp_path):
+    # KAS takes no ``--agent`` name: Crew reads the spec it sends. A name the user
+    # level declares resolves to the user-level spec whatever the checkout holds, so
+    # the app's ``<app>--<agent>.json`` is the spec KAS runs.
+    from kiro_crew.acp.harness.kas import resolve_projected_spec
+
+    agents_dir = tmp_path / "kiro-agents"
+    agents_dir.mkdir()
+    (agents_dir / "pr-bulk-ops--deploy.json").write_text(
+        json.dumps({"name": "deploy", "prompt": "the app's prompt", "tools": []})
+    )
+    project = tmp_path / "checkout"
+    (project / ".kiro" / "agents").mkdir(parents=True)
+    (project / ".kiro" / "agents" / "deploy.json").write_text(
+        json.dumps({"name": "deploy", "prompt": "the checkout's prompt"})
+    )
+    spec, anchor = resolve_projected_spec(agents_dir, "deploy", project)
+    assert spec["prompt"] == "the app's prompt"
+    assert anchor == agents_dir
 
 
 @pytest.mark.asyncio

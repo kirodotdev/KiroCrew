@@ -8,7 +8,7 @@ Three groups, and the seam between them is what this file is for:
   which only holds if the missing-attribute, raising, and awaitable-returning
   shapes are each exercised — an awaitable slipping through is what leaks an
   un-awaited-coroutine warning into an unrelated test.
-* The **pure resolvers** (``_model_fallback``, ``_session_model``,
+* The **pure resolvers** (``_session_model``,
   ``detect_provider_switch``, ``_is_continuable_key``) decide what a session
   becomes before any process exists, so they are testable without spawning one.
 * The **lifecycle edges** (``remove_if_unclaimed``, ``recycle_heartbeat``,
@@ -43,7 +43,6 @@ from kiro_crew.session import (
     FirstTurnState,
     SessionManager,
     _context_pct_is_unknown,
-    _model_fallback,
     _provider_has_active_turn,
     _provider_has_unfinished_turn,
     _ProviderBgSession,
@@ -161,21 +160,6 @@ class TestProviderProbeHelpers:
 # ── Model resolution ─────────────────────────────────────────────────────────
 
 
-class TestModelFallback:
-    def test_agent_pin_defers_to_native_resolution(self) -> None:
-        """A per-agent pin returns None so the factory reads the agent JSON."""
-        assert _model_fallback("opus", "sonnet") is None
-
-    def test_global_default_applies_when_agent_defers(self) -> None:
-        assert _model_fallback("", "sonnet") == "sonnet"
-
-    def test_sentinel_global_defers(self) -> None:
-        assert _model_fallback("", "auto") is None
-
-    def test_empty_global_defers(self) -> None:
-        assert _model_fallback("", "") is None
-
-
 class TestSessionModel:
     def test_no_agent_uses_global_default(self, cfg) -> None:
         cfg.agent.model = "sonnet"
@@ -204,8 +188,8 @@ class TestSessionModel:
         cfg.agent.model = "sonnet"
         cfg.agents["research"] = KiroCrewAgentConfig(model="", kiro_agent="tmpl")
         monkeypatch.setattr(cfg, "_resolve_named_agent_model", _resolve)
-        # A template pin returns None: the factory resolves the JSON itself.
-        assert _session_model(cfg, "research") is None
+        # The bound template's pin outranks the global.
+        assert _session_model(cfg, "research") == "haiku-from-template"
         assert seen == ["tmpl"], "the crew's bound template, not the crew name"
 
     def test_base_agent_name_skips_the_per_agent_lookup(self, cfg, monkeypatch) -> None:

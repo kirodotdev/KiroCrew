@@ -21,7 +21,7 @@
 # pytest-timeout has no SIGALRM to interrupt with, so it kills the process and
 # takes the session with it (measured). Give such a test an explicit skipif at the
 # test, with the reason -- see
-# test_config_loader.py::TestAgentWorkspaceBindingsProperties::test_workspace_path_resolution.
+# test_config_loader_workspace_bindings.py::TestAgentWorkspaceBindingsProperties::test_workspace_path_resolution.
 test/metrics/test_local_exporter.py::test_export_locks_only_the_prune_phase
 test/test_acp_offload.py::TestOffloadRunsOnSubprocessPool::test_kill_process_runs_scan_and_sweep_off_loop
 test/test_acp_runtime_client_parity.py::test_periodic_sweep_skips_protected_runtime_pid
@@ -96,7 +96,7 @@ test/test_identity_topology.py::test_session_pid_call_sites_are_registered
 test/test_installer_shim_and_cleanup.py::test_first_run_delivers_shim_and_purge
 test/test_installer_shim_and_cleanup.py::test_first_run_no_global_mcp
 test/test_installer_shim_and_cleanup.py::test_first_run_purge_is_one_time
-test/test_instances.py::TestRunMarker::test_write_read_clear
+test/test_instances_run_marker.py::TestRunMarker::test_write_read_clear
 test/test_mcp_discovery.py::TestProbeServerStderrCapture::test_stderr_captured_when_child_exits_before_response
 test/test_mcp_discovery.py::TestProbeServerStderrCapture::test_successful_probe_does_not_mention_stderr
 # Needs symlink-creation privilege: builds an in-vault FILE symlink
@@ -137,14 +137,14 @@ test/test_session_pid_sig.py::TestNoNofollowPlatform::test_regular_file_still_re
 test/test_session_pid_sig.py::TestNoNofollowPlatform::test_symlink_present_at_lstat_refused
 test/test_slack_config_handlers.py::test_write_env_updates_adds_and_preserves
 test/test_slack_config_handlers.py::test_write_env_updates_is_atomic_and_owner_only
-test/test_slack_gateway.py::TestBgSessionDashboardBranch::test_bg_session_prints_dashboard_url
-test/test_slack_gateway.py::TestBgSessionDashboardBranch::test_dashboard_url_is_printed_before_the_mcp_probe_is_awaited
-test/test_slack_gateway.py::TestBgSessionDashboardBranch::test_failing_url_announcement_does_not_abort_boot
-test/test_slack_gateway.py::TestRunMethod::test_run_failed_marker_write_still_clears
-test/test_slack_gateway.py::TestRunMethod::test_run_no_dashboard_uses_api_server
-test/test_slack_gateway.py::TestRunMethod::test_run_raises_on_shutdown
-test/test_slack_gateway.py::TestRunMethod::test_run_stalled_marker_write_does_not_block_shutdown
-test/test_slack_gateway.py::TestRunSignalAndBgSession::test_run_with_ollama_config
+test/test_slack_gateway_run.py::TestBgSessionDashboardBranch::test_bg_session_prints_dashboard_url
+test/test_slack_gateway_run.py::TestBgSessionDashboardBranch::test_dashboard_url_is_printed_before_the_mcp_probe_is_awaited
+test/test_slack_gateway_run.py::TestBgSessionDashboardBranch::test_failing_url_announcement_does_not_abort_boot
+test/test_slack_gateway_run.py::TestRunMethod::test_run_failed_marker_write_still_clears
+test/test_slack_gateway_run.py::TestRunMethod::test_run_no_dashboard_uses_api_server
+test/test_slack_gateway_run.py::TestRunMethod::test_run_raises_on_shutdown
+test/test_slack_gateway_run.py::TestRunMethod::test_run_stalled_marker_write_does_not_block_shutdown
+test/test_slack_gateway_run.py::TestRunSignalAndBgSession::test_run_with_ollama_config
 test/test_subagent_cwd.py::TestValidateCwd::test_tilde_expanded_in_allowed_roots
 test/test_subagent_cwd.py::TestValidateCwd::test_tilde_expanded_in_cwd
 test/test_subagent_sizing.py::TestMacosMemoryProbe::test_computes_available_gb_from_pages

@@ -1508,8 +1508,9 @@ def read_instance(slug: str, member: str) -> dashboard_agentic.Instance | None:
     writer's.
 
     ``live`` and ``stale`` resolve to the stored copy and ``empty`` to the DEFAULT, the
-    page that crewmate is actually shown; only ``error`` and a missing default resolve
-    to ``None``, which the write path reports as ``no_instance``. The test is whether a
+    page that crewmate is actually shown; only ``error`` and a missing default -- a
+    crewmate with no page named for it, or a registry without one -- resolve to
+    ``None``, which the write path reports as ``no_instance``. The test is whether a
     field name can be checked against a manifest a reader can trust. A stale copy HAS
     its own manifest, complete and still renderable, and the write is checked against
     the same manifest the page is drawn from; what a stale copy cannot do is be
@@ -1553,10 +1554,11 @@ def read_instance(slug: str, member: str) -> dashboard_agentic.Instance | None:
     # EMPTY resolves to the DEFAULT, because the default is the page that crewmate is
     # actually being shown: `api_member_dashboard` falls back to `default_instance` for
     # exactly this state, so refusing here made the two paths disagree about which
-    # template is in force. The disagreement was not academic -- the default page's one
-    # agentic field is the "needs you" answer, nothing in P1 calls the adopt route, and
-    # the conductor skill writes that field every cycle, so every write was refused with
-    # a remedy (adopt a template) that has no control to carry it out.
+    # template is in force. The disagreement is not academic -- the conductor's board
+    # is the page named for it, never adopted, and the goal-conductor skill writes its
+    # `needs_you` field whenever the user must act, so refusing EMPTY would refuse every
+    # such write. A crewmate with no page named for it has no default, so its write is
+    # refused here as it is shown no page there.
     #
     # ERROR stays refused on its own terms: it is the state in which the manifest does
     # not parse, so there is nothing to validate a write against.
@@ -1574,8 +1576,9 @@ def read_instance(slug: str, member: str) -> dashboard_agentic.Instance | None:
             logger.warning("no default dashboard for %s to write against", slug, exc_info=True)
             return None
         if fallback is None:
-            # `default_instance` ANSWERS None when the registry ships no default; it
-            # does not raise, so the guard above does not cover this.
+            # `default_instance` ANSWERS None for a crewmate with no page named for it
+            # and when the registry ships no default; it does not raise, so the guard
+            # above does not cover this.
             return None
         record = fallback
     elif state not in (live, stale):
@@ -2013,8 +2016,8 @@ def _credential_shaped_names(package: Mapping[str, Any]) -> str:
     rules, and the first thing the second one would do is drift.
 
     It sits in the read's module rather than here because that is where the name
-    rule belongs: a staged page is an ordinary file under the crewmate's own
-    directory, so the save route is not its only writer and the rule must not be
+    rule belongs: a saved page is an artifact its owner can also write through the
+    artifact API, so the save route is not its only writer and the rule must not be
     one this route privately owns. Imported inside the function, like
     ``read_fields`` above, because that module imports nothing from this one and
     the pair must not become a cycle.
@@ -2073,7 +2076,7 @@ async def _await_check(work: Awaitable[dict[str, Any] | None]) -> dict[str, Any]
 async def _page_check(
     slug: str, crew_name: str, slot: str, package: dict[str, Any]
 ) -> dict[str, Any] | None:
-    """The check of a staged page, which this save never waits on past its limit.
+    """The check of a saved page, which this save never waits on past its limit.
 
     The work (the record read, the copy, the browser) runs on a thread and holds the
     gateway's single check slot until it is over. The wait here ends at

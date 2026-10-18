@@ -541,8 +541,8 @@ def _types_the_writers_append() -> dict[str, bool]:
         # one non-ignorable append is all it takes to stop a folding reader.
         skippable[entry_type] = skippable.get(entry_type, True) and ignorable
 
-    for module in (emit, writer_mod, store_mod):
-        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    for path in _writer_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 keywords = {item.arg: item.value for item in node.keywords if item.arg}
@@ -568,6 +568,13 @@ def _types_the_writers_append() -> dict[str, bool]:
     return skippable
 
 
+def _writer_files():
+    """The writers' source files: the emitter, its durable writer, and the store facade
+    with its ``store_*.py`` owners, where the crash-repair closer lives."""
+    store_files = sorted(Path(store_mod.__file__).parent.glob("store*.py"))
+    return [Path(emit.__file__), Path(writer_mod.__file__), *store_files]
+
+
 def _walk(fields):
     for field in fields:
         yield field
@@ -578,10 +585,7 @@ def _types_with_a_producing_site():
     # Read the writers rather than restating their list: a type is emitted when a
     # producing module names it. This holds the closed-enum rule to code that
     # exists, so wiring a resolver cannot quietly leave an unenforceable set behind.
-    sources = [
-        Path(module.__file__).read_text(encoding="utf-8")
-        for module in (emit, writer_mod, store_mod)
-    ]
+    sources = [path.read_text(encoding="utf-8") for path in _writer_files()]
     for spec_type in SESSION_ENTRY_TYPES:
         if any(f'"{spec_type}"' in text for text in sources):
             yield spec_type

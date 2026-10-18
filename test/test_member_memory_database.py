@@ -6,14 +6,14 @@ import os
 import subprocess
 import sys
 import textwrap
-from datetime import datetime
+from datetime import datetime, timezone
 
 # pysqlite3 omits Connection.iterdump; use the same SQL dumper on either driver.
 from sqlite3.dump import _iterdump as iter_sql_dump
 
 import pytest
 
-from kiro_crew import memory_stores
+from kiro_crew import memory_record_metadata, memory_stores
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.hooks import FileTooLargeError
 from kiro_crew.memory import MemoryStore
@@ -340,6 +340,209 @@ def test_consolidation_persists_the_authored_lesson_tier(member_db, caplog):
     assert any("unrecognized applies tier" in r.getMessage() for r in caplog.records)
     # Only the closed-set reason is logged, never the untrusted value.
     assert all("Directive" not in r.getMessage() for r in caplog.records)
+
+
+def _span_with(*facts: dict) -> dict:
+    """A full extraction whose semantic list is *facts* after one plain fact."""
+    return {
+        "semantic": [
+            {"key": "project.codename", "value": "aurora", "confidence": 0.9},
+            *facts,
+        ],
+        "episodic": [{"text": "The team approved the aurora release."}],
+        "lessons": [{"rule": "Check release notes before shipping"}],
+        "history_entry": "Approved the aurora release.",
+    }
+
+
+def _assert_rest_of_span_landed(store) -> None:
+    assert json.loads(store.get_semantic("project.codename")["value_json"]) == "aurora"
+    assert store.has_episodic_text("The team approved the aurora release.")
+    assert [value["rule"] for value in _lesson_values(store).values()] == [
+        "Check release notes before shipping"
+    ]
+    assert "Approved the aurora release." in store.read_editable_history()
+
+
+def test_consolidation_drops_an_unknown_metadata_field_and_lands_the_span(member_db, caplog):
+    """One fact's unknown metadata field must not roll back the span: that fact
+    lands with its known fields, every other output lands beside it, the
+    committed receipt counts the drop, and the warning names the field but
+    never repeats its value."""
+    fact = {
+        "key": "user.work_email",
+        "value": "a@example.com",
+        "confidence": 0.9,
+        "metadata": {**_WORK_EMAIL, "evidence": "UNSTORED_EVIDENCE_VALUE"},
+    }
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.vector_memory"):
+        receipt = consolidate(member_db, result=_span_with(fact))
+    assert receipt == {
+        "source_id": "span-1",
+        "semantic": 2,
+        "episodic": 1,
+        "lessons": 1,
+        "metadata_fields_dropped": 1,
+    }
+    assert member_db.consolidation_receipt("span-1")["receipt"] == receipt
+    _assert_rest_of_span_landed(member_db)
+    # The fact kept its known identity fields; the dropped name and its value
+    # reach neither the record, its revision snapshots nor any other table.
+    stored = memory_record_metadata.get_record_metadata(member_db.db, "key:user.work_email")
+    assert (stored["subject"], stored["predicate"]) == ("user", "work_email")
+    assert "evidence" not in stored
+    for (metadata_json,) in member_db.db.execute("SELECT metadata_json FROM memory_revisions"):
+        snapshots = json.loads(metadata_json)
+        assert all("evidence" not in snapshots.get(side, {}) for side in ("before", "after"))
+    assert "UNSTORED_EVIDENCE_VALUE" not in "\n".join(iter_sql_dump(member_db.db))
+    dropped = [r.getMessage() for r in caplog.records if "unknown metadata" in r.getMessage()]
+    assert len(dropped) == 1
+    assert "'evidence'" in dropped[0] and "'user.work_email'" in dropped[0]
+    assert all("UNSTORED_EVIDENCE_VALUE" not in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("metadata", "reason", "unlogged"),
+    [
+        (
+            {**_WORK_EMAIL, "valid_from": "ISO date only if stated"},
+            "valid_from must be an ISO date or timestamp",
+            "ISO date only if stated",
+        ),
+        (
+            {**_WORK_EMAIL, "valid_until": "9999-12-31T23:59:59-05:00"},
+            "valid_until is out of the supported date range",
+            "9999-12-31",
+        ),
+        (
+            {"subject": "ß" * 600, "predicate": "work_email"},
+            "subject must be text of at most 1024 characters",
+            "ßß",
+        ),
+        (
+            {**_WORK_EMAIL, "category": json.loads('"\\ud800"')},
+            "category contains unpaired surrogate characters",
+            "\ud800",
+        ),
+        (["subject", "predicate"], "Memory metadata must be an object", None),
+    ],
+    ids=[
+        "placeholder-date",
+        "out-of-range-date",
+        "casefold-overlong-subject",
+        "lone-surrogate",
+        "not-an-object",
+    ],
+)
+def test_consolidation_skips_only_the_fact_whose_known_metadata_is_invalid(
+    member_db, caplog, metadata, reason, unlogged
+):
+    """A known field with an invalid value, or metadata that is not an object,
+    skips its own fact the way a bad confidence does; the span and its receipt
+    still commit. The cases include the prompt's placeholder echoed back as a
+    date, an offset date past the calendar's end in UTC, a subject that only
+    casefolding lengthens past the bound, and a lone surrogate that JSON parses
+    but SQLite cannot encode: each would otherwise fail later, inside the
+    span's transaction."""
+    fact = {"key": "user.work_email", "value": "a@example.com", "confidence": 0.9}
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.vector_memory"):
+        receipt = consolidate(member_db, result=_span_with({**fact, "metadata": metadata}))
+    assert receipt == {
+        "source_id": "span-1",
+        "semantic": 1,
+        "episodic": 1,
+        "lessons": 1,
+        "metadata_rejected": 1,
+    }
+    assert member_db.consolidation_receipt("span-1")["receipt"] == receipt
+    _assert_rest_of_span_landed(member_db)
+    assert member_db.get_semantic("user.work_email") is None
+    assert _identity_holders(member_db) == []
+    skipped = [r.getMessage() for r in caplog.records if "invalid metadata" in r.getMessage()]
+    assert len(skipped) == 1
+    assert "'user.work_email'" in skipped[0] and reason in skipped[0]
+    if unlogged is not None:
+        assert all(unlogged not in r.getMessage() for r in caplog.records)
+
+
+def test_a_correction_whose_evidence_the_record_cannot_store_stays_pending(member_db):
+    """The verified-correction evidence becomes the record's ``source_ref``. A
+    replacement statement that fits its own bound but not with the session
+    prefix leaves the change as a review proposal, and the span still lands."""
+    old, new = "a" * 500, "b" * 500
+    assert member_db.set_semantic("project.note", old, 1, "user_explicit") is None
+    before = member_db.with_record_metadata([member_db.get_semantic("project.note")])[0]
+    statement = f"replace {old} with {new}"
+    assert len(statement) <= 1024
+    messages = [
+        {"role": "user", "content": statement, "ts": datetime.now(timezone.utc).isoformat()}
+    ]
+    correction = {"key": "project.note", "value": new, "confidence": 0.9}
+    receipt = consolidate(
+        member_db,
+        result=_span_with({**correction, "correction_quote": statement}),
+        snapshot={"project.note": before},
+        messages=messages,
+    )
+    assert receipt == {"source_id": "span-1", "semantic": 1, "episodic": 1, "lessons": 1}
+    _assert_rest_of_span_landed(member_db)
+    assert json.loads(member_db.get_semantic("project.note")["value_json"]) == old
+    pending = member_db.db.execute(
+        "SELECT COUNT(*) FROM memory_revisions WHERE record_id='key:project.note' "
+        "AND status='conflict'"
+    ).fetchone()[0]
+    assert pending == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_metadata_field_commits_the_span_on_its_one_billed_extraction(
+    member_db, monkeypatch
+):
+    """Through the consolidator: the extraction carrying an unknown metadata
+    field commits on its only model call, advances the transcript marker and
+    charges no failed attempt, so no retry re-bills the span."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from consolidation_lease_helpers import lease_aware_log
+
+    from kiro_crew.context import ContextBuilder
+    from kiro_crew.history_consolidation import HistoryConsolidator
+
+    first = {"role": "user", "content": "My work email is a@example.com."}
+    second = {"role": "assistant", "content": "Noted your work email."}
+    log = lease_aware_log()
+    log.snapshot_for_consolidation.return_value = ([first, second], 2, 0, 0)
+    log.consolidation_retry_state.return_value = (0, 0.0)
+    memory = MagicMock()
+    memory.read_preferences.return_value = ""
+    memory.read_projects.return_value = ""
+    writer = HistoryConsolidator(log, memory, vector_store=member_db, migrated=True)
+    extraction = {
+        "history_entry": "Recorded the work email.",
+        "semantic": [
+            {
+                "key": "user.work_email",
+                "value": "a@example.com",
+                "confidence": 1.0,
+                "metadata": {**_WORK_EMAIL, "evidence": "stated in chat"},
+            }
+        ],
+    }
+    writer._call_llm = AsyncMock(return_value=extraction)
+    writer._note_failed_attempt = AsyncMock()
+    monkeypatch.setattr("kiro_crew.context.store_of_session", lambda *_: "alice-store")
+    monkeypatch.setattr(memory_stores, "memory_store_version", lambda *_: 2)
+    monkeypatch.setattr(ContextBuilder, "ensure_store", AsyncMock(return_value=member_db))
+    monkeypatch.setattr(ContextBuilder, "get_memory_for", lambda **_: memory)
+    monkeypatch.setattr(ContextBuilder, "get_lessons_for", lambda **_: None)
+
+    await writer._consolidate("chat:alice")
+
+    assert writer._call_llm.await_count == 1
+    writer._note_failed_attempt.assert_not_awaited()
+    log.mark_consolidated.assert_called_once_with("chat:alice", 2, 0)
+    assert _identity_holders(member_db) == ["key:user.work_email"]
+    assert "Recorded the work email." in member_db.read_editable_history()
 
 
 def test_history_does_not_duplicate_full_bodies_in_a_revision_table(member_db):

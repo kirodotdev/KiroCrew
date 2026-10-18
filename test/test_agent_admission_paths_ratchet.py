@@ -115,7 +115,7 @@ AGENT_ARGV_SITES: dict[Site, tuple[Site, ...] | str] = {
         "spawned with no cwd argument, so the child resolves --agent against the "
         "gateway process's own working directory rather than a session checkout"
     ),
-    ("mcp_gateway/rewriter.py", "_build_stub_entry"): (
+    ("mcp_gateway/rewriter_spec.py", "_build_stub_entry"): (
         "not a kiro-cli spawn: the agent name is an argument to the MCP gateway stub"
     ),
     ("testing/workflow_memory_scenario.py", "respond"): (
