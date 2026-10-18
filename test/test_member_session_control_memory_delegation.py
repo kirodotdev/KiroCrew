@@ -940,6 +940,49 @@ class TestShadowedTemplateDispatch:
         assert "member-worker" not in causes[0]
         assert "conductor-notes" not in causes[0]
 
+    def test_a_bare_stock_worker_pick_takes_the_template_on_the_callers_store(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The legacy-install shape with the conductor omitting `agent_kind`: the
+        # stock worker's name is shadowed by a private-memory crew member. The
+        # bare name must still dispatch the TEMPLATE on the caller's own store
+        # instead of being refused `memory_delegation_denied`.
+        from kiro_crew.dashboard.session_control_parts import session_create
+        from kiro_crew.execution_context import MemoryStoreRef, read_session_execution
+
+        assert session_create._STOCK_WORKER_AGENT == "kirocrew-worker"
+        state, caller, _conductor, calls = self._prepare(tmp_path, monkeypatch)
+        # `_prepare` enrolls the shadowing member as `worker`; name it the stock worker.
+        monkeypatch.setattr(session_create, "_STOCK_WORKER_AGENT", "worker")
+
+        result = asyncio.run(
+            sc.create_session(state, caller_session_key=slot_history_key(caller), agent="worker")
+        )
+        assert calls == ["template"]
+        child = state.get_slot(result["target"])
+        assert child.agent_kind == "template"
+        actual = read_session_execution(slot_history_key(child), required=True)
+        assert actual.store == MemoryStoreRef("default")
+        assert actual.member_id is None
+        assert actual.template_id == self._WORKER_TEMPLATE
+
+    def test_the_stock_worker_default_leaves_other_member_names_name_first(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The default is for the stock worker's name ONLY. Any other private
+        # member named bare still resolves as the member and stays refused, so
+        # member-to-member dispatch keeps its name-first resolution.
+        state, caller, _conductor, calls = self._prepare(tmp_path, monkeypatch)
+
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(
+                sc.create_session(
+                    state, caller_session_key=slot_history_key(caller), agent="worker"
+                )
+            )
+        assert error.value.code == "memory_delegation_denied"
+        assert calls == [""]
+
     def test_the_template_kind_dispatches_the_worker_on_the_callers_own_store(
         self, tmp_path, monkeypatch, _fresh_create_budget
     ):

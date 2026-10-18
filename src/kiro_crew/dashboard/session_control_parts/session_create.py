@@ -10,6 +10,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_scope
+from kiro_crew.agent_files import WORKER_AGENT_FILENAME
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config.loader import (
     KiroCrewConfig,
@@ -78,6 +79,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 # The module's original logger name, which log filters and caplog assertions key on.
 logger = logging.getLogger("kiro_crew.dashboard.session_control")
+
+# The stock worker's name. A bare selection of it always means the shared
+# template: a crew member carrying this name is a leftover of an older agent
+# sync, and selecting it fences a shared-store conductor's dispatch.
+_STOCK_WORKER_AGENT = WORKER_AGENT_FILENAME.removesuffix(".json")
 
 
 async def create_session(
@@ -305,6 +311,15 @@ async def create_session(
             "agent_kind qualifies an explicit agent; name the agent too",
             code="agent_kind_requires_agent",
         )
+    # The stock worker needs no memory of its own, so a bare pick of it is the
+    # template on the caller's own memory -- what the conductor charter already
+    # asks for. Without this, an install where an older sync enrolled the name as
+    # a private-memory crew member refuses every conductor dispatch
+    # (`memory_delegation_denied`) whenever the model omits the kind. Only this
+    # one name: any other crew member still resolves name-first, and every gate
+    # below still applies to the template child.
+    if not agent_kind and agent.strip() == _STOCK_WORKER_AGENT:
+        agent_kind = "template"
 
     log = state.conversation_log
     if log is None:
