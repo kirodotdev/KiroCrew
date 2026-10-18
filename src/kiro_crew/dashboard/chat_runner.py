@@ -15004,15 +15004,12 @@ async def _run_chat(
             slot._transient_5xx_retries += 1
             _in_recovery_window = slot._transient_5xx_retries > TRANSIENT_RETRIES
             _throttled = acp_error_is_throttle(exc)
-            _base_delay = (
-                connection_retry_delay(slot._transient_5xx_retries)
-                if acp_error_is_connection_failure(exc)
-                else (
-                    throttle_retry_delay(slot._transient_5xx_retries)
-                    if _throttled
-                    else transient_retry_delay(slot._transient_5xx_retries)
-                )
-            )
+            if acp_error_is_connection_failure(exc):
+                _base_delay = connection_retry_delay(slot._transient_5xx_retries)
+            elif _throttled:
+                _base_delay = throttle_retry_delay(slot._transient_5xx_retries)
+            else:
+                _base_delay = transient_retry_delay(slot._transient_5xx_retries)
             # Local curve, floored by the dependency coordinator's shared
             # cooldown for this provider scope (one schedule per scope, RFC
             # §4.4); a typed throttle is reported to the adaptive controller.
