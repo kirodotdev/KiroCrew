@@ -22,11 +22,13 @@ start from. On a Dashboard page, the `dashboard` skill owns the page contract.
 ## The gate: freeze one frame
 
 Run the `widgets` skill's freeze-one-frame test first: picture one still frame of
-the figure. If that frame carries the meaning, the figure stays still, and only
-rules F (focus) and W (words) apply.
+the figure. If that frame carries the meaning, the figure stays still and the
+motion rules M, T, L and X do not apply. It may still take input, as a slider or
+a clickable diagram does, so rules F (focus), W (words), V (verify) and the
+Accessibility section apply all the same.
 
-The rules after the gate say how to move once motion has earned its place. None
-of them is a reason to make something move.
+The motion rules say how to move once motion has earned its place. None of them
+is a reason to make something move.
 
 ## M. Motion feels like a real thing
 
@@ -59,7 +61,7 @@ instant.
 
 Exactly one element is lit, in `var(--accent)`. Every other element steps down
 one tone: a lower opacity, or `var(--muted)`. Hover, the keyboard and the idle
-tour all move that one focus. Nothing lights a second element.
+tour all choose the lit element. Nothing lights a second element.
 
 ## W. Words stay out of the drawing
 
@@ -75,9 +77,9 @@ tour all move that one focus. Nothing lights a second element.
   the last input. It drives the same targets the user would. It plays at most
   three loops and then rests, so the `widgets` rule "stops when it is done" still
   holds. A visible play/pause control restarts it.
-- **Offscreen means stopped.** Watch the figure with an `IntersectionObserver`
-  (`rootMargin: "120px 0px"`), act on the newest entry in each callback, and stop
-  the loop while the figure is out of view.
+- **Offscreen means stopped.** Watch the figure with an `IntersectionObserver`,
+  act on the newest entry in each callback, and stop the loop while the figure is
+  out of view.
 - **Reduced motion.** Under `prefers-reduced-motion: reduce`, every value jumps
   straight to its target, there is no tour, and every envelope is zero. The figure
   still answers input.
@@ -122,10 +124,13 @@ Dashboard page still goes through the check `dashboard_save` runs.
 - **Screen readers.** Update `aria-valuenow` and `aria-valuetext` when the state
   changes, never on every frame: a focused slider announces each change, so a
   per-frame value becomes a stream of numbers. Phase words go to a polite live
-  region (`aria-live="polite"`) that is empty at load and filled on focus.
+  region (`aria-live="polite"`). It is empty at load, takes the current phase
+  when the stage is focused, and is updated each time input or new data changes
+  the phase. The idle tour does not write to it, so the region speaks only when
+  the user acts or the data changes.
 - **Colour is never the only signal.** The readout's words also name the lit
   element.
-- **The tour yields.** Any input stops it at once, and it never moves focus.
+- **The tour yields.** Any input stops it at once. It never moves keyboard focus.
 
 ## Toolkit
 
