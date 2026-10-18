@@ -116,7 +116,6 @@
 2096 src/kiro_crew/webex/transport_dispatch.py
 4051 src/kiro_crew/work_ledger.py
 2641 test/conftest.py
-2852 test/test_acp_pi_backend.py
 2780 test/test_admission_gate.py
 2200 test/test_app_backend_composition_contract.py
 4051 test/test_app_manager.py
@@ -132,7 +131,6 @@
 10498 test/test_cli.py
 2744 test/test_cli_server_more_coverage.py
 2260 test/test_config_live.py
-2868 test/test_connections_mint.py
 6406 test/test_crew_log_emit.py
 2195 test/test_crew_turn_proxy.py
 3125 test/test_cron_script.py
@@ -143,7 +141,6 @@
 11203 test/test_denied_commands_security.py
 2194 test/test_deploy_web_handlers.py
 2240 test/test_eager_spawn.py
-2861 test/test_embeddings.py
 2417 test/test_ephemeral_sessions.py
 2765 test/test_fargate_launch_engine.py
 4162 test/test_gateway_appkit_endpoints.py
@@ -192,7 +189,6 @@
 2185 test/test_side.py
 2396 test/test_skill_trust_store.py
 3082 test/test_skills.py
-2824 test/test_slack_gateway_coverage.py
 2650 test/test_slack_handler_composition_contract.py
 2629 test/test_slack_handler_coverage.py
 2730 test/test_slack_options_lifecycle.py

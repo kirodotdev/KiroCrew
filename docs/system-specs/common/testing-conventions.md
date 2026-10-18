@@ -3859,7 +3859,7 @@ review finding; the version below is what the lane accepted.
   `test_cron_reaper_failed_kill.py::test_a_refused_pid_is_audited_as_a_failed_kill_not_reaped` read
   `kill failed: runtime still leased by another tenant` for its fabricated pid 4242 in one
   round of three -- the round xdist placed it after
-  `test_connections_mint.py::test_the_mint_pid_is_protected_while_readiness_is_still_stalled`
+  `test_connections_mint_spec_files.py::test_the_mint_pid_is_protected_while_readiness_is_still_stalled`
   on one worker. That test replaced `_dispose_mint`, the only path that releases the
   `RUNTIME_TENANCY` claim the pid shield takes, with a no-op; and its client stand-in
   answers neither `is_alive` nor `is_process_alive`, which the table reads as alive for
@@ -4021,7 +4021,7 @@ warming to their caps. `slow` was the suite's own budgets, plus the five
 `test_subagent_force_stop_audit.py` cases at 30 s each -- a missing `_RESET_TIMEOUT` pin,
 which the concurrent fourteenth pass (native Windows, three rounds) found and fixes in
 [#15061](https://github.com/kirodotdev/KiroCrew/pull/15061), together with the
-`test_connections_mint.py` tenancy stub behind the same refused-kill wording the conftest
+`test_connections_mint_spec_files.py` tenancy stub behind the same refused-kill wording the conftest
 reset above floors.
 
 ## Running the suite: the defaults, and how to narrow safely

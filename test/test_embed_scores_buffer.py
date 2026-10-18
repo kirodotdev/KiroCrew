@@ -57,7 +57,7 @@ _VENDORED_LLAMA = (
 def _make_recording_llama_class(dim: int = embeddings_mod._DEFAULT_DIM):
     """Fake Llama class that records the kwargs its constructor was handed.
 
-    Mirrors ``_make_fake_llama_class`` in test/test_embeddings.py: it never loads
+    Mirrors ``_make_fake_llama_class`` in test/embeddings_helpers.py: it never loads
     a real model and returns a fixed-width embedding for ``create_embedding``.
     """
 

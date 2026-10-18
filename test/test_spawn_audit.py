@@ -349,7 +349,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # with the same credential mask the session spawn gets, because the child
         # is the agent itself loading extensions out of the operator's own
         # directories. Called from a worker thread, never the event loop --
-        # ``test/test_acp_pi_backend.py`` pins that.
+        # ``test/test_acp_pi_backend_spawn.py`` pins that.
         "acp/harness/pi.py::_verify_pi_gate",
         # The DeepSeek Harness gate read-back, the same shape as the pi one above:
         # the argv is the SESSION'S own argv already wrapped by ``wrap_argv_async``

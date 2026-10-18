@@ -149,7 +149,8 @@
  1 test_e2e_smoke.py
  5 test_embedding_rebuild_generation.py
  1 test_embedding_rebuild_process.py
- 2 test_embeddings.py
+ 1 test_embeddings.py
+ 1 test_embeddings_threads.py
  5 test_executors.py
  1 test_explain_for_skill.py
  1 test_fairness_lanes.py
@@ -299,7 +300,7 @@
  3 test_skill_view_relaunch_harness.py
  3 test_skills_cold_start.py
  1 test_slack_events_coverage_route_flow.py
- 2 test_slack_gateway_coverage.py
+ 2 test_slack_gateway_coverage_mcp_broker.py
  3 test_slack_gateway_cron_exec_coverage.py
  3 test_slack_gateway_more_coverage.py
  2 test_slack_handler.py
