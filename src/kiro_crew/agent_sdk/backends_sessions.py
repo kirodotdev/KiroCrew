@@ -136,6 +136,9 @@ ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX})
 #   85 MB at eight. The growth is in ``codex app-server``, and it is gentle
 #   (+14 MB per session on a minimal config, +37 MB with a host MCP registry).
 #
+# These two facts are not re-measured on the Real Adapter Contract lane's pin
+# (``test/real_adapters/package.json``).
+#
 # What it does NOT bring is the kiro-family spawn convention: it reads no
 # cli.json overlay and takes effort through ``session/set_config_option``. That
 # is why membership here is a statement about the TRANSPORT and nothing else --
