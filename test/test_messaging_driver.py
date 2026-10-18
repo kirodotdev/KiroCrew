@@ -1047,12 +1047,36 @@ class TestTextAcrossAToolCall:
         joined, _ = _turn_across_tool([], ["Found it."])
         assert joined == "Found it."
 
-    def test_credential_split_by_a_tool_call_never_reassembles(self):
+    def test_credential_split_by_a_tool_call_is_redacted_whole(self):
+        # Both sides of this join are non-whitespace, so the break rule fires.
+        # The redactor must still see the key joined: a break fed in between
+        # would let each half pass the scan alone and show both.
         # Split literal on purpose so Semgrep does not mistake the synthetic
         # fixture for a hardcoded AWS access key.
         secret = "AKIA" + "1234567890ABCDEF"
         joined, _ = _turn_across_tool([f"key {secret[:14]}"], [f"{secret[14:]} end"])
-        assert secret not in joined
+        assert secret[:14] not in joined
+        assert secret[14:] not in joined
+        assert "[REDACTED: credential]" in joined
+
+    def test_no_break_once_a_redaction_has_changed_the_output(self):
+        # Residual, pinned: once the output differs from the raw text there is
+        # no held text to anchor the break on, so the join stays glued.
+        secret = "AKIA" + "1234567890ABCDEF"
+        joined, _ = _turn_across_tool([f"key {secret} then that time."], ["No logs."])
+        assert "[REDACTED: credential]" in joined
+        assert joined.endswith("time.No logs.")
+
+    def test_break_waits_while_the_join_is_still_held(self):
+        # "time." + "No" is one credential-class run, so the redactor emits
+        # nothing until " here." ends it; the break lands when it does.
+        joined, _ = _turn_across_tool(["Around that time."], ["No", "thing here."])
+        assert joined == "Around that time.\n\nNothing here."
+
+    def test_break_is_placed_when_the_turn_ends_on_the_held_join(self):
+        # Nothing terminates the run, so only the end-of-turn flush releases it.
+        joined, _ = _turn_across_tool(["See the api_key"], ["Next."])
+        assert joined == "See the api_key\n\nNext."
 
 
 class TestToolGateEnforcement:
