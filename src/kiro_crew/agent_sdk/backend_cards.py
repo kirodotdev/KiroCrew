@@ -314,8 +314,11 @@ USER_FACING_LINES: Tuple[_LineSpec, ...] = (
 #: panel can show them behind a folded disclosure, and kept OUT of the card's
 #: count so "supports N of M" is a number over the core set alone.
 DETAIL_LINES: Tuple[_LineSpec, ...] = (
-    # Only kiro-cli loads an enrolled member's whole saved spec at spawn. The
-    # question a user asks -- does a crewmate get Crew's tools here? -- is the
+    # Whether an enrolled member's saved spec is loaded (kiro-cli, KAS) or its
+    # projection confirmed (Claude, Codex, DeepSeek) at spawn. The label says
+    # "saved agent", not "whole": a projecting backend reports some fields as
+    # gaps, and the card's "will not take effect" list names them. The question
+    # a user asks -- does a crewmate get Crew's tools here? -- is the
     # member-thread line on the card; this one says how the spec arrives.
     _LineSpec(LINE_MEMBER_SAVED_AGENT, ("ACP_BACKENDS_MEMBER_CAPABILITIES",)),
     # ``spawn_continue`` is a verb the AGENT calls, not a control the user

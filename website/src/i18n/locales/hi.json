@@ -13279,7 +13279,7 @@
         "card_manual_compact": "/compact कमांड काम करता है",
         "card_markdown_agents": "markdown फ़ाइल में तुम्हारे बनाए एजेंट लोड करता है",
         "card_mcp_ineffective": "तुम्हारी एजेंट कॉन्फ़िग फ़ाइल की ये सेटिंग्स {{name}} पर काम नहीं करेंगी",
-        "card_member_saved_agent": "क्रूमेट अपना पूरा सहेजा हुआ एजेंट लोड करते हैं",
+        "card_member_saved_agent": "क्रूमेट अपना सहेजा हुआ एजेंट लोड करते हैं",
         "card_member_thread_tools": "क्रूमेट चैट को सेशन टूल मिलते हैं",
         "card_mid_turn_steer": "काम चलते रहने पर भी संदेश भेजा जा सकता है",
         "card_model_switch": "चैट के भीतर मॉडल बदला जा सकता है",

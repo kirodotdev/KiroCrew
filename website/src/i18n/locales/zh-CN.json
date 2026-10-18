@@ -13062,7 +13062,7 @@
         "card_manual_compact": "/compact 命令可用",
         "card_markdown_agents": "加载你用 markdown 文件定义的代理",
         "card_mcp_ineffective": "代理配置文件里的这些设置在 {{name}} 上不会生效",
-        "card_member_saved_agent": "队友会完整加载自己保存的代理",
+        "card_member_saved_agent": "队友会加载自己保存的代理",
         "card_member_thread_tools": "队友聊天会挂上会话工具",
         "card_mid_turn_steer": "它正在干活时也能再发一条消息",
         "card_model_switch": "可以在聊天里换模型",

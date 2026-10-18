@@ -13062,7 +13062,7 @@
         "card_manual_compact": "/compact 명령이 동작합니다",
         "card_markdown_agents": "markdown 파일에 직접 정의한 에이전트를 불러옵니다",
         "card_mcp_ineffective": "에이전트 설정 파일의 이 설정들은 {{name}}에서 적용되지 않습니다",
-        "card_member_saved_agent": "크루메이트가 저장한 에이전트를 전부 불러옵니다",
+        "card_member_saved_agent": "크루메이트가 저장한 에이전트를 불러옵니다",
         "card_member_thread_tools": "크루메이트 대화에 세션 도구가 들어갑니다",
         "card_mid_turn_steer": "작업 중에도 메시지를 보낼 수 있습니다",
         "card_model_switch": "대화 안에서 모델을 바꿀 수 있습니다",

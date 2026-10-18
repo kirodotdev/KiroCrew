@@ -13279,7 +13279,7 @@
         "card_manual_compact": "/compact কমান্ড কাজ করে",
         "card_markdown_agents": "markdown ফাইলে তোমার বানানো এজেন্ট লোড করে",
         "card_mcp_ineffective": "তোমার এজেন্ট কনফিগ ফাইলের এই সেটিংগুলো {{name}} এ কাজ করবে না",
-        "card_member_saved_agent": "ক্রুমেটরা তাঁদের পুরো সংরক্ষিত এজেন্ট লোড করেন",
+        "card_member_saved_agent": "ক্রুমেটরা তাঁদের সংরক্ষিত এজেন্ট লোড করেন",
         "card_member_thread_tools": "ক্রুমেটের চ্যাটে সেশন টুল যুক্ত হয়",
         "card_mid_turn_steer": "কাজ চলার সময়েও বার্তা পাঠানো যায়",
         "card_model_switch": "চ্যাটের ভেতরেই মডেল বদলানো যায়",

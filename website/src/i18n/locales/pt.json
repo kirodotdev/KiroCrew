@@ -13496,7 +13496,7 @@
         "card_manual_compact": "O comando /compact funciona",
         "card_markdown_agents": "Carrega os agentes que você define em um arquivo markdown",
         "card_mcp_ineffective": "Estas configurações do seu arquivo de configuração do agente não terão efeito no {{name}}",
-        "card_member_saved_agent": "Os colegas carregam todo o agente salvo",
+        "card_member_saved_agent": "Os colegas carregam o agente salvo",
         "card_member_thread_tools": "Os chats de colegas recebem ferramentas de sessão",
         "card_mid_turn_steer": "Você pode enviar uma mensagem enquanto ele trabalha",
         "card_model_switch": "O modelo pode ser trocado dentro do chat",

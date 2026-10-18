@@ -13062,7 +13062,7 @@
         "card_manual_compact": "/compact コマンドが使えます",
         "card_markdown_agents": "markdown ファイルで定義した独自のエージェントを読み込みます",
         "card_mcp_ineffective": "エージェント設定ファイルのこれらの設定は {{name}} では効きません",
-        "card_member_saved_agent": "クルーメイトは保存したエージェントをそのまま読み込めます",
+        "card_member_saved_agent": "クルーメイトは保存したエージェントを読み込めます",
         "card_member_thread_tools": "クルーメイトのチャットにセッション用ツールが入ります",
         "card_mid_turn_steer": "作業中でもメッセージを追加できます",
         "card_model_switch": "チャットの中でモデルを切り替えられます",

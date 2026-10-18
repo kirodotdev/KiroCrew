@@ -13279,7 +13279,7 @@
         "card_manual_compact": "Der Befehl /compact funktioniert",
         "card_markdown_agents": "Lädt eigene Agenten, die du in einer Markdown-Datei definierst",
         "card_mcp_ineffective": "Diese Einstellungen aus deiner Agenten-Konfigurationsdatei greifen auf {{name}} nicht",
-        "card_member_saved_agent": "Crewmates laden ihren ganzen gespeicherten Agenten",
+        "card_member_saved_agent": "Crewmates laden ihren gespeicherten Agenten",
         "card_member_thread_tools": "Crewmate-Chats erhalten Sitzungstools",
         "card_mid_turn_steer": "Du kannst während der Arbeit eine Nachricht senden",
         "card_model_switch": "Das Modell lässt sich im Chat wechseln",
