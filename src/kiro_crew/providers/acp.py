@@ -1017,6 +1017,15 @@ class AcpProvider(LLMProvider):
         """
         await self._client.new_conversation()  # type: ignore[attr-defined]
 
+    def set_delete_delay(self, seconds: float) -> None:
+        """Keep the session's record for ``seconds`` after it ends, then delete it.
+
+        Only a session on the shared runtime can be released and deleted later,
+        so the per-session client ends its sessions as before.
+        """
+        if isinstance(self._client, AcpSessionProvider):
+            self._client.set_delete_delay(seconds)
+
     def is_alive(self) -> bool:
         """Whether the shared client is responsive.
 

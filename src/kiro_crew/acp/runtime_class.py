@@ -148,6 +148,9 @@ class AcpRuntime:
     mark_turn_active = _rt_registry.mark_turn_active
     terminate_session = _rt_registry.terminate_session
     evict_session = _rt_registry.evict_session
+    can_release = _rt_registry.can_release
+    release_session = _rt_registry.release_session
+    delete_session_record = _rt_registry.delete_session_record
     keep_record_on_teardown = _rt_registry.keep_record_on_teardown
     _session_teardown_method = _rt_registry._session_teardown_method
     _mcp_init_progress = _rt_registry._mcp_init_progress

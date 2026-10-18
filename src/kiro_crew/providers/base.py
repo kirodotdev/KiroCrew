@@ -475,6 +475,16 @@ class LLMProvider(ABC):
         """
         return None
 
+    def set_delete_delay(self, seconds: float) -> None:
+        """Keep the session's record for ``seconds`` after it ends, then delete it.
+
+        Set by a workflow worker from ``session.kas_delete_delay_secs``. Only a
+        session on a host that can free a session and keep its record acts on it
+        (``AcpSessionHandle.destroy``). Default no-op for a provider whose
+        sessions end as they always did.
+        """
+        return None
+
     def disown_work_dir(self) -> None:
         """Declare that this provider does not own its work directory for reclaim.
 

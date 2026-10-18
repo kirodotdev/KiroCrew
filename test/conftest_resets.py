@@ -71,6 +71,19 @@ def _fresh_reexec_environment(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_released_sessions_warning(_floor_monkeypatch):
+    """Start every test with the stranded-records warning not yet given.
+
+    ``released_sessions.sweep`` warns once per process about records that wait on a
+    backend that is not selected, so a test that drives that warning would
+    otherwise silence it for every later test on the same worker.
+    """
+    from kiro_crew import released_sessions
+
+    _floor_monkeypatch.setattr(released_sessions, "_stranded_warned", False)
+
+
+@pytest.fixture(autouse=True)
 def _approve_every_mcp_launch(request, _floor_monkeypatch):
     """Treat every gatewayd launch as operator-approved, except where it is the subject.
 

@@ -11,7 +11,9 @@ engine's either way. KAS reports MCP readiness through session-scoped
 It takes no ``--agent`` flag, so the agent definition travels on every session
 start and has to be re-sent on resume. Its ``protocolVersion`` is an integer, not
 a date string. It can ask Crew for the access token instead of holding one. And
-its teardown verb DESTROYS the session record rather than evicting it.
+its teardown verb DESTROYS the session record rather than evicting it; an engine
+that advertises ``sessionCapabilities.close`` also offers the evict-only half,
+which :meth:`KasHarness.release` names.
 """
 
 from __future__ import annotations
@@ -62,6 +64,7 @@ from kiro_crew.acp.types import (
     METHOD_KAS_MCP_STATUS,
     METHOD_KAS_SESSION_DELETE,
     METHOD_KAS_TOOLS_CHANGED,
+    METHOD_SESSION_CLOSE,
 )
 from kiro_crew.agent import ForkGovernanceUnresolved
 from kiro_crew.config import paths as paths_mod
@@ -924,3 +927,17 @@ class KasHarness(MembershipHarness):
         answer confirms, and a delete whose outcome is unknown is worth waiting for.
         """
         return TeardownPolicy(method=METHOD_KAS_SESSION_DELETE, notification=False)
+
+    def release(self, agent_capabilities: Mapping[str, Any] | None) -> TeardownPolicy | None:
+        """Close the session, keeping its record, when this engine has the verb.
+
+        ``session/close`` disposes the session in memory as the delete does and
+        removes nothing from disk. The engine says it has the verb by
+        advertising ``sessionCapabilities.close`` in its ``initialize`` answer,
+        and an engine older than the verb does not, so anything else is refused
+        and the caller deletes as before. A request: the engine answers ``{}``.
+        """
+        session_caps = (agent_capabilities or {}).get("sessionCapabilities")
+        if isinstance(session_caps, Mapping) and isinstance(session_caps.get("close"), Mapping):
+            return TeardownPolicy(method=METHOD_SESSION_CLOSE, notification=False)
+        return None
