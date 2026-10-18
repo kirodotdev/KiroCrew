@@ -173,11 +173,12 @@ jobs:
           }
 
       - name: Terminal handler suite (verbose, so a darwin PTY hang names its test)
-        # test/macos-collect-ignore.txt keeps this file out of the shards and this
-        # step runs it instead: -v -n0 so every test name streams to the log the
+        # test/macos-collect-ignore.txt keeps these files (test_terminal_handler.py
+        # and its topic parts) out of the shards and this step runs them instead:
+        # -v -n0 so every test name streams to the log the
         # moment it starts, and a 90 s per-test timeout so a PTY read that darwin
         # never wakes fails by name in the log rather than as 180 s of silence
-        # inside a -q shard. Runs on shard 1 only; the file is one process either way.
+        # inside a -q shard. Runs on shard 1 only; the files are one process either way.
         if: matrix.group == 1
         env:
           PYTHONUNBUFFERED: "1"
@@ -185,10 +186,17 @@ jobs:
           set -o pipefail
           echo "::remove-matcher owner=python::"
           pytest -v -n0 --no-cov --timeout=90 -o faulthandler_timeout=75 \
-            -p no:cacheprovider test/test_terminal_handler.py 2>&1 | tee terminal.log
-          # A FLOOR, not "at least one pass". This file carries ~277 tests and this
-          # step is its only execution on macOS (test/macos-collect-ignore.txt keeps
-          # it out of every shard, and test/windows-collect-ignore.txt out of the
+            -p no:cacheprovider test/test_terminal_handler.py \
+            test/test_terminal_handler_session_routes.py \
+            test/test_terminal_handler_completion.py \
+            test/test_terminal_handler_ws.py \
+            test/test_terminal_handler_pty_integration.py \
+            test/test_terminal_handler_session_state.py \
+            test/test_terminal_handler_pty_writes.py \
+            test/test_terminal_handler_child_process.py 2>&1 | tee terminal.log
+          # A FLOOR, not "at least one pass". These files carry ~277 tests and this
+          # step is their only execution on macOS (test/macos-collect-ignore.txt keeps
+          # them out of every shard, and test/windows-collect-ignore.txt out of the
           # Windows ones), so what has to be caught here is a COLLECTION COLLAPSE --
           # and `[1-9][0-9]* passed` was satisfied by "1 passed, 276 skipped". The
           # count is read numerically instead: growth is fine, a handful of

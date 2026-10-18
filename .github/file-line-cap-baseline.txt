@@ -172,7 +172,6 @@
 3177 test/test_subagent_scale.py
 2820 test/test_subagent_turn_resilience.py
 2460 test/test_taskq_runner_adapter.py
-8129 test/test_terminal_handler.py
 5831 test/test_vector_memory.py
 2238 test/test_wheel_engine.py
 2944 website/electron/gateway-supervisor.js

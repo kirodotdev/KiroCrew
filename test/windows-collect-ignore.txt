@@ -56,6 +56,13 @@ test_source_providers_reviews.py   # a test_source_providers.py topic part; same
 # Feature-parity gaps observed on the first Windows runs -- each is a
 # POSIX-shaped feature or test suite tracked as a Windows follow-up:
 test_terminal_handler.py           # PTY web terminal is POSIX-only
+test_terminal_handler_child_process.py  # a test_terminal_handler.py topic part; same suite
+test_terminal_handler_completion.py  # a test_terminal_handler.py topic part; same suite
+test_terminal_handler_pty_integration.py  # a test_terminal_handler.py topic part; same suite
+test_terminal_handler_pty_writes.py  # a test_terminal_handler.py topic part; same suite
+test_terminal_handler_session_routes.py  # a test_terminal_handler.py topic part; same suite
+test_terminal_handler_session_state.py  # a test_terminal_handler.py topic part; same suite
+test_terminal_handler_ws.py        # a test_terminal_handler.py topic part; same suite
 test_acp_client.py                 # the test_acp_client suite stays uncollected as one unit
 test_acp_client_binary_resolution.py  # a test_acp_client.py topic part; same suite
 test_acp_client_commands.py        # a test_acp_client.py topic part; same suite

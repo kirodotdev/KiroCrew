@@ -14,13 +14,14 @@
 # (AF_UNIX, PGID, PTY, mode bits, symlink privilege) do not apply. This list is
 # expected to stay short or empty.
 #
-# One entry. Everything else the full-suite macOS shard runs surfaced was
+# One suite. Everything else the full-suite macOS shard runs surfaced was
 # addressable as a node id in macos-expected-failures.txt, including the two
 # frame-recording suites, whose refusal-path tests still pass here and are
 # deliberately kept running.
 #
-# test_terminal_handler.py is NOT excluded from macOS: it runs in the dedicated
-# "Terminal handler suite" step of backend-test-macos, verbosely and single-process,
+# test_terminal_handler.py and its test_terminal_handler_*.py topic parts are NOT
+# excluded from macOS: they run in the dedicated "Terminal handler suite" step of
+# backend-test-macos, verbosely and single-process,
 # instead of inside the shards. On darwin a blocked os.read() on the PTY controlling side is not
 # woken by closing the descriptor from another thread, so a terminal test whose
 # shell is still alive when the session closes runs to its per-test timeout. Inside a
@@ -28,3 +29,10 @@
 # the job cap twice with no output at all. The dedicated step names each test as it
 # runs, so a hang fails by name, and the shards finish.
 test_terminal_handler.py
+test_terminal_handler_child_process.py
+test_terminal_handler_completion.py
+test_terminal_handler_pty_integration.py
+test_terminal_handler_pty_writes.py
+test_terminal_handler_session_routes.py
+test_terminal_handler_session_state.py
+test_terminal_handler_ws.py
