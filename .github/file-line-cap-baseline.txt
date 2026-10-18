@@ -107,7 +107,6 @@
 2475 test/test_chat_mirror.py
 10498 test/test_cli.py
 2744 test/test_cli_server_more_coverage.py
-2260 test/test_config_live.py
 6406 test/test_crew_log_emit.py
 3125 test/test_cron_script.py
 2247 test/test_cron_secret_env.py
@@ -115,7 +114,6 @@
 2718 test/test_dashboard_server_composition_contract.py
 2478 test/test_dashboard_updates_coverage.py
 11203 test/test_denied_commands_security.py
-2240 test/test_eager_spawn.py
 2765 test/test_fargate_launch_engine.py
 4437 test/test_github_pull_request_monitor.py
 5410 test/test_governance_distribution.py
@@ -126,7 +124,6 @@
 2162 test/test_issue_radar_routes_coverage.py
 4427 test/test_job_sdk.py
 2631 test/test_llm_pool.py
-2248 test/test_markdown_link_parentheses.py
 7022 test/test_mcp_discovery.py
 3224 test/test_mcp_gateway_stub_session_token.py
 2449 test/test_mcp_gatewayd_coverage.py
@@ -158,7 +155,6 @@
 2820 test/test_subagent_turn_resilience.py
 2460 test/test_taskq_runner_adapter.py
 5831 test/test_vector_memory.py
-2238 test/test_wheel_engine.py
 2944 website/electron/gateway-supervisor.js
 2903 website/scripts/lib/ui-index.mjs
 2169 website/src/apps/command-bar/CommandBarOverlay.test.tsx
