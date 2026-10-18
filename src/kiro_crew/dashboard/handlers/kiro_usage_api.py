@@ -1115,3 +1115,63 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
             continue
     _note_api_outcome(False, f"all {len(candidates)} candidate credential(s) failed; last: {reason}")
     return UsageResult(None, AUTH_REJECTED if saw_unauthorized else AUTH_OTHER)
+
+
+def fetch_usage_limits_with_credential(token: str, profile_arn: str | None) -> UsageResult:
+    """Fetch credit usage with ONE caller-supplied credential. Synchronous (urllib).
+
+    The path for Kiro Crew's own sign-in vault, which needs no kiro-cli at all:
+    the caller resolves (and refreshes) the vault's access token through
+    :class:`kiro_crew.auth.provider.KasAuthProvider` and hands it here with the
+    profile ARN stored beside it. No credential store is enumerated, so the
+    ownership proofs :func:`fetch_usage_limits` applies to discovered candidates
+    do not arise: a token from Crew's vault is the signed-in Crew account's
+    credential by construction -- the same provenance argument that admits a
+    token from kiro-cli's own store.
+
+    ``profile_arn`` is the vault's stored ARN when it has one (enterprise / IdC
+    identities) and is used as-is for the request; the ListAvailableProfiles
+    probe then only supplies the profile's display name. Without one (Builder
+    ID, social), the probe's first ARN is used when the token lists any, which
+    is what an enterprise identity stored without its ARN needs to avoid a 403.
+
+    Same contract as :func:`fetch_usage_limits`: never raises, never logs the
+    token, returns ``UsageResult(None, <AUTH_*>)`` on any failure, and the usage
+    dict carries the private ``_profile_arn`` key the caller strips.
+    """
+    if not token:
+        return UsageResult(None, AUTH_NO_CREDENTIAL)
+    endpoint = _rts_endpoint(profile_arn)
+    try:
+        listed = _list_profile_arn(token, expected_arn=profile_arn, endpoint=endpoint)
+        arn = profile_arn or listed
+        payload: dict[str, object] = {"origin": "AI_EDITOR"}
+        if arn:
+            payload["profileArn"] = arn
+        try:
+            r = _post(token, _TARGET_GET_USAGE, payload, endpoint=endpoint)
+        except _RequestError as e:
+            _note_api_outcome(False, f"vault credential request failed: {type(e).__name__}")
+            return UsageResult(None, AUTH_OTHER)
+        if r.status_code != 200:
+            _note_api_outcome(False, f"vault credential: HTTP {r.status_code}")
+            # 401 only, as in fetch_usage_limits (see AUTH_REJECTED).
+            return UsageResult(None, AUTH_REJECTED if r.status_code == 401 else AUTH_OTHER)
+        try:
+            body = r.json()
+        except ValueError:
+            _note_api_outcome(False, "vault credential: non-JSON body")
+            return UsageResult(None, AUTH_OTHER)
+        mapped = _map_response(body)
+        if mapped is None:
+            _note_api_outcome(False, "no usable CREDIT breakdown in response")
+            return UsageResult(None, AUTH_OTHER)
+        account = _account_name(token, profile_arn)
+        if account:
+            mapped["account"] = account
+        mapped["_profile_arn"] = arn
+        _note_api_outcome(True)
+        return UsageResult(mapped, AUTH_OK)
+    except Exception:  # noqa: BLE001 - never let an unexpected shape escape
+        logger.debug("Kiro usage API: unexpected error for the vault credential", exc_info=True)
+        return UsageResult(None, AUTH_OTHER)
