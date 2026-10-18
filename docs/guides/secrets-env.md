@@ -96,6 +96,13 @@ only once stored. The Secrets routes do not edit it: a write or delete of that
 name returns `409` with code `managed_by_connections`; change it under
 **Settings → OAuth Apps**.
 
+The three WakaTime OAuth read-auth credentials appear in the catalog as kind
+`wakatime_oauth`: the client secret, the access credential, and the refresh
+credential. They are listed only once stored, written by the OAuth flow rather
+than typed in, and the client secret is the one a user pastes after creating an
+app at `wakatime.com/apps`. The access and refresh credentials rotate on
+refresh and clear on disconnect, so a user never edits them by hand.
+
 When a stored integration name is one the runtime will not read, the response
 also carries an `unused` list of `{name, reason}` entries. The reasons are
 `wakatime_disabled` (`WAKATIME_API_KEY` stored while WakaTime is off),

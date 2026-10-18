@@ -38,6 +38,14 @@ export type WakaTimeStats = {
   }
 }
 
+/** WakaTime OAuth connection state (GET /api/wakatime/oauth/status). `connected`
+ *  gates the Disconnect control; `client_configured` tells the UI whether an
+ *  OAuth app client id is set so it can prompt for setup before offering Connect. */
+export type WakaTimeOauthStatus = {
+  connected: boolean
+  client_configured: boolean
+}
+
 /** Stacking dimensions `GET /api/usage/series` accepts. */
 export type UsageSeriesDimension = 'channel' | 'agent' | 'model' | 'cohort'
 
@@ -148,6 +156,16 @@ export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: Client
      *  the CSV/JSON arrives via the endpoint's own Content-Disposition. */
     wakatimeExportUrl: (start: string, end: string, format: 'csv' | 'json') =>
       `/api/wakatime/export?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&format=${format}`,
+    /** OAuth connection state for the settings Connect/Disconnect control. */
+    wakatimeOauthStatus: () =>
+      fetch('/api/wakatime/oauth/status').then(j) as Promise<WakaTimeOauthStatus>,
+    /** Start the OAuth read-auth flow. Returns the WakaTime authorize URL the
+     *  browser navigates to; the backend sets the CSRF state cookie on this call. */
+    wakatimeOauthAuthorize: () =>
+      post('/api/wakatime/oauth/authorize').then(j) as Promise<{ authorize_url: string }>,
+    /** Revoke and clear the stored tokens, returning the integration to API-key auth. */
+    wakatimeOauthDisconnect: () =>
+      post('/api/wakatime/oauth/disconnect').then(j) as Promise<{ disconnected: boolean }>,
   }
 
   const privacyPosture = {
