@@ -1,0 +1,10 @@
+{
+ "base_public_names": [
+  "ENV_ASSIGNMENT_RE",
+  "normalize_shell_command"
+ ],
+ "note": "The shell reader keeps argv attribution and re-imports what callers name from its lexical owners (shell_normalizer_walk, _redirects, _escapes, _programs); its two public names are the path normalizer it defines and the assignment pattern it imports.",
+ "rebound": {
+  "ENV_ASSIGNMENT_RE": "kiro_crew.trust_patterns"
+ }
+}

@@ -2639,7 +2639,7 @@ class TestMemoryTuningPlumbing:
         # Scenario workspaces are throwaway stores, not the install's memory.
         "eval/runner.py": "eval scenario workspace",
         # Read-only injection audit; it never writes an episode.
-        "security/__init__.py": "read-only injection audit",
+        "security/memory_audit.py": "read-only injection audit",
     }
 
     def test_dashboard_fallback_passes_configured_options(

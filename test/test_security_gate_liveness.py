@@ -384,7 +384,16 @@ def _url_payload_command(n: int) -> str:
 #: recursive-force rm rows (segments from the shared split, words from the shared
 #: ``_shell_tokens``, flags and an exact root/home target) and its gated branch at the
 #: end of ``is_denied``. No pattern moved.
-_PACKAGE_LINE_BUDGET = 29_751
+#:
+#: Raised again, from 29,751, for the split of ``__init__.py`` and ``shell_normalizer.py``
+#: under the 2,000-line cap. No rule, pattern or pass changed, and every moved definition
+#: keeps its syntax tree but one docstring's wording. The 458 lines are glue only:
+#: 205 are the eight new modules' docstrings and imports; 86 are
+#: ``shell_normalizer.py``'s re-imports of the names its callers import from it and the
+#: docstring naming its owners; 146 are the facade's ``_EXPORTS`` and
+#: ``TYPE_CHECKING`` rows for the moved names and the owner import at its foot; and
+#: 21 are the moved privates added to the frozen manifest.
+_PACKAGE_LINE_BUDGET = 30_209
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
