@@ -702,6 +702,9 @@ class SlackRenderer(Renderer):
         # and uploads stay off until then: extraction reads files the model named,
         # and "anywhere" is not an approved root.
         self._upload_root = upload_root if os.path.isabs(upload_root) else ""
+        # The session's own scratch directory, set only by the dispatcher beside
+        # a valid root (``authorize_upload_root``).
+        self._scratch_root = ""
         self._uploads_allowed = uploads_allowed
         # Visible text withheld from the append-only stream because a local image
         # reference is in play; released (markup removed) at the seal.
@@ -927,9 +930,18 @@ class SlackRenderer(Renderer):
         await self._append_stream(flush)
 
     # -- outbound local-image uploads ---------------------------------------
-    def authorize_upload_root(self, root: str) -> None:
-        """Authorize the provider's resolved cwd; an invalid root disables uploads."""
+    def authorize_upload_root(self, root: str, scratch_root: str = "") -> None:
+        """Authorize the provider's resolved cwd; an invalid root disables uploads.
+
+        *scratch_root* is the session's own ``$KIROCREW_SCRATCH`` directory. It
+        is admitted only beside a valid cwd, and extraction re-checks that it is
+        one allocation under the managed scratch root
+        (``outbound_files.session_scratch_root``) before it counts.
+        """
         self._upload_root = root if os.path.isabs(root) else ""
+        self._scratch_root = (
+            scratch_root if self._upload_root and os.path.isabs(scratch_root) else ""
+        )
 
     def _uploads_enabled(self) -> bool:
         """Require the transport capability, an unrestricted session, and a root."""
@@ -1015,7 +1027,10 @@ class SlackRenderer(Renderer):
         appended, so the notes have to be appended there instead.
         """
         return await extract_outbound_with_audit(
-            text, within_root=self._upload_root, audit_caller=self._audit_caller()
+            text,
+            within_root=self._upload_root,
+            scratch_root=self._scratch_root,
+            audit_caller=self._audit_caller(),
         )
 
     def _rejection_notes(self, rejections: list[Rejection]) -> str:

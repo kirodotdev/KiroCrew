@@ -146,6 +146,7 @@ DECLARED_SITES = frozenset(
         ("memory_files.py", "LocalMemoryFiles.read_text"),
         ("memory_files.py", "LocalMemoryFiles.read_text_for_rewrite"),
         ("messaging/outbound_files.py", "_inspect"),
+        ("messaging/outbound_files.py", "session_scratch_root"),
         ("node_modules_txn.py", "_gone"),
         ("pinned_fs.py", "open_pinned_descendant_dir"),
         ("platform/policy_distribution.py", "_cache_write_lock"),
