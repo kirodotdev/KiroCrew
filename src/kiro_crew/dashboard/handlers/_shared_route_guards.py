@@ -19,6 +19,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from aiohttp import web
 
+from kiro_crew.dashboard.handlers._shared_access import require_owner_for_dashboard_caller
 from kiro_crew.dashboard.handlers._shared_member_scope import (
     _audit_private_memory_denial,
     internal_memory_scope,
@@ -536,6 +537,24 @@ def owner_surface_guard(operation: str) -> RouteGuard:
     return guard
 
 
+def dashboard_owner_surface_guard(operation: str) -> RouteGuard:
+    """:func:`owner_surface_guard`, then the dashboard-owner check, audited under ``operation``.
+
+    For a surface that is the owner's own data (a transcript, the history list): a
+    non-owner dashboard session holds the same empty app claim as the owner's, so
+    the private-member check alone admits it. App-token and internal callers pass
+    :func:`require_owner_for_dashboard_caller` untouched.
+    """
+
+    async def guard(request: web.Request) -> web.Response | None:
+        refusal = await private_owner_surface_refusal(request, operation)
+        if refusal is not None:
+            return refusal
+        return await require_owner_for_dashboard_caller(request, operation)
+
+    return guard
+
+
 def owner_surface_route(handler: Callable[..., Any]) -> Callable[..., Any]:
     """Check owner permissions before ``handler`` runs; the audit label is its name."""
     return guarded_route(handler, owner_surface_guard(handler.__name__))
@@ -547,6 +566,7 @@ def guard_owner_surface_routes(
     member_scoped: frozenset[str],
     resource_scoped: Mapping[str, RouteGuard] | None = None,
     prefix: str = "api_",
+    dashboard_owner_only: bool = False,
 ) -> None:
     """Wrap every ``<prefix>*`` coroutine in a handler module's ``namespace`` as an owner surface.
 
@@ -556,8 +576,14 @@ def guard_owner_surface_routes(
     route's own resource) instead of the owner check. A handler added later is
     refused to private callers unless it is listed here on purpose. Call it
     once, at the bottom of the module, so the re-exported names are the guarded
-    ones.
+    ones. With ``dashboard_owner_only`` the owner check is
+    :func:`dashboard_owner_surface_guard`, which also refuses a non-owner
+    dashboard session.
     """
+    if dashboard_owner_only:
+        owner_guard = dashboard_owner_surface_guard
+    else:
+        owner_guard = owner_surface_guard
     scoped = dict(resource_scoped or {})
     missing = (member_scoped | scoped.keys()) - namespace.keys()
     if missing:
@@ -569,6 +595,4 @@ def guard_owner_surface_routes(
             and name not in member_scoped
         ):
             guard = scoped.get(name)
-            namespace[name] = (
-                owner_surface_route(value) if guard is None else guarded_route(value, guard)
-            )
+            namespace[name] = guarded_route(value, guard or owner_guard(value.__name__))

@@ -289,6 +289,25 @@ async def require_owner_dashboard_request(
     return _owner_denial_response(request)
 
 
+async def require_owner_for_dashboard_caller(
+    request: web.Request, operation: str
+) -> web.Response | None:
+    """:func:`require_owner_dashboard_request` for the dashboard-user class only.
+
+    A non-owner dashboard session (a Telegram, Teams or Webex allowlist link)
+    holds the same empty app claim as the owner's own session, so an app guard
+    alone admits it. This gate refuses it and audits the refusal. A caller whose
+    app claim is not exactly ``""`` passes untouched and stays under the control
+    that already governs it: an app token under its app-isolation check and
+    manifest scope, an ``X-Internal-Secret`` caller under the internal transport
+    (``token_auth`` leaves ``app`` absent for one acting as the person). It is a
+    layer on top of those controls, never a replacement for them.
+    """
+    if request.get("app") != "":
+        return None
+    return await require_owner_dashboard_request(request, operation)
+
+
 def _owner_denial_response(
     request: web.Request,
     error_message: str = "owner authorization required",

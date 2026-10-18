@@ -422,6 +422,9 @@ async def ingest_file(request: web.Request) -> web.Response:
 
 async def get_job(request: web.Request) -> web.Response:
     """GET /api/knowledge/jobs/{id}."""
+    owner_denied = await _require_knowledge_owner(request, "knowledge.job.read")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     row = await asyncio.to_thread(
         lambda: store.db.execute(

@@ -50,6 +50,9 @@ def _embedding_counts(store) -> tuple[int, int]:
 
 async def get_embedding_status(request: web.Request) -> web.Response:
     """GET /api/knowledge/embedding/status -- embedding config and progress."""
+    owner_denied = await _require_knowledge_owner(request, "knowledge.embedding.status.read")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     embedder = request.app.get("knowledge_embedder")
     total, embedded = await asyncio.to_thread(_embedding_counts, store)

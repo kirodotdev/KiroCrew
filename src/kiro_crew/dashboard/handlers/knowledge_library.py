@@ -45,6 +45,9 @@ def _namespace_rows(store) -> list:
 
 async def list_namespaces(request: web.Request) -> web.Response:
     """GET /api/knowledge/namespaces -- all namespaces with item counts."""
+    owner_denied = await _require_knowledge_owner(request, "knowledge.namespaces.read")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     rows = await asyncio.to_thread(_namespace_rows, store)
     return web.json_response(
@@ -204,6 +207,9 @@ def _items_page(
 
 async def list_items(request: web.Request) -> web.Response:
     """GET /api/knowledge/items -- list/search with pagination."""
+    owner_denied = await _require_knowledge_owner(request, "knowledge.items.read")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     q = request.query.get("q")
     item_type = request.query.get("type")
@@ -350,6 +356,9 @@ def _item_detail(store, item_id: str) -> dict | None:
 
 async def get_item(request: web.Request) -> web.Response:
     """GET /api/knowledge/items/{id} -- single item with entities, relations, source_locations."""
+    owner_denied = await _require_knowledge_owner(request, "knowledge.item.read")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     detail = await asyncio.to_thread(_item_detail, store, request.match_info["id"])
     if detail is None:
@@ -417,6 +426,9 @@ async def delete_item(request: web.Request) -> web.Response:
 
 async def get_item_content(request: web.Request) -> web.Response:
     """GET /api/knowledge/items/{id}/content -- plain text for clipboard."""
+    owner_denied = await _require_knowledge_owner(request, "knowledge.item.content.read")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     item = await asyncio.to_thread(store.get_item, request.match_info["id"])
     if not item:
@@ -442,6 +454,9 @@ def _entity_list_rows(store, where_clause: str, params: list) -> list:
 
 async def list_entities(request: web.Request) -> web.Response:
     """GET /api/knowledge/entities."""
+    owner_denied = await _require_knowledge_owner(request, "knowledge.entities.read")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     etype = request.query.get("type")
     q = request.query.get("q")
@@ -464,6 +479,9 @@ async def list_entities(request: web.Request) -> web.Response:
 
 async def get_entity_graph(request: web.Request) -> web.Response:
     """GET /api/knowledge/entities/{id}/graph -- D3-compatible subgraph."""
+    owner_denied = await _require_knowledge_owner(request, "knowledge.entity.graph.read")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     entity_id = request.match_info["id"]
     try:
@@ -488,6 +506,9 @@ async def get_entity_graph(request: web.Request) -> web.Response:
 
 async def get_entity_items(request: web.Request) -> web.Response:
     """GET /api/knowledge/entities/by-name/{name}/items -- items containing entity."""
+    owner_denied = await _require_knowledge_owner(request, "knowledge.entity.items.read")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     name = request.match_info["name"]
     rows = await asyncio.to_thread(_entity_items_rows, store, name)
@@ -555,6 +576,9 @@ def _related_items(store, item_id: str, limit: int) -> list[dict]:
 
 async def get_related_items(request: web.Request) -> web.Response:
     """GET /api/knowledge/items/{id}/related -- items sharing entities with given item."""
+    owner_denied = await _require_knowledge_owner(request, "knowledge.item.related.read")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     item_id = request.match_info["id"]
     try:
@@ -574,6 +598,9 @@ async def get_full_graph(request: web.Request) -> web.Response:
       source_id: comma-separated source IDs to filter entities by. When set,
         only entities mentioned in items belonging to those sources are included.
     """
+    owner_denied = await _require_knowledge_owner(request, "knowledge.graph.read")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     try:
         limit = min(200, max(1, int(request.query.get("limit", 100) or 100)))
@@ -657,6 +684,9 @@ async def source_counts(request: web.Request) -> web.Response:
     source's unfiltered, all-namespace total and would over-report whenever a
     filter is on. Sourceless items are reported under the `__none__` key.
     """
+    owner_denied = await _require_knowledge_owner(request, "knowledge.source_counts.read")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     item_type = request.query.get("type")
     status = request.query.get("status")
@@ -735,6 +765,9 @@ def _stats_counts(store, with_embedded: bool) -> tuple[dict, int]:
 
 async def get_stats(request: web.Request) -> web.Response:
     """GET /api/knowledge/stats."""
+    owner_denied = await _require_knowledge_owner(request, "knowledge.stats.read")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     embedder = request.app.get("knowledge_embedder")
     stats, embedded_count = await asyncio.to_thread(_stats_counts, store, embedder is not None)

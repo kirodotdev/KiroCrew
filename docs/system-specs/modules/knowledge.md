@@ -641,12 +641,17 @@ The dashboard Knowledge list view is **source-first**: it renders one collapsed
 row per source and pages *within* a source, rather than paging all items globally
 and grouping whatever landed on the page. Two pieces of API surface support this.
 
-**Owner gate on the mutating routes.** Every mutating `/api/knowledge` route (17 of them)
-calls `_require_knowledge_owner` before acting. It gates only dashboard-user requests
-(`app == ""`), which must come from the dashboard owner. Any other caller passes this gate
-and stays under the control that already governs it: an app token is confined to its
-manifest's declared paths by `_enforce_app_scope`, and an `X-Internal-Secret` loopback
-caller is admitted on the secret itself. `test/test_knowledge_owner_gate.py` pins it.
+**Owner gate on every route.** Every `/api/knowledge` route calls `_require_knowledge_owner`
+before acting: the 17 mutating routes, and the 19 reads too (items, item content and
+export, entities, graphs, sources, source files, counts, stats, config, jobs, embedding
+status, `search-for-context` and the whole-library `export`), because a disclosed document
+cannot be taken back. It gates only dashboard-user requests (`app == ""`), which must come
+from the dashboard owner; a non-owner dashboard session (a Telegram, Teams or Webex
+allowlist link) gets 403 `owner_only`. Any other caller passes this gate and stays under the
+control that already governs it: an app token is confined to its manifest's declared paths
+by `_enforce_app_scope`, and an `X-Internal-Secret` loopback caller is admitted on the secret
+itself. `test/test_knowledge_owner_gate.py` pins the writes and
+`test/test_dashboard_owner_gate_history_kb_tasks.py` the reads.
 
 ### `GET /api/knowledge/items?source_id=<id>`
 

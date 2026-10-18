@@ -142,6 +142,9 @@ def _validate_knowledge_bundle(body: object) -> str | None:
 
 async def export_item(request: web.Request) -> web.Response:
     """GET /api/knowledge/items/{id}/export -- .knowledge JSON bundle."""
+    owner_denied = await _require_knowledge_owner(request, "knowledge.item.export")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     item_id = request.match_info["id"]
     bundle = await asyncio.to_thread(store.export_item, item_id)
@@ -155,6 +158,9 @@ async def export_item(request: web.Request) -> web.Response:
 
 async def export_all(request: web.Request) -> web.Response:
     """GET /api/knowledge/export -- full .knowledge JSON bundle, optionally filtered by namespace."""
+    owner_denied = await _require_knowledge_owner(request, "knowledge.export")
+    if owner_denied is not None:
+        return owner_denied
     namespace = request.query.get("namespace")
     _sel_log("export_all", namespace=namespace)
     store = _store(request)

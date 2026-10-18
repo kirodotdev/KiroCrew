@@ -59,6 +59,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         admits_cloud_deployment,
         admits_registry,
         require_owner_dashboard_request,
+        require_owner_for_dashboard_caller,
     )
     from kiro_crew.dashboard.handlers._shared_config_followups import (  # noqa: F401
         AGENT_SPEC_NOT_REWRITTEN,
@@ -124,6 +125,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         cron_creator_admission,
         cron_mode_refusal,
         cron_slot_creator,
+        dashboard_owner_surface_guard,
         guard_owner_surface_routes,
         guarded_route,
         member_scope_denied_refusal,
