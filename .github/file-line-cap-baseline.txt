@@ -121,17 +121,14 @@
 2096 src/kiro_crew/webex/transport_dispatch.py
 4051 src/kiro_crew/work_ledger.py
 2641 test/conftest.py
-3482 test/test_acp_deepseek_backend.py
 2852 test/test_acp_pi_backend.py
 2780 test/test_admission_gate.py
-3538 test/test_agent_panel_routes.py
 2200 test/test_app_backend_composition_contract.py
 4051 test/test_app_manager.py
 5489 test/test_apps_backend_coverage.py
 5531 test/test_apps_routes_coverage.py
 3299 test/test_artifacts_handlers.py
 4053 test/test_auto_research.py
-3522 test/test_aws_control_app.py
 6303 test/test_aws_control_backup.py
 2170 test/test_aws_control_backup_composition_contract.py
 4193 test/test_aws_control_routes.py
@@ -243,7 +240,6 @@
 4193 test/test_transcribe.py
 5831 test/test_vector_memory.py
 2014 test/test_vector_memory_coverage.py
-3521 test/test_webex_dispatch.py
 2238 test/test_wheel_engine.py
 2944 website/electron/gateway-supervisor.js
 2903 website/scripts/lib/ui-index.mjs

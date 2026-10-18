@@ -1,6 +1,6 @@
 """AWS Control backup/costs — the paths the P0 suite's backup classes leave uncovered.
 
-``test_aws_control_app.py`` already pins the security-critical traversal (symlink
+``test_aws_control_app_hardening.py`` already pins the security-critical traversal (symlink
 and junction refusals, descriptor-pinned descent, FIFO/O_NONBLOCK non-hang, the
 restore staging checks, the teardown stop gate, and the corrupt-state shape
 guards). This file covers what those do not exercise: the two whole-run push
