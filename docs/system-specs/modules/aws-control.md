@@ -1257,7 +1257,9 @@ torn state the read-once rule exists to prevent. Only the withdrawn direction
 refuses; a grant arriving mid-build leaves an archive without Layer B, which the
 next run picks up.
 
-`test_aws_control_backup.py::TestSessionsArchiveLayerBGate` pins both directions,
+`test_aws_control_backup_layer_b.py::TestSessionsArchiveLayerBGatePermission` and
+`test_aws_control_backup_layer_b_mid_build.py::TestSessionsArchiveLayerBGateMidBuild`
+pin both directions,
 that a permitted upload holds the setter's lock, that a scheduled withheld one holds
 it too, and that an owner-initiated withheld one does not, that
 no `config.json` key can grant it, that a grant does not cross accounts, and that
@@ -1340,7 +1342,7 @@ names, and length-bounded by `backup.sanitize_label`; the transfer is
 range-bounded through `storage.get_object_head_bytes`, since the object's size is
 another install's choice. The dashboard renders a foreign label in quotation marks
 beside the owning id so the self-asserted part is visibly self-asserted.
-`test_aws_control_backup.py::TestLabelIsDisplayOnly.test_a_published_label_cannot_make_a_foreign_archive_restorable`
+`test_aws_control_backup_ownership.py::TestLabelIsDisplayOnly.test_a_published_label_cannot_make_a_foreign_archive_restorable`
 pins that the gate never reads it.
 
 `backup.restore_download` refuses every archive it cannot PROVE is this install's

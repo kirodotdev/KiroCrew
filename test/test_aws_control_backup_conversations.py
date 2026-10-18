@@ -776,7 +776,7 @@ class TestConversationExport:
         report, and a legacy install that keeps its store at a redirected Roaming root
         has no store at either fixed candidate, which the lookup reports as
         `store_absent`; the last case here pins that, and
-        `test_an_absent_store_also_stops_retention` in test_aws_control_backup.py pins
+        `test_an_absent_store_also_stops_retention` in test_aws_control_backup_layer_b.py pins
         that the reason suppresses the sweep.
 
         Paths come from `tmp_path`, never written as literals. `pathlib` takes its

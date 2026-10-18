@@ -97,7 +97,6 @@
 5489 test/test_apps_backend_coverage.py
 5531 test/test_apps_routes_coverage.py
 3299 test/test_artifacts_handlers.py
-6303 test/test_aws_control_backup.py
 2475 test/test_chat_mirror.py
 10498 test/test_cli.py
 2744 test/test_cli_server_more_coverage.py

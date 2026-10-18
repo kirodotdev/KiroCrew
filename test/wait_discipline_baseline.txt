@@ -64,8 +64,8 @@
  1 test_auto_research_onloop_db.py
  2 test_autonudge_reconciler.py
  4 test_autonudge_remove_offload_425.py
- 4 test_aws_control_backup.py
  1 test_aws_control_backup_job.py
+ 4 test_aws_control_backup_run_state.py
  2 test_aws_control_routes.py
  2 test_browser_cli_install_run_control.py
  4 test_browser_cli_view.py
