@@ -929,11 +929,15 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     # NOT read that leaf, and an entry on this tier as well would make
     # ``security_posture`` publish "Reads allowed" for a path the read gate
     # refuses.
+    # app-agent-launch: the empty directory a launch copy's kiro-cli starts in
+    # (``apps.agent_launch.launch_process_cwd``); a spec written into it is the spec
+    # kiro-cli runs. Read-only in the sandbox for the same reason.
     for leaf in (
         "config.json",
         "config.local.json",
         "playwright-cli-config.json",
         "subagents",
+        "app-agent-launch",
     )
 ] + [
     # Ops Mission Control's on-call schedule. WRITE-protected, not read+write

@@ -1032,6 +1032,10 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # two was refused rather than leaving the reader to guess. The third is the same
     # project read made for Crew-fired spec hooks (``project_agent_spec``), named
     # for that surface so a refusal there is not filed under the MCP projection.
+    # The app launch copy, read by its reserved name's path to hold it as a view.
+    "kiro_crew/acp/runtime_spawn_launch.py": [("app_agent_launch", "acp")],
+    # The pinned spec a session's skill scope is read from (an app launch copy's).
+    "kiro_crew/skill_scope_pin.py": [("agent_skill_globs", "unknown")],
     "kiro_crew/acp/session_mcp.py": [
         ("session_mcp_project_agent", "unknown"),
         ("session_mcp_servers", "unknown"),
@@ -1067,6 +1071,12 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("forward:operation", "forward:source"),
     ],
     "kiro_crew/agent_discovery_parts/spec_snapshot.py": [("forward:operation", "forward:source")],
+    "kiro_crew/apps/agent_launch.py": [
+        ("app_agent_launch", "unknown"),
+        ("app_agent_launch", "unknown"),
+        ("app_agent_launch", "unknown"),
+        ("app_agent_launch", "unknown"),
+    ],
     "kiro_crew/apps/builtins/auto_improvement/spine/crew_runner.py": [
         ("auto_improvement_assignment", "unknown")
     ],

@@ -11,7 +11,8 @@ Instance fields written: ``_native_skill_projection``, ``_skill_projection_gener
 ``_skill_projection_issued``, ``_skill_projection_lock_obj``,
 ``_skill_projection_unadopted``, ``_switched_models``.
 
-Instance fields read: ``_agent``, ``_spawn_skill_projection``, ``_work_dir``.
+Instance fields read: ``_agent``, ``_launch_agent``, ``_spawn_skill_projection``,
+``_wire_mode_id``, ``_work_dir``.
 """
 
 from __future__ import annotations
@@ -153,6 +154,16 @@ def _adopt_skill_projection(self: AcpRuntime, prepared: Any, generation: int) ->
     nothing -- for a preparation older than (or as old as) the adopted one."""
     if generation <= self._adopted_skill_projection_generation():
         return False
+    previous = getattr(self, "_native_skill_projection", None)
+    launch_copy = getattr(self, "_launch_agent", "")
+    if launch_copy and previous is not None and prepared is not None:
+        # A new preparation lists no launch copy (rosters leave copies out), so
+        # the copy the spawn held as its view is carried over unchanged.
+        held = previous.specs.get(launch_copy)
+        if held is not None:
+            prepared.specs[launch_copy] = held
+        if launch_copy in previous.search_agents:
+            prepared.search_agents.add(launch_copy)
     self._native_skill_projection = prepared
     self._skill_projection_generation = generation
     return True
@@ -255,7 +266,7 @@ async def _verify_spawn_agent_active(
     if override or not self._agent:
         return
     if self._harness.verifies_agent_activation:
-        spawn_agent = self._agent
+        spawn_agent = self._wire_mode_id(self._agent) or self._agent
         ids, current, _adv = parse_session_modes(resp)
         if current:
             if current == spawn_agent:
@@ -326,6 +337,10 @@ def _resolve_start_alias(self: AcpRuntime, projection: Any, mode_agent: str) -> 
     adopted by a concurrent start does not reject the unchanged launch agent
     the strict resolver has no entry for."""
     if mode_agent and mode_agent == self._agent:
+        # A launch copy is activated by its own name, never through a view
+        # built by a name lookup that could reach the checkout's spec.
+        if self._launch_agent:
+            return self._launch_agent
         return str(projection.spawn_agent(mode_agent))
     return str(projection.agent(mode_agent))
 

@@ -10,13 +10,13 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe_result``,
 ``_entitlement_probe_result_at``, ``_first_session_ready``, ``_saw_sandbox_init_failure``,
-``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``, ``_stderr_lines``,
+``_session_cwds``, ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``, ``_stderr_lines``,
 ``recording_allowed``.
 
 Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_dead``,
 ``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``,
 ``_mcp_gateway_overlay``, ``_member_context``, ``_pending_init_notifications``, ``_pid``,
-``_process``, ``_start_collect_timeout``, ``_work_dir``.
+``_pool_lookup``, ``_process``, ``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``.
 """
 
 from __future__ import annotations
@@ -208,12 +208,14 @@ async def create_session(
             consumed_spec = mirrored.agent_spec
             ref_spec = mirrored.ref_spec
         else:
+            pool_agent, launch_spec = self._pool_lookup(agent or self._agent)
             pooled, ref_spec = await asyncio.to_thread(
                 _pooled_session_servers_and_ref_spec,
                 self._mcp_gateway_overlay,
-                agent or self._agent,
+                pool_agent,
                 self.acp_backend,
                 session_work_dir,
+                launch_spec,
             )
             mcp_servers = await self._unpooled_control_planes(
                 pooled, agent or self._agent, session_work_dir
@@ -659,6 +661,7 @@ async def _finish_create_session(
     # Register session queue
     queue: asyncio.Queue[JsonRpcMessage | None] = asyncio.Queue()
     self._session_queues[session_id] = queue
+    self._session_cwds[session_id] = str(session_work_dir)
     for msg in buffered_init:
         queue.put_nowait(msg)
 
@@ -774,7 +777,11 @@ async def _finish_create_session(
     # The id the host knows the agent by: a wire-registered batch went out under
     # kas_wire_agent_id (attach_kas_custom_agents), so the advertised modes and
     # set_mode name that; everything Crew records keeps the crewmate's own id.
-    mode_wire = kas_wire_agent_id(mode_agent) if mode_agent and kas_agents else mode_agent
+    mode_wire = (
+        kas_wire_agent_id(mode_agent)
+        if mode_agent and kas_agents
+        else self._wire_mode_id(mode_agent)
+    )
     refusal = self._harness.activation_refusal(mode_wire, resp) if mode_wire else None
     if refusal:
         await self.terminate_session(session_id)

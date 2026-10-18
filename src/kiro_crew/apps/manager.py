@@ -111,6 +111,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _same_dir_key,
         _screened_spec_path,
         app_agent_backend_refusal,
+        app_agent_launch_refusal,
         app_command_agent_refusal,
         app_disabled,
         app_enabled_state,

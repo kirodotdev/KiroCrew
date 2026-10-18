@@ -418,6 +418,12 @@ _RELOCATED_CREW_HIDDEN_LEAVES: tuple[str, ...] = (".vault",)
 #: never writable by it. See the READONLY note above for why hiding a ceiling
 #: inverts its effect; named memory stores need write integrity, not secrecy.
 _CREW_READONLY_LEAVES: tuple[str, ...] = (
+    # The empty directory kiro-cli starts in when it runs an app agent's launch copy
+    # (``apps.agent_launch.launch_process_cwd``). kiro-cli reads project agents from
+    # its process directory, so a sandboxed writer that could create
+    # ``.kiro/agents/<launch name>.json`` here would choose the spec kiro-cli runs.
+    # Read-only rather than hidden: kiro-cli itself must enter and list it.
+    "app-agent-launch",
     # Gateway-owned run records restore app authorization on cold continuation.
     # Keep results readable, but agent code must not rewrite its app owner.
     # The second root holds the same authority for retained V1 runs only.
@@ -912,6 +918,9 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
 #: stayed masked and broke a boot, which someone notices. Under a complement it would
 #: be exposed, which nobody notices.
 _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
+    # The empty directory a launch copy's kiro-cli starts in. It holds nothing, so a
+    # foreign child that reads it learns nothing.
+    "app-agent-launch",
     # The browser launcher an agent browser command must read and execute. The only
     # entry here the read gate also fences, so the only one whose exclusion changes
     # what an enforced child can open; the rest are already outside the mask.

@@ -250,6 +250,10 @@ class AcpRuntime:
     _reader_loop = _rt_reader._reader_loop
     _notification_aliases = _rt_reader._notification_aliases
 
+    #: See ``__init__``. Set on the class too, so a runtime built without
+    #: ``__init__`` (a test double, a restored instance) reads as having none.
+    _launch_agent = ""
+
     def __init__(
         self,
         work_dir: str | Path | None = None,
@@ -268,6 +272,7 @@ class AcpRuntime:
         memory_mode: str = "persistent",
         tool_search: ToolSearchSettings | None = None,
         shared_scratch: Path | None = None,
+        launch_agent: str = "",
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -278,6 +283,12 @@ class AcpRuntime:
 
             self._work_dir = config_dir() / "workspace"
         self._agent = agent
+        # The name kiro-cli is asked for in place of ``agent`` -- on ``--agent`` and
+        # in ``session/set_mode`` -- when they differ: an app's launch copy
+        # (``apps.agent_launch``). Wire-only, like KAS's ``kas_wire_agent_id``:
+        # ``self._agent`` stays the identity every gate, profile, audit row and
+        # hook reads. Empty for every other runtime.
+        self._launch_agent = launch_agent
         # Canonical Kiro Crew agent identity (a cfg.agents key) resolved by the
         # surface that created this runtime — a DIFFERENT namespace from
         # ``agent`` (the kiro template the process spawns with). Default for
@@ -354,6 +365,18 @@ class AcpRuntime:
         self._sandbox_cleanup: str | None = None
         self._bound_workspace_fd: int | None = None
         self._spawn_work_dir = str(self._work_dir)
+        # The directory the kiro-cli PROCESS starts in when it runs an app's launch
+        # copy (``apps.agent_launch.launch_process_cwd``), set at spawn; empty for
+        # every other runtime, whose process starts in ``_work_dir``.
+        self._launch_process_cwd = ""
+        # Its spellings, resolved once at spawn off the loop (``launch_cwd_roots``).
+        self._launch_cwd_roots: tuple[str, ...] = ()
+        # The launch copy as read by its path at spawn (``apps.agent_launch.read_launch_copy``):
+        # the spec Crew's own session-start reads judge for it, never a name lookup.
+        self._launch_copy_spec: dict[str, Any] | None = None
+        # sessionId -> the cwd its ``session/new`` / ``session/load`` named, so the
+        # paths kiro-cli reports against ``_launch_process_cwd`` map to it.
+        self._session_cwds: dict[str, str] = {}
         # The session tree's work directory when this runtime is not the tree's
         # first process (a companion runtime spawned for a parent's subagents,
         # or the successor of a recycled ``_bg`` runtime). Re-validated at spawn
@@ -643,6 +666,49 @@ class AcpRuntime:
         # believe a consumer exists and park a child request unread.
         self._turn_active_sessions: set[str] = set()
         self._dropped_frames_flushed_at: float = 0.0
+
+    def _pool_lookup(self, agent: str | None) -> tuple[str | None, dict[str, Any] | None]:
+        """The overlay name *agent*'s pooled stubs are found under, and its spec snapshot.
+
+        A launch copy's stubs are the app's REGISTERED spec's, kept in the overlay under
+        its file stem (``<app>--<agent>``); its snapshot is the copy read by path at
+        spawn. ``None`` for the snapshot means read it by name, as for any other agent.
+        A launch copy this process did not publish has no overlay name: no stubs, rather
+        than a bare-name match that another spec of that name could answer.
+        """
+        if self._launch_agent and agent == self._agent:
+            from kiro_crew.apps.agent_launch import launch_source_stem
+
+            return launch_source_stem(self._launch_agent), self._launch_copy_spec
+        return agent, None
+
+    def _map_launch_cwd_paths(self, data: object) -> None:
+        """Point a frame's tool paths at its session's cwd, not the launch directory."""
+        from kiro_crew.apps.agent_launch import map_process_cwd_paths
+
+        params = data.get("params") if isinstance(data, dict) else None
+        if not isinstance(params, dict):
+            return
+        session_id = params.get("sessionId")
+        session_cwd = self._session_cwds.get(session_id) if isinstance(session_id, str) else None
+        # A ``session/update`` carries the tool call under ``update``, a permission
+        # request under ``toolCall``.
+        for key in ("update", "toolCall"):
+            map_process_cwd_paths(
+                params.get(key), self._launch_cwd_roots, session_cwd or str(self._work_dir)
+            )
+
+    def _wire_mode_id(self, agent: str | None) -> str | None:
+        """The id kiro-cli knows *agent* by: the launch copy for this runtime's own agent."""
+        if agent and self._launch_agent and agent == self._agent:
+            return self._launch_agent
+        return agent
+
+    def crew_agent_name(self, name: str) -> str:
+        """*name* as Crew records it: this runtime's launch copy reads as its own agent."""
+        if name and self._launch_agent and name == self._launch_agent:
+            return self._agent
+        return name
 
     @property
     def pid(self) -> int | None:

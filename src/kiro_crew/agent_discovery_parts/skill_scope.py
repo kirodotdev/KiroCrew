@@ -238,11 +238,17 @@ def session_skill_globs(
     execution = read_session_execution(session_key) if session_key else None
     template = execution.template_id if execution and execution.template_id else fallback_agent
     from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP
+    from kiro_crew.skill_scope_pin import pinned_skill_globs
 
-    mapped = agent_skill_globs(
-        template,
-        project_dir=project_dir,
-        strict=True,
-        inherit_defaults=provider_type == PROVIDER_ACP,
+    inherit = provider_type == PROVIDER_ACP
+    pinned = pinned_skill_globs(
+        session_key, project_dir=project_dir, strict=True, inherit_defaults=inherit
+    )
+    mapped = (
+        pinned
+        if pinned is not None
+        else agent_skill_globs(
+            template, project_dir=project_dir, strict=True, inherit_defaults=inherit
+        )
     )
     return None if template == "kirocrew" and not mapped else mapped

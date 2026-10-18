@@ -21,13 +21,28 @@ from turn_harness import ScriptedProvider, SlotSpec, TurnScript, run_turn
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.apps import bridges, manager
+from kiro_crew.apps.agent_launch import app_agent_launch_name
 from kiro_crew.config.loader import KiroCrewConfig
 
 
 class _KiroProvider(ScriptedProvider):
-    """A scripted provider whose capabilities are kiro-cli's."""
+    """A scripted provider whose capabilities are kiro-cli's.
+
+    kiro-cli is asked for what an app-owned allocation stamps: the app's launch
+    copy (``apps.agent_launch``).
+    """
 
     capabilities = capabilities_for(ACP_BACKEND_KIRO)
+
+    @property
+    def app_launch_agent(self) -> str:
+        owner_app, _, owner_agent = (self._ctx.slot.app_agent_owner or "").partition("/")
+        return app_agent_launch_name(owner_app, owner_agent) if owner_app else ""
+
+
+def _backend_config(provider):
+    """The configured backend a turn on *provider* is selected for."""
+    return {"agent": {"acp_backend": "kiro" if provider is _KiroProvider else "kas"}}
 
 
 class _KasProvider(ScriptedProvider):
@@ -356,9 +371,14 @@ def test_an_unregistered_app_agent_is_refused(tmp_path, monkeypatch):
 @pytest.mark.parametrize("provider", [_KiroProvider, _KasProvider], ids=["kiro", "kas"])
 @pytest.mark.parametrize("refused", [True, False])
 async def test_the_turn_is_refused_before_the_prompt_reaches_the_provider(
-    monkeypatch, refused, provider
+    tmp_path, monkeypatch, refused, provider
 ):
     agent = KiroCrewConfig.load().default_agent
+    # The app's registered spec, which a kiro-cli turn launches a copy of.
+    agents_dir = tmp_path / "kiro-agents"
+    agents_dir.mkdir()
+    (agents_dir / f"pr-bulk-ops--{agent}.json").write_text(json.dumps({"name": agent}))
+    monkeypatch.setattr(bridges, "KIRO_AGENTS_DIR", agents_dir)
     seen = []
 
     def refusal(owner, name, *projects):
@@ -372,7 +392,9 @@ async def test_the_turn_is_refused_before_the_prompt_reaches_the_provider(
         ctx.slot.app_agent_owner = f"pr-bulk-ops/{agent}"
 
     record = await run_turn(
-        TurnScript(message="deploy it", setup=bind, provider=provider), slot=SlotSpec()
+        TurnScript(message="deploy it", setup=bind, provider=provider),
+        slot=SlotSpec(),
+        config=_backend_config(provider),
     )
     assert seen == [("pr-bulk-ops", agent)]
     denials = [
@@ -486,12 +508,13 @@ async def test_on_an_allowed_backend_the_turn_runs_only_while_the_namespaced_spe
     (agents_dir / f"pr-bulk-ops--{agent}.json").write_text(json.dumps({"name": agent}))
     monkeypatch.setattr(bridges, "KIRO_AGENTS_DIR", agents_dir)
     script = TurnScript(message="deploy it", setup=_bind_to_default_agent, provider=provider)
-    record = await run_turn(script, slot=SlotSpec())
+    config = _backend_config(provider)
+    record = await run_turn(script, slot=SlotSpec(), config=config)
     assert not _refused_rows(record)
     assert [call for call in record.provider_calls if call.name.startswith("stream")]
 
     (agents_dir / "other.json").write_text(json.dumps({"name": agent}))
-    record = await run_turn(script, slot=SlotSpec())
+    record = await run_turn(script, slot=SlotSpec(), config=config)
     assert _refused_rows(record)
     assert not [call for call in record.provider_calls if call.name.startswith("stream")]
 

@@ -236,7 +236,11 @@ def build_session_context(
     # Compute the plan once and reuse it at the skills block below so the log
     # and the injection cannot diverge.
     inject_skills, skill_globs = ctx._skills_injection_plan(
-        agent, is_cc=is_cc, project_dir=project, provider_type=provider_type
+        agent,
+        is_cc=is_cc,
+        project_dir=project,
+        provider_type=provider_type,
+        session_key=session_key,
     )
     if is_custom:
         logger.info(

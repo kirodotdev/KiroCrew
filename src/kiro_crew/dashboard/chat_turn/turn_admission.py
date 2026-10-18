@@ -11,12 +11,14 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _KIRO_ONLY_BLOCKED_SLASH_COMMANDS,
+        ACP_BACKEND_KIRO,
         APP_AGENT_REFUSED_KIND,
         DM_SLOT_MODE,
         MAX_PROMPT_BYTES,
         QUICK_PROMPTS,
         KiroCrewConfig,
         ResolvedBindings,
+        Routing,
         SessionBusyError,
         _AppAgentNotLoaded,
         _billing_stats,
@@ -42,6 +44,7 @@ if TYPE_CHECKING:
         reproject_claimed_session,
         resolve_agent_bindings,
         resolve_session_agent_bindings,
+        routing_for,
         save_slot_off_loop,
         sel,
         slot_history_key,
@@ -55,9 +58,11 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.app_agent_binding import (
         _app_agent_host_allowed,
         _app_agent_start_dirs,
-        _app_agent_turn_host_allowed,
+        _app_agent_turn_backend,
+        _provider_backend,
         _recover_app_agent_binding,
         _retire_app_agent_session,
+        _runs_app_agent_launch,
         app_agent_binding_applies,
     )
     from kiro_crew.dashboard.chat_turn.context_cap import _cap_conductor_context
@@ -136,11 +141,21 @@ def _require_current_binding(turn, *, project_may_be_staged: bool = False) -> No
         )
 
 
-def _check_owner(turn) -> str | None:
+def _check_owner(turn) -> tuple[str | None, str]:
+    """The refusal of an app-owned turn (None when it may run) and the launch copy it runs as.
+
+    The copy's name is empty unless the turn runs on kiro-cli.
+    """
     # Only kiro-cli and KAS launch the app's named spec; checked first,
     # since the name check below means nothing on another backend.
-    from kiro_crew.apps.manager import app_agent_backend_refusal, app_command_agent_refusal
+    from kiro_crew.apps.agent_launch import AppAgentLaunchError, publish_app_agent_launch
+    from kiro_crew.apps.manager import (
+        app_agent_backend_refusal,
+        app_agent_launch_refusal,
+        app_command_agent_refusal,
+    )
 
+    _owner_backend = turn._owner_backend
     _owner_host_allowed = turn._owner_host_allowed
     _owner_project = turn._owner_project
     owner_agent = turn.owner_agent
@@ -148,10 +163,21 @@ def _check_owner(turn) -> str | None:
     session_key = turn.session_key
     state = turn.state
     if not _owner_host_allowed:
-        return app_agent_backend_refusal(owner_app)
+        return app_agent_backend_refusal(owner_app), ""
     # Both halves touch the filesystem (the work-dir root, the specs).
     dirs = _app_agent_start_dirs(state, session_key, _owner_project)
-    return app_command_agent_refusal(owner_app, owner_agent, *dirs)
+    refused = app_command_agent_refusal(owner_app, owner_agent, *dirs)
+    if refused:
+        return refused, ""
+    if _owner_backend == ACP_BACKEND_KIRO:
+        try:
+            launch = publish_app_agent_launch(owner_app, owner_agent)
+        except AppAgentLaunchError as exc:
+            return app_agent_launch_refusal(owner_app, exc.detail), ""
+        # kiro-cli reads no checkout spec for the copy's name: it runs from the
+        # empty launch directory (apps.agent_launch.launch_process_cwd).
+        return None, launch
+    return None, ""
 
 
 def _release_dispatch_lock(turn) -> None:
@@ -439,13 +465,38 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     owner_app, _, owner_agent = (slot.app_agent_owner or "").partition("/")
     turn.owner_app = owner_app
     turn.owner_agent = owner_agent
+    # On kiro-cli the turn launches the app's launch copy, by a name Crew
+    # writes, instead of the bare name kiro-cli would resolve project-first
+    # (apps.agent_launch). Empty on every other turn.
+    _app_launch_agent = ""
+    # The spec file this turn's session is pinned to (``skill_scope_pin``): the
+    # app's registered file for a turn that runs the launch copy, else none.
+    # Published only once this turn holds the session's lease, so a sibling turn
+    # waiting for it cannot clear the pin from under the turn that is running.
+    _pinned_spec = None
     if app_agent_binding_applies(slot):
         _owner_project = selected_binding[1] or None
         turn._owner_project = _owner_project
-        _owner_host_allowed = await _app_agent_turn_host_allowed(state, session_key, loaded_cfg)
+        _owner_backend = await _app_agent_turn_backend(state, session_key, loaded_cfg)
+        turn._owner_backend = _owner_backend
+        _owner_host_allowed = (
+            _owner_backend is not None and routing_for(_owner_backend) is Routing.AGENT_SPEC
+        )
         turn._owner_host_allowed = _owner_host_allowed
 
-        refusal = await asyncio.to_thread(_check_owner, turn)
+        refusal, _app_launch_agent = await asyncio.to_thread(_check_owner, turn)
+        if not refusal and _app_launch_agent:
+            from kiro_crew.apps.agent_launch import registered_spec_path
+
+            _pinned_spec = registered_spec_path(owner_app, owner_agent)
+        if not refusal and _app_launch_agent:
+            # A session already registered under the key was started as
+            # something other than the copy (the bare name, before this turn
+            # chose the copy); it must not serve this turn, so the claim
+            # below cold-starts under the copy.
+            live = state.sessions.get_provider(session_key)
+            if live is not None and not _runs_app_agent_launch(live, _app_launch_agent):
+                await _retire_app_agent_session(state, slot, session_key)
         if refusal:
             logger.warning(
                 "refusing an app-owned agent turn for slot %s: %s",
@@ -728,6 +779,10 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         start_priority=_turn_priority,
         **_app_allocation_kwargs(slot),
     )
+    if _app_launch_agent:
+        # An app-owned kiro-cli turn asks kiro-cli for the app's launch copy;
+        # the session keeps the agent's own name as its identity.
+        _allocation_kwargs["app_launch_agent"] = _app_launch_agent
     turn._allocation_kwargs = _allocation_kwargs
 
     # The switch lock is held for the COLD START only: the window it
@@ -902,12 +957,31 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # app-authored prompt without the app's spec, so it is refused here
     # before anything is sent, and the session is reset so the next turn
     # allocates afresh from the current selection.
-    if app_agent_binding_applies(slot) and not _app_agent_host_allowed(client):
+    # On kiro-cli the claimed provider must also have been started as the
+    # app's launch copy and nothing else: the pre-claim read may have chosen
+    # another backend, so this turn passed the bare name, which kiro-cli would
+    # resolve project-first.
+    _claimed_off_spec = app_agent_binding_applies(slot) and (
+        not _app_agent_host_allowed(client)
+        or (
+            _provider_backend(client) == ACP_BACKEND_KIRO
+            and not _runs_app_agent_launch(client, _app_launch_agent)
+        )
+    )
+    if _claimed_off_spec:
         from kiro_crew.apps import manager as app_manager
 
-        refusal = await asyncio.to_thread(app_manager.app_agent_backend_refusal, owner_app)
+        if _app_agent_host_allowed(client):
+            refusal = await asyncio.to_thread(
+                app_manager.app_agent_launch_refusal,
+                owner_app,
+                "this chat's session did not start from the app's own agent spec. "
+                "Run the command again from the command palette.",
+            )
+        else:
+            refusal = await asyncio.to_thread(app_manager.app_agent_backend_refusal, owner_app)
         logger.warning(
-            "refusing an app-owned agent turn for slot %s: backend not allowed",
+            "refusing an app-owned agent turn for slot %s: claimed session off the app spec",
             redact_log_via_context(slot.key),
         )
         try:
@@ -928,6 +1002,11 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         turn.needs_session_reset = needs_session_reset
         slot.append("error", refusal, "msg msg-err", meta={"kind": APP_AGENT_REFUSED_KIND})
         return _Flow.END
+    # This turn holds the session now: the launch copy's skills and prompt are read
+    # from the app's registered file, and every other turn of the key reads by name.
+    from kiro_crew.skill_scope_pin import pin_session_skill_spec
+
+    pin_session_skill_spec(session_key, _pinned_spec)
     # The acquired provider is the final authority for harness-specific slash
     # gates. A dead live row can be replaced during the get_or_create call
     # above. The positive capability fails closed for unknown adapters and

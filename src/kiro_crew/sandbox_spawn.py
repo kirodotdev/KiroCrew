@@ -393,6 +393,7 @@ async def wrap_argv_async(
     extra_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
+    exec_cwd: str = "",
     is_kiro_cli: bool | None = None,
     first_party_fixed_argv: bool = False,
     _prepare: Callable[..., tuple[list[str], str | None]] | None = None,
@@ -422,6 +423,8 @@ async def wrap_argv_async(
         options["extra_writable_dirs"] = extra_writable_dirs
     if extra_expose_files:
         options["extra_expose_files"] = extra_expose_files
+    if exec_cwd:
+        options["exec_cwd"] = exec_cwd
     if is_kiro_cli is not None:
         options["is_kiro_cli"] = is_kiro_cli
     if first_party_fixed_argv:

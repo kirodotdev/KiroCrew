@@ -13,9 +13,11 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_session_start_timeout``, ``_start_collect_timeout``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_bound_workspace_fd``,
-``_expect_mcp_reports``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``, ``_member_context``,
+``_expect_mcp_reports``, ``_launch_agent``, ``_launch_copy_spec``, ``_mcp_gateway_overlay``,
+``_mcp_gateway_socket``, ``_member_context``,
 ``_native_launch_resources``, ``_native_launch_sources``, ``_native_launch_view_alias``,
-``_native_skill_projection``, ``_session_queues``, ``_tool_search_wire``, ``_work_dir``.
+``_native_skill_projection``, ``_session_queues``, ``_tool_search_wire``, ``_wire_mode_id``,
+``_work_dir``.
 """
 
 from __future__ import annotations
@@ -120,7 +122,11 @@ def _disable_check_scope(backend: str, work_dir: Any) -> Any:
 
 
 def _pooled_session_servers_and_ref_spec(
-    overlay: Any, agent: str | None, backend: str, work_dir: str | Path
+    overlay: Any,
+    agent: str | None,
+    backend: str,
+    work_dir: str | Path,
+    ref_spec: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """The pooled stub array AND the guard's spec snapshot, from one off-loop hop.
 
@@ -136,9 +142,15 @@ def _pooled_session_servers_and_ref_spec(
     both of the runtime's session-array paths. The snapshot reads the spec against
     the session's checkout regardless -- a user-level-only host scopes its overlay
     lookup to nothing, and the guard still judges the spec it is running.
+
+    *ref_spec* is that spec when the session runs an app's launch copy, read by its
+    path at spawn (``AcpRuntime._pool_lookup``). Then *agent* is the registered spec's
+    overlay name, and the lookup is user-level: kiro-cli reads no checkout spec for a
+    launch copy, so a checkout's file of that name says nothing about this session.
     """
-    servers = pooled_session_servers(overlay, agent, **overlay_project_scope(backend, work_dir))
-    return servers, _ref_spec_snapshot(agent, work_dir)
+    scope_dir = None if ref_spec is not None else work_dir
+    servers = pooled_session_servers(overlay, agent, **overlay_project_scope(backend, scope_dir))
+    return servers, ref_spec if ref_spec is not None else _ref_spec_snapshot(agent, work_dir)
 
 
 class _MirroredSessionMcp(NamedTuple):
@@ -719,24 +731,37 @@ async def _unpooled_control_planes(
     if self.acp_backend == ACP_BACKEND_KIRO:
         from kiro_crew.acp.session_mcp import kiro_control_plane_servers
 
+        # The spec kiro-cli runs: a launch copy for this runtime's own agent,
+        # read by the copy's name, never through a view built by a name lookup
+        # that could reach the checkout's same-named spec.
+        spec_agent = self._wire_mode_id(agent or self._agent)
         projection = getattr(self, "_native_skill_projection", None)
         projection_kwargs: dict[str, Any] = (
-            {"spec_override": projection.specs.get(agent or self._agent)}
-            if projection is not None
-            else {}
+            {"spec_override": projection.specs.get(spec_agent)} if projection is not None else {}
         )
+        if self._launch_agent and spec_agent == self._launch_agent:
+            # The copy as read by its path at spawn, whether or not a projection runs:
+            # a name lookup here would reach a checkout's spec of the copy's name.
+            if self._launch_copy_spec is None:
+                raise AcpRuntimeError("the app agent's launch copy was not read at spawn")
+            projection_kwargs = {"spec_override": self._launch_copy_spec}
         mount = await asyncio.to_thread(
             kiro_control_plane_servers,
-            agent,
+            spec_agent if spec_agent != (agent or self._agent) else agent,
             work_dir=work_dir,
             existing_names={str(entry.get("name")) for entry in entries},
             **projection_kwargs,
         )
-        name = agent or self._agent
-        if (
-            projection is not None
-            and name in projection.search_agents
-            and not any(entry.get("name") == "kirocrew-core" for entry in mount.elements)
+        name = spec_agent
+        if self._launch_agent and name == self._launch_agent:
+            # The copy's own verdict, kept whether or not a projection runs.
+            from kiro_crew.apps.agent_launch import is_search_launch_copy
+
+            search_agent = is_search_launch_copy(name)
+        else:
+            search_agent = projection is not None and name in projection.search_agents
+        if search_agent and not any(
+            entry.get("name") == "kirocrew-core" for entry in mount.elements
         ):
             # The mount did not produce the element itself: a settings file
             # withheld it, or a broker stub already in ``entries`` pre-empted

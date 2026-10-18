@@ -638,6 +638,7 @@ def _runtime_for_spawn(monkeypatch, attempts_outcomes):
     rt._process_tree_confirmed_dead = False
     rt._initialized = False
     rt._session_queues = {}
+    rt._session_cwds = {}
     rt._answer_tasks = set()
     rt._scratch_dir = None
     rt._stderr_lines = []
@@ -783,6 +784,7 @@ def _runtime_for_create_session(monkeypatch, tmp_path, sent, terminated):
     rt._mcp_gateway_overlay = None
     rt._agent_capabilities = {}
     rt._session_queues = {}
+    rt._session_cwds = {}
     rt._session_inits_in_flight = 0
     rt._expect_mcp_reports = False
     rt._pid = 4242  # only the post-activation log line reads it

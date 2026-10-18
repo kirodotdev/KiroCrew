@@ -388,6 +388,7 @@ _LAUNCHER_PLAN_GOLDEN: dict[str, Any] = {
     ],
     "fail_closed_file_masks": [["<ROOT>/op/.npmrc", 3, 4]],
     "alias_credential_ids": [[7, 99], [8, 1]],
+    "exec_cwd": "",
     "required_mask_targets": ["<ROOT>/outside"],
     "mask_occupants": {"<ROOT>/crew/apps": [21, 22, 0], "<ROOT>/op/.aws": [23, 24, 1, 1, 25, 26]},
     "crew_home_aliases": [["<ROOT>/op/.kiro/crew", "<ROOT>/crew", 31, 32]],

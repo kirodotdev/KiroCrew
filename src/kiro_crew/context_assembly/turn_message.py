@@ -726,7 +726,12 @@ def build_message(
         triggered = self.skills.get_triggered_skills(
             trigger_text, project_dir=project, select=select, unusable=unusable
         )
-        mapped = ctx.agent_skill_globs(agent, project_dir=project) if agent else []
+        pinned = ctx.pinned_skill_globs(session_key, project_dir=project)
+        mapped = (
+            pinned
+            if pinned is not None
+            else (ctx.agent_skill_globs(agent, project_dir=project) if agent else [])
+        )
         if mapped:
             allowed = {
                 row["key"] for row in self.skills.scoped_skills(project_dir=project, only=mapped)

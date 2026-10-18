@@ -93,6 +93,7 @@ def _prune_stale_app_resources(app_name: str, manifest: AppManifest, app_root: P
     # Agents: the current link names the manifest still declares (same derivation
     # as _register_agents: the JSON's `name`, falling back to the file stem).
     current_links: set[str] = set()
+    current_agent_names: set[str] = set()
     screened_root = screen_app_path(app_root) if manifest.agents else Containment.UNCHECKED
     for agent_path_str in manifest.agents or []:
         agent_path = app_root / agent_path_str
@@ -136,6 +137,7 @@ def _prune_stale_app_resources(app_name: str, manifest: AppManifest, app_root: P
             break
         agent_name = data.get("name", agent_path.stem)
         current_links.add(_safe_link_name(_namespace(app_name, agent_name)) + ".json")
+        current_agent_names.add(str(agent_name))
     agents_dir = _kiro_agents_dir()
     if current_links is not None and agents_dir.is_dir():
         prefix = _safe_link_name(app_name + "/")
@@ -150,6 +152,11 @@ def _prune_stale_app_resources(app_name: str, manifest: AppManifest, app_root: P
                     logger.info("Pruned stale app agent %s (absent from manifest)", entry.name)
                 except OSError:
                     pass
+        # A dropped agent's launch copy (apps.agent_launch) carries its grants, and
+        # kiro-cli would keep loading it as a mode, so it goes with the spec.
+        from kiro_crew.apps.agent_launch import remove_app_agent_launches
+
+        remove_app_agent_launches(app_name, keep_agents=current_agent_names)
 
     # MCP servers: keep only servers the current manifest still declares.
     current_servers = {f"{app_name}:{srv}" for srv in (manifest.mcpServers or {})}

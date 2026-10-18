@@ -596,6 +596,7 @@ _CHILD_STAGES = (
     "drop_privileges",
     "install_seccomp",
     "refuse_hardlinked_credentials",
+    "enter_exec_cwd",
     "exec_agent",
 )
 

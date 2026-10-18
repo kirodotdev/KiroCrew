@@ -26,6 +26,7 @@ from kiro_crew.agent_files import (  # noqa: F401
 )
 from kiro_crew.agent_spec_format import (  # noqa: F401
     is_agent_spec_name,
+    is_app_agent_launch_name,
     is_markdown_spec,
     is_native_skill_alias_name,
     iter_agent_spec_files,

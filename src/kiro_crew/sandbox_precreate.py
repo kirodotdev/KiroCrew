@@ -82,6 +82,10 @@ from kiro_crew.sandbox_leaves import (
 #: name), and ``_CREW_HIDDEN_LEAVES`` has no reader to prove an empty document is
 #: absent-equivalent, so each leaf needs its own argument.
 _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
+    # The app-agent launch directory. Absent, the seal is skipped and a sandbox could
+    # create it and plant the spec a launch copy's kiro-cli would read; its only
+    # writer (``launch_process_cwd``) accepts the existing empty 0700 directory.
+    "app-agent-launch",
     # Empty roots confer no run authority; directory mounts expose later
     # gateway records without letting a sandbox create the missing root.
     "subagents",
@@ -152,6 +156,7 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
 #: its target was sealed instead of the leaf. Every seal here is the load-bearing
 #: half of a control, so none may be satisfied by a link the governed party planted.
 _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
+    "app-agent-launch",
     "playwright-cli",
     "engines",
     "subagents",
@@ -251,6 +256,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed settings-seed record",
         "the agent could forge the record that lets Kiro Crew overwrite and delete a "
         "settings.local.json the user wrote",
+    ),
+    "app-agent-launch": (
+        "sealed app-agent launch directory",
+        "the agent could plant the agent spec kiro-cli runs for an app's own agent",
     ),
 }
 assert set(_DELEGATED_OVERLAP_LEAF_REASONS) == set(_CREW_NOFOLLOW_READONLY_FILE_LEAVES) | set(

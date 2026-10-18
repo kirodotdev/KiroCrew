@@ -940,6 +940,42 @@ def drop_foreign_inherited_port(env: dict[str, str]) -> None:
     env.pop("KIROCREW_PORT", None)
 
 
+def process_directory(host: LaunchHost) -> tuple[str, int | None]:
+    """The directory the host process is created in, and the descriptor that enters it.
+
+    An app agent's launch copy on kiro-cli must START in its empty, read-only launch
+    directory (``apps.agent_launch.launch_process_cwd``): kiro-cli takes project agents
+    from its process directory, so no checkout spec is read, while its sessions still
+    name ``host._work_dir``. Crew's Linux launcher enters that directory itself, after
+    its seals (:func:`exec_cwd_options`), so it is created in the workspace like any
+    other host: a process created inside the directory would keep the writable mount
+    under the seal, and the launcher's hardlinked-credential scan walks the directory it
+    was created in. Every other launch copy spawn (no Crew launcher) is created in the
+    directory directly. Every other host starts in its workspace.
+    """
+    process_cwd = getattr(host, "_launch_process_cwd", "")
+    if process_cwd and not _launcher_enters_exec_cwd(host):
+        return process_cwd, None
+    return host._spawn_work_dir, host._bound_workspace_fd
+
+
+def exec_cwd_options(host: LaunchHost) -> dict[str, str]:
+    """The sandbox wrap's ``exec_cwd`` for a launch copy, as keyword arguments."""
+    process_cwd = getattr(host, "_launch_process_cwd", "")
+    return {"exec_cwd": process_cwd} if process_cwd else {}
+
+
+def _launcher_enters_exec_cwd(host: LaunchHost) -> bool:
+    """Whether the wrap put the spawn behind Crew's Linux launcher, which takes ``exec_cwd``.
+
+    Read off the wrap's own record (``_sandbox_wrapped_by_crew``): on Linux Crew's only
+    wrapper is that launcher. Crew's macOS Seatbelt wrap takes no working directory.
+    """
+    return bool(getattr(host, "_sandbox_wrapped_by_crew", False)) and sys.platform.startswith(
+        "linux"
+    )
+
+
 async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -> LaunchedProcess:
     """Start *request*'s host process for *host*, suspended, through the shared tail.
 
@@ -1029,6 +1065,7 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         extra_hidden_dirs=request.extra_hidden_dirs,
         extra_private_dirs=scratch_window,
         extra_expose_files=request.extra_expose_files,
+        **exec_cwd_options(host),
         is_kiro_cli=delegate_internal_sandbox,
         _prepare=tools.wrap_argv,
     )
@@ -1140,7 +1177,7 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd=host._spawn_work_dir,
+        cwd=process_directory(host)[0],
         limit=_STDOUT_BUFFER_LIMIT,
         env=env,
         start_new_session=tools.platform_compat.IS_POSIX,
@@ -1153,7 +1190,7 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         # workspace through this verified descriptor instead of resolving
         # ``cwd``'s pathname, which a same-UID symlink retarget could aim elsewhere
         # in between; ``cwd`` stays the same directory by name.
-        chdir_fd=host._bound_workspace_fd,
+        chdir_fd=process_directory(host)[1],
         profile=RLIMIT_PROFILE_SESSION_HOST,
     )
     if tools.retrying_spawn_factory is not None:

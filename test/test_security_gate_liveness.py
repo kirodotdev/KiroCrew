@@ -430,7 +430,11 @@ def _url_payload_command(n: int) -> str:
 #: credential and outbound-URL spans on the same text and rewrites it once. It is new
 #: behaviour, not moved code, so no other file shrinks to pay for it, and it belongs in
 #: this package because egress code must reach the raw passes only through it.
-_PACKAGE_LINE_BUDGET = 32_056
+#:
+#: Raised by four, from 32,056, for the ``app-agent-launch`` entry on the file-tool write
+#: fence and its three-line comment: the empty directory an app agent's launch copy runs
+#: kiro-cli from, which the sandbox seals read-only too.
+_PACKAGE_LINE_BUDGET = 32_060
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -117,6 +117,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _count_projected_aliases,
         _warn_ceiling_fallback_once,
         prepare_native_skill_projection,
+        project_agent_view,
     )
     from kiro_crew.acp.skill_projection_parts.side_files import (  # noqa: F401
         _IN_PROCESS_PROJECTION_LOCKS,

@@ -72,6 +72,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_codex_compaction_event": ("function", False, "f2eb5a4fbc3e", "session_handle_compaction"),
     "_compacts_inline": ("function", False, "a6632a57e602", "session_handle_compaction"),
     "_consult_oracle_offloaded": ("function", True, "a74b2cf7aa76", "session_handle_watchdog"),
+    "_crew_agent_name": ("function", False, "9854751dbafb", "session_handle_model_selection"),
     "_deny_spec_disabled_tool": ("function", True, "2dfacffa6279", "session_handle_permissions"),
     "_died": ("function", False, "687ef4e00210", "session_handle_lifecycle"),
     "_dispatch_events": ("function", "agen", "883a50b3b1fa", "session_handle_dispatch"),

@@ -10,7 +10,8 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_answer_tasks``, ``_last_activity``, ``_pending_requests``,
 ``_routed_requests``.
 
-Instance fields read: ``_acp_backend``, ``_kas_host_auth``, ``_max_answer_tasks``,
+Instance fields read: ``_acp_backend``, ``_kas_host_auth``, ``_launch_cwd_roots``,
+``_map_launch_cwd_paths``, ``_max_answer_tasks``,
 ``_mcp_secret_server``, ``_native_skill_projection``, ``_process``,
 ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``,
 ``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
@@ -308,6 +309,8 @@ async def _reader_loop(self: AcpRuntime) -> None:
             projection = getattr(self, "_native_skill_projection", None)
             if projection is not None:
                 data = projection.frame(data)
+            if self._launch_cwd_roots:
+                self._map_launch_cwd_paths(data)
             msg = JsonRpcMessage.from_dict(data)
 
             # Route responses

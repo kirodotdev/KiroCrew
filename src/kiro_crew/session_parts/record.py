@@ -94,6 +94,11 @@ class _Session:
     backend_override: str | None = None
     extra_env: dict[str, str] | None = field(default=None, repr=False)
     reasoning_effort_override: str | None = None
+    # The app launch copy kiro-cli was asked for in place of ``agent``
+    # (``apps.agent_launch``); ``""`` for every other session. Carried by
+    # ``allocation_identity`` so a reset successor or a compaction restart is
+    # asked for the same copy rather than the bare name.
+    app_launch_agent: str = ""
     # The profile ``aws.project_profiles`` set on this session's process at its
     # cold start; ``None`` when the binding set none (no map, an unbound
     # directory, a caller that chose its own profile, a pooled process). A

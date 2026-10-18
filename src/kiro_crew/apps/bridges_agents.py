@@ -976,6 +976,11 @@ def _deregister_agents(app_name: str) -> int:
                 removed += 1
             except OSError:
                 pass
+    # The launch copies the app's palette sessions ran under (apps.agent_launch)
+    # describe the specs just removed, so they go with them.
+    from kiro_crew.apps.agent_launch import remove_app_agent_launches
+
+    removed += remove_app_agent_launches(app_name)
     if removed:
         logger.info("Deregistered %d agent(s) for app %s", removed, app_name)
         # Drop the removed names from the resolver's snapshot. Without this a

@@ -190,6 +190,16 @@ def _name_credential_mask(runtime: object, exc: BaseException, *, read_stderr: b
         exc.args = (named,)
 
 
+def _launch_agent(provider: AcpProvider) -> str:
+    """The launch copy kiro-cli is asked for in place of *provider*'s agent, or ``""``.
+
+    Only kiro-cli takes an agent name on its command line and in ``set_mode``;
+    every other runtime host keeps the agent's own name.
+    """
+    launch = getattr(provider, "app_launch_agent", "")
+    return launch if isinstance(launch, str) and launch and provider.is_kiro_backend else ""
+
+
 async def _start_kiro_runtime(self: AcpProvider) -> None:
     """Spawn an AcpRuntime + session; time the kiro cold-start split.
 
@@ -534,6 +544,7 @@ async def _start_kiro_runtime_impl(
         # this runtime, not the placeholder client, is the process the
         # subagent runs in, so the second window has to be mounted HERE.
         shared_scratch=self._shared_scratch,
+        launch_agent=_launch_agent(self),
     )
     # One priority for both start queues this path enters, set by the session
     # layer for this start (rule: ``kiro_crew.start_priority``).
@@ -687,6 +698,7 @@ async def _start_kiro_runtime_impl(
                     # The dead runtime's tree, for the same reason a restart
                     # joins it (above): its sessions' work is there.
                     shared_scratch=self._shared_scratch or runtime.work_scratch_dir,
+                    launch_agent=_launch_agent(self),
                 )
                 try:
                     await runtime.spawn(

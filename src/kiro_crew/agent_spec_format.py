@@ -50,6 +50,10 @@ JSON_SUFFIX = ".json"
 MARKDOWN_SUFFIX = ".md"
 AGENT_SPEC_SUFFIXES: tuple[str, ...] = (JSON_SUFFIX, MARKDOWN_SUFFIX)
 NATIVE_SKILL_ALIAS_PREFIX = "kirocrew-skill-view-"
+#: Prefix of the launch copy a palette-opened app agent runs under on kiro-cli
+#: (:mod:`kiro_crew.apps.agent_launch`). Reserved like the skill-view prefix: a
+#: checkout may not claim it, and no roster offers it.
+APP_AGENT_LAUNCH_PREFIX = "kirocrew-app-launch-"
 
 #: The ``kirocrew-skill-view-*`` alias count at or above which the projection
 #: stops minting new views and falls back to the authored agent, and which the
@@ -180,6 +184,17 @@ def is_native_skill_alias_name(name: str) -> bool:
     the test on the stem.
     """
     return name.startswith(NATIVE_SKILL_ALIAS_PREFIX)
+
+
+def is_app_agent_launch_name(name: str) -> bool:
+    """Whether *name* (an agent name or a directory entry name) is an app launch copy.
+
+    Unlike a skill-view alias, a launch copy stays in the directory walks: it is
+    the spec kiro-cli runs, so every reader that resolves the running agent by
+    name must find it. Only the rosters leave it out
+    (``agent_discovery.is_internal_agent_spec``).
+    """
+    return name.startswith(APP_AGENT_LAUNCH_PREFIX)
 
 
 def is_markdown_spec(path: str | Path) -> bool:

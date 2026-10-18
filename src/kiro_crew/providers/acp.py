@@ -198,6 +198,10 @@ class AcpProvider(LLMProvider):
             kwargs["agent"] = agent
         self.member_context = member_context
         self.memory_mode = memory_mode
+        # The name kiro-cli is asked for in place of ``agent`` (an app's launch
+        # copy, ``apps.agent_launch``), set by session allocation; ``agent``
+        # stays the session's identity. Read by the Kiro runtime start only.
+        self.app_launch_agent = ""
         # Kept on the provider, not only on the placeholder client: on the kiro
         # path ``_start_kiro_runtime_impl`` replaces that client with an
         # ``AcpRuntime`` it constructs itself, and a dedicated subagent's

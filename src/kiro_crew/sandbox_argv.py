@@ -412,6 +412,7 @@ def _spawn_plan(
     required_mask_targets: tuple[str, ...] = (),
     mask_occupants: "Mapping[str, tuple[int, ...]] | None" = None,
     crew_home_aliases: tuple[tuple[str, str, int, int], ...] = (),
+    exec_cwd: str = "",
 ) -> sandbox_plan.ConfinementPlan:
     """Plan one spawn for *backend* against this host, logging what the plan refused.
 
@@ -436,6 +437,7 @@ def _spawn_plan(
         required_mask_targets=tuple(required_mask_targets),
         mask_occupants=tuple((mask_occupants or {}).items()),
         crew_home_aliases=tuple(crew_home_aliases),
+        exec_cwd=exec_cwd,
     )
     plan = sandbox_plan.plan_confinement(request, _live_plan_host(request))
     _log_refusals(plan.refusals)
@@ -460,6 +462,7 @@ def _build_launcher_script(
     required_mask_targets: tuple[str, ...] = (),
     mask_occupants: "Mapping[str, tuple[int, ...]] | None" = None,
     crew_home_aliases: tuple[tuple[str, str, int, int], ...] = (),
+    exec_cwd: str = "",
 ) -> str:
     """The Linux namespace launcher program for one spawn, as Python source text.
 
@@ -487,6 +490,7 @@ def _build_launcher_script(
             required_mask_targets=required_mask_targets,
             mask_occupants=mask_occupants,
             crew_home_aliases=crew_home_aliases,
+            exec_cwd=exec_cwd,
         )
     )
 
@@ -533,6 +537,7 @@ def namespace_argv(
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
+    exec_cwd: str = "",
 ) -> list[str]:
     """Wrap *argv* via the Python namespace launcher.
 
@@ -683,6 +688,7 @@ def namespace_argv(
         # builder stays free of filesystem calls and still hands the launcher one
         # name per crew directory on a symlinked home.
         crew_home_aliases=_crew_home_alias_roots(),
+        exec_cwd=exec_cwd,
     )
     run_dir = _ensure_run_dir()
     # Prefix and suffix from the module constants, not a second spelling of them: the

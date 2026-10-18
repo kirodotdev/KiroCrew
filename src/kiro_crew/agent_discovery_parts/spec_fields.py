@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.agent_spec_format import is_native_skill_alias_name
+from kiro_crew.agent_spec_format import is_app_agent_launch_name, is_native_skill_alias_name
 from kiro_crew.dashboard.side_readonly_spec import is_readonly_spec_description
 
 # Discovery scopes. A ``project`` agent comes from the session's own checkout and
@@ -122,7 +122,8 @@ def is_internal_agent_spec(info: object) -> bool:
       agent that merely ends in ``--readonly`` stays spawnable;
     * a skill-view alias (``kirocrew-skill-view-*``), which discovery already
       leaves out of the roster; matched here too so a row built some other way
-      cannot put one back.
+      cannot put one back. An app launch copy (``kirocrew-app-launch-*``,
+      ``apps.agent_launch``) is matched the same way.
 
     A roster that offers either sends the model straight into a spawn that
     fails: the read-only spec is written per side turn, after the shared
@@ -133,7 +134,8 @@ def is_internal_agent_spec(info: object) -> bool:
     if is_readonly_spec_description(getattr(info, "description", None)):
         return True
     return any(
-        isinstance(value, str) and is_native_skill_alias_name(value)
+        isinstance(value, str)
+        and (is_native_skill_alias_name(value) or is_app_agent_launch_name(value))
         for value in (getattr(info, "filename", None), getattr(info, "name", None))
     )
 

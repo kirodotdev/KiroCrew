@@ -152,6 +152,7 @@ class _ChatTurn:
     _needs_reinjection: "bool"
     _noticed_leak: "bool"
     _open_construct: "str"
+    _owner_backend: "str | None"
     _owner_host_allowed: "bool"
     _owner_project: "Any | None"
     _parsed_input: "Any | None"

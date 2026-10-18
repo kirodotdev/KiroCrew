@@ -148,6 +148,7 @@ class AcpSessionHandle:
     _advertised_model_ids = _sh_models._advertised_model_ids
     supports_config_option = _sh_models.supports_config_option
     get_valid_effort_levels = _sh_models.get_valid_effort_levels
+    _crew_agent_name = _sh_models._crew_agent_name
     store_session_config = _sh_models.store_session_config
     ensure_served_default = _sh_models.ensure_served_default
     _normalize_models = staticmethod(_sh_models._normalize_models)

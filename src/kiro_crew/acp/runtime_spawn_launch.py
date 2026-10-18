@@ -11,7 +11,8 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``,
 ``_can_load_session``, ``_child_pids``, ``_derived_spec_snapshot``, ``_exit_watch_task``,
-``_initialized``, ``_kas_host_auth``, ``_last_activity``, ``_max_age_secs``,
+``_initialized``, ``_kas_host_auth``, ``_last_activity``, ``_launch_copy_spec``,
+``_launch_cwd_roots``, ``_launch_process_cwd``, ``_max_age_secs``,
 ``_max_rss_depth``, ``_max_rss_mb``, ``_native_launch_resources``,
 ``_native_launch_sources``, ``_native_launch_view_alias``, ``_native_skill_projection``,
 ``_pid``, ``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``,
@@ -22,8 +23,9 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_with_mcp_sign_in_storage`` (a plain function handed the runtime) also writes
 ``_mcp_secret_server``.
 
-Instance fields read: ``_acp_backend``, ``_extra_env``, ``_member_context``, ``_model``,
-``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``, ``_work_dir``.
+Instance fields read: ``_acp_backend``, ``_extra_env``, ``_launch_agent``, ``_member_context``,
+``_model``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
+``_work_dir``.
 """
 
 from __future__ import annotations
@@ -426,6 +428,27 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
     # Off-loop: mkdir is a blocking syscall and the parent dirs may live on
     # slow storage; the loop must never wait on the kernel here.
     await asyncio.to_thread(ensure_directory, self._work_dir)  # 0700 in the data home
+    if self._launch_agent:
+        # kiro-cli takes project agents from its PROCESS directory, so a launch copy's
+        # process starts where no checkout spec can sit; the session's cwd stays the
+        # checkout (``apps.agent_launch.launch_process_cwd``).
+        from kiro_crew.apps.agent_launch import (
+            AppAgentLaunchError,
+            launch_cwd_roots,
+            launch_process_cwd,
+            read_launch_copy,
+        )
+
+        try:
+            self._launch_process_cwd = str(await asyncio.to_thread(launch_process_cwd))
+            self._launch_cwd_roots = await asyncio.to_thread(
+                launch_cwd_roots, self._launch_process_cwd
+            )
+            self._launch_copy_spec = await asyncio.to_thread(
+                read_launch_copy, self._launch_agent, kiro_agents_dir()
+            )
+        except AppAgentLaunchError as exc:
+            raise AcpRuntimeError(exc.detail) from exc
     # Delegated Kiro agents on macOS do not inherit Kiro Crew's Seatbelt
     # deny rules. Keep their workspace disjoint from the named voice-decoder
     # runtime so verified executable bytes cannot be replaced before spawn.
@@ -436,6 +459,11 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
         plan = await self._resolve_spawn_plan()
         self._max_rss_depth = plan.rss_depth
         argv = plan.argv
+        if self._launch_agent and "--agent" in argv:
+            # The harness built ``--agent <identity>`` and ran its spawn gates
+            # on the identity; kiro-cli is handed the launch copy instead.
+            argv = list(argv)
+            argv[argv.index("--agent") + 1] = self._launch_agent
         if self.acp_backend == ACP_BACKEND_KIRO:
             from kiro_crew.acp.skill_projection import prepare_native_skill_projection
 
@@ -469,11 +497,14 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
                 # an activatable mode (frame reads advertised_launch_name, which
                 # the shared runtime DOES set -- advertising is safe for both
                 # runtimes; only request()'s mid-session tolerance is withheld).
-                projection.advertised_launch_name = self._agent
+                projection.advertised_launch_name = self._launch_agent or self._agent
                 argv = list(argv)
                 agent_position = argv.index("--agent") + 1
                 try:
-                    launch_view_alias = projection.spawn_agent(self._agent)
+                    # A launch copy spawns under its own name: a view of the
+                    # agent is built by name, and the name can reach the
+                    # checkout's same-named spec.
+                    launch_view_alias = self._launch_agent or projection.spawn_agent(self._agent)
                 except ValueError as exc:
                     # The projection refused this agent's view -- a
                     # ``kirocrew-core`` restriction authored in its spec, a
@@ -490,11 +521,17 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
                     # lands here.
                     raise AcpRuntimeError(str(exc)) from exc
                 argv[agent_position] = launch_view_alias
+                if self._launch_agent:
+                    # The copy is already this agent's skill view, published by
+                    # ``apps.agent_launch``; read by its own path and held like
+                    # any prepared view, so the session's control plane and the
+                    # launch steering record below are judged from it.
+                    await asyncio.to_thread(_adopt_launch_copy_view, projection, self._launch_agent)
                 if not self._member_context and not self._native_launch_sources:
                     if not await asyncio.to_thread(
                         acp_driver.inherits_default_resources, self._work_dir
                     ):
-                        projected_view = projection.specs.get(self._agent)
+                        projected_view = projection.specs.get(self._launch_agent or self._agent)
                         if projected_view is not None:
                             # kiro-cli re-reads the view's declared guides for
                             # every request, so the record holds their paths
@@ -1222,3 +1259,27 @@ async def _source_agent(agent: str | None) -> str | None:
     if source != agent:
         logger.info("skill view %s maps back to agent %s", agent, source)
     return source
+
+
+def _adopt_launch_copy_view(projection: Any, launch_agent: str) -> None:
+    """Hold the app launch copy *launch_agent* in *projection* as a prepared view.
+
+    Read from ``~/.kiro/agents/<launch_agent>.json`` by its path: the copy's name is
+    reserved, and a name lookup is what the copy exists to avoid. It is a search
+    agent exactly when the projection's verdict on publishing it said so
+    (``apps.agent_launch.is_search_launch_copy``), so a session whose control plane
+    cannot mount is refused as for the same agent's projected view and for no other.
+    An unreadable copy adopts nothing, and the session start's own checks then decide.
+    """
+    from kiro_crew.agent_discovery import _read_agent_spec
+
+    view = _read_agent_spec(
+        kiro_agents_dir() / f"{launch_agent}.json", operation="app_agent_launch", source="acp"
+    )
+    if not isinstance(view, dict):
+        return
+    from kiro_crew.apps.agent_launch import is_search_launch_copy
+
+    projection.specs[launch_agent] = view
+    if is_search_launch_copy(launch_agent):
+        projection.search_agents.add(launch_agent)

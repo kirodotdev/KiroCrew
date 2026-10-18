@@ -825,9 +825,9 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_app_agent_host_allowed", "function", "(provider: 'Any') -> 'bool'"),
         (
-            "_app_agent_turn_host_allowed",
+            "_app_agent_turn_backend",
             "async function",
-            "(state: \"'DashboardState'\", session_key: 'str', cfg: \"'KiroCrewConfig | None'\") -> 'bool'",
+            "(state: \"'DashboardState'\", session_key: 'str', cfg: \"'KiroCrewConfig | None'\") -> 'str | None'",
         ),
     ),
     "queue_cycle": (

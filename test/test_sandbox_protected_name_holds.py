@@ -374,7 +374,12 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   over it. That is the move this module asks for: the directory's own inode
     #:   stays the same on a republish. It sits at the data-home root beside
     #:   writable siblings, so it is counted leaf-only like ``skill-projection``.
-    EXPECTED: dict[str, int] = {"standard": 287, "cc": 294, "strict": 295}
+    #: * ``app-agent-launch`` -- the empty directory kiro-cli runs an app agent's
+    #:   launch copy from (``apps.agent_launch.launch_process_cwd``), sealed read-only
+    #:   so no sandboxed writer can plant the spec kiro-cli reads there. At the
+    #:   data-home root beside writable siblings, so leaf-only is the only hold.
+    #:   Three more entries per tier.
+    EXPECTED: dict[str, int] = {"standard": 290, "cc": 297, "strict": 298}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

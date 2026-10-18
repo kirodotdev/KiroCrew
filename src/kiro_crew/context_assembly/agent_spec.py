@@ -466,8 +466,18 @@ def _resolve_prompt_templates(
     return prompt.replace("{{WIDGET_BLOCK}}", _sections.widget_block(density))
 
 
-def _load_agent_prompt(agent: str, project: str | None = None, *, owner_template: str = "") -> str:
-    """Read the resolved execution prompt, excluding an owner source in essentials."""
+def _load_agent_prompt(
+    agent: str,
+    project: str | None = None,
+    *,
+    owner_template: str = "",
+    spec_path: Path | None = None,
+) -> str:
+    """Read the resolved execution prompt, excluding an owner source in essentials.
+
+    *spec_path* is the file a pinned session runs from (``skill_scope_pin``), read
+    by its path instead of resolving *agent* by name project-first.
+    """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_discovery import _read_agent_spec
     from kiro_crew.member_essential_context import (
@@ -476,7 +486,7 @@ def _load_agent_prompt(agent: str, project: str | None = None, *, owner_template
     )
 
     try:
-        path = resolve_template_path(agent, project)
+        path = spec_path or resolve_template_path(agent, project)
         if path is None:
             return ""
         data = _read_agent_spec(path, operation="agent_prompt", source="context")
@@ -554,7 +564,10 @@ def _resolve_agent_prompt(
             agent_prompt = ""
     elif is_custom:
         agent_prompt = self._load_agent_prompt(
-            agent or "", project, owner_template=(agent or "") if private_owner else ""
+            agent or "",
+            project,
+            owner_template=(agent or "") if private_owner else "",
+            spec_path=ctx.pinned_session_skill_spec(session_key),
         )
     else:
         pp = ctx._prompt_path()

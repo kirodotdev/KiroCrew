@@ -579,6 +579,15 @@ def get_valid_effort_levels(self: AcpSessionHandle) -> list[str]:
     return []
 
 
+def _crew_agent_name(self: AcpSessionHandle, name: str) -> str:
+    """*name* as Crew records it: the runtime's launch copy reads as its own agent."""
+    crew_name = getattr(self._runtime, "crew_agent_name", None)
+    if not callable(crew_name):
+        return name
+    mapped = crew_name(name)
+    return mapped if isinstance(mapped, str) else name
+
+
 def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
     """Extract configOptions and available models from session/new or session/load response.
 
@@ -586,7 +595,9 @@ def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
     """
     modes = resp.get("modes")
     current_agent = modes.get("currentModeId") if isinstance(modes, dict) else None
-    self.active_agent = current_agent if isinstance(current_agent, str) else ""
+    self.active_agent = (
+        self._crew_agent_name(current_agent) if isinstance(current_agent, str) else ""
+    )
     config_options = resp.get("configOptions")
     if isinstance(config_options, list):
         self._config_options = config_options

@@ -31,6 +31,11 @@ test/test_agent.py::TestResolveKirocrewBin::test_accepts_wrapper_bin_from_walk
 test/test_agent.py::TestResolveKirocrewBin::test_finds_bin_in_parent_hierarchy
 test/test_agent.py::TestResolveKirocrewBin::test_prefers_venv_bin_over_project_bin
 test/test_agent.py::TestResolveKirocrewBin::test_venv_install_falls_through_to_step1
+# Drives a real AcpRuntime.spawn through the shared TestRuntimeProjectedLaunchDocuments
+# harness, which simulates only asyncio's subprocess; Windows spawns through the
+# cleanup-owned child (pin/identity) the harness cannot fake. The decision it pins is
+# platform-independent and runs on the POSIX matrix.
+test/test_app_agent_launch_copy.py::TestTheCopyRunsTheLaunchSteeringDecision::test_the_decision_runs_on_the_copys_view
 test/test_app_backend.py::TestShellDispatch::test_explicit_backend_type_exec_routes_to_shell_branch
 test/test_app_backend.py::TestShellDispatch::test_non_executable_bash_entry_honors_shebang
 test/test_app_backend.py::TestShellDispatch::test_non_executable_sh_entry_falls_back_to_bin_sh

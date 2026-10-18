@@ -717,6 +717,7 @@ async def _dispatch_events(
                                 agent_info.get("name", "") if isinstance(agent_info, dict) else ""
                             )
                             if name:
+                                name = self._crew_agent_name(name)
                                 self.active_agent = name
                                 yield AcpEvent(kind=EVENT_AGENT_SWITCHED, text=name)
                 reason, _refusal = self.last_prompt_stats.terminal_refusal(reason)
@@ -981,10 +982,11 @@ async def _dispatch_events(
                 saw_agent_switch = True
                 params = msg.params or {}
                 name = params.get("agentName", "")
-                self.active_agent = name if isinstance(name, str) else ""
+                name = self._crew_agent_name(name) if isinstance(name, str) else ""
+                self.active_agent = name
                 yield AcpEvent(
                     kind=EVENT_AGENT_SWITCHED,
-                    text=params.get("agentName", ""),
+                    text=name,
                     runtime_global=msg.fanout_no_owner,
                 )
             elif action == "subagent_list":

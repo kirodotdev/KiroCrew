@@ -93,6 +93,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
         "bypass_resume",
         "bypass_stateless",
         "bypass_member",
+        "bypass_app_launch",
         "bypass_restricted_context",
         "bypass_member_context",
         "bypass_cwd",

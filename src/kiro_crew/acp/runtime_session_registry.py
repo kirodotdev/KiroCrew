@@ -8,8 +8,8 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_pending_init_notifications``, ``_routed_requests``,
-``_session_inits_in_flight``, ``_session_queues``, ``_subagent_owner``,
-``_subagent_roster_overflow``, ``_subagent_sessions``, ``_turn_active_sessions``.
+``_session_cwds``, ``_session_inits_in_flight``, ``_session_queues``,
+``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``, ``_turn_active_sessions``.
 
 Instance fields read: ``_dead``, ``_process``, ``_start_collectors``.
 """
@@ -120,6 +120,7 @@ _TERMINATE_TIMEOUT = 5.0
 def unregister_session(self: AcpRuntime, session_id: str) -> None:
     """Unregister a session queue (called by AcpSessionHandle.destroy)."""
     self._session_queues.pop(session_id, None)
+    self._session_cwds.pop(session_id, None)
     self._switched_model_record().pop(session_id, None)
     # Clean up any pending routed requests for this session
     stale = [k for k, v in self._routed_requests.items() if v == session_id]

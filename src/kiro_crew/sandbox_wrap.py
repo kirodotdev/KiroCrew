@@ -450,6 +450,7 @@ def wrap_argv(
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
+    exec_cwd: str = "",
     is_kiro_cli: bool | None = None,
     first_party_fixed_argv: bool = False,
 ) -> tuple[list[str], str | None]:
@@ -481,6 +482,9 @@ def wrap_argv(
             security warning. Inert on
             backends with no path seal to carve (Windows, the no-backend
             fail-open path): there the directory is already writable.
+        exec_cwd: A directory the Linux namespace launcher enters after its seals
+            and before it execs, failing closed unless it is read-only and empty
+            (an app agent's launch copy). Ignored by every other backend.
         is_kiro_cli: Explicit executable classification for descriptor-backed
             Kiro snapshots whose launch path has no ``kiro-cli``
             basename. ``None`` retains basename detection for other callers.
@@ -846,6 +850,7 @@ def wrap_argv(
             or extra_private_dirs
             or extra_writable_dirs
             or extra_expose_files
+            or exec_cwd
         ):
             wrapped = namespace_argv(
                 argv,
@@ -861,6 +866,7 @@ def wrap_argv(
                 extra_private_dir_ids=extra_private_dir_ids,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
+                exec_cwd=exec_cwd,
             )
         else:
             wrapped = namespace_argv(

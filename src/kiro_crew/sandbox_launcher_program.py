@@ -146,6 +146,8 @@ class Launch:
         self.sensitive_files = plan["sensitive_files"]
         self.fail_closed_file_masks = plan["fail_closed_file_masks"]
         self.alias_credential_ids = plan["alias_credential_ids"]
+        #: The directory to enter after the seals and before exec, or "" for none.
+        self.exec_cwd = plan.get("exec_cwd", "")
         self.required_mask_targets = frozenset(plan["required_mask_targets"])
         #: The masked directories that must be SEALED read-only when they carry no
         #: writable window: the caller-supplied masks (``extra_hidden_dirs`` -- an app
@@ -2243,6 +2245,32 @@ def refuse_hardlinked_credentials(launch, scan_roots=None, max_per_root=100000):
         )
 
 
+def enter_exec_cwd(launch):
+    """Enter the plan's ``exec_cwd`` by its name, so the agent starts in it through the seal.
+
+    The process inherits its working directory from before the namespace existed, so a
+    directory it already stands in keeps the writable mount underneath any seal placed
+    since. Entering by name AFTER the seals resolves through them. The directory must
+    then report read-only and hold nothing, or the launch ends here: an agent started in
+    a writable or populated directory could be handed a spec that directory holds.
+    Runs after the hardlinked-credential scan, which walks the workspace the launcher
+    was started in.
+    """
+    target = launch.exec_cwd
+    if not target:
+        return
+    try:
+        os.chdir(target)
+        read_only = bool(os.statvfs(".").f_flag & os.ST_RDONLY)
+        entries = os.listdir(".")
+    except OSError as exc:
+        sys.exit("sandbox: FATAL — cannot enter the launch directory (%s)" % (exc.strerror or exc))
+    if not read_only:
+        sys.exit("sandbox: FATAL — the launch directory is not sealed read-only")
+    if entries:
+        sys.exit("sandbox: FATAL — the launch directory is not empty")
+
+
 def exec_agent(launch, argv):
     """Replace this process with the agent command, in the scrubbed environment.
 
@@ -2299,6 +2327,7 @@ def run_child(launch, argv):
     drop_privileges(launch)
     install_seccomp(launch)
     refuse_hardlinked_credentials(launch)
+    enter_exec_cwd(launch)
     exec_agent(launch, argv)
 
 

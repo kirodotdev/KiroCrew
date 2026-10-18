@@ -11,7 +11,8 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_last_activity``, ``_next_id``, ``_pending_requests``,
 ``_routed_requests``, ``_stdin_lock``.
 
-Instance fields read: ``_acp_backend``, ``_dead``, ``_native_skill_projection``,
+Instance fields read: ``_acp_backend``, ``_agent``, ``_dead``, ``_launch_agent``,
+``_native_skill_projection``,
 ``_one_at_a_time_sent``, ``_process``, ``_session_queues``, ``_stderr_lines``.
 """
 
@@ -128,7 +129,11 @@ async def send_request(
         raise AcpRuntimeDead("runtime is dead")
 
     projection = getattr(self, "_native_skill_projection", None)
-    if projection is not None:
+    if method == METHOD_SET_MODE and self._launch_agent and params.get("modeId") == self._agent:
+        # Re-selecting this runtime's own agent mid-session names its launch
+        # copy, never a view the projection built by name lookup.
+        params = {**params, "modeId": self._launch_agent}
+    elif projection is not None:
         params = projection.request(method, params)
     req_id = self._next_id
     self._next_id += 1

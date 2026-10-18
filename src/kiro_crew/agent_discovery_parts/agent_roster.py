@@ -47,6 +47,7 @@ from kiro_crew.agent_files import (
     OWNED_KIRO_AGENT_FILES,
 )
 from kiro_crew.agent_spec_format import (
+    is_app_agent_launch_name,
     is_markdown_spec,
     iter_agent_spec_files,
     shadowed_markdown_specs,
@@ -368,6 +369,11 @@ def list_agents(
         user_candidates = 0
         user_parsed = 0
         for f in iter_agent_spec_files(d):
+            # An app launch copy is the spec kiro-cli runs a palette-opened app
+            # agent under, never an agent to offer: the app's own agent is
+            # listed under its own name already (apps.agent_launch).
+            if is_app_agent_launch_name(f.name):
+                continue
             # AppleDouble sidecars are rejected by design, not by failure — a
             # directory holding only sidecars is empty of specs, not broken.
             if not f.name.startswith("._"):

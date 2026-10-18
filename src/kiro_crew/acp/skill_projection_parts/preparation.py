@@ -174,6 +174,125 @@ def _warn_ceiling_fallback_once(directory: Path, count: int) -> None:
     )
 
 
+def project_agent_view(
+    spec: dict[str, Any],
+    source: Path,
+    agent_name: str,
+    *,
+    crew_home_id: str,
+    inherits_skills: bool,
+    per_session_element: bool,
+) -> tuple[dict[str, Any] | None, bool, str | None]:
+    """*spec*'s native skill view: ``(view, is_search_agent, refusal)``.
+
+    The view drops every ``skill://`` resource and serves the agent's skills through
+    ``kirocrew-core``'s ``skill_search`` instead; every other field is the spec's own.
+    *source* is the spec's file, which a relative ``file://`` prompt is anchored to.
+    *inherits_skills* says the agent's workspace lends it inherited skill trees.
+    ``view`` is ``None``, with the sentence that says why, when the view is refused.
+    Shared by :func:`prepare_native_skill_projection` and the app launch copy
+    (``apps.agent_launch``), so the two views cannot drift apart.
+    """
+    search = False
+    # An iterative copy, not ``copy.deepcopy``: the reader admits a spec
+    # nested hundreds of levels deep, and a recursive copy of it would
+    # raise ``RecursionError`` out of the projection.
+    view = copy_json_document(spec)
+    _strip_alias_display_text(view)
+    # The ONE display field a view carries, replacing the authored one: it
+    # tells a reader that lists the agents directory (the Kiro IDE) what the
+    # row is and which agent to pick instead, and it tags the publishing
+    # home for the prune (see _MANAGED_VIEW_DESCRIPTION_PREFIX). Short, so
+    # kiro-cli's per-session copy of it stays small.
+    view["description"] = _managed_view_description(agent_name, crew_home_id)
+    resources = view.get("resources", [])
+    resources = resources if isinstance(resources, list) else []
+    view["resources"] = [
+        r for r in resources if not (isinstance(r, str) and r.startswith("skill://"))
+    ]
+    mapped = any(isinstance(r, str) and r.startswith("skill://") for r in resources)
+    # An unmapped custom agent reaches the block below only through its
+    # inherited skill trees. Where the block would refuse a mapped agent, this
+    # one keeps the view it had and gets no search: it never relied on it, and
+    # it is not a search agent, so no session of it is refused either.
+    inherited_only = (
+        agent_name != "kirocrew" and not mapped and inherits_skills and can_inherit_skills(spec)
+    )
+    if agent_name == "kirocrew" or mapped or inherited_only:
+        refusal = skill_search_refusal(view)
+        if refusal is not None:
+            return None, False, refusal
+        # The bounded directory must have a loading path even for a custom spec
+        # whose authored resources rely on native skill activation. Expose
+        # only the read/search capability; do not grant server-wide tools or
+        # change the author's approval policy.
+        from kiro_crew.agent import managed_mcp_spec_entry
+
+        original_core = view.get("mcpServers", {}).get("kirocrew-core", {})
+        # The verdict the mount will reach for the spec's part, reached here
+        # first, over the declaration AS AUTHORED. The managed replacement
+        # built below carries only the keys a per-session element can
+        # express, so judging it would let a ``type`` or a key the element
+        # cannot carry vanish unjudged and the control plane mount despite the
+        # restriction; the mount's own arms read the declaration itself, and
+        # so does this. A restriction authored in the spec refuses the view:
+        # the view would drop this agent's skill resources on the promise of
+        # an element the mount can never mount for it. The settings files are
+        # deliberately NOT read here -- see the note above the loop -- so a
+        # spec that is clean gets its view whatever the files say today, and
+        # the mount asks the full question over the files at every session
+        # start. A broker stub ``session/new`` would mount ahead of the
+        # element is not a source either: a stub element carries a
+        # kiro-cli-only restriction no better than the native element does,
+        # and its overlay is written from the spec and the global file alone,
+        # so the sources decide, and only the sources.
+        #
+        # The question exists only where an element will REPLACE the
+        # declaration. The direct client mounts none: kiro-cli loads the
+        # view's entry itself -- the managed launch plus the restrictions
+        # copied onto it below -- and honours them natively, with the
+        # session's identity on the process environment. There a
+        # ``disabledTools`` naming other tools, or a ``timeout``, restricts
+        # exactly what its author meant and leaves ``skill_search`` standing
+        # (the checks above already refused the view if it did not), so
+        # withholding the view for it would refuse a supported customization
+        # and abort the spawn over a restriction that reaches the session.
+        withheld = (
+            session_mcp.native_mount_withholding("kirocrew-core", original_core, [])
+            if per_session_element
+            else None
+        )
+        entry = managed_mcp_spec_entry("kirocrew-core") if withheld is None else None
+        if entry is None:
+            if not inherited_only:
+                return (
+                    None,
+                    False,
+                    (
+                        withheld.explain("skill search")
+                        if withheld is not None
+                        else "Crew's managed skill search server is unavailable"
+                    ),
+                )
+        else:
+            for key in ("autoApprove", "disabledTools", "timeout"):
+                if key in original_core:
+                    entry[key] = original_core[key]
+            view.setdefault("mcpServers", {})["kirocrew-core"] = entry
+            tools = view.get("tools", [])
+            if tools != "*" and isinstance(tools, list):
+                if not any(t in tools for t in ("*", "@kirocrew-core", _SEARCH_TOOL)):
+                    view["tools"] = [*tools, _SEARCH_TOOL]
+            if not inherited_only:
+                search = True
+    prompt = view.get("prompt")
+    if isinstance(prompt, str) and prompt.startswith("file://"):
+        path = Path(prompt[7:]).expanduser()
+        if not path.is_absolute():
+            view["prompt"] = "file://" + (source.parent / path).absolute().as_posix()
+    return view, search, None
+
+
 def prepare_native_skill_projection(
     work_dir: Path,
     *,
@@ -317,103 +436,19 @@ def prepare_native_skill_projection(
             # between the two reads; skip it, exactly as an absent spec is skipped.
             continue
         display_sizes[agent.name] = (_display_text_bytes(spec), source.absolute().as_posix())
-        # An iterative copy, not ``copy.deepcopy``: the reader admits a spec
-        # nested hundreds of levels deep, and a recursive copy of it would
-        # raise ``RecursionError`` out of the projection.
-        view = copy_json_document(spec)
-        _strip_alias_display_text(view)
-        # The ONE display field a view carries, replacing the authored one: it
-        # tells a reader that lists the agents directory (the Kiro IDE) what the
-        # row is and which agent to pick instead, and it tags the publishing
-        # home for the prune (see _MANAGED_VIEW_DESCRIPTION_PREFIX). Short, so
-        # kiro-cli's per-session copy of it stays small.
-        view["description"] = _managed_view_description(agent.name, crew_home_id)
-        resources = view.get("resources", [])
-        resources = resources if isinstance(resources, list) else []
-        view["resources"] = [
-            r for r in resources if not (isinstance(r, str) and r.startswith("skill://"))
-        ]
-        mapped = any(isinstance(r, str) and r.startswith("skill://") for r in resources)
-        # An unmapped custom agent reaches the block below only through its
-        # inherited skill trees. Where the block would refuse a mapped agent, this
-        # one keeps the view it had and gets no search: it never relied on it, and
-        # it is not a search agent, so no session of it is refused either.
-        inherited_only = (
-            agent.name != "kirocrew"
-            and not mapped
-            and bool(inherited_globs)
-            and can_inherit_skills(spec)
+        view, search, refusal = project_agent_view(
+            spec,
+            source,
+            agent.name,
+            crew_home_id=crew_home_id,
+            inherits_skills=bool(inherited_globs),
+            per_session_element=per_session_element,
         )
-        if agent.name == "kirocrew" or mapped or inherited_only:
-            refusal = skill_search_refusal(view)
-            if refusal is not None:
-                errors[agent.name] = refusal
-                continue
-            # The bounded directory must have a loading path even for a custom spec
-            # whose authored resources rely on native skill activation. Expose
-            # only the read/search capability; do not grant server-wide tools or
-            # change the author's approval policy.
-            from kiro_crew.agent import managed_mcp_spec_entry
-
-            original_core = view.get("mcpServers", {}).get("kirocrew-core", {})
-            # The verdict the mount will reach for the spec's part, reached here
-            # first, over the declaration AS AUTHORED. The managed replacement
-            # built below carries only the keys a per-session element can
-            # express, so judging it would let a ``type`` or a key the element
-            # cannot carry vanish unjudged and the control plane mount despite the
-            # restriction; the mount's own arms read the declaration itself, and
-            # so does this. A restriction authored in the spec refuses the view:
-            # the view would drop this agent's skill resources on the promise of
-            # an element the mount can never mount for it. The settings files are
-            # deliberately NOT read here -- see the note above the loop -- so a
-            # spec that is clean gets its view whatever the files say today, and
-            # the mount asks the full question over the files at every session
-            # start. A broker stub ``session/new`` would mount ahead of the
-            # element is not a source either: a stub element carries a
-            # kiro-cli-only restriction no better than the native element does,
-            # and its overlay is written from the spec and the global file alone,
-            # so the sources decide, and only the sources.
-            #
-            # The question exists only where an element will REPLACE the
-            # declaration. The direct client mounts none: kiro-cli loads the
-            # view's entry itself -- the managed launch plus the restrictions
-            # copied onto it below -- and honours them natively, with the
-            # session's identity on the process environment. There a
-            # ``disabledTools`` naming other tools, or a ``timeout``, restricts
-            # exactly what its author meant and leaves ``skill_search`` standing
-            # (the checks above already refused the view if it did not), so
-            # withholding the view for it would refuse a supported customization
-            # and abort the spawn over a restriction that reaches the session.
-            withheld = (
-                session_mcp.native_mount_withholding("kirocrew-core", original_core, [])
-                if per_session_element
-                else None
-            )
-            entry = managed_mcp_spec_entry("kirocrew-core") if withheld is None else None
-            if entry is None:
-                if not inherited_only:
-                    errors[agent.name] = (
-                        withheld.explain("skill search")
-                        if withheld is not None
-                        else "Crew's managed skill search server is unavailable"
-                    )
-                    continue
-            else:
-                for key in ("autoApprove", "disabledTools", "timeout"):
-                    if key in original_core:
-                        entry[key] = original_core[key]
-                view.setdefault("mcpServers", {})["kirocrew-core"] = entry
-                tools = view.get("tools", [])
-                if tools != "*" and isinstance(tools, list):
-                    if not any(t in tools for t in ("*", "@kirocrew-core", _SEARCH_TOOL)):
-                        view["tools"] = [*tools, _SEARCH_TOOL]
-                if not inherited_only:
-                    search_agents.add(agent.name)
-        prompt = view.get("prompt")
-        if isinstance(prompt, str) and prompt.startswith("file://"):
-            path = Path(prompt[7:]).expanduser()
-            if not path.is_absolute():
-                view["prompt"] = "file://" + (source.parent / path).absolute().as_posix()
+        if view is None:
+            errors[agent.name] = refusal or ""
+            continue
+        if search:
+            search_agents.add(agent.name)
         specs[agent.name] = view
         sources[agent.name] = source.absolute().as_posix()
 
