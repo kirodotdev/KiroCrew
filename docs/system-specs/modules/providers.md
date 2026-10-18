@@ -352,6 +352,7 @@ tar -xf "$measurement/source.tar" -C "$snapshot"
 # Copy test instrumentation only; leave all production sources at the baseline.
 cp "$root/test/test_essential_delivery.py" "$snapshot/test/"
 cp "$root/test/test_member_essential_context.py" "$snapshot/test/"
+cp "$root/test/member_essential_context_helpers.py" "$snapshot/test/"
 export PYTHONPYCACHEPREFIX="$measurement/pycache"
 export TMPDIR="$measurement"
 export KIROCREW_HOME="$measurement/home"

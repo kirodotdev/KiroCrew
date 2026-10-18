@@ -471,6 +471,8 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_deploy_web_handlers_manifest_reaper.py",
         "test_deploy_web_handlers_webapp.py",
         "test_snapshot.py",
+        "test_snapshot_notification_copy_branch.py",
+        "test_snapshot_notification_merge_branch.py",
         "test_theme_install.py",
         "test_theme_install_declarations.py",
         "test_theme_install_identity.py",

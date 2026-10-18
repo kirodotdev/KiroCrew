@@ -128,15 +128,12 @@
 2631 test/test_llm_pool.py
 2248 test/test_markdown_link_parentheses.py
 7022 test/test_mcp_discovery.py
-3224 test/test_mcp_gateway_stub_session_token.py
 2449 test/test_mcp_gatewayd_coverage.py
-3249 test/test_member_essential_context.py
 2096 test/test_monitor_directive_apply.py
 5822 test/test_onboarding_import.py
 3579 test/test_overload_integration_glue.py
 2725 test/test_plugin_import.py
 8519 test/test_pod.py
-3225 test/test_portability.py
 2147 test/test_recovery_l1_chat_runner.py
 3193 test/test_sandbox_absent_ceiling_seal.py
 12647 test/test_security.py
@@ -150,7 +147,6 @@
 2650 test/test_slack_handler_composition_contract.py
 2629 test/test_slack_handler_coverage.py
 2730 test/test_slack_options_lifecycle.py
-3265 test/test_snapshot.py
 2641 test/test_spawn_audit.py
 3093 test/test_subagent.py
 3616 test/test_subagent_panel_durable_replay.py
