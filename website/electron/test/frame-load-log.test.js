@@ -187,7 +187,7 @@ describe("frame-load-log console normalization", () => {
   it("carries the emitting frame through, since the text alone proves nothing", () => {
     const pane = paneFrame();
     assert.equal(normalizeConsoleMessage([consoleDetails("hi", { frame: pane })]).frame, pane);
-    // Electron 43 delivers the details object AND the deprecated positionals; the
+    // Electron 44 delivers the details object AND the deprecated positionals; the
     // frame must survive whichever branch reads the payload.
     assert.equal(normalizeConsoleMessage([{ frame: pane }, 3, "boom", 1, "a.js"]).frame, pane);
   });

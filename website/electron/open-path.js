@@ -29,7 +29,7 @@
 //
 // A VERSION-FLUID DEPENDENCY, STATED PLAINLY. The mitigation is airtight only
 // while Linux `OpenPath` forks SYNCHRONOUSLY inside the `shell.openPath()` call
-// (verified against Electron 43, the pinned major -- see ELECTRON_MAJOR_VERIFIED
+// (verified against Electron 44, the pinned major -- see ELECTRON_MAJOR_VERIFIED
 // below and its guard test). macOS and Windows `OpenPath` ALREADY post the
 // native open to a worker (a dispatch queue; a COM STA task runner), which
 // proves this timing is an implementation detail that varies by platform and
@@ -82,7 +82,20 @@ const LINUX_LAUNCHER_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
 // in test/open-path.test.js fails when package.json moves past this, which is
 // the signal to re-verify the Linux launch is still synchronous and then bump
 // this constant in the same change.
-const ELECTRON_MAJOR_VERIFIED = 43;
+//
+// Re-verified for 44 against v44.7.2 `shell/common/platform_util_linux.cc`:
+// `OpenPath` (l.387) -> `XDGOpen` (l.364, wait_for_exit=false) -> `XDGUtil`
+// (l.314) -> `base::LaunchProcess` (l.340), a direct call with no task runner
+// anywhere on that chain, so the fork still happens before `shell.openPath()`
+// returns and the `finally` restore below still bounds it. (The one
+// `base::ThreadPool::PostTaskAndReplyWithResult` in that file, l.171, belongs
+// to the xdg-desktop-portal path behind `ShowItemInFolder`, not `OpenPath`.)
+// 44 did change one thing here, in our favour: 43 never ran the callback on the
+// `wait_for_exit=false` branch, so `shell.openPath()` returned a promise that
+// never settled on Linux; 44 resolves it once the launch succeeds. This wrapper
+// deliberately does not await that promise, so neither shape affects the
+// mitigation.
+const ELECTRON_MAJOR_VERIFIED = 44;
 
 /**
  * The hardened launcher PATH for a platform, or `null` when the platform needs

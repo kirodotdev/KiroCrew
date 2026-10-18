@@ -22,7 +22,7 @@
  * nobody asked for. So: once a NON-transient page (the dashboard) has actually
  * committed, surgically remove every transient shell entry still in the
  * history via `navigationHistory.removeEntryAtIndex()` (Electron ≥34; the app
- * pins Electron ^43 — the pre-36 `clearHistory()` spelling is gone). Removal
+ * pins Electron 44.x — the pre-36 `clearHistory()` spelling is gone). Removal
  * is per-entry rather than `navigationHistory.clear()` on purpose: after a
  * gateway reconnect the history legitimately holds the user's own prior
  * dashboard routes behind the re-painted splash, and a wholesale clear would
