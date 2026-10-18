@@ -104,7 +104,6 @@
 2421 src/kiro_crew/session_ledger.py
 2648 src/kiro_crew/session_map.py
 6051 src/kiro_crew/session_pid.py
-5246 src/kiro_crew/session_storage.py
 3685 src/kiro_crew/slack/events.py
 3789 src/kiro_crew/slack/handler.py
 3892 src/kiro_crew/slack/interactions.py

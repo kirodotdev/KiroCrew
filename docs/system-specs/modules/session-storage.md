@@ -3,7 +3,8 @@
 ## Overview
 
 `src/kiro_crew/session_storage.py` measures what conversations cost on disk and
-reclaims that space when a user asks. `src/kiro_crew/session_digest.py` reads a
+reclaims that space when a user asks; its code lives in the owners listed under
+[Module layout](#module-layout). `src/kiro_crew/session_digest.py` reads a
 single session's content for the detail view. `src/kiro_crew/dashboard/handlers/session_storage.py`
 exposes both over HTTP. Reclaiming stages files under `<data home>/trash/sessions/`
 rather than unlinking them; emptying that trash is the only irreversible step and
@@ -11,6 +12,38 @@ the only one that returns space to the filesystem.
 
 Nothing here runs on a timer. Every measurement is pulled by a request and every
 move is initiated by a user action.
+
+## Module layout
+
+`kiro_crew.session_storage` is the module every caller imports, and every name it bound
+before its owners moved out is still reached there. It is a mirror facade
+(`kiro_crew._facade_mirror`) over the owners in `src/kiro_crew/session_storage_parts/`: it
+binds each name an owner defines, so its namespace holds the definitions the unsplit module
+held, and it serves the names the owners import from the owner holding them. A patch of
+`session_storage.<name>` therefore reaches every owner holding the name, and the moved code
+reads its names as plain module globals. Owners never import the facade, each imports only
+the owners listed before it below, and new work goes to the owner of its responsibility
+rather than back into the facade. Every owner that logs does so under
+`kiro_crew.session_storage`, and `SessionStorageError` and `_OversizedManifestRecord` keep
+that module name in a traceback. The scan and co-tenant caches
+(`_scan_cache`, `_cotenant_cache`) are the two owner names the facade serves instead of
+binding: `store_inventory.py` rebinds them, so a copy on the facade would go stale.
+
+| Owner | Holds |
+|---|---|
+| `session_storage_parts/store_layout.py` | the trash, staging and manifest names, `BUCKET_DAYS`, `MIN_RECLAIM_AGE_DAYS`, `MUTATION_LOCK_NAME`, the unit-id shape, `SessionStorageError`, the index, unit, report and batch types, an empty's callbacks and `SKIP_*` codes, `BatchIdentity`, `trash_root` and the transcript directories, the archive index, and the tree walk (`_tree_files`, `_tree_bytes`) |
+| `session_storage_parts/batch_manifest.py` | a batch's manifest: the header and entries, `_manifest_records` under `_MANIFEST_RECORD_CAP`, `_read_manifest`, the summary and rewrite, `_manifest_rels`, `_rels_digest`, `_header_names_this_batch`, and making a batch durable (`_sync_batch`) |
+| `session_storage_parts/crew_staging.py` | a session's crew logs in the trash: `_stage_crew_logs`, putting them back, the holds file, the staged units no manifest lists (which nothing that removes the batch may remove), and discarding a batch's staging after an empty |
+| `session_storage_parts/store_inventory.py` | the read side: the cached scan (`_scan_units`, `_scan_raw`, `invalidate_scan_cache`), `_unit_paths`, `measure`, `list_units`, `select_reclaimable`, `cotenant_sids`, `reclaim_block_reason` and `list_trash` |
+| `session_storage_parts/pinned_delete.py` | deleting a batch's listed files by descriptor (`_FD_SAFE_DELETE`, `_delete_listed_files`), renaming a batch aside and back (`_stage_batch_by_name`), and the coarse path (`_coarse_remove`) |
+| `session_storage_parts/file_moves.py` | `_mutation_lock`, `_batch_dir`, the no-follow movers and the cross-filesystem copy, `_rollback`, `_canonical_origin`, `_origin_path` and `_unlisted_files` |
+| `session_storage_parts/batch_removal.py` | `staged_targets` and its `_approve_batch`, `empty_trash`, and removing a batch a restore or a rolled-back move emptied (`_remove_emptied_batch`) |
+| `session_storage_parts/trash_reclaim.py` | `move_to_trash` and `_purge_search_index` |
+| `session_storage_parts/trash_restore.py` | `restore` |
+
+`test/test_session_storage_parts.py` pins the owner set and its layer order, the names the
+facade binds and serves, the patch reach of every name the test trees patch through the
+facade, the names served from outside the family, and the logger and exception names.
 
 ## One session, two stores
 
@@ -418,7 +451,7 @@ bytes into an agent-readable trash, and a link planted in the trash would copy a
 bytes back out over a restored origin. Staging does not hand it a link today, since every
 enumeration scan uses `is_file(follow_symlinks=False)`, so this is hardening rather than a
 reachable hole being closed: it makes the copy safe on its own terms instead of by
-inheritance from a filter several hundred lines away.
+inheritance from a filter in another module.
 `test_the_copy_helper_refuses_a_symlink_instead_of_reading_its_target` pins it at the copy
 and `test_a_planted_source_symlink_never_reaches_the_trash` pins the end-to-end outcome.
 The final component is what a swap replaces; a symlinked PARENT directory is still
@@ -685,7 +718,7 @@ by path left the trash root and everything above it — writable by the same use
 re-resolved, so an ancestor swapped to a link after validation was followed. The walk is
 `pinned_fs.pin_parent`, not a second copy of it: that module exists so the mechanism is
 spelled once rather than per call site. `supports_pinned_tree_walk()` and
-`pinned_fs.dir_flags()` (aliased here as `_dir_open_flags`) come from the same place; what this module adds is only the three mutating
+`pinned_fs.dir_flags()` (aliased as `_dir_open_flags` in `session_storage_parts/pinned_delete.py`) come from the same place; what that owner adds is only the three mutating
 calls this path makes relative to a descriptor. The path walked is the RESOLVED one, so this
 cannot refuse an install whose data home legitimately sits behind a symlinked home
 directory.
@@ -1220,7 +1253,7 @@ no longer addressing.
 
 ## Constants
 
-`kiro_crew.session_storage` owns the trash layout, manifest schema, age policy, and mutation-lock constants; `kiro_crew.dashboard.handlers.session_storage` owns the request selection bound. Callers import those constants rather than duplicating their literals, so code and tests remain the source of truth when the policy changes.
+`kiro_crew.session_storage` owns the trash layout, manifest schema, age policy, and mutation-lock constants (defined in `src/kiro_crew/session_storage_parts/store_layout.py`); `kiro_crew.dashboard.handlers.session_storage` owns the request selection bound. Callers import those constants rather than duplicating their literals, so code and tests remain the source of truth when the policy changes.
 
 ## Known Limitations
 

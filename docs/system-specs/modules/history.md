@@ -2505,7 +2505,7 @@ POSIX the leaf is replaced relative to its pinned descriptor
 directory. A sidecar written by another hand under the data home cannot grow
 the gateway's memory past a legitimate one, nor reach the dashboard through a
 metadata field or a key, nor redirect a write. Session Storage
-(`session_storage.py`) counts the sidecar in the session's size and moves,
+(`session_storage_parts/`) counts the sidecar in the session's size and moves,
 restores and purges it with the transcript (`_unit_paths`, `_canonical_origin`
 accept `crew/.threads/<stem>.json`; the location is the one spelling
 `history.threads_sidecar_for_stem` gives). Because the sidecar is written under
@@ -2742,7 +2742,7 @@ Contract:
   orphan under a `.attachments.trash-*` name that nothing serves, logged at
   WARNING for the operator; it never fails the delete and never leaves a
   transcript pointing at missing pictures.
-- The Storage page's reclaim (`session_storage.py`) treats the directory as the
+- The Storage page's reclaim (`session_storage_parts/`) treats the directory as the
   session's third half: `_unit_paths` lists its files, so they are measured with
   the session, moved to the trash batch under `crew/<stem>.attachments/`, restored
   with it, and emptied with it; an image written recently keeps the session

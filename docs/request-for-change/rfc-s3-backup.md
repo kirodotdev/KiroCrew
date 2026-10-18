@@ -78,7 +78,7 @@ path in the repository wrote crew state to a remote store.
 
 **P1 — the bundle omits the conversations.** No component stages the transcript
 store `session_storage.py:7-10` documents (`<data home>/sessions/*.jsonl` +
-`sessions/archive/`, resolver `:277`; `<kiro home>/sessions/cli/<sid>.*`, resolver
+`sessions/archive/`, resolver `_crew_sessions_dir` in `session_storage_parts/store_layout.py`; `<kiro home>/sessions/cli/<sid>.*`, resolver
 `config/paths.py` (`kiro_sessions_dir`)). `uploads/` is excluded outright on the dashboard path
 (`EXCLUDE_DIRS` in `portability.py`) and absent from `CORE_FILES`; `artifacts/` is in neither.
 Measured on one install: 385 MB irreplaceable (322 MB transcripts, 28 MB uploads,
