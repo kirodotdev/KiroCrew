@@ -383,7 +383,13 @@ class TestUpThreadsTheBudget:
         monkeypatch.setattr(rt, "is_active", lambda cfg, n: was_active)
         monkeypatch.setattr(pod_cli, "_home_holds_state", lambda cfg, n: home_populated)
         monkeypatch.setattr(rt, "unit_state", lambda cfg, n: unit_state)
-        monkeypatch.setattr(rt, "recent_journal", lambda cfg, n, ln=30: "journal tail")
+        journal_calls: list[dict] = []
+        self._journal_calls = journal_calls
+        monkeypatch.setattr(
+            rt,
+            "recent_journal",
+            lambda cfg, n, ln=30, **kw: (journal_calls.append(kw), "journal tail")[1],
+        )
         monkeypatch.setattr(
             rt,
             "stop_pod",
@@ -393,6 +399,38 @@ class TestUpThreadsTheBudget:
         with pytest.raises(SystemExit):
             pod_cli._up(c, _ns(wait_secs=17))
         return audits, stops
+
+    def test_failure_journal_is_read_from_this_starts_mark(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The failure tail starts where THIS start began, not at an earlier boot.
+
+        The mark is taken before `start_pod`, so an earlier start's FATAL that is
+        still in the appended log files is not reported as this start's cause.
+        """
+        order: list[str] = []
+        mark = {"pod.out.log": 7, "pod.err.log": 3}
+        monkeypatch.setattr(rt, "journal_mark", lambda cfg, n: (order.append("mark"), mark)[1])
+        monkeypatch.setattr(
+            rt, "start_pod", lambda cfg, n: (order.append("start"), _cp(returncode=0))[1]
+        )
+        self._fail_up(tmp_path, monkeypatch, unit_state=("failed", 1))
+        assert order == ["mark", "start"]
+        assert self._journal_calls == [{"since": mark}]
+
+    def test_failure_journal_of_a_running_pod_is_the_whole_tail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No start, no mark: an already-active pod's tail is read as it stands."""
+        monkeypatch.setattr(rt, "journal_mark", lambda cfg, n: pytest.fail("no start, so no mark"))
+        self._fail_up(
+            tmp_path,
+            monkeypatch,
+            unit_state=("active", 0),
+            code=pod_cli.HEALTH_NO_CREDENTIAL,
+            was_active=True,
+        )
+        assert self._journal_calls == [{"since": None}]
 
     def test_an_unreadable_credential_does_not_destroy_a_running_pod(
         self,
@@ -506,7 +544,7 @@ class TestUpThreadsTheBudget:
         monkeypatch.setattr(rt, "is_active", lambda cfg, n: False)
         monkeypatch.setattr(pod_cli, "_home_holds_state", lambda cfg, n: True)
         monkeypatch.setattr(rt, "unit_state", lambda cfg, n: ("activating", 2))
-        monkeypatch.setattr(rt, "recent_journal", lambda cfg, n, ln=30: "journal tail")
+        monkeypatch.setattr(rt, "recent_journal", lambda cfg, n, ln=30, **_kw: "journal tail")
         monkeypatch.setattr(rt, "stop_pod", lambda cfg, n: _cp())
         monkeypatch.setattr(
             rt,

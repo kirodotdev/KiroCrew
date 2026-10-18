@@ -82,6 +82,7 @@ port, no tunnel, ``--no-crons``, and the refusal to bind the live port.
 from __future__ import annotations
 
 import contextlib
+import locale
 import os
 import subprocess
 import sys
@@ -1274,18 +1275,63 @@ def active_names(cfg: PodConfig) -> set[str]:
     return names
 
 
-def recent_journal(cfg: PodConfig, name: str, lines: int = 50) -> str:
-    """The journal stand-in: the tail of this pod's own stderr/stdout files."""
+def journal_mark(cfg: PodConfig, name: str) -> dict[str, int]:
+    """Where the next start's output begins in each pod log file.
+
+    The wrapper appends (``>>``) every boot to the same two files, so a tail
+    read after a failed start also returns earlier starts' lines. Taken just
+    before ``start``, this mark lets ``recent_journal`` return only what the
+    current start wrote. A missing file marks at 0.
+    """
+    mark: dict[str, int] = {}
+    for path in log_paths(cfg, name):
+        try:
+            mark[path.name] = path.stat().st_size
+        except OSError:
+            mark[path.name] = 0
+    return mark
+
+
+def _read_since(path: Path, offset: int) -> str:
+    """Text appended to *path* past *offset*; the whole file if it shrank."""
+    with path.open("rb") as fh:
+        if fh.seek(0, os.SEEK_END) >= offset:
+            fh.seek(offset)
+        else:
+            fh.seek(0)
+        data = fh.read()
+    return data.decode(locale.getpreferredencoding(False), errors="replace")
+
+
+def recent_journal(
+    cfg: PodConfig, name: str, lines: int = 50, since: dict[str, int] | None = None
+) -> str:
+    """The journal stand-in: the tail of this pod's own stderr/stdout files.
+
+    With *since* (a ``journal_mark``), only lines written after that mark are
+    returned, so an earlier start's ``FATAL`` is never shown as this start's
+    cause.
+    """
     out_log, err_log = log_paths(cfg, name)
     chunks: list[str] = []
     for path in (err_log, out_log):
         try:
-            tail = path.read_text(errors="replace").splitlines()[-lines:]
+            if since is None:
+                text = path.read_text(errors="replace")
+            else:
+                text = _read_since(path, since.get(path.name, 0))
         except OSError:
             continue
+        tail = text.splitlines()[-lines:]
         if tail:
             chunks.append(f"== {path.name} ==\n" + "\n".join(tail))
     if not chunks:
+        if since is not None:
+            return (
+                f"no pod log from this start at {err_log.parent}: the boot wrote "
+                "nothing before it ended. Earlier starts' output is in "
+                f"`kirocrew pod logs {name}` and is not the cause of this one."
+            )
         return (
             f"no pod log yet at {err_log.parent} — Task Scheduler has no journal, "
             "so a pod that never started writes nothing here."
