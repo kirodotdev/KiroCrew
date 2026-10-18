@@ -327,7 +327,7 @@ describe('MobileConnectModal — paints above the chat chrome, below the takeove
 
   it('the dialog layer sits above every chat-chrome layer', () => {
     mount(['login_link'])
-    const appSrc = readSource('App.tsx')
+    const appSrc = ['App.tsx', 'shell/appShell.tsx', 'shell/topbar/shellHeader.tsx', 'shell/nav/navRail.tsx', 'shell/nav/navRow.tsx'].map(f => readSource(f)).join('\n')
     // The sessions flyout and its drawer morph.
     const flyout = zLayers(readSource('pages', 'chat', 'SessionFlyout.tsx'))
     expect(flyout.length).toBeGreaterThan(0)
@@ -383,7 +383,7 @@ describe('MobileConnectModal — paints above the chat chrome, below the takeove
     // its z would hit-test every nav-row click, making a tab take two clicks
     // (one to dismiss, one to navigate). Read the rail's OWN className line —
     // and fail loudly if that line stops declaring a z.
-    const railLines = readSource('App.tsx')
+    const railLines = ['App.tsx', 'shell/appShell.tsx', 'shell/topbar/shellHeader.tsx', 'shell/nav/navRail.tsx', 'shell/nav/navRow.tsx'].map(f => readSource(f)).join('\n')
       .split('\n')
       .filter(line => line.includes('focus-chrome-rail') && line.includes('className='))
     expect(railLines).toHaveLength(1)

@@ -391,6 +391,7 @@
     "update_failed_2": "更新失败",
     "update_now": "立即更新",
     "updates": "项更新",
+    "subagents_in_flight_fallback": "子代理运行中",
     "updating_kirocrew": "正在更新 {{productName}}…",
     "v": "v",
     "view_full_changelog": "▸ 查看完整更新日志",

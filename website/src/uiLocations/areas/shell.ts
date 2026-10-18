@@ -70,7 +70,7 @@ export const LOCATIONS = {
       requires: [{ kind: 'condition', id: 'search_bar_unclaimed' }],
     }],
   },
-  // The rail's bottom block (App.tsx `navBody`) is ONE fragment the shell draws
+  // The rail's bottom block (navRail.tsx `navBody`) is ONE fragment the shell draws
   // either as the desktop rail or, on a phone, inside the nav drawer the menu
   // button opens. So each row below is one site with two placements: the
   // desktop rail, and the drawer under shell.mobile-menu (whose phone and

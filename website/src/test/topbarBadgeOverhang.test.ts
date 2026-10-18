@@ -50,7 +50,7 @@ describe('topbar unread badge overhang', () => {
     // the first time. And the badge's glow shadow extends past the badge box, so
     // a reserve that only admits the box still clips the glow — the blur radius
     // must fit inside the reserve too.
-    const app = await read('App.tsx')
+    const app = (await Promise.all(['App.tsx', 'shell/appShell.tsx', 'shell/topbar/shellHeader.tsx', 'shell/nav/navRail.tsx', 'shell/nav/navRow.tsx'].map(read))).join('\n')
     const badge = app.match(/className="absolute (-top-\S+) (-right-\S+)[^"]*"/)
     expect(badge, 'expected the bell badge span').not.toBeNull()
     // Tailwind spacing: `-top-1` / `-right-1` are 0.25rem = 4px.

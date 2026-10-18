@@ -239,7 +239,7 @@ export function NavToggle({ collapsed, expanded, hiddenCount, onClick }: {
       onBlur={hideTip}
     >
       <span className="w-4 h-4 flex items-center justify-center shrink-0 opacity-70"><Icon size={16} /></span>
-      {/* Same reason as the nav-item label in `App.tsx`'s `NavItem`: clipped by `whitespace-nowrap
+      {/* Same reason as the nav-item label in `navRow.tsx`'s `NavItem`: clipped by `whitespace-nowrap
           overflow-hidden`, so the full string lives on `aria-label` (not `title` — see the
           getByTitle collision note on the NavItem span). */}
       {!collapsed && (

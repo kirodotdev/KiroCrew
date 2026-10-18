@@ -407,7 +407,7 @@ ships in the edition's own overlay: this seam contributes only the picker entry.
 (core wins).
 
 **Theme branding reaches three consumers.** `getThemeBranding(colorTheme)` drives
-the shell chrome (resolved once in `shell/branding.ts`, which `App.tsx`'s header
+the shell chrome (resolved once in `shell/branding.ts`, which the shell's header
 and rail read), `WelcomeView.tsx` (the new-session brand mark), and
 `pages/chat/ChatFooter.tsx` (the turn-running loader). A registered theme's `logo`
 shows in the first two, falling back to the stock ghost mark when the theme
@@ -425,7 +425,7 @@ core has no per-theme favicon and falls back to `/logo.png`.
 mounts a status segment INSIDE the header's readout capsule, sharing its border,
 `|` dividers, and offline tint, rather than as a standalone sibling pill. Choose
 this over `registerTopBarWidgets` when the readout must join that grouping (a
-credential-TTL or spend segment, say). `App.tsx` splices registered segments after
+credential-TTL or spend segment, say). `shell/topbar/shellHeader.tsx` splices registered segments after
 the core segments in ascending `order`; each renders with an `offline` prop and is
 isolated in its own `ErrorBoundary` with `fallback={null}`. A segment must not
 change its size in response to the header's collapse classes (`tbl-N` / `tbr-N`)

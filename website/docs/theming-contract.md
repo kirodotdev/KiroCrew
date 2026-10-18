@@ -320,7 +320,7 @@ rule aimed at anything else never reaches the document.
 
 | Class | Where it is applied |
 |---|---|
-| `topbar` | the header shell (`App.tsx`) |
+| `topbar` | the header shell (`shell/topbar/shellHeader.tsx`) |
 | `sidebar` | the conversation-list cards: the chat session list (`ChatSidebar.tsx`) and the Crew Members roster (`members/MembersPageRoster.tsx`), both via `LIST_SHELL_CLS` in `components/listShell.ts` |
 | `chat-container` | the chat scroll region (`pages/chat/TranscriptScrollShell.tsx`) |
 | `message-bubble` | a user or assistant turn (`chat/UserMessage.tsx`, `chat/AssistantMessage.tsx`) |

@@ -430,6 +430,7 @@
     "update_failed_2": "Обновление не удалось",
     "update_now": "Обновить сейчас",
     "updates": "обновления",
+    "subagents_in_flight_fallback": "субагентов в работе",
     "updating_kirocrew": "Обновление {{productName}}…",
     "v": "v",
     "view_full_changelog": "▸ Показать полный журнал изменений",

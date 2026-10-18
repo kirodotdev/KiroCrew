@@ -85,7 +85,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   const { data: desktop } = useQuery<UpdateState | null>({
     queryKey: ['update-state'],
     queryFn: () => null,
-    enabled: false, // populated by useUpdateSubscription (App.tsx)
+    enabled: false, // populated by useUpdateSubscription (shell/appShell.tsx)
     staleTime: Infinity,
   })
 

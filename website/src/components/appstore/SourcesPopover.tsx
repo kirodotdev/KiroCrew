@@ -39,7 +39,7 @@ export default function SourcesPopover({ open, onOpenChange, onError, onInstalle
       recordEvent('app_install', { app: installedName, source: 'local' })
       setInstallPath('')
       // Cache invalidation (['apps'] + ['registry']) is owned by the
-      // mc:apps-changed listener in App.tsx, for every dispatch site at once.
+      // mc:apps-changed listener in shell/appShell.tsx, for every dispatch site at once.
       window.dispatchEvent(new Event('mc:apps-changed'))
       onInstalled?.(installedName)
       onOpenChange(false)

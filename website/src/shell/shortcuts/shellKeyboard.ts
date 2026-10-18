@@ -46,7 +46,7 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const toggleShortcutsModal = useCallback(() => setShortcutsOpen(p => !p), [])
   // Search Everywhere command palette — global double-Shift / ⌘K
-  // trigger + open state. Mounted once at the app shell (`App.tsx`).
+  // trigger + open state. Mounted once at the app shell (`shell/appShell.tsx`).
   const commandPalette = useCommandPalette()
   const newChatMutation = useMutation({
     mutationFn: () => dispatch(createSlot(undefined)).unwrap(),

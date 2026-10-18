@@ -99,6 +99,7 @@
     "gateway_offline_session_expired_see_banner_above": "[Ğàţèẁàý øƒƒĺìñè — şèşşìøñ èẋþìŕèð, şèè ƀàññèŕ àƀøṽè ··················]",
     "signed_in_with": "[Şìğñèð ìñ ẁìţĥ {{provider}} ··············]",
     "updates": "[ùþðàţèş ···········]",
+    "subagents_in_flight_fallback": "[şùƀàğèñţş ìñ ƒĺìğĥţ ·················]",
     "installing_packages": "[Ìñşţàĺĺìñğ þàçķàğèş ·················]",
     "pulling_latest_changes": "[Þùĺĺìñğ ĺàţèşţ çĥàñğèş ···············]",
     "rebuilding_package": "[Ŕèƀùìĺðìñğ þàçķàğè ················]",

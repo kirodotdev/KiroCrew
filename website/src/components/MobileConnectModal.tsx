@@ -102,7 +102,7 @@ export default function MobileConnectModal({
 
   // Two sibling layers, the same split Modal.tsx uses for its backdrop and
   // dialog wrapper. The BACKDROP stays on the chat-pane ceiling (z-50): the
-  // desktop nav rail (App.tsx, `focus-chrome-rail`) is a DOM-later z-50 sibling
+  // desktop nav rail (navRail.tsx, `focus-chrome-rail`) is a DOM-later z-50 sibling
   // in the shell's stacking context, so it wins the tie and stays clickable —
   // a nav-row click both dismisses (the outside-pointerdown handler above) and
   // navigates. The DIALOG LAYER sits at z-[65]: ABOVE every piece of chat

@@ -77,7 +77,7 @@ export default function MigrationPage() {
     mutationFn: (_vars: { thenInstall: boolean }) => api.migrateCleanup(name!),
     onSuccess: (data: { notice?: string }, { thenInstall }) => {
       // Cache invalidation (['apps'] + ['registry']) is owned by the
-      // mc:apps-changed listener in App.tsx, for every dispatch site at once.
+      // mc:apps-changed listener in shell/appShell.tsx, for every dispatch site at once.
       window.dispatchEvent(new Event('mc:apps-changed'))
       if (typeof data?.notice === 'string' && data.notice) {
         setInstallPending(thenInstall)

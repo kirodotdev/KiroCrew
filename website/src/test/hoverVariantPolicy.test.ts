@@ -123,7 +123,7 @@ const TOUCH = /\[@media\(hover:none\)\]:|HOVER_NONE_ACTIONS_ROW_CLS|HOVER_NONE_A
  *  inside a button that is itself always visible, or a hover tooltip. On touch
  *  these simply do not appear. Keyed by file and a snippet of the line. */
 const DECORATIVE: Array<[file: string, snippet: string, why: string]> = [
-  ['App.tsx', 'group-hover/nav:opacity-100 group-focus-visible/nav', 'keyboard-shortcut chord hint on a nav link'],
+  ['shell/nav/navRow.tsx', 'group-hover/nav:opacity-100 group-focus-visible/nav', 'keyboard-shortcut chord hint on a nav link'],
   ['apps/spec-builder/components/SpecDetail.tsx', '<Pencil size={11}', 'edit glyph inside the always-visible title button'],
   ['components/ChatInput.tsx', 'group-hover/drag:opacity-100', 'resize-grip bar; the drag handle itself stays in place'],
   ['components/CopyBranchButton.tsx', 'group-hover/branch:opacity-70', 'copy glyph inside the always-visible branch button'],

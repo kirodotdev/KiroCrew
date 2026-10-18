@@ -271,10 +271,10 @@ describe('the remaining scope owners (phase 3)', () => {
     ['shell.terminal-panel', '../components/BottomTerminalPanel.tsx'],
     ['members.roster', '../pages/members/MembersPage.tsx'],
     ['members.roster-phone', '../pages/members/MembersPage.tsx'],
-    ['menu:shell.mobile-menu', '../App.tsx'],
+    ['menu:shell.mobile-menu', '../shell/appShell.tsx'],
   ]
   const listed = import.meta.glob(
-    ['../components/ChatInput.tsx', '../pages/ChatPage.tsx', '../shell/nav/railChrome.tsx', '../components/BottomTerminalPanel.tsx', '../pages/members/MembersPage.tsx', '../App.tsx', '../pages/ChatSidebar.tsx'],
+    ['../components/ChatInput.tsx', '../pages/ChatPage.tsx', '../shell/nav/railChrome.tsx', '../components/BottomTerminalPanel.tsx', '../pages/members/MembersPage.tsx', '../shell/appShell.tsx', '../pages/ChatSidebar.tsx'],
     { query: '?raw', import: 'default', eager: true },
   ) as Record<string, string>
   // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings),

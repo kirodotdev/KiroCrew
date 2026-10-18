@@ -55,7 +55,7 @@ interface PopStep {
 }
 
 // Steps 3-5 anchor to real left-rail nav items (see `data-onboarding-nav`
-// on <NavItem> in App.tsx). The client's Sessions surface is the Chat rail
+// on <NavItem> in shell/nav/navRow.tsx). The client's Sessions surface is the Chat rail
 // item (navId 'chat').
 const POPS: Record<number, PopStep> = {
   3: { navId: 'schedule', route: '/schedule' },

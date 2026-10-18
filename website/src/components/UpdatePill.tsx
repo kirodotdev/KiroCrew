@@ -41,7 +41,7 @@ export default function UpdatePill({ variant = 'pill' }: { variant?: 'pill' | 'm
   const { data: desktop } = useQuery<UpdateState | null>({
     queryKey: ['update-state'],
     queryFn: () => null,
-    enabled: false, // populated by useUpdateSubscription (App.tsx)
+    enabled: false, // populated by useUpdateSubscription (shell/appShell.tsx)
     staleTime: Infinity,
   })
 

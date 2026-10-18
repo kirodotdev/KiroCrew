@@ -16,7 +16,7 @@ const INDEX_FILE = path.resolve(__dirname, '../../../src/kiro_crew/docs/ui-index
 const index = JSON.parse(fs.readFileSync(INDEX_FILE, 'utf-8')) as { locations: Loc[]; labels: Record<string, Record<string, string>> }
 const byId = new Map(index.locations.map(l => [l.id, l]))
 const src = (rel: string) => fs.readFileSync(path.resolve(__dirname, rel), 'utf-8')
-const APP_SRC = src('../App.tsx')
+const APP_SRC = ['../App.tsx', '../shell/appShell.tsx', '../shell/topbar/shellHeader.tsx', '../shell/nav/navRail.tsx', '../shell/nav/navRow.tsx'].map(src).join('\n')
 const FEED_SRC = src('../components/notifications/NotificationFeed.tsx')
 const DETAIL_SRC = src('../components/notifications/NotificationDetailPanel.tsx')
 const TERMINAL_SRC = src('../components/BottomTerminalPanel.tsx')

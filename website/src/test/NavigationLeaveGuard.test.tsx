@@ -60,7 +60,7 @@ function CapabilitiesLike() {
 }
 
 /** The app shell's nav row, reduced to the one thing under test: it asks before
- *  it navigates, exactly as App.tsx's NavItem does. It lives OUTSIDE the layout,
+ *  it navigates, exactly as navRow.tsx's NavItem does. It lives OUTSIDE the layout,
  *  which is the whole reason the layout's own guard cannot answer for it. */
 function SidebarRow({ to, label }: { to: string; label: string }) {
   const navigate = useNavigate()

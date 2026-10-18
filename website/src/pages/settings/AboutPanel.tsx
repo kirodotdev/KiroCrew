@@ -335,7 +335,7 @@ export function AboutPanel() {
   const infoRefreshFailed = info !== undefined && infoQuery.isError
 
   // Desktop update lifecycle state, read from the shared cache that
-  // useUpdateSubscription (mounted in App.tsx) populates.
+  // useUpdateSubscription (mounted in shell/appShell.tsx) populates.
   const { data: updateState } = useQuery<UpdateState | null>({
     queryKey: ['update-state'],
     queryFn: () => null,

@@ -30,7 +30,7 @@ export function gatewayStopCommand(st: UpdateState | null | undefined): string |
  * Subscribes to the Electron main process's update lifecycle events and mirrors
  * each one into the shared ['update-state'] React Query cache.
  *
- * Must be mounted exactly once at the app root (App.tsx) so update events are
+ * Must be mounted exactly once at the app root (shell/appShell.tsx) so update events are
  * captured regardless of which page is visible. Both UpdateModal and the
  * Settings > About panel read from this cache — if the subscription lived only
  * inside About, the modal would never fire unless the user opened About first.

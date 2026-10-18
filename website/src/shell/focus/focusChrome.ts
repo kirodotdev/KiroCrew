@@ -42,7 +42,7 @@ export function useFocusChrome({ isMobile, navCollapsed, activeInstanceId, topRe
     // only a mousemove observed below the header band closes the bar, and event
     // silence (pointer resting on the draggable empty region, or dragging the
     // window) can never hide it. 42 is the header's height (its
-    // inline style in `App.tsx`); +6 slack so grazing the band's bottom edge does not
+    // inline style in `shell/topbar/shellHeader.tsx`); +6 slack so grazing the band's bottom edge does not
     // count as departure. In macOS fullscreen the header starts topReservePx
     // down the window, so the band moves down with it.
     departWhen: e => e.clientY > topReservePx + 48,

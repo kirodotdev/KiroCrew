@@ -96,7 +96,7 @@ function isSheetBackgroundPress(target: Element, e: MouseEvent): boolean {
  * The notification sheet the top-bar bell opens: its open/closing/closed phase,
  * the compositor slide, every dismissal path (the bell, an outside or background
  * press, Escape, a route change) and the once-per-selection auto-ack. The bell
- * button itself, and the unread badge on it, stay with the bell in `App.tsx`.
+ * button itself, and the unread badge on it, stay with the bell in `topbar/shellHeader.tsx`.
  */
 export function useNotificationSheet() {
   const location = useLocation()
@@ -105,7 +105,7 @@ export function useNotificationSheet() {
   const isMobile = useIsMobile()
   /**
    * ONE phase value, not an `open` + `closing` pair (mirrors the shell's mobile nav
-   * drawer in `App.tsx` and ChatPage's sessions drawer).
+   * drawer in `shell/nav/navRail.tsx`, its phase in `shell/appShell.tsx`, and ChatPage's sessions drawer).
    *
    * The pair was the defect: dismissal set `closing = true` AND `open = false`
    * in the same commit, while the sheet stayed on screen for the whole exit

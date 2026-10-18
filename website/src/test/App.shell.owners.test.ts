@@ -1,9 +1,10 @@
 /**
  * The app shell's composition contract.
  *
- * `App.tsx` is the composition root: the route table, the chrome markup the
- * read-only layout tests pin there, and the calls into the owners under
- * `src/shell/`. React runs a component's effects in declaration order, and a
+ * `App.tsx` is the composition root: the route table and the layout around the
+ * shell's views, which the read-only layout tests read together with the
+ * owners under `src/shell/`. Its first call, `useAppShell`, makes the calls into
+ * those owners. React runs a component's effects in declaration order, and a
  * custom hook's effects run where the hook is called, so the ORDER of those
  * calls is the order the shell's effects run in — the boot reads, the listener
  * registrations and the platform calls. Each call sits at the position of the
@@ -22,7 +23,7 @@ import { RailHeaderGlyph } from '../shell/nav/railChrome'
 import { metricColor } from '../utils/metricColor'
 
 const SRC = join(__dirname, '..')
-const APP = readFileSync(join(SRC, 'App.tsx'), 'utf8')
+const APP = ['App.tsx', 'shell/appShell.tsx', 'shell/topbar/shellHeader.tsx', 'shell/nav/navRail.tsx', 'shell/nav/navRow.tsx'].map(f => readFileSync(join(SRC, f), 'utf8')).join('\n')
 
 function* walk(dir: string): Generator<string> {
   for (const name of readdirSync(dir)) {
@@ -84,7 +85,7 @@ describe('app shell composition', () => {
     const installs = [...walk(SRC)].filter(f => readFileSync(f, 'utf8').includes('useWebSocket()'))
       .map(f => relative(SRC, f).replaceAll('\\', '/'))
       .filter(f => f !== 'hooks/useWebSocket.ts')
-    expect(installs).toEqual(['App.tsx'])
+    expect(installs).toEqual(['shell/appShell.tsx'])
   })
 
   it('keeps the facade exports and their identities', () => {

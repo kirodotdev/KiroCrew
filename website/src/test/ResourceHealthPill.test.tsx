@@ -4,7 +4,7 @@ import { render, screen } from '@testing-library/react'
 /**
  * Tests for the resource health indicator in the dashboard capsule.
  *
- * The indicator is inlined in App.tsx's capsule IIFE — we test it by
+ * The indicator is inlined in shellHeader.tsx's capsule IIFE — we test it by
  * rendering the capsule segment builder logic extracted into a minimal
  * harness that mirrors the imperative segments.push() pattern.
  *

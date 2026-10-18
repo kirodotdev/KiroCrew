@@ -351,6 +351,7 @@
     "gateway_offline_session_expired_see_banner_above": "Gateway offline — session expired, see banner above",
     "signed_in_with": "Signed in with {{provider}}",
     "updates": "updates",
+    "subagents_in_flight_fallback": "subagents in flight",
     "installing_packages": "Installing packages",
     "pulling_latest_changes": "Pulling latest changes",
     "rebuilding_package": "Rebuilding package",

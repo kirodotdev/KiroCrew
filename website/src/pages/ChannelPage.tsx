@@ -671,7 +671,7 @@ export default function ChannelPage() {
     }).catch(e => fail('pages.channelPage.failed_to_load_channel', e))
   }, [activeId, fail])
 
-  // Channel WS events dispatched via existing useWebSocket in App.tsx
+  // Channel WS events dispatched via existing useWebSocket in shell/appShell.tsx
   // Listen for custom events on window
   useEffect(() => {
     const handler = (e: Event) => {

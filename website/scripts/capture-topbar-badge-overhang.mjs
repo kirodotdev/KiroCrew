@@ -37,7 +37,7 @@ const BASE = process.argv[2] || 'http://127.0.0.1:6811'
 const OUT = process.argv[3] || '../temp-screenshots/topbar-badge-overhang'
 mkdirSync(OUT, { recursive: true })
 
-/** The badge offset in App.tsx: `-top-1 -right-1` = 0.25rem. The gutter in
+/** The badge offset in shellHeader.tsx: `-top-1 -right-1` = 0.25rem. The gutter in
  *  index.css must equal it. */
 const OVERHANG_PX = 4
 const WIDTHS = [390, 1280]

@@ -245,7 +245,7 @@ function CrewSwitcher() {
   )
 }
 
-/** Verbatim from App.tsx's NotificationsBellButton -- including the wrapper,
+/** Verbatim from shellHeader.tsx's NotificationsBellButton -- including the wrapper,
  *  whose `relative` is the badge's containing block. Kept byte-faithful on
  *  purpose: this harness exists to let the REAL stylesheet lay out the REAL
  *  class strings, and a paraphrased bell silently stops measuring the shipped
@@ -450,7 +450,7 @@ function TopBarMobile() {
           <span className="w-px h-3.5 bg-border shrink-0" />
           {/* The mobile metrics readout is a passive SPAN, not a button — the
               nowrap backstop must hold on it too, so the harness renders it
-              verbatim (App.tsx's isMobile && sysMetrics branch). The rarer
+              verbatim (shellHeader.tsx's isMobile && sysMetrics branch). The rarer
               resource-posture segment shares the same seg class recipe, so
               this span stands in for every span-shaped segment. */}
           <span data-seg className={`${seg} gap-2 text-[11px] font-mono tabular-nums`}>

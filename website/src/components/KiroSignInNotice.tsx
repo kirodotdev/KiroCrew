@@ -94,7 +94,7 @@ export default function KiroSignInNotice() {
   })
   const kas = cfgQuery.data?.agent?.acp_backend === KIRO_SIGN_IN_BACKEND
   // The shell's own outage surfaces: the offline capsule, and the banner that
-  // asks for a token. Same event pair App.tsx subscribes to, seeded from the
+  // asks for a token. Same event pair shell/appShell.tsx subscribes to, seeded from the
   // banner element (as in KiroPrerequisiteGate) rather than from api/client.
   const connected = useAppSelector(s => s.dashboard.connected)
   const [authRequired, setAuthRequired] = useState<boolean>(

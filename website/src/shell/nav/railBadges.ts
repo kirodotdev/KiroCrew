@@ -61,7 +61,7 @@ export function useRailBadges(approvalCount: number) {
   // fetch and both see the same shape): a passive cache read only ever fires
   // after a store page has populated the cache, which is the one place the
   // count is already visible — a badge that cannot appear in a fresh session
-  // does not do its job. `mc:apps-changed` invalidation (`App.tsx`) refetches it.
+  // does not do its job. `mc:apps-changed` invalidation (`shell/appShell.tsx`) refetches it.
   // `['apps']` stays a passive read: refreshAppNav in this shell already
   // writes it on every fetch.
   const { data: registryBadgeData } = useQuery({

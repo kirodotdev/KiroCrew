@@ -391,6 +391,7 @@
     "update_failed_2": "更新に失敗しました",
     "update_now": "今すぐ更新",
     "updates": "更新",
+    "subagents_in_flight_fallback": "サブエージェント実行中",
     "updating_kirocrew": "{{productName}} を更新中…",
     "v": "v",
     "view_full_changelog": "▸ チェンジログ全文を表示",

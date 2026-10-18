@@ -56,7 +56,7 @@ class MockWebSocket {
   }
 }
 
-/** The badge derivation from NotificationsBellButton (App.tsx): unacked,
+/** The badge derivation from NotificationsBellButton (shellHeader.tsx): unacked,
  *  non-passive, non-silenced rows. */
 const badgeCount = (items: Notification[]) =>
   items.filter(n => !n.acked && n.priority !== 'passive' && !n.silenced).length

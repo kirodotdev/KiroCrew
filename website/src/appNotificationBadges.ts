@@ -100,7 +100,7 @@ const PASSIVE_PRIORITY = 'passive'
  *
  * That definition is three clauses, not two, and it is written down in the
  * dashboard already: `!n.acked && n.priority !== 'passive' && !n.silenced`
- * (`App.tsx`, commented "mirroring the backend's `_unread_count` semantics";
+ * (`shell/topbar/shellHeader.tsx`, commented "mirroring the backend's `_unread_count` semantics";
  * the same predicate again in `hooks/useWebSocket.ts`, and an existing test
  * pins the expression). This mirrors it rather than inventing a variant.
  *

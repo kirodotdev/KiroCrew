@@ -404,6 +404,7 @@
     "update_failed_2": "Aktualisierung fehlgeschlagen",
     "update_now": "Jetzt aktualisieren",
     "updates": "Aktualisierungen",
+    "subagents_in_flight_fallback": "Subagenten laufen",
     "updating_kirocrew": "{{productName}} wird aktualisiert…",
     "v": "v",
     "view_full_changelog": "▸ Vollständiges Änderungsprotokoll anzeigen",

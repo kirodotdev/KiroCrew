@@ -18,7 +18,7 @@ import { join } from 'node:path'
  *  shorthand's `infinite` wins whenever the pulse rule comes later. */
 
 const SRC = join(__dirname, '..')
-const APP = readFileSync(join(SRC, 'App.tsx'), 'utf8')
+const APP = ['App.tsx', 'shell/appShell.tsx', 'shell/topbar/shellHeader.tsx', 'shell/nav/navRail.tsx', 'shell/nav/navRow.tsx'].map(f => readFileSync(join(SRC, f), 'utf8')).join('\n')
 
 const INFINITE_UTILITIES = /\banimate-(pulse|ping|bounce)\b/
 const BOUNDED = '[animation-iteration-count:3]!'

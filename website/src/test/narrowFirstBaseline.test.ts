@@ -198,7 +198,7 @@ describe('narrow-first layout baseline', () => {
     // page's own left edge, which is what made it read as indented on every page.
     // The RIGHT cluster keeps its own padding/negative-margin pair, which exists to
     // stop the notification badge's 4px overhang being clipped.
-    const app = await readFile(join(SRC, 'App.tsx'), 'utf8')
+    const app = (await Promise.all(['App.tsx', 'shell/appShell.tsx', 'shell/topbar/shellHeader.tsx', 'shell/nav/navRail.tsx', 'shell/nav/navRow.tsx'].map(f => readFile(join(SRC, f), 'utf8')))).join('\n')
     const cluster = app.match(/className=[^\n]*tb-left[^\n]*/)
     expect(cluster, 'App.tsx should render the tb-left cluster').toBeTruthy()
     expect(
@@ -310,7 +310,7 @@ describe('narrow-first layout baseline', () => {
     // than as literals, because every part of this failure is silent -- moving any one
     // number just makes the chrome look indented, which no overflow or scroll assertion
     // can see.
-    const app = await readFile(join(SRC, 'App.tsx'), 'utf8')
+    const app = (await Promise.all(['App.tsx', 'shell/appShell.tsx', 'shell/topbar/shellHeader.tsx', 'shell/nav/navRail.tsx', 'shell/nav/navRow.tsx'].map(f => readFile(join(SRC, f), 'utf8')))).join('\n')
     const header = app.match(/topbar topbar-glass relative pl-(\d+(?:\.\d+)?) /)
     expect(header, 'App.tsx should give the topbar an explicit left inset').toBeTruthy()
     const btn = app.match(/className="group p-(\d+(?:\.\d+)?) rounded-md bg-transparent[^\n]*aria-label=\{i18nT\('app\.open_menu'\)\}/)

@@ -379,7 +379,7 @@ A press on the bell sheet's own background dismisses it, like a press outside. I
 
 `website/src/components/notifications/NotificationBanner.tsx`, mounted once with
 the bell's sheet (`website/src/shell/notifications/notificationSheet.tsx`, which
-the bell button in `App.tsx` renders) and portalled beside it, shows a
+the bell button in `shell/topbar/shellHeader.tsx` renders) and portalled beside it, shows a
 macOS Notification Center-style card under the top bar for a **live**
 notification. The card body is `NotificationCard.tsx`, the ONE rendering the
 bell popover's mac rows and the banner both use (kind-tinted 26 px icon square,

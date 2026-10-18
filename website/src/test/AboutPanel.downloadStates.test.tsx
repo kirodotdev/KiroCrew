@@ -24,7 +24,7 @@ type UpdateState = Record<string, unknown>
  * Mount the panel and return a setter that publishes an update state.
  *
  * AboutPanel does NOT subscribe to the bridge itself: useUpdateSubscription is
- * mounted in App.tsx and writes every payload into the shared ['update-state']
+ * mounted in shell/appShell.tsx and writes every payload into the shared ['update-state']
  * React Query cache, which the panel reads with a disabled query. So the test
  * seeds that cache directly -- pushing through a locally-captured onState
  * callback would never reach the component.

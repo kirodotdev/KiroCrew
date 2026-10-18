@@ -27,7 +27,7 @@ type Counts = { announced: number; keepTarget: number; plain: number; reason: st
 
 /** file -> pinned counts. `reason` documents why the PLAIN sites stay silent. */
 const PINNED: Record<string, Counts> = {
-  'src/App.tsx': { announced: 2, keepTarget: 0, plain: 0, reason: 'popout nav-intent suppliers announce' },
+  'src/shell/appShell.tsx': { announced: 2, keepTarget: 0, plain: 0, reason: 'popout nav-intent suppliers announce' },
   'src/app-sdk/ChatPanel.tsx': { announced: 0, keepTarget: 0, plain: 1, reason: 'panel binds to a slot the host supplied programmatically' },
   'src/apps/auto-improvement/lib/agentSession.ts': { announced: 0, keepTarget: 0, plain: 2, reason: 'awaited unwrap() flows with their own catch/recovery' },
   'src/apps/command-bar/CommandBarOverlayRootRows.tsx': { announced: 2, keepTarget: 0, plain: 0, reason: 'attention row and recent row announce' },

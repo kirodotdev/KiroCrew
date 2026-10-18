@@ -2463,7 +2463,7 @@ file-tree-container{
 .tb-left{justify-content:flex-start;gap:.5rem}
 /* The actions group ends flush with the header's own padding edge, and the
    notification bell's unread badge is deliberately offset 4px past the button's
-   top-right corner (`-top-1 -right-1` in App.tsx). `overflow:hidden` clipped
+   top-right corner (`-top-1 -right-1` in shellHeader.tsx). `overflow:hidden` clipped
    exactly that overhang, squaring the badge's right edge off and cutting into a
    two-digit count.
    The padding reserves the overhang INSIDE the clip box (which is the padding
@@ -2714,7 +2714,7 @@ file-tree-container{
      this containing block rather than living in it.
 
      Two spellings on purpose, because focus mode drives this element's
-     `transform` from an INLINE style (see the header in App.tsx) which wins over
+     `transform` from an INLINE style (see the header in shellHeader.tsx) which wins over
      this rule -- so `translateZ(0)` is absent for exactly the case that animates
      hardest. `backface-visibility` promotes on its own and nothing writes it, so
      the glass keeps its layer while sliding. Neither declaration is visible to

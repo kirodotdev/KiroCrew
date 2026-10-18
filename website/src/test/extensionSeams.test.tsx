@@ -590,7 +590,7 @@ describe('builtinRegistry — route-shape guard', () => {
 })
 
 describe('extension slot isolation', () => {
-  // App.tsx wraps each registered extension render slot (top-bar decoration /
+  // The shell wraps each registered extension render slot (top-bar decoration /
   // aside / widgets / theme overlays) in an ErrorBoundary with fallback={null},
   // so a throwing downstream contribution disables ONLY itself instead of
   // crashing the shell via the root boundary. This verifies that contract at

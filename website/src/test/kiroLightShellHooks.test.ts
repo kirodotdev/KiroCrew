@@ -42,7 +42,7 @@ const css = read('index.css')
 
 /** hook class -> the source that must render it, and the regex proving it does */
 const HOOKS: Record<string, { file: string[]; carries: RegExp }> = {
-  'focus-chrome-rail': { file: ['App.tsx'], carries: /className="focus-chrome-rail / },
+  'focus-chrome-rail': { file: ['shell', 'nav', 'navRail.tsx'], carries: /className="focus-chrome-rail / },
   // Carried by the shared list-shell recipe, which both the sessions sidebar and
   // the members roster mount (pinned below) — one string, two cards.
   'sidebar-inner': { file: ['components', 'listShell.ts'], carries: /export const LIST_SHELL_CLS = 'sidebar sidebar-inner / },

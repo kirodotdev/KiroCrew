@@ -11,7 +11,7 @@ import ErrorNotice from './ErrorNotice'
  * In-app "update ready" modal for the packaged desktop app.
  *
  * Consumes the shared ['update-state'] query cache populated by the
- * useUpdateSubscription hook (mounted once in App.tsx). When an update has
+ * useUpdateSubscription hook (mounted once in shell/appShell.tsx). When an update has
  * finished downloading we surface this modal so the user can restart-and-
  * install on their terms. "Install Update & Restart App" calls back into Electron, which
  * stops the bundled gateway gracefully before ShipIt swaps the .app bundle,
@@ -38,7 +38,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
   const { data: update } = useQuery<UpdateState | null>({
     queryKey: ['update-state'],
     queryFn: () => null,
-    enabled: false, // populated by useUpdateSubscription (App.tsx)
+    enabled: false, // populated by useUpdateSubscription (shell/appShell.tsx)
     staleTime: Infinity,
   })
 

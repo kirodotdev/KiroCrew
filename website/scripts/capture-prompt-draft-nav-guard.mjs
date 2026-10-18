@@ -4,7 +4,7 @@
  *
  * The sibling harness (capture-prompt-draft-tab-guard.mjs) drives an isolated
  * capture entry, which is enough for the exits SidePanelLayout owns. This one
- * cannot: the exit under test is the GLOBAL SIDEBAR, which lives in App.tsx
+ * cannot: the exit under test is the GLOBAL SIDEBAR, which App.tsx mounts
  * around the whole router. So this drives the REAL BUILT SPA over serveDist with
  * every /api call stubbed -- the real sidebar, the real CapabilitiesPage, the
  * real PromptsTab, the real leave-guard channel between them, and no gateway.

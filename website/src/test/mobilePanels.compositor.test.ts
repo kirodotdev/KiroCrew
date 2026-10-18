@@ -5,7 +5,7 @@
  * transform / no projection under it"), and one half regressing alone
  * reintroduces a bug the other half was built around.
  *
- *  LEFT (App.tsx mobile nav drawer):
+ *  LEFT (the shell's mobile nav drawer, navRail.tsx):
  *   - the panel is a plain <nav> whose slide runs via animateDrawer — framer
  *     must not own a competing transform on it;
  *   - NavItem drops `layout` on mobile: a projection node under a
@@ -27,7 +27,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { readMembersPage } from './membersPageFamily'
 
-const app = readFileSync(resolve(__dirname, '../App.tsx'), 'utf8')
+const app = ['App.tsx', 'shell/appShell.tsx', 'shell/topbar/shellHeader.tsx', 'shell/nav/navRail.tsx', 'shell/nav/navRow.tsx'].map(f => readFileSync(resolve(__dirname, '..', f), 'utf8')).join('\n')
 // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so
 // the pins read the page and those owners.
 const PAGES_DIR = resolve(__dirname, '../pages')

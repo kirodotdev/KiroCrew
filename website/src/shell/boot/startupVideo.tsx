@@ -43,7 +43,7 @@ export function useStartupVideo({
   const { data: desktopUpdateState } = useQuery<UpdateState | null>({
     queryKey: ['update-state'],
     queryFn: () => null,
-    enabled: false, // populated by useUpdateSubscription, which `App.tsx` calls
+    enabled: false, // populated by useUpdateSubscription, which `shell/appShell.tsx` calls
     staleTime: Infinity,
   })
   const updateStaged = !!desktopUpdateState

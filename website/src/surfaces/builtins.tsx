@@ -75,7 +75,7 @@ registerBuiltinSurface({
   // Non-slot: count comes from the notifications panel.
   unreadSelector: selectUnacknowledgedNotificationCount,
   badgeLabel: 'notifications',
-  // Surfaced as the topbar bell (App.tsx NotificationsBellButton), not a rail
+  // Surfaced as the topbar bell (shellHeader.tsx NotificationsBellButton), not a rail
   // item. Route + badge + tab-title attention count stay wired via the
   // selectors above; only the left-rail entry is suppressed.
 })
@@ -223,7 +223,7 @@ registerBuiltinSurface({
   ...BUILTIN_SURFACE_NAV.settings,
   icon: <Settings size={16} />,
   // NOTE: the Settings nav dot (gateway update OR desktop update available)
-  // is hand-rolled in App.tsx's bottom-fixed section, which renders this row
+  // is hand-rolled in navRail.tsx's bottom-fixed section, which renders this row
   // directly (not via renderNavRow/NavBadge) -- a registry badge here would
   // be dead code.
 })

@@ -54,7 +54,7 @@ const RAIL_MX_EACH_PX = 2 * STEP_PX
 const RAIL_INNER_WIDTH = RAIL_TRACK_COLLAPSED - 2 * RAIL_MX_EACH_PX - 2 * RAIL_BORDER_PX
 /** The content-box corner radius: the border-box radius minus the border. */
 const CORNER_SQUARE = ROUNDED_XL_PX - RAIL_BORDER_PX
-/** The collapsed header container's top padding: `pt-2` = 8px (App.tsx). The
+/** The collapsed header container's top padding: `pt-2` = 8px (navRail.tsx). The
  *  glyph's TOP is pinned here — `justify-center` centres only the main
  *  (horizontal) axis, so a smaller box or a wider inset never lifts the top. */
 const HEADER_PT_PX = 2 * STEP_PX

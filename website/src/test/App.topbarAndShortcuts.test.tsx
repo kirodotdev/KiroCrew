@@ -1,6 +1,6 @@
 // App-level behaviour outside routing: the top bar's system metrics and Kiro
 // credits pill, the agent / reasoning effort / approval mode / model cycling
-// shortcuts, and two source contracts on App.tsx (the mobile nav drawer insets,
+// shortcuts, and two source contracts on the shell's source (the mobile nav drawer insets,
 // the single import-outcome notice mount). App.test.tsx covers routing; the
 // module mocks and the matchMedia / ResizeObserver stubs below are copied from it
 // word for word.
@@ -119,7 +119,7 @@ describe('mobile nav drawer insets', () => {
    *  jsdom applies no CSS, so a rendered assertion here would either need the
    *  whole mobile shell stood up or would pass against an empty rule. */
   function mobileDrawerClasses(): string[] {
-    const src = readFileSync(join(__dirname, '..', 'App.tsx'), 'utf8')
+    const src = ['App.tsx', 'shell/appShell.tsx', 'shell/topbar/shellHeader.tsx', 'shell/nav/navRail.tsx', 'shell/nav/navRow.tsx'].map(f => readFileSync(join(__dirname, '..', f), 'utf8')).join('\n')
     const drawer = src.slice(src.indexOf('key="mobile-nav-drawer"'))
     const cls = drawer.match(/className="([^"]+)"/)?.[1] ?? ''
     expect(cls, 'expected to find the mobile nav drawer className').not.toBe('')

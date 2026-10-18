@@ -38,7 +38,7 @@ function filterBrowsableBuiltins(apps: AppEntry[]): AppEntry[] {
 
 /**
  * Sidebar filter: returns apps that should appear in navigation.
- * This mirrors the logic in App.tsx refreshAppNav.
+ * This mirrors the logic in shell/appShell.tsx refreshAppNav.
  */
 function filterSidebarApps(apps: AppEntry[]): AppEntry[] {
   return apps.filter(a => a.enabled && (a.manifest?.ui?.pages?.length || 0) > 0)

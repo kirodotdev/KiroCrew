@@ -3459,7 +3459,7 @@ Two steps, and the generator fails on either one alone; then regenerate:
    `Item` today),
    each with its own rendered forwarding test, whose `afterEach` fails on any
    `data-ui-location` in the document not registered under that same id
-   (`unregisteredMarkers`, `src/test/guideTargets.ts`). `NavItem` (App.tsx) takes a fixed
+   (`unregisteredMarkers`, `src/test/guideTargets.ts`). `NavItem` (`shell/nav/navRow.tsx`) takes a fixed
    prop list and forwards only its typed `data-ui-location` prop (the one
    `uiLocation()` produces) to the row, pinned by
    `src/test/App.navItemUiLocation.test.tsx`; `SimpleSelect` likewise forwards

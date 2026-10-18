@@ -63,7 +63,7 @@ const SHELL_TAKEOVER_Z = 100
  */
 function chatChromeCeiling(): number {
   const flyout = zClasses(read('pages', 'chat', 'SessionFlyout.tsx'))
-  const app = read('App.tsx')
+  const app = ['App.tsx', 'shell/appShell.tsx', 'shell/topbar/shellHeader.tsx', 'shell/nav/navRail.tsx', 'shell/nav/navRow.tsx'].map(f => read(f)).join('\n')
   // The focus-peek layers (rail toggle included) are z-[N] classes.
   const peek = app
     .split('\n')

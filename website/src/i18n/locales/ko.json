@@ -391,6 +391,7 @@
     "update_failed_2": "업데이트 실패",
     "update_now": "지금 업데이트",
     "updates": "업데이트",
+    "subagents_in_flight_fallback": "서브에이전트 실행 중",
     "updating_kirocrew": "{{productName}} 업데이트 중…",
     "v": "v",
     "view_full_changelog": "▸ 전체 변경 내역 보기",

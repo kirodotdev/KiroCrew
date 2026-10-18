@@ -105,7 +105,7 @@ describe('notification attention count skips silenced / passive notes', () => {
   })
 
   it('agrees with the bell sheet, which already applied the rule', () => {
-    // App.tsx computes the bell/dock badge inline as
+    // shellHeader.tsx computes the bell/dock badge inline as
     // `!n.acked && n.priority !== 'passive' && !n.silenced`. The tab title and
     // the bell are two readouts of one number, so they must not disagree — that
     // divergence IS the defect, and asserting the two side by side pins it

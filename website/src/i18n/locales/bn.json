@@ -404,6 +404,7 @@
     "update_failed_2": "আপডেট ব্যর্থ হয়েছে",
     "update_now": "এখনই আপডেট করুন",
     "updates": "আপডেট",
+    "subagents_in_flight_fallback": "সাবএজেন্ট চলছে",
     "updating_kirocrew": "{{productName}} আপডেট করা হচ্ছে…",
     "v": "v",
     "view_full_changelog": "▸ পূর্ণ চেঞ্জলগ দেখো",

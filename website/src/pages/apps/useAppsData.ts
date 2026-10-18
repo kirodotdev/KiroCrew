@@ -160,7 +160,7 @@ export function pickFeatured(apps: RegistryApp[]): RegistryApp[] {
  * Announce an install-state change to the app shell.
  *
  * Neither ['apps'] nor ['registry'] is invalidated here: the mc:apps-changed
- * listener in App.tsx owns both caches, for every dispatch site at once.
+ * listener in shell/appShell.tsx owns both caches, for every dispatch site at once.
  */
 export function announceAppsChanged(): void {
   window.dispatchEvent(new Event('mc:apps-changed'))

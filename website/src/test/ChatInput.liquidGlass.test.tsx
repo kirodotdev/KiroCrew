@@ -246,7 +246,7 @@ describe('composer liquid glass', () => {
     // read as a white frame, not as light (issue #18314).
     expect(INDEX_CSS).toContain('.glass-accent { --glass-tint: color-mix(in srgb, var(--accent) 14%, var(--glass-tint-step)); --glass-band: color-mix(in srgb, var(--accent) 14%, var(--glass-band-plain)); }')
     expect(INDEX_CSS).toContain('.glass-warn { --glass-tint: color-mix(in srgb, var(--warn) 12%, var(--glass-tint-step)); --glass-band: color-mix(in srgb, var(--warn) 12%, var(--glass-band-plain)); }')
-    // The top bar's readout capsule while the gateway is offline (App.tsx).
+    // The top bar's readout capsule while the gateway is offline (shellHeader.tsx).
     expect(INDEX_CSS).toContain('.glass-danger { --glass-tint: color-mix(in srgb, var(--danger) 12%, var(--glass-tint-step)); --glass-band: color-mix(in srgb, var(--danger) 12%, var(--glass-band-plain)); }')
     // The neutral steps leave the band alone.
     expect(INDEX_CSS).toContain('.glass-faded { --glass-tint: color-mix(in srgb, var(--glass-tint-step) 55%, transparent); }')

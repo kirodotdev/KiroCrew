@@ -20,7 +20,7 @@ const page = [
   ...readdirSync(PAGES_DIR).filter(f => /^useChatPage.*\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
     .map(f => readFileSync(resolve(PAGES_DIR, f), 'utf8')),
 ].join('\n')
-const app = readFileSync(resolve(__dirname, '../App.tsx'), 'utf8')
+const app = ['App.tsx', 'shell/appShell.tsx', 'shell/topbar/shellHeader.tsx', 'shell/nav/navRail.tsx', 'shell/nav/navRow.tsx'].map(f => readFileSync(resolve(__dirname, '..', f), 'utf8')).join('\n')
 
 describe('transcript overlays do not take a touch selection', () => {
   it('marks the header overlay and the composer dock for selection-time inert', () => {

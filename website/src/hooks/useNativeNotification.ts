@@ -1,6 +1,6 @@
 /**
  * Fires a browser `Notification` whenever a new unacked notification lands in
- * the Redux store while the user is away from the window. Used by `App.tsx`
+ * the Redux store while the user is away from the window. Used by `shell/appShell.tsx`
  * to surface macOS notification-center toasts.
  *
  * This is the ONLY place a feed note becomes an OS toast. The socket layer's

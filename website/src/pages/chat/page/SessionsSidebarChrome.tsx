@@ -120,7 +120,7 @@ export default function SessionsSidebarChrome({
             key="sessions-backdrop"
             data-testid="sessions-backdrop"
             className="fixed inset-0 z-[46] bg-black/50 backdrop-blur-xs"
-            // ^ Frosted, matching every other scrim in the app (App.tsx's own
+            // ^ Frosted, matching every other scrim in the app (navRail.tsx's own
             // mobile nav backdrop is the same three classes). Kept adjacent to
             // `key` — the composer-chrome occlusion guard anchors its z-order
             // regex on that proximity. A full-viewport `backdrop-filter` does

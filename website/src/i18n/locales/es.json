@@ -417,6 +417,7 @@
     "update_failed_2": "Falló la actualización",
     "update_now": "Actualizar ahora",
     "updates": "actualizaciones",
+    "subagents_in_flight_fallback": "subagentes en curso",
     "updating_kirocrew": "Actualizando {{productName}}…",
     "v": "v",
     "view_full_changelog": "▸ Ver el registro de cambios completo",
