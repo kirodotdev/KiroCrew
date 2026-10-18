@@ -118,13 +118,15 @@ def _interactive_approval(
 
     is_background = source in _BACKGROUND_APPROVAL_SOURCES
     # Redacted and escaped once: a job name is user-authored, and Slack parses
-    # entity markup (a job named ``<!channel>`` would notify the channel).
+    # entity markup in the block text AND the top-level fallback text (a job
+    # named ``<!channel>`` would notify the channel from either sink).
     requester_md = ""
-    requester_plain = ""
+    requester_safe = ""
     if requester:
-        requester_plain, _ = redact_exfiltration_urls(redact(requester))
-        requester_plain, _ = redact_credentials(requester_plain)
-        requester_md = f"Requested by {escape_mrkdwn(requester_plain)}"
+        requester_safe, _ = redact_exfiltration_urls(redact(requester))
+        requester_safe, _ = redact_credentials(requester_safe)
+        requester_safe = escape_mrkdwn(requester_safe)
+        requester_md = f"Requested by {requester_safe}"
 
     async def _approve(event: LLMEvent, parent_session_key: str = "") -> bool:
         request_id = str(event.request_id)
@@ -426,8 +428,8 @@ def _interactive_approval(
                 title_safe, _ = redact_exfiltration_urls(event.title)
                 title_safe, _ = redact_credentials(title_safe)
                 fallback = f"🔐 [{source}] Approve: {title_safe}?"
-                if requester_plain:
-                    fallback += f" ({requester_plain})"
+                if requester_safe:
+                    fallback += f" ({requester_safe})"
                 approval_ts = await self.slack.post_blocks(
                     channel, blocks, fallback, thread_ts  # type: ignore[arg-type]
                 )

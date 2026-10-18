@@ -131,6 +131,9 @@ async def test_a_job_name_cannot_inject_slack_markup_or_leak_a_secret() -> None:
     _channel, blocks, fallback, _thread = gw.slack.post_blocks.await_args.args
     line = _texts(blocks)[-1]
     assert "<!channel>" not in line and "&lt;!channel&gt;" in line
+    # The top-level text drives notifications and block-less clients, so it is
+    # an entity sink too.
+    assert "<!channel>" not in fallback and "&lt;!channel&gt;" in fallback
     assert token not in line and token not in fallback
     assert token not in gw.slack.update_message.await_args.kwargs["text"]
 
