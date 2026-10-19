@@ -285,6 +285,40 @@ class TestFirstPrinciplesOneStatementPerProblem:
         assert "It is the\nLAST line of the entry" in contract
 
 
+class TestFirstPrinciplesExistenceLadder:
+    """A grep of this repository cannot see work the standard library, the
+    runtime or an installed dependency already does, so a hand-written
+    `deepClone` beside the browser's `structuredClone` reads as `justified`.
+    The existence lens climbs a ladder instead."""
+
+    def test_the_existence_lens_climbs_repo_then_platform_then_dependency(self) -> None:
+        flat = " ".join(_fp_contract().split())
+        lens = flat.split("4. PER ITEM -- DOES IT ALREADY EXIST")[1].split("5. PER ITEM")[0]
+        assert "stop at the first rung" in lens
+        assert (
+            lens.index("(a) THIS REPOSITORY")
+            < lens.index("(b) THE STANDARD LIBRARY OR THE PLATFORM")
+            < lens.index("(c) A DEPENDENCY ALREADY DECLARED")
+        )
+        # The platform rung is model knowledge, not a grep, so it is bounded
+        # to a runtime the code already runs on and skipped otherwise; a
+        # wrong recollection of a platform API must not hold a merge.
+        assert "only for a runtime the touched code already runs on" in lens
+        assert "when you cannot read that, skip this rung" in lens
+        # What an API or a dependency does is recall, not a grep, so only an
+        # in-repository duplicate can BLOCK, here and in the BLOCK list alike.
+        assert (
+            "a rung (b) or (c) duplicate reaches CONCERNS at most and is never the duplicate that BLOCKs"
+            in lens
+        )
+        verdicts = flat.split("VERDICT (advisory")[1].split("Tie-breaker:")[0]
+        assert (
+            "an existing mechanism you can name in this repository (lens 4's rung (a); "
+            "a rung (b) or (c) duplicate stays at CONCERNS)" in verdicts
+        )
+        assert "A NEW dependency added for a few lines" in lens
+
+
 class TestFirstPrinciplesShellSyntax:
     """Parse-check every `run:` block in both lanes.
 

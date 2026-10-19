@@ -2131,9 +2131,11 @@ and it does not outweigh the relearning cost every existing user pays.
   from a constraint you can point at, or *inherited* from convention, symmetry, "for
   flexibility"? Reasoning by analogy is named and rejected explicitly, because
   analogy is how an unnecessary feature enters a codebase looking reasonable.
-- **Does it already exist?** A grep for the mechanism that already does this job. A
-  second spelling of one capability is a finding even when no code is duplicated,
-  because both spellings must then be maintained and will diverge.
+- **Does it already exist?** A ladder, first rung that holds: this repository (a
+  grep for the mechanism that already does this job), then the standard library or
+  an API the runtime already ships, then a dependency already declared. A second
+  spelling of one capability is a finding even when no code is duplicated, because
+  both spellings must then be maintained and will diverge.
 - **Does it fix the cause?** Each item is placed on a named chain — **symptom**
   (patched where it was observed), **mechanism** (the code that produced it), or
   **cause** (the decision or invariant gap that let it misbehave). Symptom-level

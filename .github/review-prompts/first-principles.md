@@ -194,15 +194,28 @@ rather than inventing a justification for it.
    An item whose harm you cannot name in one sentence fails all of
    these at once; say so plainly.
 
-4. PER ITEM -- DOES IT ALREADY EXIST (mechanical): Grep the repository
-   for a mechanism that already does this job -- a sibling helper, an
-   existing config key, an existing component or hook, an existing
-   skill, an existing CLI path. If one exists, decide whether the new
-   item is MEANINGFULLY different or merely a SECOND SPELLING of the
-   same capability. A second spelling is a finding even when no code
-   is duplicated, because both spellings must then be maintained and
-   will diverge. Name the existing symbol and its path; the
-   subtraction is "use that one".
+4. PER ITEM -- DOES IT ALREADY EXIST (mechanical): climb this ladder
+   and stop at the first rung that already does this job:
+   (a) THIS REPOSITORY -- Grep for a sibling helper, an existing config
+       key, an existing component or hook, an existing skill, an
+       existing CLI path;
+   (b) THE STANDARD LIBRARY OR THE PLATFORM -- the language's standard
+       library, or an API the runtime itself ships (the browser,
+       Electron, Node, CPython, the OS). Claim this rung only for a
+       runtime the touched code already runs on; when you cannot read
+       that, skip this rung;
+   (c) A DEPENDENCY ALREADY DECLARED in pyproject.toml or a
+       package.json. A NEW dependency added for a few lines that rung
+       (b) or (c) already covers is itself a finding.
+   If a rung holds, decide whether the new item is MEANINGFULLY
+   different or merely a SECOND SPELLING of the same capability. A
+   second spelling is a finding even when no code is duplicated,
+   because both spellings must then be maintained and will diverge.
+   Name the existing symbol and its path (or the standard-library or
+   platform API); the subtraction is "use that one". What an API or a
+   dependency does rests on what you know rather than what you
+   grepped, so a rung (b) or (c) duplicate reaches CONCERNS at most
+   and is never the duplicate that BLOCKs.
 
 5. PER ITEM -- CONSUMER COUNT (mechanical): for the surface this item
    introduces -- each new public field, config key, enum value, flag,
@@ -396,7 +409,9 @@ VERDICT (advisory -- pick exactly one):
   carries one of the premise risks above, or when it ships a
   non-trivial surface of its own; a harm-free rider is inventory.
 - BLOCK: an item's zero option costs nobody anything; or it duplicates
-  an existing mechanism you can name; or it adds one-way-door surface
+  an existing mechanism you can name in this repository (lens 4's
+  rung (a); a rung (b) or (c) duplicate stays at CONCERNS); or it
+  adds one-way-door surface
   with ZERO counted consumers; or the change sits at SYMPTOM level
   while you can name the reachable, in-scope cause; or the framing is
   contradicted by the diff (a deleted pin recast as "a gap" with no
