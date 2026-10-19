@@ -227,11 +227,14 @@ class TestDoctorKasBundle:
         _floor_monkeypatch.setattr(
             cli_doctor.KiroCrewConfig, "load", classmethod(lambda cls: self._Cfg())
         )
-        # A kiro-cli resolver that would fail the test if consulted.
+        # No kiro-cli on the host, the route's point. Only the auto-approve row
+        # looks one up, through the writer's predicate (an installed kiro-cli
+        # reads the same specs); the doctor's own resolver must not be asked.
+        _floor_monkeypatch.setattr("kiro_crew.kiro_cli.resolve_kiro_cli", lambda: None)
         _floor_monkeypatch.setattr(
             cli_doctor,
             "resolve_kiro_cli",
-            lambda: pytest.fail("kiro-cli consulted on bundle route"),
+            lambda: pytest.fail("kiro-cli resolved by the doctor on the bundle route"),
         )
         _floor_monkeypatch.setattr(cli_doctor, "_report_kas_spec_permissions", lambda issues: None)
         _floor_monkeypatch.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: False)
@@ -249,16 +252,39 @@ class TestDoctorKasBundle:
         assert issues == ["agent.kas_bundle is on but no KAS engine bundle is installed"]
         assert "relay:" not in out
 
-    def test_an_installed_engine_prints_the_exact_spawn_argv(self, monkeypatch, capsys, tmp_path):
+    def test_nothing_installed_reports_the_block_withheld_without_a_second_issue(
+        self, monkeypatch, capsys
+    ):
+        """No engine is an unknown version to the writer's gate, so the block is
+        withheld; the row says so, and the bundle row already names the fix."""
         from kiro_crew.agent_sdk import kas_bundle
 
-        installed = kas_bundle.InstalledKasBundle(
-            version="0.66.33",
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert (
+            "auto-approve: ⚠  spec `permissions` block withheld: no engine bundle installed" in out
+        )
+        assert "kiro-cli" not in out
+        assert len(issues) == 1
+
+    @staticmethod
+    def _installed(tmp_path, version: str):
+        from kiro_crew.agent_sdk import kas_bundle
+
+        return kas_bundle.InstalledKasBundle(
+            version=version,
             node_version="22.23.3",
             root=tmp_path,
             node_bin=tmp_path / "node" / "bin" / "node",
             acp_server=tmp_path / "bundle" / "acp-server.js",
         )
+
+    def test_an_installed_engine_prints_the_exact_spawn_argv(self, monkeypatch, capsys, tmp_path):
+        from kiro_crew.agent_sdk import kas_bundle
+
+        installed = self._installed(tmp_path, "0.66.33")
         monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: installed)
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
@@ -269,6 +295,90 @@ class TestDoctorKasBundle:
         assert "auth owner:  Kiro Crew vault" in out
         assert "not signed in" in out
         assert issues == []
+
+    def test_the_pinned_engine_reports_the_block_written_from_the_engine_gate(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """The row is the writer's own rule (``engine_spec_permissions_supported`` on
+        the installed engine's version), and with no kiro-cli installed its version
+        is never asked."""
+        from kiro_crew.agent_sdk import kas_bundle
+
+        installed = self._installed(tmp_path, kas_bundle.KAS_PIN_VERSION)
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: installed)
+        monkeypatch.setattr(
+            cli_doctor,
+            "installed_kiro_cli_version",
+            lambda: pytest.fail("kiro-cli version asked on the bundle route"),
+        )
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert (
+            "auto-approve: ✅ spec `permissions` block written"
+            f" (the bundled engine KAS {kas_bundle.KAS_PIN_VERSION} reads it)"
+        ) in out
+        assert "kiro-cli" not in out
+        assert issues == []
+
+    def test_an_engine_below_the_floor_reports_the_block_withheld(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        from kiro_crew.agent_sdk import kas_bundle
+
+        installed = self._installed(tmp_path, "0.66.32")
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: installed)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        floor = ".".join(str(p) for p in kas_bundle.KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION)
+        assert f"auto-approve: ❌ withheld: the bundled engine KAS 0.66.32 is below {floor}" in out
+        assert kas_bundle.KAS_VERSION_OVERRIDE_ENV in out
+        assert issues == ["the bundled KAS engine is too old to carry the KAS `permissions` block"]
+
+    @pytest.mark.parametrize("cli_version", [(2, 10, 0), None], ids=["old", "unknown"])
+    def test_an_installed_kiro_cli_that_refuses_withholds_the_block(
+        self, monkeypatch, capsys, tmp_path, cli_version
+    ):
+        """kiro-cli reads the same specs, so the switch alone does not let the block
+        through: the row names kiro-cli and its fix, not the engine."""
+        from kiro_crew.agent_sdk import kas_bundle
+
+        installed = self._installed(tmp_path, kas_bundle.KAS_PIN_VERSION)
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: installed)
+        monkeypatch.setattr("kiro_crew.kiro_cli.resolve_kiro_cli", lambda: "/opt/kiro/bin/kiro-cli")
+        monkeypatch.setattr(cli_doctor, "installed_kiro_cli_version", lambda: cli_version)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        shown = "unknown" if cli_version is None else "2.10.0"
+        assert f"auto-approve: ❌ withheld: kiro-cli ({shown}) is installed" in out
+        assert "block written" not in out
+        assert issues == ["kiro-cli is installed but cannot carry the KAS `permissions` block"]
+
+    @pytest.mark.parametrize("cli_version", [None, (2, 10, 0), (2, 23, 0)])
+    @pytest.mark.parametrize("cli_present", [False, True])
+    def test_the_row_agrees_with_the_writer_on_every_version(
+        self, monkeypatch, tmp_path, cli_present, cli_version
+    ):
+        """Doctor and writer share the same predicates, so they cannot drift apart.
+        The doctor reads the installed kiro-cli's version through its own import
+        only to print it, so both names are pinned to the same answer."""
+        from kiro_crew.agent_materialization import auto_approve
+        from kiro_crew.agent_sdk import kas_bundle
+
+        monkeypatch.setattr("kiro_crew.agent_sdk.backend_install._kas_bundle_route", lambda: True)
+        binary = "/opt/kiro/bin/kiro-cli" if cli_present else None
+        monkeypatch.setattr("kiro_crew.kiro_cli.resolve_kiro_cli", lambda: binary)
+        for owner in ("kiro_crew.cli_doctor", "kiro_crew.kiro_cli"):
+            monkeypatch.setattr(f"{owner}.installed_kiro_cli_version", lambda: cli_version)
+        for version in (None, "0.66.32", kas_bundle.KAS_PIN_VERSION, "1.2.3"):
+            installed = None if version is None else self._installed(tmp_path, version)
+            monkeypatch.setattr(kas_bundle, "installed_bundle", lambda i=installed: i)
+            issues: list[str] = []
+            cli_doctor._report_kas_bundle_spec_permissions(version, issues)
+            written = auto_approve._spec_permissions_accepted()
+            assert (issues == []) is (written or version is None)
 
 
 class TestDoctorKas:

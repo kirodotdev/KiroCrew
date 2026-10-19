@@ -9,8 +9,8 @@ plain data crosses: paths, version strings, the installer's error text.
 Importing this module is cheap by design. ``kirocrew``'s argument parser imports
 ``cli_kas`` while it is built, and the dashboard's route registrar imports the
 handler, both before the gateway is ready and whether or not ``agent.kas_bundle``
-is on. Only the pin (two constants and an env lookup) is imported eagerly; the
-installer -- tarfile, zipfile, subprocess, urllib and the data-home resolver --
+is on. Only the pin (its constants, an env lookup and the engine's spec
+``permissions`` gate) is imported eagerly; the installer -- tarfile, zipfile, subprocess, urllib and the data-home resolver --
 is imported on the first attribute that needs it, through :func:`__getattr__`
 (:pep:`562`), so a disabled bundle route costs the boot path nothing
 (``no-new-work-on-gateway-boot-path`` item 5).
@@ -41,8 +41,10 @@ if TYPE_CHECKING:
 
 KAS_PIN_VERSION = _pin.KAS_PIN_VERSION
 KAS_PIN_MANIFEST_SHA256 = _pin.KAS_PIN_MANIFEST_SHA256
+KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION = _pin.KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION
 KAS_VERSION_OVERRIDE_ENV = _pin.KAS_VERSION_OVERRIDE_ENV
 pinned_version = _pin.pinned_version
+engine_spec_permissions_supported = _pin.engine_spec_permissions_supported
 
 #: Attribute -> the dotted name of the module that owns it. Names, not modules: the
 #: owner is looked up in ``sys.modules`` on each read (see the module docstring).
@@ -68,8 +70,10 @@ _OWNED: dict[str, str] = {
 __all__ = [
     "KAS_PIN_MANIFEST_SHA256",
     "KAS_PIN_VERSION",
+    "KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION",
     "KAS_VERSION_OVERRIDE_ENV",
     "bundle_spawn_argv",
+    "engine_spec_permissions_supported",
     "pinned_version",
     "sha256_bytes",
     "sha256_file",
