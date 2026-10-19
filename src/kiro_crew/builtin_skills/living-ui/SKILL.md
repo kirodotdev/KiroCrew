@@ -371,6 +371,16 @@ LivingUI.css = `
 
 <!-- living-ui:blocks end -->
 
+## Looks
+
+A look is an optional drawing style built on these rules and the toolkit. Every
+look is opt-in: use one only when the user asks for it, never by default and
+never because you like it.
+
+- [`looks/isometric.md`](looks/isometric.md) draws the idea as a small machine
+  shaded in four tones mixed from theme variables, for a request such as "draw
+  it as a machine" or "make it isometric".
+
 ## Credits
 
 Several of these rules restate ideas from
