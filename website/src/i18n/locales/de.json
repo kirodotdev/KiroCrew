@@ -13032,6 +13032,7 @@
       "folder_order_reorder_note": "Ordner lassen sich nur in der eigenen Reihenfolge per Ziehen anordnen",
       "folder_order_switch_custom": "Auf „Eigene“ wechseln",
       "folder_order_unstamped_note": "Ordner, die vor der Aufzeichnung von Daten angelegt wurden, haben kein Datum; sie stehen zuletzt, in deiner eigenen Reihenfolge",
+      "unfiled_sessions_above_folders": "Nicht zugeordnete Sitzungen über den Ordnern",
       "sort_sessions_by": "Sitzungen sortieren nach",
       "sort_newest": "Neueste",
       "sort_oldest": "Älteste",

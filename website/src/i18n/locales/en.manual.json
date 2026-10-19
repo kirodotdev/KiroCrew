@@ -6144,6 +6144,7 @@
       "folder_order_reorder_note": "Folders can be dragged into place in Custom order only",
       "folder_order_switch_custom": "Switch to Custom",
       "folder_order_unstamped_note": "Folders made before dates were recorded have no date; they come last, in your Custom order",
+      "unfiled_sessions_above_folders": "Unfiled sessions above folders",
       "sort_sessions_by": "Sort sessions by",
       "clear_named_filter": "Clear {{filter}} filter",
       "pause_all_filters": "Pause all filters",

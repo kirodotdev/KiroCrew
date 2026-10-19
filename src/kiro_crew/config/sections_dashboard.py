@@ -910,6 +910,21 @@ class DashboardConfig:
             ],
         ),
     )
+    # Default FALSE: unfiled sessions below the folders is the layout every
+    # install has drawn. A config that never mentions the key must render it.
+    unfiled_sessions_above_folders: bool = field(
+        default=False,
+        metadata=_meta(
+            "Unfiled sessions above folders",
+            "Where the chat sidebar draws sessions that are not filed in any folder: "
+            "above the folder list when on, below it when off. Applies to the list "
+            "view's folder tree and to each board column; flat view draws no folders "
+            "and is unaffected. In the list view, dropping a session on the unfiled "
+            "area removes it from its folder either way. New sessions start unfiled, "
+            "so with many folders turning this on keeps the ones still to sort on "
+            "screen instead of below the last folder.",
+        ),
+    )
     update_nudge: dict = field(
         default_factory=dict,
         metadata=_meta(

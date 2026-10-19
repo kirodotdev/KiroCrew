@@ -21,7 +21,7 @@ import type { useConductorLane } from './conductor'
 import type { useFolderChatCreate, useSessionCreate } from './create'
 import type { useFolderDropOps, useNativeSessionDrag, useSidebarDragHandlers, useSidebarMoveUndo } from './dnd/useSidebarDrag'
 import type { useSessionFilterState, useSessionStatusFilters } from './filters'
-import type { useFolderFilterReveal, useFolderFilterRows, useFolderMutations, useFolderSort, useFolderTree, useFolderVisibility, useRootFolderLanes } from './folders'
+import type { useFolderFilterReveal, useFolderFilterRows, useFolderMutations, useFolderSort, useFolderTree, useFolderVisibility, useRootFolderLanes, useUnfiledAboveFolders } from './folders'
 import type { useHistoryPane } from './history'
 import type { useHoverHold } from './hoverHold'
 import type { useLaneCycle, useSidebarLane } from './lanes'
@@ -357,6 +357,12 @@ export interface SidebarScope {
   folderReorderHint: ReturnType<typeof useFolderSort>['folderReorderHint']
   folderReorderHintRef: ReturnType<typeof useFolderSort>['folderReorderHintRef']
   folderSortMut: ReturnType<typeof useFolderSort>['folderSortMut']
+
+  // From `useUnfiledAboveFolders`
+  unfiledAboveFolders: ReturnType<typeof useUnfiledAboveFolders>['unfiledAboveFolders']
+  toggleUnfiledAboveFolders: ReturnType<typeof useUnfiledAboveFolders>['toggleUnfiledAboveFolders']
+  unfiledAboveFoldersError: ReturnType<typeof useUnfiledAboveFolders>['unfiledAboveFoldersError']
+  dismissUnfiledAboveFoldersError: ReturnType<typeof useUnfiledAboveFolders>['dismissUnfiledAboveFoldersError']
 
   // From `useFolderRename`
   folderEditInputRef: ReturnType<typeof useFolderRename>['folderEditInputRef']

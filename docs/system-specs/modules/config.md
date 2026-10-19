@@ -3384,6 +3384,7 @@ class DashboardConfig:
     show_unread_dot: bool = True   # the per-row unread dot on sidebar session cards (Settings → Display → Sidebar); only a literal false hides it. Folder and aggregate unread counts are unaffected. PATCH-able via /api/config/kirocrew
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
     session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title), "manual" (the person's own drag order). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
+    unfiled_sessions_above_folders: bool = False  # draw the sessions filed in no folder above the folder list (true) or below it (false), in the list view's folder tree and in each board column. A view preference; the drop that removes a session from its folder works in both layouts. See "Unfiled sessions above folders" below.
     onboarded: bool = False         # whether the "Choose your look" onboarding modal was completed
     import_onboarded: bool = False  # whether foreign-agent import was completed or skipped
     terminal: dict                  # the built-in Terminal tab: shell ("" = $SHELL), max_sessions (12, server-wide ceiling), orphan_timeout_s (43200 = 12 h a shell runs with no browser attached before it and its processes are ended; floor 60), cwd ("" = $HOME), reuse_current (false; true = Run-in-terminal focuses the selected terminal and copies the command, never runs it), completion.enabled (true). PATCH-able via /api/config/kirocrew
@@ -4060,6 +4061,72 @@ if chosen. Queued behind an in-flight save, the newer pick's request starts when
 the previous one settles, so the last pick is both the last request the server sees
 and the persisted one; a refusal behind a newer pick is not reported (the newer
 save's own outcome is).
+
+### Unfiled sessions above folders
+
+`DashboardConfig.unfiled_sessions_above_folders` is where the chat sidebar draws
+the sessions filed in no folder: below the folder list when false (the default,
+so an upgrade changes nothing) or above it when true. New sessions start
+unfiled, so with many folders the ones still to sort are below the last folder
+and off screen; the setting keeps them at the top. It is gateway config rather
+than browser storage so the choice follows the person to every browser and the
+desktop app. Written only through the `PATCH /api/config/kirocrew` allowlist
+(`dashboard.unfiled_sessions_above_folders`, a boolean). The loader and the
+sidebar's reader both read anything but `true` as false, so an older gateway
+without the field, or a hand-edited value, draws the default layout.
+
+The setting applies where a folder row is drawn: the list view's folder tree
+and the board's columns. The flat lane and the conductor lane draw no folders,
+and the flat board draws none in its columns, so it changes nothing there.
+
+In the folder tree, with the setting off, the ungrouped bucket (`root-group`, a
+droppable with `folderId: null`) follows the folders and fills the remaining
+height, holding the unfiled rows, their dormant section, the Older Sessions hint,
+and the crew groups, so the whole empty lower area is the target that removes a
+dropped session from its folder. With the setting on, the bucket renders first,
+at its natural height, holding only the unfiled rows and their dormant section,
+and only while the lane holds at least one unfiled session, a dormant one
+included (a search or filter
+that matches none removes it). The folders follow in their
+order, then a lane tail (`root-lane-tail`, another `folderId: null` droppable)
+fills the remaining height and holds the Older Sessions hint and the crew
+groups, so the Older Sessions hint stays after the last Local session row and
+before the crew groups in both layouts (see
+`docs/decisions/2026-09-05-sidebar-lanes-end-with-a-show-all-older-sessions-row.md`).
+The tail also shows the "Drop here to remove from folder" hint while a nested
+folder drags and, when the lane holds no unfiled session, while a foldered
+session drags.
+Both the bucket and the tail remove a dropped session from its folder, and
+both light their ring while a foldered session or a nested folder drags over
+them. The one consequence of the direction: with the setting on, the first
+folder block sits directly below the last unfiled row, so a manual reorder
+among the unfiled rows that overshoots the last row files the session into
+that folder, where the same overshoot with the setting off lands in the
+bucket's own empty space. The move undo bar covers it as it covers any
+mis-drop. The unfiled rows render inside the bucket's render prop in both
+layouts, so their paint-order stamps (`renderSessionRow`) are assigned in the
+same sequence as the folder rows' in each layout. In a board column the
+unfiled cards render above the folder blocks instead of below them; the unfile
+strip at the column foot and the column body's own drop are unchanged.
+
+The control is a checkbox row, **Unfiled sessions above folders**, under the
+**Folder order** rows of the sidebar's sort-and-filter menu. It is offered in
+the tree lane and the non-flat board (the same lane-mode gate as the folder
+drag note, `folderRowsDrawn`), including a tree with no folders yet and a board
+whose folder filter conceals every folder, because the setting takes effect the
+moment a folder appears. It is hidden in the flat, flat-board, and conductor
+lanes. As a checkbox row it reports `aria-checked` and keeps the menu open on a
+pick, as the tag and model rows do. The lane redraws on the pick, through the
+same optimistic overlay on the shared `kirocrewConfig` cache that the session
+sort uses, because nothing outside the dashboard reads the key. The row's
+checked state and its toggle both read the shown value, so two picks during one
+in-flight save send the opposite values in order and the gateway keeps the last
+one (saves go out one at a time, in pick order). A refused save puts the stored
+layout back and is said on a notice of its own, titled "Couldn't save this
+setting. Nothing changed. Try again." with the gateway's text under it. The next
+toggle or a dismiss clears that notice. The `kirocrew-dashboard` MCP server's
+`chat_folder_tree` is unaffected: it lists the unfiled group after the folders
+in either layout, and its `before`/`after` anchors name folders.
 
 ### Sidebar session order
 
