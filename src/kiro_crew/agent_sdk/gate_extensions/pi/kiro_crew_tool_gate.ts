@@ -29,7 +29,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createDecipheriv } from "node:crypto";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -280,7 +280,6 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (_event, ctx) => {
-    if (crewServers.size === 0) return;
     const registered = new Map(
       pi.getMcpServers().map((server) => [server.name, server] as const),
     );
@@ -298,6 +297,20 @@ export default function (pi: ExtensionAPI) {
           "Rename or remove that entry in pi's mcp.json.",
         "warning",
       );
+    }
+    const receipt = process.env.KIROCREW_PI_MCP_RECEIPT;
+    if (receipt && process.env[NONCE_ENV]) {
+      try {
+        // The private scratch window is writable; the gate's own directory is
+        // sealed read-only. No prompt or adapter event listener is needed.
+        writeFileSync(receipt, JSON.stringify({
+          "kiro-crew-mcp-registration": 1,
+          nonce: process.env[NONCE_ENV],
+          servers: [...crewServers.keys()].filter(name => !shadowed.has(name)),
+        }), { mode: 0o600, flag: "wx" });
+      } catch {
+        // The host treats a missing or stale receipt as an unconfirmed handoff.
+      }
     }
   });
 

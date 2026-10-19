@@ -187,6 +187,21 @@ Crew's sealed gate extension registers each entry with pi's built-in MCP support
 `mcp.json`, user-level or a trusted project's, outranks that registration, so the
 extension refuses its tools (`acp/harness/pi.py`, `test_pi_gate_extension_mcp.py`).
 
+The session's own pi process confirms what it registered: during `session_start`
+the extension writes its unshadowed Crew server names to a nonce-bound receipt in
+the session's writable scratch window (the gate artifact directory stays
+read-only). pi runs `session_start` handlers to completion before it reads its
+first RPC command, so the receipt exists before pi-acp answers `session/new` or
+`session/load`. The host then reads and removes it before the first prompt
+(`acp/pi_mcp_registration.py`): a missing, malformed or other-nonce receipt, or
+one confirming none of the handed-off servers, refuses startup; one confirming
+only some records each missing server as failed on the session's MCP report, so
+the card never lists it available. A handoff of no servers has nothing to
+confirm. Each load/new retry clears the previous child's receipt. No bootstrap
+prompt is submitted: pi-acp does not settle a prompt handled only by an extension
+command. The separate routing read-back proves the extension loaded; it does not
+prove the session consumed its MCP handoff.
+
 Two card lines stay unavailable on pi, each on a driven observation:
 
 - **Mid-turn steer.** pi-acp 0.0.34 serves no steer verb. A `session/prompt` sent

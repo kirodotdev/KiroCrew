@@ -145,6 +145,10 @@ class ProcessSession(Protocol):
     _deepseek_gate_nonce: str
     _deepseek_read_only_issue: str
 
+    @property
+    def work_scratch_dir(self) -> Path | None:
+        """The child scratch window allocated by the shared launch tail."""
+
     def _agent_env_for_spawn(self) -> dict[str, str]:
         """``agent.env`` for the spawn in progress, read at most once per spawn: a
         tool-gate read-back and the launch tail see the same values."""
