@@ -27,7 +27,10 @@
  * dialog exactly like the create dialog, and an edit pass that cannot fail
  * would be worse than no edit pass at all.
  *
- * Usage: EXPECT=fixed|broken node scripts/verify-agent-selector-dialog.mjs [outDir]
+ * Usage: npm run build && EXPECT=fixed|broken npm run verify:agent-selector-dialog [-- outDir]
+ *
+ * On demand only: no CI lane runs this script (a maintainer CI-policy decision,
+ * #10625). It guards nothing until someone runs it.
  */
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
@@ -120,6 +123,14 @@ async function driveAgentPicker(page, dialog, shot) {
   await listbox.waitFor({ timeout: 5000 })
 
   await page.screenshot({ path: join(OUT, `${shot}-dropdown-open.png`) })
+
+  // A picker that opens empty means the fixture no longer reaches the endpoint
+  // the form reads its roster from. Say so, instead of a bare click timeout.
+  // Wait for a row rather than counting: the list renders before the roster
+  // fetch lands.
+  await listbox.getByRole('option').first().waitFor({ timeout: 5000 }).catch(() => {
+    throw new Error(`[${shot}] the agent list opened empty: the roster fixture no longer feeds the picker`)
+  })
 
   await page.getByRole('option', { name: /oncall/ }).click({ timeout: 5000 })
 
@@ -230,8 +241,12 @@ try {
 
   await stubDashboardApi(page, {
     extra: async (path, route) => {
-      if (path === '/api/agents') {
-        await json(route, { agents: AGENTS, default_agent: 'kirocrew' })
+      // The schedule form's roster comes from `useAgents`, which reads the
+      // execution-choice catalog, not `/api/agents`. Answering only
+      // `/api/agents` left the catalog on the stub's `[]` guess, so the picker
+      // opened empty and the option click timed out (#21664).
+      if (path === '/api/agents/catalog') {
+        await json(route, { agents: AGENTS.map(a => ({ ...a, selection_kind: 'member' })), default_agent: 'kirocrew' })
         return true
       }
       if (path === '/api/crons') {
