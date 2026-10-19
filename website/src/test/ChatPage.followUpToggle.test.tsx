@@ -373,3 +373,19 @@ describe('ChatPage plan-shaped follow-ups', () => {
     expect(JSON.stringify((api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0])).toContain('"Go All"')
   })
 })
+
+describe('ChatPage command-shaped follow-ups under quick send', () => {
+  it('picks a command chip into a non-empty draft instead of sending it, then a second click takes it out', async () => {
+    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: true })
+    await renderPage('Done.\n\n[OPTIONS: /clear | Merge it now]', '', 'Merge it now')
+    fireEvent.change(composer(), { target: { value: 'note' } })
+    vi.useFakeTimers()
+    await act(async () => { clickOption('/clear') })
+    expect(composer().value).toBe('note, /clear')
+    expect(chip('/clear').className).toContain('glass-accent')
+    await act(async () => { clickOption('/clear') })
+    expect(composer().value).toBe('note')
+    expect(chip('/clear').className).not.toContain('glass-accent')
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+})

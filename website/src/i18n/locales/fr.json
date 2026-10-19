@@ -57,6 +57,7 @@
     "open_session": "Ouvrir la session",
     "open_to_answer": "Cette vue ne peut pas vérifier la demande. Ouvre la session pour l’examiner et répondre.",
     "explicit_input": "Seule ta validation explicite envoie une réponse ou une approbation.",
+    "session_only_options": "Certaines options ne peuvent être choisies que dans la session.",
     "recorded": "Ta réponse a été enregistrée.",
     "send_refused": "La session n’a pas accepté cette réponse.",
     "send_unknown": "La livraison est incertaine. Ta réponse est conservée. Vérifie la session avant de réessayer pour éviter un double envoi.",

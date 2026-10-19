@@ -6,6 +6,7 @@ import { InstantTip, useInstantTip as useSharedInstantTip } from './InstantTip'
 import ErrorNotice from './ErrorNotice'
 import { reportUiControlClick } from '../lib/uiControlTelemetry'
 import { Glass } from './Glass'
+import { dispatchIsCommandShaped } from '../app-sdk/protocol/dispatchShape'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -359,16 +360,19 @@ function sendSegmentClassName(isPicked: boolean, pending: boolean) {
   }`
 }
 
-function chipTitle(isPicked: boolean, quickSend: boolean | undefined, picked: ReadonlySet<string>, hasOnSend: boolean, multi: boolean) {
+function chipTitle(isPicked: boolean, quickSend: boolean | undefined, picked: ReadonlySet<string>, hasOnSend: boolean, multi: boolean, commandShaped: boolean) {
   if (isPicked) {
-    return hasOnSend
+    return hasOnSend && !commandShaped
       ? i18nT('components.followUpBar.click_to_remove_from_input_double_click_to_send')
       : i18nT('components.followUpBar.click_to_remove_from_input')
   }
+  // A command-shaped label is never dispatched by a click, so it takes the same hint as its
+  // siblings except where that hint promises a send.
   // Single-select ([OPTION:]) rows: a new pick REPLACES the previous one, so
   // the hint must not promise multi-select (see followUpChips.ts). With Quick
   // Send off the same replace applies once a chip is picked, so "add" is wrong.
   if (quickSend && picked.size === 0) {
+    if (commandShaped) return i18nT('components.followUpBar.click_to_add_to_input_editable_before_sending')
     return multi
       ? i18nT('components.followUpBar.click_to_send_instantly_shift_click_to_select_mu')
       : i18nT('components.followUpBar.click_to_send_instantly_shift_click_to_add_without_sending')
@@ -379,11 +383,11 @@ function chipTitle(isPicked: boolean, quickSend: boolean | undefined, picked: Re
       : i18nT('components.followUpBar.click_to_replace_selection')
   }
   if (!multi && picked.size > 0) {
-    return hasOnSend
+    return hasOnSend && !commandShaped
       ? i18nT('components.followUpBar.click_to_replace_selection_double_click_to_send')
       : i18nT('components.followUpBar.click_to_replace_selection')
   }
-  return hasOnSend
+  return hasOnSend && !commandShaped
     ? i18nT('components.followUpBar.click_to_add_to_input_double_click_to_select_and')
     : i18nT('components.followUpBar.click_to_add_to_input_editable_before_sending')
 }
@@ -432,25 +436,27 @@ function Chip({ option, isPicked, picked, quickSend, multi, onSelect, onSend, cl
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
 
   const useDebouncedClick = !!onSend && !(quickSend && !isPicked && picked.size === 0)
+  // The visible "send now" segment is the discoverable form of the existing
+  // double-click-to-send gesture. Redundant (and hidden) in the quickSend
+  // instant-send state, where a single click on an unpicked chip already
+  // sends — so it's suppressed there to avoid two controls doing the same
+  // thing side by side. Withheld from a command-shaped label for the opposite
+  // reason: no click path on such a chip dispatches it, so an arrow still
+  // promising a send is a control that does not do what it shows.
+  const commandShaped = dispatchIsCommandShaped(option)
+  const showSendSegment = useDebouncedClick && !commandShaped
   // The visible ↑ segment gets its own hint fragment: the blind-read found the
   // click/double-click sentence never names the arrow, so a first-time user
   // "could not tell where the safe click ends and the send click begins". The
-  // fragment exists only when the segment does (same condition, see
-  // showSendSegment below).
-  const hint = chipTitle(isPicked, quickSend, picked, !!onSend, multi)
-    + (useDebouncedClick ? ` · ${i18nT('components.followUpBar.tooltip_arrow_sends_now')}` : '')
+  // fragment exists only when the segment does.
+  const hint = chipTitle(isPicked, quickSend, picked, !!onSend, multi, commandShaped)
+    + (showSendSegment ? ` · ${i18nT('components.followUpBar.tooltip_arrow_sends_now')}` : '')
   const { tipHandlers, tipNode } = useInstantTip(option, hint)
   // The entrance belongs on whichever element is this chip's flex item — the
   // button when the chip is standalone, the wrapper when it is a split button.
   // On the inner button of a split chip it would animate the label away from
   // its own send segment.
   const entrance = chipEntrance(index, animating)
-  // The visible "send now" segment is the discoverable form of the existing
-  // double-click-to-send gesture. Redundant (and hidden) in the quickSend
-  // instant-send state, where a single click on an unpicked chip already
-  // sends — so it's suppressed there to avoid two controls doing the same
-  // thing side by side.
-  const showSendSegment = useDebouncedClick
   const stateClass = chipStateClass(!!pending, !!dimmed)
 
   if (!useDebouncedClick) {
@@ -520,6 +526,13 @@ function Chip({ option, isPicked, picked, quickSend, multi, onSelect, onSend, cl
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }
     const clickedKey = armedSourceKeyRef.current !== undefined ? armedSourceKeyRef.current : sourceKey
     armedSourceKeyRef.current = undefined
+    // The arrow is withheld for these, so this is the double-click. It takes the ordinary
+    // select path rather than sending, which stages the label in the composer: the
+    // refusal is about the LABEL, not about which gesture reached it.
+    if (commandShaped) {
+      onSelect(option, { shiftKey: false, detail: 1 } as unknown as React.MouseEvent, clickedKey)
+      return
+    }
     // Pass option text directly to send() so it doesn't race with setInput.
     // If already picked, send() will use the current input (which already contains o).
     reportUiControlClick('option_chip')
