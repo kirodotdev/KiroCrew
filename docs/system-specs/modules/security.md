@@ -818,7 +818,11 @@ under a running gateway cannot pair the new program with the old code's plan; a 
 without a readable program still imports, and every Linux spawn then refuses.
 `sandbox_seatbelt.render_seatbelt_profile` spells the plan as Seatbelt rules.
 `sandbox_mount_sweep` reclaims the launcher's stale bind-mount sources for
-`cleanup_stale_sandbox_profiles`. The rest is carved into owner modules, each with one
+`cleanup_stale_sandbox_profiles`. Its pin scan reads one task's mountinfo per mount
+view, a namespace and a root, since the kernel renders the same table for every task
+that shares both; it holds each read view's namespace and root open until the scan
+returns so neither identity can be re-used, and reads every task whose view does not
+resolve, so the pins and coverage it reports are the ones reading every task gives. The rest is carved into owner modules, each with one
 job: `sandbox_leaves` names the crew-home leaves and the data-home prefixes and holds each
 leaf's `HIDDEN` / `READONLY` / `VISIBLE` disposition, with the leaves a foreign child is
 withheld or may read (`crew_host_runtime_leaves`); `sandbox_tiers` each tier's mask lists

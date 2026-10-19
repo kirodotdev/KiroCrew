@@ -1,10 +1,10 @@
 """Filesystem operations whose meaning differs by platform.
 
 Permission changes that never raise, a tree removal that defeats Windows read-only
-files, the no-replace rename and directory publication, the log-tail and lock-sweep
-opens that leave the file renamable and deletable while held, owner access restored
-to every directory of a copied tree, the macOS TCC folders a home-rooted walk prunes,
-and the remote-volume, executable-file and read-only checks.
+files, the no-replace rename and directory publication, a path's mount identity, the
+log-tail and lock-sweep opens that leave the file renamable and deletable while held,
+owner access restored to every directory of a copied tree, the macOS TCC folders a
+home-rooted walk prunes, and the remote-volume, executable-file and read-only checks.
 
 One of the owners ``kiro_crew.platform_compat`` is split into: every name here stays
 readable and patchable as ``kiro_crew.platform_compat.<name>``.
@@ -15,11 +15,13 @@ from __future__ import annotations
 import contextlib
 import ctypes.util
 import errno
+import functools
 import logging
 import os
 import platform
 import shutil
 import stat
+import struct
 import sys
 from ctypes import wintypes
 from pathlib import Path
@@ -140,6 +142,115 @@ if IS_LINUX or IS_MACOS:
         _RENAME_NOREPLACE_FN = None
 
 RENAME_NOREPLACE_AVAILABLE: bool = _RENAME_NOREPLACE_FN is not None
+
+
+# ── Mount identity ──
+#: ``SYS_statx`` numbers per ``platform.machine()``. As with renameat2 above, the
+#: kernel call (Linux 4.11) is older than glibc's ``statx`` wrapper (2.28), so a
+#: host on glibc 2.26/2.27 reaches it through ``syscall()``. Arch-stable ABI.
+_SYS_STATX_BY_MACHINE: dict[str, int] = {
+    "x86_64": 332,
+    "i386": 383,
+    "i686": 383,
+    "aarch64": 291,
+    "armv7l": 397,
+    "armv6l": 397,
+    "ppc64le": 383,
+    "ppc64": 383,
+    "s390x": 379,
+    "riscv64": 291,
+}
+_AT_FDCWD = -100
+_AT_EMPTY_PATH = 0x1000
+_STATX_INO = 0x100
+_STATX_MNT_ID = 0x1000
+#: ``struct statx`` is 256 bytes; the fields read are ``stx_mask`` (u32 at 0),
+#: ``stx_ino`` (u64 at 32), ``stx_dev_major`` / ``stx_dev_minor`` (u32 at 136 and
+#: 140) and ``stx_mnt_id`` (u64 at 144).
+_STATX_SIZE = 256
+#: Set once a kernel answered without ``STATX_MNT_ID`` (before Linux 5.8): the
+#: field never appears on that kernel, so later calls skip the syscall.
+_statx_mnt_id_unreported = False
+
+
+@functools.lru_cache(maxsize=1)
+def _statx_call() -> Any:
+    """The ``statx(dirfd, path, flags, mask, buf)`` callable, or None off Linux."""
+    if not IS_LINUX:
+        return None
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+    except OSError:
+        return None
+    wrapper = getattr(libc, "statx", None)
+    if wrapper is not None:
+        wrapper.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_uint,
+            ctypes.c_void_p,
+        ]
+        wrapper.restype = ctypes.c_int
+        return wrapper
+    nr = _SYS_STATX_BY_MACHINE.get(platform.machine())
+    syscall = getattr(libc, "syscall", None)
+    if nr is None or syscall is None:
+        return None
+    syscall.restype = ctypes.c_long
+    syscall.argtypes = [
+        ctypes.c_long,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_uint,
+        ctypes.c_void_p,
+    ]
+
+    def _statx(dirfd: int, path: bytes, flags: int, mask: int, buf: Any) -> int:
+        return syscall(nr, dirfd, path, flags, mask, buf)
+
+    return _statx
+
+
+def mount_identity(path: str, *, dir_fd: int | None = None) -> tuple[int, int, int, int] | None:
+    """``(mount id, device major, device minor, inode)`` of what *path* names, or None.
+
+    The mount id is what tells two mounts of one directory apart: a bind mount
+    shares its source's device and inode, so ``os.stat`` alone cannot. Symlinks,
+    ``/proc`` magic links included, are followed. With *dir_fd* and an empty
+    *path* the descriptor itself is identified (``AT_EMPTY_PATH``).
+
+    ``None`` whenever the identity is unknown: not Linux, no ``statx`` for this
+    architecture, a call that failed for any reason (the errno is not reported),
+    or a kernel older than 5.8, which does not fill in the mount id.
+    """
+    global _statx_mnt_id_unreported
+    if _statx_mnt_id_unreported:
+        return None
+    call = _statx_call()
+    if call is None:
+        return None
+    buf = ctypes.create_string_buffer(_STATX_SIZE)
+    flags = _AT_EMPTY_PATH if dir_fd is not None and path == "" else 0
+    if call(
+        _AT_FDCWD if dir_fd is None else dir_fd,
+        os.fsencode(path),
+        flags,
+        _STATX_INO | _STATX_MNT_ID,
+        buf,
+    ):
+        return None
+    (mask,) = struct.unpack_from("<I", buf.raw, 0)
+    if not mask & _STATX_MNT_ID:
+        _statx_mnt_id_unreported = True
+        return None
+    if not mask & _STATX_INO:
+        return None
+    (ino,) = struct.unpack_from("<Q", buf.raw, 32)
+    dev_major, dev_minor = struct.unpack_from("<II", buf.raw, 136)
+    (mnt_id,) = struct.unpack_from("<Q", buf.raw, 144)
+    return mnt_id, dev_major, dev_minor, ino
 
 
 # ── macOS TCC-protected home subdirectories ──

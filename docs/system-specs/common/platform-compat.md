@@ -39,10 +39,10 @@ is defined in an owner module beside it. Import and patch every one as
     pinned directory that acts on its entries through its descriptor, and the opens that
     never follow a link at the final name;
   - `platform_compat_files`: permission changes that never raise, a tree removal that
-    defeats Windows read-only files, the no-replace rename and directory publication,
-    the log-tail and lock-sweep opens, owner access restored to every directory of a
-    copied tree, the macOS TCC folders a home-rooted walk prunes, and the
-    remote-volume, executable-file and read-only checks;
+    defeats Windows read-only files, the no-replace rename and directory publication, a
+    path's mount identity, the log-tail and lock-sweep opens, owner access restored to
+    every directory of a copied tree, the macOS TCC folders a home-rooted walk prunes,
+    and the remote-volume, executable-file and read-only checks;
   - `platform_compat_trust`: system binaries resolved only from fixed directories, the
     environment allowlist, the Windows Known Folders and short names, whether another
     account can write a path, and launching the file manager or a default app;
@@ -130,6 +130,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Spawn isolation | `start_new_session=IS_POSIX` + `creationflags=CREATE_NEW_PROCESS_GROUP` | bare `start_new_session=True` |
 | Spawn a console helper from the windowless gateway | `creationflags=_SUBPROCESS_NO_WINDOW` (`CREATE_NO_WINDOW` on Windows, `0` on POSIX) | no flag (each helper flashes a console window) |
 | Walk a tree without leaving it | skip entries where `lstat_is_name_surrogate(info)` is true (Windows junctions and other name-surrogate reparse points); remove a tree in a sweep with `rmtree_force(path)` | `S_ISDIR` alone on an `lstat` result (it reports a junction as a plain directory and walks into the target) |
+| Tell two mounts of one directory apart (a bind mount shares its source's device and inode) | `mount_identity(path, dir_fd=)` -> `(mount id, device major, device minor, inode)` through `statx(STATX_MNT_ID)`, following symlinks and `/proc` magic links; with `dir_fd` and an empty path it names the descriptor. `None` off Linux, before Linux 5.8, or on any failure. Reached through `syscall()` where glibc has no `statx` wrapper, as `rename_noreplace` is | `os.stat` alone, which reports a bind and its source as one directory |
 | Remove a tree git produced (a clone, a `--local` clone, a directory with a `.git`) | `rmtree_force(path)` from a thread, or `_rmtree_force_settled(path)` where a cancelled caller must not leave the delete running (`registry_pipeline`). It clears the read-only bit on a file Windows refuses to unlink and retries once, never raises, and returns whether the path is gone, so a caller that restores something into the same path checks the answer. A tree that survives (a file another process holds open) is set aside, not collided with: `_restore_moved_aside` renames it to a `.partial-*` sibling before the restore | `shutil.rmtree(path, ignore_errors=True)` (git writes `.git/objects/pack/*` read-only; Windows refuses the unlink, `ignore_errors` swallows it, and the tree stays on disk while the caller reports success). Keep `ignore_errors=True` only where the tree holds nothing git wrote: a copy that drops `.git` (`manager._COPY_IGNORE`), a scratch or staging directory, or a linked worktree whose `.git` is a file. `test/test_git_tree_removal_windows.py` pins every site that removes a git tree |
 | Resolve a path for a containment check | `resolve(strict=True)`, handling `FileNotFoundError` on its own and failing closed on any other error | non-strict `Path.resolve()` (on Windows it collapses a self-pointing reparse point lexically without raising, so the loop passes as contained) |
 | Wait on a subprocess PIPE with a deadline | a daemon reader thread feeding a `queue.Queue`, consumed with a bounded `get` (`testing/harness.py`'s `_StdoutPump`) | `selectors.DefaultSelector()` on the pipe (select()-based on Windows, which accepts SOCKETS only, so registering a pipe RAISES there) |
