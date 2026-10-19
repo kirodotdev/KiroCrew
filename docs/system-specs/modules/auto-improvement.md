@@ -139,7 +139,7 @@ and never drive the verdict, or one flaky optional job would nudge forever.
 | Do-not-pollute gate | `spine/pollute.py` | host state hashed before/after; drift blocks the run |
 | Second reproduce | `spine/pr_pipeline.py` | an independent A/B must confirm before a PR is drafted |
 | Pre-push review gate | `spine/driver_publish.py:_prepush_review_clean` | optional, fail-closed; an unfounded "clean" cannot pass it |
-| Tool-request gate | `spine/agent_runner.py:_tool_permitted` + `shell_command_refusal` | the caller's `allowed_tools` is ENFORCED, and state-mutating shell verbs are refused even when Bash is allowed |
+| Tool-request gate | `spine/agent_runner_gate.py:_tool_permitted` + `shell_command_refusal` | the caller's `allowed_tools` is ENFORCED, and state-mutating shell verbs are refused even when Bash is allowed |
 | Audit-or-deny approval | `spine/agent_runner.py:_approve` | the unattended auto-approve is logged to the SEL with `critical=True` **before** it is granted; an unwritable audit REJECTS the tool |
 | Audited MCP dispatch | `backend/mcp_server.py:_audit` | every `tools/call` is logged, rejected ones included; the pre-dispatch `invoked` event is `critical=True` (audit-or-DENY — an unauditable call is refused), outcome events stay fail-soft since the handler has already run |
 | Redacted evidence | `backend/routes.py:_redact_for_display` / `_redact_tree` | EVERY agent-authored field served to the browser is scanned — diff, PR body, and the candidate's signature/hypothesis/evidence/severity/blast-radius, plus the gate tree recursively; **fail-closed** |
@@ -312,7 +312,7 @@ must choose to obey is not a control.
 
 Removing Bash for watchers would break the feature — the watcher's task is "run the repo's
 build, test and lint commands, find the root cause, and fix it". So the shell stays and the
-**verbs** are denied. The source of truth is `spine/agent_runner.py` `_FORBIDDEN_SUBCOMMANDS`
+**verbs** are denied. The source of truth is `spine/agent_runner_gate.py` `_FORBIDDEN_SUBCOMMANDS`
 and `_FORBIDDEN_BINARIES`; they cover, among others, `git push` and `git remote set-url`,
 `gh pr merge`/`ready`/`close`/`comment`/`review`/`edit`/`create`, every `gh issue` and
 `gh release` verb, `gh api`, `gh auth`, `gh secret`, `gh workflow run`, and the
@@ -1246,6 +1246,30 @@ commit mechanics go to their owner, and new loop behaviour stays in `driver.py`.
 `test/test_driver_owner_bindings.py` pins the member inventory, the bindings and the
 patch reach.
 
+### Agent runner layout
+
+`spine/agent_runner.py` holds both runners: `AgentRunner`, the `claude -p` subprocess
+path, and `SessionAgentRunner`, the provider session the backend selects, with
+`AgentResult` and the helpers only they call (the launch and per-tool audits, the
+agent-copy install, the sandbox launcher cleanup). It also keeps the one `kiro_crew.acp`
+import the agent-sdk boundary baseline records. Three owner modules beside it hold the
+rest:
+
+| Module | Owns |
+|---|---|
+| `spine/agent_runner_gate.py` | whether a tool request is refused: `_governance_denial`, the shell-command denylist (`shell_command_refusal` and its tables) and the caller's allowlist (`_tool_permitted`) |
+| `spine/agent_runner_feed.py` | the activity feed: `_LineBuffer`, `_tool_detail`, `_detail_is_richer`, `_summarize_stream_event` |
+| `spine/agent_runner_authoring.py` | `author_bug_fix` and `author_perf_fix`: the prompt, the run, and the worktree check that decides whether a change is left for the gate |
+
+`agent_runner.py` stays the import path. It serves the moved names, and a patch through
+it (`monkeypatch.setattr(agent_runner, "HookManager", ...)`) reaches every owner that
+binds the name (`kiro_crew._facade_mirror`). The owners log through the facade's logger,
+named from their package, so a record keeps the name it had. `_GovernanceDeny` reports
+the gate module as its `__module__`; nothing reads it. New tool-gate, feed or authoring
+work goes to its owner, and new runner behaviour stays in `agent_runner.py`.
+`test/test_agent_runner_owner_bindings.py` pins the owners, the served names and the
+patch reach.
+
 ## Frontend
 
 `website/src/apps/auto-improvement/AutoImprovementPage.tsx`, routed at
@@ -1349,7 +1373,7 @@ integration test — nothing in the tree runs the full loop against a live repos
   `test_ai_agent_runner_coverage.py`, `test_ai_runner_coverage.py`,
   `test_ai_pr_watchers_coverage.py`, `test_ai_spine_driver_coverage.py`,
   `test_ai_spine_driver_coverage_cycle.py`,
-  `test_driver_owner_bindings.py`,
+  `test_driver_owner_bindings.py`, `test_agent_runner_owner_bindings.py`,
   `test_ai_github_profile_coverage.py`, `test_ai_runner_purpose_not_identity.py`,
   `test_auto_improvement_owner_gate.py`, `test_auto_improvement_members.py` and
   `test_handlers_auto_improvement_deny_notice.py`.

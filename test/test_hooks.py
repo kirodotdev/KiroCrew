@@ -808,7 +808,7 @@ class TestHookGateKwargs:
     }
     ALLOWED_OVERRIDES = {
         # Provider-agnostic readings of a stream that may not be an AcpEvent.
-        "apps/builtins/auto_improvement/spine/agent_runner.py": {
+        "apps/builtins/auto_improvement/spine/agent_runner_gate.py": {
             "tool_kind",
             "command",
             "is_shell",
@@ -907,7 +907,7 @@ class TestHookGateKwargs:
     def test_a_typed_consultation_must_be_built_by_from_event(self):
         """The scan sees the typed form and holds it to the one extraction and to
         the pinned overrides, exactly as it holds an ``on_tool_call`` site."""
-        pinned = "apps/builtins/auto_improvement/spine/agent_runner.py"
+        pinned = "apps/builtins/auto_improvement/spine/agent_runner_gate.py"
         cases = [
             ("x.py", "a = self.hooks.judge(ToolCall.from_event(event), session_key=k)", None),
             ("x.py", "a = gate.judge(hooks.ToolCall.from_event(event, resolved_agent=r))", None),
@@ -1049,7 +1049,7 @@ class TestHookGateKwargs:
             "task_executor.py",
             "task_planner.py",
             "telegram/dispatch/turn_engine.py",
-            "apps/builtins/auto_improvement/spine/agent_runner.py",
+            "apps/builtins/auto_improvement/spine/agent_runner_gate.py",
         }, sorted(helper_sites)
         # Every pinned exception still exists; a deleted site must leave the
         # table too, or the table drifts into fiction.

@@ -17,7 +17,6 @@
 9026 src/kiro_crew/acp/runtime.py
 6697 src/kiro_crew/agent.py
 2265 src/kiro_crew/agent_discovery.py
-2259 src/kiro_crew/apps/builtins/auto_improvement/spine/agent_runner.py
 2683 src/kiro_crew/apps/builtins/code_review_sage/backend/routes.py
 2449 src/kiro_crew/apps/builtins/spec_builder/backend/repository.py
 5184 src/kiro_crew/apps/routes.py

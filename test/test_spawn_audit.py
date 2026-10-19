@@ -661,8 +661,8 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # the auto-improvement PR asked for it. These two remain listed because the
         # detector attributes the spawn to the enclosing prompt-authoring helpers as
         # well, and those do not spawn anything themselves.
-        "apps/builtins/auto_improvement/spine/agent_runner.py::author_bug_fix",
-        "apps/builtins/auto_improvement/spine/agent_runner.py::author_perf_fix",
+        "apps/builtins/auto_improvement/spine/agent_runner_authoring.py::author_bug_fix",
+        "apps/builtins/auto_improvement/spine/agent_runner_authoring.py::author_perf_fix",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr ``run``
         # on base ``asyncio``) in ``SessionAgentRunner.run``, which drives the in-process
         # provider and creates no child at all. Same classification as the other
