@@ -364,13 +364,16 @@ def _display_redaction_cache_key(
 
 
 def _clear_display_redaction_cache() -> None:
-    """Reset the process-local cache for deterministic tests."""
+    """Reset the process-local caches for deterministic tests."""
     global _display_redaction_cache_bytes, _display_clean_young, _display_clean_old
+    global _display_preview_cache_bytes
     with _display_redaction_cache_lock:
         _display_redaction_cache.clear()
         _display_redaction_cache_bytes = 0
         _display_clean_young = set()
         _display_clean_old = set()
+        _display_preview_cache.clear()
+        _display_preview_cache_bytes = 0
 
 
 # Entries keyed under the per-process salt are unreachable once the
@@ -440,23 +443,48 @@ def _display_clean_add(ck: int) -> None:
     _display_clean_young.add(ck)
 
 
+def _display_scope_changes_battery() -> bool:
+    """Whether this call runs inside a scope that changes the battery's answer.
+
+    The owner-view scope stands the credential pass down and ``code_text`` relaxes the
+    bare-secret pass. Neither is part of :func:`_display_redaction_cache_key`, so
+    inside either the display caches must be neither read nor filled: a cached
+    answer would be the wrong one there, and the scoped one wrong everywhere else.
+    """
+    # Imported here, as ``display_verdicts.active`` does, so the chat_utils facade
+    # does not forward the two predicates as names of its own.
+    from kiro_crew.security.redaction_switch import (
+        bare_secret_pass_enabled,
+        credential_pass_bypassed,
+    )
+
+    return credential_pass_bypassed() or not bare_secret_pass_enabled()
+
+
 def _redact_for_display(text: str) -> str:
-    """Apply all display redactors, reusing only an exact content-hash match."""
-    stored, base = _display_verdicts.active()
+    """Apply all display redactors, reusing only an exact content-hash match.
+
+    Inside a scope that changes the battery's answer
+    (:func:`_display_scope_changes_battery`) the battery runs uncached: no cache
+    and no stored verdict is read or written.
+    """
+    scoped = _display_scope_changes_battery()
+    stored, base = (None, None) if scoped else _display_verdicts.active()
     key, input_bytes = _display_redaction_cache_key(text, base)
     ck = _clean_verdict_key(key)
     tag = key[0]
-    with _display_redaction_cache_lock:
-        if _display_clean_seen(ck):
-            if stored is not None:
-                stored.note(tag, _display_verdicts.CLEAN, from_memory=True)
-            return text
-        cached = _display_redaction_cache.get(key)
-        if cached is not None:
-            _display_redaction_cache.move_to_end(key)
-            if stored is not None:
-                stored.note(tag, cached[0], from_memory=True)
-            return cached[0]
+    if not scoped:
+        with _display_redaction_cache_lock:
+            if _display_clean_seen(ck):
+                if stored is not None:
+                    stored.note(tag, _display_verdicts.CLEAN, from_memory=True)
+                return text
+            cached = _display_redaction_cache.get(key)
+            if cached is not None:
+                _display_redaction_cache.move_to_end(key)
+                if stored is not None:
+                    stored.note(tag, cached[0], from_memory=True)
+                return cached[0]
 
     if stored is not None:
         # The session's stored verdicts (display_verdicts): read once per render,
@@ -472,6 +500,8 @@ def _redact_for_display(text: str) -> str:
             return verdict
 
     redacted = display_battery(text)
+    if scoped:
+        return redacted
     if redacted == text:
         with _display_redaction_cache_lock:
             _display_clean_add(ck)
@@ -504,6 +534,77 @@ def _remember_redacted(key: _DisplayRedactionKey, input_bytes: int, redacted: st
         ):
             _, (_, evicted_bytes) = _display_redaction_cache.popitem(last=False)
             _display_redaction_cache_bytes -= evicted_bytes
+
+
+# The sidebar's one-line preview of a tab's last message, memoized beside the string
+# cache: ``_redact_for_display(strip_markdown_preview(text))`` cut to a limit. Every
+# slot-list read and slots broadcast re-projects every open tab on the event loop,
+# and stripping and redacting each whole message is most of that cost while the
+# message rarely changes between two reads. The key is the string cache's keyed
+# digest of the RAW text (exempt-host and token-parameter sets folded in) plus the
+# limit, and the value is the redacted, cut preview, so an entry retains no
+# credential-bearing text. Bounded by entries and by bytes of key plus output;
+# ``_clear_display_redaction_cache`` empties it with the string cache.
+_DISPLAY_PREVIEW_CACHE_MAX_ENTRIES = 8_192
+_DISPLAY_PREVIEW_CACHE_MAX_BYTES = 2 * 1024 * 1024
+_DisplayPreviewKey = tuple[bytes, int, int]
+_display_preview_cache: OrderedDict[_DisplayPreviewKey, tuple[str, int]] = OrderedDict()
+_display_preview_cache_bytes = 0
+
+
+def _cut_preview(text: str, limit: int) -> str:
+    return text[:limit] + "…" if len(text) > limit else text
+
+
+def _redacted_preview(text: str, limit: int) -> str:
+    """*text* stripped of markdown, redacted for display, cut to *limit* characters plus "…".
+
+    Equal to ``_redact_for_display(strip_markdown_preview(text))`` cut that way,
+    which is what a hit returns. The strip runs before the redaction so markdown
+    cannot split a credential signature and rejoin it on the wire.
+    """
+    # Imported here so the chat_utils facade does not forward the strip as its own name.
+    from kiro_crew.preview_text import strip_markdown_preview
+
+    if _display_scope_changes_battery():
+        # _redact_for_display runs the battery uncached here too.
+        return _cut_preview(_redact_for_display(strip_markdown_preview(text)), limit)
+    (digest, length), _ = _display_redaction_cache_key(text)
+    key = (digest, length, limit)
+    with _display_redaction_cache_lock:
+        cached = _display_preview_cache.get(key)
+        if cached is not None:
+            _display_preview_cache.move_to_end(key)
+            return cached[0]
+    preview = _cut_preview(_redact_for_display(strip_markdown_preview(text)), limit)
+    # Filed only when the sets the key folds in did not change while it was
+    # computed, so an entry never holds an answer from a context its key does not name.
+    if _display_redaction_cache_key(text)[0][0] == digest:
+        _remember_preview(key, preview)
+    return preview
+
+
+def _remember_preview(key: _DisplayPreviewKey, preview: str) -> None:
+    global _display_preview_cache_bytes
+    entry_bytes = len(key[0]) + len(preview.encode("utf-8", errors="surrogatepass"))
+    with _display_redaction_cache_lock:
+        if key in _display_preview_cache:
+            _display_preview_cache.move_to_end(key)
+            return
+        _display_preview_cache[key] = (preview, entry_bytes)
+        _display_preview_cache_bytes += entry_bytes
+        while (
+            len(_display_preview_cache) > _DISPLAY_PREVIEW_CACHE_MAX_ENTRIES
+            or _display_preview_cache_bytes > _DISPLAY_PREVIEW_CACHE_MAX_BYTES
+        ):
+            _, (_, evicted_bytes) = _display_preview_cache.popitem(last=False)
+            _display_preview_cache_bytes -= evicted_bytes
+
+
+def _display_preview_cache_info() -> tuple[int, int]:
+    """Return ``(entries, accounted_bytes)`` of the preview cache for invariant tests."""
+    with _display_redaction_cache_lock:
+        return len(_display_preview_cache), _display_preview_cache_bytes
 
 
 def redact_display_content(content: Any) -> str:

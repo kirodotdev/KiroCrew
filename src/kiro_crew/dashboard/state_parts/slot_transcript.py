@@ -45,8 +45,6 @@ from kiro_crew.dashboard.state_parts.transcript_rows import (
 )
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.history import latest_transcript_ts, mint_row_mid, monotonic_transcript_ts
-from kiro_crew.preview_text import strip_markdown_preview
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
@@ -129,14 +127,54 @@ _OPTIONS_RE = OPTIONS_RE_LINE
 
 
 def _redact(text: str) -> str:
-    """Sanitise LLM output before surfacing to dashboard."""
-    text, _ = redact_exfiltration_urls(text)
-    text, _ = redact_credentials(text)
-    return text
+    """Sanitise LLM output before surfacing to dashboard.
+
+    The display battery (exfiltration URLs, then credentials) behind the
+    slot-detail render's exact-content cache, ``_redact_for_display``: a sidebar
+    read or slots broadcast re-redacts every open tab's title on the event loop,
+    and a hit costs one keyed digest instead of both passes.
+    """
+    # circular import: chat_utils_display imports dashboard.state, which imports this module.
+    from kiro_crew.dashboard.chat_utils_display import _redact_for_display
+
+    return _redact_for_display(text)
+
+
+#: The sidebar's one-line preview of a tab's last message is cut to this many
+#: characters, plus "…" when it was longer.
+_LAST_MESSAGE_PREVIEW_CHARS = 80
+
+
+def _last_message_preview(text: str) -> str:
+    """The sidebar's redacted one-line preview of a message *text*.
+
+    Markdown is stripped before the redaction, then the result is cut. Memoized
+    by ``_redacted_preview`` under a keyed digest of the raw text, so a tab whose
+    last message has not changed costs one digest per read.
+    """
+    # circular import: chat_utils_display imports dashboard.state, which imports this module.
+    from kiro_crew.dashboard.chat_utils_display import _redacted_preview
+
+    return _redacted_preview(text, _LAST_MESSAGE_PREVIEW_CHARS)
+
+
+#: Every match of ``_OPTIONS_RE`` contains this literal (the pattern is
+#: case-sensitive), so a text without it has no marker and the per-position
+#: regex scan can be skipped with the same answer.
+_OPTIONS_HEAD = "[OPTIONS:"
+
+
+def _strip_options(text: str) -> str:
+    """*text* without its ``[OPTIONS: ...]`` marker lines, stripped."""
+    if _OPTIONS_HEAD not in text:
+        return text.strip()
+    return _OPTIONS_RE.sub("", text).strip()
 
 
 def _parse_options(text: str) -> list[str]:
     """Extract pipe-separated choices from the LAST [OPTIONS: A | B | C] in text."""
+    if _OPTIONS_HEAD not in text:
+        return []
     matches = list(_OPTIONS_RE.finditer(text))
     if not matches:
         return []
@@ -597,12 +635,12 @@ def to_dict(
         transient_roles=_TRANSIENT_ROLES,
         redact=_redact,
         parse_options=_parse_options,
-        strip_options=lambda text: _OPTIONS_RE.sub("", text).strip(),
+        strip_options=_strip_options,
         parse_cls_meta=parse_cls_meta,
         is_turn_interrupted=is_turn_interrupted,
         is_system_notice=is_system_notice,
         latest_transcript_ts=latest_transcript_ts,
-        strip_markdown_preview=strip_markdown_preview,
+        last_message_preview=_last_message_preview,
         resolve_effective_agent=resolve_effective_agent,
         budget_source_links=_budgeted_source_links,
         # Bind the PUBLIC-only gate through the projection's positional

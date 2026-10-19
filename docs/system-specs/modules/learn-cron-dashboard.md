@@ -1670,6 +1670,20 @@ The owners, lowest layer first:
   and wait-tool fields the chat runner keeps on the slot.
 - `state_parts/slot_transcript.py` — `append`, `update_message`, the disk-window
   bookkeeping, the lazy window, and `to_dict` with its OPTIONS parsing.
+  `serialize_slots` runs `to_dict` for every open tab on the event loop, on each
+  `GET /api/chat/slots` and each slots broadcast, so its per-tab text work is kept
+  cheap without changing a byte of the payload (pinned by
+  `test_slot_summary_hot_path.py`): the last-message preview
+  (`_last_message_preview`: markdown strip, display redaction, cut to 80
+  characters) is memoized by `chat_utils_display._redacted_preview` under the
+  display cache's keyed digest of the raw text, holding only the redacted preview;
+  `_redact` (titles, options, the OPTIONS prompt) goes through the same display
+  cache (`_redact_for_display`); the OPTIONS parse and strip skip their regex scan
+  when the text lacks the literal `[OPTIONS:` every match contains; and
+  `preview_text.drop_format_chars` categorizes each distinct character once.
+  Inside an `owner_view` or `code_text` scope, which change the battery's answer
+  and are not in the cache key, both caches are neither read nor filled (see
+  security.md, "Display redaction memo").
 - `state_parts/chat_slot.py` — the `_ChatSlot` class itself (see above).
 - `state_parts/dashboard_services.py` — the services `DashboardState` hosts: the lazy
   coordinator accessors, the background-turn budget, approvals and questions,
