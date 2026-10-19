@@ -232,9 +232,9 @@ A missing or malformed handle is refused before any phase runs, naming the field
 that is wrong.
 
 **It does not run the worktree's test suite.** There is no pytest phase, on
-purpose: the suite is ~62k tests that need no pod, CI runs it on the merge ref,
-and a full local fan-out on a shared box costs far more than the browser check
-this harness exists for. Run the tests your change actually touches yourself,
+purpose: the suite is large and none of it needs a pod, CI runs it on the merge
+ref, and a full local fan-out on a shared box costs far more than the browser
+check this harness exists for. Run the tests your change actually touches yourself,
 in the worktree (see the `kirocrew-worktree-dev` skill), and let CI own the
 full suite.
 

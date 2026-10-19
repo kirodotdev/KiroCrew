@@ -291,11 +291,11 @@ def test_usage_text_lists_the_flag(flag):
 def test_the_harness_never_runs_the_worktrees_test_suite():
     """No executable line in the harness may invoke the checkout's test suite.
 
-    A `python -m pytest -q` from the checkout root is ~62k tests that need no
-    pod, that CI runs on the merge ref anyway, and whose fan-out costs far more
-    than the browser check this harness exists for. Only the comment explaining
-    the absence may name pytest, so an executable line that invokes it fails
-    here.
+    A `python -m pytest -q` from the checkout root is the whole suite, none of
+    which needs a pod, that CI runs on the merge ref anyway, and whose fan-out
+    costs far more than the browser check this harness exists for. Only the
+    comment explaining the absence may name pytest, so an executable line that
+    invokes it fails here.
     """
     offenders = [
         ln

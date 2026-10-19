@@ -34,7 +34,7 @@ if os.name == "nt":
         def _close_self_pipe(self) -> None:
             # Windows implements ``socketpair`` with a localhost TCP connection.
             # pytest-asyncio 0.21 creates two fresh loops per async test, so this
-            # 62k-test suite can consume the 16,384-port dynamic range before
+            # suite is large enough to consume the 16,384-port dynamic range before
             # TIME_WAIT entries expire.  Abortive close is safe for the loop's
             # private wakeup socket (it carries no application data) and releases
             # the port immediately while preserving a fresh Proactor loop per test.

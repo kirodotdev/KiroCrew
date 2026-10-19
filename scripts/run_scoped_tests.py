@@ -4,8 +4,8 @@
 What this buys
 --------------
 The ``kirocrew-prepare-pr`` loop runs its gate up to ten times per PR, and the full local
-suites are enormous: 62,108 collected backend tests (collection alone takes ~100s
-before a single test runs) and ~1,444 frontend spec files. CI runs the touched
+suites are enormous: collecting the backend suite alone takes noticeable time
+before a single test runs, and the frontend has thousands of spec files. CI runs the touched
 surface's full suite on ``refs/pull/<N>/merge`` regardless of what ran here, and
 for the other surface the same cross-surface set this runner includes (``ci.yml``
 ``changes`` job; the only other narrowing is ``leaf_test_scope.py``, which is sound
