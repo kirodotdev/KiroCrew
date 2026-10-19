@@ -206,7 +206,7 @@ _BUILDER_MEMBERS: dict[str, tuple[str, str]] = {
     ),
     "_build_member_section": (
         "method",
-        "(self, member: 'str', *, strict: 'bool' = False, include_briefing: 'bool' = True, desk_withheld: 'bool' = False) -> 'str'",
+        "(self, member: 'str', *, include_briefing: 'bool', strict: 'bool' = False, desk_withheld: 'bool' = False) -> 'str'",
     ),
     "_build_v2_essentials": (
         "method",
@@ -933,7 +933,9 @@ class TestPatchReach:
         cfg = SimpleNamespace(agents={"writer": crew})
         monkeypatch.setattr(ctx.KiroCrewConfig, "load", lambda *a, **k: cfg)
         monkeypatch.setattr(ctx, "read_member_rules", lambda slug, member: "")
-        section = ctx.ContextBuilder._build_member_section(object(), "writer")  # type: ignore[arg-type]
+        section = ctx.ContextBuilder._build_member_section(  # type: ignore[arg-type]
+            object(), "writer", include_briefing=True
+        )
         assert "[CURRENT ASSIGNMENT — not available on this platform]" in section
 
     def test_dashboard_surface_and_crew_context_gates(self, monkeypatch) -> None:

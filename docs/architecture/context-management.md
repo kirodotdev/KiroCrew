@@ -654,6 +654,21 @@ the user when the briefing is stale, and the user clears it by editing or
 deleting that file; the dashboard's Notes tab shows it read-only. Every variable
 payload runs through `_scrub_member_payload` first.
 
+A **memory scope that blocks reads** withholds layer 4 instead of reading it: the
+section carries the `withheld by this turn's memory/privacy scope` placeholder and
+the instruction not to fill the gap from the briefing or recall. `member.py` →
+`briefing_reads_allowed(blocks_reads, context_groups)` is the one predicate, and
+every delivery path — the V2 essentials envelope, session start, slim resume and
+post-compaction re-injection — passes its verdict as `include_briefing`, so a
+temporary turn (whose own prefix promises no memory reads) cannot carry the
+member's working memory however the section reaches the prompt. The predicate
+also reads the config-scoped memory group, so a turn that excludes the memory
+group (`memory.inject_memory` off, or a spawn without `include_memory`) withholds
+the briefing on the V1 paths just as the V2 envelope already did. The builder's
+`_build_member_section` takes `include_briefing` with no default, so a new
+delivery path that forgets the verdict fails to type-check. An **incognito**
+scope blocks writes only and still reads.
+
 `members_parts/member_sessions.py` → `member_turn_context` is the single chokepoint deciding, per
 session lifecycle, whether the section is delivered and whether the rules gate
 runs: `FRESH` (session start), `WARM_REINJECTION` (post-compaction; a minimal

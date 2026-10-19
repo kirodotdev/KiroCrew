@@ -356,6 +356,27 @@ def _read_goal_block(slug: str, member: str) -> str:
         return ""
 
 
+def briefing_reads_allowed(blocks_reads: bool, context_groups: frozenset[str] | None) -> bool:
+    """Whether this turn's memory scope permits reading the member briefing.
+
+    ONE predicate for the briefing read, shared by every member-section
+    caller, so a delivery path cannot forget the check and leak the member's
+    agent-writable working memory into a turn that promised no memory reads.
+    ``blocks_reads`` is the turn's memory scope — a temporary record blocks
+    every memory read (``resolve_turn_owner`` folds ``memory_mode ==
+    "temporary"`` into it, and the turn builder ORs the per-session mode on
+    top) — and the group test is the operator's standing memory switch.
+
+    *context_groups* must already be config-scoped by the caller, the way
+    every other memory block scopes it (``ctx._config_scoped_groups``); the
+    V2 validation pass is the one caller that deliberately sees the
+    unscoped set and scopes before calling.
+    """
+    return not blocks_reads and _inclusion._group_included(
+        context_groups, _inclusion.CONTEXT_GROUP_MEMORY
+    )
+
+
 def build_member_section(
     member: str,
     *,
@@ -680,9 +701,7 @@ def build_v2_essentials(
     # what the operator currently injects.
     if profile_overrides is None:
         context_groups = ctx._config_scoped_groups(context_groups)
-    reads = not blocks_reads and _inclusion._group_included(
-        context_groups, _inclusion.CONTEXT_GROUP_MEMORY
-    )
+    reads = briefing_reads_allowed(blocks_reads, context_groups)
     include_project = not blocks_reads and _inclusion._group_included(
         context_groups, _inclusion.CONTEXT_GROUP_PROJECT
     )
