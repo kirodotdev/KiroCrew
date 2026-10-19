@@ -149,7 +149,7 @@
  2 test_discord_sessions_binding_state.py
  2 test_e2e_ci_scheduling.py
  1 test_e2e_smoke.py
- 5 test_embedding_rebuild_generation.py
+ 3 test_embedding_rebuild_generation.py
  1 test_embedding_rebuild_process.py
  1 test_embeddings.py
  1 test_embeddings_threads.py
