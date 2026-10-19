@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from kiro_crew.acp import session_provider_mcp_reinject as _sp_mcp_reinject
+from kiro_crew.acp import stale_compaction
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpAuthRequired,
@@ -749,6 +750,7 @@ class AcpSessionProvider(LLMProvider):
             raise
         # Bind only to this attempt's handle, after any re-injection replaced it.
         send = self._handle.prompt
+        stale_compaction.sync_provider_compaction_delivery(self, self.essential_delivery)
         if sign_in_ask:
             send = functools.partial(send, sign_in_ask=sign_in_ask)
         if not allow_image:
@@ -885,6 +887,10 @@ class AcpSessionProvider(LLMProvider):
         """True when the backing handle can steer a deny notice into a refused turn."""
         return self._handle.supports_refusal_steer
 
+    def command_is_native(self, command: str) -> bool:
+        """True when *command* goes to native ``commands/execute``, with no model request."""
+        return bool(self._handle.command_is_native(command))
+
     async def stream_command(self, command: str) -> AsyncIterator[LLMEvent]:
         """Execute a slash command natively via ``_kiro.dev/commands/execute``.
 
@@ -897,15 +903,24 @@ class AcpSessionProvider(LLMProvider):
         Same exception translation as stream(): everything leaving this
         surface stays within AcpError.
         """
+        if stale_compaction.is_compact_command(
+            command
+        ) and stale_compaction.provider_refuses_compaction(self):
+            raise AcpError(stale_compaction.UNRESOLVED_COMPACTION_ERROR)
         # /compact and /clear discard native history; invalidate before dispatch
         # so the next warm turn resends the complete snapshot even when the
         # status receipt is missing or arrives late.
+        stale_compaction.sync_provider_compaction_delivery(self, self.essential_delivery)
         self.essential_delivery.prepare_command(command)
         claim = self._claim_shared_turn()
         try:
             async with aclosing(
                 self.essential_delivery.stream(
-                    command, self._handle.stream_command, lambda: self.context_incarnation
+                    command,
+                    self._handle.stream_command,
+                    lambda: self.context_incarnation,
+                    # Native commands/execute makes no model request.
+                    requests_model=not self.command_is_native(command),
                 )
             ) as events:
                 async for event in events:
@@ -1498,14 +1513,23 @@ class AcpSessionProvider(LLMProvider):
         await self._guarded(self._handle.set_config_option(config_id, value))
 
     async def compact(self, context: str = "") -> None:
-        """Trigger context compaction."""
+        """Trigger context compaction.
+
+        While an earlier compaction status is unresolved, this sends nothing
+        and the next :meth:`wait_for_compaction` returns one ``failed`` result.
+        """
+        if stale_compaction.refuse_provider_compaction(self):
+            return
         self.essential_delivery.invalidate()
         await self._guarded(self._handle.compact(context))
 
     async def wait_for_compaction(
         self, timeout: float = COMPACT_WAIT_TIMEOUT_SECS
     ) -> dict[str, str]:
-        """Wait for compaction completed/failed event."""
+        """Wait for compaction completed/failed event, or return a refused compact's result."""
+        refusal = stale_compaction.take_provider_compaction_refusal(self)
+        if refusal is not None:
+            return refusal
         return await self._guarded(self._handle.wait_for_compaction(timeout))
 
     async def _drain_post_compaction_metadata(self) -> None:

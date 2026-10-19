@@ -60,6 +60,7 @@ from kiro_crew.acp.liveness import (
     VERDICT_WORKING,
 )
 from kiro_crew.acp.session_handle_watchdog import INTERACTIVE_POLICY_WAIT
+from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
@@ -953,6 +954,11 @@ async def _dispatch_events(
                 params = msg.params or {}
                 status = params.get("status", {})
                 status_type = status.get("type", "") if isinstance(status, dict) else str(status)
+                if consume_stale_compaction_status(self, msg):
+                    # A terminal can have no session id after runtime fan-out.
+                    # While this handle owes one, the frame pays that debt and
+                    # is not exposed as this turn's compaction result.
+                    continue
                 # A compaction notification carrying no sessionId is fanned
                 # out to EVERY co-tenant queue (AcpRuntime marks the copies
                 # fanout_no_owner once more than one session is registered),

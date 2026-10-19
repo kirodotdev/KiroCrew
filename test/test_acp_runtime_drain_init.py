@@ -225,6 +225,28 @@ async def test_drain_init_consumes_init_frames_and_captures_config():
 
 
 @pytest.mark.asyncio
+async def test_drain_init_counts_an_owed_compaction_terminal():
+    from kiro_crew.acp import stale_compaction
+    from kiro_crew.acp.types import METHOD_COMPACTION_STATUS
+
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    stale_compaction.discard_stale_compaction_status(handle, within_secs=0.0)
+    q["sA"].put_nowait(
+        JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={"status": {"type": "completed"}},
+        )
+    )
+
+    await handle.drain_init(duration=0.05, idle_exit=0.01, no_report_ceiling=0.0)
+
+    assert handle._unresolved_compaction_statuses is None
+    assert handle.last_prompt_stats.context_tokens_from_usage is False
+
+
+@pytest.mark.asyncio
 async def test_drain_init_repoisons_on_dead_runtime():
     """#1: a None sentinel (runtime died during init) is re-queued so the next
     consumer still sees the death, and drain stops."""

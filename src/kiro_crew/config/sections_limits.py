@@ -122,6 +122,13 @@ MAX_SUBAGENTS_FIXED_FLOOR = 3
 AUTOCOMPACT_PCT_MIN = 5.0
 AUTOCOMPACT_PCT_MAX = 90.0
 
+# session.idle_compaction_min_context_pct: the context use below which an idle
+# chat is never compacted. The floor is kiro's first-request break-even: below
+# about 40% the cold request a compaction saves is cheaper than the compaction
+# itself, so a hand-edited lower value loads as 40.
+IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN = 40.0
+IDLE_COMPACTION_MIN_CONTEXT_PCT_MAX = 90.0
+
 
 class AutocompactPctError(ValueError):
     """A per-session threshold refused by :func:`parse_autocompact_pct`.

@@ -37,6 +37,7 @@ from kiro_crew.messaging.renderer import display_safe
 from kiro_crew.session_compaction import (
     COMPACT_OUTCOME_CANCELLED,
     COMPACT_OUTCOME_COMPACTED,
+    COMPACT_OUTCOME_COMPACTED_IDLE,
     COMPACT_OUTCOME_RECYCLED,
     COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE,
     COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS,
@@ -119,6 +120,21 @@ def _record_crew_log_class(state: Any, slot: Any) -> None:
 
 
 _AUTO_COMPACT_NOTICE = "🔄 Auto-compacted at {pct:.0f}%."
+
+
+#: ``session.idle_compaction`` compacted a quiet chat. Says so, because the user who
+#: returns sees the context meter dropped with no turn of theirs to explain it.
+_AUTO_COMPACT_IDLE_NOTICE = (
+    "🔄 Compacted at {pct:.0f}% while this chat was idle, before its prompt cache expired."
+)
+
+
+#: A failed idle compaction, or one that reported no status. The session is kept
+#: and only the cooldown is armed, so the threshold failure notice's retry advice
+#: does not apply to it.
+_AUTO_COMPACT_IDLE_FAILED_NOTICE = (
+    "⚠ Compaction while this chat was idle didn't succeed; nothing was changed."
+)
 
 
 #: The notice for the arm that REPLACES the session instead of summarizing it. A
@@ -320,12 +336,16 @@ def wire_session_compact_callback(self: DashboardState) -> None:
             template = _AUTO_COMPACT_WAITING_NOTICE
         elif outcome == COMPACT_OUTCOME_CANCELLED:
             template = _AUTO_COMPACT_CANCELLED_NOTICE
+        elif not success and outcome == COMPACT_OUTCOME_COMPACTED_IDLE:
+            template = _AUTO_COMPACT_IDLE_FAILED_NOTICE
         elif not success:
             template = _AUTO_COMPACT_FAILED_NOTICE
         elif outcome == COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE:
             template = _AUTO_RESTART_UNCOMPACTABLE_NOTICE
         elif outcome == COMPACT_OUTCOME_RECYCLED:
             template = _AUTO_RECYCLE_NOTICE
+        elif outcome == COMPACT_OUTCOME_COMPACTED_IDLE:
+            template = _AUTO_COMPACT_IDLE_NOTICE
         else:
             template = _AUTO_COMPACT_NOTICE
         message = template.format(pct=pct)

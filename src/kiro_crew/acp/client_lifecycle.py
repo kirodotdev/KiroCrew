@@ -55,6 +55,7 @@ from kiro_crew.acp.client_timeouts import (
 from kiro_crew.acp.liveness import LivenessOracle, _consume_future_exception
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime_process_tree import ChildRecord
+from kiro_crew.acp.stale_compaction import clear_stale_compaction_state
 from kiro_crew.acp.transport_errors import (
     AcpDelegateLaunchFailed,
     AcpError,
@@ -700,6 +701,8 @@ def _reset_state(self: AcpClient) -> None:
     # harness transcript (restore_cost_session keeps the baseline). Zeroing
     # here re-billed the whole lifetime on the first turn after every resume.
     self._buffer.clear()
+    # The replacement process cannot send an abandoned compaction's terminal.
+    clear_stale_compaction_state(self)
     self._stderr_lines.clear()
     # A fresh process opens a fresh registration window: cleared WITH the
     # ring, so the latch and the evidence it gates always describe the same
