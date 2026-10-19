@@ -56,6 +56,7 @@ from kiro_crew.dashboard.slot_buffers import (
     DeferredHoldRebound,
     NoteEvidence,
     persist_deferred_notes_sync,
+    persist_held_markers_sync,
     serialize_deferred_notes,
     stamp_consumed_merge_cards_sync,
 )
@@ -63,6 +64,7 @@ from kiro_crew.dashboard.slot_persistence.metadata_line import _stamp_delivered_
 from kiro_crew.dashboard.state import _MAX_PENDING_CONTEXT, DashboardState
 from kiro_crew.execution_context import STRICTEST_MEMORY_MODE
 from kiro_crew.history import TRANSCRIPT_HEADER_MAX_BYTES, TranscriptWithheld
+from kiro_crew.session_directive import SECTION_MARKER_ROLE
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -210,7 +212,7 @@ class TestEnqueueDurability:
         running.cancel()
         slot.task = None
 
-        assert slot.flush_deferred_notes() == 0
+        assert slot.flush_deferred_notes(markers_only=False) == 0
         assert [note["content"] for note in slot._deferred_notes] == [
             "durable card",
             "later note",
@@ -260,7 +262,7 @@ class TestEnqueueDurability:
         running.cancel()
         slot.task = None
 
-        assert slot.flush_deferred_notes() == 0
+        assert slot.flush_deferred_notes(markers_only=False) == 0
         assert [note["content"] for note in slot._deferred_notes] == [
             "failed card",
             "later note",
@@ -377,6 +379,54 @@ class TestEnqueueDurability:
         assert not state.conversation_log._read_metadata(foreign_key).get(
             "deferred_notes"
         ), "nothing may be written into the transcript the rebind installed"
+
+    @pytest.mark.asyncio
+    async def test_an_unbound_channel_slot_persists_its_held_marker(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A slot whose session key is a phantom must still reach its own transcript.
+
+        An unbound channel slot resolves ``effective_session_key`` to ``dashboard:<name>``
+        while its rows live in the channel file, so the two keys differ with NO rebind in
+        play. Authorizing the write with the session key made the guard read that
+        difference as a foreign transcript and refuse, leaving the marker held and
+        undurable through exactly the crash window this seam exists to close.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        # The slot NAME is the channel transcript's stem, which is what makes
+        # slot_history_key resolve the channel file rather than a dashboard key.
+        slot = _seeded_slot(state, "slack_1785370133.085469")
+        slot.channel_origin = True
+        slot.linked_session_key = ""
+        transcript_key = slot_history_key(slot)
+        session_key = effective_session_key(slot)
+        assert session_key != transcript_key, (
+            "this slot does not reproduce the mismatch, so the test cannot see the bug: "
+            f"session={session_key!r} transcript={transcript_key!r}"
+        )
+        slot._deferred_notes.append(
+            {
+                "id": "unboundmark1",
+                "content": "— End of section: Phase one —",
+                "role": SECTION_MARKER_ROLE,
+                "cls": "section-marker",
+                "context": None,
+                "session": session_key,
+            }
+        )
+
+        # The guard compares TRANSCRIPT keys, so authorizing with the session key
+        # reads as a foreign transcript and is refused.
+        with pytest.raises(DeferredHoldRebound):
+            persist_held_markers_sync(state.conversation_log, slot, session_key)
+
+        # The transcript key -- what the seam now captures at admission -- is accepted,
+        # so the marker gets its durable copy instead of staying undurable.
+        persist_held_markers_sync(state.conversation_log, slot, transcript_key)
+        # Positive control: the hold is still HELD, not drained -- a release here would
+        # land the row before the re-queued turn's reply and move the boundary.
+        assert slot._deferred_notes, "the marker was released instead of persisted in place"
 
     @pytest.mark.asyncio
     async def test_rebind_dropped_note_is_refused_not_acknowledged(
@@ -992,7 +1042,7 @@ class TestRestartRoundTrip:
         waiting[AWAITING_DURABLE_WRITE] = True
         later = _hold_note(slot, "delivers later")
 
-        assert slot.flush_deferred_notes() == 0
+        assert slot.flush_deferred_notes(markers_only=False) == 0
 
         assert slot._deferred_notes == [waiting, later]
         assert not any(row.get("role") == "inject" for row in slot.messages)
@@ -1022,7 +1072,7 @@ class TestRestartRoundTrip:
 
         monkeypatch.setattr(type(slot), "append", no_room)
         with pytest.raises(OSError):
-            slot.flush_deferred_notes()
+            slot.flush_deferred_notes(markers_only=False)
 
         assert slot._pending_context == pending_before
         assert slot._deferred_notes[0]["context"]["content"] == "merge context"
@@ -1065,7 +1115,7 @@ class TestRestartRoundTrip:
 
         # First flush after the restart delivers exactly one copy.
         restored._titled = True
-        assert restored.flush_deferred_notes() == 1
+        assert restored.flush_deferred_notes(markers_only=False) == 1
         injected = [m for m in restored.messages if m.get("role") == "inject"]
         assert len(injected) == 1
         assert injected[0]["content"] == "survives the restart"
@@ -1111,7 +1161,7 @@ class TestRestartRoundTrip:
         restored = _rehydrate_slot_from_history(state, "rt2")
         assert restored is not None
         restored._titled = True
-        assert restored.flush_deferred_notes() == 1
+        assert restored.flush_deferred_notes(markers_only=False) == 1
         # No save happens: the "crash". The window (with the delivered row)
         # dies here; the durable hold on disk is what survives.
 
@@ -1145,7 +1195,7 @@ class TestRestartRoundTrip:
         assert _meta(state, slot).get("deferred_notes")
 
         # Drop at the rebind seam: memory drains, the disk copy stays.
-        assert slot.flush_deferred_notes() == 0
+        assert slot.flush_deferred_notes(markers_only=False) == 0
         assert slot._deferred_notes == []
         assert _meta(state, slot).get(
             "deferred_notes"
@@ -1157,7 +1207,7 @@ class TestRestartRoundTrip:
         assert restored is not None
         assert len(restored._deferred_notes) == 1
         restored._titled = True
-        assert restored.flush_deferred_notes() == 0
+        assert restored.flush_deferred_notes(markers_only=False) == 0
         assert not any(m.get("role") == "inject" for m in restored.messages)
 
         # The save retires the dropped entry (the live hold is empty).
@@ -1191,7 +1241,7 @@ class TestRestartRoundTrip:
 
         # The turn-end flush delivers A into the in-memory window; no save yet.
         slot._titled = True
-        assert slot.flush_deferred_notes() == 1
+        assert slot.flush_deferred_notes(markers_only=False) == 1
 
         # A new note lands and persists while A's row is still unsaved.
         slot._deferred_notes.append(
@@ -1239,7 +1289,7 @@ class TestRestartRoundTrip:
         )
         assert _persist(state, slot).written is True
         slot._titled = True
-        assert slot.flush_deferred_notes() == 1  # A's row is now in the window
+        assert slot.flush_deferred_notes(markers_only=False) == 1  # A's row is now in the window
 
         # B lands durably AFTER the flush — the racing enqueue: on disk (and
         # held live), its row nowhere.
@@ -1287,7 +1337,7 @@ class TestRestartRoundTrip:
             }
         )
         assert _persist(state, slot).written is True
-        assert slot.flush_deferred_notes() == 0  # dropped at the rebind seam
+        assert slot.flush_deferred_notes(markers_only=False) == 0  # dropped at the rebind seam
         assert slot._dropped_note_ids == {"droppedid001"}
 
         real_atomic_write = cp.atomic_write
@@ -1353,7 +1403,7 @@ class TestRebindDropArmsTheSave:
         note["session"] = effective_session_key(slot) + "-stale"
 
         slot._dirty = False
-        dropped = slot.flush_deferred_notes()
+        dropped = slot.flush_deferred_notes(markers_only=False)
 
         assert dropped == 0, "a rebound note is dropped, not delivered"
         assert "rebinddirty1" in slot._dropped_note_ids

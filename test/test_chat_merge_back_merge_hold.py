@@ -624,7 +624,7 @@ class TestMerge:
 
         assert restored is not None
         assert [entry.get("consumed") for entry in restored._deferred_notes] == [True]
-        assert restored.flush_deferred_notes() == 1
+        assert restored.flush_deferred_notes(markers_only=False) == 1
         assert len(_cards(restored)) == 1
         assert restored._pending_context == []
 
@@ -1166,7 +1166,7 @@ class TestMerge:
         assert _cards(restored) == []
         assert restored._deferred_notes == []
         assert [entry["content"] for entry in restored._pending_context] == ["rotated summary"]
-        restored.flush_deferred_notes()
+        restored.flush_deferred_notes(markers_only=False)
         state.flush_slot_now(restored)
         rows = state.conversation_log.read_messages_chained_full(key)
         assert (
@@ -1400,7 +1400,7 @@ class TestMerge:
                 entered.is_set, describe=lambda: "the failed card write never entered its hold"
             )
             chats.parent.task = None
-            chats.parent.flush_deferred_notes()
+            chats.parent.flush_deferred_notes(markers_only=False)
             release.set()
             status, body = await await_until(merging, what="the failed card-write merge completion")
             shown, held = _cards(chats.parent), list(chats.parent._deferred_notes)
@@ -1436,7 +1436,7 @@ class TestMerge:
                 entered.is_set, describe=lambda: "the successful card write never entered its hold"
             )
             chats.parent.task = None
-            chats.parent.flush_deferred_notes()
+            chats.parent.flush_deferred_notes(markers_only=False)
             kept_back = _cards(chats.parent)
             release.set()
             status, body = await await_until(
@@ -1607,7 +1607,7 @@ class TestMerge:
 
         assert (status, again["code"]) == (409, "already_merged")
         chats.parent.task = None
-        chats.parent.flush_deferred_notes()
+        chats.parent.flush_deferred_notes(markers_only=False)
         (card,) = _cards(chats.parent)
         assert card["meta"][MERGED_FROM_META_KEY]["through"] == draft["through"]
 

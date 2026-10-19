@@ -485,7 +485,7 @@ class TestMerge:
                 log.update_metadata, slot_history_key(chats.fork), {"memory_mode": "incognito"}
             )
             chats.parent.task = None
-            chats.parent.flush_deferred_notes()
+            chats.parent.flush_deferred_notes(markers_only=False)
             resume.set()
             status, body = await await_until(merging, what="the private-fork merge completion")
 
@@ -551,7 +551,7 @@ class TestMerge:
             assert _cards(chats.parent) == []
             # The twin's turn ends; its window has the card, not yet on disk.
             twin.task = None
-            twin.flush_deferred_notes()
+            twin.flush_deferred_notes(markers_only=False)
             again, refused = await _draft(client)
 
         assert [c["meta"][MERGED_FROM_META_KEY]["slot"] for c in _cards(twin)] == ["fork"]
@@ -809,7 +809,7 @@ class TestMerge:
             status, body = await _merge(client, "held durable summary", draft)
         assert (status, body["deferred"]) == (200, True)
         chats.parent.task = None
-        assert chats.parent.flush_deferred_notes() == 1
+        assert chats.parent.flush_deferred_notes(markers_only=False) == 1
         state.flush_slot_now(chats.parent)
 
         del state._slots["parent"]
@@ -900,7 +900,7 @@ class TestMerge:
         restored = state._slots["parent"]
         assert _cards(restored) == []
         assert [entry["content"] for entry in restored._deferred_notes] == ["write-race summary"]
-        assert restored.flush_deferred_notes() == 1
+        assert restored.flush_deferred_notes(markers_only=False) == 1
         assert [card["content"] for card in _cards(restored)] == ["write-race summary"]
         assert [entry["content"] for entry in restored._pending_context] == ["write-race summary"]
         prompts = await _run_turn(state, restored, "continue")
@@ -1338,7 +1338,7 @@ class TestMerge:
         assert held["context"]["content"] == "late summary"
         assert any("kept a merge card held" in record.message for record in caplog.records)
 
-        assert parent.flush_deferred_notes() == 1
+        assert parent.flush_deferred_notes(markers_only=False) == 1
         [card] = _cards(parent)
         assert card["content"] == "late summary"
         queued = [e for e in parent._pending_context if e.get("noteId") == card["meta"]["noteId"]]
@@ -1366,7 +1366,7 @@ class TestMerge:
             "rows-only rotated summary"
         ]
 
-        restored.flush_deferred_notes()
+        restored.flush_deferred_notes(markers_only=False)
         state.flush_slot_now(restored)
         rows = state.conversation_log.read_messages_chained_full(key)
         assert (
@@ -1433,7 +1433,7 @@ class TestMerge:
         assert [entry["content"] for entry in restored._deferred_notes] == [
             "restart-safe twin summary"
         ]
-        assert restored.flush_deferred_notes() == 1
+        assert restored.flush_deferred_notes(markers_only=False) == 1
         assert [card["content"] for card in _cards(restored)] == ["restart-safe twin summary"]
         assert restored._pending_context == []
 

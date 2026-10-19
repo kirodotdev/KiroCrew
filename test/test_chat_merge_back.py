@@ -426,7 +426,7 @@ class TestHeldMergeNote:
 
         restored = sanitize_restored_deferred_notes(serialize_deferred_notes([held]))
         slot._deferred_notes = restored
-        slot.flush_deferred_notes()
+        slot.flush_deferred_notes(markers_only=False)
 
         row = slot.messages[-1]
         assert row["role"] == "inject"

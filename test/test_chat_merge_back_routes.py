@@ -444,7 +444,7 @@ class TestEndToEndWithTheForkRoute:
         assert (status, body["deferred"]) == (200, True), body
         assert _cards(replacement) == []
         replacement.task = None
-        replacement.flush_deferred_notes()
+        replacement.flush_deferred_notes(markers_only=False)
         [card] = _cards(replacement)
         assert card["content"] == "Redis works."
         note_id = card["meta"]["noteId"]
@@ -968,7 +968,7 @@ class TestCarrierClosedAfterTheCard:
         assert "Redis works." not in [entry["content"] for entry in twin._pending_context]
         twin.task.cancel()
         twin.task = None
-        assert twin.flush_deferred_notes() == 1
+        assert twin.flush_deferred_notes(markers_only=False) == 1
         assert twin._pending_context[-1]["content"] == "held plain note"
 
 

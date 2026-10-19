@@ -681,6 +681,7 @@ from kiro_crew.session_agent_selection import (  # noqa: F401
     restore_agent_selection,
     session_agent_selection_name,
 )
+from kiro_crew.session_directive import default_row_cls  # noqa: F401
 from kiro_crew.session_lifecycle import compaction_in_flight  # noqa: F401
 from kiro_crew.session_summary import count_user_turns_in_records  # noqa: F401
 from kiro_crew.start_priority import person_priority  # noqa: F401

@@ -12,6 +12,7 @@ if TYPE_CHECKING:
         _ChatSlot,
         _redact_meta_for_role,
         carry_provenance,
+        default_row_cls,
         logger,
         redact_credentials,
         redact_exfiltration_urls,
@@ -114,7 +115,7 @@ async def _reconcile_slot_window(state: DashboardState, slot: "_ChatSlot") -> No
     )
     for msg in fresh:
         role = msg.get("role", "assistant")
-        cls = msg.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
+        cls = msg.get("cls") or default_row_cls(role)
         content = msg.get("content", "")
         if role != "user":
             content, _ = redact_exfiltration_urls(content)

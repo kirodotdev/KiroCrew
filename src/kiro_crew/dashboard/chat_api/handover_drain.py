@@ -301,7 +301,7 @@ async def _persist_handover_tail(
                 name,
             )
         try:
-            slot.flush_deferred_notes(broadcast=False, retain=False)
+            slot.flush_deferred_notes(markers_only=False, broadcast=False, retain=False)
         except Exception:
             _report_held_note_preparation_failure()
             # A held note IS a row owed that did not reach disk, which the contract

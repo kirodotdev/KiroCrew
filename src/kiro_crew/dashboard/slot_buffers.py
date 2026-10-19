@@ -12,10 +12,13 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from kiro_crew import validation
 from kiro_crew.history_derivation import TRANSCRIPT_HEADER_MAX_BYTES
 from kiro_crew.history_projection import METADATA_LINE_CORRUPT, metadata_record_for_update
 from kiro_crew.jsonl_util import bounded_records
+from kiro_crew.security import redact
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import SECTION_MARKER_ROLE
 from kiro_crew.session_lifecycle import STOP_DECLINED_KEY_MAX_CHARS
 
 logger = logging.getLogger(__name__)
@@ -265,6 +268,13 @@ def serialize_deferred_notes(notes: list[dict[str, Any]]) -> list[dict[str, Any]
     what the 200 accepted. The note's ``id`` rides along: it is what lets the
     merge writers tell "this disk entry is still held" from "this disk entry
     was already delivered or dropped in memory".
+
+    ``role`` and ``meta`` ride along too, because the hold carries section-marker
+    rows as well as ``/note`` entries and they are what MAKE it a marker. Dropping
+    them restored a marker as a role-less entry, which the flush defaults to
+    ``inject`` — the label text survived but the chapter rule came back as an
+    ordinary note row. :func:`sanitize_restored_deferred_notes` re-validates both
+    on the way back in, since the metadata line is a trust boundary.
     """
     out: list[dict[str, Any]] = []
     for note in notes:
@@ -293,6 +303,12 @@ def serialize_deferred_notes(notes: list[dict[str, Any]]) -> list[dict[str, Any]
             consumed = note.get("consumed")
             if isinstance(consumed, bool):
                 entry["consumed"] = consumed
+        role = note.get("role")
+        if isinstance(role, str) and role:
+            entry["role"] = role
+        meta = note.get("meta")
+        if isinstance(meta, dict):
+            entry["meta"] = dict(meta)
         out.append(entry)
     return out
 
@@ -571,6 +587,32 @@ def _sanitize_restored_context(raw: object) -> dict[str, Any] | None:
     return entry
 
 
+def _restored_marker_label(meta: object) -> str:
+    """A restored marker label, made safe for the live broadcast.
+
+    The metadata line is a trust boundary and the flushed marker row is broadcast
+    with its ``meta`` merged verbatim, so this re-derives the label instead of
+    trusting it: shape first via ``SECTION_MARKER_SCHEMA``, then the same
+    redaction pass every other label surface applies.
+
+    Over-cap input is REJECTED, never truncated. Cutting a credential mid-pattern
+    leaves a fragment the redactors miss, so a length check that trims
+    would defeat the scrub it precedes. The cap is re-applied only AFTER redaction,
+    where the value is already scrubbed and a tag may have lengthened it.
+    """
+    if not isinstance(meta, dict):
+        return ""
+    label = meta.get("label")
+    cap = validation.max_section_label()
+    if not isinstance(label, str) or len(label) > cap:
+        return ""
+    try:
+        cleaned = validation.validate_tool_args({"label": label}, validation.SECTION_MARKER_SCHEMA)
+    except validation.ValidationError:
+        return ""
+    return redact(cleaned.get("label") or "")[:cap]
+
+
 def sanitize_restored_deferred_notes(raw: object) -> list[dict[str, Any]]:
     """Validate a persisted ``deferred_notes`` value back into hold entries.
 
@@ -642,6 +684,7 @@ def sanitize_restored_deferred_notes(raw: object) -> list[dict[str, Any]]:
             and not SOURCE_LABEL_CTRL_RE.search(raw_source)
             else ""
         )
+        is_marker = item.get("role") == SECTION_MARKER_ROLE
         restored: dict[str, Any] = {
             # A missing or invalid id gets a fresh one so the entry stays
             # addressable by the enqueue persist's merge after the restore.
@@ -652,7 +695,9 @@ def sanitize_restored_deferred_notes(raw: object) -> list[dict[str, Any]]:
                 and len(note_id) <= MAX_DEFERRED_NOTE_ID_CHARS
                 else uuid.uuid4().hex[:MAX_DEFERRED_NOTE_ID_CHARS]
             ),
-            "content": content,
+            # Marker only: a marker's drawn field is rebuilt here, while a note's
+            # content is already scrubbed by the enqueue that wrote it to disk.
+            "content": redact(content) if is_marker else content,
             "cls": (
                 cls
                 if isinstance(cls, str) and cls and len(cls) <= MAX_DEFERRED_NOTE_CLASS_CHARS
@@ -673,6 +718,11 @@ def sanitize_restored_deferred_notes(raw: object) -> list[dict[str, Any]]:
             consumed = item.get("consumed")
             if isinstance(consumed, bool):
                 restored["consumed"] = consumed
+        # Only the marker role is admitted back. Echoing the on-disk string would
+        # let a tampered file mint any transcript role the renderer honours.
+        if is_marker:
+            restored["role"] = SECTION_MARKER_ROLE
+            restored["meta"] = {"label": _restored_marker_label(item.get("meta"))}
         notes.append(restored)
     return notes
 
@@ -796,6 +846,39 @@ def stamp_consumed_merge_cards_sync(
                         durable_ids.add(row_note_id)
             durable.extend((note_id, transcript) for note_id in note_ids if note_id in durable_ids)
     return durable
+
+
+def persist_held_markers_sync(
+    conversation_log: Any,
+    slot: Any,
+    authorized_history_key: str,
+) -> DeferredHoldOutcome | None:
+    """Give a held marker a durable copy WITHOUT releasing it.
+
+    The empty-response re-queue needs both halves of this and they pull apart: a
+    marker with no durable copy is lost outright if the process exits before the
+    next save, while a marker RELEASED here lands its row BEFORE the re-queued
+    turn's reply is appended, moving the boundary it exists to assert — and that
+    one is unrecoverable, because the row is then permanently early in the
+    persisted transcript rather than merely missing.
+
+    So the HOLD is persisted instead of drained: the metadata line carries the
+    marker across a restart, and the row itself stays held for the seam after the
+    recovery turn lands, which is the seam that actually owes it.
+
+    Returns the merge outcome, or ``None`` when no marker is held. The merge lands
+    only in an EXISTING metadata line, so on a fresh slot it reports
+    ``written=False`` and the caller must save the slot to create one.
+    """
+    held = getattr(slot, "_deferred_notes", None) or ()
+    if not any(
+        isinstance(note, dict) and (note.get("role") or "inject") == SECTION_MARKER_ROLE
+        for note in held
+    ):
+        return None
+    # No ``ensure`` pin: nothing is being acknowledged to a caller here, so there is
+    # no single note whose absence from the live list would need forcing into the write.
+    return persist_deferred_notes_sync(conversation_log, slot, {}, authorized_history_key)
 
 
 def persist_deferred_notes_sync(
@@ -1136,6 +1219,7 @@ class SlotBufferCoordinator:
         slot: Any,
         *,
         logger: logging.Logger,
+        markers_only: bool,
         broadcast: bool = True,
         retain: bool | None = None,
     ) -> int:
@@ -1173,6 +1257,29 @@ class SlotBufferCoordinator:
         A restored sidebar row whose window is still pending is loaded first,
         because that load settles the hold against the committed rows, and a
         copy taken before it would deliver those notes again.
+
+        Each delivered inject row carries its note id in
+        ``meta.noteId``, and the full save retires a durable entry exactly
+        when the window it writes contains that id — so the delivered row and
+        the retirement land in one atomic file write, whatever the
+        flush/save/enqueue interleaving is. A note dropped at the rebind
+        seam records its id in ``slot._dropped_note_ids`` instead, and the
+        next save retires it from there. A crash before the save re-delivers
+        the note on restore: at-least-once, the correct failure direction
+        for a delivery promise.
+
+        The hold carries two element classes, and ``markers_only`` picks which one
+        leaves:
+
+        - ``False`` releases EVERY held row, markers and notes alike. Pass it at a
+          seam that ends the turn the notes were held for.
+        - ``True`` releases the section-marker rows ONLY and leaves the notes held.
+          Pass it at a seam that owes a ``/note`` to the next USER turn but must
+          still let a boundary out.
+
+        They differ because the two classes mean different things when late: a note
+        is a message, so delaying it is delivery, while a marker is a boundary, so
+        delaying it relocates the boundary.
         """
         if not slot._deferred_notes:
             return 0
@@ -1186,8 +1293,19 @@ class SlotBufferCoordinator:
         # circular import: chat_utils imports the state facade, which imports this module.
         from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 
-        held = slot._deferred_notes[:]
-        slot._deferred_notes.clear()
+        def _role(note: dict) -> str:
+            return note.get("role") or "inject"
+
+        if not markers_only:
+            held = slot._deferred_notes[:]
+            slot._deferred_notes.clear()
+        else:
+            held = [n for n in slot._deferred_notes if _role(n) == SECTION_MARKER_ROLE]
+            if not held:
+                return 0
+            slot._deferred_notes[:] = [
+                n for n in slot._deferred_notes if _role(n) != SECTION_MARKER_ROLE
+            ]
         live_session = effective_session_key(slot)
         if retain is None:
             retain = bool(getattr(slot, "_closing", False))
@@ -1343,6 +1461,15 @@ class SlotBufferCoordinator:
             # before _on_card_event / _on_message). A row that landed despite a
             # callback exception is treated as written: context is promoted and
             # the note is not retried.
+            # ``noteSession`` is stamped ONLY on a note row: the note wire contract
+            # (``website/src/lib/noteContract.ts``) calls ANY row carrying it a note.
+            role = _role(note)
+            if role == "inject":
+                delivered_meta = row_meta
+            else:
+                delivered_meta = dict(note.get("meta") or {})
+                if isinstance(note_id, str) and note_id:
+                    delivered_meta["noteId"] = note_id
             _pre_inject_len = len(slot.messages)
             try:
                 # Visible row before any other note's context: that context is
@@ -1350,11 +1477,11 @@ class SlotBufferCoordinator:
                 # raise here cannot leave an orphaned context entry in the pending
                 # queue (a card's seat, taken above, is given back below).
                 slot.append(
-                    role="inject",
+                    role=role,
                     content=note["content"],
                     cls=note["cls"],
                     broadcast=broadcast,
-                    meta=row_meta,
+                    meta=delivered_meta,
                 )
             except Exception:
                 if len(slot.messages) > _pre_inject_len:
@@ -1465,7 +1592,7 @@ def flush_restored_hold(slot: Any, *, logger: logging.Logger) -> None:
     if not slot._deferred_notes or slot.turn_running:
         return
     try:
-        slot.flush_deferred_notes()
+        slot.flush_deferred_notes(markers_only=False)
     except Exception:
         # The flush puts the unwritten suffix back before raising, so the next
         # seam still delivers it; the turn itself goes on.

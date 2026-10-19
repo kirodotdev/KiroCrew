@@ -8,18 +8,8 @@
  * everything nondeterministic is pinned here — animations off, fixed
  * timestamps, fixed viewport, DSF 1.
  */
-import { createRoot } from 'react-dom/client'
-import { MemoryRouter } from 'react-router-dom'
-import { Provider } from 'react-redux'
-import { configureStore } from '@reduxjs/toolkit'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { initI18n } from '../src/i18n'
-import chatReducer from '../src/store/chatSlice'
-import dashboardReducer from '../src/store/dashboardSlice'
-import notificationsReducer from '../src/store/notificationsSlice'
-import { ThemeProvider } from '../src/hooks/useTheme'
-import type { RootState } from '../src/store'
-import ChatPage from '../src/pages/ChatPage'
+import { mountChatPage } from './chatpage-mount'
 import '../src/index.css'
 
 initI18n('en')
@@ -56,50 +46,4 @@ const mkShort = (): Msg[] => mkLong().slice(0, 2)
 const messages = scene === 'short' || busyScene ? mkShort() : mkLong()
 ;(window as unknown as { __CAPTURE_MESSAGES__: Msg[] }).__CAPTURE_MESSAGES__ = messages
 
-const store = configureStore({
-  reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
-  preloadedState: {
-    dashboard: {
-      status: null,
-      slots: [{ key: 'slot-a', title: 'scroll-shell fixture', messages: messages.length, running: busyScene, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
-      slotsLoaded: true,
-      unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
-      subagentRunning: {}, subagentDetails: {}, subagentText: {},
-    } as unknown as RootState['dashboard'],
-    chat: {
-      activeSlot: 'slot-a', messages,
-      slotRunning: busyScene, slotStopping: false, slotState: busyScene ? 'streaming' : 'idle',
-      history: [], historyHasMore: false, pendingInput: null,
-      subagents: {}, toolLog: [], activityOpen: false, activityTab: 'tools',
-      // The paging scene photographs the two states the shell extraction moved
-      // across the file boundary: the earlier-messages bar (aboveRows slot,
-      // gated on slotHasMore) and the sticky older-messages spinner
-      // (loadingOlder). Only the loadOlderMessages thunk flips loadingOlder,
-      // so a preloaded true survives the mount refetch.
-      slotHasMore: scene === 'paging', slotOldestIndex: scene === 'paging' ? 4 : 0, loadingOlder: scene === 'paging',
-      // The paging chrome (earlier-messages bar, minimap end-cap) is also gated
-      // on the paging cursor belonging to the active slot.
-      slotCursorKey: scene === 'paging' ? 'slot-a' : null,
-      slotStatusDetail: {}, slotContextPct: {}, slotActivity: {}, slotHistory: [],
-      historyOffset: 0, _wsChunkedDuringFetch: false,
-      slotMessages: {}, slotLoading: false,
-    } as unknown as RootState['chat'],
-    notifications: { items: [] } as unknown as RootState['notifications'],
-  },
-})
-
-const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-
-createRoot(document.getElementById('root')!).render(
-  <QueryClientProvider client={qc}>
-    <Provider store={store}>
-      <ThemeProvider>
-        <MemoryRouter>
-          <div data-capture-root style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
-            <ChatPage />
-          </div>
-        </MemoryRouter>
-      </ThemeProvider>
-    </Provider>
-  </QueryClientProvider>,
-)
+mountChatPage({ messages, title: 'scroll-shell fixture', busy: busyScene, paging: scene === 'paging' })

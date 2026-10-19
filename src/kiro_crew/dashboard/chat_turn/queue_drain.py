@@ -549,6 +549,23 @@ def _record_queued_crew_steers(state: DashboardState, consumed: list[dict]) -> N
             logger.warning("crew steer: a queued steer was not recorded", exc_info=True)
 
 
+def _next_queued_is_recovery_continuation(slot: _ChatSlot) -> bool:
+    """Whether the head of the queue continues THIS turn rather than succeeding it.
+
+    A recovery re-queue (a continuation or a false-tool-blocker replay): the reply
+    it produces is the one a pending boundary CLOSES, not the first row of the next
+    unit of work. Releasing a held marker ahead of it would therefore place the
+    boundary one row too early, and permanently — the row is in the transcript.
+
+    Distinct from the origin-tag withhold beside it, which asks whether the successor
+    is a USER turn. A cron notification IS a successor whose rows a boundary precedes;
+    this one is not a successor at all.
+    """
+    if not slot._queue:
+        return False
+    return is_synthetic_recovery_item(slot._queue[0])
+
+
 async def _start_next_queued_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -654,9 +671,15 @@ async def _start_next_queued_turn(
     # notification or a runner-injected recovery prompt -- for the same reason
     # _finish_queue_cycle withholds from synthesis: a note is owed to the next
     # USER turn, and that cycle's own flush delivers it afterwards.
-    if not (slot._queue and slot._queue[0].get("kind")):
+    # A recovery re-queue is skipped whole: it CONTINUES this turn, so neither class is
+    # due -- the marker would land before the reply it closes, the note before a non-user turn.
+    if not _next_queued_is_recovery_continuation(slot):
+        # A marker is exempt from the origin-tag withhold: a note is a MESSAGE owed
+        # to the next user turn, but a marker is a BOUNDARY, so holding it past the
+        # successor moves the seam over rows it never covered.
+        structural_next = bool(slot._queue and slot._queue[0].get("kind"))
         try:
-            slot.flush_deferred_notes()
+            slot.flush_deferred_notes(markers_only=structural_next)
         except Exception:
             # Everything below this point is the successor handoff -- the dequeue,
             # the row append and spawn_guarded_turn. A raise here would return
