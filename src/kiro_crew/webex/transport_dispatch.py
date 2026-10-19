@@ -43,16 +43,35 @@ by the shared pipeline off ``ctx_builder.hooks`` (channel-neutral) so this
 module never imports ``kiro_crew.slack``.
 
 Dependency direction is ``webex -> messaging`` (allowed).
+
+``WebexDispatcher`` is composed from the owners beside this module: where a message
+belongs and where its reply goes (``transport_dispatch_origin``), the answers to what a
+turn posted -- a typed approval reply and an Adaptive Card press
+(``transport_dispatch_interactions``) -- and the ``/model``, ``/sessions``, ``/yolo``
+and ``/kirocrew dashboard`` handlers (``transport_dispatch_commands``). Each owner's
+methods are bound below as class attributes of the same name. This module keeps the
+dispatcher's state and its own send path (``_reply``), the inbound front door
+(``handle_message``), the mid-turn steer-or-queue arm, the queue receipt and drain,
+``/stop``, ``/link``, ``/unlink``, ``/compact``, the context-length notice and the
+conversation-identity helpers; repository guards read the front door, the drain, the
+receipt, ``/stop``, ``/link``'s mirror admission and the notice's context-usage read in
+this file. It stays the only import path and patch surface, and
+:mod:`kiro_crew._facade_mirror` sends a patch of any name it binds to every owner
+holding the same object. Which owner takes new work is recorded in
+``docs/system-specs/modules/messaging.md`` (Webex's dispatcher composition).
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib as _importlib
 import logging
+import sys as _sys
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+from kiro_crew import _facade_mirror
 from kiro_crew.agent_switch_command import ChannelAgentPicks, handle_channel_agent_command
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
@@ -113,6 +132,8 @@ from kiro_crew.session_lifecycle import (
 )
 from kiro_crew.start_priority import person_priority
 from kiro_crew.webex import cards
+from kiro_crew.webex import transport_dispatch_commands as _commands
+from kiro_crew.webex import transport_dispatch_interactions as _interactions
 from kiro_crew.webex.attachments import process_webex_attachments
 from kiro_crew.webex.cards import LiveChoices, read_press
 from kiro_crew.webex.client import WebexInbound
@@ -128,6 +149,17 @@ from kiro_crew.webex.commands import (
 )
 from kiro_crew.webex.renderer import WebexRenderer, webex_display_safe
 from kiro_crew.webex.transport import ROOM_DIRECT, WEBEX_CAPABILITIES
+from kiro_crew.webex.transport_dispatch_interactions import _APPROVALS
+from kiro_crew.webex.transport_dispatch_origin import (
+    _CHANNEL,
+    _ROOT_THREAD,
+    _chat_type_of,
+    _entry_owner,
+    _queued_place,
+    _QueuedPlace,
+    _reply_envelope,
+    _route_of,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
@@ -169,212 +201,6 @@ _COMPACT_FAILURE_TYPES = frozenset(("failed", "timeout"))
 # bug rather than as "your file is waiting".
 _QUEUED_ATTACHMENT_LABEL = "(attachment)"
 
-#: This channel's name in the shared queue-drain contract
-#: (``messaging/queue_drain.py``). ONE constant, used both to tag the entries this
-#: dispatcher produces and to register its drain, because a tag that does not match the
-#: registration cannot be woken for its own entries. The neutral key those entries carry
-#: it under is defined in that module, not here: a per-module copy of the string fails
-#: silently, making this channel's entries unowned to every drain.
-_CHANNEL = "webex"
-
-#: Prefix the queued envelope fields take on a queue entry.
-_ORIGIN_PREFIX = "webex_"
-
-
-class _QueuedPlace(NamedTuple):
-    """Where one queued Webex message's reply goes, and who sent it.
-
-    Recorded per QUEUED MESSAGE and NOT inherited from the envelope that opened the
-    finished turn: under ``messaging.dm_scope = "unified"`` every allow-listed person's
-    direct room collapses onto one session key, so one queue holds messages from several
-    people, and a turn replayed under the opener's envelope answers one person's text in
-    another person's room, attributed to them.
-
-    ``room_type`` rides along because it is what ``_route_of`` reads to decide whether a
-    message routes to a person or to a space, and therefore which SESSION KEY the replay
-    resolves to. A replay that inherited the wrong one would run against a different
-    session than the one the message was queued on.
-    """
-
-    room_id: str
-    parent_id: str
-    person_email: str
-    room_type: str
-
-    @property
-    def sender_key(self) -> tuple[str, str, str]:
-        """WHO sent this and WHERE the reply goes: sender, room, and thread root.
-
-        Two entries may be collapsed into one turn exactly when all three match, because
-        one turn gets one envelope and one audited caller.
-
-        The sender is in the key, not just the conversation. A GROUP SPACE routes as
-        ``space:{room_id}``, and ``_session_key`` takes that route -- so every
-        allow-listed member of one space shares one session key and one queue under ANY
-        ``dm_scope``, not only under ``unified``. Keying on room and thread alone would
-        collapse two members' mid-turn messages into one turn, and
-        :func:`_reply_envelope` stamps the FIRST entry's email, so the second member's
-        text would run and be SEL-audited as the first member. Delivery into the shared
-        space would look right, which is what makes the misattribution the lasting half.
-
-        Room and thread stay in the key beside the sender: a different room is reachable
-        whenever a unified key puts two people on one queue, and a different thread
-        whenever ``reply_in_thread`` is on, so mixing either would answer text into a
-        conversation it did not come from.
-        """
-        return (self.person_email, self.room_id, self.parent_id)
-
-
-def _entry_owner(inbound: "WebexInbound") -> str:
-    """The neutral token naming the principal *inbound* came from.
-
-    Built from the same three values ``_QueuedPlace.sender_key`` compares -- sender, room
-    and thread root -- so "whose entry is this" and "may these collapse into one turn"
-    can never answer differently. ``/stop`` compares it to drop one person's queued
-    messages and leave everybody else's, which matters under ANY ``dm_scope`` here: a
-    group space routes as ``space:{room_id}``, so every allow-listed member of one space
-    already shares a session key and a queue.
-    """
-    return owner_token(_CHANNEL, (inbound.person_email, inbound.room_id, inbound.parent_id))
-
-
-def _queued_place(kwargs: dict) -> _QueuedPlace | None:
-    """An owned entry's place, or None if ANOTHER channel recorded it.
-
-    Ownership is decided on the NEUTRAL channel tag, never on whether a ``webex_`` key
-    happens to be present. That distinction is the whole fix: a foreign entry carries no
-    ``webex_room_id``, and reading it with a default produced ``""`` -- which then became
-    THE room for the drained turn, so another transport's message was answered into an
-    empty room under an empty identity, and was consumed off the queue while doing it.
-
-    For an entry this channel DID record, the fields are REQUIRED: a missing key raises a
-    ``KeyError`` naming it, and an empty ``room_id`` raises too, because that is the value
-    that would address a reply at nothing. Both producers are in this module
-    (``_enqueue_with_receipt``, and the drain's own re-enqueue which passes an entry's own
-    kwargs straight back), so either is a producer bug here -- and a silent misdelivery is
-    a worse outcome than a loud failure. The queue is an in-process list on a live
-    session, so there is no entry persisted by an older build to be lenient towards.
-    """
-    if entry_channel(kwargs) != _CHANNEL:
-        return None
-    place = _QueuedPlace(
-        room_id=str(kwargs[f"{_ORIGIN_PREFIX}room_id"] or ""),
-        parent_id=str(kwargs[f"{_ORIGIN_PREFIX}parent_id"] or ""),
-        person_email=str(kwargs[f"{_ORIGIN_PREFIX}person_email"] or ""),
-        room_type=str(kwargs[f"{_ORIGIN_PREFIX}room_type"] or ""),
-    )
-    if not place.room_id:
-        raise KeyError(f"{_ORIGIN_PREFIX}room_id")
-    return place
-
-
-def _reply_envelope(
-    inbound: "WebexInbound | None", place: _QueuedPlace, *, person_origin: bool
-) -> "WebexInbound":
-    """The envelope a drained turn answers under: the QUEUED entry's, never the opener's.
-
-    *person_origin* is the queued entries' own flag, never the opener's: the finished
-    turn can have been opened by a gateway-built wake, and a wake can itself have been
-    queued (kiro_crew.start_priority).
-
-    Built on *inbound* when the finished turn had one, so a field this replay does not
-    address (the spool's ``message_id``, card inputs) keeps whatever that turn carried.
-    When a PEER channel woke this drain there is no such envelope, and a bare one is
-    correct rather than a fallback: every field that addresses or attributes the reply
-    comes from *place*, and deliberately stashing a "last seen" inbound would reintroduce
-    the defect this module fixes, one channel further out.
-    """
-    base = inbound if inbound is not None else WebexInbound(person_email="", room_id="", text="")
-    return replace(
-        base,
-        room_id=place.room_id,
-        parent_id=place.parent_id,
-        person_email=place.person_email,
-        room_type=place.room_type,
-        person_origin=person_origin,
-    )
-
-
-# How many conversations ``/sessions`` prints. A Webex message is byte-capped,
-# and a list longer than this stops being scannable anyway.
-_SESSIONS_LIST_MAX = 15
-
-# What to say when an answer arrives with no prompt waiting. Deliberately does
-# NOT claim a denial: this is reached both when the window timed out (denied) and
-# when the OTHER affordance already answered (possibly approved) — and the second
-# is the common case, because Webex refuses to edit a message carrying an
-# attachment, so a resolved card's buttons stay clickable forever. Telling a user
-# their approved tool was denied is worse than telling them nothing changed.
-_APPROVAL_NOT_PENDING = (
-    "⌛ That prompt is already answered or timed out — no new decision was sent."
-)
-
-# The typed answers an approval prompt accepts: EXACTLY what the prompt asks for,
-# and nothing else.
-#
-# The temptation is to be generous — "ok", "yes", "y", "sure" — and it is the
-# wrong instinct in this one place, asymmetrically so. A too-narrow set costs the
-# user a retry after an explicit "that is not 1 or 2". A too-wide one silently
-# APPROVES A TOOL: "ok" is an extremely common thing to type into a chat, a
-# pending prompt makes any message a candidate answer, and the user who typed it
-# as conversation gets no signal that they just authorised a write. So the
-# accepted words are the two digits the prompt names, plus the two verbs that
-# cannot be mistaken for conversational filler.
-_APPROVE_REPLIES = frozenset(("1", "approve"))
-_DENY_REPLIES = frozenset(("2", "deny"))
-
-#: Process-global approval registry for this channel. Module scope because a
-#: pending prompt must outlive the dispatcher method that created it and be
-#: resolvable from a later inbound frame, which is a different call stack.
-_APPROVALS = PendingApprovals("webex")
-
-#: Scope-path segment marking a route that addresses a SPACE, not a person. A
-#: Webex room id is an opaque base64 blob with no colon, so this prefix is what
-#: tells the two route kinds apart everywhere one is read.
-_SPACE_ROUTE_PREFIX = "space:"
-
-#: The thread component of a receipt address when the bubble sits in the room
-#: ROOT rather than under a thread -- either because ``reply_in_thread`` is off,
-#: or because the message it receipts arrived outside any thread.
-#:
-#: A stand-in is required rather than an empty component:
-#: :func:`~kiro_crew.messaging.queue_receipt.receipt_address_key` reads an empty
-#: part as UNKNOWN and returns no address at all, which opens no bubble. A room
-#: root IS a nameable conversation, so it gets a name. The colon keeps it out of
-#: the value space it shares: a Webex message id is an opaque base64 blob with no
-#: colon, so no real thread root can collide with this.
-_ROOT_THREAD = "root:none"
-
-
-def _route_of(inbound: "WebexInbound") -> str:
-    """The conversation *inbound* belongs to.
-
-    A direct room is the SENDER's conversation. A group space is the SPACE's,
-    shared by everyone in it — the same semantics a Telegram group Topic gets,
-    and the reason a space must never resolve to a participant's private DM key:
-    that key carries their private history, is the target a mid-turn DM steers
-    into, and is what their ``/new`` resets.
-
-    Returned as ONE string that carries both the namespace and the identity, so
-    the ``ConversationState`` bucket, the generation seed and the session key
-    cannot disagree about which conversation a message routes to. A second
-    parameter beside the id would be forgettable at exactly one call site, and
-    the failure there is silent: the space quietly borrows a DM.
-    """
-    if inbound.room_type == ROOM_DIRECT:
-        return inbound.person_email
-    return f"{_SPACE_ROUTE_PREFIX}{inbound.room_id}"
-
-
-def _chat_type_of(route: str) -> str:
-    """The session-key namespace *route* belongs in.
-
-    A space is ``forum``, which is what keeps it out of the ``unified`` DM bucket:
-    ``build_dm_session_key`` collapses only ``direct`` routes, so a shared space
-    can never merge into one person's cross-surface DM continuity.
-    """
-    return CHAT_TYPE_FORUM if route.startswith(_SPACE_ROUTE_PREFIX) else CHAT_TYPE_DIRECT
-
 
 class WebexDispatcher:
     """Coordinates Webex turns onto the shared ``TurnDriver``.
@@ -384,6 +210,24 @@ class WebexDispatcher:
     ``handle_message`` is wired as the transport's dispatch callback. ``client``
     is set by the gateway after construction.
     """
+
+    # ── Owner bindings ─────────────────────────────────────────────────────
+    # Each name below is the owner module's own function, bound as the member it
+    # is: the state stays on the instance, and a class or instance patch of a
+    # member reaches every caller.
+    # transport_dispatch_interactions.py
+    _maybe_answer_approval = _interactions._maybe_answer_approval
+    _handle_card_press = _interactions._handle_card_press
+    _resolve_card_approval = _interactions._resolve_card_approval
+    # transport_dispatch_commands.py
+    _model_choices = _commands._model_choices
+    _handle_model = _commands._handle_model
+    _apply_model = _commands._apply_model
+    _model_label = staticmethod(_commands._model_label)
+    _bucket_stem = _commands._bucket_stem
+    _handle_sessions = _commands._handle_sessions
+    _handle_yolo = _commands._handle_yolo
+    _handle_dashboard = _commands._handle_dashboard
 
     def __init__(
         self,
@@ -839,382 +683,6 @@ class WebexDispatcher:
             # Running it now is safe: is_busy is False, so there is no re-entry
             # loop, and stranding the message would lose it silently.
             await self.handle_message(inbound)
-
-    # ── Approvals (typed reply) ────────────────────────────────────────────
-
-    async def _maybe_answer_approval(
-        self, inbound: "WebexInbound", session_key: str, *, permitted: bool
-    ) -> bool:
-        """Try to read *inbound* as the answer to a pending approval prompt.
-
-        Returns whether the message was consumed. A message that is not a
-        recognised answer falls through to the ordinary mid-turn path, so a user
-        who ignores the prompt and sends a real instruction still gets it
-        steered or queued rather than swallowed.
-
-        A channels-governance deny blocks an APPROVE but still resolves a DENY.
-        Dropping the deny too would leave the provider's permission request
-        stranded for the whole approval window with the turn holding the
-        semaphore — and a policy that forbids this channel has no interest in
-        keeping a tool request alive.
-        """
-        answer = (inbound.text or "").strip().lower()
-        approved = answer in _APPROVE_REPLIES
-        denied = answer in _DENY_REPLIES
-        if not approved and not denied:
-            return False
-        if approved and not permitted:
-            logger.info("Webex: approve reply dropped by channels governance policy")
-            return True
-        resolved = _APPROVALS.resolve(self._approval_key(_route_of(inbound)), approved)
-        sel().log_api_access(
-            caller=f"webex:{inbound.person_email}",
-            operation="webex.tool_approval",
-            outcome="approved" if approved else "denied",
-            source="webex",
-            resources=f"session={session_key} resolved={resolved}",
-        )
-        if not resolved:
-            await self._reply(inbound, _APPROVAL_NOT_PENDING)
-            return True
-        await self._reply(inbound, "✅ Approved." if approved else "🚫 Denied.")
-        return True
-
-    # ── /model (pick from what the backend advertised) ─────────────────────
-
-    def _model_choices(self, session_key: str) -> list[tuple[str, str]]:
-        """``(model_id, label)`` rows this session may actually use.
-
-        The ONLY source is what the session's backend advertised at
-        ``session/new`` — the set THIS account is entitled to, carrying the
-        backend's own ids. A static catalogue would offer models the account
-        cannot reach, which surfaces as a refusal mid-conversation, and its
-        display keys would need per-backend translation before the wire.
-        """
-        rows: list[tuple[str, str]] = [("", "Auto (let the backend choose)")]
-        provider = self.sessions.get_provider(session_key)
-        advertised = getattr(provider, "available_models", None)
-        if not callable(advertised):
-            return rows
-        try:
-            entries = [m for m in advertised() if isinstance(m, dict)]
-        except Exception:
-            logger.warning("Webex /model: available_models failed", exc_info=True)
-            return rows
-        for entry in entries:
-            model_id = str(entry.get("modelId") or "").strip()
-            # "auto" is already the first row; listing it twice offers the same
-            # choice two numbers.
-            if not model_id or model_id == "auto":
-                continue
-            rows.append((model_id, str(entry.get("name") or model_id)))
-        return rows
-
-    async def _handle_model(self, inbound: "WebexInbound") -> None:
-        """List the advertised models, or apply a numbered pick.
-
-        Numbered rather than free-text: a model id is not something the user can
-        enumerate, and a typo would land as a rejected ``set_model`` mid-
-        conversation. The number indexes the list this reply printed.
-        """
-        email = inbound.person_email
-        route = _route_of(inbound)
-        session_key = self._session_key(route)
-        choices = self._model_choices(session_key)
-        arg = parse_command_argument(inbound.text)
-        if not arg:
-            current = self._model_pref.get(email, "")
-            lines = [
-                f"**Model** — currently {self._model_label(choices, current)}",
-                "",
-            ]
-            lines += [
-                f"{index}. {label}{' ·  current' if mid == current else ''}"
-                for index, (mid, label) in enumerate(choices, start=1)
-            ]
-            if len(choices) == 1:
-                lines.append("")
-                lines.append("_No model list yet — send a message first, then `/model`._")
-            lines += ["", "Reply `/model <number>` to switch."]
-            await self._reply(inbound, "\n".join(lines))
-            return
-        if not arg.isdigit() or not 1 <= int(arg) <= len(choices):
-            await self._reply(
-                inbound,
-                f"❌ Pick a number between 1 and {len(choices)} — send `/model` for the list.",
-            )
-            return
-        model_id, label = choices[int(arg) - 1]
-        await self._reply(inbound, await self._apply_model(inbound, model_id, label))
-
-    async def _apply_model(self, inbound: "WebexInbound", model_id: str, label: str) -> str:
-        """Record *model_id* for the caller and push it to the live session.
-
-        *model_id* comes verbatim from the session's advertised list, so it is
-        already the id this backend accepts — no canonical translation, which
-        would differ per backend and could mangle an id that was correct.
-
-        The preference is stored unconditionally so it reaches the NEXT session
-        even when there is nothing live to switch. When a session does exist the
-        switch is attempted IN PLACE: ``session/set_model`` carries the
-        conversation across, so a user who picks a model mid-conversation gets the
-        model they picked rather than a promise about their next one. The session
-        semaphore is taken atomically, because the switch and a turn share one
-        stdio channel and interleaving JSON-RPC on it would corrupt both.
-
-        Returns the user-facing outcome line — every branch says what actually
-        happened, since a claimed switch the user cannot verify is worse than a
-        deferral they can act on.
-        """
-        # The preference is per PERSON: which model to use is an individual
-        # choice, while the conversation it applies to may be a shared space.
-        self._model_pref[inbound.person_email] = model_id
-        session_key = self._session_key(_route_of(inbound))
-        live = self.sessions.has_session(session_key)
-        # Two different promises, because the preference reaches a session only at
-        # CREATION: ``get_or_create`` returns a reused session from its fast path
-        # before it consults ``model=``. With nothing live the next message starts
-        # the session, so it genuinely lands then.
-        deferred = f"✅ Model set to **{label}** — it applies to your next message."
-        next_new = (
-            f"✅ Model set to **{label}** — this conversation keeps its current "
-            f"model; the switch applies to your next one (`/new`)."
-        )
-        # "Auto" has no ACP id meaning "let the backend choose", so it can only be
-        # recorded; the next session start resolves it. Claiming a live switch here
-        # would be a lie.
-        if not model_id:
-            return next_new if live else deferred
-        if not live:
-            return deferred
-        if not await self.sessions.try_acquire(session_key):
-            return (
-                f"✅ Model set to **{label}**, but a reply is still running — this "
-                f"conversation keeps its current model; the switch applies to your "
-                f"next one (`/new`)."
-            )
-        try:
-            provider = self.sessions.get_provider(session_key)
-            set_model = getattr(getattr(provider, "client", None), "set_model", None)
-            if set_model is None:
-                return next_new
-            await set_model(model_id)
-        except Exception as exc:
-            logger.warning(
-                "Webex /model: live set_model failed for %s: %s",
-                session_key,
-                type(exc).__name__,
-                exc_info=True,
-            )
-            # The stored preference still stands, so the next session gets it —
-            # but do not claim the running conversation switched when it did not.
-            return (
-                f"⚠️ Couldn't switch this conversation to **{label}** "
-                f"({type(exc).__name__}) — it applies to your next conversation "
-                f"(`/new`)."
-            )
-        finally:
-            self.sessions.release(session_key)
-        return f"✅ Now using **{label}**."
-
-    @staticmethod
-    def _model_label(choices: list[tuple[str, str]], model_id: str) -> str:
-        """The label for a stored preference, falling back to the raw id."""
-        return next((label for mid, label in choices if mid == model_id), model_id or "Auto")
-
-    # ── /sessions (this channel's own conversations) ────────────────────────
-
-    def _bucket_stem(self, route: str) -> str:
-        """The filename stem shared by every generation of *route*'s conversation.
-
-        ``list_sessions`` reports a key as the transcript's filename STEM, which
-        is the session key with every character outside ``[\\w\\-.]`` folded to
-        ``_`` — so a colon-bearing session key never matches a raw prefix test
-        against it, and a filter written that way silently lists nothing at all.
-        Folded through ``transcript_stem`` so this side uses the store's own rule
-        rather than a second copy of it.
-        """
-        bucket = build_dm_session_key(
-            "webex",
-            self._resolve_agent(route),
-            route,
-            gen=0,
-            dm_scope=str(self.cfg.messaging.dm_scope),
-            chat_type=_chat_type_of(route),
-        )
-        return transcript_stem(bucket)
-
-    async def _handle_sessions(self, inbound: "WebexInbound") -> None:
-        """List THIS conversation's past generations, newest first.
-
-        Scoped to the caller's own durable bucket — their DM, or the space the
-        command was sent in — and not to the channel. A channel-wide list would
-        print one person's conversation TITLES, which are the opening words of
-        their messages, into whatever room asked; scoping to the bucket means the
-        audience of the list is exactly the audience of the conversations in it.
-
-        Deliberately not a dashboard-session picker: resuming one of those needs
-        the durable resume-expectation store and an inbound path that resolves the
-        mirror binding. Webex implements neither and therefore leaves
-        ``supports_session_resume`` false; Discord and Telegram are the shipped
-        transports that currently declare it.
-        """
-        if self.conv_log is None:
-            await self._reply(inbound, "ℹ️ Conversation history is not available.")
-            return
-        route = _route_of(inbound)
-        stem = self._bucket_stem(route)
-        try:
-            rows = [
-                row
-                for row in await asyncio.to_thread(self.conv_log.list_sessions)
-                # The bucket itself (generation 0) or one of its generations. The
-                # separator is required so a bucket cannot match a longer route
-                # that merely starts with the same characters.
-                if (key := str(row.get("key", ""))) == stem or key.startswith(f"{stem}_gen")
-            ]
-        except Exception:
-            logger.warning("Webex /sessions: listing failed", exc_info=True)
-            await self._reply(inbound, "⚠️ Couldn't read the conversation list.")
-            return
-        sel().log_api_access(
-            caller=f"webex:{inbound.person_email}",
-            operation="webex.sessions_list",
-            outcome="success",
-            source="webex",
-            resources=f"bucket={stem} rows={len(rows)}",
-        )
-        if not rows:
-            await self._reply(inbound, "ℹ️ No earlier conversations here yet.")
-            return
-        current = transcript_stem(self._session_key(route))
-        lines = ["**This conversation's history**", ""]
-        for row in rows[:_SESSIONS_LIST_MAX]:
-            title = str(row.get("title") or "").strip() or "(untitled)"
-            marker = " ·  current" if str(row.get("key", "")) == current else ""
-            lines.append(f"- {title}{marker}")
-        if len(rows) > _SESSIONS_LIST_MAX:
-            lines.append(f"- _…and {len(rows) - _SESSIONS_LIST_MAX} older_")
-        lines += ["", "Send `/new` to start a fresh one."]
-        await self._reply(inbound, "\n".join(lines))
-
-    # ── Adaptive Card presses ──────────────────────────────────────────────
-
-    async def _handle_card_press(self, inbound: "WebexInbound", *, permitted: bool) -> None:
-        """Route an Adaptive Card submit to whatever it was rendered for.
-
-        A press is authorized the same way a message is — by the sender's EMAIL
-        against the allow-list — because the card lives in a room and Webex lets
-        anyone in that room press it. The transport's room gate has already run;
-        this adds the sender check, which for a press has to resolve a person id
-        to an email first.
-
-        The nonce is what makes a press safe to honour at all: Webex will not let
-        a card carrying an attachment be edited into a terminal state, so a
-        resolved prompt's buttons stay clickable forever. Only the live card's
-        nonce is accepted, so a later press is inert instead of answering
-        whatever prompt is open now. It is validated INSIDE the approval registry,
-        as a precondition of resolving — checking it here, around the resolve call,
-        would approve the tool first and only then discover the press was stale.
-        """
-        kind, choice, nonce, request_id = read_press(inbound.card_inputs)
-        if not kind:
-            return
-        if not self._sender_allowed(inbound.person_email):
-            sel().log_api_access(
-                caller=inbound.person_email or "unknown",
-                operation="webex.card_press",
-                outcome="denied",
-                source="webex",
-                # Bounded and quoted: ``kind`` is attacker-chosen here (the press
-                # came from a sender this branch is refusing), and an audit record
-                # is read by an operator and by log tooling. An unbounded value can
-                # pad the record, and an unescaped newline can forge a second
-                # line in it.
-                resources=f"kind={kind[:32]!r}",
-            )
-            return
-        if kind == cards.KIND_APPROVAL:
-            approved = choice == "approve"
-            # Governance may block an approve while still letting a deny through:
-            # a policy that forbids this channel has no interest in keeping a tool
-            # request alive for its whole window.
-            if approved and not permitted:
-                logger.info("Webex: card approve dropped by channels governance policy")
-                return
-            await self._resolve_card_approval(inbound, approved, nonce, request_id)
-            return
-        if kind == cards.KIND_OPTIONS:
-            # A choice is turn CONTENT, so a policy-denied channel drops it whole
-            # rather than echoing it. Unlike an approval there is nothing waiting
-            # to be released: `drive_turn` would silently drop the turn anyway, and
-            # the echo alone would claim the channel is answering.
-            if not permitted:
-                logger.info("Webex: card choice dropped by channels governance policy")
-                return
-            text = self._choices.take(self._approval_key(_route_of(inbound)), choice, nonce)
-            if not text:
-                await self._reply(inbound, "⌛ Those options are no longer current — just reply.")
-                return
-            # Echo the choice first: a press leaves no trace in the room, so
-            # without this the next answer arrives with nothing above it saying
-            # which option it is answering.
-            await self._reply(inbound, f"> {text}")
-            # Run the chosen option as turn CONTENT, never as a command. The label
-            # is model-authored, so an `[OPTIONS: Keep going | /yolo on]` trailer
-            # would otherwise render a button whose single press takes the
-            # process-global auto-approve grant — and more commonly, any label
-            # whose first token merely looks like `/…` would be answered with the
-            # unknown-command card and the choice dropped on the floor.
-            await self.handle_message(
-                replace(inbound, text=text, card_inputs=None), interpret_commands=False
-            )
-
-    async def _resolve_card_approval(
-        self, inbound: "WebexInbound", approved: bool, nonce: str, request_id: str
-    ) -> None:
-        """Apply one authorized approval-card press, and say what happened.
-
-        Every path here emits a SEL record. A press that is refused is exactly the
-        event an operator needs in the audit log — a forged or replayed press
-        leaves no other trace, since the reply it draws is indistinguishable from
-        the one a genuinely expired card draws.
-        """
-        session_key = self._session_key(_route_of(inbound))
-        approval_scope = self._approval_key(_route_of(inbound))
-        # Fail CLOSED on a press that carries no nonce or no request id. Both are
-        # minted by us and every real press echoes them back, so their absence is
-        # either a forgery or a card from a build that predates them; an empty
-        # nonce means "typed answer" to the registry and would skip the guard.
-        if not nonce or not request_id:
-            outcome, resolved = "denied", False
-        else:
-            resolved = _APPROVALS.resolve(
-                approval_scope, approved, request_id=request_id, expected_nonce=nonce
-            )
-            # Only a resolve that actually landed can record an approval: a press
-            # the registry refused (stale nonce, wrong request id) decided nothing.
-            outcome = "approved" if resolved and approved else "denied"
-        sel().log_api_access(
-            caller=f"webex:{inbound.person_email}",
-            operation="webex.tool_approval",
-            outcome=outcome,
-            source="webex",
-            resources=f"session={session_key} via=card resolved={resolved}",
-        )
-        if resolved:
-            await self._reply(inbound, "✅ Approved." if approved else "🚫 Denied.")
-            return
-        # A prompt still waiting means the CARD went stale, not the decision — so
-        # point at the affordance that still works instead of claiming the request
-        # is over, which would leave the turn hanging with no way to answer it.
-        if _APPROVALS.has_pending(approval_scope):
-            await self._reply(
-                inbound,
-                "⌛ That card is no longer current — reply **1** to approve or **2** to deny.",
-            )
-            return
-        await self._reply(inbound, _APPROVAL_NOT_PENDING)
 
     # ── Live config ────────────────────────────────────────────────────────
 
@@ -1713,162 +1181,6 @@ class WebexDispatcher:
         reply = await asyncio.to_thread(_unbind)
         await self._reply(inbound, reply)
 
-    async def _handle_yolo(self, inbound: "WebexInbound") -> None:
-        """Report or change the global auto-approve grant.
-
-        Reads and writes the process-wide :func:`safety_override` grant — the
-        SAME one the dashboard toggle and the other channels drive, so a grant
-        taken here shows up (and expires) everywhere. Reachable only by an
-        allow-listed Webex user, because ``transport.receive`` is deny-by-default
-        before dispatch ever runs.
-
-        Turning it on does NOT weaken the PreToolUse security gate: the
-        sensitive-path keystone, governance ceiling and deny-list all run ahead
-        of the auto-approve ladder in ``TurnDriver``, so a hard DENY still wins.
-
-        The three grant mutators run off-loop: ``activate`` resolves the ad-hoc
-        duration through a live config read and each writes a SEL record, so
-        calling them inline would put filesystem latency on the event loop.
-        """
-        so = safety_override()
-        arg = parse_command_argument(inbound.text)
-        action = arg.lower().split()[0] if arg else ""
-
-        if action in ("on", "off", "renew"):
-            outcome = "allowed"
-            if action == "on":
-                if so.is_active():
-                    reply = f"🟢 YOLO is already ON ({describe_grant_lifetime()})."
-                elif (await asyncio.to_thread(so.activate, "webex")).active:
-                    reply = (
-                        f"🟢 YOLO ON ({describe_grant_lifetime()}) — every tool "
-                        f"auto-approves. Denied-by-policy tools are still blocked."
-                    )
-                else:
-                    reply = "❌ Couldn't turn YOLO on (audit system unavailable)."
-                    outcome = "denied"
-            elif action == "off":
-                # Unconditional: deactivate() also zeroes the deadline of a grant
-                # that already lapsed, which closes the renew grace window so a
-                # later "/yolo renew" cannot resurrect it, and records the
-                # operator's decision either way.
-                await asyncio.to_thread(so.deactivate, "webex")
-                reply = "🔴 YOLO OFF — tools ask for approval again."
-            else:
-                renewed = (await asyncio.to_thread(so.renew, "webex")).renewed
-                reply = (
-                    f"🟢 YOLO renewed ({describe_grant_lifetime()})."
-                    if renewed
-                    else "🔴 YOLO is not active — use `/yolo on` first."
-                )
-            sel().log_api_access(
-                caller=f"webex:{inbound.person_email}",
-                operation="webex.yolo_mode",
-                outcome=outcome,
-                source="webex",
-                resources=f"yolo_{action}",
-            )
-            await self._reply(inbound, reply)
-            return
-
-        status = f"ON 🟢 ({describe_grant_lifetime()})" if so.is_active() else "OFF 🔴"
-        await self._reply(
-            inbound,
-            f"YOLO is {status}.\nUsage: `/yolo on | off | renew`",
-        )
-
-    async def _handle_dashboard(self, inbound: "WebexInbound") -> None:
-        """Generate and send a presigned dashboard login link.
-
-        Calls ``generate_token`` directly (never via shell) and builds the URL
-        from the ``dashboard.url`` config (``KIROCREW_PORT`` overrides the port,
-        matching every other link producer).
-
-        The direct-room assertion is kept explicit rather than inherited: a
-        presigned link is a credential and every member of a space can read it,
-        while ``transport.receive``'s room gate deliberately DOES admit an
-        allow-listed space. So this command needs its own narrower rule, not that
-        layer's.
-        """
-        # Deferred deliberately: the dashboard package drags in ~370 transitive
-        # modules, and this command is the only thing in the channel that needs
-        # it. At module scope every gateway that merely enables Webex would pay
-        # that import.
-        from kiro_crew.dashboard.token_auth import (
-            MAX_SESSION_TTL_SECS,
-            generate_token,
-            parse_duration,
-        )
-        from kiro_crew.dashboard.urls import dashboard_origin, parse_dashboard_url
-
-        # Positive test against the named constant, not ``!= "direct"``: a Webex
-        # room type this code has not seen must not inherit what a direct room
-        # gets, and a presigned dashboard login is the worst thing to hand a room
-        # whose audience nobody enumerated.
-        if inbound.room_type != ROOM_DIRECT:
-            await self._reply(
-                inbound,
-                "🔒 Dashboard links are only sent in a direct message.",
-            )
-            return
-        arg = parse_command_argument(inbound.text).lower()
-        if not arg.startswith("dashboard"):
-            await self._reply(
-                inbound,
-                "Usage: `/kirocrew dashboard [<N>h|<N>m]`",
-            )
-            return
-        # parse_duration owns the <N>h / <N>m grammar and already clamps to the
-        # server maximum; the outer min() keeps the clamp explicit at the call
-        # site. A malformed duration falls back rather than erroring: the user
-        # asked for a link, and refusing one over a typo trades a working link
-        # for a lecture.
-        ttl_secs = min(parse_duration(_ttl_spec(arg)) or _DEFAULT_TTL_SECS, MAX_SESSION_TTL_SECS)
-        caller = f"webex:{inbound.person_email}"
-        try:
-            token = generate_token(inbound.person_email, ttl_seconds=ttl_secs)
-            origin = dashboard_origin(self.cfg.dashboard.url)
-            if not origin:
-                # No configured dashboard.url: fall back to the local port
-                # (parse_dashboard_url applies the KIROCREW_PORT override).
-                _, port = parse_dashboard_url(self.cfg.dashboard.url)
-                origin = f"http://localhost:{port}"
-            # Credential issuance MUST be audited (backend-security-controls).
-            sel().log_api_access(
-                caller=caller,
-                operation="webex.dashboard_token",
-                outcome="ok",
-                source="webex",
-                resources=f"ttl={ttl_secs}",
-            )
-            # self_minted: the URL carries a token THIS process just generated, and
-            # it looks exactly like the credential-bearing link the exfiltration
-            # redactor exists to catch — scanning it would deliver a login link
-            # that cannot log in. Nothing here passed through the model.
-            await self._reply(
-                inbound,
-                f"🔗 Dashboard link (valid {_format_ttl(ttl_secs)}):\n" f"{origin}/?token={token}",
-                self_minted=True,
-            )
-        except Exception as exc:
-            logger.warning("Webex /kirocrew dashboard: token generation failed", exc_info=True)
-            try:
-                sel().log_api_access(
-                    caller=caller,
-                    operation="webex.dashboard_token",
-                    outcome="error",
-                    source="webex",
-                    resources=f"ttl={ttl_secs}",
-                )
-            except Exception:
-                # The audit trail must never turn a user-facing failure reply
-                # into a crash; the warning above already captured the error.
-                pass
-            await self._reply(
-                inbound,
-                f"⚠️ Could not generate dashboard link: {type(exc).__name__}",
-            )
-
     # ── Helpers ────────────────────────────────────────────────────────────
 
     def _resolve_agent(self, route: str | None = None) -> str:
@@ -2077,26 +1389,75 @@ class WebexDispatcher:
             self.sessions.release(session_key)
 
 
-# How long a dashboard link lives when the user names no duration.
-_DEFAULT_TTL_SECS = 3600
-
-
-def _ttl_spec(arg: str) -> str:
-    """The duration token out of ``dashboard [<N>h|<N>m]``, or ``""``.
-
-    Only the SPLITTING is local; the grammar itself belongs to
-    ``token_auth.parse_duration``, so a unit added there reaches this command
-    too instead of diverging silently.
-    """
-    parts = arg.split()
-    return parts[1].strip().lower() if len(parts) > 1 else ""
-
-
-def _format_ttl(ttl_secs: int) -> str:
-    """A short human duration for the link's validity line."""
-    mins = max(1, ttl_secs // 60)
-    if mins % 60 == 0:
-        return f"{mins // 60}h"
-    if mins > 60:
-        return f"{mins // 60}h {mins % 60}m"
-    return f"{mins}m"
+# The transport_dispatch_* owner modules hold the WebexDispatcher members the class
+# binds and the module-level names imported back above. ``_facade_mirror`` keeps the
+# patch surface whole: a write of a name this module binds reaches every owner binding
+# the same object, and a read of an owner name this module does not bind is answered by
+# that owner. ``test/test_transport_dispatch_webex_composition.py`` pins the reach.
+#: BASE imports this module binds for its importers and for the patches the mirror
+#: routes through it, though its own code does not read them.
+_BOUND_FOR_IMPORTERS = (
+    cards,
+    CHAT_TYPE_DIRECT,
+    CHAT_TYPE_FORUM,
+    describe_grant_lifetime,
+    NamedTuple,
+    owner_token,
+    PendingApprovals,
+    read_press,
+    sel,
+    transcript_stem,
+)
+#: Owner modules, lowest layer first: the first holder of a name answers its reads.
+_OWNERS = (
+    "kiro_crew.webex.transport_dispatch_origin",
+    "kiro_crew.webex.transport_dispatch_interactions",
+    "kiro_crew.webex.transport_dispatch_commands",
+)
+for _owner in _OWNERS:
+    _importlib.import_module(_owner)
+del _owner
+#: The module-level names an owner defines that this module serves without binding them;
+#: the ``TYPE_CHECKING`` manifest below imports the same names for type checkers. The
+#: owners' other bindings stay out of this module's surface: the members the class binds
+#: are reached on the class.
+_SERVED = (
+    "_APPROVAL_NOT_PENDING",
+    "_APPROVE_REPLIES",
+    "_DEFAULT_TTL_SECS",
+    "_DENY_REPLIES",
+    "_format_ttl",
+    "_ORIGIN_PREFIX",
+    "_SESSIONS_LIST_MAX",
+    "_SPACE_ROUTE_PREFIX",
+    "_ttl_spec",
+)
+#: Name the facade serves but does not bind -> the owner that answers a read of it.
+_EXPORTS: dict[str, str] = {}
+_EXPORTS.update(
+    _facade_mirror.install(
+        _sys.modules[__name__],
+        _OWNERS,
+        excluded=(),
+        surface=frozenset(globals()) | frozenset(_SERVED),
+    ).served
+)
+_sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
+#: What a star import binds: every public name of the unsplit module's namespace.
+__all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
+if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.webex.transport_dispatch_commands import (  # noqa: F401
+        _DEFAULT_TTL_SECS,
+        _SESSIONS_LIST_MAX,
+        _format_ttl,
+        _ttl_spec,
+    )
+    from kiro_crew.webex.transport_dispatch_interactions import (  # noqa: F401
+        _APPROVAL_NOT_PENDING,
+        _APPROVE_REPLIES,
+        _DENY_REPLIES,
+    )
+    from kiro_crew.webex.transport_dispatch_origin import (  # noqa: F401
+        _ORIGIN_PREFIX,
+        _SPACE_ROUTE_PREFIX,
+    )

@@ -104,6 +104,7 @@ legacy metadata do not override a canonical execution.
 | `slack/transport_dispatch.py` | `handle_message_transport()` — full new-path dispatch wiring the three layers together |
 | `telegram/transport_dispatch.py` + `telegram/dispatch/` | `TelegramDispatcher` and the owners it is composed from — see [Telegram's dispatcher composition](#telegrams-dispatcher-composition) |
 | `discord/transport_dispatch.py` + `discord/transport_dispatch_*.py` | `DiscordDispatcher` and the owners it is composed from — see [Discord's dispatcher composition](#discords-dispatcher-composition) |
+| `webex/transport_dispatch.py` + `webex/transport_dispatch_*.py` | `WebexDispatcher` and the owners it is composed from — see [Webex's dispatcher composition](#webexs-dispatcher-composition) |
 | `discord/renderer.py` + `discord/renderer_*.py` | `DiscordRenderer`, `DiscordApprovalDecider` and the owners the renderer is composed from — see [Discord's renderer and client composition](#discords-renderer-and-client-composition) |
 | `discord/client.py` + `discord/client_*.py` | `DiscordClient` (Gateway WebSocket and REST v10 over aiohttp) and the owners it is composed from — see [Discord's renderer and client composition](#discords-renderer-and-client-composition) |
 | `telegram/renderer.py` + `telegram/renderer_*.py` | `TelegramRenderer`, `TelegramApprovalDecider` and the owners the renderer is composed from — see [Telegram's renderer and client composition](#telegrams-renderer-and-client-composition) |
@@ -2151,7 +2152,7 @@ grouping on sender and place ALONE:
   messages would split one person's burst.
 - Discord (`discord/transport_dispatch_origin.py`, `_QueuedOrigin`) records user, channel
   and thread, and excludes nothing -- none of those names an individual message.
-- Webex (`webex/transport_dispatch.py`, `_QueuedPlace`) records room, thread, the
+- Webex (`webex/transport_dispatch_origin.py`, `_QueuedPlace`) records room, thread, the
   sender's email and the room type, and groups on sender email, room and thread root
   (`sender_key`): a GROUP space routes as `space:{room_id}`, so every allow-listed
   member of one space shares one session key and one queue under any `dm_scope`, and
@@ -4557,12 +4558,13 @@ after one connect. An empty value is what means "discover", so no caller may
 default it.
 
 **Dispatch + rendering.** Turns ride the shared `drive_turn` / `TurnDriver`
-pipeline. `transport_dispatch.py` intercepts the command surface (`/new`,
-`/compact`, `/help`, `/stop` + `/cancel`, `/link`, `/unlink`, `/yolo`,
+pipeline. `transport_dispatch.py` and the owners it is composed from (see
+[Webex's dispatcher composition](#webexs-dispatcher-composition)) intercept the command
+surface (`/new`, `/compact`, `/help`, `/stop` + `/cancel`, `/link`, `/unlink`, `/yolo`,
 `/kirocrew dashboard`, `/model`, `/agent`, `/sessions`, plus the `/queue` and `/steer`
 per-message overrides),
-queues or steers mid-turn messages, drains the queue after the turn, runs
-`/compact` under atomic `try_acquire`, and posts soft/hard context-threshold
+queue or steer mid-turn messages, drain the queue after the turn, run
+`/compact` under atomic `try_acquire`, and post soft/hard context-threshold
 notices as separate proactive messages. `COMMAND_SPEC` in `commands.py` generates
 the `/help` card, so the card cannot drift from the parser; an unrecognised
 `/token` answers with the card rather than spending a turn having the model
@@ -4626,6 +4628,58 @@ this renderer buffers a whole turn and sends once, so by `on_done` such a tail i
 the assistant's own prose and cutting it is permanent loss — the same trade
 `render_options_as_text` makes for the other non-streaming channels. `on_done` delivers the WHOLE answer before uploads and the card, so
 neither interrupts a chunked reply.
+
+### Webex's dispatcher composition
+
+`WebexDispatcher` is one class composed from owners beside its facade.
+`webex/transport_dispatch.py` keeps the dispatcher's state and live config (`__init__`,
+`_live_cfg`, `_thresholds`, `_sender_allowed`, `_bot_name`), its own send path
+(`_reply_parent`, `_reply`), the inbound front door
+(`handle_message`: governance, admission, the card-press, mention and approval intercepts,
+the command ladder, the busy check, rotation and the hand-off to `drive_turn`), the
+mid-turn steer-or-queue arm (`_handle_busy`), the queue receipt and drain
+(`_receipt_surface`, `_enqueue_with_receipt`, `_drain_queue`, `_pump_queue`), `/stop`
+(`_handle_stop`), `/link` and `/unlink` (`_origin_mirror_link`, `_handle_link`,
+`_handle_unlink`), `/compact` beside the context-length notice whose forced compaction it
+shares (`_compact_provider`, `_handle_compact`, `_maybe_notice`), the transcript write
+(`_persist_turn`) and the conversation-identity helpers (`_resolve_agent`,
+`current_session_key`, `_approval_key`, `_session_key`, `_seed_gen`). Of those, repository
+guards read these in this file by path or by its text: `handle_message`, with its
+admission before the command parse, its `resolve_pre_turn` call and its one `ChannelTurn`
+start priority; `_drain_queue`; `_receipt_surface`, and the `ReceiptQueue` beside
+`_enqueue_with_receipt`; `/stop`'s owner; `/link`'s mirror admission; and the
+context-usage read beside the `drive_turn` hand-off.
+
+Every other responsibility is an owner beside the facade, and new work of that kind goes
+to it:
+
+| Owner | Holds |
+|---|---|
+| `webex/transport_dispatch_origin.py` | `_CHANNEL`, `_ORIGIN_PREFIX`, `_QueuedPlace` and its sender key, the entry owner token, the entry read and the replay envelope (`_entry_owner`, `_queued_place`, `_reply_envelope`), and the route spellings (`_route_of`, `_chat_type_of`, `_SPACE_ROUTE_PREFIX`, `_ROOT_THREAD`) |
+| `webex/transport_dispatch_interactions.py` | the typed approval reply (`_maybe_answer_approval`), Adaptive Card presses (`_handle_card_press`, `_resolve_card_approval`), the `_APPROVALS` registry and the typed answers a prompt accepts |
+| `webex/transport_dispatch_commands.py` | `/model` (`_model_choices`, `_handle_model`, `_apply_model`, `_model_label`), `/sessions` (`_bucket_stem`, `_handle_sessions`), `/yolo` (`_handle_yolo`) and `/kirocrew dashboard` (`_handle_dashboard`, `_ttl_spec`, `_format_ttl`) |
+
+A new command's handler goes to `webex/transport_dispatch_commands.py`; its dispatch stays
+in `handle_message`. An owner's function whose first parameter is `self` is bound as the
+`WebexDispatcher` attribute of the same name (`_model_label` through `staticmethod`), so
+instance and class patches, `inspect.getsource` and every `self.<name>(...)` call reach it
+as they reach a method defined in the class body; the state stays on the dispatcher. Such
+a function's `__module__` names its owner and its `__qualname__` is its bare name, which
+is what a repr shows; `_QueuedPlace`'s `__module__` names its owner. No caller reads any
+of them. `typing.get_type_hints` on one of the ten moved methods raises `NameError`,
+because its `self: WebexDispatcher` annotation names a class its owner imports only under
+`TYPE_CHECKING`; nothing resolves those hints, and the kept `__init__` and `_live_cfg`
+raised the same way at the base. The facade keeps every name it bound, holds the base
+imports its own code does not read in `_BOUND_FOR_IMPORTERS`, and installs
+`_facade_mirror`: a name tests rebind on
+the facade (`sel`, `safety_override`, ...) reaches every owner holding the same object, so
+the moved code reads it unchanged, and the moved names the facade does not read itself are
+served from their owner. Owners log under the
+facade's logger name, import each other in one direction and the facade only under
+`TYPE_CHECKING`, and the facade imports every owner when it loads.
+`test/test_transport_dispatch_webex_composition.py` pins the surface, the patch reach of
+the names the tests rebind there, and these placement rules; `test/test_facade_mirror_guards.py`
+holds the facade to the mirror's contract.
 
 ## Webex settings API
 
