@@ -1317,6 +1317,17 @@ _MIME_EXT = {
 _UNSAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
+def filename_passes_screen(name: str) -> bool:
+    """Whether *name* passes the refusal gate: no credential, no flagged URL.
+
+    The screen :func:`upload_filename` applies to the name it derives, shared so a
+    channel that sends a file under its own basename (a document keeps its real
+    extension, which the raster mapping here would rewrite) applies the same one.
+    A safety decision: it judges in full whatever the owner's redaction setting.
+    """
+    return not refuses(name, lambda text: redact_credentials(redact_exfiltration_urls(text)[0])[0])
+
+
 def upload_filename(file: "OutboundFile", index: int = 0) -> str:
     """Derive and re-scan a header-safe filename from an untrusted path.
 
@@ -1335,10 +1346,7 @@ def upload_filename(file: "OutboundFile", index: int = 0) -> str:
     stem = stem[: -len(Path(stem).suffix)] if Path(stem).suffix else stem
     stem = stem.strip("._")[:64]
     name = f"{stem or f'image_{index}'}.{ext}"
-    # A safety decision: it judges in full whatever the owner's redaction setting.
-    if refuses(name, lambda text: redact_credentials(redact_exfiltration_urls(text)[0])[0]):
-        return f"image_{index}.{ext}"
-    return name
+    return name if filename_passes_screen(name) else f"image_{index}.{ext}"
 
 
 def extract_local_refs(
