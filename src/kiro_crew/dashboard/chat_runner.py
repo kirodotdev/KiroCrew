@@ -562,6 +562,7 @@ from kiro_crew.dashboard.handlers.usage import (
     read_effective_agent,
     read_turn_model,
 )
+from kiro_crew.dashboard.member_message_notes import post_turn_reply
 from kiro_crew.dashboard.poisoned_escalation import POISONED_SESSION_CYCLES  # noqa: F401
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
 from kiro_crew.dashboard.recovery_replays import SESSION_NOT_FOUND_CANCELLED_TEXT  # noqa: F401
@@ -10273,6 +10274,8 @@ async def _run_chat(
                 if isinstance(_changes_now, list) and _changes_now
                 else None
             )
+            # Copied before the flush, which clears the reply ids on exit.
+            _note_reply_mids = list(_reply_mids) if isinstance(_reply_mids, list) else []
             _flush_file_changes(
                 slot,
                 turn_boundary=_turn_msg_boundary,
@@ -10290,6 +10293,13 @@ async def _run_chat(
                 _retire_local_turn_marker(slot, _local_turn_marker_generation)
             # Save to history and trigger memory consolidation
             await save_slot_off_loop(state, slot)
+            # A crewmate's answer in its DM thread is one notification per
+            # landed turn. Not for a turn the user stopped (they are here), nor
+            # for one about to re-run (its re-run's reply is the answer).
+            if _stop_reason != STOP_REASON_CANCELLED and not (
+                _recovering_promise or _recovering_compaction or _noticed_leak or _recovering_infra
+            ):
+                post_turn_reply(state, slot, _note_reply_mids)
         # Reset ALL retry budgets once the cycle completes (success OR the
         # terminal second-empty error) so each new user turn gets fresh budgets.
         # Guarded by _retrying_empty, _recovering_promise and _noticed_leak:

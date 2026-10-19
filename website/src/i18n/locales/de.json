@@ -17007,7 +17007,8 @@
         "sound_save_failed": "Die Sound-Einstellung konnte nicht gespeichert werden. Gib in den Browsereinstellungen Speicher für diese Website frei und versuche es dann erneut.",
         "custom_sound_deleted": "{{name}} gelöscht.",
         "custom_sound_undo": "Rückgängig",
-        "custom_sound_option": "{{name}} (eigener)"
+        "custom_sound_option": "{{name}} (eigener)",
+        "channel_member": "Crewmate-Nachrichten"
       },
       "privacyPanel": {
         "recordMetricsDescription": "Leistungsmetriken auf diesem Rechner erfassen.",

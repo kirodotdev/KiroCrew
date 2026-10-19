@@ -17539,7 +17539,8 @@
         "sound_save_failed": "Не удалось сохранить настройку звука. Освободи место для этого сайта в настройках браузера и попробуй снова.",
         "custom_sound_deleted": "{{name}} удалён.",
         "custom_sound_undo": "Отменить",
-        "custom_sound_option": "{{name}} (твой)"
+        "custom_sound_option": "{{name}} (твой)",
+        "channel_member": "Сообщения напарников"
       },
       "privacyPanel": {
         "recordMetricsLabel": "Записывать метрики",

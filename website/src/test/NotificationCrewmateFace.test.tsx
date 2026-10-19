@@ -53,6 +53,14 @@ describe('crewmate attribution on notifications', () => {
     expect(screen.getByTestId('notification-crewmate-name')).toHaveTextContent('Ada Lovelace')
   })
 
+  it("omits the name label when the title already is the crewmate's name", async () => {
+    roster([{ name: 'Ada', slug: 'ada', avatar: {} }])
+    renderWithProviders(<NotificationCard n={{ ...fromAda, title: 'Ada' }} onOpen={() => {}} openLabel="open" />)
+    expect(await screen.findByTestId('notification-crewmate-face')).toBeInTheDocument()
+    expect(screen.queryByTestId('notification-crewmate-name')).toBeNull()
+    expect(screen.getByText('Ada')).toBeInTheDocument()
+  })
+
   it('keeps the kind icon while the roster loads and when the crewmate is gone', async () => {
     let resolve: (v: unknown) => void = () => {}
     members.mockReturnValue(new Promise(r => { resolve = r }) as never)

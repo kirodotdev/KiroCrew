@@ -17273,7 +17273,8 @@
         "sound_save_failed": "Impossibile salvare l'impostazione del suono. Libera spazio per questo sito nelle impostazioni del browser, poi riprova.",
         "custom_sound_deleted": "{{name}} eliminato.",
         "custom_sound_undo": "Annulla",
-        "custom_sound_option": "{{name}} (tuo)"
+        "custom_sound_option": "{{name}} (tuo)",
+        "channel_member": "Messaggi dei compagni"
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registra le metriche",

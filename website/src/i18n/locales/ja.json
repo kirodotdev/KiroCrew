@@ -16741,7 +16741,8 @@
         "sound_save_failed": "サウンド設定を保存できませんでした。ブラウザーの設定でこのサイトの保存領域を空けてから、もう一度お試しください。",
         "custom_sound_deleted": "{{name}} を削除しました。",
         "custom_sound_undo": "元に戻す",
-        "custom_sound_option": "{{name}}（自作）"
+        "custom_sound_option": "{{name}}（自作）",
+        "channel_member": "クルーメイトからのメッセージ"
       },
       "privacyPanel": {
         "recordMetricsDescription": "このマシンでパフォーマンスメトリクスを収集します。",

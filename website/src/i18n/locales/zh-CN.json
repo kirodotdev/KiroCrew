@@ -16741,7 +16741,8 @@
         "sound_save_failed": "无法保存提示音设置。请在浏览器设置中为此网站释放存储空间，然后重试。",
         "custom_sound_deleted": "已删除 {{name}}。",
         "custom_sound_undo": "撤销",
-        "custom_sound_option": "{{name}}（自定义）"
+        "custom_sound_option": "{{name}}（自定义）",
+        "channel_member": "队友消息"
       },
       "privacyPanel": {
         "recordMetricsLabel": "记录指标",

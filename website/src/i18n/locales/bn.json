@@ -17007,7 +17007,8 @@
         "sound_save_failed": "সাউন্ড সেটিং সেভ করা যায়নি। ব্রাউজারের সেটিংসে এই সাইটের জন্য জায়গা খালি করো, তারপর আবার চেষ্টা করো।",
         "custom_sound_deleted": "{{name}} মুছে ফেলা হয়েছে।",
         "custom_sound_undo": "পূর্বাবস্থায় ফেরাও",
-        "custom_sound_option": "{{name}} (তোমার)"
+        "custom_sound_option": "{{name}} (তোমার)",
+        "channel_member": "সঙ্গীদের বার্তা"
       },
       "privacyPanel": {
         "recordMetricsLabel": "মেট্রিক রেকর্ড করো",

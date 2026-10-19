@@ -17273,7 +17273,8 @@
         "sound_save_failed": "Não foi possível salvar a configuração de som. Libere espaço para este site nas configurações do navegador e tente novamente.",
         "custom_sound_deleted": "{{name}} excluído.",
         "custom_sound_undo": "Desfazer",
-        "custom_sound_option": "{{name}} (seu)"
+        "custom_sound_option": "{{name}} (seu)",
+        "channel_member": "Mensagens de colegas"
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",

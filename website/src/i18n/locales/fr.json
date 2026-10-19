@@ -17273,7 +17273,8 @@
         "sound_save_failed": "Impossible d'enregistrer le réglage du son. Libère de l'espace pour ce site dans les paramètres du navigateur, puis réessaie.",
         "custom_sound_deleted": "{{name}} supprimé.",
         "custom_sound_undo": "Annuler",
-        "custom_sound_option": "{{name}} (le tien)"
+        "custom_sound_option": "{{name}} (le tien)",
+        "channel_member": "Messages des coéquipiers"
       },
       "privacyPanel": {
         "recordMetricsDescription": "Collecter les métriques de performance sur cette machine.",

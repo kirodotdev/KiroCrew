@@ -16753,7 +16753,8 @@
         "sound_save_failed": "소리 설정을 저장하지 못했습니다. 브라우저 설정에서 이 사이트의 저장 공간을 확보한 뒤 다시 시도하세요.",
         "custom_sound_deleted": "{{name}}을(를) 삭제했습니다.",
         "custom_sound_undo": "실행 취소",
-        "custom_sound_option": "{{name}}(내 사운드)"
+        "custom_sound_option": "{{name}}(내 사운드)",
+        "channel_member": "크루메이트 메시지"
       },
       "postureDisclosure": {
         "filter": "{{label}} 필터",

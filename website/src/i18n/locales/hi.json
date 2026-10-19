@@ -17007,7 +17007,8 @@
         "sound_save_failed": "साउंड सेटिंग सहेजी नहीं जा सकी। ब्राउज़र सेटिंग्स में इस साइट के लिए जगह खाली करो, फिर दोबारा कोशिश करो।",
         "custom_sound_deleted": "{{name}} हटाया गया।",
         "custom_sound_undo": "पूर्ववत करो",
-        "custom_sound_option": "{{name}} (तुम्हारी)"
+        "custom_sound_option": "{{name}} (तुम्हारी)",
+        "channel_member": "साथियों के संदेश"
       },
       "privacyPanel": {
         "recordMetricsDescription": "इस मशीन पर परफ़ॉर्मेंस मेट्रिक इकट्ठा करो।",

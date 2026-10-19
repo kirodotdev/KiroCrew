@@ -17273,7 +17273,8 @@
         "sound_save_failed": "No se pudo guardar el ajuste de sonido. Libera espacio para este sitio en los ajustes del navegador y vuelve a intentarlo.",
         "custom_sound_deleted": "Se eliminó {{name}}.",
         "custom_sound_undo": "Deshacer",
-        "custom_sound_option": "{{name}} (tuyo)"
+        "custom_sound_option": "{{name}} (tuyo)",
+        "channel_member": "Mensajes de compañeros"
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",
