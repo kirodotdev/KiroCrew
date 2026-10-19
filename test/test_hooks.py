@@ -1045,7 +1045,7 @@ class TestHookGateKwargs:
             "messaging/dispatch_tools.py",
             "slack/handler_runtime/permission_ladder.py",
             "slack/transport_dispatch.py",
-            "subagent_manager/run.py",
+            "subagent_manager/run_turn.py",
             "task_executor.py",
             "task_planner.py",
             "telegram/dispatch/turn_engine.py",

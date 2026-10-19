@@ -348,7 +348,7 @@ def _session_record_manager(agent_id: str) -> tuple[SubagentManager, SubagentInf
     write that is the only writer of ``cwd`` on the spawn path."""
     sessions = _mock_sessions(served_model="model-served")
     # The project the provider runs in is what the session record carries as
-    # ``cwd`` (run.py takes it from ``client.cwd``).
+    # ``cwd`` (run_turn.py takes it from ``client.cwd``).
     sessions.get_or_create.return_value[0].cwd = "/projects/chess"
     manager = SubagentManager(
         sessions=sessions,

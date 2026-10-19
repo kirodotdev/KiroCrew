@@ -61,7 +61,7 @@ ordering bolichen97 accepted on 2026-10-01.
 ## What it replaces, and why that shape was wrong
 
 On the base branch a continuation's run reads its trust off the **continuing**
-chat: `run.py` asks `get_approval_policy(info.parent_session_key)`, where the
+chat: `run_turn.py` asks `get_approval_policy(info.parent_session_key)`, where the
 parent is whichever chat called `spawn_continue`. The founder is never
 consulted. So a conversation whose turns were authored under chat A's key could
 be picked up by chat B, and if B was trusted (a Trust press, YOLO, or a

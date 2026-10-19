@@ -508,7 +508,7 @@ def test_the_shared_runtime_rekey_claims_its_own_session_not_the_runtime(
 #: shared runtime's process tree pointed at. Deleting one keyword argument
 #: re-opens exactly that, which no behavioural test on another file would catch.
 _SHARED_RUNTIME_SESSION_SITES = [
-    ("src/kiro_crew/subagent_manager/run.py", "session_key=session_key"),
+    ("src/kiro_crew/subagent_manager/run_start.py", "session_key=session_key"),
     ("src/kiro_crew/session_allocation.py", "session_key=key"),
 ]
 
@@ -691,7 +691,7 @@ async def test_a_cold_started_session_can_re_bind_after_a_respawn(
 #: re-claim carries no key, which gatewayd discards.
 _PROVIDER_OWNER_SITES = [
     ("src/kiro_crew/providers/acp_runtime_start.py", "session_key=self._owning_session_key()"),
-    ("src/kiro_crew/subagent_manager/run.py", "session_key=session_key"),
+    ("src/kiro_crew/subagent_manager/run_start.py", "session_key=session_key"),
 ]
 
 

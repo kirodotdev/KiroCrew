@@ -591,7 +591,7 @@ def test_a_member_with_no_persisted_id_spawns_a_plain_template_child(env):
     with no member section -- neither the desk protocol nor the rules (the record
     cannot say "this member, under that template"; a record-shape change for the
     memory model). A continuation of
-    that child is a template turn: `run.py` takes the kind from the record, the
+    that child is a template turn: `run_turn.py` takes the kind from the record, the
     member refresh is skipped, the spawn template is kept, and no member is
     looked up, so a renamed alias is not an error.
     """

@@ -1190,10 +1190,12 @@ def test_a_recovery_respawn_starts_with_an_empty_queue_total():
     """``_run_inner`` re-runs the same ``SubagentInfo`` on a recovery respawn. The
     previous attempt's queue total (or a mark it was cancelled inside) must not be
     subtracted from a clock that never paid it."""
-    source = (_SRC / "subagent_manager" / "run.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
+    # run.py binds most of its members from sibling ``run_*`` owners: scan the family.
+    package = _SRC / "subagent_manager"
+    family = [package / "run.py", *sorted(package.glob("run_*.py"))]
+    trees = [ast.parse(path.read_text(encoding="utf-8")) for path in family]
     reset_fields = []
-    for fn in ast.walk(tree):
+    for fn in (node for tree in trees for node in ast.walk(tree)):
         if not isinstance(fn, ast.AsyncFunctionDef):
             continue
         body = ast.unparse(fn)

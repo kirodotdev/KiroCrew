@@ -113,7 +113,7 @@ lives.
   the whole tool surface loaded into its context. The work it hands to
   `spawn_run` without naming an agent runs the member's OWN template again
   (`subagent_parts/agent_policy._inherited_member_agent`,
-  `subagent_manager/run.py`: `info.agent or execution.template_id`) — for a
+  `subagent_manager/run_turn.py`: `info.agent or execution.template_id`) — for a
   `kirocrew`-bound crewmate, the full default once more. `kirocrew-worker`, the
   disk mirror of that default (`agent_materialization/worker_agent.py`), is
   what a plain session's unnamed spawn runs.

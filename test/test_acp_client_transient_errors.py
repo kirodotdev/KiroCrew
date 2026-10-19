@@ -390,7 +390,7 @@ class TestIsTransientRawError:
 
     def test_context_window_overflow_wording_is_surface_neutral(self):
         # The formatter cannot tell a first turn from a later one, and
-        # ``subagent_manager/run.py`` appends this text after its own
+        # ``subagent_manager/run_lifecycle.py`` appends this text after its own
         # post-activity reason, so a startup-only claim would contradict the
         # caller. Both causes and both remedies must be named.
         from kiro_crew.acp.client import AcpError, _raise_acp_error

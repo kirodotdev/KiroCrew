@@ -204,7 +204,7 @@ async def _run_inner(self: SubagentManager, info: SubagentInfo, session_key: str
 
 
 # Facades for the completion / stop-reason handling and the lane-slot
-# waits that live in subagent_manager/run.py.
+# waits that live in subagent_manager/run_yields.py.
 def _stop_recovery_wanted(self: SubagentManager, info: SubagentInfo, stop: Any) -> bool:
     return self._run_events._stop_recovery_wanted_impl(info, stop)
 
@@ -245,6 +245,8 @@ def _taskq_note_stop_recovery(
     self._run_events._taskq_note_stop_recovery_impl(info, data)
 
 
+# Facades for how a run gets its session (the sharing decision, the start's price and
+# the start-queue gate marks); implementations live in subagent_manager/run_start.py.
 def _should_use_session_sharing(self: SubagentManager, info: SubagentInfo) -> bool:
     return self._run_events._should_use_session_sharing_impl(info)
 
@@ -278,7 +280,7 @@ def _gate_wait_mark(self: SubagentManager, info: SubagentInfo) -> Callable[..., 
 
 
 # Facades for the session-start gate's late-adoption path;
-# implementations live in run.py.
+# implementations live in subagent_manager/run_start.py.
 async def _await_late_start(
     self: SubagentManager, info: SubagentInfo, session_key: str, exc: Exception
 ) -> "LLMProvider":

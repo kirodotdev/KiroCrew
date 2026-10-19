@@ -87,7 +87,6 @@
 3685 src/kiro_crew/slack/events.py
 3892 src/kiro_crew/slack/interactions.py
 2115 src/kiro_crew/snapshot.py
-4774 src/kiro_crew/subagent_manager/run.py
 2594 src/kiro_crew/subagent_persistence.py
 2272 src/kiro_crew/tool_call_title.py
 2250 src/kiro_crew/ui_index.py

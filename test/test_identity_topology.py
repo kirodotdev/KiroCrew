@@ -384,7 +384,7 @@ def shared_topo(tmp_path: Path) -> ProcessTopology:
     t.add(KIRO_CLI, SESSION_HOST)
     t.add(MCP_SERVER, KIRO_CLI)
     # The founder published; the co-tenant did not (a shared subagent session
-    # deliberately does not overwrite the mapping — subagent_manager/run.py
+    # deliberately does not overwrite the mapping — subagent_manager/run_turn.py
     # guards the publish on ``not use_session_sharing``). So line 1 stays the
     # founder's key for every reader that predates the tenant section, and the
     # section is what records the second session.

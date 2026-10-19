@@ -253,7 +253,7 @@ edit:
 Change 1 is the switch, and it is what the request is for. It opens the
 eligibility chain that decides whether a sub-agent gets a shared session:
 `AcpProvider.is_session_sharing_eligible` reads the set, `session_allocation`
-reads the provider, and `subagent_manager/run.py` reads that.
+reads the provider, and `subagent_manager/run_start.py` (`_should_use_session_sharing_impl`) reads that.
 
 Change 4 is a second, independent membership, and the request does not work
 without it. KAS sits outside `ACP_BACKENDS_HARNESS_OWNED_SESSIONS`, which puts it

@@ -966,7 +966,7 @@ async def execute_task(
                 )
             # EVENT_COMPLETE only says the stream ended: a watchdog stall, a
             # runtime cancel or a transport death must not become a PASSED
-            # step. Same mapping as chat_runner / subagent run.py.
+            # step. Same mapping as chat_runner / subagent run_turn.py.
             _stop = classify_stop_reason(str(getattr(_complete_event, "stop_reason", "") or ""))
             if not _stop.is_success:
                 raise _TurnNotCompleted(

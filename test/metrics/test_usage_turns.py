@@ -326,10 +326,13 @@ class TestWriteSiteStamping:
         assert 'app=getattr(slot, "_app", "") or ""' in src
 
     def test_subagent_completion_stamps_the_dispatching_app(self):
-        src = (self._ROOT / "src/kiro_crew/subagent_manager/run.py").read_text(encoding="utf-8")
-        tree = ast.parse(src)
+        # run.py binds most of its members from sibling ``run_*`` owners: read the family.
+        package = self._ROOT / "src/kiro_crew/subagent_manager"
+        family = [package / "run.py", *sorted(package.glob("run_*.py"))]
+        trees = [ast.parse(path.read_text(encoding="utf-8")) for path in family]
         calls = [
             node
+            for tree in trees
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)

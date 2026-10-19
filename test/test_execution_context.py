@@ -448,7 +448,7 @@ def test_every_binder_declares_whether_it_vouches():
         ("dashboard/session_control_parts/session_create.py", "_persist_birth"): "True",
         ("member_memory_auth.py", "bind_private_session_store"): "True",
         ("session_agent_selection.py", "record_agent_selection"): "vouch",
-        ("subagent_manager/run.py", "publish_execution"): "ABSENT",
+        ("subagent_manager/run_turn.py", "publish_execution"): "ABSENT",
         ("subagent_persistence.py", "bind_session_memory_mode"): "ABSENT",
     }
     assert actual == expected

@@ -1949,6 +1949,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "subagent_manager/continuation.py",
         "subagent_manager/monitoring.py",
         "subagent_manager/run.py",
+        "subagent_manager/run_lifecycle.py",
+        "subagent_manager/run_turn.py",
+        "subagent_manager/run_yields.py",
         "subagent_manager/terminal.py",
         # The other owners composed onto the ``subagent.py`` namespace hold moved
         # redactor calls; they add no transport or audience either.

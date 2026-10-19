@@ -323,7 +323,7 @@ class TestFailurePathFlipAndArmAreInseparable:
     @staticmethod
     def _checkpoint(mgr, info, seen):  # type: ignore[no-untyped-def]
         async def _teardown_probe(_info, _session_key):  # type: ignore[no-untyped-def]
-            # The real run.py yield point: record what a sibling scheduled
+            # The real run_lifecycle.py yield point: record what a sibling scheduled
             # here would observe about this member.
             seen.append((_info.done, mgr.batch_reports_in_flight(info.batch_id)))
 

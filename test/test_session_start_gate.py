@@ -28,7 +28,7 @@ from kiro_crew.acp.types import METHOD_MCP_SERVER_INITIALIZED, METHOD_SESSION_NE
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.testing.wait import await_until
 
-# The run.py tests below drive ``SubagentManager.spawn``, which refuses while
+# The run_turn.py tests below drive ``SubagentManager.spawn``, which refuses while
 # the host looks short of memory -- the runner's state, not this test's input.
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -729,7 +729,7 @@ def test_pending_requests_adopt_keeps_entry_until_response():
         loop.close()
 
 
-# ── run.py: congestion never falls back to a dedicated process ────────────────
+# ── run_turn.py: congestion never falls back to a dedicated process ───────────
 
 
 class _FakeCollector:

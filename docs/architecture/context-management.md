@@ -367,7 +367,7 @@ terminal. See [Session Ledger](../../src/kiro_crew/docs/session-ledger.md), [Mon
 ## 3. Sub-agent sessions (`spawn_run`)
 
 A sub-agent's prompt is built by the **same** `build_message`, from
-`subagent_manager/run.py`, with three differences.
+`subagent_manager/run_turn.py` (`_run_inner_impl`), with three differences.
 
 **The task text.** A spawn naming no agent gets `_SYSTEM_PREFIX` ("You are a
 focused sub-agent…") prepended; an explicit `agent=` does not, so the named
@@ -398,14 +398,14 @@ store, so a crew's silo survives delegation.
 
 A **fresh** run also gets no slim resume: it is a new session with no transcript to
 restore. A **continued** run (`spawn_continue`, or `keep=True` resumed later) is the
-opposite — `run.py` passes `resumed=True` into `build_message`, so it takes the
+opposite — `run_turn.py` passes `resumed=True` into `build_message`, so it takes the
 slim-resume path of §2 and gets the refreshed header over its restored history
 rather than the full session-start build. A continuation that did not actually
 resume fails closed rather than running without its prior context.
 
 ### Shared session vs dedicated process
 
-`subagent_manager/run.py` → `_should_use_session_sharing_impl`: sharing needs
+`subagent_manager/run_start.py` → `_should_use_session_sharing_impl`: sharing needs
 `agent.session_sharing` true (default **true**), a live parent session on a backend
 in `ACP_BACKENDS_SESSION_SHARING` (kiro-cli or codex), and no per-run `model`,
 `allowed_tools`, `bare` or `backend`. `keep=True`, a continuation, a
@@ -694,7 +694,7 @@ per-member permission control; both exist today, in the forms above.
 | Post-compaction re-injection | `src/kiro_crew/messaging/turn_bracket.py` (`TurnBracket`, `consume_reinjection`, `rearm_reinjection`; re-exported by `messaging/dispatch.py`) |
 | Ledger snapshot on nudge turns | `src/kiro_crew/session_ledger.py` (`render_snapshot`), `src/kiro_crew/dashboard/handlers/autonudge.py` |
 | Sub-agent context scope | `src/kiro_crew/subagent_parts/run_record.py` (`_context_groups_of`), `src/kiro_crew/mcp_tools/spawn.py`, `src/kiro_crew/mcp_tools/spawn_parts/schemas.py`, `src/kiro_crew/mcp_tools/spawn_parts/wave.py` |
-| Sub-agent prompt assembly, shared vs dedicated | `src/kiro_crew/subagent_manager/run.py` |
+| Sub-agent prompt assembly, shared vs dedicated | `src/kiro_crew/subagent_manager/run_turn.py` (`_run_inner_impl`), `src/kiro_crew/subagent_manager/run_start.py` (`_should_use_session_sharing_impl`, `_sharing_plan_impl`) |
 | Scratch directories | `src/kiro_crew/agent_scratch.py` (`allocate_scratch`, `scratch_env`) |
 | The worker agent spec | `src/kiro_crew/agent_materialization/worker_agent.py` (`_write_worker_spec`) |
 | Member identity, rules, briefing, activity, V2 essentials | `src/kiro_crew/members.py`, `src/kiro_crew/context_assembly/member.py` (`build_member_section`, `build_v2_essentials`), `src/kiro_crew/member_essential_context.py` |

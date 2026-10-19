@@ -42,9 +42,9 @@ The single enforcement point for non-resumability is one tuple entry. `"subagent
 
 | Property | Today | Consequence |
 |---|---|---|
-| Turns | One logical prompt. The retry ladder may re-issue it or send one continuation (`subagent_manager/run.py`, `_stream_with_transient_retry` inside `_run_inner_impl`), but nothing carries a *new* instruction | No HTTP route or MCP tool accepts a follow-up message into a run |
-| ACP session id | Persisted to `state.json` under the comment "Record session_id and provider type for session file cleanup" (the `update_state` call in `subagent_manager/run.py`'s `_run_inner_impl`) | Read only by deletion paths (`_reconcile_orphans_impl` in `subagent_manager/monitoring.py`, `subagent_persistence.py:275-280`). The one artifact needed to resume exists so it can be deleted |
-| Transcript | Assistant text chunks only (`write_result_chunk`, called from `subagent_manager/run.py`'s `_run_inner_impl` on assistant-text events), truncated to `RESULT_FILE_MAX_BYTES = 512_000` with an in-file marker (`context_management.RESULT_FILE_MAX_BYTES`, `cap_result_bytes` / `cap_result_file`) | No roles, no prompt, no tool sequence — cannot be rendered as a conversation or replayed into one |
+| Turns | One logical prompt. The retry ladder may re-issue it or send one continuation (`subagent_manager/run_turn.py`, `_stream_with_transient_retry` inside `_run_inner_impl`), but nothing carries a *new* instruction | No HTTP route or MCP tool accepts a follow-up message into a run |
+| ACP session id | Persisted to `state.json` under the comment "Record session_id and provider type for session file cleanup" (the `update_state` call in `subagent_manager/run_turn.py`'s `_run_inner_impl`) | Read only by deletion paths (`_reconcile_orphans_impl` in `subagent_manager/monitoring.py`, `subagent_persistence.py:275-280`). The one artifact needed to resume exists so it can be deleted |
+| Transcript | Assistant text chunks only (`write_result_chunk`, called from `subagent_manager/run_turn.py`'s `_run_inner_impl` on assistant-text events), truncated to `RESULT_FILE_MAX_BYTES = 512_000` with an in-file marker (`context_management.RESULT_FILE_MAX_BYTES`, `cap_result_bytes` / `cap_result_file`) | No roles, no prompt, no tool sequence — cannot be rendered as a conversation or replayed into one |
 | Prompt | Only the redacted task line, in `state.json` | A run cannot be re-issued from disk |
 | Gateway restart | `_reconcile_orphans` (`subagent_manager/monitoring.py`, `_reconcile_orphans_impl`) identity-verifies the child PID, terminates it, tombstones `gateway_restart`, deletes its kiro session files, notifies the parent | Nothing partial is recoverable |
 | Retention | `mark_delivered` schedules folder pruning after `agent.subagent_result_ttl_secs` (default 3600, `config/sections_agent.py` `AgentConfig.subagent_result_ttl_secs`) | Within an hour of success nothing recoverable remains |
@@ -114,7 +114,7 @@ Record rows use the existing schema. `tools` carries tool **names in order** (`a
 | When | What |
 |---|---|
 | Record creation (spawn) | Metadata: redacted prompt |
-| ACP session established | Metadata: sid, cwd, provider, agent — written here, not at terminal, so a run orphaned by a restart is still resume-eligible. The same values are already captured in one `update_state` call in `subagent_manager/run.py` (`_run_inner_impl`) |
+| ACP session established | Metadata: sid, cwd, provider, agent — written here, not at terminal, so a run orphaned by a restart is still resume-eligible. The same values are already captured in one `update_state` call in `subagent_manager/run_turn.py` (`_run_inner_impl`) |
 | Per completed turn | An assistant row, appended and awaited before the turn is acknowledged |
 | Terminal (success, failure, cancel, `_force_reap`, orphan reconcile) | Metadata: tool order, outcome, dropped-row count |
 
@@ -124,7 +124,7 @@ Record rows use the existing schema. `tools` carries tool **names in order** (`a
 
 **Archive pruning must be scoped.** `_cleanup_old_archives` is throttled by a module-global `_last_cleanup` and defaults its window to `session.archive_retention_days` (`_resolve_retention_days`). The record base passes an explicit `retention_days`, and the throttle is keyed per base dir so a record rotation cannot consume the chat store's prune window.
 
-**Redaction** is at write, single-pass, reusing the redactors the run already applies before it stores its task line and streams its result (`subagent_manager/admission.py`'s `spawn_impl` runs `redact_exfiltration_urls` + `redact_credentials` over the task; the result path applies `subagent_parts/run_output.py`'s `_redact` to each assistant chunk in `subagent_manager/run.py`'s `_run_inner_impl`). If redaction raises, the row is dropped, the dropped-row count increments, and the record view labels itself incomplete. A record is never written unredacted.
+**Redaction** is at write, single-pass, reusing the redactors the run already applies before it stores its task line and streams its result (`subagent_manager/admission.py`'s `spawn_impl` runs `redact_exfiltration_urls` + `redact_credentials` over the task; the result path applies `subagent_parts/run_output.py`'s `_redact` to each assistant chunk in `subagent_manager/run_turn.py`'s `_run_inner_impl`). If redaction raises, the row is dropped, the dropped-row count increments, and the record view labels itself incomplete. A record is never written unredacted.
 
 `result.txt`, `state.json`, and `tombstone.json` keep their current format and role; `result.txt` remains the fast path for `spawn_status` paging/grep and the completion-event pointer. Record-write failures are surfaced through the record's own metadata and the `spawn_status` response — **not** by adding a field to `state.json`.
 
@@ -136,12 +136,12 @@ Keeping the kiro session files means touching **four** unlink sites:
 
 | Unlink site | Reached by |
 |---|---|
-| `AcpSessionHandle._cleanup_transcript`, via `AcpSessionHandle.destroy()` | the session-sharing arm — the default — through `AcpSessionProvider.shutdown` (`acp/session_provider.py:173`) from `subagent_manager/run.py`'s `_teardown_run_session_impl` |
+| `AcpSessionHandle._cleanup_transcript`, via `AcpSessionHandle.destroy()` | the session-sharing arm — the default — through `AcpSessionProvider.shutdown` (`acp/session_provider.py:173`) from `subagent_manager/run_lifecycle.py`'s `_teardown_run_session_impl` |
 | `AcpSessionProvider.cleanup_session` (`acp/session_provider.py:180-200`) | `SessionManager._safe_cleanup` |
 | `AcpProvider.cleanup_session` (`providers/acp_lifecycle.py`) | `SessionManager._safe_cleanup` |
 | `_cleanup_session_files_sync` (`subagent_persistence.py:293`) | tombstone prune (`:280`) and orphan reconcile (`_reconcile_orphans_impl`) |
 
-reached from four subagent call sites: `_teardown_run_session` (`subagent_manager/run.py`, `_teardown_run_session_impl`), `_force_reap` (`subagent_manager/terminal.py`, `_force_reap_impl` — the deadline/stop path, exactly the long run retention exists for), tombstone prune, and orphan reconcile.
+reached from four subagent call sites: `_teardown_run_session` (`subagent_manager/run_lifecycle.py`, `_teardown_run_session_impl`), `_force_reap` (`subagent_manager/terminal.py`, `_force_reap_impl` — the deadline/stop path, exactly the long run retention exists for), tombstone prune, and orphan reconcile.
 
 `keep_transcript` cannot be a parameter at the point of call: the shared arm calls the `LLMProvider.shutdown` ABC method, and `destroy()` has seven other callers, all non-subagent background sessions (`acp/session_provider.py:126,138`, `suggestions.py:202`, `llm_helpers.py:299`, `tips.py:759`, `dashboard/handlers/cron.py:141`, `apps/builtins/code_review_sage/sage_lib/review_pool.py:490`). It is therefore **per-session-handle** state, not per-provider — a provider instance serves many sessions, so a sticky provider-level flag would retain unrelated background transcripts on disk. It is set on the run's handle before teardown, consumed by `destroy()`, and cleared in a `finally`. `terminate_session` stays unconditional: it is the RSS reclaim on a multiplexed process (`acp/runtime.py:905-926`), and only the unlink is deferred. `release`'s cleanup is already gated on `_SUBAGENT_PREFIX` (`session.py`, passed through to `SessionAllocationService.release` in `session_allocation.py`), so the dedicated arm's change touches no other caller.
 

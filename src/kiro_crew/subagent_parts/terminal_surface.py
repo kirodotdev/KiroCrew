@@ -397,7 +397,7 @@ def _write_tombstone(info: SubagentInfo, cause: str, *, leaked_process: bool = F
     # Finalize the run's elapsed time ONCE, here, before any abnormal-exit
     # tombstone is written. Every abnormal arm (timeout, cancel, reap,
     # error) writes the tombstone before ``_run``'s finally / the reaper
-    # assigns ``info.elapsed`` (subagent_manager/run.py, terminal.py), so
+    # assigns ``info.elapsed`` (subagent_manager/run_lifecycle.py, terminal.py), so
     # sampling the wall clock inline at write time produced a DIFFERENT
     # value than the terminal ``subagent_done`` event later carried, and a
     # replayed ``spawn_status`` (which reads this tombstone) disagreed with

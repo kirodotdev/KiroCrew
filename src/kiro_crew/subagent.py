@@ -44,7 +44,7 @@ from kiro_crew.acp.liveness import (
 )
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import PROVIDER_LABEL_CLAUDE, PROVIDER_LABEL_DEFAULT
-from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401 - STOP_* resolved by run.py via bind_component_globals
+from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401 - STOP_* resolved by run_turn.py/run_yields.py via bind_component_globals
     STOP_CLASS_CANCELLED,
     STOP_CLASS_FAILED,
     STOP_CLASS_SUCCEEDED,
@@ -144,7 +144,7 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.platform.context import redact_via_context
-from kiro_crew.process_identity import (  # noqa: F401 - resolved by run.py/terminal.py via bind_component_globals
+from kiro_crew.process_identity import (  # noqa: F401 - resolved by run_lifecycle.py/run_yields.py/terminal.py via bind_component_globals
     MAX_ERROR_DETAIL_LEN,
     ProcessHandle,
     add_handle,
@@ -427,7 +427,7 @@ from kiro_crew.subagent_parts.start_pricing import (  # noqa: F401
     _spawn_memory_floor_and_cost,
     _startup_memory_reserve_gb,
 )
-from kiro_crew.subagent_persistence import (  # noqa: F401 - read_tombstone resolved by run.py via bind_component_globals
+from kiro_crew.subagent_persistence import (  # noqa: F401 - read_tombstone resolved by run_lifecycle.py via bind_component_globals
     DISMISSAL_FAILED,
     _agent_dir,
     _cleanup_session_files_sync,

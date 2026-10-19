@@ -1242,7 +1242,7 @@ class TestEveryProcessSpawnSeamIsAccountedFor:
         from kiro_crew import session_allocation
         from kiro_crew.config import loader_config
         from kiro_crew.providers import acp as acp_provider
-        from kiro_crew.subagent_manager import run as sub_run
+        from kiro_crew.subagent_manager import run_turn as sub_run
 
         assert '"shared_scratch": shared_scratch' in inspect.getsource(acp_provider.AcpProvider)
         assert 'kwargs["shared_scratch"]' in inspect.getsource(

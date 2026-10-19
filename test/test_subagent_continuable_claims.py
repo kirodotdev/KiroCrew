@@ -236,7 +236,7 @@ class TestSharedBindIdentityLabel:
         remembered = AsyncMock()
         with (
             patch.object(RunEventCoordinator, "_remember_identity_off_loop", remembered),
-            # ``run.py``'s ``*_impl`` bodies resolve their globals through
+            # ``run_start.py``'s ``*_impl`` bodies resolve their globals through
             # ``kiro_crew.subagent``, so that is where the name has to be replaced.
             patch("kiro_crew.subagent.AcpSessionProvider", lambda *a, **k: provider),
         ):

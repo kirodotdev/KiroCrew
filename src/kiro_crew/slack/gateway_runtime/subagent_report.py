@@ -137,7 +137,7 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
         detail = f"Error: {info.error}"
         # A run that ended on a stall / cancel / transport death keeps
         # what it streamed as a flagged PARTIAL (``info.partial``, set by
-        # the stop-reason classifier in subagent_manager/run.py); deliver
+        # the stop-reason classifier in subagent_manager/run_turn.py); deliver
         # it so the parent continues from it instead of re-submitting the
         # whole task.
         if info.partial and info.result:

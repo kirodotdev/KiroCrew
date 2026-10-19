@@ -1895,6 +1895,9 @@ def test_chat_runner_has_no_private_stop_reason_mapping():
 def test_subagent_run_has_no_private_stop_reason_mapping():
     import kiro_crew.subagent_manager.run as run_mod
 
-    src = Path(run_mod.__file__).read_text(encoding="utf-8")
+    # run.py binds most of its members from sibling ``run_*`` owners: read the family.
+    facade = Path(run_mod.__file__)
+    family = [facade, *sorted(facade.parent.glob("run_*.py"))]
+    src = "\n".join(path.read_text(encoding="utf-8") for path in family)
     assert 'startswith("error:")' not in src
     assert "classify_stop_reason(" in src

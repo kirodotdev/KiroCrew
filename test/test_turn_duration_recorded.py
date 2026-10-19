@@ -105,7 +105,12 @@ EXPECTED_SITES = {
     # heartbeat + its timeout + monitor + its
     # timeout)
     "task_executor.py": 2,  # task step + self-review
-    "subagent_manager/run.py": 1,
+    "subagent_manager/run.py": 0,  # the facade: run_turn persists the sub-agent's row
+    "subagent_manager/run_lifecycle.py": 0,
+    "subagent_manager/run_records.py": 0,
+    "subagent_manager/run_start.py": 0,
+    "subagent_manager/run_turn.py": 1,
+    "subagent_manager/run_yields.py": 0,
     "workflows/agent_exec.py": 1,
 }
 

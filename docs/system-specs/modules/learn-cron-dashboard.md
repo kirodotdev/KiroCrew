@@ -4546,7 +4546,7 @@ frontend `ErrorCard.test.tsx` / `transcriptRenderers.test.tsx` suites. Not done
 here, tracked separately: the chat path passes no `late_adopter` to
 `create_session`, so a `session/new` answer that arrives seconds after the
 budget is torn down by the `StartCollector` rather than handed to the slot (the
-subagent path already adopts, `subagent_manager/run.py`); binding a late handle
+subagent path already adopts, `subagent_manager/run_start.py`); binding a late handle
 to a slot is a lifecycle change wider than this guard.
 
 **A context overflow swaps Resume for a fresh session.** A turn the provider

@@ -88,7 +88,7 @@ def parent_work_scratch_dir(owner: _AllocationOwner, parent_session_key: str) ->
     the parent has no live provider or its process carries no scratch. The
     caller passes it as ``shared_scratch`` to the spawn it makes on the
     parent's behalf -- a companion runtime here, a dedicated subagent process
-    in ``subagent_manager/run.py`` -- and the spawn re-validates it at mount
+    in ``subagent_manager/run_turn.py`` -- and the spawn re-validates it at mount
     time (``agent_scratch.shared_scratch_window``).
     """
     provider = owner.get_provider(parent_session_key)
