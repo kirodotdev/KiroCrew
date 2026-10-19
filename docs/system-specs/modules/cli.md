@@ -1929,6 +1929,25 @@ no signal and exit 1. Without `--expect-pid` the command is unchanged:
 with the OS service manager so it survives SSH disconnects, restarts
 on crash, and starts on boot. Implemented in `src/kiro_crew/service/`.
 
+On Linux, `service/linux.py` keeps the verbs that read and drive an installed unit:
+`user_unit_installed`, `user_unit_active`, `user_unit_path`, `is_active`, `is_up`,
+`alias_holder`, `stop`, `restart` with its settle window, and `status`. The rest lives in
+its owners, and new work for each part goes to its module:
+
+| Module | Owns |
+|---|---|
+| `service/linux_unit.py` | the unit and overrides-file paths (`UNIT_PATH`, `ENV_FILE_PATH`), the service account (user, group, uid, home, linger) and `render_unit` |
+| `service/linux_systemctl.py` | privilege (`_privilege_prefix`, `_sudo_run`, `ServiceInstallError`), `_systemctl` in either scope, and one scope's unit state (`_UnitState`, `_unit_state`, `_stale_unit_line`) |
+| `service/linux_install.py` | `install`: the root-owned unit and overrides-file writes, the SELinux refusal and its user-unit remedy, and the AppArmor profile install and removal |
+| `service/linux_uninstall.py` | `uninstall`: the ownership decision `_owned_unit`, the per-scope teardown arms and `UninstallReport` |
+
+`kiro_crew.service.linux` is a mirror facade over those four owners, lowest layer first.
+Every name `linux.py` held before the split still resolves as
+`kiro_crew.service.linux.<name>` and is the same object, and a patch through it reaches
+every owner that binds the name. An owner imports only the owners listed before it, never
+the facade, and the owners log as `kiro_crew.service.linux`. `test/test_linux_facade.py`
+pins the contract.
+
 - **Linux** (`current_platform() == SYSTEMD`):
   - Unit file: `/etc/systemd/system/kirocrew.service` (root-owned).
   - Install: `sudo install` writes the unit, then `sudo systemctl
@@ -1940,8 +1959,8 @@ on crash, and starts on boot. Implemented in `src/kiro_crew/service/`.
     `FileNotFoundError`.
   - The gateway runs as `User=$USER Group=$(id -gn)`. Every elevated
     executable is a stock system program, not a kirocrew one; the module
-    docstring in `service/linux.py` sits next to the call sites, names the
-    current set, and records what escalating the AppArmor step's
+    docstring in `service/linux.py` names the current set for the whole
+    family, and records what escalating the AppArmor step's
     interpreter does and does not guarantee. [security](security.md)
     carries the reasoning behind that step's four tools.
   - **Environment**: values are captured from the installer's environment

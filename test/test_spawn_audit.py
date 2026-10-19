@@ -1709,18 +1709,18 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # purpose is to make the sandbox constructible in the first place.
         "service/apparmor.py::parser_version",
         "service/apparmor.py::validate",
-        "service/linux.py::_current_group",
+        "service/linux_unit.py::_current_group",
         # Read-only diagnostic: `loginctl show-user <user> -p Linger`, with
         # `Linger=` parsed from the Key=value output (no `--value`), a
         # fixed argv whose only variable is the service account name taken from
         # $USER/$LOGNAME (never agent-supplied). Same class as
-        # service/linux.py::_current_group — an identity/state query the install
+        # service/linux_unit.py::_current_group — an identity/state query the install
         # makes to warn the operator when runtimes would die at logout. No shell,
         # no agent-influenced argument, nothing written.
-        "service/linux.py::_linger_enabled",
-        "service/linux.py::_sudo_run",
-        "service/linux.py::_systemctl",
-        "service/linux.py::_write_unit_via_sudo",
+        "service/linux_unit.py::_linger_enabled",
+        "service/linux_systemctl.py::_sudo_run",
+        "service/linux_systemctl.py::_systemctl",
+        "service/linux_install.py::_write_unit_via_sudo",
         "service/macos.py::_launchctl",
         "session_pid.py::kill_orphan_mcps",
         "session_pid_orphan_scan.py::_our_orphan_pids",

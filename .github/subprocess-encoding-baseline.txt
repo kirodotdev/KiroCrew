@@ -39,7 +39,6 @@
 1 src/kiro_crew/pod/launchd.py
 1 src/kiro_crew/pod/runtime.py
 2 src/kiro_crew/service/apparmor.py
-3 src/kiro_crew/service/linux.py
 1 src/kiro_crew/service/macos.py
 2 test/test_acp_backend_kas.py
 1 test/test_agent_home_isolation.py

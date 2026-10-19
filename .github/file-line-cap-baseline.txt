@@ -45,7 +45,6 @@
 2787 src/kiro_crew/portability.py
 2284 src/kiro_crew/sandbox_launcher_program.py
 3181 src/kiro_crew/security_posture.py
-2232 src/kiro_crew/service/linux.py
 3685 src/kiro_crew/slack/events.py
 3892 src/kiro_crew/slack/interactions.py
 2594 src/kiro_crew/subagent_persistence.py

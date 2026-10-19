@@ -792,7 +792,7 @@ def main() -> None:
             print(f"👻 {exc}", file=sys.stderr)
             # A live holder is a sibling gateway already serving this home, so
             # retrying can only meet the same refusal: exit the code the systemd
-            # unit's RestartPreventExitStatus= names (service/linux.py) and let
+            # unit's RestartPreventExitStatus= names (service/linux_unit.py) and let
             # the supervisor stand down. Every other refusal is one a later
             # attempt may find cleared, so it keeps the restartable exit 1.
             sys.exit(LIVE_HOLDER_EXIT_CODE if exc.live_holder else 1)

@@ -4,7 +4,7 @@ The child's stdout and stderr carry a unit name or a D-Bus error, localized on s
 A text-mode spawn without ``encoding=`` decodes them with the locale's code page, and a
 strict UTF-8 decode raises ``UnicodeDecodeError`` on a byte it cannot read, which would
 skip the caller's own failure handling (its warning, and the ``False`` it returns). So
-each call decodes as UTF-8 with ``errors="replace"``, as ``service/linux.py`` does. Pinned
+each call decodes as UTF-8 with ``errors="replace"``, as ``service/linux_unit.py`` does. Pinned
 where it matters: the keyword arguments each caller hands ``subprocess.run``.
 """
 
