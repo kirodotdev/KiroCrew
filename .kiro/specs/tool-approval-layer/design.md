@@ -67,7 +67,7 @@ Tool executes (approved) or is skipped (rejected); agent turn continues
 | `website/src/components/chat-input/approval.ts` (`resolveApproval`) | **Unchanged** resume path the layer reuses (id-scoped by `request_id`; `approveChatSlot` is trust-grants only). |
 | `website/src/hooks/useWebSocket.ts` | Delivers the pending-decision + resume events (existing). |
 | `website/src/kit/tool-views/` (App Builder Kit spec — **prerequisite, not built by this spec**) | Supplies `ToolPreviewFrame` / schema-matched typed previews. This spec **consumes** it and is sequenced after it (see "Dependency and sequencing" below, and Req 8). |
-| `website/src/types/index.ts` (`tool_input: string`) | The opaque input string a preview parses; no new wire field. |
+| `website/src/types/index.chat.ts` (`tool_input: string`) | The opaque input string a preview parses; no new wire field. |
 
 ### Dependency and sequencing (Req 8)
 
@@ -110,7 +110,7 @@ type ToolInvocationState =
 
 interface PendingDecision {
   slot: string
-  approval: PendingApproval    // the verbatim wire event (types/index.ts): carries
+  approval: PendingApproval    // the verbatim wire event (types/index.chat.ts): carries
                                // request_id (the resume id), tool, tool_input, tool_kind
   toolCallId?: string          // optional; display/correlation only — resume uses
                                // approval.request_id, not this
@@ -186,7 +186,7 @@ The portable shape is three steps; the table names what an adopter substitutes.
 part is: intercept before execute, render a card from the invocation state, resume the
 same invocation on decision. **The AI-SDK `UIToolInvocation` union is reused as a state
 model, not a transport claim (Req 5.4)** — Kiro Crew's chat transport is markdown +
-`<mcwidget>` opaque strings (`useBlockAssembler.ts`, `types/index.ts`), not a typed
+`<mcwidget>` opaque strings (`useBlockAssembler.ts`, `types/index.chat.ts`), not a typed
 `tool-<name>` part stream, exactly as documented for the App Builder Kit tool-view encoding.
 
 ## Data Models

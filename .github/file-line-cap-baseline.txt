@@ -116,4 +116,3 @@
 2722 website/src/pages/settings/SecurityPanel.test.tsx
 2014 website/src/pages/settings/decisionsCard.test.tsx
 2004 website/src/test/InstancesViewport.test.tsx
-2166 website/src/types/index.ts

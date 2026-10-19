@@ -667,6 +667,26 @@ connection and peer owners) as arguments and never imports the facade; outside
 `src/hooks/websocket/` only the facade imports an owner, and owners import each
 other only along the edges `src/test/useWebSocket.ownership.test.ts` lists.
 
+`src/types/index.ts` is the one import path for the shared types it serves, most
+of them the shapes of REST and `/api/ws` payloads. That file declares nothing. It
+re-exports each owner below with an explicit `export type { … } from` list
+(`isolatedModules` is on, so a plain `export { … }` of a type does not compile).
+A new type for one of these areas goes to its owner and gets a line in that
+owner's list; `src/types/index.owners.test.tsx` fails until it has one. No owner
+imports the facade. An owner that needs another owner's type imports it with
+`import type` from that owner and imports nothing else, and nothing outside the
+family imports an owner. A module beside them in `src/types/` that is not named
+`index.<area>.ts` is not an owner and keeps its own import path.
+
+| Owner (`src/types/`) | Holds |
+|---|---|
+| `index.gateway.ts` | the status push (`StatusData`), the update check, host metrics, session storage and its inventory, and each connected crew's version, capabilities, approval state and remote update |
+| `index.jobs.ts` | scheduled jobs (`CronJob`), task-runner projects and their steps, dynamic-workflow runs |
+| `index.capabilities.ts` | lessons and memory stores, skills and their budget, steering files, skill and MCP discovery, configured MCP servers and their scopes |
+| `index.chat.ts` | the chat slot row (`ChatSlot`) with its turn identity and the `chat_done` payload, its todo list, MCP report and channel links; sidebar folders, tags and board lanes; transcript messages and the slot detail read; subagent and tool activity; content blocks; notifications and their channels; approvals; history session rows |
+| `index.sources.ts` | pull requests, issues, the source provider id, an app repository's contributors |
+| `index.artifacts.ts` | artifacts and their publication, publishing providers, forks, remote listings, session docs, folders, events, comments, web-app metadata |
+
 Redux Toolkit (`src/store/index.ts`) holds the cross-page shell state in **four**
 slices:
 

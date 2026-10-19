@@ -170,7 +170,7 @@ prompt for the sidebar's `last_turn_ts`, making a session look freshly asked-of
 every time a break was drawn.
 
 A new role is cheap on the wire: `ChatMessage.role` is an open `string`
-(`website/src/types/index.ts`), and the transcript read path has no role
+(`website/src/types/index.chat.ts`), and the transcript read path has no role
 allowlist — `_read_messages_locked` skips only the `_type: "metadata"` header and
 appends every other JSON line verbatim (`history_projection.py`,
 `TranscriptReadProjection`).
