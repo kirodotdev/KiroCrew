@@ -73,7 +73,6 @@ import contextlib
 import errno
 import logging
 import os
-import re
 import stat
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -83,9 +82,12 @@ from kiro_crew import platform_compat
 
 logger = logging.getLogger(__name__)
 
-# Either record terminator, so one scan finds whichever comes first. See
-# _boundary_end for why two bytes.find() calls are not equivalent.
-_BOUNDARY_RE = re.compile(rb"[\r\n]")
+# The one search primitive the framing walk uses: ``bytes.find`` is a memchr scan
+# in C, where a ``rb"[\r\n]"`` regex walks each byte through the regex engine
+# (measured 6x slower over real transcripts, and slower than ``json.loads``
+# parses the same records). A module name rather than a method call so the
+# linearity test can count what each search scans; see _BoundaryScan.
+_find = bytes.find
 
 # Longest record these readers will materialise, in BYTES (terminator excluded:
 # the threshold applies to the record without its newline, so a cap-length record
@@ -192,12 +194,13 @@ def _body_len(piece: bytes) -> int:
     return len(piece)
 
 
-def _boundary_end(buf: bytes, start: int = 0) -> int | None:
-    """Index just past the first record terminator at or after *start*, else None.
+class _BoundaryScan:
+    """Record-terminator search over ONE buffer, walked by a non-decreasing start.
 
-    Terminators are the universal-newline set -- ``\\n``, ``\\r\\n`` and a bare
-    ``\\r`` -- because that is what the TEXT-mode reads these callers were
-    converted from treated as a record end.
+    :meth:`end` answers "index just past the first record terminator at or after
+    *start*, else None". Terminators are the universal-newline set -- ``\\n``,
+    ``\\r\\n`` and a bare ``\\r`` -- because that is what the TEXT-mode reads
+    these callers were converted from treated as a record end.
 
     *start* lets the caller walk one buffer without re-slicing it. Searching
     from an offset rather than trimming the front is what keeps a chunk holding
@@ -205,12 +208,15 @@ def _boundary_end(buf: bytes, start: int = 0) -> int | None:
     tail per record, which is quadratic in the record count and is itself a
     cheap denial-of-service on an agent-writable file.
 
-    One regex scan finds whichever terminator comes first. Two separate
-    ``bytes.find`` calls would NOT do: a file delimited only by ``\\r`` has no
-    ``\\n`` until its very end, so searching for ``\\n`` walks the whole
-    remaining buffer on every record and reintroduces the same quadratic cost
-    the offset was added to remove. Measured before and after on a
-    40,000-record file: 0.086s of superlinear growth against 0.012s flat.
+    Each needle's next position is CACHED, and that is what makes two separate
+    ``bytes.find`` scans linear. Without the cache, a file delimited only by
+    ``\\r`` has no ``\\n`` until its very end, so a fresh search for ``\\n`` per
+    record walks the whole remaining buffer every time -- quadratic again. With
+    it, a needle is searched again only once *start* has passed its cached
+    position, and a needle with no occurrence left in the buffer is never
+    searched again, so every byte is scanned at most once per needle. That holds
+    because *start* never decreases within one buffer, which the framing walk
+    guarantees: it only advances past what it has already split off.
 
     A ``\\r`` that is the LAST byte is deliberately not treated as a terminator:
     it may be the first half of a ``\\r\\n`` whose ``\\n`` is in the next read,
@@ -219,15 +225,33 @@ def _boundary_end(buf: bytes, start: int = 0) -> int | None:
     at EOF yields the remainder whole -- so a file genuinely ending in a bare
     ``\\r`` still produces exactly one final record.
     """
-    match = _BOUNDARY_RE.search(buf, start)
-    if match is None:
-        return None
-    at = match.start()
-    if buf[at : at + 1] != b"\r":
-        return at + 1
-    if at + 1 == len(buf):
-        return None  # may be the \r of a \r\n not read yet
-    return at + 2 if buf[at + 1 : at + 2] == b"\n" else at + 1
+
+    __slots__ = ("_buf", "_size", "_nl", "_cr")
+
+    def __init__(self, buf: bytes) -> None:
+        self._buf = buf
+        self._size = len(buf)
+        # Next index of each needle at or after the last search's start; -1 means
+        # none is left in this buffer, and -2 means not searched yet.
+        self._nl = -2
+        self._cr = -2
+
+    def end(self, start: int) -> int | None:
+        if start >= self._size:
+            return None
+        nl = self._nl
+        if nl != -1 and nl < start:
+            nl = self._nl = _find(self._buf, b"\n", start)
+        cr = self._cr
+        if cr != -1 and cr < start:
+            cr = self._cr = _find(self._buf, b"\r", start)
+        if cr == -1 or (nl != -1 and nl < cr):
+            return None if nl == -1 else nl + 1
+        if cr + 1 == self._size:
+            return None  # may be the \r of a \r\n not read yet
+        # `nl` is the first \n at or after `start`, and `cr` precedes it, so the
+        # \r is half of a CRLF exactly when that \n sits right behind it.
+        return cr + 2 if nl == cr + 1 else cr + 1
 
 
 class _Oversized:
@@ -336,7 +360,8 @@ def _frames_with_offsets(
         # re-slicing per record copies the whole tail each time, which is
         # quadratic in the number of records a single read holds.
         start = 0
-        while (idx := _boundary_end(buf, start)) is not None:
+        scan = _BoundaryScan(buf)
+        while (idx := scan.end(start)) is not None:
             piece_start = start
             piece, start = buf[start:idx], idx
             absolute_start = buf_offset + piece_start
@@ -451,7 +476,7 @@ def bounded_raw_records(
     set -- ``\\n``, ``\\r\\n`` and a bare ``\\r`` -- which is exactly what the
     text-mode ``for line in handle`` iteration this replaces split on, so
     moving to a binary handle changes where records begin and end not at all
-    (see :func:`_boundary_end`). A record containing an exotic boundary
+    (see :class:`_BoundaryScan`). A record containing an exotic boundary
     ``str.splitlines`` would honour (``\\u2028``, ``\\x1c``, ...) stays ONE
     record and still parses, matching the iteration rather than
     ``splitlines`` -- which is the difference from
