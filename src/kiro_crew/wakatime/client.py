@@ -4,7 +4,9 @@ Structurally mirrors ``webex/client.py``: one lazily-created shared
 ``aiohttp.ClientSession`` behind a double-checked lock, a single ``_api`` core
 that honors one ``429 Retry-After`` back-off then gives up, explicit per-call
 ``ClientTimeout``, and transport errors caught narrowly so a failed call
-degrades to ``None``/``[]`` instead of raising into a turn.
+degrades to ``None``, an empty ``[]``/``{}``, or a ``0`` count instead of raising
+into a turn. :meth:`verify` and the strict ``fetch_*`` reads are the exceptions:
+they raise on a failed call, for callers that need a hard signal.
 
 Auth has two modes, chosen by :meth:`_headers` from whether an OAuth access
 token was given at construction. With a token the client sends
@@ -16,7 +18,7 @@ that date reading stats, summaries, or durations needs an OAuth token; the key
 still works for the heartbeat-send path and against a self-hosted
 Wakapi/Hackatime backend that has no OAuth provider, which is why the Basic
 fallback stays. A client built with a token therefore reads over OAuth; one
-built without a token keeps the existing key behavior unchanged. Either
+built without a token authenticates every call with the key. Either
 credential is revealed only at the request site and never logged: a failing
 request logs the exception TYPE only, because a WakaTime error message or a
 request URL can carry it.
@@ -123,17 +125,17 @@ def _stats_from_summaries(days: list[dict]) -> dict[str, Any]:
 
 
 class WakaTimeAuthError(Exception):
-    """Raised by :meth:`verify` when the credential is rejected (401/403).
+    """Raised by :meth:`verify` on a 401/403, any other non-2xx status, or a transport failure.
 
-    Distinct from a transport failure (which returns ``None``): a rejected
-    credential is a configuration problem the caller should surface, not retry.
-    This covers a bad API key and, under OAuth, a rejected or expired bearer
-    token.
+    The message says which. A 401/403 is a rejected credential: a bad API key
+    or, under OAuth, a rejected or expired bearer token. Unlike the plain read
+    verbs, which degrade to an empty result, :meth:`verify` raises on each of
+    these, so a caller validating a credential gets a hard signal.
     """
 
 
 class WakaTimeUnavailableError(Exception):
-    """Raised by the ``*_strict`` read verbs when the upstream call fails.
+    """Raised by the strict ``fetch_*`` read verbs when the upstream call fails.
 
     The plain read verbs (:meth:`get_summaries`, :meth:`get_stats`) swallow every
     ``_api`` failure into an empty result so an agent turn degrades quietly. A
@@ -158,8 +160,7 @@ class WakaTimeClient:
         # When set, every call authenticates with this bearer token instead of
         # the Basic key. A client is built with a token (OAuth, for reads after
         # the key cutoff) or without one (the key, for the heartbeat-send path
-        # and self-hosted backends); the token-exchange and refresh wiring that
-        # supplies it lands in a follow-up PR.
+        # and self-hosted backends).
         self._oauth_access_token = oauth_access_token or None
         self._session: aiohttp.ClientSession | None = None
         self._session_lock: asyncio.Lock = asyncio.Lock()
@@ -216,8 +217,9 @@ class WakaTimeClient:
         payload: Any | None = None,
         timeout: int = _DEFAULT_TIMEOUT_SECS,
     ) -> Any:
-        """Call a WakaTime endpoint. Returns the parsed JSON body on success
-        (``{}`` for an empty 2xx), None on any error.
+        """Call a WakaTime endpoint. Returns the parsed JSON body on a 2xx
+        (``{}`` for a 204 or a non-JSON body, None for an empty one), None on
+        any error.
 
         Honors a single 429 ``Retry-After`` back-off, clamped, then gives up —
         mirroring WebexClient._api.
@@ -262,12 +264,15 @@ class WakaTimeClient:
     # ── Public verbs ──
 
     async def verify(self) -> dict[str, Any]:
-        """Confirm the key works by reading the current user. Raises
-        :class:`WakaTimeAuthError` on 401/403, returns the user dict on success.
+        """Confirm the credential works by reading the current user.
 
-        Validates a newly-entered key before persisting it. Distinct from
-        the read verbs: a caller wants a hard signal that the key is valid, not a
-        silent empty result.
+        Returns the user dict on success and raises :class:`WakaTimeAuthError`
+        on a 401/403, any other non-2xx status, or a transport failure. A 2xx
+        returns ``{}`` when its body is blank or parses to JSON without a
+        ``data`` object; a body that does not parse lets the decoder's
+        ``ValueError`` escape rather than :class:`WakaTimeAuthError`. For
+        validating a newly-entered key before persisting it: unlike the read
+        verbs, a failed call raises rather than returning an empty result.
         """
         session = await self._ensure_session()
         url = f"{self._api_base}/users/current"
@@ -329,7 +334,7 @@ class WakaTimeClient:
         """Like :meth:`get_summaries`, but RAISE on an upstream failure.
 
         ``_api`` returns ``None`` on any failure (non-2xx, transport error,
-        timeout, exhausted 429) and a dict on success (``{}`` for an empty 2xx).
+        timeout, exhausted 429) and the parsed body on a 2xx (``{}`` for a 204).
         This verb turns that ``None`` into :class:`WakaTimeUnavailableError` so a
         caller can tell "the summaries request failed" apart from "the range has
         no activity" — the two are indistinguishable through :meth:`get_summaries`,

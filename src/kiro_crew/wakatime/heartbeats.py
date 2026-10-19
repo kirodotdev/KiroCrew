@@ -1,10 +1,11 @@
 """Turn agent coding activity into WakaTime heartbeats (the send side).
 
-The read side (stats, export, the productivity view) lives elsewhere in this
-package. This module is the producer: a completed agent turn that ran a
-filesystem-write or shell tool is coding activity. It emits a cadence heartbeat
-when a coding tool is CONFIRMED by an approved permission decision so WakaTime
-can accrue turn duration from the gaps between beats, and one
+The read side lives outside this module: the client's read verbs, the
+dashboard's stats and export handlers (``dashboard/handlers/wakatime.py``) and
+the Overview page's WakaTime tab. This module is the producer: a completed agent
+turn that ran a filesystem-write or shell tool is coding activity. It emits a
+cadence heartbeat when a coding tool is CONFIRMED by an approved permission
+decision so WakaTime can accrue turn duration from the gaps between beats, and one
 attribution-carrying heartbeat at turn end (the token and line-change deltas);
 every beat's entity is the session's project directory.
 
@@ -119,7 +120,7 @@ def line_changes_from_file_changes(file_changes: Any) -> int:
     entries are still counted; a non-list input returns 0. This feeds a
     heartbeat, never a decision.
     """
-    if not isinstance(file_changes, list) or not file_changes:
+    if not isinstance(file_changes, list):
         return 0
     total = 0
     for fc in file_changes:
@@ -185,7 +186,7 @@ def _make_heartbeat(
     an external service. The AI-coding category and the aggregate token and
     line-change deltas carry the attribution WakaTime needs without one.
 
-    Every AI field is dropped when zero/empty: the WakaTime schema treats them
+    Every AI field is dropped unless positive: the WakaTime schema treats them
     as nullable, and sending a zero would dilute per-session averages.
     """
     hb: dict[str, Any] = {
@@ -227,9 +228,9 @@ def note_coding_activity(
             return
         heartbeat = _make_heartbeat(
             project,
-            ai_input_tokens=max(0, int(ai_input_tokens or 0)),
-            ai_output_tokens=max(0, int(ai_output_tokens or 0)),
-            ai_line_changes=max(0, int(ai_line_changes or 0)),
+            ai_input_tokens=int(ai_input_tokens or 0),
+            ai_output_tokens=int(ai_output_tokens or 0),
+            ai_line_changes=int(ai_line_changes or 0),
         )
         loop = asyncio.get_running_loop()
         loop.create_task(send_heartbeat(heartbeat))
