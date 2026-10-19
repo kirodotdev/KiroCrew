@@ -1,6 +1,6 @@
 """Which provider a session runs on, and the guard that keeps it there.
 
-A profile id names exactly one provider (Coder, Sprites or boxd). Launch, the
+A profile id names exactly one provider (Coder, Sprites, boxd or Fargate). Launch, the
 picker, the choice lock and browse resolve it here, and a session whose id now
 names another provider than the one it started on is refused rather than moved.
 """
@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 
 #: ``coder.session_launch.PROVIDER_ID``; not imported, since that module imports this one.
 _CODER = "coder"
+#: An AWS Fargate task is not a persistent VM: it is dispatched here, beside them.
+FARGATE_PROVIDER_ID = "fargate"
 
 
 def _provider_ids_of(section: Any) -> dict[str, set[str]]:
@@ -93,7 +95,7 @@ async def prepare_vm_session(
     profile_id: str,
     recorded_provider: str,
 ) -> Optional[PreparedRemoteSession]:
-    """Prepare the session's sprite or boxd machine; None when it runs on Coder.
+    """Prepare the session's sprite, boxd machine or Fargate task; None when it runs on Coder.
 
     Raises :class:`SessionEnvironmentUnavailable` for a session whose profile
     was removed or now belongs to another provider.
@@ -125,6 +127,11 @@ async def prepare_vm_session(
             f"this session's profile {profile_id!r} now belongs to another provider; "
             "restore the original profile in Settings > Session Environments"
         )
+    if provider == FARGATE_PROVIDER_ID:
+        from kiro_crew.fargate_session.launch import FargateSessionEnvironments
+
+        # Keyed by the owner like Coder's, so a subagent shares the parent's task.
+        return await FargateSessionEnvironments(section, home).prepare(owner_key, profile_id)
     vm_environments = _vm_environments().get(provider)
     if vm_environments is None:
         return None
@@ -166,6 +173,17 @@ def _has_coder_binding(home: Path, owner_key: str) -> bool:
     return WorkspaceBindingRegistry(path).get_by_session(owner_key) is not None
 
 
+def _has_fargate_task(home: Path, owner_key: str) -> bool:
+    """Whether ``owner_key`` already owns a Fargate task row; reads only, like
+    :func:`_has_coder_binding`, and an unreadable registry raises."""
+    path = home / "fargate" / "session-tasks.json"
+    if not path.exists():
+        return False
+    from kiro_crew.fargate_session.launch import SessionTaskRegistry
+
+    return SessionTaskRegistry(path).get(owner_key) is not None
+
+
 def _owned_elsewhere(home: Path, owner_key: str, provider: str) -> bool:
     """Whether ``owner_key`` owns a workspace or VM row with a provider other
     than ``provider`` (any state, an archived one included).
@@ -176,6 +194,8 @@ def _owned_elsewhere(home: Path, owner_key: str, provider: str) -> bool:
     from kiro_crew.session_environments.persistent_vm import SessionResourceRegistry
 
     if provider != _CODER and _has_coder_binding(home, owner_key):
+        return True
+    if provider != FARGATE_PROVIDER_ID and _has_fargate_task(home, owner_key):
         return True
     for name, cls in _vm_environments().items():
         if name == provider:

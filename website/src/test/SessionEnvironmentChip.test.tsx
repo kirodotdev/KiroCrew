@@ -182,10 +182,11 @@ describe('SessionEnvironmentChip', () => {
   })
 
   it("shows each profile's provider mark, and the chosen one on the chip", async () => {
+    const aws = { id: 'aws', name: 'AWS task', provider: 'fargate', workdir: '/workspace' }
     const old = { id: 'old', name: 'Older gateway', provider: '', workdir: '/w' }
     const fly = { id: 'fly', name: 'Fly box', provider: 'sprites', workdir: '/w' }
     const box = { id: 'bx', name: 'Boxd box', provider: 'boxd', workdir: '/w' }
-    mockEnv(envResponse('dev', [{ ...DEV, template: 'python-dev' }, old, fly, box]))
+    mockEnv(envResponse('dev', [{ ...DEV, template: 'python-dev' }, aws, old, fly, box]))
     const u = userEvent.setup()
     chip()
     const picker = await button('Runs on Coder MicroVM')
@@ -203,8 +204,53 @@ describe('SessionEnvironmentChip', () => {
     expect(item(/Coder MicroVM/).querySelector('[data-testid="provider-mark-coder"]')).not.toBeNull()
     expect(item(/Fly box/).querySelector('[data-testid="provider-mark-sprites"]')).not.toBeNull()
     expect(item(/Boxd box/).querySelector('[data-testid="provider-mark-boxd"]')).not.toBeNull()
+    expect(item(/AWS task/).querySelector('[data-testid="provider-mark-fargate"]')).not.toBeNull()
     // An unknown provider keeps the generic cloud rather than guessing a brand.
     expect(item(/Older gateway/).querySelector('[data-testid^="provider-mark-"]')).toBeNull()
+  })
+
+  it('says a Fargate row runs on AWS, calls out what it bills beside the pricing link, and checks it when picked', async () => {
+    const aws = { id: 'aws', name: 'Fargate 4 vCPU', provider: 'fargate', workdir: '/workspace' }
+    vi.spyOn(api, 'chatSlotEnvironment').mockResolvedValue(envResponse('aws', [DEV, aws]))
+    const u = userEvent.setup()
+    wrap(<SessionEnvironmentChip slot="chat-1" />)
+    await u.click(await screen.findByRole('button', { name: 'Runs on Fargate 4 vCPU' }))
+    const row = await screen.findByRole('menuitemradio', { name: /Fargate 4 vCPU/ })
+    expect(row).toHaveTextContent('Separate cloud machine in your AWS account')
+    expect(row).toHaveTextContent('/workspace')
+    expect(row).toHaveAttribute('aria-checked', 'true')
+    expect(row.querySelector('.lucide-check')).not.toBeNull()
+    // Only a Fargate profile says where it runs.
+    const coder = screen.getByRole('menuitemradio', { name: /Coder MicroVM/ })
+    expect(coder).not.toHaveTextContent('AWS')
+    expect(coder.querySelector('.lucide-check')).toBeNull()
+    // The cost callout is the shared info notice, in plain words with no price:
+    // what bills, both things that stop it, and what to keep before archiving.
+    const notice = screen.getByTestId('fargate-cost-notice')
+    expect(notice).toHaveAttribute('role', 'status')
+    expect(notice).toHaveAttribute('data-tone', 'info')
+    expect(notice).toHaveTextContent(
+      'Each chat gets its own Fargate task, which bills your AWS account while it runs. ' +
+      'It stops when you archive the chat, or on its own about 15 minutes after Kiro Crew stops running. ' +
+      "Archiving deletes this chat's workspace files, so keep the work you want first.",
+    )
+    expect(notice.textContent).not.toMatch(/[$€£¥]|USD|per hour|\/ ?h(ou)?r/i)
+    // AWS's own price list sits right after it.
+    const pricing = screen.getByRole('menuitem', { name: 'See AWS Fargate pricing' })
+    expect(notice.nextElementSibling).toBe(pricing)
+    expect(pricing).toHaveAttribute('href', 'https://aws.amazon.com/fargate/pricing/')
+    expect(pricing).toHaveAttribute('target', '_blank')
+    expect(pricing).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it('offers no Fargate cost callout or pricing link when no Fargate profile is listed', async () => {
+    vi.spyOn(api, 'chatSlotEnvironment').mockResolvedValue(envResponse('dev'))
+    const u = userEvent.setup()
+    wrap(<SessionEnvironmentChip slot="chat-1" />)
+    await u.click(await screen.findByRole('button', { name: /Runs on/ }))
+    await screen.findByRole('menuitemradio', { name: /Coder MicroVM/ })
+    expect(screen.queryByTestId('fargate-cost-notice')).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'See AWS Fargate pricing' })).toBeNull()
   })
 
   it('unbinds back to this machine with null, and re-picking the current one sends nothing', async () => {

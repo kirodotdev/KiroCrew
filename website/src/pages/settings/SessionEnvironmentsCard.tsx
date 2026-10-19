@@ -15,7 +15,7 @@ import { isMemberThreadSlot, memberSlugOfSlot } from '../../hooks/unreadOnAttent
 import { resumeFromHistory } from '../../store/chatSlice'
 import { reportForError } from '../../utils/errorReport'
 import { safeHttpUrl } from '../../lib/safeUrl'
-import { BoxdIcon, CoderIcon, FlyIcon } from '../../components/BrandIcon'
+import { BoxdIcon, CoderIcon, FargateIcon, FlyIcon } from '../../components/BrandIcon'
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SettingsCombobox, SettingsField, SettingsInput, SettingsSelect, SettingsToggle, useSettingsDeepLinkTarget } from '../../components/settings'
@@ -51,6 +51,21 @@ interface BoxdProfile {
 }
 /** Mirrors BOXD_VCPU_CHOICES in config/session_environments.py. */
 const BOXD_VCPU_CHOICES = [0, 1, 2, 4, 8]
+/** Mirrors validate_fargate_profile in config/session_environments.py. */
+interface FargateProfile {
+  id: string
+  name: string
+  aws_profile: string
+  region: string
+  cluster: string
+  task_definition: string
+  subnets: string[]
+  security_groups: string[]
+  assign_public_ip: boolean
+  workdir: string
+}
+type FargateTextKey = 'id' | 'name' | 'aws_profile' | 'region' | 'cluster' | 'task_definition' | 'workdir'
+type FargateListKey = 'subnets' | 'security_groups'
 /** Mirrors MAX_PROFILES in config/session_environments.py. */
 const MAX_PROFILES = 20
 interface EnvironmentSettings {
@@ -60,6 +75,8 @@ interface EnvironmentSettings {
   sprites_profiles?: SpritesProfile[]
   /** boxd machine profiles. Older gateways omit it. */
   boxd_profiles?: BoxdProfile[]
+  /** AWS Fargate profiles. Older gateways omit it. */
+  fargate_profiles?: FargateProfile[]
   /** Profile id new chats start on; "" is this machine. Older gateways omit it. */
   default_profile?: string
   /** Stop every remote environment when the gateway shuts down. Older gateways omit it. */
@@ -68,10 +85,11 @@ interface EnvironmentSettings {
 // Symbols stay local to the editor: JSON configuration writes cannot include them.
 const PROFILE_ROW_ID = Symbol('profile-row-id')
 type ProfileDraft<T> = T & { readonly [PROFILE_ROW_ID]: string }
-type EnvironmentDraft = Omit<EnvironmentSettings, 'profiles' | 'sprites_profiles' | 'boxd_profiles'> & {
+type EnvironmentDraft = Omit<EnvironmentSettings, 'profiles' | 'sprites_profiles' | 'boxd_profiles' | 'fargate_profiles'> & {
   profiles: ProfileDraft<EnvironmentProfile>[]
   sprites_profiles?: ProfileDraft<SpritesProfile>[]
   boxd_profiles?: ProfileDraft<BoxdProfile>[]
+  fargate_profiles?: ProfileDraft<FargateProfile>[]
 }
 function newProfileDraft<T>(profile: T): ProfileDraft<T> {
   return { ...profile, [PROFILE_ROW_ID]: crypto.randomUUID() }
@@ -90,13 +108,14 @@ function environmentDraft(section: EnvironmentSettings | undefined, previous?: E
     profiles: reconcile(section.profiles, previous?.profiles),
     sprites_profiles: section.sprites_profiles && reconcile(section.sprites_profiles, previous?.sprites_profiles),
     boxd_profiles: section.boxd_profiles && reconcile(section.boxd_profiles, previous?.boxd_profiles),
+    fargate_profiles: section.fargate_profiles && reconcile(section.fargate_profiles, previous?.fargate_profiles),
   }
 }
 /** A removed profile cannot stay the default (the gateway refuses that save),
  * so removing the default moves it to the first remaining profile of the same
  * provider, then of the others in picker order, or to this machine when none
  * is left. */
-type DefaultKind = 'coder' | 'sprites' | 'boxd'
+type DefaultKind = 'coder' | 'sprites' | 'boxd' | 'fargate'
 function withoutDefault<T extends EnvironmentSettings>(next: T, removedId: string, kind: DefaultKind): T {
   if (next.default_profile !== removedId) return next
   const own = profilesOf(next, kind)
@@ -106,22 +125,24 @@ function withoutDefault<T extends EnvironmentSettings>(next: T, removedId: strin
 function profilesOf(c: EnvironmentSettings, kind: DefaultKind): { id: string; name: string }[] {
   if (kind === 'sprites') return c.sprites_profiles ?? []
   if (kind === 'boxd') return c.boxd_profiles ?? []
+  if (kind === 'fargate') return c.fargate_profiles ?? []
   return c.profiles
 }
 /** Every provider's profiles, in the order the default picker lists them. */
 function allProfiles(c: EnvironmentSettings): { id: string; name: string }[] {
-  return [...c.profiles, ...(c.sprites_profiles ?? []), ...(c.boxd_profiles ?? [])]
+  return [...c.profiles, ...(c.sprites_profiles ?? []), ...(c.boxd_profiles ?? []), ...(c.fargate_profiles ?? [])]
 }
 interface ConfigResponse {
   session_environments?: EnvironmentSettings
 }
 
-type ProviderId = 'coder' | 'sprites' | 'boxd'
-const PROVIDERS: readonly ProviderId[] = ['coder', 'sprites', 'boxd']
+type ProviderId = 'coder' | 'sprites' | 'boxd' | 'fargate'
+const PROVIDERS: readonly ProviderId[] = ['coder', 'sprites', 'boxd', 'fargate']
 const SETUP_DOCS: Record<ProviderId, string> = {
   coder: 'https://coder.com/docs/admin/setup',
   sprites: 'https://docs.sprites.dev',
   boxd: 'https://docs.boxd.sh/quickstart',
+  fargate: 'https://docs.aws.amazon.com/AmazonECS/latest/developerguide/getting-started-fargate.html',
 }
 const URL_ERROR_ID = 'session-environments-url-error'
 const emptyRows = (): Record<string, boolean> => ({})
@@ -186,6 +207,33 @@ function RawDetails({ text, className = 'pl-5' }: { text: string; className?: st
  * since the line itself is not something to click. */
 type CheckLineStatus = 'ok' | 'signIn' | 'withheld' | 'unknown'
 const CHECK_LINE_ICONS = { ok: Check, signIn: CircleDashed, withheld: Lock, unknown: Minus } as const
+/** Splits a comma-separated field into its non-empty, trimmed items. */
+function parseList(text: string): string[] {
+  return text.split(',').map(item => item.trim()).filter(Boolean)
+}
+const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((item, i) => item === b[i])
+
+/** A comma-separated list field. The typed text is kept as typed, so a comma
+ * or a space is not stripped mid-word; the draft only ever holds the parsed
+ * array. A value changed from outside (Discard, fresh server data) replaces
+ * the text, and leaving the field tidies it. */
+function ListInput({ label, value, onChange }: { label: string; value: string[]; onChange: (next: string[]) => void }) {
+  const [text, setText] = useState(() => value.join(', '))
+  const [seen, setSeen] = useState(value)
+  if (seen !== value) {
+    setSeen(value)
+    if (!sameList(parseList(text), value)) setText(value.join(', '))
+  }
+  return (
+    <SettingsInput label={label} value={text}
+      onChange={next => {
+        setText(next)
+        const items = parseList(next)
+        if (!sameList(items, value)) onChange(items)
+      }}
+      onBlur={() => setText(value.join(', '))} />
+  )
+}
 
 /** One check line: a status glyph and its text, announced as a list item. */
 function CheckLine({ status, children }: { status: CheckLineStatus; children: ReactNode }) {
@@ -236,12 +284,13 @@ function ProviderCheckLine({ row, name, okText }: {
  * Follows the provider tab, like the Manage step: a Sprites setup never reports
  * Coder rows even when a Coder URL is still saved. Git rows apply to every
  * provider. */
-function CheckResults({ result, provider, profiles, spritesProfiles, boxdProfiles }: {
+function CheckResults({ result, provider, profiles, spritesProfiles, boxdProfiles, fargateProfiles }: {
   result: SessionEnvironmentsCheck
   provider: ProviderId
   profiles: EnvironmentProfile[]
   spritesProfiles: SpritesProfile[]
   boxdProfiles: BoxdProfile[]
+  fargateProfiles: FargateProfile[]
 }) {
   const { t } = useTranslation()
   const names = new Map(profiles.map(p => [p.id, p]))
@@ -256,6 +305,7 @@ function CheckResults({ result, provider, profiles, spritesProfiles, boxdProfile
   const unsupported = git.length > 0 && git.every(([, status]) => status === 'unsupported')
   const spritesNames = new Map(spritesProfiles.map(p => [p.id, p.name || p.id]))
   const boxdNames = new Map(boxdProfiles.map(p => [p.id, p.name || p.id]))
+  const fargateNames = new Map(fargateProfiles.map(p => [p.id, p]))
   return (
     <>
     <ul aria-label={t('sessionEnvironments.checkResults')} className="space-y-1.5">
@@ -298,6 +348,12 @@ function CheckResults({ result, provider, profiles, spritesProfiles, boxdProfile
         const name = boxdNames.get(row.id) ?? row.id
         return <ProviderCheckLine key={`boxd:${row.id}`} row={row} name={name}
           okText={t('sessionEnvironments.checkBoxdOk', { name })} />
+      })}
+      {provider === 'fargate' && (result.fargate ?? []).map(row => {
+        const profile = fargateNames.get(row.id)
+        const name = profile?.name || row.id
+        return <ProviderCheckLine key={`fargate:${row.id}`} row={row} name={name}
+          okText={t('sessionEnvironments.checkTaskDefinitionOk', { name, taskDefinition: profile?.task_definition ?? '' })} />
       })}
       {allWithheld && <CheckLine status="withheld">{t('sessionEnvironments.checkGitWithheldAll')}</CheckLine>}
       {/* A Windows gateway lends nothing, so one line says so; no sandbox link applies. */}
@@ -525,7 +581,9 @@ function WorkspaceList({ provider, handoff, profiles }: {
             // Opening the chat would leave the card and lose the draft, so the
             // name is plain text then and the line above the list says why.
             <span className="min-w-0 truncate text-muted">
-              {chatTitle ? t('sessionEnvironments.workspaceSessionNamed', { title: chatTitle }) : t('sessionEnvironments.workspaceSession')}
+              {row.provider === 'fargate'
+                ? t('sessionEnvironments.workspaceFargateTask')
+                : chatTitle ? t('sessionEnvironments.workspaceSessionNamed', { title: chatTitle }) : t('sessionEnvironments.workspaceSession')}
             </span>
           ) : (
             // Status and action as one right-aligned group, so the button sits
@@ -576,8 +634,9 @@ export function SessionEnvironmentsCard() {
   // replace the draft. Saving freezes controls until the server responds.
   const [draft, setDraft] = useState<EnvironmentDraft | null>(null)
   const [saved, setSaved] = useState(false)
-  // Removal has no confirm: the draft keeps it undoable until Save.
-  const [removed, setRemoved] = useState(false)
+  // Removal has no confirm: the draft keeps it undoable until Save, and the
+  // status names the removed profile.
+  const [removed, setRemoved] = useState<string | null>(null)
   // Null until the person picks a tab; until then the tab follows what is saved
   // (see `provider` below), so a Sprites-only setup does not open on Coder.
   const [providerChoice, setProvider] = useState<ProviderId | null>(null)
@@ -690,7 +749,7 @@ export function SessionEnvironmentsCard() {
     })
     setDraft(null)
     setOpenRows(emptyRows())
-    setRemoved(false)
+    setRemoved(null)
   }
   const config = draft ?? savedConfig
   // Typed tokens the next Save stores. They count as unsaved edits like the draft.
@@ -709,7 +768,7 @@ export function SessionEnvironmentsCard() {
   // Removing the default's profile moves the default to a remaining profile, or
   // turns it off when none is left: say which, beside the switch.
   const savedDefault = query.data?.session_environments?.default_profile
-  const defaultGone = !!draft && removed && !!savedDefault
+  const defaultGone = !!draft && removed !== null && !!savedDefault
     && !allProfiles(draft).some(p => p.id === savedDefault)
   const defaultDropped = defaultGone && !draft?.default_profile
   const movedTo = defaultGone && draft?.default_profile
@@ -721,17 +780,20 @@ export function SessionEnvironmentsCard() {
   const savedProfiles = query.data?.session_environments?.profiles ?? []
   const savedSpritesProfiles = query.data?.session_environments?.sprites_profiles ?? []
   const savedBoxdProfiles = query.data?.session_environments?.boxd_profiles ?? []
+  const savedFargateProfiles = query.data?.session_environments?.fargate_profiles ?? []
   // The providers are separate choices, so open on the one in use. Coder wins a
   // tie because it is the only one with deployment-level settings.
   const provider: ProviderId = providerChoice
     ?? (savedCoderUrl || savedProfiles.length > 0 ? 'coder'
       : savedSpritesProfiles.length > 0 ? 'sprites'
         : savedBoxdProfiles.length > 0 ? 'boxd'
-          : 'coder')
+          : savedFargateProfiles.length > 0 ? 'fargate'
+            : 'coder')
   // Whether the open tab has anything saved for the check and the Manage list.
   const providerSaved = provider === 'coder' ? !!savedCoderUrl
     : provider === 'sprites' ? savedSpritesProfiles.length > 0
-      : savedBoxdProfiles.length > 0
+      : provider === 'boxd' ? savedBoxdProfiles.length > 0
+        : savedFargateProfiles.length > 0
   const checkMutation = useMutation({ mutationFn: () => api.sessionEnvironmentsCheck() })
   // Every provider tab, profile row and Advanced disclosure stays mounted but
   // hidden, so a settings deep link (command palette, a setting chip) would find
@@ -765,7 +827,8 @@ export function SessionEnvironmentsCard() {
   const workspacesQuery = useQuery({
     queryKey: ['sessionEnvironmentsWorkspaces'],
     queryFn: () => api.sessionEnvironmentsWorkspaces(),
-    enabled: !!savedCoderUrl || savedSpritesProfiles.length > 0 || savedBoxdProfiles.length > 0,
+    enabled: !!savedCoderUrl || savedSpritesProfiles.length > 0 || savedBoxdProfiles.length > 0
+      || savedFargateProfiles.length > 0,
     retry: false,
   })
   // Every provider's saved ids the draft drops: a VM row names its profile too.
@@ -912,10 +975,47 @@ export function SessionEnvironmentsCard() {
     addRow(row[PROFILE_ROW_ID])
     change({ ...config, boxd_profiles: [...boxdProfiles, row] })
   }
+  const fargateProfiles = config.fargate_profiles ?? []
+  const fargateFields: { key: FargateTextKey; label: string }[] = [
+    { key: 'id', label: t('sessionEnvironments.id') },
+    { key: 'name', label: t('sessionEnvironments.name') },
+    { key: 'aws_profile', label: t('sessionEnvironments.awsProfile') },
+    { key: 'region', label: t('sessionEnvironments.region') },
+    { key: 'cluster', label: t('sessionEnvironments.cluster') },
+    { key: 'task_definition', label: t('sessionEnvironments.taskDefinition') },
+    { key: 'workdir', label: t('sessionEnvironments.workdir') },
+  ]
+  const fargateListFields: { key: FargateListKey; label: string }[] = [
+    { key: 'subnets', label: t('sessionEnvironments.subnets') },
+    { key: 'security_groups', label: t('sessionEnvironments.securityGroups') },
+  ]
+  // A per-profile control: a variable label keeps it out of the global
+  // settings index, which cannot deep-link to one configured row.
+  const publicIpLabel = t('sessionEnvironments.publicIp')
+  const updateFargate = (index: number, updates: Partial<FargateProfile>) => {
+    const follows = updates.id !== undefined && defaultFollows(fargateProfiles[index]?.id, updates.id)
+    change({
+      ...config,
+      ...(follows ? { default_profile: updates.id } : {}),
+      fargate_profiles: fargateProfiles.map((profile, i) => i === index ? { ...profile, ...updates } : profile),
+    })
+  }
+  const addFargate = () => {
+    let n = 1
+    while (fargateProfiles.some(profile => profile.id === `fargate-${n}`)) n++
+    // Private networking by default: a public IP is an explicit choice.
+    const row = newProfileDraft({
+      id: `fargate-${n}`, name: '', aws_profile: '', region: '', cluster: '', task_definition: '',
+      subnets: [], security_groups: [], assign_public_ip: false, workdir: '/workspace',
+    })
+    addRow(row[PROFILE_ROW_ID])
+    change({ ...config, fargate_profiles: [...fargateProfiles, row] })
+  }
   const providerOptions: Record<ProviderId, { label: string; icon: ReactNode }> = {
     coder: { label: t('sessionEnvironments.coder'), icon: <CoderIcon size={14} /> },
     sprites: { label: t('sessionEnvironments.sprites'), icon: <FlyIcon size={18} /> },
     boxd: { label: t('sessionEnvironments.boxd'), icon: <BoxdIcon size={16} /> },
+    fargate: { label: t('sessionEnvironments.fargate'), icon: <FargateIcon size={20} /> },
   }
 
   return (
@@ -928,7 +1028,8 @@ export function SessionEnvironmentsCard() {
       <p className="text-[13px] text-muted">
         {provider === 'coder' ? t('sessionEnvironments.intro')
           : provider === 'sprites' ? t('sessionEnvironments.introSprites')
-            : t('sessionEnvironments.introBoxd')}
+            : provider === 'boxd' ? t('sessionEnvironments.introBoxd')
+              : t('sessionEnvironments.introFargate')}
       </p>
       {/* No hand-off: navigating would discard the unsaved environment draft. */}
       <ErrorNotice message={query.isError ? t('sessionEnvironments.loadError') : null} footer={
@@ -937,7 +1038,7 @@ export function SessionEnvironmentsCard() {
       <fieldset disabled={mutation.isPending} className="min-w-0 pt-3">
         <legend className="mb-2 text-[13px] font-semibold text-text">{t('sessionEnvironments.provider')}</legend>
         <p className="mb-2 text-[12px] text-muted">{t('sessionEnvironments.providerHint')}</p>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {PROVIDERS.map(id => (
             <label key={id} className={`flex items-center gap-3 rounded-lg border p-3 cursor-pointer text-[13px] ${provider === id ? 'border-accent bg-accent-subtle text-text' : 'border-border bg-bg text-text'}`}>
               <input type="radio" name={`${controlId}-provider`} value={id} checked={provider === id}
@@ -961,10 +1062,14 @@ export function SessionEnvironmentsCard() {
             <li>{t('sessionEnvironments.spritesSetup1')}</li>
             <li>{t('sessionEnvironments.spritesSetup2')}</li>
             <li>{t('sessionEnvironments.spritesSetup3')}</li>
-          </> : <>
+          </> : provider === 'boxd' ? <>
             <li>{t('sessionEnvironments.boxdSetup1')}</li>
             <li>{t('sessionEnvironments.boxdSetup2')}</li>
             <li>{t('sessionEnvironments.boxdSetup3')}</li>
+          </> : <>
+            <li>{t('sessionEnvironments.fargateSetup1')}</li>
+            <li>{t('sessionEnvironments.fargateSetup2')}</li>
+            <li>{t('sessionEnvironments.fargateSetup3')}</li>
           </>}
         </ol>
         <a className="inline-block pt-3 text-[13px] text-accent underline" target="_blank" rel="noopener noreferrer"
@@ -1025,7 +1130,7 @@ export function SessionEnvironmentsCard() {
                 <p className="-mt-2 text-[12px] font-medium text-text">{t('sessionEnvironments.computeSurvivesStopMicroVm')}</p>
                 <Btn type="button" onClick={() => {
                   removeRow(profile[PROFILE_ROW_ID])
-                  setRemoved(true)
+                  setRemoved(profile.name || profile.id)
                   change(withoutDefault({ ...config, profiles: config.profiles.filter((_, i) => i !== index) }, profile.id, 'coder'))
                 }}>
                   <Trash2 size={14} aria-hidden="true" />{t('sessionEnvironments.remove')}
@@ -1067,7 +1172,7 @@ export function SessionEnvironmentsCard() {
                     </details>
                     <Btn type="button" onClick={() => {
                       removeRow(profile[PROFILE_ROW_ID])
-                      setRemoved(true)
+                      setRemoved(profile.name || profile.id)
                       const remaining = spritesProfiles.filter((_, i) => i !== index)
                       change(withoutDefault({ ...config, sprites_profiles: remaining }, profile.id, 'sprites'))
                     }}>
@@ -1101,7 +1206,7 @@ export function SessionEnvironmentsCard() {
                       onChange={value => updateBoxd(index, { vcpu: Number(value) })} />
                     <Btn type="button" onClick={() => {
                       removeRow(profile[PROFILE_ROW_ID])
-                      setRemoved(true)
+                      setRemoved(profile.name || profile.id)
                       change(withoutDefault({ ...config, boxd_profiles: boxdProfiles.filter((_, i) => i !== index) }, profile.id, 'boxd'))
                     }}>
                       <Trash2 size={14} aria-hidden="true" />{t('sessionEnvironments.remove')}
@@ -1115,6 +1220,43 @@ export function SessionEnvironmentsCard() {
             </SettingsField>
           )}
         </div>
+        <div hidden={provider !== 'fargate'} className="space-y-3">
+          {config.fargate_profiles === undefined ? (provider === 'fargate' && <ErrorNotice message={t('sessionEnvironments.unavailable')} askAgent />) : <>
+            {/* Deploy my crew hosts a whole headless crew; a session environment
+              * keeps state on this gateway. Say so where the two look alike. */}
+            <p className="text-[13px] text-muted">{t('sessionEnvironments.fargateVsDeploy')}</p>
+            <SettingsField configKey="session_environments.fargate_profiles" label={t('sessionEnvironments.profiles')}
+              description={t('sessionEnvironments.profilesFargateHint')}>
+              <div className="min-w-0 space-y-3">
+                {fargateProfiles.map((profile, index) => (
+                  <ProfileDisclosure key={profile[PROFILE_ROW_ID]} title={profile.name || profile.id} subtitle={profile.task_definition}
+                    open={!!openRows[profile[PROFILE_ROW_ID]]} onToggle={() => toggleRow(profile[PROFILE_ROW_ID])}>
+                    {fargateFields.map(field => (
+                      <SettingsInput key={field.key} label={field.label} value={profile[field.key]}
+                        onChange={value => updateFargate(index, { [field.key]: value })} />
+                    ))}
+                    {fargateListFields.map(field => (
+                      <ListInput key={field.key} label={field.label} value={profile[field.key]}
+                        onChange={value => updateFargate(index, { [field.key]: value })} />
+                    ))}
+                    <SettingsToggle label={publicIpLabel} description={t('sessionEnvironments.publicIpHint')}
+                      checked={profile.assign_public_ip} onChange={value => updateFargate(index, { assign_public_ip: value })} />
+                    <Btn type="button" onClick={() => {
+                      removeRow(profile[PROFILE_ROW_ID])
+                      setRemoved(profile.name || profile.id)
+                      change(withoutDefault({ ...config, fargate_profiles: fargateProfiles.filter((_, i) => i !== index) }, profile.id, 'fargate'))
+                    }}>
+                      <Trash2 size={14} aria-hidden="true" />{t('sessionEnvironments.remove')}
+                    </Btn>
+                  </ProfileDisclosure>
+                ))}
+                <Btn type="button" disabled={fargateProfiles.length >= MAX_PROFILES} onClick={addFargate}>
+                  <Plus size={14} aria-hidden="true" />{t('sessionEnvironments.addFargate')}
+                </Btn>
+              </div>
+            </SettingsField>
+          </>}
+        </div>
       </fieldset>
       </section>
       <section aria-label={t('sessionEnvironments.verifyStep')} className="space-y-3 pt-3">
@@ -1124,17 +1266,20 @@ export function SessionEnvironmentsCard() {
             : !providerSaved ? (provider === 'coder' ? t('sessionEnvironments.checkNeedsUrl') : t('sessionEnvironments.checkNothingSaved'))
               : provider === 'coder' ? t('sessionEnvironments.verifyHint')
                 : provider === 'sprites' ? t('sessionEnvironments.verifyHintSprites')
-                  : t('sessionEnvironments.verifyHintBoxd')}
+                  : provider === 'boxd' ? t('sessionEnvironments.verifyHintBoxd')
+                    : t('sessionEnvironments.verifyHintFargate')}
         </p>
         <Btn type="button" disabled={dirty || !providerSaved || checkMutation.isPending}
           aria-describedby={`${controlId}-verification`} onClick={() => checkMutation.mutate()}>
           {checkMutation.isPending ? t('sessionEnvironments.checkRunning')
             : provider === 'coder' ? t('sessionEnvironments.check')
               : provider === 'sprites' ? t('sessionEnvironments.checkSprites')
-                : t('sessionEnvironments.checkBoxd')}
+                : provider === 'boxd' ? t('sessionEnvironments.checkBoxd')
+                  : t('sessionEnvironments.checkFargate')}
         </Btn>
         {checkMutation.data && !dirty && <CheckResults result={checkMutation.data} provider={provider}
-          profiles={savedProfiles} spritesProfiles={savedSpritesProfiles} boxdProfiles={savedBoxdProfiles} />}
+          profiles={savedProfiles} spritesProfiles={savedSpritesProfiles} boxdProfiles={savedBoxdProfiles}
+          fargateProfiles={savedFargateProfiles} />}
         {/* No hand-off while unsaved edits exist: leaving the page would discard them. */}
         <ErrorNotice askAgent={!dirty} askAgentLabel={t('sessionEnvironments.askAgentFix')} message={checkMutation.isError ? t('sessionEnvironments.checkError') : null} />
       </section>
@@ -1143,7 +1288,8 @@ export function SessionEnvironmentsCard() {
         <p className="text-[13px] text-muted">
           {provider === 'coder' ? t('sessionEnvironments.managementHint')
             : provider === 'sprites' ? t('sessionEnvironments.managementHintSprites')
-              : t('sessionEnvironments.managementHintBoxd')}
+              : provider === 'boxd' ? t('sessionEnvironments.managementHintBoxd')
+                : t('sessionEnvironments.managementHintFargate')}
         </p>
         {providerSaved && <WorkspaceList provider={provider} handoff={!dirty}
           profiles={provider === 'coder' ? savedProfiles : provider === 'sprites' ? savedSpritesProfiles : savedBoxdProfiles} />}
@@ -1158,7 +1304,7 @@ export function SessionEnvironmentsCard() {
         * steps, which a first setup walks in order. Older gateways omit
         * either key, and then its control stays hidden. */}
       {(config.default_profile !== undefined || config.stop_on_shutdown !== undefined) && (() => {
-        const all = [...config.profiles, ...spritesProfiles, ...boxdProfiles].filter(p => p.id)
+        const all = [...config.profiles, ...spritesProfiles, ...boxdProfiles, ...fargateProfiles].filter(p => p.id)
         const defaultOn = !!config.default_profile
         return (
           <section aria-label={t('sessionEnvironments.globalDefaults')} className="space-y-3 pt-3">
@@ -1205,6 +1351,9 @@ export function SessionEnvironmentsCard() {
                   <ul id={notesId} data-testid="shutdown-provider-notes" className="mr-14 space-y-0.5 text-[12px] text-muted">
                     <li>{t('sessionEnvironments.stopOnShutdownBoxd')}</li>
                     <li>{t('sessionEnvironments.stopOnShutdownSprites')}</li>
+                    {/* The switch never stops a Fargate task (stopping one deletes
+                      * its files); the guest bootstrap's idle exit ends it instead. */}
+                    <li>{t('sessionEnvironments.stopOnShutdownFargate')}</li>
                   </ul>
                 </div>
               })()}
@@ -1222,12 +1371,12 @@ export function SessionEnvironmentsCard() {
           setTokens({})
           setTokenErrors({})
           setSaved(false)
-          setRemoved(false)
+          setRemoved(null)
           setOpenRows(emptyRows())
           mutation.reset()
         }}>{t('sessionEnvironments.discard')}</Btn>
-        {(saved || (removed && draft)) && <span role="status" className="text-[13px] text-muted">
-          {saved ? t('sessionEnvironments.saved') : t('sessionEnvironments.removed')}</span>}
+        {(saved || (removed !== null && draft)) && <span role="status" className="text-[13px] text-muted">
+          {saved ? t('sessionEnvironments.saved') : t('sessionEnvironments.profileRemoved', { name: removed })}</span>}
       </div>
       {/* What saving does to chats still on a removed profile, before it is saved. */}
       {strandedChats > 0 && <p role="status" className="text-[13px] font-medium text-text">

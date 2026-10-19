@@ -1,4 +1,4 @@
-"""Sprites and boxd take their shared pieces from ``session_environments``, not ``coder``.
+"""Sprites, boxd and Fargate take their shared pieces from ``session_environments``, not ``coder``.
 
 ``coder/`` is Coder's own package. The persistent-VM registry and lifecycle, the
 provider routing and move guard, and the VM branches of browse and retention live
@@ -20,6 +20,16 @@ VM_PACKAGES = ("sprites_session", "boxd_session")
 #: launch and its remote shell protocol are Coder's on main and run unchanged on
 #: every remote provider. Nothing else of ``coder`` is shared.
 ALLOWED_CODER_IMPORTS = frozenset({"kiro_crew.coder.remote_worker"})
+#: AWS Fargate is not a persistent VM, so ``persistent_vm`` does not import these
+#: two for it: the per-session lifecycle lock and the prepared-session record,
+#: both Coder's on main. By exact name, so nothing else of their modules is shared.
+FARGATE_PACKAGE = "fargate_session"
+FARGATE_CODER_NAMES = frozenset(
+    {
+        "kiro_crew.coder.retention.session_lifecycle",
+        "kiro_crew.coder.session_launch.PreparedRemoteSession",
+    }
+)
 #: What moved out of ``coder``: none of it may come back there.
 MOVED = {
     "kiro_crew.coder.session_launch": (
@@ -72,6 +82,32 @@ def test_a_vm_provider_imports_nothing_shared_from_coder(package):
     assert not offending, sorted(offending)
 
 
+def test_fargate_imports_nothing_shared_from_coder():
+    """Fargate takes routing and the shared browse and retention branches from
+    ``session_environments`` too. From ``coder`` it takes only the guest worker
+    protocol and the two names ``persistent_vm`` takes for Sprites and boxd."""
+    files = sorted((SRC / FARGATE_PACKAGE).glob("*.py"))
+    assert files
+    offending = set()
+    for path in files:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                imported = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                if node.module in ALLOWED_CODER_IMPORTS:
+                    continue
+                imported = [f"{node.module}.{alias.name}" for alias in node.names]
+            else:
+                continue
+            offending.update(
+                f"{path.name}: {name}"
+                for name in imported
+                if (name == "kiro_crew.coder" or name.startswith("kiro_crew.coder."))
+                and name not in FARGATE_CODER_NAMES
+            )
+    assert not offending, sorted(offending)
+
+
 def test_the_shared_pieces_live_in_session_environments():
     assert importlib.util.find_spec("kiro_crew.coder.persistent_vm") is None
     for module in ("persistent_vm", "routing", "browse", "retention"):
@@ -100,6 +136,6 @@ def test_the_neutral_package_does_not_import_a_vm_provider_at_module_load():
             for node in top
             for alias in node.names
         }
-        providers = {f"kiro_crew.{package}" for package in VM_PACKAGES}
+        providers = {f"kiro_crew.{package}" for package in (*VM_PACKAGES, FARGATE_PACKAGE)}
         eager = [n for n in names if any(n == p or n.startswith(f"{p}.") for p in providers)]
         assert not eager, (path.name, eager)
