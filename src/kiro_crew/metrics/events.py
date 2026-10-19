@@ -147,13 +147,30 @@ def subagent_outcome(raw: object) -> str:
     return SUBAGENT_OUTCOME_UNKNOWN
 
 
-#: One per inbound webhook REQUEST, at ``webhooks.WebhookRunStore.record`` --
-#: the single commit point every request reaches, rejections and auth failures
-#: included. ``outcome`` is the store's own closed enum folded by
-#: ``webhooks.metric_outcome`` (``completed`` / ``timeout`` / ``error`` /
-#: ``rejected_capacity`` / ``unauthorized`` / ``disabled`` / ``other``), so the
-#: refusal slices are readable against the completed one without any free text
-#: from the run's ``detail`` field reaching an attribute.
+#: One per inbound webhook REQUEST the endpoint decides, which is WIDER than the
+#: runs the history ring stores. TWO emitters, both through
+#: ``webhooks.count_request``:
+#:
+#: * ``webhooks.WebhookRunStore.record`` counts each recorded run;
+#: * ``dashboard/handlers/hooks.py::api_hooks_agent`` counts, with an inline
+#:   ``count_request`` above each of its 21 refusing ``return``s, the requests it
+#:   turns away before a run exists.
+#:
+#: Neither is sufficient alone, and that is the point rather than an accident.
+#: The refusals cannot record: the unreadable store is what a record would write
+#: to, and the per-source auth throttle exists to stop doing work on a flood. Left
+#: uncounted they made the series lie in the case it is for -- a rotated
+#: credential records a few ``unauthorized`` runs, the throttle then trips, and
+#: the rate falls to zero while the integration is still broken. So do NOT read
+#: either emitter as redundant and delete it; the increments are disjoint, which
+#: ``test_webhooks_request_counter.py`` pins, and that file's
+#: ``test_every_refusal_branch_is_counted`` reads the endpoint's syntax tree so a
+#: new branch cannot answer without counting.
+#:
+#: ``outcome`` is folded by ``webhooks.metric_outcome`` over two disjoint halves
+#: plus a remainder: the recorded runs (``webhooks.VALID_OUTCOMES``), the refusals
+#: (``webhooks.METRIC_REFUSAL_OUTCOMES``) and ``other``. No free text from the
+#: run's ``detail`` field, and no id, reaches an attribute.
 WEBHOOK_REQUESTS = "kirocrew.webhook.requests"
 
 #: One per cron job execution. ``kind`` separates the three dispatch shapes

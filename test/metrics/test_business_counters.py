@@ -445,11 +445,16 @@ class TestWebhookRequests:
             store.record(outcome="teleported")
         assert _named(rec, ev.WEBHOOK_REQUESTS) == []
 
-    def test_the_metric_enum_is_the_store_enum_plus_the_remainder(self):
-        """Widening ``VALID_OUTCOMES`` without saying so in the docs fails here."""
+    def test_every_recorded_outcome_is_a_member_of_the_metric_enum(self):
+        """The recorded half of the series key is exactly the store's own enum.
+
+        The other half -- the endpoint refusals the run store never sees -- and
+        the whole-enum shape are pinned in
+        ``test/test_webhooks_request_counter.py``, which owns that population.
+        """
         from kiro_crew.webhooks import METRIC_OUTCOME_OTHER, METRIC_OUTCOMES, VALID_OUTCOMES
 
-        assert METRIC_OUTCOMES == VALID_OUTCOMES | {METRIC_OUTCOME_OTHER}
+        assert VALID_OUTCOMES <= METRIC_OUTCOMES
         assert METRIC_OUTCOME_OTHER not in VALID_OUTCOMES
 
     def test_no_identifier_or_free_text_reaches_an_attribute(self, rec, store):
