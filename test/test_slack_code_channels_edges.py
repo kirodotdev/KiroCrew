@@ -450,3 +450,27 @@ async def test_a_follow_up_repeating_the_request_does_not_stand_in_for_it(
     routed_before = len(env.routed)
     assert await routing.maybe_open_code_channel(env.orch, mention(), CLEAN, OWNER) is True
     assert len(env.routed) == routed_before + 1  # the request is delivered, once
+
+
+async def test_a_channel_whose_binding_row_cannot_be_read_drops_every_message(
+    env: Env, tmp_path: Any
+) -> None:
+    """The fenced channel's kickoff thread still links to its old session; no
+    message there reaches it, directed or not."""
+    import json
+
+    from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
+
+    path = tmp_path / "fenced.json"
+    path.write_text(
+        json.dumps({"bindings": {"C0CODE": {"channel_id": "C0CODE", "session_key": "chat-9-1"}}}),
+        encoding="utf-8",
+    )
+    fenced = CodeChannelStore(path)
+    fenced.load()
+    set_store(fenced)
+    assert fenced.is_quarantined("C0CODE")
+    reply = {**_msg("400.000002", "status?"), "thread_ts": "300.000001"}
+    assert (await _gate(env, reply)).gate is Gate.DROP
+    assert (await _gate(env, mention(channel="C0CODE"))).gate is Gate.DROP
+    assert env.routed == [] and env.created_sessions == []

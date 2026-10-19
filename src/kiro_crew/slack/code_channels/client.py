@@ -222,6 +222,9 @@ def parse_channel_info(channel_id: str, raw: Any) -> ChannelInfo:
         origin_channel_id=str(origin.get("channel_id") or ""),
         origin_ts=str(origin.get("ts") or ""),
         shared=_shared(channel),
+        archived=(
+            channel.get("is_archived") if isinstance(channel.get("is_archived"), bool) else None
+        ),
     )
 
 

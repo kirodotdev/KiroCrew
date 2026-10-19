@@ -326,11 +326,11 @@
       "route": "/settings/channels/whatsapp?highlight=channels.how-the-agent-joins-in-whatsapp"
     },
     {
-      "id": "channels.let-the-conductor-hand-off-work-slack",
-      "label": "Let the conductor hand off work (Slack)",
+      "id": "channels.let-code-channels-start-helper-agents-slack",
+      "label": "Let code channels start helper agents (Slack)",
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=key%3Aslack.code_channel_dispatch",
-      "description": "The conductor is the agent that runs each code channel. With this on, it can start worker sessions for the channel's task when you message it, and track them on its work ledger.",
+      "description": "Helpers work in the code channel's folder and ask you before changing files, unless that channel is set to approve automatically (Trust).",
       "configKey": "slack.code_channel_dispatch"
     },
     {

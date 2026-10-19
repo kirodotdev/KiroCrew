@@ -392,7 +392,16 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         # it is told what it CAN do (the state read and the worker's link).
         link = str(resp.get("dashboard_link") or "")
         link_line = f" Dashboard: {link}" if link else ""
-        return redact(f"{opened}{guidance}{link_line}" + reply_line(resp))
+        # A first message that did not land is still named (the conductor's only
+        # word that its worker got nothing); the rest of that line points at a
+        # transcript read this caller is not given.
+        failed = resp.get("delivery_error")
+        undelivered = (
+            _first_message_line({"message": ""}, resp) + " "
+            if args.get("message") is not None and isinstance(failed, dict)
+            else ""
+        )
+        return redact(f"{opened}{undelivered}{guidance}{link_line}" + reply_line(resp))
     # A Crew Mode chat's worker is in the sidebar but filed in no folder.
     where = (
         "the user's sidebar, unfiled (this chat is in Crew Mode)"
