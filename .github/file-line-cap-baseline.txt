@@ -117,7 +117,6 @@
 2208 website/src/apps/issue-radar/api.ts
 2567 website/src/apps/mochi/src/renderer/ChatPanel.tsx
 2125 website/src/pages/AppDetailPage.tsx
-2117 website/src/pages/chat/SidePanel.tsx
 2026 website/src/pages/connections/ConnectionsPage.tsx
 2722 website/src/pages/settings/SecurityPanel.test.tsx
 2014 website/src/pages/settings/decisionsCard.test.tsx

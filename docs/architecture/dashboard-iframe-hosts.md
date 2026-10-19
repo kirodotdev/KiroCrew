@@ -69,7 +69,7 @@ So `WebPreviewPanel.tsx` does not detect this state. It carries a standing note 
 
 ## Adding a new panel tab kind
 
-Tab kinds live in `website/src/hooks/usePanelTabs.ts` (`ViewKind` / `TabKind`), and the body is dispatched in `website/src/pages/chat/SidePanel.tsx`. Two things to know before adding one:
+Tab kinds live in `website/src/hooks/usePanelTabs.ts` (`ViewKind` / `TabKind`), and the body is dispatched in `website/src/pages/chat/SidePanel.tsx` : category views, the Files home and the Dashboard tab inline; terminal, Browser and document (file, diff, folder, artifact) bodies through `TabBody`, and MCP app and app-contributed tabs from the cross-slot app list through `McpAppTabBody` / `AppPanelTabBody`, all three in `website/src/pages/chat/SidePanelTabBodies.tsx`. Two things to know before adding one:
 
 - **Tab switch is safe only for non-category bodies.** Terminal, document, artifact, folder, Browser, and App bodies are kept mounted and hidden via `display` in `SidePanel.tsx`, so switching those tabs does not tear down a frame. Category views (the `VIEW_KINDS` set) are unmounted when inactive.
 - **Category views unmount on switch** (`if (!isActive || panelHidden) return null`), so a stateful frame must not be registered as a category view.

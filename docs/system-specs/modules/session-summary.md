@@ -380,7 +380,7 @@ behavior the feature exists to remove.
 | `404` `{"code": "slot_not_found"}` | Unknown slot, or a slot the calling app does not own |
 
 While `enabled` is false the panel's `+`-menu row is **hidden** as well
-(`newMenuSections` in `SidePanel.tsx`), because the feature is turned on from
+(`newMenuSections` in `SidePanelAddMenu.tsx`), because the feature is turned on from
 Settings → Chat (`session_summary.enabled`), not from the panel, so offering the
 row would only lead to a panel saying the feature is off. `SidePanel` reads the flag from this same
 endpoint under the same react-query key the tab uses, so it is one cheap
