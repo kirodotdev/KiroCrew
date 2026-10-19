@@ -96,7 +96,13 @@ async def _caller_key(
             "restricted_session",
             "The work ledger is not available in this session mode.",
         )
-    why, caller_slot, admission = _caller_admission(request, sk)
+    # Off the loop, right before the synchronous judgement: the code-channel store
+    # and the dispatch switch's config-path reading (no-ops once loaded / while
+    # code channels are off). Nothing else is awaited between this and the gate.
+    await session_control.load_code_channel_lineage()
+    why, caller_slot, admission, via_code_channel = caller_admission_with_route(
+        request.app["state"], sk
+    )
     if why:
         # Containment for channel agents, held HERE rather than only in
         # ``channel.CHANNEL_AGENT_BLOCKED_TOOLS``. That list is matched against a
@@ -137,16 +143,28 @@ async def _caller_key(
     # publishes withholds it -- see ``session_control.record_audience_admission``.
     if admission is not None:
         session_control.record_audience_admission(caller_slot, admission)
+    if via_code_channel:
+        # Every route below answers this caller with the published-fields
+        # projection and nothing else: what it reads becomes a reply posted into
+        # the code channel. See :func:`_code_channel_caller`.
+        request[_CODE_CHANNEL_CALLER] = True
     return session_ledger.ledger_key(sk), None
 
 
-def _caller_admission(request: web.Request, sk: str) -> tuple[str, Any, dict[str, Any] | None]:
-    """:func:`caller_admission` over a request. See it for the judgement."""
-    return caller_admission(request.app["state"], sk)
+#: Request key set by :func:`_caller_key` when the caller was admitted through the
+#: code-channel dispatch exemption.
+_CODE_CHANNEL_CALLER = "work_ledger.code_channel_caller"
 
 
-def caller_admission(state: DashboardState, sk: str) -> tuple[str, Any, dict[str, Any] | None]:
-    """The entry gate's one judgement of *sk*: ``(why, slot, admission)``.
+def _code_channel_caller(request: web.Request) -> bool:
+    """Whether this request's caller is a code channel's conductor (see above)."""
+    return request.get(_CODE_CHANNEL_CALLER) is True
+
+
+def caller_admission_with_route(
+    state: DashboardState, sk: str
+) -> tuple[str, Any, dict[str, Any] | None, bool]:
+    """The entry gate's one judgement of *sk*: ``(why, slot, admission, via_code_channel)``.
 
     ``why`` is ``""`` when the caller may reach the ledger, else the refusal reason
     :func:`_contained_channel_caller` would name; ``slot`` is the caller's own live
@@ -173,22 +191,37 @@ def caller_admission(state: DashboardState, sk: str) -> tuple[str, Any, dict[str
     delivers ledger state into a session's own turn has to pass this same gate and
     holds no request. One judgement, one implementation: a second copy of a
     containment test is how one of the two drifts open.
+
+    ``via_code_channel`` is True when the caller was admitted through the
+    code-channel dispatch exemption (``session_control.judge_code_channel``)
+    rather than as unmirrored or as the owner's DM: a Slack code channel's own
+    session, which every route then answers with the published-fields projection
+    only (``session_control.published_item_fields``).
     """
     slot_key = session_control.caller_slot_key(state, sk)
     slot = state.get_slot(slot_key) if slot_key else None
     if slot is None:
-        return contained_channel_caller(state, sk), None, None
+        return contained_channel_caller(state, sk), None, None, False
     try:
         verdict = session_control.judge_owner_dm(state, slot)
     except Exception:  # pragma: no cover - the predicate fails closed itself
         logger.debug("owner-DM check failed for %s", sk, exc_info=True)
-        return "the owner-DM check could not be completed", slot, None
+        return "the owner-DM check could not be completed", slot, None, False
     reaches = (
         is_channel_session_key(sk)
         or bool(session_control._channel_link_of(slot))
         or verdict.mirrored
     )
-    return (verdict.refusal if reaches else ""), slot, verdict.admission
+    if not reaches or not verdict.refusal:
+        return (verdict.refusal if reaches else ""), slot, verdict.admission, False
+    if not is_channel_session_key(sk) and not session_control._channel_link_of(slot):
+        channel = session_control.judge_code_channel(
+            state, slot, operation=session_control.LEDGER_OPERATION
+        )
+        if session_control.admits(channel):
+            return "", slot, channel.admission, True
+        return verdict.refusal + session_control.withheld_clause(channel), slot, None, False
+    return verdict.refusal, slot, verdict.admission, False
 
 
 def _contained_channel_caller(request: web.Request, sk: str) -> str:
@@ -216,7 +249,7 @@ def contained_channel_caller(state: DashboardState, sk: str) -> str:
     Re-checked after every read the routes await across, because the exemption
     rests on live state -- a mirror retargeted at a thread while the ledger was
     being read widens the audience exactly as a mirror gained by a dashboard
-    session does. The ENTRY gate judges through :func:`_caller_admission` instead,
+    session does. The ENTRY gate judges through :func:`caller_admission_with_route` instead,
     which takes the same predicate's verdict once and records the row it judged;
     this reason-only form is what that gate falls back to for a key no open slot
     answers to, where there is nothing to record.
@@ -224,10 +257,25 @@ def contained_channel_caller(state: DashboardState, sk: str) -> str:
     if not (is_channel_session_key(sk) or reaches_a_channel(state, sk)):
         return ""
     try:
-        return session_control.session_owner_dm_refusal(state, sk)
+        why = session_control.session_owner_dm_refusal(state, sk)
     except Exception:  # pragma: no cover - the predicate fails closed itself
         logger.debug("owner-DM check failed for %s", sk, exc_info=True)
         return "the owner-DM check could not be completed"
+    if not why or is_channel_session_key(sk):
+        return why
+    # A code channel's own session, re-judged on the live state after the read:
+    # a mirror retargeted, the channel shared or the switch turned off while the
+    # ledger was being read withholds the answer exactly as an owner DM's does.
+    slot_key = session_control.caller_slot_key(state, sk)
+    slot = state.get_slot(slot_key) if slot_key else None
+    if slot is None or session_control._channel_link_of(slot):
+        return why
+    channel = session_control.judge_code_channel(
+        state, slot, operation=session_control.LEDGER_OPERATION
+    )
+    if session_control.admits(channel):
+        return ""
+    return why + session_control.withheld_clause(channel)
 
 
 def _reaches_a_channel(request: web.Request, sk: str) -> bool:
