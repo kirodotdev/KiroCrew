@@ -6,6 +6,7 @@ import { WINDOWS_ABS_PATH_RE, decodeLocalPath } from '../../utils/urlTransform'
 import { i18nT } from '../../i18n/t'
 import { BasePathCtx, CompactImagesCtx, ImageVersionCtx, MdSourceCtx } from './contexts'
 import { useTitleCuedCopy } from './copyFeedback'
+import { basenameOf } from './pathReferences'
 import {
   GatewayMediaRefused,
   REMOTE_MEDIA_CHIP_CLASS,
@@ -42,7 +43,9 @@ import { dispatchLightbox } from './Lightbox'
  * is already honest there.
  */
 function BrokenImage({ path, alt, probeUrl }: { path: string; alt?: string; probeUrl?: string }) {
-  const { copied, press, failureBubble } = useTitleCuedCopy(path, i18nT('components.markdownRenderer.couldnt_copy_the_image_path'))
+  // Names the path's tail, as the path chip does, so the reader knows WHICH
+  // image's path failed to copy (#14294).
+  const { copied, press, failureBubble } = useTitleCuedCopy(path, i18nT('components.markdownRenderer.couldnt_copy_the_image_path_label', { label: basenameOf(path.replace(/[\\/]+$/, '')) || path }))
   const [confirmedGone, setConfirmedGone] = useState(false)
   useEffect(() => {
     // The verdict belongs to THIS probeUrl. A reused instance handed a different

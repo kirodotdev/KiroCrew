@@ -204,11 +204,11 @@ describe('inline-code chips: each class names its own click', () => {
     expect(notices).toHaveLength(1)
     // The shared title-cued notice names WHAT failed to copy — this chip copies
     // the path — and never the copy chip's "select the text" recovery: that
-    // sentence belongs to the chip whose value IS its visible text. The gesture
-    // leads the sentence, so it reads as what failed — never as advice to try
-    // Ctrl+click — and a reader who did not press it does not learn that a
-    // plain click copies.
-    expect(notices[0]).toHaveTextContent(/^The copy failed\. Ctrl\/Cmd\+click copies the path a\.md\.$/)
+    // sentence belongs to the chip whose value IS its visible text. It names no
+    // gesture: it shows only after Ctrl/Cmd+click was refused, and naming the
+    // gesture again read as advice to try something else (#14294).
+    expect(notices[0]).toHaveTextContent(/^Couldn’t copy the path a\.md\.$/)
+    expect(notices[0]).not.toHaveTextContent(/ctrl|cmd|click/i)
     expect(notices[0]).not.toHaveTextContent(/select the text/i)
     expect(screen.getByRole('tooltip').contains(notices[0])).toBe(true)
     expect(flow.innerHTML).toBe(flowRest)
