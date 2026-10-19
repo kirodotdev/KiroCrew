@@ -102,6 +102,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _forward_remote_decide,
         _is_code_channel_worker,
         _record_conductor_write,
+        _refuse_code_channel_worker,
         _refuse_dispatch_without_ledger,
         _refuse_dispatched_worker,
         _refuse_unowned_worker,
@@ -125,11 +126,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         stamp_send_handback,
     )
     from kiro_crew.dashboard.handlers.work_ledger_read import (  # noqa: F401
+        _CHANNEL_ANSWER_FIELDS,
         _COMPACT_ROW_FIELDS,
         _MAX_EVENT_TAIL,
         _PUBLISHED_NOTE,
         _QUERY_FALSE,
         _QUERY_TRUE,
+        _UNPLACED_WHY,
+        _bar_is_placed,
         _find_slot,
         _passes_filters,
         _published_payload,
@@ -143,6 +147,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _slot_open,
         _slot_running,
         _tail_events,
+        api_work_ledger_accept_eval,
         api_work_ledger_get,
         worker_holds_open_item,
     )
@@ -265,5 +270,6 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         WORK_CONDUCTOR_FIELDS,
         WORK_MAX_ARTIFACT_VALUE_CHARS,
         WORK_MAX_DEPTH_MAX,
+        WORK_MAX_DEPTH_MIN,
         WORK_MAX_RETIRE_REASON_CHARS,
     )

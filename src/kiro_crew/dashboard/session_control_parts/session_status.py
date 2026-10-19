@@ -21,6 +21,7 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     _caller_is_ownership_fenced,
 )
 from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
+    _defuse,
     worker_dashboard_link,
 )
 from kiro_crew.dashboard.session_control_parts.model_switch import _pending_pick_view
@@ -638,7 +639,8 @@ async def created_session_status(
             rows.append(
                 {
                     "target": key,
-                    "title": meta["title"],
+                    # Relayed into the channel for a code channel's conductor.
+                    "title": _defuse(meta["title"]) if via_code_channel else meta["title"],
                     "status": "unknown",
                     "source": "history",
                 }
@@ -666,23 +668,29 @@ async def created_session_status(
         from kiro_crew.autonudge import get_instance as get_nudge
 
         link = worker_dashboard_link(key) if via_code_channel else ""
-        rows.append(
-            {
-                "target": key,
-                "title": _bounded_status_title(slot.display_title),
-                "status": "working" if running else ("queued" if queue_depth else "idle"),
-                "running": running,
-                # Its own loop will wake it (``ledger_wake.worker_looping``): an
-                # ``idle`` row with it is waiting on something outside, not stopped.
-                "looping": not running and ledger_wake.worker_looping(get_nudge(), key),
-                "queue_depth": queue_depth,
-                "process": process_state(state, slot),
-                **_pending_approval_fields(state, slot),
-                **(_activity_fields(slot) if via_code_channel else {}),
-                **({"dashboard_link": link} if link else {}),
-                "source": "+".join(sources),
-            }
-        )
+        row = {
+            "target": key,
+            "title": _bounded_status_title(slot.display_title),
+            "status": "working" if running else ("queued" if queue_depth else "idle"),
+            "running": running,
+            # Its own loop will wake it (``ledger_wake.worker_looping``): an
+            # ``idle`` row with it is waiting on something outside, not stopped.
+            "looping": not running and ledger_wake.worker_looping(get_nudge(), key),
+            "queue_depth": queue_depth,
+            "process": process_state(state, slot),
+            **_pending_approval_fields(state, slot),
+            **(_activity_fields(slot) if via_code_channel else {}),
+            **({"dashboard_link": link} if link else {}),
+            "source": "+".join(sources),
+        }
+        if via_code_channel:
+            # A code channel's conductor relays these rows into its channel: the
+            # worker-set text loses Slack mention markup, as the ledger's
+            # published fields do.
+            for field_name in ("title", "pending_approval_tool"):
+                if field_name in row:
+                    row[field_name] = _defuse(str(row[field_name]))
+        rows.append(row)
 
     _audit(
         caller_session_key=caller_session_key,

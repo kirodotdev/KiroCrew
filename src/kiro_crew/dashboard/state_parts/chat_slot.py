@@ -99,6 +99,7 @@ class _ChatSlot:
         "_task",
         "_turn_admission_reserved",
         "_turn_generation",
+        "_turn_lineage",
         "_turns_started",
         "_unstarted_generation",
         "_handoff_generation",
@@ -329,6 +330,7 @@ class _ChatSlot:
         "remote_slot",
         "_turn_in_flight_generation",
         "_turn_in_flight_prompt",
+        "_restored_turn_marker",
         "_active_turn_session_key",
         "_responsive",
         "_side",
@@ -381,6 +383,9 @@ class _ChatSlot:
         "_row_redacted_memo",
         "_row_links_memo",
         "_slot_links_memo",
+        # A per-slot record kept outside the slot (the code-channel sender record)
+        # holds it weakly, so a closed slot is freed with everything it carries.
+        "__weakref__",
     )
 
     # Initialised by state_parts/source_links.py.
@@ -510,6 +515,9 @@ class _ChatSlot:
     # Initialised by state_parts/slot_turns.py.
     _turn_in_flight_generation: int
     _turn_in_flight_prompt: dict[str, Any] | None
+    # What a restore found in a marker that outlived its process, kept after the
+    # marker itself is cleared (``slot_persistence.turn_marker``); None otherwise.
+    _restored_turn_marker: dict[str, Any] | None
     _buffers: SlotBufferCoordinator
     _queue_repository: SlotQueueRepository
     _closing: int
@@ -522,6 +530,9 @@ class _ChatSlot:
     _task: asyncio.Task[Any] | None
     _turn_admission_reserved: bool
     _turn_generation: int
+    # ``(generation, first generation)`` of a dispatch that retried the turn
+    # before it (``queue_drain``); read through :meth:`_turn_lineage_generation`.
+    _turn_lineage: tuple[int, int]
     _turns_started: int
     _unstarted_generation: int
     _handoff_generation: int
@@ -991,6 +1002,12 @@ class _ChatSlot:
         if value is not None and value is not self._task:
             self._turn_generation += 1
         self._task = value
+
+    def _turn_lineage_generation(self) -> int:
+        """The generation that started the turn of the latest dispatch: that
+        dispatch's own, unless it was the previous turn's own retry."""
+        generation, first = self._turn_lineage
+        return first if generation == self._turn_generation else self._turn_generation
 
     @property
     def turn_running(self) -> bool:

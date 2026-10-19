@@ -1,4 +1,4 @@
-"""What this process last saw of a code channel's audience: whether it is shared.
+"""What this process last saw of a code channel's audience: shared, or archived.
 
 The code-channel dispatch exemption
 (:mod:`kiro_crew.dashboard.session_control_parts.code_channel_exemption`) lets a
@@ -20,7 +20,11 @@ fail-closed answer -- until a fresh answer lands:
 * a reading older than :data:`READING_TTL_SECS`;
 * a lookup that FAILED after an earlier answer (:func:`forget`), so a stale "not
   shared" never outlives a lookup that could not confirm it;
-* an answer that did not carry the share flags.
+* an answer that did not carry the share flags or the archived flag.
+
+The same reading says whether Slack has the channel archived
+(:func:`channel_archived`): an archive made while the gateway was offline sent
+no event, so the stored stamp alone cannot show the channel is still open.
 """
 
 from __future__ import annotations
@@ -40,25 +44,26 @@ MAX_CHANNELS = 1024
 READING_TTL_SECS = 300.0
 
 _lock = threading.Lock()
-_shared: OrderedDict[str, tuple[bool, float]] = OrderedDict()
+_shared: OrderedDict[str, tuple[bool, bool, float]] = OrderedDict()
 _refreshing: set[str] = set()
 
 
 def note_channel_info(info: Any) -> None:
-    """Record what *info* (a :class:`~.models.ChannelInfo`) says about sharing.
+    """Record what *info* (a :class:`~.models.ChannelInfo`) says about sharing and archiving.
 
-    A reading that did not carry the share flags forgets the channel rather than
-    keeping an older answer.
+    A reading that did not carry the share flags or the archived flag forgets the
+    channel rather than keeping an older answer.
     """
     channel_id = str(getattr(info, "channel_id", "") or "")
     if not channel_id:
         return
     shared = getattr(info, "shared", None)
+    archived = getattr(info, "archived", None)
     with _lock:
-        if shared is None:
+        if not isinstance(shared, bool) or not isinstance(archived, bool):
             _shared.pop(channel_id, None)
             return
-        _shared[channel_id] = (bool(shared), time.monotonic())
+        _shared[channel_id] = (shared, archived, time.monotonic())
         _shared.move_to_end(channel_id)
         while len(_shared) > MAX_CHANNELS:
             _shared.popitem(last=False)
@@ -70,10 +75,22 @@ def channel_shared(channel_id: str) -> bool | None:
         entry = _shared.get(channel_id)
     if entry is None:
         return None
-    shared, read_at = entry
+    shared, _archived, read_at = entry
     if time.monotonic() - read_at > READING_TTL_SECS:
         return None
     return shared
+
+
+def channel_archived(channel_id: str) -> bool | None:
+    """``True`` archived in Slack, ``False`` open, ``None`` unknown or stale (same reading)."""
+    with _lock:
+        entry = _shared.get(channel_id)
+    if entry is None:
+        return None
+    _shared_flag, archived, read_at = entry
+    if time.monotonic() - read_at > READING_TTL_SECS:
+        return None
+    return archived
 
 
 def forget(channel_id: str) -> None:

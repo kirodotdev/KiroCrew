@@ -458,10 +458,11 @@ async def _save_code_channel_dispatch_locked(
     path = config_path()
 
     def _read() -> dict:
-        data = json.loads(read_config_text(path)) if path.exists() else {}
-        if not isinstance(data, dict):
-            raise ValueError("config.json is not a JSON object")
-        return data
+        # The read half of this read-modify-write starts from what the load reads,
+        # as the Settings card's save does (fails closed on a torn file).
+        from kiro_crew.config.loader import read_config_for_update
+
+        return read_config_for_update(path)
 
     try:
         data = await asyncio.to_thread(_read)
@@ -482,6 +483,10 @@ async def _save_code_channel_dispatch_locked(
                 await cfg_write.commit()
             except ConfigReadError:
                 return _deny("config.json is corrupt")
+            except OSError:
+                # Full disk, read-only storage: the atomic write left the file as
+                # it was, so this is a refusal the caller can report and retry.
+                return _deny("config.json could not be written")
     _sel().log_api_access(
         caller=caller,
         operation="slack.config.update",

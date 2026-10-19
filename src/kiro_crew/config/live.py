@@ -724,6 +724,12 @@ class ConfigWatch:
                 self._env_fingerprint = await asyncio.to_thread(self._current_env_fingerprint)
             except Exception:  # noqa: BLE001 - the first cycle re-reads it
                 self._env_fingerprint = None
+        # The torn / not-a-file record before the first cycle runs (one poll
+        # interval away): the dispatch switch reads it from the first request.
+        try:
+            await asyncio.to_thread(self._document_is_torn)
+        except Exception:  # noqa: BLE001 - the first cycle takes it again
+            logger.debug("config watch: initial file probe failed", exc_info=True)
         self._task = loop.create_task(self._run(), name="config-watch")
         self._task.add_done_callback(self._on_task_done)
 
@@ -1240,24 +1246,41 @@ class ConfigWatch:
         The answer is also added, per file, to :func:`torn_config_files`, which
         keeps it until restart. Nothing here touches the loader's process-wide
         degradation record, so no gate that reads that record moves on a tear.
+
+        A ``config.local.json`` the loader reads as absent while its name still
+        stands (a symlink whose target is gone -- an unmounted share) is listed
+        there too: it can stand where an opt-out was. It is NOT reported as torn,
+        so the watcher still adopts the load and every other setting reloads as
+        before; only the dispatch switch reads the list. Both checks go through
+        the loader's own read, so where the sandbox seals the file and serves its
+        endorsed copy, a pending delete or edit is neither torn nor unknown.
         """
+        import os
+
         from kiro_crew.config import loosening_provenance
         from kiro_crew.config.loader import config_local_path, config_path, read_config_text
 
         torn: set[str] = set()
+        unknown: set[str] = set()
+        local = config_local_path()
 
         def _read(path: Any) -> bytes:
             return read_config_text(path).encode("utf-8")
 
         for leaf, path in (
             ("config.json", config_path()),
-            ("config.local.json", config_local_path()),
+            ("config.local.json", local),
         ):
             try:
                 # The bytes the loader parses: where the sandbox seals these files, an
                 # edit held as pending reads as the endorsed copy, so it is not torn.
                 content = loosening_provenance.reconciled_bytes(leaf, path, _read)
                 if content is None:
+                    # Absent to the loader. An overlay name that still stands there
+                    # (a symlink whose target is gone) can hide an opt-out; an
+                    # endorsed copy the loader serves instead never reaches here.
+                    if path == local and os.path.lexists(local):
+                        unknown.add(str(local))
                     continue
                 data = json.loads(content)
             except Exception:  # noqa: BLE001 - unreadable or unparseable: torn
@@ -1265,7 +1288,7 @@ class ConfigWatch:
                 continue
             if not isinstance(data, dict):
                 torn.add(str(path))
-        _set_torn_files(torn)
+        _set_torn_files(torn | unknown)
         return bool(torn)
 
 

@@ -41,7 +41,7 @@ from kiro_crew.slack import scope_probe
 #: The ``code_channel_defaults`` keys the PUT accepts.
 DEFAULT_KEYS: tuple[str, ...] = ("folder", "agent", "model", "reasoning_effort", "approval_mode")
 #: ``slack.code_channel_dispatch``: the opt-in sub-toggle under Code channels
-#: ("Let the conductor hand off work"). Off by default; hot-applied like the
+#: ("Let code channels start helper agents"). Off by default; hot-applied like the
 #: switches, through the live config watcher.
 DISPATCH_KEY = "code_channel_dispatch"
 #: The model picker's "pin nothing, inherit" spelling; stored as unset.
@@ -69,16 +69,22 @@ def _dispatch_overlay_state() -> str:
     Not ``overlay_pins``, which answers "not pinned" for a file it cannot read:
     the dispatch save must not take an unreadable overlay -- which may hold the
     value that wins -- for one that does not set the key.
+
+    Read as the load reads it (``read_endorsed_config_text``), with no
+    ``exists()`` check first, as ``overlay_entry`` does: where the sandbox seals
+    the file, a pending hand-edit or delete still reads as the endorsed copy the
+    loader keeps in force.
     """
     import json
 
-    from kiro_crew.config.loader import config_local_path, read_config_text
+    from kiro_crew.config.loader import config_local_path, read_endorsed_config_text
 
     path = config_local_path()
     try:
-        if not path.exists() and not path.is_symlink():
-            return "absent"
-        node: object = json.loads(read_config_text(path))
+        node: object = json.loads(read_endorsed_config_text(path))
+    except FileNotFoundError:
+        # Neither a file nor an endorsed copy: what the loader also reads as absent.
+        return "absent"
     except (OSError, ValueError):
         return "unreadable"
     if not isinstance(node, dict):
@@ -89,6 +95,28 @@ def _dispatch_overlay_state() -> str:
     if not isinstance(slack, dict):
         return "unreadable"
     return "pinned" if DISPATCH_KEY in slack else "absent"
+
+
+#: How :func:`_overlay_display_path` names the home directory: ``~`` on POSIX,
+#: ``%USERPROFILE%`` on Windows, where Explorer, cmd and PowerShell all expand it
+#: (Explorer and cmd do not expand ``~``).
+HOME_PREFIXES: tuple[str, ...] = ("~/", "%USERPROFILE%\\")
+
+
+def _overlay_display_path() -> str:
+    """``config.local.json``'s path with the home directory shown as one of
+    :data:`HOME_PREFIXES`, in the platform's own separators; else the full path. No I/O."""
+    import os
+    from pathlib import Path
+
+    from kiro_crew.config.loader import config_local_path
+
+    path = config_local_path()
+    try:
+        rel = path.relative_to(Path.home())
+    except ValueError:
+        return str(path)
+    return HOME_PREFIXES[1] + str(rel) if os.name == "nt" else HOME_PREFIXES[0] + rel.as_posix()
 
 
 def _dispatch_overlay_pins() -> bool:
@@ -255,6 +283,11 @@ async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
         # ``config.local.json`` sets it: a save writes the base file, which the
         # overlay wins over, so the card disables the toggle and the PUT refuses.
         f"{DISPATCH_KEY}_overlay": await asyncio.to_thread(_dispatch_overlay_pins),
+        # Which: "pinned" (the value shown is the one it sets) or "unreadable"
+        # (what it sets is unknown), so the card never states a value it cannot know.
+        f"{DISPATCH_KEY}_overlay_state": await asyncio.to_thread(_dispatch_overlay_state),
+        # Where that file is, home shown as ``~``, so the card can name it.
+        f"{DISPATCH_KEY}_overlay_path": _overlay_display_path(),
         "code_channel_defaults": {
             "folder": defaults.folder,
             "agent": defaults.agent,
@@ -363,14 +396,14 @@ async def validate_code_settings(
         overlay = await asyncio.to_thread(_dispatch_overlay_state)
         if overlay == "pinned":
             raise CodeSettingsError(
-                f"slack.{DISPATCH_KEY} is set in config.local.json, which overrides "
-                "this setting; change it there",
+                f"Helper agents are set in config.local.json (slack.{DISPATCH_KEY}), "
+                "which overrides this setting; change it there",
                 status=409,
             )
         if overlay == "unreadable":
             raise CodeSettingsError(
-                "config.local.json cannot be read, so whether it overrides "
-                f"slack.{DISPATCH_KEY} is unknown; fix the file and try again",
+                "config.local.json cannot be read, so whether it turns helper agents on "
+                f"(slack.{DISPATCH_KEY}) is unknown; fix the file and try again",
                 status=409,
             )
         if val != (stored.get(DISPATCH_KEY) is True):

@@ -10,9 +10,7 @@ import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew import model_scope
 from kiro_crew.agent_files import WORKER_AGENT_FILENAME
-from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     _workspace_name_for_dir,
@@ -21,7 +19,6 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
 )
 from kiro_crew.config.sections import (
-    DEFAULT_MODEL,
     AutocompactPctError,
     KiroCrewAgentConfig,
     coerce_effort,
@@ -64,6 +61,9 @@ from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
 from kiro_crew.dashboard.session_control_parts.crew_filing import (
     _crew_filing_answer,
     _in_turned_on_crew_tree,
+)
+from kiro_crew.dashboard.session_control_parts.session_create_pins import (  # noqa: F401
+    _inherited_pin_foreign_to_child,
 )
 from kiro_crew.dashboard.session_control_parts.session_titles import _clean_new_session_title
 from kiro_crew.dashboard.session_control_parts.target_authorization import (
@@ -393,7 +393,12 @@ async def create_session(
 
         # The conductor test the worker hand-off below uses, off the loop: it
         # reads the config and may rescan the installed agents inline.
-        conductor = await asyncio.to_thread(_conducts_for_a_worker, caller_execution)
+        # A code channel's worker is filed in the channel's own folder (set above),
+        # never moved home by a mate's conductor rule; a mate's home it would land
+        # in is still refused below.
+        conductor = not via_code_channel and await asyncio.to_thread(
+            _conducts_for_a_worker, caller_execution
+        )
         try:
             folder_id, project_folder_id = await mate_home_filing(
                 state, caller_execution, folder_id, conductor=conductor
@@ -410,12 +415,6 @@ async def create_session(
         )
         if not {folder_id, project_folder_id} <= {str(f.get("id") or "") for f in folder_snapshot}:
             raise SessionControlError("folder not found", code="folder_not_found")
-        if channel_folder and not _folder_within(folder_snapshot, folder_id, channel_folder):
-            raise SessionControlError(
-                "a code channel's workers are filed in the channel's own folder (or a "
-                "folder inside it)",
-                code="code_channel_folder",
-            )
         folder_project_raw, folder_project_error = _folder_declared_project(
             folder_snapshot, project_folder_id
         )
@@ -453,8 +452,14 @@ async def create_session(
     # resolution, which refuses a peer bound elsewhere.
     from kiro_crew.mate_worker import MATE_WORKER_AGENT
 
-    own_worker = agent_kind in ("", "template") and await asyncio.to_thread(
-        _hands_off_to_own_worker, caller_execution, agent.strip(), agent_kind
+    # Never for a code channel's session: its workers take the channel's own
+    # approval mode, not a crewmate Profile's.
+    own_worker = (
+        not via_code_channel
+        and agent_kind in ("", "template")
+        and await asyncio.to_thread(
+            _hands_off_to_own_worker, caller_execution, agent.strip(), agent_kind
+        )
     )
     if own_worker:
         agent, agent_kind = MATE_WORKER_AGENT, "template"
@@ -1052,9 +1057,6 @@ async def create_session(
         ) -> tuple[bool, str | None, str | None]:
             tree = _safe_folder_tree(folders)
             exists = any(str(folder.get("id") or "") == folder_id for folder in tree)
-            if exists and channel_folder and not _folder_within(tree, folder_id, channel_folder):
-                # Reparented out of the channel's folder while this create waited.
-                return exists, None, "the folder is no longer inside the code channel's folder"
             raw_project, error = _folder_declared_project(tree, project_folder_id)
             return exists, raw_project, error
 
@@ -1121,7 +1123,7 @@ async def create_session(
         )
     if via_code_channel and str(getattr(live_caller, "folder_id", "") or "") != channel_folder:
         # The conductor was refiled while this create waited: its worker must file
-        # beside it, where it is NOW, so the decision above no longer holds.
+        # beside it, where it is NOW, so the decision above does not hold.
         raise SessionControlError(
             "this code channel's session moved folder while its worker was being "
             "created; call again",
@@ -1657,23 +1659,6 @@ async def create_session(
     }
 
 
-def _folder_within(folders: list[dict[str, Any]], folder_id: str, ancestor_id: str) -> bool:
-    """Whether *folder_id* is *ancestor_id* or nested (at any depth) inside it.
-
-    Walks ``parent_id`` up from *folder_id* over the snapshot; a cycle or a
-    dangling parent ends the walk as "not inside", the fail-closed answer.
-    """
-    parents = {str(f.get("id") or ""): str(f.get("parent_id") or "") for f in folders}
-    seen: set[str] = set()
-    current = folder_id
-    while current and current not in seen:
-        if current == ancestor_id:
-            return True
-        seen.add(current)
-        current = parents.get(current, "")
-    return False
-
-
 def _model_pin_refusal(model_name: str, backend: str) -> str | None:
     """Why ``model_name`` may not be pinned on a new session, or ``None`` to allow it.
 
@@ -1696,66 +1681,6 @@ def _model_pin_refusal(model_name: str, backend: str) -> str | None:
     from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
 
     return _model_rejected_reason(model_name, backend or "")
-
-
-def _inherited_pin_foreign_to_child(
-    model_name: str,
-    cfg: KiroCrewConfig,
-    child_backend: str,
-    *,
-    validated_for_worker: bool,
-    crew: str = "",
-) -> str | None:
-    """Why a crewmate's model pin cannot follow its worker onto the child's harness, or ``None``.
-
-    A crewmate's own thread runs on its harness pin when *crew* has one, else
-    on ``agent.member_acp_backend``, and its own ``model`` was validated against
-    THAT harness's catalog (``_pin_entitlement_backend``). A child that inherits is never a crewmate
-    itself: it runs on *child_backend* -- the crewmate's own backend for its
-    worker, ``agent.acp_backend`` for any other child, as
-    ``select_provider_backend`` picks them -- and an id one harness serves is
-    refused on the wire by the other. Two reads, both keyed on
-    the child's backend: the two harnesses disagree on model-id namespace (a
-    claude or codex member pin cannot ride a kiro worker, and vice versa), or the
-    child's namespace has advertised a list the pin is not on while another
-    harness claims it (:func:`model_scope.pin_applies`). ``"auto"`` is every
-    harness's own word and always passes.
-
-    ``validated_for_worker`` names the profile's explicit ``worker_model``,
-    which ``PUT /api/agents/{name}`` validates against the WORKER's harness
-    (``mate_worker.crewmate_worker_backend``), so the namespace read does not apply to it -- the
-    person pinned it for exactly this harness -- and only the advertised-list
-    read remains. Only consulted for an INHERITED pin: an explicit model on the
-    call is the caller's own choice and keeps today's guard alone.
-    """
-    if model_name == DEFAULT_MODEL:
-        return None
-    from kiro_crew.crewmate_harness import (
-        CrewmateHarnessUnavailable,
-        crewmate_pin_for,
-        pinned_backend,
-    )
-
-    child_namespace = capabilities_for(child_backend).model_id_namespace
-    try:
-        own_backend = pinned_backend(cfg, crew, cfg.agent.member_acp_backend)
-    except CrewmateHarnessUnavailable:
-        # The crewmate's own harness stopped being startable (a policy narrowed
-        # it): the model it chose there is stale, dropped like any stale pin.
-        return "the Bot's model pin was chosen for a harness this gateway cannot start"
-    member_namespace = capabilities_for(own_backend).model_id_namespace
-    if not validated_for_worker and child_namespace != member_namespace:
-        pin = crewmate_pin_for(cfg, crew)
-        setting = (
-            pin.display_stored if pin is not None else (cfg.agent.member_acp_backend or "default")
-        )
-        return (
-            f"the Bot's model pin was chosen for its own harness ({setting}), "
-            f"and the worker runs on {child_backend or 'the default backend'}"
-        )
-    if not model_scope.pin_applies(model_name, child_namespace):
-        return "the Bot's model pin is not served by the harness the worker runs on"
-    return None
 
 
 def _dispatching_crewmate(

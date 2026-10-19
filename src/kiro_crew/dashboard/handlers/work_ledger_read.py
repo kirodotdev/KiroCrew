@@ -12,7 +12,9 @@ import and patch; this module never imports it.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 from typing import Any
 
 from aiohttp import web
@@ -200,6 +202,113 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     return web.json_response(payload)
 
 
+#: What a code channel's ``accept_eval`` answer may carry per item: which item, its
+#: verdict, and why one was skipped. Never the bar, the evidence its check printed,
+#: or the row facts beside it, since the answer is posted into the channel.
+_CHANNEL_ANSWER_FIELDS: tuple[str, ...] = ("id", "verdict", "why")
+
+#: Why a code channel's done item was not evaluated by the gateway.
+_UNPLACED_WHY = (
+    "its bar is read relative to a working directory (a pull request with no repo, "
+    "or a relative file path); record the repo or an absolute path, then ask again"
+)
+
+
+def _bar_is_placed(accept: Any) -> bool:
+    """Whether *accept* names everything it checks without a working directory."""
+    if not isinstance(accept, dict):
+        return True  # the evaluator's own error
+    kind = accept.get("kind")
+    if kind in ("pr_checks", "pr_merged"):
+        return bool(accept.get("repo"))
+    if kind == "file":
+        path = accept.get("path")
+        return not isinstance(path, str) or os.path.isabs(path)
+    return True
+
+
+async def api_work_ledger_accept_eval(request: web.Request) -> web.Response:
+    """GET /api/work-ledger/accept-eval — a code channel's conductor's ``accept_eval``.
+
+    That conductor reads published fields only (a derived ``state``, no ``status``
+    and no bars), so an evaluation of its own read would call open work "already
+    done". The gateway evaluates the stored bars instead, through the tool's own
+    evaluator (``mcp_work._accept_eval``: the same selection, path screen and kinds),
+    and answers with :data:`_CHANNEL_ANSWER_FIELDS` alone. ``item_id`` narrows it to
+    one item. Any other caller evaluates its own full read and is refused here.
+    """
+    key, refusal = await _caller_key(request, "work_ledger_accept_eval")
+    if refusal is not None:
+        return refusal
+    assert key is not None
+    if not _code_channel_caller(request):
+        return _refuse_403(
+            "not_code_channel",
+            "Only a Slack code channel's conductor is evaluated here; call accept_eval, "
+            "which evaluates your own ledger read.",
+        )
+    item_id = request.query.get("item_id")
+    if set(request.query) - {"item_id"} or (item_id is not None and not 0 < len(item_id) <= 64):
+        return _refuse_400(work_ledger.CODE_INVALID_VALUE, "expected only item_id", "item_id")
+    async with _board_lock(key):
+        _record, lrefusal = await _own_ledger(key, "work_ledger_accept_eval")
+        if lrefusal is not None:
+            return lrefusal
+        dirty = await _refuse_if_dirty(key, key, "work_ledger_accept_eval")
+        if dirty is not None:
+            return dirty
+        items = await asyncio.to_thread(work_ledger.list_work_items, key)
+    from kiro_crew import mcp_work
+
+    batch = work_ledger.accept_batch(items)
+    # The gateway's working directory is not the channel's worktree, so a done
+    # item whose bar leans on one (a PR with no repo, a relative file path) is
+    # skipped with that reason rather than judged against the wrong directory.
+    placed = [entry for entry in batch["items"] if _bar_is_placed(entry.get("accept"))]
+    unplaced = [
+        entry["id"]
+        for entry in batch["items"]
+        if entry not in placed and entry.get("status") == "done"
+    ]
+    board = {
+        "items": [item.to_dict() for item in items if item.item_id not in unplaced],
+        "accept_batch": {"items": placed},
+    }
+    args = {} if item_id is None else {"item_id": item_id}
+    if item_id is not None and item_id in unplaced:
+        document: dict[str, Any] = {"results": []}
+    else:
+        # Off the loop: the evaluator runs ``gh`` and stats files.
+        document = json.loads(await asyncio.to_thread(mcp_work._accept_eval, args, board))
+    document.setdefault("skipped", []).extend(
+        {"id": unplaced_id, "why": _UNPLACED_WHY}
+        for unplaced_id in unplaced
+        if item_id is None or unplaced_id == item_id
+    )
+    if why := _contained_channel_caller(request, request.headers.get("X-Session-Key", "")):
+        _audit(key, "work_ledger_accept_eval", "denied", resources="channel_agent_block_post_read")
+        return _refuse_403(
+            "channel_session",
+            f"This session's audience changed while its ledger was being evaluated: {why}.",
+        )
+    answer: dict[str, Any] = {
+        name: [
+            {field: row[field] for field in _CHANNEL_ANSWER_FIELDS if field in row}
+            for row in document.get(name) or []
+            if isinstance(row, dict)
+        ]
+        for name in ("results", "skipped")
+    }
+    if "error" in document:
+        answer["error"] = "the evaluator could not read the ledger's bars"
+    for name in ("truncated", "omitted"):
+        if name in document:
+            answer[name] = document[name]
+    answer["published_fields_only"] = True
+    _audit(key, "work_ledger_accept_eval", "ok", resources=f"{len(answer['results'])} result(s)")
+    return web.json_response(answer)
+
+
 def _row_with_flags(
     state: DashboardState,
     item: work_ledger.WorkItem,
@@ -292,7 +401,6 @@ def _published_payload(
             "round": record.round,
             "depth": record.depth,
             "goal_items_used": record.goal_items_used,
-            "cap_exceeded": record.cap_exceeded,
             "goal": session_control.published_goal(record.goal),
         }
     return {

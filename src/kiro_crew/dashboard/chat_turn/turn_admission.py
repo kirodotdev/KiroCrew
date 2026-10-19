@@ -376,7 +376,10 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # inside it still reaches _run_chat's finally with something to retire.
     _local_turn_marker_generation = _local_turn_generation_for(slot)
     turn._local_turn_marker_generation = _local_turn_marker_generation
-    await _begin_local_turn_marker(state, slot, _local_turn_marker_generation)
+    # The row the dispatcher started this turn from, when it handed one over.
+    await _begin_local_turn_marker(
+        state, slot, _local_turn_marker_generation, getattr(turn, "_current_message", None)
+    )
 
     # Resolve agent bindings early so we pass the correct kiro-cli
     # agent name (e.g. "kirocrew") instead of the Kiro Crew slot name

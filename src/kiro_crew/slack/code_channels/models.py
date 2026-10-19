@@ -140,3 +140,6 @@ class ChannelInfo:
     #: flag is set, ``False`` only when Slack positively reported the flags
     #: unset, ``None`` when the answer did not carry them.
     shared: bool | None = None
+    #: Whether Slack reports the channel archived (``is_archived``); ``None`` when
+    #: the answer did not carry it.
+    archived: bool | None = None

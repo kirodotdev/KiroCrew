@@ -1,10 +1,10 @@
-"""The code channel's "hand-off is off" notice and its Turn-on button.
+"""The code channel's "helper agents are off" notice and its Turn-on button.
 
 ``slack.code_channel_dispatch`` is an opt-in (default off). When a code channel's
 own session asks to hand off work while it is off, the dispatch exemption refuses
 (``DISPATCH_OFF_REFUSAL``, which names the Settings control) and calls
 :func:`notice_soon`, which posts ONE short notice in that channel with a
-**Turn on hand-off for code channels** button.
+**Turn on helper agents for all code channels** button.
 
 **Once per channel per refusal state.** A channel that has been shown the notice is
 not shown it again while the switch stays off; the exemption calls :func:`forget`
@@ -46,22 +46,26 @@ HANDOFF_ACTION_ID = "kc_code_channel_enable_handoff"
 OPERATION = "slack.code_channel.handoff"
 
 NOTICE_TEXT = (
-    "This channel's conductor tried to hand off work to worker sessions, but hand-off "
-    "is turned off for code channels."
+    "This channel's agent tried to start helper agents for this work, but helper "
+    "agents are turned off for code channels."
 )
-BUTTON_TEXT = "Turn on hand-off for code channels"
-CONFIRM_TITLE = "Turn on hand-off?"
+BUTTON_TEXT = "Turn on helper agents for all code channels"
+CONFIRM_TITLE = "Turn on helper agents?"
 CONFIRM_TEXT = (
-    "Every code channel's conductor will be able to start worker sessions for its "
-    "task when you message it. You can turn it off again in Settings → Channels → "
-    "Slack → Code channels."
+    "Every code channel's agent will be able to start helper agents for its task "
+    "when you message it. You can turn it off again in Settings → Channels → Slack → "
+    'Code channels → "Let code channels start helper agents".'
 )
-DONE_TEXT = "Hand-off is on. Ask again or say retry."
-NOT_OWNER_TEXT = "⛔ Only the owner can turn on hand-off."
-NOT_ALLOWED_TEXT = "⛔ You can't change hand-off from this channel."
-FAILED_TEXT = "I couldn't turn on hand-off: {reason}"
+DONE_TEXT = "Helper agents are on. Send your request again."
+NOT_OWNER_TEXT = ":no_entry: Only {owner} can turn on helper agents."
+NOT_ALLOWED_TEXT = ":no_entry: You can't turn on helper agents from this channel."
+FAILED_TEXT = "I couldn't turn on helper agents: {reason}"
+PINNED_TEXT = (
+    "Helper agents for code channels are set in `{path}`, so they can't be turned on "
+    "from Slack. Change the setting in that file, then send your request again."
+)
 STALE_TEXT = (
-    "That notice is out of date, so it can't change the setting. Ask the conductor "
+    "That notice is out of date, so it can't change the setting. Send your request "
     "again, or use Settings → Channels → Slack → Code channels."
 )
 
@@ -114,6 +118,36 @@ def done_blocks() -> list[dict[str, Any]]:
     return [
         {"type": "section", "text": {"type": "mrkdwn", "text": f":white_check_mark: {DONE_TEXT}"}}
     ]
+
+
+def pinned_blocks(text: str) -> list[dict[str, Any]]:
+    """The notice once a click found ``config.local.json`` pinning the switch: no button."""
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": NOTICE_TEXT}},
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": text}]},
+    ]
+
+
+async def _overlay_pin_path() -> str:
+    """``config.local.json``'s path (home as ``~``) when it pins the switch, else ``""``.
+
+    A file outside the home directory is named without its directory.
+    """
+    try:
+        from kiro_crew.dashboard.slack_code_settings import (
+            HOME_PREFIXES,
+            _dispatch_overlay_state,
+            _overlay_display_path,
+        )
+
+        if await asyncio.to_thread(_dispatch_overlay_state) != "pinned":
+            return ""
+        shown = _overlay_display_path()
+        # Posted where every channel member reads it: a path outside the home
+        # directory is shown by file name only, not as a host path.
+        return shown if shown.startswith(HOME_PREFIXES) else "config.local.json"
+    except Exception:
+        return ""
 
 
 def forget(channel_id: str) -> None:
@@ -176,9 +210,18 @@ async def _post(channel_id: str, token: str) -> None:
         )
         _release(channel_id, token)
         return
+    # Asked again after the binding and archive awaits, as the last await before
+    # the post: a policy revoked meanwhile stops it here.
+    if not await surface.outbound_permitted():
+        surface.audit(
+            "system", f"{OPERATION}.notice", "denied", resources, "channels governance policy"
+        )
+        _release(channel_id, token)
+        return
     # Posted only where an ordinary message to this channel may go: its workspace
     # admitted, and the channel and its origin conversation admitting the bot --
-    # the gates the click handler (and the message path) apply.
+    # the gates the click handler (and the message path) apply. Synchronous, so
+    # nothing changes between these reads and the post.
     from kiro_crew.slack.code_channels.routing import _origin_of, channel_and_origin_permit
 
     origin = _origin_of(channel_id, binding, None)
@@ -192,6 +235,10 @@ async def _post(channel_id: str, token: str) -> None:
             f"{resources} origin={origin}",
             "channel, origin or workspace does not admit the bot",
         )
+        _release(channel_id, token)
+        return
+    # The per-channel policy ceiling, in the same synchronous stretch as the post.
+    if surface.channel_policy_refusal(channel_id, operation=f"{OPERATION}.notice", caller="system"):
         _release(channel_id, token)
         return
     if _noticed.get(channel_id) != token:
@@ -266,7 +313,7 @@ async def handle_handoff_click(orch: Any, payload: dict[str, Any]) -> bool:
     # do, which is the owner's choice exactly as it is on the Settings card.
     if not is_owner(user):
         surface.audit(user, OPERATION, "denied", resources, "not the owner")
-        await _ephemeral(channel, user, NOT_OWNER_TEXT)
+        await _ephemeral(channel, user, NOT_OWNER_TEXT.format(owner=surface.owner_name()))
         return True
     origin = _origin_of(channel, binding, None)
     if not channel_and_origin_permit(live_config(orch), channel, origin):
@@ -282,6 +329,8 @@ async def handle_handoff_click(orch: Any, payload: dict[str, Any]) -> bool:
     if not await surface.outbound_permitted():
         surface.audit(user, OPERATION, "denied", resources, "channels governance policy")
         return True
+    if surface.channel_policy_refusal(channel, operation=OPERATION, caller=user):
+        return True  # audited by the policy seam; the setting is not touched
     from kiro_crew.dashboard.handlers.messaging import save_code_channel_dispatch
 
     async with _lock(channel):
@@ -299,11 +348,68 @@ async def handle_handoff_click(orch: Any, payload: dict[str, Any]) -> bool:
             surface.audit(user, OPERATION, "denied", resources, "not the current hand-off notice")
             await _ephemeral(channel, user, STALE_TEXT)
             return True
+        # Asked again under the lock, right before the save: a click queued behind
+        # another must not write the setting after the policy was revoked.
+        from kiro_crew.messaging.identity import channel_inbound_permitted
+        from kiro_crew.slack.channel_policy import channel_refusal
+
+        if not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation=OPERATION, caller=user, audit=False)
+            and await surface.outbound_permitted()
+        ):
+            # ``allowed_channel_ids`` is part of channels governance (its posture).
+            surface.audit(user, OPERATION, "denied", resources, "channels governance policy")
+            return True
+        # And the synchronous gates read again after that last await, so a channel
+        # or origin turned off while the click queued is not saved for either.
+        if not (
+            surface.workspace_admitted(team)
+            and is_owner(user)
+            and channel_and_origin_permit(live_config(orch), channel, origin)
+            and not surface.channel_policy_refusal(
+                channel, operation=OPERATION, caller=user, audit=False
+            )
+        ):
+            surface.audit(user, OPERATION, "denied", resources, "the channel's gates changed")
+            await _ephemeral(channel, user, NOT_ALLOWED_TEXT)
+            return True
         _noticed[channel] = _USED
-        refusal = await save_code_channel_dispatch(
-            surface.dashboard_state(), value=True, caller=user, source="slack"
-        )
+        try:
+            refusal = await save_code_channel_dispatch(
+                surface.dashboard_state(), value=True, caller=user, source="slack"
+            )
+        except asyncio.CancelledError:
+            # Cut off mid-save: the notice stays live, so a later click can retry
+            # (turning the switch on again is harmless if this save landed).
+            if _noticed.get(channel) == _USED:
+                _noticed[channel] = msg_ts
+            raise
+        except Exception:
+            # Not a decision: the button must not die with it.
+            logger.warning("code channel %s: hand-off save failed", channel, exc_info=True)
+            refusal = "the setting could not be saved"
         if refusal:
+            pinned_at = await _overlay_pin_path()
+            if pinned_at:
+                # The button can only fail again until that file changes: swap it
+                # for where the setting lives (the switch stays off).
+                surface.audit(user, OPERATION, "error", resources, refusal)
+                text = PINNED_TEXT.format(path=pinned_at)
+                # Said once: on the notice itself, or privately when it cannot be edited.
+                slack = surface.slack()
+                shown = False
+                if slack is not None and msg_ts:
+                    try:
+                        await slack.update_message(channel, msg_ts, text, pinned_blocks(text))
+                        shown = True
+                    except Exception:
+                        logger.warning(
+                            "code channel %s: hand-off notice not updated", channel, exc_info=True
+                        )
+                if not shown:
+                    await _ephemeral(channel, user, text)
+                return True
             _noticed[channel] = msg_ts  # nothing changed: the notice still stands
             surface.audit(user, OPERATION, "error", resources, refusal)
             await _ephemeral(channel, user, FAILED_TEXT.format(reason=refusal))

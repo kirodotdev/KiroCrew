@@ -895,7 +895,8 @@ async def route_linked_thread(
     _linked_slot_key = _linked_slot.key
     # Who wrote the text this slot is about to carry, for the code-channel
     # dispatch exemption: it admits a channel-origin turn only while every author
-    # on record passes ``is_allowed_user`` (checked above for this one).
+    # on record is the Slack owner (``is_owner``; this one passed
+    # ``is_allowed_user`` above, which only lets the text in).
     from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
         note_channel_sender,
     )
