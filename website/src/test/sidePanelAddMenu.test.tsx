@@ -180,8 +180,8 @@ describe('side panel Dashboard view', () => {
 })
 
 describe('newMenuSections', () => {
-  const kinds = (o: { devMode: boolean; terminalEnabled: boolean; summaryEnabled?: boolean }) =>
-    newMenuSections({ summaryEnabled: true, ...o }).map(g => g.items.map(i => i.kind))
+  const kinds = (o: { devMode: boolean; terminalEnabled: boolean; summaryEnabled?: boolean; hasWorkflowRuns?: boolean }) =>
+    newMenuSections({ summaryEnabled: true, hasWorkflowRuns: true, ...o }).map(g => g.items.map(i => i.kind))
 
   it('partitions every catalogued view exactly once', () => {
     // Both gates open, so nothing is filtered but the auto-pinned views. Any
@@ -206,17 +206,27 @@ describe('newMenuSections', () => {
       .toEqual(['command-center', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'])
   })
 
+  it('hides Workflows while the chat has no workflow runs', () => {
+    // With no run launched from this chat the view can only say "no workflow
+    // runs", so the row waits for the first one. Only that row goes.
+    expect(kinds({ devMode: true, terminalEnabled: true, hasWorkflowRuns: false })[0])
+      .toEqual(['command-center', 'summary', 'pins', 'issues', 'links', 'subagents', 'git'])
+    expect(kinds({ devMode: true, terminalEnabled: true, hasWorkflowRuns: true })[0]).toContain('workflows')
+  })
+
   it('keeps each group id fixed however the gates fall', () => {
     // The group id is the menu's React key. If it moved when a gate resolved,
     // React would remount the group and detach the row under the user's cursor
     // — `summaryEnabled` in particular starts undefined and flips when its
     // request lands, i.e. potentially mid-click. So the id a group reports must
     // depend only on its declaration, never on which rows survived.
-    const idsFor = (o: { devMode: boolean; terminalEnabled: boolean; summaryEnabled: boolean }) =>
-      newMenuSections(o).map(g => g.id)
+    const idsFor = (o: { devMode: boolean; terminalEnabled: boolean; summaryEnabled: boolean; hasWorkflowRuns?: boolean }) =>
+      newMenuSections({ hasWorkflowRuns: true, ...o }).map(g => g.id)
 
     // Gating a row must not touch its group's id.
     expect(idsFor({ devMode: true, terminalEnabled: true, summaryEnabled: false }))
+      .toEqual(idsFor({ devMode: true, terminalEnabled: true, summaryEnabled: true }))
+    expect(idsFor({ devMode: true, terminalEnabled: true, summaryEnabled: true, hasWorkflowRuns: false }))
       .toEqual(idsFor({ devMode: true, terminalEnabled: true, summaryEnabled: true }))
 
     // Dropping a whole group must not renumber the survivors: with Developer
@@ -250,7 +260,7 @@ describe('newMenuSections', () => {
     // gate combination.
     for (const devMode of [false, true]) {
       for (const terminalEnabled of [false, true]) {
-        for (const group of newMenuSections({ devMode, terminalEnabled, summaryEnabled: true })) {
+        for (const group of newMenuSections({ devMode, terminalEnabled, summaryEnabled: true, hasWorkflowRuns: true })) {
           expect(group.items.length).toBeGreaterThan(0)
         }
       }

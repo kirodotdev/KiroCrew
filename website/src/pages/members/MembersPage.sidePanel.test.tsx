@@ -1020,6 +1020,10 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     )
     expect(MEMBERS_UNCONFIRMED_WITHHELD_VIEWS).toEqual(expect.arrayContaining([...MEMBERS_WITHHELD_VIEWS]))
     expect(CREW_PANEL_TAB_IDS).toEqual([CREW_DASHBOARD_TAB_ID])
+    // Workflows is offered only to a slot with a run (the panel's own gate, not
+    // this host's), so give the member's thread one: the claim here is that the
+    // HOST does not withhold it.
+    vi.mocked(api.workflowRuns).mockResolvedValue({ runs: [{ run_id: 'r1', status: 'finished', session_key: 'member-oncall' }] })
 
     const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
