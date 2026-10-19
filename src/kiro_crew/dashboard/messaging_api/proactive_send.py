@@ -955,11 +955,13 @@ async def _deliver_send_message_fallback(
             )
         )
     if channel_type:
-        outcome.sent_channel = await _deliver_to_channel(
-            state,
-            _channel_delivery_key(state, caller_session, declared_session),
-            _with_source_line(channel_text, source_line if is_cron_caller else ""),
-            channel_type=channel_type,
+        outcome.sent_channel, outcome.channel_code, outcome.channel_detail = (
+            await _deliver_to_channel(
+                state,
+                _channel_delivery_key(state, caller_session, declared_session),
+                _with_source_line(channel_text, source_line if is_cron_caller else ""),
+                channel_type=channel_type,
+            )
         )
     # Opt-in "Open session" deep-link button: resolved (server-side) only
     # when the caller asked for it AND this send actually reaches Slack.
