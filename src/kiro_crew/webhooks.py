@@ -146,6 +146,90 @@ VALID_OUTCOMES = frozenset(
     }
 )
 
+#: The remainder member of the metric ``outcome`` enum. It is NOT a member of
+#: :data:`VALID_OUTCOMES` -- nothing may be RECORDED under it -- and exists only
+#: so a series key stays bounded when a value this build does not know reaches
+#: the counter. :meth:`WebhookRunStore.record` refuses an unknown outcome before
+#: it writes, so the fold is unreachable from that path and is the fallback for a
+#: caller that reads an outcome back off a stored row written by a build with
+#: more outcomes than this one (see :meth:`WebhookRunStore._load`).
+METRIC_OUTCOME_OTHER = "other"
+
+#: Every value ``outcome`` can carry on ``kirocrew.webhook.requests``. Pinned by
+#: a test against :data:`VALID_OUTCOMES`, so widening the store's enum without
+#: restating it in the metrics doc fails.
+METRIC_OUTCOMES = frozenset(VALID_OUTCOMES | {METRIC_OUTCOME_OTHER})
+
+
+def metric_outcome(outcome: object) -> str:
+    """Fold *outcome* onto :data:`METRIC_OUTCOMES`; never raises.
+
+    An attribute value must come from a closed enum, so anything this build does
+    not recognise -- including a non-string -- becomes
+    :data:`METRIC_OUTCOME_OTHER` rather than minting a series of its own.
+    """
+    if isinstance(outcome, str) and outcome in VALID_OUTCOMES:
+        return outcome
+    return METRIC_OUTCOME_OTHER
+
+
+# ── Context registrations (hooks.json) ──
+
+#: The file ``register_hook`` writes a webhook's callback context into. Shared
+#: with ``ScriptHookStore``, which keeps its own script hooks under a ``hooks``
+#: key whose value is a LIST -- which is why every reader here has to confirm the
+#: SHAPE of a value rather than trusting the file to hold only registrations.
+CONTEXT_REGISTRATIONS_FILENAME = "hooks.json"
+
+
+def context_registrations_path() -> Path:
+    """Where :data:`CONTEXT_REGISTRATIONS_FILENAME` lives in the live data home.
+
+    ``data_home`` rather than ``config_dir``: this is asked on request handlers
+    and on the metrics reader thread, and ``config_dir`` additionally ``mkdir``s
+    the home and refreshes the recovery breadcrumb on every call.
+    """
+    from kiro_crew.config.paths import data_home
+
+    return data_home() / CONTEXT_REGISTRATIONS_FILENAME
+
+
+def is_context_registration(value: object) -> bool:
+    """True when a ``hooks.json`` value is a webhook context registration.
+
+    THE single owner of that test. An id-addressed delete has to confirm the
+    shape it is removing or ``DELETE /api/webhooks/contexts/hooks`` would drop
+    every script hook the user has; the registered-hook count published as
+    ``kirocrew.inventory.webhooks.registered`` has to agree with what the
+    dashboard lists, or the gauge reports a number no surface can confirm.
+    """
+    return isinstance(value, dict) and ("context_summary" in value or "summary" in value)
+
+
+def registered_context_count(path: Path | None = None) -> tuple[int, bool]:
+    """``(count, loadable)`` for the webhook context registrations at *path*.
+
+    The pair, rather than a bare count, for the reason ``cron`` draws the same
+    distinction: an ABSENT file is a genuine 0 (a fresh install has registered
+    no hooks), while a file that is present and does not parse is a FAULT whose
+    count is unknown -- and a reader that reported 0 for both would publish a
+    number that is a lie on exactly the install worth looking at.
+
+    Never raises: an unreadable file is ``(0, False)``.
+    """
+    target = path if path is not None else context_registrations_path()
+    try:
+        raw = _read_json(target, {})
+    except WebhookStoreUnreadable:
+        return 0, False
+    if not isinstance(raw, dict):
+        # A top-level non-object is not a registration map. It parses, so it is
+        # not a fault -- ``ScriptHookStore`` is the other writer of this file --
+        # and it holds no registrations.
+        return 0, True
+    return sum(1 for value in raw.values() if is_context_registration(value)), True
+
+
 # ── Context freshness ──
 
 FRESHNESS_FRESH = "fresh"
@@ -804,6 +888,19 @@ class WebhookRunStore:
             # drop completed turn output on the delivery path. The file is left
             # untouched either way, which is the point of the refusal.
             logger.warning("webhook run history write failed", exc_info=True)
+        # Counted here and nowhere else: this method is the one commit point
+        # every inbound webhook request reaches, rejections and auth failures
+        # included, so one call is one request and the counter cannot
+        # double-count a run that is also delivered or also retried.
+        #
+        # Outside the try, and deliberately not conditional on the write landing:
+        # the series counts REQUESTS, not history rows, and the request happened
+        # whether or not the ring could record it. An in-memory add, so it adds no
+        # syscall to a path a caller is waiting on, and ``emit_counter`` swallows
+        # its own failures -- telemetry must never fail a webhook run.
+        from kiro_crew.metrics.events import WEBHOOK_REQUESTS, emit_counter
+
+        emit_counter(WEBHOOK_REQUESTS, {"outcome": metric_outcome(outcome)})
         return record
 
 

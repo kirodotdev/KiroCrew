@@ -130,6 +130,37 @@ class TerminalCoordinator(ManagerComponent):
             except Exception:
                 _logger.debug("crew log: releasing a child origin failed", exc_info=True)
 
+    def _record_terminal_metric(self, info: SubagentInfo) -> None:
+        """Count *info* reaching a terminal state, once; never raises.
+
+        Called from the same exclusive point as :meth:`_record_crew_log_terminal`
+        and for the same reason -- past the finalize claim, so the reaper and the
+        run loop's ``finally`` cannot both increment -- but NOT from inside it:
+        that method returns early when the crew log emitter is off, and this
+        series is gated on ``telemetry.enabled`` alone. Counting a run only on
+        installs that happen to keep a crew log would make every rate read off
+        this counter describe a population nobody chose.
+
+        The outcome is the runtime's own three-way classification, folded onto a
+        closed enum. Nothing else from the record is published: the ``error``
+        text, the agent name and the task are all free text.
+
+        Like every other name in this module's methods, the import is inside the
+        body (see :meth:`_record_crew_log_terminal`).
+        """
+        from kiro_crew.metrics.events import SUBAGENT_COMPLETED, emit_counter, subagent_outcome
+        from kiro_crew.subagent import logger as _logger
+
+        try:
+            outcome = subagent_outcome(getattr(info, "outcome", None))
+        except Exception:
+            # ``outcome`` is a PROPERTY, so reading it is the one line here that
+            # can raise, and a record whose outcome cannot be read is exactly the
+            # one the remainder member names.
+            _logger.debug("metrics: reading a subagent terminal outcome failed", exc_info=True)
+            outcome = subagent_outcome(None)
+        emit_counter(SUBAGENT_COMPLETED, {"outcome": outcome})
+
     def _claim_finalize_impl(self, info: SubagentInfo, *, supersede_recovery: bool = False) -> bool:
         """Claim the exclusive right to report ``info``'s terminal outcome.
 
@@ -282,6 +313,7 @@ class TerminalCoordinator(ManagerComponent):
         # closer is handed to the writer. This flip stays ahead of the event for
         # the paths that reach a terminal without the run loop.
         self._record_crew_log_terminal(info)
+        self._record_terminal_metric(info)
         info.done = True
         if info._credit_accounting is not None:
             info._credit_accounting.settle()

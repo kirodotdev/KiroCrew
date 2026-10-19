@@ -1213,5 +1213,4 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.agent_discovery import _read_agent_spec, list_agents  # noqa: F401
-    from kiro_crew.config.loader import data_home  # noqa: F401
     from kiro_crew.validation import sanitize_string  # noqa: F401

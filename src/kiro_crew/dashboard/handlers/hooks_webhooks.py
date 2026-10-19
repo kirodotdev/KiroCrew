@@ -183,13 +183,16 @@ def _public_runs(runs: list[dict]) -> list[dict]:
 def _is_context_registration(value: object) -> bool:
     """True when a hooks.json value is a webhook context registration.
 
-    Mirrors the filter in :func:`_read_hook_registrations`. ``hooks.json`` is
-    shared with ``ScriptHookStore``, whose ``hooks`` key holds a LIST of script
-    hooks, so an id-addressed delete must confirm the shape it is removing —
-    otherwise ``DELETE /api/webhooks/contexts/hooks`` would drop every script
-    hook the user has.
+    Thin alias for :func:`kiro_crew.webhooks.is_context_registration`, the single
+    owner of that test. ``hooks.json`` is shared with ``ScriptHookStore``, whose
+    ``hooks`` key holds a LIST of script hooks, so an id-addressed delete must
+    confirm the shape it is removing -- otherwise
+    ``DELETE /api/webhooks/contexts/hooks`` would drop every script hook the user
+    has. ``kirocrew.inventory.webhooks.registered`` counts through the same owner,
+    so the gauge and this surface cannot disagree on what a registration is.
+    Kept as a module-level name because the existing call sites address it here.
     """
-    return isinstance(value, dict) and ("context_summary" in value or "summary" in value)
+    return webhooks.is_context_registration(value)
 
 
 def _delete_hook_context(hook_id: str) -> bool:
