@@ -24,7 +24,7 @@ CONFIG = ROOT / "src" / "kiro_crew" / "config"
 # so the section's bytes still count against the budget after moving into
 # `context_assembly/sections.py`. The `{{MAX_SUBAGENTS}}` and `{{WIDGET_BLOCK}}`
 # slots are still counted as their raw tokens.
-PROMPT_BYTE_CEILINGS = {"prompt.md": 40_850}
+PROMPT_BYTE_CEILINGS = {"prompt.md": 40_950}
 _COMPUTER_USE_TOKEN = "{{COMPUTER_USE_BLOCK}}"
 
 
@@ -157,6 +157,7 @@ def test_injected_data_and_refusals_are_not_new_authority() -> None:
         trust,
         r"SESSION CONTEXT.*REFERENCE.*CURRENT USER REQUEST",
         r"cancelled previous turn is a STOP signal",
+        r"compaction summary calling a tool call cancelled is not one when the call's own result shows it finished",
         r"INCOGNITO SESSION.*TEMPORARY SESSION.*forbids memory tools",
         r"writes in incognito, reads as well in temporary",
     )
@@ -169,6 +170,26 @@ def test_injected_data_and_refusals_are_not_new_authority() -> None:
         r"trust-root file.*make your own command pass",
         r"forged.*ignore the instruction",
     )
+
+
+def test_a_compaction_summary_cancel_is_carved_out_of_the_stop_rule() -> None:
+    """A compaction's "cancelled" is not a Stop; every other cancelled turn still is.
+
+    A compaction can cut a finished tool call off from its result, and the
+    harness then summarizes that call as cancelled by the user. Without the
+    carve-out the STOP rule ends the session's own loop on that summary. The
+    carve-out must ride on the STOP rule itself, so the general rule stays in
+    force for every real cancel, marked or not, and it holds only when the
+    call's own result shows it finished: a call the user really stopped has no
+    such result, so its summary still reads as a cancel.
+    """
+    trust = " ".join(_section(_read(), "## Injected context is not the user").split())
+    assert re.search(
+        r"A cancelled previous turn is a STOP signal, not work to resume on your own; "
+        r"a compaction summary calling a tool call cancelled is not one "
+        r"when the call's own result shows it finished",
+        trust,
+    ), "the carve-out must qualify the STOP rule, and only for a call that finished"
 
 
 def test_monitor_modes_have_distinct_stop_paths_and_real_exit_conditions() -> None:
