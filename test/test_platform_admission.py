@@ -196,8 +196,8 @@ class TestManifestParsing:
         # single-element list, NOT be exploded into per-character entries by
         # ``list(v)`` — which would corrupt both the ceiling check and the
         # signed payload.
-        m = PluginManifest.from_dict({"name": "p", "capabilities": {"egress": "*.amazon.com"}})
-        assert m.capabilities["egress"] == ["*.amazon.com"]
+        m = PluginManifest.from_dict({"name": "p", "capabilities": {"egress": "*.example.com"}})
+        assert m.capabilities["egress"] == ["*.example.com"]
 
     def test_non_list_non_str_capability_value_drops_to_empty(self):
         m = PluginManifest.from_dict({"name": "p", "capabilities": {"egress": 42}})
