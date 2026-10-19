@@ -104,7 +104,6 @@
 3177 test/test_subagent_scale.py
 2460 test/test_taskq_runner_adapter.py
 5831 test/test_vector_memory.py
-2169 website/src/apps/command-bar/CommandBarOverlay.test.tsx
 2145 website/src/apps/design-tweak/DesignTweakPage.tsx
 2567 website/src/apps/mochi/src/renderer/ChatPanel.tsx
 2125 website/src/pages/AppDetailPage.tsx
