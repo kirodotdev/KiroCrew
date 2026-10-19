@@ -36,6 +36,11 @@ from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
     require_owner_dashboard_request,
 )
+from kiro_crew.dashboard.handlers.files import (
+    _PathProbeBusy,
+    _probe_busy_response,
+    _run_path_probe,
+)
 from kiro_crew.dashboard.handlers.memory_services import _get_vector_store_async, _sel
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.embeddings import (
@@ -405,6 +410,22 @@ def _apply_embedding_model(store: object, raw: str, loop: "asyncio.AbstractEvent
         prog.fail(str(exc) or exc.__class__.__name__)
 
 
+def _probe_model_path(raw: str) -> tuple[str, str, int]:
+    """``(error, code, size_bytes)`` for a model path the request named.
+
+    Blocking: ``validate_custom_model_path`` stats the path and the size is one
+    more stat, on a mount the caller chose. So the handler runs this on the
+    bounded request-path probe pool, in one hop, never on the event loop.
+    """
+    path, error, code = validate_custom_model_path(raw, "The model path")
+    if error:
+        return error, code, 0
+    try:
+        return "", "", path.stat().st_size
+    except OSError:
+        return "", "", 0
+
+
 async def api_memory_embedding_model(request: web.Request) -> web.Response:
     """POST /api/memory/embedding-model — validate and apply a custom model.
 
@@ -445,13 +466,12 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
     # Validate BEFORE writing, so a typo never lands in config.
     size_bytes = 0
     if raw:
-        path, error, code = validate_custom_model_path(raw, "The model path")
+        try:
+            error, code, size_bytes = await _run_path_probe(_probe_model_path, raw)
+        except _PathProbeBusy:
+            return _probe_busy_response(resource=raw, operation="memory.embedding_model")
         if error:
             return web.json_response({"ok": False, "error": error, "code": code}, status=400)
-        try:
-            size_bytes = path.stat().st_size
-        except OSError:
-            size_bytes = 0
     if validate_only:
         return web.json_response({"ok": True, "size_bytes": size_bytes})
 

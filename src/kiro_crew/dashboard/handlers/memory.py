@@ -1466,6 +1466,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _embedding_setup_status,
         _ensure_pip_available,
         _faiss_install_lock,
+        _probe_model_path,
         _redact_pip_stderr,
         _store_progress_adapter,
         _write_embed_model_config,
@@ -1488,6 +1489,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
         memory_startup_refusal,
+    )
+    from kiro_crew.dashboard.handlers.files import (  # noqa: F401
+        _PathProbeBusy,
+        _probe_busy_response,
+        _run_path_probe,
     )
     from kiro_crew.embeddings import (  # noqa: F401
         DOWNLOAD_ATTEMPTS_INTERACTIVE,

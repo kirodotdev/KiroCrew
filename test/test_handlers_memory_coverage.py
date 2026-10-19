@@ -2178,6 +2178,49 @@ class TestEmbeddingModelEndpoint:
         apply_mock.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_path_checks_run_off_the_event_loop(self, tmp_path: Path) -> None:
+        # The path is the caller's choice, so on a dead mount its stats would
+        # park the gateway's one loop. Both must run on a probe-pool worker.
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"abcd")
+        loop_thread = threading.get_ident()
+        seen: list[int] = []
+        real_stat = Path.stat
+
+        def record_validate(raw: str, _origin: str) -> tuple[Path, str, str]:
+            seen.append(threading.get_ident())
+            return Path(raw), "", ""
+
+        def record_stat(self: Path, *a: Any, **kw: Any) -> Any:
+            if self == model:
+                seen.append(threading.get_ident())
+            return real_stat(self, *a, **kw)
+
+        state = _make_state()
+        req = _make_request(
+            state, method="POST", json_body={"path": str(model), "validate_only": True}
+        )
+        with (
+            patch(f"{_MOD}.validate_custom_model_path", side_effect=record_validate),
+            patch.object(Path, "stat", record_stat),
+        ):
+            resp = await mem_mod.api_memory_embedding_model(req)
+        assert _body(resp) == {"ok": True, "size_bytes": 4}
+        assert len(seen) == 2 and loop_thread not in seen
+
+    @pytest.mark.asyncio
+    async def test_busy_probe_pool_answers_a_coded_503(self) -> None:
+        from kiro_crew.dashboard.handlers import memory_embeddings
+
+        state = _make_state()
+        req = _make_request(state, method="POST", json_body={"path": "/m.gguf"})
+        busy = AsyncMock(side_effect=memory_embeddings._PathProbeBusy())
+        with patch.object(memory_embeddings, "_run_path_probe", busy):
+            resp = await mem_mod.api_memory_embedding_model(req)
+        assert resp.status == 503
+        assert _body(resp)["code"] == "path_probe_busy"
+
+    @pytest.mark.asyncio
     async def test_validate_only_tolerates_unstatable_path(self, tmp_path: Path) -> None:
         missing = tmp_path / "gone.gguf"
         state = _make_state()
