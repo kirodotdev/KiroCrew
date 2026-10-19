@@ -2372,6 +2372,10 @@ def _sum_usage(left: TurnUsage, right: TurnUsage) -> TurnUsage:
             + int(getattr(right, "cache_read_tokens", 0) or 0),
             cost_usd=float(getattr(left, "cost_usd", 0.0) or 0.0)
             + float(getattr(right, "cost_usd", 0.0) or 0.0),
+            num_turns=int(getattr(left, "num_turns", 0) or 0)
+            + int(getattr(right, "num_turns", 0) or 0),
+            context_sum_tokens=int(getattr(left, "context_sum_tokens", 0) or 0)
+            + int(getattr(right, "context_sum_tokens", 0) or 0),
         )
     except Exception:
         logger.debug("usage sum failed", exc_info=True)

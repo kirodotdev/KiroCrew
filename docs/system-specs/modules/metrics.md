@@ -932,15 +932,16 @@ Each row (`_build_token_record`) carries:
 | `cache_create` / `cache_read` | int | cache-write / cache-read tokens |
 | `cost` | float | provider-reported USD cost (`0.0` on ACP) |
 | `credits` | float | kiro-cli per-turn credit spend (float-coerced) |
-| `turns` | int | provider `num_turns` |
+| `turns` | int | model calls the turn made (`TurnUsage.num_turns`); on kiro-cli counted from its per-call `_kiro.dev/metadata` frames (see acp-client "Per-call context readings"), `0` when the provider reports none |
 | `duration_ms` | int | provider-reported turn duration (`0` on ACP) |
 | `surface` | str | canonical dispatch/session source. Dashboard-backed turns derive the source from the effective session key through `telemetry_channel_of` (so linked Slack/Telegram sessions retain their transport); Task Runner writes `taskrunner`; other writers use their dispatch origin (`cron`, `subagent`, `monitor`, `heartbeat`, `webhook`, `workflow`, …). `""` if unset |
 | `agent` | str | agent id resolved for the turn; `""` if unset |
 | `context_used` | int | context-window tokens occupied after the turn (int-coerced) |
 | `context_window` | int | served context-window size in tokens (int-coerced) |
+| `context_sum` | int | the context-window occupancy after each of the turn's model calls, added up (`TurnUsage.context_sum_tokens`): the volume of context the turn's calls carried, cached or not. Measured per call on kiro-cli; `0` when the window is unknown or the provider reports no per-call reading. Not a billed token count |
 | `stop_reason` | str | the turn's terminal stop reason read off the EVENT_COMPLETE event, or a synthetic reason on a dashboard turn that ended without one (`_persist_abnormal_turn_usage`: the caller's reason, else `cancelled`); `""` when the producer has none, e.g. a bare `TurnUsage` from `provider_last_turn_usage`. Free-form is fine HERE (the row store has no cardinality limit, unlike OTel attrs) — this is where per-agent stall analysis happens: joining `stop_reason` (`error: tool stall` / `stale_recover`) against the row's `agent` field attributes watchdog outcomes to free-form agent names retroactively |
 
-The `surface` / `agent` / `context_used` / `context_window` fields and
+The `surface` / `agent` / `context_used` / `context_window` / `context_sum` fields and
 `stop_reason` are all **additive** — every field defaults (`""` / `0`) so existing
 callers stay valid and shards predating a field (which lack its key) remain
 parseable; readers must tolerate their absence.
