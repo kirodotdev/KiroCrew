@@ -16,7 +16,7 @@ import logging
 import math
 import uuid
 import weakref
-from typing import Any
+from typing import Any, Callable
 
 from kiro_crew.dashboard.chat_tag_grants import (
     mint_grant,
@@ -25,6 +25,7 @@ from kiro_crew.dashboard.chat_tag_grants import (
     store_write_blocked,
 )
 from kiro_crew.dashboard.chat_tags_policy import _COLOR_RE, _DEFAULT_COLOR, _NAME_MAX
+from kiro_crew.dashboard.snapshot_commit import commit_snapshot_while_holding_the_lock
 from kiro_crew.dashboard.state import DashboardState, mint_tags_revision
 from kiro_crew.loop_lock import LoopBoundLock
 
@@ -109,6 +110,39 @@ def _tags_write_lock(state: Any) -> LoopBoundLock:
 tags_write_lock = _tags_write_lock
 
 
+async def _commit_tags_snapshot(
+    state: DashboardState,
+    snapshot: list[dict],
+    on_committed: Callable[[], None] | None = None,
+) -> None:
+    """THE choke point for a confirmed tag-vocabulary write: persist, then confirm.
+
+    Every tag write in this package routes through here, which makes "the caller learns
+    whether its bytes landed" a mechanism rather than a convention each call site has to
+    remember. ``on_committed`` mirrors the folder store's hook of the same name: it fires
+    once the write confirms, on BOTH the normal and the cancelled exit, so a caller that
+    captured a cancellation can still tell a landed write from an abandoned one.
+
+    A RETURN VALUE cannot serve, which is why this is a callback: the only caller that
+    needs the answer is one whose await raised, so the cancelled exit never delivers a
+    value to it.
+
+    Deliberately NOT inside ``_write_tags_snapshot``: that is the sync body handed to
+    ``asyncio.to_thread``, which the suites replace wholesale, so a confirmation there
+    would be patched out exactly where it matters most.
+
+    Awaiting the write bare would lose the confirmation, since the worker cannot be
+    interrupted and lands its bytes even when the handler is cancelled. The shield-and-
+    drain protocol lives once in ``commit_snapshot_while_holding_the_lock``, which the
+    folder store calls too. Each mutating caller owns its own rollback.
+    """
+    write = asyncio.ensure_future(asyncio.to_thread(_write_tags_snapshot, state, snapshot))
+    await commit_snapshot_while_holding_the_lock(
+        write,
+        publish=lambda: on_committed() if on_committed is not None else None,
+    )
+
+
 def _write_tags_snapshot(state: DashboardState, snapshot: list[dict]) -> None:
     """Persist a pre-captured tag snapshot (runs in worker thread).
 
@@ -168,7 +202,7 @@ async def persist_tags_snapshot_unlocked(state: DashboardState) -> None:
     cross-module critical sections (e.g. chat_auto_tag.maybe_auto_tag).
     """
     snapshot = [dict(t) for t in state._tags]
-    await asyncio.to_thread(_write_tags_snapshot, state, snapshot)
+    await _commit_tags_snapshot(state, snapshot)
 
 
 def _valid_color(value: str) -> str:
@@ -296,7 +330,7 @@ async def create_tag_definition_off_loop(
                 raise
         snapshot = [dict(t) for t in state._tags]
         try:
-            await asyncio.to_thread(_write_tags_snapshot, state, snapshot)
+            await _commit_tags_snapshot(state, snapshot)
         except Exception:
             committed = await _reconcile_failed_tag_create(
                 state, tag, identity_was_minted=record_protected_identity
