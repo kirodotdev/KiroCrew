@@ -15,6 +15,7 @@ judgment-only ones it cannot, are catalogued in
 | CI job `backend-test` (ordinary pytest) | `test/test_harness_parity.py` | yes — the structural pins in groups A (Kiro is the default and the floor), B (identity is tested positively) and C (the Kiro path keeps its own machinery) |
 | The four AI review lanes | the `harness-parity` rule in `AUTOSDE.yaml`, `blocking: true` | yes — a violation of a blocking rule blocks |
 | Locally | `HARNESS_BASE_REF=origin/main python3 scripts/check_harness_parity.py` | exit 1 on any violation |
+| Same job, same command | the [X-capture rule](#the-x-capture-rule-whole-tree-shrink-only-allowlist), whole tree | yes, except entries on its shrink-only allowlist |
 
 The self-test runs **first**, in the same step. A gate that has silently stopped
 matching reads as a green signal, which is worse than no gate, so each rule is
@@ -69,6 +70,22 @@ checks out was computed against that exact commit, so the diff cannot pick up
   exempt file exactly, never by pattern, so a new owner is gated until it is
   listed, and `test_harness_parity.py` pins that list to the vocabulary
   module's own owner imports.
+
+## The X-capture rule (whole tree, shrink-only allowlist)
+
+A non-standard (X) capability — an underscore method, a `_meta` field, a harness-native verb — is proven once, on one adapter version. Most ACP follow-up fixes came from X sets whose proof was prose, a synthesized fixture, the wrong adapter package, or a kiro-cli capture standing in for KAS. So the same script, in both its diff-scoped and whole-tree runs, also checks every set in `X_FEATURE_SETS`:
+
+| Each member must | Fails on |
+|---|---|
+| cite `acp_frames/<dir>/<file>.jsonl` in the `#` block directly above the set, where `<dir>` is the member's own fixture directory (`kiro` for `""`) | a member with no citation in its own directory, as when pi joined `ACP_BACKENDS_STEERING_REQUEST` with no pi capture (#21740) |
+| for KAS, cite `kas/` | a KAS member citing only `kiro/` — kiro-cli is not KAS |
+| point at a file that exists, whose header says `recorded: live`, the member's `backend`, and an `agent_version` | a missing or synthesized capture |
+| carry an agent name, when it has one (`_meta.agent_name`, else `initialize.agentInfo.name`), listed in `EXPECTED_AGENT_NAMES` | a capture of another package, such as `@openma/pi-acp` for pi |
+| have its `.expected.json` snapshot | a capture `test_acp_frame_replay.py` does not replay through the dispatch parsers |
+
+A second check covers kiro-cli and KAS drifting apart: every `ACP_BACKENDS_*` set holding exactly one of them must name the other in its comment, so the reader sees the split was decided, not assumed.
+
+Today's gaps live in `X_CAPTURE_ALLOWLIST` (each entry names the missing capture) and `KIRO_KAS_PAIR_ALLOWLIST`. Both only shrink: with `HARNESS_BASE_REF` set, an entry missing from the base ref's copy fails; an entry whose member now passes fails until it is deleted; an X set dropped from `X_FEATURE_SETS`, or its scope narrowed, fails; and `test/test_x_feature_captures.py` holds a ceiling on each. A member added to an X set therefore lands with its capture, or not at all. The self-test plants each shape above.
 
 ## Escape hatch
 
