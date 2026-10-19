@@ -315,6 +315,37 @@ your queries, so you can move that line without a Kiro Crew change.
 Resource attributes identify the sending process and are attached to every
 series, so they are what you group by. `service.name` is always `kirocrew`.
 
+### A destination can receive less than everything
+
+The paragraph above describes the destination you configure: `otlp_endpoint`
+sends your own collector every instrument the process records, under the full
+resource, with no attribute Kiro Crew added on its way out. That is unchanged and
+is what this guide is about.
+
+A destination is also allowed to receive only PART of that. `OtlpDestination`
+carries three optional fields, and a build that assembles its own destination --
+rather than the one you configure through `otlp_endpoint` -- can set them:
+
+- `allow` -- only metrics whose name is in this set are sent. Unset means
+  everything, which is what your endpoint gets.
+- `point_attributes` -- fixed key/value pairs added to every data point of that
+  destination. The one reviewed key today is `ClientType`.
+- `resource_allow` -- that destination's batches carry a resource reduced to these
+  keys, so a destination that may see only `service.name` and `service.version`
+  does not receive `service.instance.id`.
+
+Three things to take from this if you operate a collector:
+
+- **Your destination is not affected by another one.** Each destination's
+  narrowing is applied to its own exporter, so nothing another destination
+  declares can add an attribute to, or remove a metric from, what reaches yours.
+- **The local JSONL sink is never narrowed.** It records everything the process
+  collected, under the full resource, which is what makes it the place to check
+  what was actually measured on a machine.
+- **A narrowing can only reduce.** None of the three fields can add a metric, relax
+  the consent gate, or bypass the attribute sanitiser; a destination that sets
+  none of them behaves exactly as this guide describes.
+
 ### Before you build a per-host dashboard
 
 Kiro Crew sets `service.instance.id` explicitly to a random, persisted install

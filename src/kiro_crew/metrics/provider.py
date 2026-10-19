@@ -46,6 +46,7 @@ from urllib.parse import urlsplit
 from kiro_crew import __version__, beacon
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
+from kiro_crew.metrics import destination_filter
 from kiro_crew.metrics import harness as _harness
 from kiro_crew.metrics import otlp_governance
 from kiro_crew.metrics.recorder import MetricsRecorder
@@ -1340,6 +1341,23 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
             foreign,
             foreign,
         )
+    # A destination asking for an unreviewed point-attribute key is REFUSED here,
+    # before an exporter exists: it gets no reader, and local collection plus
+    # every other destination continue untouched. Checked separately from the
+    # build below so the log names the real cause instead of reading as a
+    # constructor failure. Keys are a reviewed non-secret set and safe to name;
+    # the VALUES are constants and are never logged, least of all beside an
+    # endpoint that may carry a credential.
+    try:
+        destination_filter.validate_point_attributes(getattr(dest, "point_attributes", None))
+    except ValueError as exc:
+        logger.warning(
+            "OTLP destination %r declares an unsupported point attribute; "
+            "egress disabled for it (local-only): %s",
+            dest.name,
+            exc,
+        )
+        return None
     # Callable directly (not only via _build_recorder), so make sure the lazily
     # imported SDK symbols this needs are bound.
     if not _load_otel():
@@ -1390,6 +1408,12 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
         otlp_governance.gate_exporter(
             exporter, endpoint, _policy_ceiling, redact=_policy_redactor()
         )
+        # Narrowing, when this destination declared any: a metric allowlist, fixed
+        # point attributes, a reduced Resource. Applied as a WRAPPER around this
+        # destination's own exporter, so the local sink and every other
+        # destination are untouched by construction, and a destination that
+        # declared none is handed back the exporter object itself.
+        exporter = destination_filter.wrap_if_narrowed(dest, exporter)
         return PeriodicExportingMetricReader(
             exporter,
             export_interval_millis=float(getattr(cfg, "export_interval_seconds", 60)) * 1000.0,
