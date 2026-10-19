@@ -246,7 +246,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_store_session_config": ("function", False, "4d0ed6879afd", "client_model_selection"),
     "_sync_effort_levels": ("function", False, "b60c5fea256e", "client_model_selection"),
     "_to_thread_guarding_sandbox": ("function", True, "8dbe076fd22d", "client_lifecycle"),
-    "_track_metadata": ("function", False, "87459833bc5c", "client_usage"),
+    "_track_metadata": ("function", False, "c20f6a9efea3", "client_usage"),
     "_track_prompt_usage": ("function", False, "c8d5c402278d", "client_usage"),
     "_track_tool_call": ("function", False, "87459833bc5c", "client_tool_events"),
     "_track_usage_update": ("function", False, "87459833bc5c", "client_usage"),

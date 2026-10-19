@@ -8,7 +8,7 @@ Each function here whose first parameter is ``self`` is an ``AcpClient`` method:
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_cancelled``,
+Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_between_turn_credits``, ``_cancelled``,
 ``_claude_compaction_pending``, ``_codex_compaction_pending``,
 ``_compaction_failed_at``, ``_compaction_failed_turn``, ``_last_stop_reason``,
 ``_oauth_emitted_servers``, ``_observed_tool_calls``, ``_permission_options``,
@@ -632,6 +632,9 @@ async def send_message_stream(
 
     req_id = await self._send_prompt(message)
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
+    # Credits held between turns (see ``_track_metadata``): billed here, once.
+    self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
+    self._between_turn_credits = 0.0
 
     # aclosing(): _prompt_loop holds _turn_lock and releases it in its
     # finally. Consumers below `return` on "complete" without exhausting the
@@ -764,6 +767,9 @@ async def _dispatch_events(
 ) -> AsyncGenerator[AcpEvent, None]:
     """Shared event dispatch loop for prompts and commands."""
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
+    # Credits held between turns (see ``_track_metadata``): billed here, once.
+    self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
+    self._between_turn_credits = 0.0
     self._tool_call_inputs.clear()
     self._tool_call_input_redacted.clear()
     self._tool_call_is_shell.clear()
@@ -1260,6 +1266,9 @@ async def _send_prompt(self: AcpClient, message: str, *, allow_image: bool = Tru
 async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) -> str:
     output: list[str] = []
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
+    # Credits held between turns (see ``_track_metadata``): billed here, once.
+    self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
+    self._between_turn_credits = 0.0
 
     async for action, msg in self._prompt_loop(req_id, timeout):
         if action == "complete":
