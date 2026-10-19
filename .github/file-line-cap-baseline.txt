@@ -39,7 +39,6 @@
 2177 src/kiro_crew/discord/client.py
 2103 src/kiro_crew/discord/renderer.py
 2038 src/kiro_crew/history_search.py
-2007 src/kiro_crew/knowledge/ingestion.py
 2129 src/kiro_crew/members.py
 2646 src/kiro_crew/pinned_fs.py
 2787 src/kiro_crew/portability.py

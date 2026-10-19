@@ -134,7 +134,9 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `knowledge/store_parts/bundle_transfer.py` | `.knowledge` export and import, and `KnowledgeBundleError` for malformed input |
 | `knowledge/store_parts/bundle_ownership.py` | which of a bundle's ownership rows an import restores and which items it withholds |
 | `knowledge/retrieval.py` | `HybridRetriever` — FTS5 + graph + vector search fused with RRF |
-| `knowledge/ingestion.py` | `IngestionPipeline` — read → chunk → extract → store orchestration |
+| `knowledge/ingestion.py` | `IngestionPipeline` — read → chunk → extract → store orchestration; the import path of the owners below |
+| `knowledge/ingestion_budget.py` | `ImportChunkBudget` / `ImportChunkBudgetError` — the explicit-import cross-file chunk ceiling and its refusal |
+| `knowledge/ingestion_rebuild.py` | `rebuild_embeddings` — the signature-gated corpus re-embed; `start_rebuild_job` (its single-flight job row), `count_stale_items` (the watcher's trigger count) |
 | `knowledge/dedup.py` | Cross-source deduplication |
 | `knowledge/connectors/` | `BaseConnector`, `local_folder` source connectors |
 | `mcp_tools/knowledge.py` | `local_knowledge_search` MCP tool handler |
@@ -181,6 +183,18 @@ every patch of `knowledge.<name>` go through it, a patch reaches every owner tha
 name, and no owner imports the facade. Owners import each other lowest layer first, in the
 table's order, and every owner that logs uses the facade's logger name. New handler work goes
 to the owner of its responsibility; `test/test_knowledge_handlers_facade.py` pins the family.
+
+`knowledge/ingestion.py` is a mirror facade (`kiro_crew._facade_mirror`) over
+`ingestion_budget.py` and `ingestion_rebuild.py`, lowest layer first. It keeps
+`IngestionPipeline`, the ingestion gate and `handoff_gate_context`, `EmbedRateLimiter`,
+`run_to_completion` and the redaction and chunking helpers the pipeline reads. A patch of
+`kiro_crew.knowledge.ingestion.<name>` reaches every owner that binds the name, so a patch of
+`bulk_pace_delay` reaches the re-embed sweep. No owner imports the facade, and an owner that
+logs does so under the facade's logger name. `ImportChunkBudgetError` carries
+`kiro_crew.knowledge.ingestion` as its `__module__`, so a traceback names it by its import
+path. New budget work goes to `ingestion_budget.py`, new re-embed or job-row work to
+`ingestion_rebuild.py`, and new pipeline work stays in `ingestion.py`;
+`test/test_ingestion_facade.py` pins the family.
 
 ## Constants
 
@@ -460,7 +474,7 @@ the superseded document stays searchable.
 **Explicit-import chunk ceiling.** Every budget above governs a WATCHER sweep. The
 explicit one-shot import routes reach `IngestionPipeline` directly and no sweep
 counter ever sees them, so they carry their own cross-file ceiling:
-`ImportChunkBudget` in `ingestion.py`, sized by `knowledge.import_chunk_budget`
+`ImportChunkBudget` in `ingestion_budget.py`, sized by `knowledge.import_chunk_budget`
 (0 = disabled, the default) over a rolling `_IMPORT_CHUNK_BUDGET_WINDOW_SECS`
 window. A single file is already capped at `MAX_CHUNKS_PER_FILE`; this bounds the
 cost ACROSS files, which is the shape a run of deliberate adds has.
@@ -562,7 +576,7 @@ Entity extraction (`EntityExtractor`) and internal-URL fetch (`agent_fetch.fetch
 - **RRF fusion (`_rrf_fuse`, k=60)** — per-leg weights align positionally with `(keyword, graph, vector) = (1.0, 1.0, VECTOR_RRF_WEIGHT=2.0)` so semantically-strong matches dominate when the keyword leg returns literal junk. Results are tie-broken by recency (`updated_at`), and each result's `match_type` records which legs it appeared in (`keyword+graph+vector`).
   - **The keyword leg's rank-1 hit is protected from truncation.** The weight above is what makes a keyword-only document losable: a query carrying an exact error string, a ticket id or a rare technical term can have its one correct document pushed past `limit` by weighted semantic neighbours, and the caller sees related-but-wrong rows with no signal that the right one was found and dropped. When that happens `search` **appends** the keyword winner as one extra trailing row, so a response may carry `limit + 1` rows. Only rank 1 is protected, and nothing already ranked is removed, reordered or demoted — the rescue can only add. The appended row carries its real fused score (the tool caller's `min_score` floor depends on it: a keyword-rank-1-only row scores `1.0 / (60 + 1) = 0.0164`, which clears `0.012`) and its normal `match_type`, and it is appended *before* the citation-enrichment passes below, so it is exactly as citable as a ranked row. A keyword hit whose item no longer resolves (a stale FTS row) adds nothing.
 
-### Embedding vector space (`embedder.py`, `store.py`, `ingestion.py`)
+### Embedding vector space (`embedder.py`, `store.py`, `ingestion.py`, `ingestion_rebuild.py`)
 
 Vectors are comparable only to vectors from the same model at the same width. Three pieces enforce that, and they are deliberately not three independent identities.
 
@@ -871,4 +885,5 @@ Writers: `knowledge/store_parts/entity_graph.py` (the `entities`, `entity_relati
 and `mentions` tables, the in-memory `SimpleDiGraph`), `knowledge/store_parts/item_rows.py`
 (`items.embedding`, which the signature-gated re-embed rewrites), `knowledge/extractor.py` (per-chunk entity and relation extraction),
 `knowledge/ingestion.py` (chunking, dedup, the embedding pass),
+`knowledge/ingestion_rebuild.py` (the signature-gated re-embed's vector writes and its job row),
 `knowledge/retrieval.py` (the three search legs and their RRF fusion).
