@@ -3935,6 +3935,12 @@ fills it from `agent._computer_use_spec_gate()`, read when the session's backend
 spawns (session start and resume); see
 [computer-use.md](computer-use.md).
 
+`{{BROWSER_BEGIN}}` and `{{BROWSER_END}}` mark the Browser section in place for
+the same reason: whether a session can browse is a property of the host. The
+section stays while `browser_cli.install.available()` holds or cannot be read,
+and becomes a short pointer while it does not, read at session start; see
+[browser.md](browser.md#capability-model).
+
 ### Foreign-agent import onboarding state
 
 `DashboardConfig.import_onboarded` is a separate workspace-persistent gate from

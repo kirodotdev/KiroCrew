@@ -3,10 +3,10 @@
 These renderers produce the deterministic blocks every session carries whatever its
 memory holds -- the critical-rules contract, the runtime identity, the user profile,
 the reply-style preferences, the workspace identity, the runtime refresh a follow-up
-turn needs, the widget pointer an agent prompt's ``{{WIDGET_BLOCK}}`` resolves to and
-the section its ``{{COMPUTER_USE_BLOCK}}`` resolves to. Each takes its inputs as
-arguments and reads no transcript, store or file, so a render is a pure function of
-config and the trusted dispatcher metadata.
+turn needs, the widget pointer an agent prompt's ``{{WIDGET_BLOCK}}`` resolves to,
+the section its ``{{COMPUTER_USE_BLOCK}}`` resolves to and what its marked Browser
+section becomes. Each takes its inputs as arguments and reads no transcript, store or
+file, so a render is a pure function of config and the trusted dispatcher metadata.
 
 The critical-rules contract and the UI-language renderers live in
 :mod:`kiro_crew.context_assembly.output_contract`, the output contract a session
@@ -17,6 +17,7 @@ New conduct blocks belong here; a block that reads memory or a transcript does n
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import TYPE_CHECKING
 
@@ -571,3 +572,52 @@ def computer_use_block(mounted: bool) -> str:
     short pointer when it is not.
     """
     return _COMPUTER_USE_SECTION if mounted else _COMPUTER_USE_UNAVAILABLE
+
+
+# The shipped prompt marks its Browser section in place, each marker on a line of its
+# own, so the section is edited and pinned (``test/test_prompt_compact_contract.py``)
+# in ``config/prompt.md`` like every other section.
+BROWSER_BEGIN = "{{BROWSER_BEGIN}}"
+BROWSER_END = "{{BROWSER_END}}"
+# A marked span, each marker taking its own line break with it, or a marker left
+# without its partner, which is dropped alone so the text around it stays.
+_BROWSER_SPAN = re.compile(
+    r"\{\{BROWSER_BEGIN\}\}\r?\n?(?P<section>.*?)\r?\n?\{\{BROWSER_END\}\}"
+    r"|\{\{BROWSER_(?:BEGIN|END)\}\}",
+    re.DOTALL,
+)
+
+# What the marked section becomes while browsing is not set up on this host: no
+# vetted ``playwright-cli`` resolves, and the ``browser`` tool refuses every op. Its
+# last sentence covers a session that stays open across the install, which the tool
+# notices on its next call while this session's prompt keeps this text.
+_BROWSER_UNAVAILABLE = (
+    "## Browser\n"
+    "\n"
+    "Not available in this session: browsing is not set up on this host (no\n"
+    "`playwright-cli`), so the `browser` tool refuses every op. Read pages with\n"
+    "`web_fetch` / `web_search`, and tell a user who needs a real browser that they can\n"
+    "install it from Settings → Browser (one click). The `web-preview` marker still\n"
+    "shows a local dev server in the dashboard and needs no `playwright-cli`: read the\n"
+    "`web-preview` skill first. If a `browser` call works anyway,\n"
+    "browsing was set up after this session started: read the `web-browse` skill before\n"
+    "you drive a page."
+)
+
+
+def browser_section(prompt: str, available: bool) -> str:
+    """*prompt* with its marked Browser section resolved for one session.
+
+    ``available`` is the session's reading of the browse gate. While it holds, the
+    section stays word for word and only the markers go; while it does not, the short
+    pointer takes the section's place. An unpaired marker is dropped and the text
+    around it kept, so a hand-edited prompt can lose a marker, never its section.
+    """
+
+    def _resolve(match: re.Match[str]) -> str:
+        section = match.group("section")
+        if section is None:
+            return ""
+        return section if available else _BROWSER_UNAVAILABLE
+
+    return _BROWSER_SPAN.sub(_resolve, prompt)

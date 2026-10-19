@@ -93,6 +93,13 @@ ladder. A dashboard session must receive an interactive command grant, a
 trusted-command pattern, or an explicit trust/auto-approve mode before the
 command runs without a prompt.
 
+The agent prompt follows the same availability. The shipped `config/prompt.md`
+marks its `## Browser` section with `{{BROWSER_BEGIN}}` and `{{BROWSER_END}}`.
+A session that starts while no vetted launcher resolves, so the `browser` tool
+refuses every op, gets a short pointer in its place (`web_fetch`, Settings →
+Browser). A launcher that resolves, or a state that cannot be read, keeps the
+section.
+
 The CLI exposes no capability toggle of its own: once an approved shell turn
 runs the binary, all of its verbs are reachable. `dashboard.use_builtin_browser`
 (default `true`) selects the native MCP path in the desktop app; turning it off

@@ -1464,6 +1464,10 @@ class ContextBuilder:
         # `_session_computer_use_gate`.
         self._computer_use_gates: dict[str, bool] = {}
         self._computer_use_gates_lock = threading.Lock()
+        # The same, for the browse-gate reading the Browser section follows; see
+        # `context_assembly.agent_spec._resolve_agent_prompt`.
+        self._browser_gates: dict[str, bool] = {}
+        self._browser_gates_lock = threading.Lock()
         # Captured for the Jev decision point at `skills.select`. Production
         # reaches `build_message` only through `run_in_embed_pool`, a thread
         # executor with no running loop, so the point cannot obtain one where it

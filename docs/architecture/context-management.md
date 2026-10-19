@@ -357,6 +357,10 @@ re-adds, once:
    except that a resume re-takes the reading, because it starts a new backend
    from the current spec: the full Computer Use section when that backend has
    `kirocrew-computer` in its spec, the short pointer to Settings when it does not.
+   The Browser section between `{{BROWSER_BEGIN}}` and `{{BROWSER_END}}` is held
+   like the cap figure, read at session start only: the full section while
+   browsing is set up on the host (or that cannot be read), a short pointer while
+   it is not.
 
 If that turn does not land (cancelled, refused, errored), `rearm_reinjection` puts
 the flag back, so the context is never lost to a failed turn. A minimal-context turn
