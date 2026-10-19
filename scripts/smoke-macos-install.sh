@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Install the macOS desktop DMG the way a user does -- mount it, copy the app
-# out -- and prove what only the installed product can show: the app launches,
-# its own supervisor boots the packaged gateway, and that gateway is handed the
-# bundled kiro-cli.
+# out -- and prove what only the installed product can show: the app launches
+# and its own supervisor boots the packaged gateway.
 #
 # WHY A SCRIPT AND NOT INLINE YAML: same reason as scripts/smoke-linux-packages.sh
 # and scripts/smoke-windows-install.ps1 -- one set of assertions for every caller
@@ -14,19 +13,16 @@
 #     resource forks and permissions the way Finder's drag does).
 #   * The universal layout the shell resolves at launch (find-bin.js): a
 #     per-arch backend tree for THIS runner's arch, with an executable launcher.
-#   * The staged kiro-cli-chat is in the installed tree and reports the pinned
-#     release from packaging/kiro-cli-version -- checked here in the INSTALLED
-#     copy, not the build's staging directory, under an explicit credential-free
-#     environment.
 #   * The REAL app, launched from its own executable, boots the packaged gateway
-#     and that gateway answers /api/health. This is the only place the Electron
-#     supervisor's bundled-kiro-cli hand-off (gateway-env.js: stat, run
-#     `--version`, then export KIROCREW_BUNDLED_KIRO_DIR + KIRO_NO_AUTO_UPDATE)
-#     executes against a shipped .app. The gateway child's environment is read
-#     back to prove the hand-off happened, and the launch log must not carry the
-#     probe's fall-through line.
-#   * The installed `kirocrew doctor` resolves that same bundled copy on its
-#     kiro-cli row.
+#     and that gateway answers /api/health.
+#   * Only for a build made with BUNDLE_KIRO_CLI=1 (off by default; the shipped
+#     app detects the user's own kiro-cli): the staged kiro-cli-chat is in the
+#     installed tree and reports the pinned release from
+#     packaging/kiro-cli-version, the Electron supervisor's hand-off
+#     (gateway-env.js: stat, run `--version`, then export
+#     KIROCREW_BUNDLED_KIRO_DIR + KIRO_NO_AUTO_UPDATE) reached the gateway
+#     child, the launch log carries no probe fall-through line, and the
+#     installed `kirocrew doctor` resolves that copy on its kiro-cli row.
 #
 # WHAT IS DELIBERATELY NOT ASSERTED: code signature and notarization. This job
 # runs on the UNSIGNED build (the sign job is a later, release-only stage), so
@@ -34,8 +30,8 @@
 # Gatekeeper.
 #
 # Usage: smoke-macos-install.sh <dist-dir>
-#   BUNDLE_KIRO_CLI=0 skips the bundled-kiro-cli assertions (the build's own
-#   documented opt-out).
+#   BUNDLE_KIRO_CLI=1 turns the bundled-kiro-cli assertions on, for a DMG built
+#   with the same opt-in. The default matches the build's default: off.
 set -euo pipefail
 
 DIST_DIR="${1:?usage: smoke-macos-install.sh <dir containing the built .dmg>}"
@@ -152,13 +148,14 @@ done
 launcher_version="$(bounded "$MAX_CLI_SECONDS" "installed launcher --version" "$LAUNCHER" --version | tail -1)"
 echo "▶ Installed launcher reports: $launcher_version"
 
-# --- 3. The bundled kiro-cli, in the INSTALLED tree. --------------------------
+# --- 3. The bundled kiro-cli, in the INSTALLED tree (BUNDLE_KIRO_CLI=1 only). --
 BUNDLED_DIR="$RESOURCES/backend-dist/kiro-cli"
 BUNDLED="$BUNDLED_DIR/kiro-cli-chat"
-PIN="$(tr -d '[:space:]' < "$REPO_ROOT/packaging/kiro-cli-version")"
-if [ "${BUNDLE_KIRO_CLI:-1}" = "0" ]; then
-  echo "▶ Bundled kiro-cli: skipped (BUNDLE_KIRO_CLI=0)"
+if [ "${BUNDLE_KIRO_CLI:-0}" != "1" ]; then
+  echo "▶ Bundled kiro-cli: not part of this build (BUNDLE_KIRO_CLI=1 asserts one)"
+  test -e "$BUNDLED_DIR" && { echo "ERROR: installed tree carries a bundled kiro-cli at $BUNDLED_DIR but the build was not asked for one" >&2; exit 1; }
 else
+  PIN="$(tr -d '[:space:]' < "$REPO_ROOT/packaging/kiro-cli-version")"
   test -x "$BUNDLED" || { echo "ERROR: installed tree carries no bundled kiro-cli at $BUNDLED (pin $PIN)" >&2; exit 1; }
   # Explicit, credential-free environment, the same shape the build's probes use.
   kiro_version="$(bounded "$MAX_CLI_SECONDS" "bundled kiro-cli --version" \
@@ -210,8 +207,8 @@ if [ "$healthy" -ne 1 ]; then
 fi
 echo "▶ Installed app's gateway answered /api/health in $(( $(date +%s) - started ))s"
 
-# --- 5. The bundled hand-off actually happened. -------------------------------
-if [ "${BUNDLE_KIRO_CLI:-1}" != "0" ]; then
+# --- 5. The bundled hand-off actually happened (BUNDLE_KIRO_CLI=1 only). ------
+if [ "${BUNDLE_KIRO_CLI:-0}" = "1" ]; then
   # The gateway child the supervisor spawned, found by the data home it was
   # given; `ps eww` prints its environment.
   gateway_pid="$(for pid in $(smoke_gateway_pids); do
@@ -258,7 +255,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo "| --- | --- |"
     echo "| DMG mount + copy | $APP_NAME |"
     echo "| Installed launcher | $launcher_version |"
-    echo "| Bundled kiro-cli | ${kiro_version:-skipped (BUNDLE_KIRO_CLI=0)} |"
+    echo "| Bundled kiro-cli | ${kiro_version:-none (the app detects the user's own kiro-cli)} |"
     echo "| App launch -> /api/health | $(( $(date +%s) - started ))s (ceiling ${MAX_HEALTH_SECONDS}s) |"
   } >> "$GITHUB_STEP_SUMMARY"
 fi
