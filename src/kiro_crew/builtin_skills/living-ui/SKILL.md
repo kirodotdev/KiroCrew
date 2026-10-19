@@ -95,18 +95,41 @@ Where seeing the parts apart helps, hover or a key opens the figure up:
 
 ## V. Verify before you ship
 
-Look at the figure before you show it:
+Look at the figure before you show it, as pictures, not as code. Below,
+`scripts/harness.py` stands for `<skill-dir>/scripts/harness.py`, beside this
+file.
 
-- a still at desktop width and a still at 390 px wide;
-- a still with reduced motion on;
-- a slowed contact sheet: three or four frames taken with time slowed down (for
-  example, `dt` multiplied by 0.05 while you capture), so a short envelope lands
-  on more than one frame;
-- each of these in a light theme and a dark theme.
+1. **Make a preview page.** Give the harness a widget body, or one whole
+   `<mcwidget>` tag, and it writes one HTML file:
 
-In every frame, check for one lit element, no words in the drawing, a readout
-that matches the parts, and nothing clipped at 390 px. The reduced-motion still
-must be complete on its own. The `web-verify` skill has the capture backends.
+   ```bash
+   python3 scripts/harness.py figure.html -o preview.html
+   ```
+
+   That file frames the body the way the chat does: the same CSP, the same
+   sandbox and the default theme's variables. Nothing is served; open the file
+   itself, with query flags to pick what you see:
+   - `?theme=light` or `?theme=dark`;
+   - `?reduced=1` answers `prefers-reduced-motion` as `reduce`, so `loop` runs
+     with `calm` true;
+   - `?slow=0.05` runs `requestAnimationFrame` and `performance.now` at 1/20
+     speed, so a 100 ms envelope lands on several frames.
+
+   A script error shows above the frame with its line in your file, and a
+   load the CSP blocks shows there with its address. Fix every one.
+2. **Capture** each of these with a `web-verify` backend, in light and in dark:
+   - a still 1440 px wide and a still 390 px wide;
+   - a still with `?reduced=1` taken right after an input, which must land at
+     once;
+   - a slowed run: with `?slow=0.05`, start a change, then take three or four
+     shots a second or more apart.
+3. **Read every PNG** before you ship. In each one, check for one lit element,
+   no words in the drawing, a readout that matches the parts, and nothing
+   clipped at 390 px. Light and dark must both read, and the reduced-motion
+   still must be complete on its own. Fix what fails, then shoot again.
+
+`examples/build-queue.html` beside this file passes this check; start from it.
+The preview has no Tailwind runtime, so Tailwind classes show unstyled there.
 With no browser backend, say that you checked the code, not the pixels. A
 Dashboard page still goes through the check `dashboard_save` runs.
 
