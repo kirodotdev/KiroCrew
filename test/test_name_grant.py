@@ -259,8 +259,12 @@ class TestLoopSafety:
         entry = name_grant.refusal_for_command_off_loop
         assert inspect.iscoroutinefunction(entry)
         assert "asyncio.to_thread(name_grant_refusal" in inspect.getsource(entry)
-        # And it is the only thread dispatch in the module.
-        assert inspect.getsource(name_grant).count("asyncio.to_thread(name_grant_refusal") == 1
+        # And it is the only thread dispatch in the module and its owners.
+        from kiro_crew import name_grant_lookup, name_grant_refusals, name_grant_tables
+
+        family = (name_grant, name_grant_refusals, name_grant_tables, name_grant_lookup)
+        source = "".join(inspect.getsource(module) for module in family)
+        assert source.count("asyncio.to_thread(name_grant_refusal") == 1
 
     @pytest.mark.usefixtures("gate_world")
     def test_the_loop_bound_gate_never_resolves_a_name(self):

@@ -440,6 +440,11 @@ class TestRedactLogViaContext:
         "task_planner.py",
         "name_grant.py",
     )
+    #: A converged site split into owner modules is judged with them: the facade keeps
+    #: the call, and no owner may reach the baseline components either.
+    CONVERGED_SITE_OWNERS = {
+        "name_grant.py": ("name_grant_refusals.py", "name_grant_tables.py", "name_grant_lookup.py"),
+    }
 
     def test_converged_log_sites_do_not_drift_back_to_the_baseline(self) -> None:
         """Each converged site must CALL the helper and not the raw components.
@@ -461,7 +466,10 @@ class TestRedactLogViaContext:
 
         root = pathlib.Path(kiro_crew.__file__).parent
         for rel in self.CONVERGED_LOG_SITES:
-            lines = (root / rel).read_text(encoding="utf-8").splitlines()
+            files = (rel, *self.CONVERGED_SITE_OWNERS.get(rel, ()))
+            lines = [
+                ln for f in files for ln in (root / f).read_text(encoding="utf-8").splitlines()
+            ]
             body = [ln for ln in lines if not ln.lstrip().startswith(("import ", "from "))]
             calls = sum(1 for ln in body if "redact_log_via_context(" in ln)
             assert calls >= 1, (

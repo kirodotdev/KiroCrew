@@ -1213,12 +1213,12 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``/oauth2/applications/@me`` with a bot token read from the operator's
         # own credential store, and every failure is folded into its result. Same
         # classification as ``cli_doctor.py::_doctor`` above.
-        "cli_doctor.py::_discord_intent_grants",
-        "cli_doctor.py::_doctor_mcp_tools",
+        "cli_doctor_parts/host_probes.py::_discord_intent_grants",
+        "cli_doctor_parts/mcp_sections.py::_doctor_mcp_tools",
         # ``node -v`` with a fixed argv and a 5 s timeout, read-only, to judge the
         # installed Node against ``MIN_NODE_VERSION``. Split out of ``_doctor``
         # unchanged; same classification as ``cli.py::_node_ok``.
-        "cli_doctor.py::_report_node",
+        "cli_doctor_parts/host_probes.py::_report_node",
         # The AST heuristic matches ``asyncio.run`` (attr ``run`` on base
         # ``asyncio``) driving one async capability-manager read from the
         # loop-less doctor path so the Credentials section can report whether this
@@ -1232,7 +1232,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # nothing at all (``available()`` is False, so the await is never issued).
         # Note this section IS reachable from a tool call, so the waiver rests on
         # those three legs rather than on who invokes doctor.
-        "cli_doctor.py::_credential_vendor_line",
+        "cli_doctor_parts/host_probes.py::_credential_vendor_line",
         # ``aws configure list-profiles`` / ``aws configure get credential_process``
         # for the Credentials section. Fixed argv — the subcommand is a literal and
         # NOTHING is interpolated, so no component is agent-influenced; the binary
@@ -1248,8 +1248,8 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # deny-remediation text itself names, and the profile set it returns is the
         # same information an allowed command already gives the agent — a
         # credential VALUE is never requested or printed.
-        "cli_doctor.py::_aws_profile_names",
-        "cli_doctor.py::_aws_auto_refreshes",
+        "cli_doctor_parts/host_probes.py::_aws_profile_names",
+        "cli_doctor_parts/host_probes.py::_aws_auto_refreshes",
         # Read-only diagnostic for the Source Checkout section: ``git -C <repo>
         # rev-parse/rev-list`` with a hardcoded argv whose only variable is the
         # install's own source directory (derived from the package's module
@@ -1261,7 +1261,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # spawn at all. Operator-invoked doctor, 10s-capped, queries only — no
         # fetch, no mutation. Same classification as the other fixed-argv
         # doctor probes (``_detect_userspace_oom_killer``, ``_detect_linger``).
-        "cli_doctor.py::_git_line",
+        "cli_doctor_parts/host_probes.py::_git_line",
         # Read-only system-metrics probe for the Memory section on macOS, where
         # the ``platform_compat`` shim has no ctypes-only per-pid RSS path:
         # ``ps -o rss= -p <pid>`` with a hardcoded argv whose only variable is
@@ -1270,7 +1270,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # a miss means no spawn at all. Operator-invoked doctor, 2s-capped, no
         # shell. Same classification as the ``ps``-based probe in
         # ``acp/runtime_process_tree.py::_get_rss_mb``.
-        "cli_doctor.py::_gateway_rss_bytes",
+        "cli_doctor_parts/host_probes.py::_gateway_rss_bytes",
         # ``<kiro-cli> acp --help`` readiness probe for the KAS backend: fixed
         # argv (subcommand and flag are module constants), 15s-capped, no shell,
         # no agent-influenced arguments, and no credential involved — it reads
@@ -1291,11 +1291,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # owns, and reading that file is what the credential floor exists to forbid --
         # a probe there would be the one reader the floor cannot fence. Those rows
         # print their declared remedy unprobed instead (``_doctor_agent_auth``).
-        "cli_doctor.py::_kiro_cli_signed_in",
+        "cli_doctor_parts/host_probes.py::_kiro_cli_signed_in",
         # ``systemctl is-active <unit>`` probes for the memory-pressure
         # preparedness check: argv is hardcoded (systemd-oomd/earlyoom unit
         # names), no agent influence, 5s-capped, read-only query.
-        "cli_doctor.py::_detect_userspace_oom_killer",
+        "cli_doctor_parts/host_probes.py::_detect_userspace_oom_killer",
         "cli_server.py::_logs_cmd",
         "cli_server_restart.py::_spawn_detached_gateway",
         "cli_server_update.py::_update",

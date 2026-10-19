@@ -116,7 +116,7 @@ It has to be its own file because every other place a decision could land is a
 TAIL. The status file's `events_tail` is bounded by schema and rewritten whole
 each cycle. The session ledger keeps `_MAX_EVENTS` = 100 events on disk and
 `session_ledger_read` returns only the newest `_MAX_EVENT_TAIL` = 20 (both in
-`session_ledger.py`; the injected `[work ledger]` block carries no events at
+`session_ledger_layout.py`; the injected `[work ledger]` block carries no events at
 all). A patrol writes at least one event per cycle, so a decision recorded in
 cycle 3 of a 40-cycle run is off the readable tail by about cycle 23 and off
 disk long before the `max_cycles=960` patrol ends. Tails answer "what just

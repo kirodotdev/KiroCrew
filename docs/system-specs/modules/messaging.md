@@ -433,6 +433,15 @@ kind-based grant with its own (weaker) trust model, unlike the dashboard's
 trust-reads tier, which classifies the command by program name via
 `is_read_only_bash` and is therefore name-grant verified there.
 
+`kiro_crew.name_grant` keeps the verdicts, the tokenizer, the pin store and the entry
+points, and re-exports every name of its three owners, lowest layer first:
+`name_grant_refusals.py` (the refusal codes, `Refusal` and the decline-log dedupe; a new
+refusal code goes there), `name_grant_tables.py` (the fixed name tables a program is judged
+against; a new table entry goes there) and `name_grant_lookup.py` (how the modelled shell
+looks a name up and which file answers it; new lookup work goes there). It is a plain
+facade, so a patch of `name_grant.<name>` reaches only the facade's own readers, and every
+reader of a name the tests patch stays in it: `test/test_name_grant_facade.py` pins that.
+
 **Teams has a decider AND the shared predicate, and that combination is the
 pattern.** It renders Adaptive Card approvals, so it passes a real `decider`; it
 also passes the same `() -> safety_override().is_active()` the buttonless channels

@@ -30,7 +30,6 @@
 2232 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/push_guard.py
 2998 src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py
 2058 src/kiro_crew/change_card_catalog.py
-2478 src/kiro_crew/cli_doctor.py
 2339 src/kiro_crew/connections/warm.py
 2260 src/kiro_crew/crew_log/session_tree_projection.py
 3161 src/kiro_crew/cron_script.py
@@ -55,7 +54,6 @@
 3928 src/kiro_crew/llm_helpers.py
 3951 src/kiro_crew/mcp_cron.py
 2129 src/kiro_crew/members.py
-2440 src/kiro_crew/name_grant.py
 2646 src/kiro_crew/pinned_fs.py
 2030 src/kiro_crew/platform/interfaces.py
 2998 src/kiro_crew/platform/policy_distribution.py
@@ -68,7 +66,6 @@
 2483 src/kiro_crew/security/redaction.py
 3181 src/kiro_crew/security_posture.py
 2232 src/kiro_crew/service/linux.py
-2421 src/kiro_crew/session_ledger.py
 3685 src/kiro_crew/slack/events.py
 3892 src/kiro_crew/slack/interactions.py
 2115 src/kiro_crew/snapshot.py

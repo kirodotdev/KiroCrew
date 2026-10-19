@@ -660,7 +660,7 @@ every call site; and the fact being reported is about the deployment, not about 
 supervisor instance, so hanging it off the supervisor would imply per-instance
 variation that does not exist.
 
-`cli_doctor.py` compares `== ACP_BACKEND_KAS` against a config load with no
+`cli_doctor_parts/kas_relay.py` compares `== ACP_BACKEND_KAS` against a config load with no
 session, and is the same pre-session shape. Both it and `session.py`'s reads route
 through this function; §7 records which phase pays each off.
 

@@ -69,8 +69,9 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
-# The ledger's real bounds, mirrored from kiro_crew/session_ledger.py
-# (_MAX_TEXT, key clamp in record(), _MAX_ARTIFACTS). Do NOT tune these here:
+# The ledger's real bounds, mirrored from kiro_crew/session_ledger_layout.py
+# (_MAX_TEXT, _MAX_ARTIFACTS) and kiro_crew/session_ledger.py (the key clamp in
+# record()). Do NOT tune these here:
 # test_conductor_ledger_entry.py asserts they equal the ledger's own constants,
 # so a ledger-side change fails that test instead of silently drifting.
 # The ledger CLAMPS rather than rejects (a long value is truncated, a full map
