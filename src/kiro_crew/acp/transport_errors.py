@@ -1659,8 +1659,8 @@ def _format_acp_error_worded(
             formatted = (
                 "Your session has expired. "
                 f"{host_auth.signed_out_message(backend)} "
-                "Retrying or switching models will not help — this is a "
-                "sign-in issue, not a backend error."
+                "Switching models will not help — this is a sign-in issue, not "
+                "a backend error."
                 f"{req_id_suffix}"
             )
         elif _RE_CONNECTION.search(haystack):
