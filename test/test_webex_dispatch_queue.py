@@ -19,9 +19,24 @@ from webex_dispatch_helpers import (
 )
 
 from kiro_crew.acp.types import EVENT_COMPLETE, AcpEvent
+from kiro_crew.messaging.queue_drain import reset_drains
 from kiro_crew.webex import transport_dispatch as webex_dispatch
 from kiro_crew.webex.client import WebexInbound
 from kiro_crew.webex.transport_dispatch import _MAX_COLLAPSE
+
+
+@pytest.fixture(autouse=True)
+def _clean_registry():
+    """A registration is process-wide; a test must not inherit another's dispatcher.
+
+    A drain that sets a foreign entry aside wakes whatever is registered for that
+    entry's channel. Left over from an earlier test on the same worker, that is a
+    dispatcher whose queue lock and sessions belong to a finished test, and the wake
+    awaits it with nothing left to release it.
+    """
+    reset_drains()
+    yield
+    reset_drains()
 
 
 class TestDrainIsFlat:
