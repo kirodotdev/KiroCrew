@@ -66,6 +66,7 @@ from kiro_crew.dashboard.handlers.office_slides import _KeyedLocks
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.metrics import work as work_metrics
 from kiro_crew.validation import (
     WORK_LEDGER_READ_SCHEMA,
     WORK_LEDGER_RECORD_SCHEMA,
@@ -760,6 +761,10 @@ async def api_work_report(request: web.Request) -> web.Response:
                     caller, "work_report", item.item_id, conductor_key, snapshot
                 )
             await asyncio.to_thread(_mark_recorded, conductor_key, item.item_id)
+            # Counted from the COMMITTED item, after its record landed: a refused
+            # report -- an unknown or closed item, a ``done`` with no evidence, a
+            # status outside the worker's vocabulary -- returned long before here.
+            work_metrics.record_report(item.status, item.reason)
             crew_store = _crew_store(conductor_key)
             if crew_store and item.status:
                 # The answer to the dispatch, in the crew's own log: the emitter
@@ -836,6 +841,40 @@ def _mark_recorded(slot: str, item_id: str) -> None:
         work_ledger.mark_item_recorded(slot, item_id)
     except (WorkLedgerError, OSError):
         logger.debug("work ledger: could not mark %s recorded", item_id, exc_info=True)
+
+
+def _count_recorded(action: str, item: Any, header: Any) -> None:
+    """The ``kirocrew.work.*`` counter one committed conductor write is owed.
+
+    Four of the six actions carry a number worth counting; ``decide`` and
+    ``verdict`` carry none of their own -- a decision's text and a verdict's
+    ruling are already visible in the close they lead to, and an item's fail
+    count is read off the close rather than off each verdict that raised it.
+
+    Every value comes from the COMMITTED record the caller holds, never from the
+    request, so a field the store defaulted or clamped is counted as the store
+    holds it. ``goal`` counts only the write that OPENED the board: the committed
+    header's ``goal_version`` is 1 on exactly that write and higher on every
+    reword, round bump, cap raise and ``new_goal`` after it.
+    """
+    depth = getattr(header, "depth", None)
+    if action == "goal":
+        if getattr(header, "goal_version", 0) == 1:
+            work_metrics.record_goal_created(depth)
+    elif action == "create":
+        work_metrics.record_item_created(depth)
+    elif action == "close":
+        work_metrics.record_item_closed(
+            getattr(item, "state", None),
+            getattr(item, "fails", None),
+            getattr(item, "created_at", None),
+            getattr(item, "closed_at", None),
+        )
+    elif action == "bind":
+        # ``session`` is the kind the dispatch this bind records always names; see
+        # the ``crew_log_emit.on_crew_dispatch`` call below, which builds the
+        # target object, and ``metrics/work.py::record_dispatch``.
+        work_metrics.record_dispatch("session")
 
 
 def _entry_with_baseline(slot: str, item: Any, header: Any, **fields: Any) -> dict[str, Any]:
@@ -1784,6 +1823,10 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
             await asyncio.to_thread(_mark_recorded, key, item.item_id)
         if action == "goal":
             await asyncio.to_thread(_mark_goal_recorded, key)
+        # Counted here and not a line earlier: every refusal above returns, and a
+        # write whose record did not land is undone above, so this point is
+        # reached once per write the route reports as successful.
+        _count_recorded(action, item, header)
         crew_store = _crew_store(key) if action == "bind" else ""
         worker_slot = getattr(item, "worker_session_key", "") or ""
         if item is not None and crew_store and worker_slot:
