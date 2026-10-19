@@ -106,6 +106,7 @@ legacy metadata do not override a canonical execution.
 | `discord/transport_dispatch.py` + `discord/transport_dispatch_*.py` | `DiscordDispatcher` and the owners it is composed from — see [Discord's dispatcher composition](#discords-dispatcher-composition) |
 | `telegram/renderer.py` + `telegram/renderer_*.py` | `TelegramRenderer`, `TelegramApprovalDecider` and the owners the renderer is composed from — see [Telegram's renderer and client composition](#telegrams-renderer-and-client-composition) |
 | `telegram/client.py` + `telegram/client_*.py` | `TelegramClient` (Bot API over aiohttp, long polling) and the owners it is composed from — see [Telegram's renderer and client composition](#telegrams-renderer-and-client-composition) |
+| `tool_call_title.py` + `tool_call_title_shell_*.py` | The tool-call titles a channel renderer shows (`derive_tool_call_title`), the Python mirror of `website/src/utils/toolCallTitle.ts` and `shellCommandParse.ts`, pinned to both by `test/fixtures/tool_call_titles.json`. `tool_call_title.py` keeps the tool-call types, the native and MCP classifiers, the English templates and the derivation, and is the import path for every name; the shell rules live in `tool_call_title_shell_parse.py` (the tokenizer, operands and the read-only grammars) and `tool_call_title_shell_classify.py` (the per-tool tables and classifiers, the whole-script pass), and a new shell rule goes to the one that holds the grammar or tool it touches |
 
 ## Layer 1 — `MessagingTransport` (`transport.py`)
 

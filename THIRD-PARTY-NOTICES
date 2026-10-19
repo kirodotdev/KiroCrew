@@ -10739,6 +10739,8 @@ notice travel with derivative work.
 - License: Apache-2.0
 - Homepage: https://github.com/openai/codex
 - Reimplemented in: `website/src/utils/shellCommandParse.ts` (TypeScript) and
+  `src/kiro_crew/tool_call_title_shell_parse.py` with
+  `src/kiro_crew/tool_call_title_shell_classify.py`, behind
   `src/kiro_crew/tool_call_title.py` (Python) — the shell-command classifier
   behind the chat transcript's tool-call titles (Read / List files / Search
   and the formatting-helper, `cd`-tracking and simplification rules).

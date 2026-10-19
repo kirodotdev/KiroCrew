@@ -796,7 +796,7 @@ class TestSelRootIsolation(unittest.IsolatedAsyncioTestCase):
     Every trust assertion in this file requires a fail-closed critical SEL
     audit to WIN the chain lock, and on the event-loop thread that acquire is a
     single non-blocking attempt (``sel_chain_lock.py``) with a fail-closed refusal behind
-    it (``safety_override.py``) — both correct product behaviour, pinned by
+    it (``safety_override_grant.py``) — both correct product behaviour, pinned by
     their own tests, and deliberately not touched here. What THESE tests pin is
     the test-isolation property that makes depending on that lock safe: the
     root the audit writes through belongs to this test alone, so no sibling

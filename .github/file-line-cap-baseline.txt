@@ -57,7 +57,6 @@
 2998 src/kiro_crew/platform/policy_distribution.py
 2275 src/kiro_crew/platform/wheel_engine.py
 2787 src/kiro_crew/portability.py
-2258 src/kiro_crew/safety_override.py
 2284 src/kiro_crew/sandbox_launcher_program.py
 3203 src/kiro_crew/security/denied_rules.py
 2296 src/kiro_crew/security/exfil.py
@@ -69,8 +68,6 @@
 3892 src/kiro_crew/slack/interactions.py
 2115 src/kiro_crew/snapshot.py
 2594 src/kiro_crew/subagent_persistence.py
-2272 src/kiro_crew/tool_call_title.py
-2250 src/kiro_crew/ui_index.py
 2096 src/kiro_crew/webex/transport_dispatch.py
 2641 test/conftest.py
 5531 test/test_apps_routes_coverage.py
