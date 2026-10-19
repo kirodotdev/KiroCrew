@@ -8176,7 +8176,8 @@ class TestEnvDumpGrepAwsNarrowing:
 
         denial = _first_tool_input_denial(["env | egrep AWS_SECRET"], None, command_rules=True)
         assert denial is not None
-        assert _ENV_CRED_DENIAL_REASON in denial
+        # Line one is the tier's reason; a refusal-diagnostic line follows it.
+        assert denial[1].splitlines()[0] == _ENV_CRED_DENIAL_REASON
 
     @pytest.mark.parametrize("cmd", PRINTENV_DENIED)
     def test_printenv_of_a_secret_is_denied(self, cmd: str) -> None:
