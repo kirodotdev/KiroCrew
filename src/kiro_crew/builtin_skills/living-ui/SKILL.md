@@ -115,6 +115,18 @@ file.
    - `?slow=0.05` runs `requestAnimationFrame` and `performance.now` at 1/20
      speed, so a 100 ms envelope lands on several frames.
 
+   For a Dashboard page, pass its `view.html`, a JSON file of sample field
+   values, and one `--push` file of new values for each change to watch:
+
+   ```bash
+   python3 scripts/harness.py view.html --fields now.json --push next.json
+   ```
+
+   The frame is then the Dashboard tab's: inline script only, so a CDN script
+   fails as it does there, and the host fills the bound cells and answers
+   `window.kirocrew.fields` and `subscribe`. A button above the frame sends
+   each push file in as the next refill, so a slowed run can show the change.
+
    A script error shows above the frame with its line in your file, and a
    load the CSP blocks shows there with its address. Fix every one.
 2. **Capture** each of these with a `web-verify` backend, in light and in dark:
