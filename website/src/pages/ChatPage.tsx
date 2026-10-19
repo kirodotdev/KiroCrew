@@ -4,6 +4,9 @@ import { useAppSelector, store, type AppDispatch } from '../store'
 import {
   switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey,
 } from '../store/chatSlice'
+import { DeliveryWarningStrip } from '../components/DeliveryWarningStrip'
+import { useDeliveryWarningStrip } from '../components/useDeliveryWarningStrip'
+import { mergeSentTurns, type SentTurnRestore } from './chat/page/composerSend'
 import { slotIsRemoteBound } from '../store/dashboardSlice'
 import { useScrollManager } from './chat/useScrollManager'
 import { useChatPageTranscriptEarlyController } from './chat/useChatPageTranscriptController'
@@ -612,7 +615,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     refusedPress, setRefusedPress, showRefusedPress,
   } = useRefusedPress()
   const {
-    send,
+    send, restoreSentTurn,
   } = useComposerSend({
     mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef,
     setInput, inputRef, sendingRef, pendingAgentRef, pendingAgentKindRef, setPendingAgent, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, setActionError, showActionError,
@@ -960,6 +963,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     dismissTip,
   })
   const composerSessionControls = useSessionControlChips({ sessionControls, openSessionControl, activeSlot, sessionControlStatuses })
+
+  const currentChatSlot = useCallback(() => activeSlotRef.current, [activeSlotRef])
+  const deliveryStrip = useDeliveryWarningStrip<SentTurnRestore>({
+    slot: activeSlot, surface: 'page', currentSlot: currentChatSlot, restore: restoreSentTurn, merge: mergeSentTurns,
+  })
+  const composerBand = useMemo(() => (
+    <>
+      {composerAbove}
+      {deliveryStrip.show ? (
+        <DeliveryWarningStrip noteId="chat-delivery-note" onDismiss={deliveryStrip.onDismiss} />
+      ) : null}
+    </>
+  ), [composerAbove, deliveryStrip.show, deliveryStrip.onDismiss])
   // The two icon-only controls at the header bar's right end look alike, so
   // each shows its own aria-label in an InstantTip on hover or focus, at once,
   // instead of a native title the browser holds back for about a second.
@@ -1092,7 +1108,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               handleCancelQueued={handleCancelQueued} handleEditQueued={handleEditQueued} handleInterruptQueued={handleInterruptQueued} handleReorderQueued={handleReorderQueued}
               keepQuestionAnswer={keepQuestionAnswer} queuedMessages={queuedMessages} queuePendingIds={queuePendingIds} steer={steer} stopTurn={stopTurn} systemDeliveryCount={systemDeliveryCount}
               handleEditLastRequest={handleEditLastRequest} composerOptimizing={composerOptimizing} handleOptimizingChange={handleOptimizingChange} memorySwitching={memorySwitching}
-              showComposerMemoryChip={showComposerMemoryChip} switchMemoryMode={switchMemoryMode} composerAbove={composerAbove} composerSessionControls={composerSessionControls}
+              showComposerMemoryChip={showComposerMemoryChip} switchMemoryMode={switchMemoryMode} composerAbove={composerBand} composerSessionControls={composerSessionControls}
             />
           </div>
           </SearchHighlightContext.Provider>
