@@ -407,11 +407,16 @@ def test_the_spelling_prefilter_admits_every_reach_and_not_the_bare_word() -> No
         "from pkg import sub\nsub.state.LIMIT = 1\n",
         "importlib.import_module('.state', 'pkg.sub')\n",
         "mock.patch('pkg.sub.state.f')\n",
+        "mock.patch('pkg.sub.state_extra.f')\n",
     )
+    # A table of many leaves answers through the text's word index instead.
+    fillers = [f"pkg.other.filler{n}" for n in range(facade_mirror_scan._WORD_INDEX_MIN_LEAVES)]
     for text in admitted:
         assert _mentions(text, [target]), text
+        assert _mentions(text, [*fillers, target]), text
     for text in ("the state of the slot\n", "from pkg.other import state\n"):
         assert not _mentions(text, [target]), text
+        assert not _mentions(text, [*fillers, target]), text
 
 
 _FACADE_NAME = "pkg.facade"
