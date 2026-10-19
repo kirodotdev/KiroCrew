@@ -4,11 +4,13 @@
  * budget, and that it picks no colour, font or shape of its own.
  *
  * The file is a plain browser script, so each test runs it in a fresh `node:vm`
- * context whose `requestAnimationFrame`, `IntersectionObserver` and `matchMedia`
- * are fakes the test moves frame by frame. A behaviour test runs ONE marked block
- * alone, the way an author copies it, so a helper that leaned on another block
- * fails here. That SKILL.md carries each block unchanged is pinned on the Python
- * side, by test/test_living_ui_toolkit.py.
+ * context whose `requestAnimationFrame`, `setTimeout`, `IntersectionObserver` and
+ * `matchMedia` are fakes the test moves frame by frame. The elements a helper
+ * writes come from this file's happy-dom document, and a MutationObserver counts
+ * each write. A behaviour test runs ONE marked block alone, the way an author
+ * copies it, so a helper that leaned on another block fails here. That SKILL.md
+ * carries each block unchanged is pinned on the Python side, by
+ * test/test_living_ui_toolkit.py.
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -21,10 +23,11 @@ const SKILL_DIR = resolve(__dirname, '../../../src/kiro_crew/builtin_skills/livi
 const SOURCE = readFileSync(join(SKILL_DIR, 'toolkit', 'living-ui.js'), 'utf8')
 const LOOKS_DIR = join(SKILL_DIR, 'looks')
 const BUDGET_BYTES = 5120
-const CORE_HELPERS = ['loop', 'follow', 'spring', 'settle', 'smooth', 'burst', 'css']
+const HELPERS = ['loop', 'follow', 'spring', 'settle', 'smooth', 'burst', 'readout', 'focusOne', 'css']
 
 interface Motion { x: number; v: number }
 interface LoopHandle { kick(): void; stop(): void; readonly calm: boolean }
+interface Words { say(text: string): void; describe(text: string): void; phase(text: string): void }
 interface Toolkit {
   loop(stage: object, tick: (dt: number, calm: boolean) => boolean): LoopHandle
   follow(x: number, target: number, dt: number, tau?: number, calm?: boolean): number
@@ -32,6 +35,8 @@ interface Toolkit {
   settle(s: Motion, target: number, dt: number, seconds?: number, calm?: boolean): boolean
   smooth(a: number, b: number, x: number): number
   burst(age: number, rise?: number, fall?: number): number
+  readout(el: Element, options?: { target?: Element; live?: Element }): Words
+  focusOne(root: Element, chosen: Element | null): void
   css: string
 }
 
@@ -63,6 +68,7 @@ function page(code: string, { reduced = false } = {}) {
   let now = 1000
   let nextHandle = 1
   const frames = new Map<number, (time: number) => void>()
+  const timers = new Map<number, { due: number; fn: () => void }>()
   const observers: FakeObserver[] = []
   const queries: string[] = []
   const listeners = new Set<() => void>()
@@ -83,6 +89,8 @@ function page(code: string, { reduced = false } = {}) {
   const globals: Record<string, unknown> = {
     requestAnimationFrame: (fn: (time: number) => void) => { frames.set(nextHandle, fn); return nextHandle++ },
     cancelAnimationFrame: (handle: number) => { frames.delete(handle) },
+    setTimeout: (fn: () => void, ms = 0) => { timers.set(nextHandle, { due: now + ms, fn }); return nextHandle++ },
+    clearTimeout: (handle: number) => { timers.delete(handle) },
     matchMedia: (query: string) => { queries.push(query); return media },
     IntersectionObserver,
   }
@@ -97,6 +105,20 @@ function page(code: string, { reduced = false } = {}) {
       for (const fn of due) fn(now)
     },
     waiting: () => frames.size,
+    /** Moves the clock on by `ms`, running each timer that comes due on the way, earliest first. */
+    wait(ms: number) {
+      const until = now + ms
+      for (;;) {
+        let next: [number, { due: number; fn: () => void }] | undefined
+        for (const entry of timers) if (entry[1].due <= until && (!next || entry[1].due < next[1].due)) next = entry
+        if (!next) break
+        timers.delete(next[0])
+        now = next[1].due
+        next[1].fn()
+      }
+      now = until
+    },
+    pending: () => timers.size,
     /** Delivers one observer callback carrying these entries, oldest first. */
     view(...inView: boolean[]) {
       for (const observer of observers) {
@@ -121,6 +143,27 @@ function recorder(moving: (call: number) => boolean = () => true) {
     return moving(calls.length)
   }
   return { calls, tick }
+}
+
+/**
+ * Takes the writes `node` itself saw since the last call: `text <new text>` for a
+ * replaced text, `<attribute> <value now>` for an attribute set or removed.
+ */
+function writes(node: Node): () => string[] {
+  const seen: MutationRecord[] = []
+  const observer = new MutationObserver((records) => { seen.push(...records) })
+  observer.observe(node, { childList: true, attributes: true })
+  return () => {
+    const records = seen.splice(0).concat(observer.takeRecords())
+    // happy-dom reports one text replacement as a removal, then an addition: count it once.
+    const halfOfReplace = (i: number) =>
+      records[i].type === 'childList' && !records[i].addedNodes.length && (records[i + 1]?.addedNodes.length ?? 0) > 0
+    return records.flatMap((record, i) => {
+      if (halfOfReplace(i)) return []
+      if (record.type === 'childList') return [`text ${[...record.addedNodes].map((added) => added.textContent).join('')}`]
+      return [`${record.attributeName} ${(record.target as Element).getAttribute(record.attributeName ?? '')}`]
+    })
+  }
 }
 
 describe('loop', () => {
@@ -414,6 +457,155 @@ describe('burst', () => {
   })
 })
 
+describe('readout', () => {
+  it('say writes the readout only when its text changes', () => {
+    const { lui } = page(block('readout'))
+    const el = document.createElement('output')
+    const taken = writes(el)
+    const words = lui.readout(el)
+    for (const text of ['50%', '50%', '51%', '51%', '51%', '50%']) words.say(text)
+    expect(taken()).toEqual(['text 50%', 'text 51%', 'text 50%'])
+    expect(el.textContent).toBe('50%')
+  })
+
+  it('describe writes aria-valuetext on target at once, only when its text changes', () => {
+    const { lui } = page(block('readout'))
+    const el = document.createElement('output')
+    const stage = document.createElement('div')
+    const [onStage, onReadout] = [writes(stage), writes(el)]
+    const words = lui.readout(el, { target: stage })
+    words.describe('Half open')
+    expect(onStage()).toEqual(['aria-valuetext Half open'])
+    words.describe('Half open')
+    expect(onStage()).toEqual([])
+    words.describe('Open')
+    expect(onStage()).toEqual(['aria-valuetext Open'])
+    expect(onReadout()).toEqual([])
+  })
+
+  it('describe never runs from loop: a tick that says each frame writes no value text and no phase', () => {
+    const p = page(block('loop') + block('readout'))
+    const [stage, el, live] = [document.createElement('div'), document.createElement('output'), document.createElement('p')]
+    const [onStage, onReadout, onLive] = [writes(stage), writes(el), writes(live)]
+    const words = p.lui.readout(el, { target: stage, live })
+    const state = { x: 0, target: 0 }
+    const run = p.lui.loop(stage, (dt) => {
+      state.x = Math.min(state.target, state.x + dt)
+      words.say(`${Math.round(state.x * 100)}%`)
+      return state.x !== state.target
+    })
+    p.view(true)
+    state.target = 1 // one input: the state changes once
+    words.describe('Full')
+    run.kick()
+    for (let i = 0; i < 90; i++) p.frame()
+    p.wait(1000)
+    expect(state.x).toBe(1)
+    expect(onReadout().length).toBeGreaterThan(30)
+    expect(onStage()).toEqual(['aria-valuetext Full'])
+    expect(onLive()).toEqual([])
+  })
+
+  it('phase speaks the newest phase once 700 ms pass with no newer one, and only when it changed', () => {
+    const p = page(block('readout'))
+    const live = document.createElement('p')
+    const taken = writes(live)
+    const words = p.lui.readout(document.createElement('output'), { live })
+    words.phase('opening')
+    p.wait(400)
+    words.phase('open')
+    p.wait(699)
+    expect(taken()).toEqual([])
+    p.wait(1)
+    expect(taken()).toEqual(['text open'])
+    words.phase('open')
+    p.wait(700)
+    expect(taken()).toEqual([])
+    for (let i = 0; i < 20; i++) {
+      words.phase('moving')
+      p.wait(100)
+    }
+    expect(taken()).toEqual([])
+    words.phase('closed')
+    p.wait(700)
+    expect(taken()).toEqual(['text closed'])
+    expect(p.pending()).toBe(0)
+  })
+
+  it('describe and phase do nothing with no target or live region', () => {
+    const p = page(block('readout'))
+    const el = document.createElement('output')
+    const taken = writes(el)
+    const words = p.lui.readout(el)
+    words.describe('Open')
+    words.phase('open')
+    expect(p.pending()).toBe(0)
+    p.wait(1000)
+    expect(taken()).toEqual([])
+  })
+})
+
+describe('focusOne', () => {
+  const { lui } = page(block('focusOne'))
+  // The LivingUI.css selectors that light one element and dim the rest.
+  const LIT = '[data-lui-on]'
+  const DIMMED = '[data-lui-focus] [data-lui-dim]:not([data-lui-on])'
+
+  /** Three parts whose still markup already lights b, its settled state. */
+  function figure() {
+    const root = document.createElement('div')
+    const parts = ['a', 'b', 'c'].map((id) => Object.assign(document.createElement('button'), { id }))
+    for (const part of parts) part.setAttribute('data-lui-dim', '')
+    parts[1].setAttribute('data-lui-on', '')
+    root.append(...parts)
+    return { root, parts }
+  }
+  const lit = (root: Element) => [...root.querySelectorAll(LIT)].map((el) => el.id)
+  const dimmed = (parts: Element[]) => parts.filter((el) => el.matches(DIMMED)).map((el) => el.id)
+
+  it('marks what the LivingUI.css rules select', () => {
+    const { css } = page(block('css')).lui
+    expect(css).toContain(`\n${LIT} {`)
+    expect(css).toContain(`\n${DIMMED} {`)
+  })
+
+  it('lights the chosen element, takes the light from every other one, and dims the rest', () => {
+    const { root, parts } = figure()
+    lui.focusOne(root, parts[0])
+    expect(root.hasAttribute('data-lui-focus')).toBe(true)
+    expect(lit(root)).toEqual(['a'])
+    expect(dimmed(parts)).toEqual(['b', 'c'])
+    lui.focusOne(root, parts[2])
+    expect(lit(root)).toEqual(['c'])
+    expect(dimmed(parts)).toEqual(['a', 'b'])
+  })
+
+  it('takes both attributes away for null, so nothing is lit or dimmed', () => {
+    const { root, parts } = figure()
+    lui.focusOne(root, parts[0])
+    lui.focusOne(root, null)
+    expect(root.hasAttribute('data-lui-focus')).toBe(false)
+    expect(lit(root)).toEqual([])
+    expect(dimmed(parts)).toEqual([])
+  })
+
+  it('writes nothing when the lit element is chosen again, and never moves keyboard focus', () => {
+    const { root, parts } = figure()
+    root.tabIndex = 0
+    document.body.append(root)
+    try {
+      root.focus()
+      lui.focusOne(root, parts[0])
+      const taken = [root, ...parts].map(writes)
+      lui.focusOne(root, parts[0])
+      expect(taken.flatMap((take) => take())).toEqual([])
+      expect(document.activeElement).toBe(root)
+    } finally {
+      root.remove()
+    }
+  })
+})
+
 describe('css', () => {
   it('carries the rules the helpers rely on', () => {
     const { css } = page(block('css')).lui
@@ -427,8 +619,8 @@ describe('css', () => {
 })
 
 describe('the toolkit file', () => {
-  it('marks each core helper as its own block, and each block alone defines just its helper', () => {
-    expect([...BLOCKS.keys()]).toEqual(expect.arrayContaining(CORE_HELPERS))
+  it('marks each helper as its own block, and each block alone defines just its helper', () => {
+    expect([...BLOCKS.keys()]).toEqual(expect.arrayContaining(HELPERS))
     for (const [name, code] of BLOCKS) expect(Object.keys(page(code).lui)).toEqual([name])
   })
 

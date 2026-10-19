@@ -166,6 +166,16 @@ LivingUI.settle(s = { x, v }, target, dt, seconds = 0.4, calm = false) -> boolea
 LivingUI.smooth(a, b, x) -> number // smoothstep, 0 to 1
 LivingUI.burst(age, rise = 0.08, fall = 0.13) -> number // event envelope, 0 to 1
 
+// The figure's words. say() writes the visible readout and may run every
+// frame; describe() writes target's aria-valuetext, on a state change only;
+// phase() writes the live region once 700 ms pass with no newer phase.
+// Each one writes only when its text changes.
+LivingUI.readout(el, { target, live } = {}) -> { say(text), describe(text), phase(text) }
+
+// The one lit element: chosen gets data-lui-on and root gets data-lui-focus;
+// null takes both away. It never moves keyboard focus.
+LivingUI.focusOne(root, chosen) -> void
+
 // The CSS rules the helpers rely on, as a string for a <style> element.
 LivingUI.css -> string
 ```
@@ -178,14 +188,28 @@ its age on each frame; under `calm`, use 0. `LivingUI.css` lights the element
 marked `data-lui-on`, dims the other `data-lui-dim` elements inside a
 `data-lui-focus` root, and draws the focus ring on a `data-lui-stage` element.
 
+`readout` keeps three kinds of words apart (rule T). Call `say` from the loop
+with where the parts are now. Call `describe` from the input or data handler
+with the new state, never from the loop: a screen reader speaks every new
+value text of a slider that has keyboard focus, so a value text written each
+frame becomes a stream of numbers. Call `phase` when the phase word changes,
+and with the current phase when the stage gets keyboard focus. It speaks only
+once 700 ms pass with no newer phase, so a drag is spoken once, when it rests.
+Make `live` a visually hidden element with `aria-live="polite"`, empty in the
+markup. `focusOne` moves the lit element (rule F): hover, the keyboard and the
+tour each call it with the part they pick, or with `null` when none is picked.
+It takes `data-lui-on` from every other element inside `root`, so a part lit
+in the still markup steps down with the rest when another part is picked.
+
 A value that follows the pointer, with its readout:
 
 ```js
 const state = { x: 0.5, target: 0.5 }; // one model (rule T)
+const words = LivingUI.readout(readout);
 const run = LivingUI.loop(stage, (dt, calm) => {
   state.x = LivingUI.follow(state.x, state.target, dt, 0.2, calm);
   knob.setAttribute('transform', `translate(${state.x * 200} 0)`);
-  readout.textContent = `${Math.round(state.x * 100)}%`;
+  words.say(`${Math.round(state.x * 100)}%`);
   return state.x !== state.target; // sleep once it lands
 });
 stage.addEventListener('pointermove', (event) => {
@@ -350,6 +374,60 @@ LivingUI.burst = (age, rise = 0.08, fall = 0.13) => {
   const t = Math.min(1, age / rise);
   const level = t * t * (3 - 2 * t) * Math.exp(Math.min(0, rise - age) / fall);
   return age > rise && level < 1e-3 ? 0 : level;
+};
+```
+
+#### `readout`
+
+```js
+// Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.
+var LivingUI = LivingUI || {};
+// The figure's words, kept apart, each written only when its text differs
+// from the last one it wrote. say(text) sets the visible readout el. Call it
+// from the loop with where the parts are now. describe(text) sets
+// aria-valuetext on target, the stage with role="slider". Call it when the
+// state changes and never from the loop, since a screen reader speaks every
+// new value text of a slider that has keyboard focus. phase(text) puts a
+// phase word in live, a visually hidden element with aria-live="polite",
+// once 700 ms pass with no newer phase, so a drag is spoken once it rests.
+// With no target, describe does nothing; with no live, phase does nothing.
+LivingUI.readout = (el, { target, live } = {}) => {
+  let said, described, spoken, timer = 0;
+  return {
+    say(text) {
+      if (text !== said) el.textContent = said = text;
+    },
+    describe(text) {
+      if (target && text !== described) target.setAttribute('aria-valuetext', described = text);
+    },
+    phase(text) {
+      clearTimeout(timer);
+      if (!live) return;
+      timer = setTimeout(() => {
+        if (text !== spoken) live.textContent = spoken = text;
+      }, 700);
+    },
+  };
+};
+```
+
+#### `focusOne`
+
+```js
+// Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.
+var LivingUI = LivingUI || {};
+// Lights one element of a figure (rule F). chosen gets data-lui-on, every
+// other element inside root loses it, and root gets data-lui-focus, so
+// LivingUI.css lights chosen and dims the other data-lui-dim elements.
+// chosen = null takes both away, so nothing is lit or dimmed. Calling it
+// again with the same element changes nothing, and it never moves keyboard
+// focus.
+LivingUI.focusOne = (root, chosen) => {
+  for (const el of root.querySelectorAll('[data-lui-on]')) {
+    if (el !== chosen) el.removeAttribute('data-lui-on');
+  }
+  if (chosen) chosen.toggleAttribute('data-lui-on', true);
+  root.toggleAttribute('data-lui-focus', !!chosen);
 };
 ```
 

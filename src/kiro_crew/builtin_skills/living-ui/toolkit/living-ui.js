@@ -1,6 +1,6 @@
 // Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.
 //
-// Living UI toolkit: small motion helpers for live figures, with no colours,
+// Living UI toolkit: small helpers for live figures, with no colours,
 // fonts or shapes of their own. Each helper sits between a "living-ui:begin
 // <name>" line and a "living-ui:end <name>" line and stands on its own, so a
 // figure copies only the blocks it uses into its inline <script>. The
@@ -146,6 +146,56 @@ LivingUI.burst = (age, rise = 0.08, fall = 0.13) => {
   return age > rise && level < 1e-3 ? 0 : level;
 };
 // living-ui:end burst
+
+// living-ui:begin readout
+// Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.
+var LivingUI = LivingUI || {};
+// The figure's words, kept apart, each written only when its text differs
+// from the last one it wrote. say(text) sets the visible readout el. Call it
+// from the loop with where the parts are now. describe(text) sets
+// aria-valuetext on target, the stage with role="slider". Call it when the
+// state changes and never from the loop, since a screen reader speaks every
+// new value text of a slider that has keyboard focus. phase(text) puts a
+// phase word in live, a visually hidden element with aria-live="polite",
+// once 700 ms pass with no newer phase, so a drag is spoken once it rests.
+// With no target, describe does nothing; with no live, phase does nothing.
+LivingUI.readout = (el, { target, live } = {}) => {
+  let said, described, spoken, timer = 0;
+  return {
+    say(text) {
+      if (text !== said) el.textContent = said = text;
+    },
+    describe(text) {
+      if (target && text !== described) target.setAttribute('aria-valuetext', described = text);
+    },
+    phase(text) {
+      clearTimeout(timer);
+      if (!live) return;
+      timer = setTimeout(() => {
+        if (text !== spoken) live.textContent = spoken = text;
+      }, 700);
+    },
+  };
+};
+// living-ui:end readout
+
+// living-ui:begin focusOne
+// Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.
+var LivingUI = LivingUI || {};
+// Lights one element of a figure (rule F). chosen gets data-lui-on, every
+// other element inside root loses it, and root gets data-lui-focus, so
+// LivingUI.css lights chosen and dims the other data-lui-dim elements.
+// chosen = null takes both away, so nothing is lit or dimmed. Calling it
+// again with the same element changes nothing, and it never moves keyboard
+// focus.
+LivingUI.focusOne = (root, chosen) => {
+  for (const el of root.querySelectorAll('[data-lui-on]')) {
+    if (el !== chosen) el.removeAttribute('data-lui-on');
+  }
+  if (chosen) chosen.toggleAttribute('data-lui-on', true);
+  root.toggleAttribute('data-lui-focus', !!chosen);
+};
+// living-ui:end focusOne
 
 // living-ui:begin css
 // Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.

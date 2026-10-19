@@ -22,7 +22,7 @@ from skill_script_helpers import load_skill_script
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "copy_living_ui_blocks.py"
-CORE_HELPERS = ("loop", "follow", "spring", "settle", "smooth", "burst", "css")
+HELPERS = ("loop", "follow", "spring", "settle", "smooth", "burst", "readout", "focusOne", "css")
 _REMEDY = "Run `python3 scripts/copy_living_ui_blocks.py` and commit SKILL.md."
 
 
@@ -41,9 +41,9 @@ def region(copier: Any) -> str:
     return copier.split_region(copier.SKILL_MD.read_text(encoding="utf-8"))[1]
 
 
-def test_the_file_marks_every_core_helper(blocks: list[tuple[str, str]]) -> None:
+def test_the_file_marks_every_helper(blocks: list[tuple[str, str]]) -> None:
     names = [name for name, _ in blocks]
-    missing = [name for name in CORE_HELPERS if name not in names]
+    missing = [name for name in HELPERS if name not in names]
     assert not missing, f"toolkit/living-ui.js marks no block for {missing}"
 
 
