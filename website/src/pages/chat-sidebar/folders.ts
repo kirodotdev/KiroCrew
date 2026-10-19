@@ -1,6 +1,7 @@
-/** Folder state the lanes render from: the sort mode (server config), visibility
- *  (hide-when-empty, the reveal override, filter-menu hides), the subtree index and
- *  ancestor expansion, the filter-menu rows, and the folder writes. */
+/** Folder state the lanes render from: the sort mode and the unfiled-sessions
+ *  placement (server config), visibility (hide-when-empty, the reveal override,
+ *  filter-menu hides), the subtree index and ancestor expansion, the filter-menu
+ *  rows, and the folder writes. */
 import { useMemo, useState, useRef, useCallback, useEffect, type Dispatch, type SetStateAction } from 'react'
 import { useMutation, type QueryClient } from '@tanstack/react-query'
 import { useOptimisticConfigPaths, setConfigPathValue } from '../settings/useOptimisticConfigPaths'
@@ -145,6 +146,51 @@ export function useFolderSort({ queryClient, mcCfg, mcCfgStatus, mcCfgError, mcC
     folderSortRead, folderSortMode, folderCompare, folderReorderable, folderDragWithheld, folderReorderHint,
     folderReorderHintRef, showFolderReorderHint, hideFolderReorderHint, folderSortMut,
   }
+}
+
+/** Config path of the sidebar's unfiled-sessions placement. */
+export const UNFILED_ABOVE_FOLDERS_CONFIG_PATH = 'dashboard.unfiled_sessions_above_folders'
+
+/** The slice of the `['kirocrewConfig']` body the placement read looks at. */
+export type UnfiledAboveFoldersConfigBody = { dashboard?: { unfiled_sessions_above_folders?: unknown } }
+
+/**
+ * Where the lanes draw the sessions filed in no folder: above the folder list
+ * when `dashboard.unfiled_sessions_above_folders` is on, below it otherwise.
+ *
+ * Read from the shared config body. Anything but `true` is off, so an older
+ * gateway without the field, or a hand-edited value, draws the layout every
+ * earlier build drew. Drawn optimistically, as the session sort is. Nothing
+ * outside the dashboard reads this key, so a toggle reorders the lane at once.
+ * A refused save puts the stored value back (the overlay's own settle) and is
+ * said on the shared folder notice. A later toggle does not clear that notice,
+ * which may be carrying another folder failure. Saves go out one at a time in
+ * pick order, so the last toggle is what the gateway keeps.
+ */
+export function useUnfiledAboveFolders({ queryClient, mcCfg, setFolderActionError }: {
+  queryClient: QueryClient
+  mcCfg: UnfiledAboveFoldersConfigBody | undefined
+  setFolderActionError: Dispatch<SetStateAction<string>>
+}) {
+  const cfgOverlay = useOptimisticConfigPaths(queryClient)
+  const stored = mcCfg?.dashboard?.unfiled_sessions_above_folders === true
+  const unfiledAboveFolders = cfgOverlay.shown(UNFILED_ABOVE_FOLDERS_CONFIG_PATH, stored)
+  const unfiledAboveFoldersMut = useMutation({
+    ...cfgOverlay.mutationOpts<boolean>({
+      queryKey: ['kirocrewConfig'],
+      mutationFn: (on: boolean) => api.patchConfig(UNFILED_ABOVE_FOLDERS_CONFIG_PATH, on),
+      path: () => UNFILED_ABOVE_FOLDERS_CONFIG_PATH,
+      displayValue: v => v,
+      applyToCache: (cached, on) => setConfigPathValue(cached, UNFILED_ABOVE_FOLDERS_CONFIG_PATH, on),
+      onFailure: e => setFolderActionError(errMessage(e) || i18nT('components.errorBoundary.something_went_wrong')),
+    }),
+    scope: { id: UNFILED_ABOVE_FOLDERS_CONFIG_PATH },
+  })
+  const { mutate } = unfiledAboveFoldersMut
+  // Negates the SHOWN value. A second toggle during an in-flight save then
+  // sends the opposite of the first, not the same value twice.
+  const toggleUnfiledAboveFolders = useCallback(() => mutate(!unfiledAboveFolders), [mutate, unfiledAboveFolders])
+  return { unfiledAboveFolders, toggleUnfiledAboveFolders }
 }
 
 /** Which folders each slot sits in and which folders are hidden. */
