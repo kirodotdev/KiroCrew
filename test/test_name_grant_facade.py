@@ -132,7 +132,9 @@ def _owner_reads() -> dict[str, set[str]]:
 @functools.lru_cache(maxsize=1)
 def _spellings() -> dict[str, str]:
     """The facade's dotted name, plus ``<module>.name_grant`` for each src module that binds
-    it at module level -- another spelling of the same object a test can patch through."""
+    it at module level -- another spelling of the same object a test can patch through. A
+    split module's facade that serves the name from an owner lists it in its module-level
+    ``if TYPE_CHECKING:`` manifest, so that block counts as module level too."""
     spellings = {FACADE: FACADE}
     for path, text in source_corpus.iter_candidate_sources(require_all=("name_grant",)):
         if not path.is_relative_to(_SRC):
@@ -140,7 +142,12 @@ def _spellings() -> dict[str, str]:
         module = ".".join(path.relative_to(_SRC.parent).with_suffix("").parts)
         if module.endswith(".__init__"):
             module = module.rpartition(".")[0]
-        for node in ast.parse(text).body:
+        body = ast.parse(text).body
+        for node in list(body):
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Name):
+                if node.test.id == "TYPE_CHECKING":
+                    body.extend(node.body)
+        for node in body:
             if isinstance(node, ast.ImportFrom) and node.module == "kiro_crew" and not node.level:
                 for alias in node.names:
                     if alias.name == "name_grant":

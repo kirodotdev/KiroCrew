@@ -306,14 +306,10 @@ jobs:
         # Makefile target, which only adds a local-dev node-bin-dir PATH
         # nicety that CI's setup-node already covers.
         shell: bash
-        # KIRO_CLI_VERSION is passed EXPLICITLY, read from the one pin file, so
-        # the lane's log names the release it bundled and the versioned download
-        # is verified against the committed sha. A moved latest manifest does not
-        # invalidate a pinned rebuild.
-        run: |
-          KIRO_CLI_VERSION="$(tr -d '[:space:]' < packaging/kiro-cli-version)"
-          echo "Bundling kiro-cli ${KIRO_CLI_VERSION} (packaging/kiro-cli-version)"
-          KIRO_CLI_VERSION="${KIRO_CLI_VERSION}" bash packaging/build-desktop.sh
+        # No bundled kiro-cli (BUNDLE_KIRO_CLI defaults to 0 in the script): the
+        # app detects the user's own install. packaging/kiro-cli-version is read
+        # only by a BUNDLE_KIRO_CLI=1 build.
+        run: bash packaging/build-desktop.sh
         env:
           # Unsigned here by design: the signing service signs the .app downstream in
           # sign-and-notarize.yml. Local certificate discovery must stay off.
@@ -466,15 +462,13 @@ jobs:
 
   # Install the macOS DMG for real and launch the app it carries.
   #
-  # Mount, copy the .app out, run the installed launcher and the installed
-  # bundled kiro-cli, then start the REAL app from its executable and wait for
-  # the gateway its supervisor boots to answer /api/health. That launch is the
-  # only place the Electron shell's bundled-kiro-cli hand-off (gateway-env.js)
-  # runs against a shipped bundle, so the gateway child's environment is read
-  # back to prove it. Unsigned build by design: signing is a later stage, and the
-  # launch exercises the binary, not Gatekeeper. See scripts/smoke-macos-install.sh.
+  # Mount, copy the .app out, run the installed launcher, then start the REAL
+  # app from its executable and wait for the gateway its supervisor boots to
+  # answer /api/health. Unsigned build by design: signing is a later stage, and
+  # the launch exercises the binary, not Gatekeeper. See
+  # scripts/smoke-macos-install.sh.
   smoke-install-macos:
-    name: Smoke-install macOS DMG (launch + bundled kiro-cli)
+    name: Smoke-install macOS DMG (launch)
     needs: build-desktop
     runs-on: macos-15
     timeout-minutes: 30
@@ -489,7 +483,7 @@ jobs:
           name: unsigned-build-darwin-universal
           path: dist
 
-      - name: Install the DMG, launch the app, prove the bundled kiro-cli
+      - name: Install the DMG and launch the app
         run: ./scripts/smoke-macos-install.sh dist
 
       - name: Upload smoke evidence

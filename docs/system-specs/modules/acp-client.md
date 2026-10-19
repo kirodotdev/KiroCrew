@@ -169,6 +169,26 @@ row names its responsibility, and a new request shape or turn-metadata parser to
 | `acp/_dispatch_parts/permission_requests.py` | a `session/request_permission` as `EVENT_PERMISSION_REQUEST`: option kinds and the least-destructive reject, the gate-extension envelope, MCP identity and approval, KAS consent and `build_permission_event` |
 | `acp/_dispatch_parts/session_update_parser.py` | the `session/update` parser: chunk text and message ids, the `tool_call` and refinement builders, and `parse_session_update` |
 
+`acp/liveness.py`, the per-session liveness oracle, keeps `LivenessOracle`, the
+offloaded-consult guard (`consult_offloaded`, `ConsultFutureHolder`,
+`OFFLOADED_CONSULT_TIMEOUT_SECS`) and the module docstring that carries the platform
+evidence matrix, and re-exports every name its owners define, so callers keep importing
+them as `kiro_crew.acp.liveness.<name>`. It is a plain facade: the names tests patch
+through it (`process_start_boot_secs`, `select_darwin_backend`) are read by the oracle as
+its own globals and by no owner, and an owner imports only the owners above it in this
+table, never the facade. The family logs under the `kiro_crew.acp.liveness` logger.
+`test/test_liveness_facade.py` pins the reach, the layer order and the logger. New oracle
+logic goes to `acp/liveness.py`, and a new verdict, tag, tunable, process reader, command
+reader, interactive rule or tool-call field to the owner whose row names it.
+
+| Liveness owner | Owns |
+|---|---|
+| `acp/liveness_evidence.py` | the oracle's vocabulary: the `VERDICT_*` verdicts, the `EVIDENCE_*` tags and the contract tunables its probes read |
+| `acp/liveness_proc.py` | the process-tree readers: the `/proc` helpers, `steady_now`, and the darwin `LibprocBackend` that `select_darwin_backend` picks on a host without procfs |
+| `acp/liveness_command.py` | the cached command text: its retention bound (`MAX_RETAINED_*`, `bounded_command_text`) and the readers that recognise what it started (`match_fragment`, `first_program`, `parse_wait_seconds`, and `launch_matches` over a `LaunchRoster`) |
+| `acp/liveness_interactive.py` | interactive-command classification: the program tables, `InteractiveClassification`, `classify_interactive_command` and `non_interactive_hint` |
+| `acp/liveness_tool_state.py` | the in-flight tool call: `ToolCallState`, the `InFlightToolTracker` hand-off rule and `wait_tool_verdict` |
+
 ## Native skill startup views
 
 `acp/skill_projection.py` is a mirror facade over the owners in

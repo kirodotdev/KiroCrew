@@ -2960,7 +2960,7 @@ Frontend joins the countdown to a pill by tool *title*, via `isWaitToolTitle()`,
 an **allowlist** of the shapes the transport produces: `wait`, `<server>___wait`,
 `wait (mcp)`, and the two decorations combined. The backend liveness contract
 does not read the title at all: it selects the wait by the provenance-verified
-adapter identity (`acp/liveness.py::ToolCallState.is_trusted_wait`), because a
+adapter identity (`acp/liveness_tool_state.py::ToolCallState.is_trusted_wait`), because a
 title-selected wait would let any tool that describes itself as waiting defer its
 own stall recovery. The frontend has only the title, so its allowlist is kept
 strict: a false positive misattributes a live deadline. Concretely,

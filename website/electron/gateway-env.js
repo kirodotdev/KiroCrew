@@ -150,7 +150,8 @@ function gatewayBytecodeEnvironment(platform, cachePath, isPackaged) {
  *
  * Both variables are set ONLY when the directory actually shipped AND its entry
  * answers `--version` on THIS machine. A build without the payload
- * (`BUNDLE_KIRO_CLI=0` or a source checkout with no resources) spreads nothing,
+ * (the default build, which does not stage one, or a source checkout with no
+ * resources) spreads nothing,
  * and so does a copy that is present but does not run here (a glibc older than
  * the binary's floor, a quarantine flag, a truncated payload): discovery then
  * falls through to the user's own install exactly as an unbundled build does,

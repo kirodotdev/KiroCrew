@@ -7,7 +7,7 @@
 #   3. pip-install kiro_crew + deps INTO the bundled interpreter
 #   4. Stage the dashboard into the package's static dir
 #   5. Prune caches/tests/unused stdlib to shrink the bundle
-#   6. Stage a pinned, sha256-verified kiro-cli into backend-dist/kiro-cli/
+#   6. (opt-in, BUNDLE_KIRO_CLI=1) Stage a pinned kiro-cli into backend-dist/kiro-cli/
 #   6b. Stage the pinned KAS engine bundle into backend-dist/kas[-<arch>]/
 #   7. Package the desktop app with electron-builder -> DMG / AppImage / NSIS
 #
@@ -39,7 +39,7 @@
 #   UNIVERSAL=0 TARGET_ARCH=x86_64 bash ...    # macOS: single-arch DMG for a named arch
 #   SKIP_FRONTEND=1 bash packaging/...         # reuse an already-staged dist
 #   SKIP_ELECTRON=1 bash packaging/...         # stop after the backend binary
-#   BUNDLE_KIRO_CLI=0 bash packaging/...       # ship without the bundled kiro-cli
+#   BUNDLE_KIRO_CLI=1 bash packaging/...       # also stage a pinned kiro-cli (off by default)
 #   BUNDLE_KAS=0 bash packaging/...            # ship without the bundled KAS engine
 set -euo pipefail
 
@@ -1025,11 +1025,17 @@ if [ -n "${KIROCREW_AUTH_SERVER_ALLOWLIST:-}" ]; then
   log "Baking AUTH-SERVER-ALLOWLIST into the app: $AUTH_ALLOWLIST"
 fi
 
-# --- 3c. Bundle kiro-cli into the app resources -------------------------------
-# Stages a pinned, sha256-verified kiro-cli entry under backend-dist/kiro-cli/ so
-# the installed app carries the agent runtime it was built against: no first-run
-# download, and the KAS backend's `acp --agent-engine v3` spawn works out of the
-# box. Mirrors docker/Dockerfile's fail-closed manifest resolution.
+# --- 3c. Bundle kiro-cli into the app resources (opt-in) ----------------------
+# OFF by default. The shipped app detects the kiro-cli the user installed, and
+# the first-run gate tells them to install one when there is none; the KAS
+# bundle route (3d) needs no kiro-cli at all. A bundled copy ranks above every
+# system install (kiro_cli.known_kiro_cli_dirs), so a release that carries one
+# reads as "installed" to the gate -- the user never installs kiro-cli -- and
+# runs a copy frozen at this pin instead of following upstream. It is also the
+# largest single payload, ~250 MB of the macOS universal update zip.
+# BUNDLE_KIRO_CLI=1 stages a pinned, sha256-verified kiro-cli entry under
+# backend-dist/kiro-cli/ for a build that wants the runtime it was tested
+# against sealed in. Mirrors docker/Dockerfile's fail-closed manifest resolution.
 # On macOS/Linux that is ONE binary, the chat one, not the upstream layout.
 # The `kiro-cli` launcher
 # resolves `kiro-cli-chat` through $HOME/.local/bin and PATH and never through
@@ -1043,9 +1049,8 @@ fi
 # and the macOS x64ArchFiles glob both cover it with zero config changes; the
 # Electron shell exports the directory as KIROCREW_BUNDLED_KIRO_DIR at gateway
 # spawn (main.js), and the backend ranks it above system installs but below the
-# KIROCREW_KIRO_BIN operator override (kiro_cli.known_kiro_cli_dirs).
-# BUNDLE_KIRO_CLI=0 opts a build out; the app then behaves exactly as an
-# unbundled build does: detect-only, the user installs kiro-cli themselves.
+# KIROCREW_KIRO_BIN operator override (kiro_cli.known_kiro_cli_dirs). Without
+# the payload the shell exports nothing and the app is detect-only.
 #
 # Payload budget: the macOS universal DMG download is ~360 MB and each Linux zip
 # ~160 MB. The Windows MSI is ~190 MB and expands to one executable. What is
@@ -1425,10 +1430,10 @@ PY
   echo "    staged kiro-cli $version -> backend-dist/kiro-cli/ ($(du -sh "$dest" 2>/dev/null | cut -f1))"
 }
 
-if [ "${BUNDLE_KIRO_CLI:-1}" = "1" ]; then
+if [ "${BUNDLE_KIRO_CLI:-0}" = "1" ]; then
   fetch_kiro_cli
 else
-  log "BUNDLE_KIRO_CLI=0: app ships without a bundled kiro-cli"
+  log "app ships without a bundled kiro-cli (BUNDLE_KIRO_CLI=1 stages one)"
 fi
 
 # --- 3d. Bundled KAS engine --------------------------------------------------
