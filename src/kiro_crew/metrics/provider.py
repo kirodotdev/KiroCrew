@@ -784,6 +784,26 @@ def _build_recorder() -> _Build:
             register_inventory_gauges(meter)
         except Exception:
             logger.warning("inventory gauges unavailable", exc_info=True)
+        # Crew log health: the write-behind's backlog and the eager fold queue depth.
+        # Same consent gate, same observable-callback contract, and its OWN try for the
+        # same reason: these read the crew log write-behind and the fold queue, and a
+        # fault there must not take the other two sets dark. Their callbacks never BUILD
+        # either one -- they read it only if it is already loaded -- so a collection on a
+        # process that has committed no entry observes nothing rather than starting a
+        # subsystem.
+        #
+        # This import is also what makes ``crew_log.bus``'s subscriber-error counter
+        # live: that one resolves this module from ``sys.modules`` instead of importing
+        # it, because it can run on a crew log write thread. See
+        # ``crew_log_health.bus_subscriber_error``.
+        try:
+            from kiro_crew.metrics.crew_log_health import (
+                register_crew_log_health_instruments,
+            )
+
+            register_crew_log_health_instruments(meter)
+        except Exception:
+            logger.warning("crew log health instruments unavailable", exc_info=True)
         return _Build(MetricsRecorder(meter), provider, consent)
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)

@@ -328,6 +328,32 @@ def _count_drop(unit_id: str, entry_type: str) -> None:
         )
 
 
+def queue_depth() -> "int | None":
+    """How many wakes are waiting to be folded right now, or ``None``.
+
+    ``None`` when no queue exists in this process -- nothing has committed an eager
+    entry, so there is no fold thread and no queue -- which is a DIFFERENT fact from an
+    empty queue and must not be reported as a zero.
+
+    Reads the module global directly and never calls :func:`_ensure_worker`: a caller
+    asking how deep the queue is must not be the thing that creates it and starts the
+    fold thread. Takes no lock either, so it cannot contend with the append path: the
+    rebind of ``_queue`` is atomic, and ``qsize`` is already only a snapshot of a
+    number that moves while it is read.
+
+    The one reader is the crew log health gauge
+    (:mod:`kiro_crew.metrics.crew_log_health`), which observes it on a metrics reader
+    thread.
+    """
+    pending = _queue
+    if pending is None:
+        return None
+    try:
+        return pending.qsize()
+    except Exception:  # pragma: no cover - qsize is unimplemented on no platform we ship
+        return None
+
+
 # --------------------------------------------------------------------------- #
 # The worker
 # --------------------------------------------------------------------------- #
