@@ -137,9 +137,9 @@ async def maybe_auto_tag(state: Any, slot: Any) -> None:
 
 
 async def _auto_tag_inner(state: Any, slot: Any) -> None:
-    # Note: no slot-kind guard needed here — the only call site
-    # (chat_handlers message path) fires exclusively for dashboard chat
-    # slots, same as ``_maybe_auto_title``. Slot keys are BARE names; the
+    # Note: no slot-kind guard needed here — both call sites (the composer's
+    # send path and ``session_send``'s run arm) fire exclusively for dashboard
+    # chat slots. Slot keys are BARE names; the
     # ``dashboard:`` prefix exists only on the derived session key
     # (``dashboard:{slot.key}``), never on ``slot.key`` itself.
     # Read the message and pin the transcript it belongs to before the first

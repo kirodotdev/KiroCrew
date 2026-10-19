@@ -210,6 +210,26 @@ def _retain_orphaned_steer_delivery(
     task.add_done_callback(_done)
 
 
+def _start_auto_tag(state: DashboardState, slot: Any) -> None:
+    """Tag a session whose turn this send started, as a typed message would.
+
+    The composer starts auto-tagging on every send (``chat_api.chat_send``). A
+    session that only ever receives ``session_send`` never passes through it,
+    so without this its sidebar row carries no project tag. Only the run arm
+    calls this: the user row is already on the transcript there, so the topic
+    pass reads the right first message. ``maybe_auto_tag``'s own once-guard
+    makes a repeat call free.
+    """
+    if getattr(slot, "_auto_tagged", False):
+        return
+    # Deferred for the same import cycle `_run_chat` documents in `send_to_target`.
+    from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
+
+    task = asyncio.create_task(maybe_auto_tag(state, slot))
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
 async def send_to_target(
     state: "DashboardState",
     *,
@@ -675,6 +695,8 @@ async def send_to_target(
                 extra_meta=send_origin_meta(state, caller_key),
             )
         )
+        if started:
+            _start_auto_tag(state, slot)
     try:
         state.push_slots_update()
     except Exception:  # pragma: no cover - sidebar refresh is best-effort

@@ -204,6 +204,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _DeliveryProgress,
         _neutralize_send_provenance,
         _retain_orphaned_steer_delivery,
+        _start_auto_tag,
         _timeout_delivery_observation,
         _too_many_targets,
         broadcast_audience,
