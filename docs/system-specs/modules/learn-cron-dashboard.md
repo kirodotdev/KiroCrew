@@ -5258,6 +5258,14 @@ lanes are in [decisions.md §14](decisions.md#14-the-wake-judges-second-lane-nud
   conductor watching sibling sessions has no `MonitorState`.
 - **Only QUIET skips a turn.** WAKE, TERMINAL and FALLBACK all spend the tick, so a
   provider outage reads exactly like the ungated timer.
+- **An unchanged board is not judged.** A pull-request tick whose reading is whole
+  and byte-identical to the last judged one asks no judge and is quiet, when every
+  target the judge would read is that pull request and no judge wake or terminal
+  turn is owed (`autonudge_service/gate.py`, `_unchanged_reading_skips_judge`). The
+  probe's quiet floor still delivers, so a judge that cannot answer spends a turn
+  only on a tick where the board moved, plus the floor's. With
+  `quiet_streak_floor` set below the shipped floor, every tick is judged, because
+  that bound counts judge verdicts.
 - **Quiet-streak floor.** After `decisions.nudge_wake.quiet_streak_floor`
   consecutive QUIET verdicts (default and ceiling `_MAX_QUIET_STREAK`, 10; the knob
   only lowers it) the tick fires anyway.
