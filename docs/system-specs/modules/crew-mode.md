@@ -709,6 +709,39 @@ its setting is `agent.acp_backend`, and in both forms carries a button that open
 the MCP Servers tab of the same pane. Every form opens "Saving works", which is
 true on the Review section and on the saved state alike.
 
+The GET view (and the PUT and stop-following replies, which return it) carries
+`platform_offer`: `null`, or the `kirocrew-mate` rows the member's spec lacks as
+an opt-in (`member_mate_tools.platform_offer`), since the pane's rows are read
+from that spec and never show a server it does not carry. The offer is
+`{value, operations}`: `operations` are exactly the rows a crewmate gets at
+creation (the server's `{"disabled": false}` set, its `@kirocrew-mate` tools
+reference and each `agent._MATE_AUTO_GRANTS` approval not already covered),
+and `value` is the safe view of the entry its copy would carry, for display
+only. An offer is made only when the Parent carries no entry for the server
+(mounted or muted) and the member has no row for it (set or removed), and never
+where creation skips: the default `kirocrew` template or the reserved `default`
+member, POLICY ∩ PROFILE withholding the server (asked fail-closed), a build
+that would not emit it, or a `member_backend_warning` on the member's spec. One
+that cannot be worked out is not made. The pane shows the offer at the top of
+the MCP Servers tab as a checkbox inside the same read-only gate as every other
+row, so a member that does not follow its Parent yet needs the enroll box first,
+and the greyed offer names that box. Its first line says saving auto-approves
+the tools, and its help names every one: the goal tools and the self-service
+ones (`update_self` and the change-card tools); neither is muted. Ticking it
+adds every operation to the draft and unticking drops them all, leaving the
+owner's other edits alone; the added server renders as the managed row it
+becomes, with its own note that it is added for this member only, not as part
+of the template, instead of the "comes with the template" note other managed
+rows carry. Its Parent has no entry for it, so that row offers Override and
+Removed but not Inherited; once Removed it drops the note and, with nothing in
+its Parent to restore, has no restore button. The box adds the offer back, and
+so do the row's own Enabled box and Override, as on any managed row. The box
+reads ticked only while the draft holds each of the offer's operations
+unchanged, so setting the added server to Removed, or muting it, unticks it. Saving goes through the ordinary preview and PUT, where the
+platform branch takes the transport from Crew, never from the draft. The
+preview view carries no offer. Once saved, the row is read from the member's
+spec like any other, with the managed-row note.
+
 Enrollment is explicit. Shared members follow their selected Parent; a legacy
 private snapshot starts with every existing row local and every absent Parent
 row removed. Restoring one row leaves all other overrides intact. MCP transport
@@ -1376,7 +1409,9 @@ itself, when POLICY ∩ PROFILE withholds the server (asked fail-closed), when a
 fresh build would not emit it, or when the previewed copy carries a
 `backend_warning` (a backend the member's chats start on cannot load an enrolled
 member's spec). An existing crewmate is never enrolled by this, and a create that
-landed is never reported failed over it. The capability editor accepts that
+landed is never reported failed over it; its Capabilities pane offers it the same
+rows instead (`platform_offer`, under the same skip rules), which the owner turns
+on and saves. The capability editor accepts that
 server on a member whose Parent lacks it (`agent_capabilities.MEMBER_PLATFORM_SERVERS`):
 its transport is never the request's but the default template's entry
 (`managed_mcp.managed_member_transport`), and every later save refreshes it, or

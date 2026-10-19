@@ -6,11 +6,15 @@ import CapabilityTransportForm from './CapabilityTransportForm'
 import { capabilityLabels } from './capabilityLabels'
 import { redactedPaths, retainedPaths, transportValue } from './capabilityTransport'
 
-export default function CapabilityRowEditor({ row, operation, disabled, models, onChange }: {
+export default function CapabilityRowEditor({ row, operation, disabled, models, addedNote, onChange }: {
   row: CapabilityRow
   operation?: CapabilityOperation
   disabled: boolean
   models: string[]
+  /** Set on a managed row the template does not carry: this note replaces the
+   * template's while the row is set. With nothing in the template, the row has
+   * no Inherited state, and once removed no restore button. */
+  addedNote?: string
   onChange: (operation: CapabilityOperation) => void
 }) {
   const { t } = useTranslation()
@@ -25,6 +29,9 @@ export default function CapabilityRowEditor({ row, operation, disabled, models, 
   const text = typeof value === 'string' ? value : ''
   const modelOptions = text && !models.includes(text) ? [text, ...models] : models
   const label = row.section === 'model' ? t('pages.kiroCrewAgentsPage.model') : row.section === 'prompt' ? t('pages.agentsPage.system_prompt') : row.label
+  const pinnable: Array<'inherited' | 'local' | 'removed'> = canPin ? ['inherited', 'local', 'removed'] : ['inherited', 'removed']
+  const added = addedNote !== undefined
+  const states = added ? pinnable.filter(option => option !== 'inherited') : pinnable
   return (
     <div className="min-w-0 border-b border-border py-2.5" data-testid={`capability-${row.section}-${row.id}`}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -32,8 +39,8 @@ export default function CapabilityRowEditor({ row, operation, disabled, models, 
             state is shown; a second badge read as a separate setting. */}
         <div className="min-w-0 flex-1 break-words text-[13px]"><span>{label}</span></div>
         <SimpleSelect aria-label={t('crewCapabilities.stateFor', { name: label })} className="w-full sm:w-[140px]"
-          options={canPin ? ['inherited', 'local', 'removed'] : ['inherited', 'removed']}
-          optionLabels={canPin ? [t('crewCapabilities.inherited'), t('crewCapabilities.local'), t('crewCapabilities.removed')] : [t('crewCapabilities.inherited'), t('crewCapabilities.removed')]}
+          options={states}
+          optionLabels={states.map(option => t(capabilityLabels.state[option]))}
           triggerFallback={t(capabilityLabels.state[state])} value={state} disabled={disabled}
           onChange={next => {
             if (next === 'inherited') onChange({ ...ref, action: 'inherit' })
@@ -44,7 +51,8 @@ export default function CapabilityRowEditor({ row, operation, disabled, models, 
           }} />
       </div>
       {managed && <label className="mt-2 flex items-center gap-2 text-[13px]"><Checkbox disabled={disabled} checked={state !== 'removed' && transport?.disabled !== true} onChange={e => set({ disabled: !e.target.checked })} /><span>{t('pages.hooksPage.enabled')}</span></label>}
-      {managed && <p className="mt-1 text-[12px] text-muted">{t('pages.agentsPage.comes_with_the_template_read_only_here')}</p>}
+      {managed && !added && <p className="mt-1 text-[12px] text-muted">{t('pages.agentsPage.comes_with_the_template_read_only_here')}</p>}
+      {added && state === 'local' && <p className="mt-1 text-[12px] text-muted">{addedNote}</p>}
       {row.shared_reference && <p className="mt-1 text-[12px] text-muted">{t('crewCapabilities.sharedReference')}</p>}
       {operation?.action === 'set' && 'connection_id' in operation && <p className="mt-1 text-[12px] text-muted">{t('crewCapabilities.connectionSelected')}</p>}
       {transport && state !== 'removed' && !(operation?.action === 'set' && 'connection_id' in operation) && (
@@ -66,7 +74,7 @@ export default function CapabilityRowEditor({ row, operation, disabled, models, 
         <SimpleSelect aria-label={label} options={modelOptions} value={state === 'removed' ? '' : text} triggerFallback={t('components.agentTemplateDetail.no_model_pinned')} disabled={disabled} onChange={set} />
       </div>}
       {row.section === 'resources' && <code className="mt-1 block break-all text-[12px]" translate="no">{row.id}</code>}
-      {state === 'removed' && <Btn className="mt-2" disabled={disabled} onClick={() => onChange({ ...ref, action: 'inherit' })}>{t('crewCapabilities.restore')}</Btn>}
+      {state === 'removed' && !added && <Btn className="mt-2" disabled={disabled} onClick={() => onChange({ ...ref, action: 'inherit' })}>{t('crewCapabilities.restore')}</Btn>}
     </div>
   )
 }

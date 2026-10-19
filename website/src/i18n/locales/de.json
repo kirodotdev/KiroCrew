@@ -282,6 +282,11 @@
     "withheldManaged": "{{productName}} baut diese Verbindung selbst neu auf, und die neu aufgebaute Verbindung behält keine Freigaben.",
     "withheldUnexplained": "{{productName}} speichert diese Freigabe nicht, und keine bekannte Einstellung erklärt, warum. Melde das als Fehler.",
     "withheldOpenTab": "Tab „MCP-Server“ öffnen (Entwurf bleibt erhalten)",
+    "platformOffer": "Tools für Ziele hinzufügen ({{server}})",
+    "platformOfferHelp": "Damit kann {{name}} sein Ziel, seine Meilensteine und Check-ins vorschlagen und seinen Fortschritt festhalten. Auf deinen Wunsch kann es auch seinen eigenen Namen, seine Beschreibung und sein Gesicht ändern und auf einer Karte, die du bestätigst, ein anderes Modell, einen anderen Freigabemodus oder andere Tools anfragen.",
+    "platformOfferApproval": "Beim Speichern kommen diese Tools nur zu {{name}} (nicht zu anderen Crewmates mit dieser Vorlage) und werden automatisch freigegeben.",
+    "platformOfferEnrollFirst": "Aktiviere oben „{{enroll}}“, um diese Tools hinzuzufügen.",
+    "platformOfferRow": "Nur für {{name}} hinzugefügt — nicht Teil der Vorlage",
     "permissionsReview": "Diese Seite kann die Freigaben für {{member}} nicht ändern: Seine Agent-Datei in ~/.kiro/agents enthält handgeschriebene Berechtigungseinstellungen. Entferne sie und drücke dann „Vom Server neu laden“. Dein Entwurf bleibt erhalten. Gemeint sind ein von Hand bearbeiteter permissions-Block, autoAllowReadonly oder eine allowed- bzw. trusted-Liste in toolsSettings.",
     "unreviewableDrift": "Die Agent-Datei {{file}} von {{member}} wurde außerhalb dieser Seite in einer Einstellung bearbeitet, die diese Seite nicht anzeigen kann, deshalb kann diese Seite die Korrektur nicht schreiben und „Änderungen prüfen“ bleibt ausgeschaltet. Mache diese äußere Bearbeitung in ~/.kiro/agents/{{file}} rückgängig und drücke dann „Vom Server neu laden“."
   },

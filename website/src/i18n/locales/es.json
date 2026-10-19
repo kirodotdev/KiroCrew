@@ -292,6 +292,11 @@
     "withheldManaged": "{{productName}} reconstruye esta conexión por su cuenta, y la conexión reconstruida no conserva aprobaciones.",
     "withheldUnexplained": "{{productName}} no guardará esta aprobación, y ningún ajuste conocido explica por qué. Repórtalo como un error.",
     "withheldOpenTab": "Abrir la pestaña Servidores MCP (conserva tu borrador)",
+    "platformOffer": "Añadir las herramientas de objetivos ({{server}})",
+    "platformOfferHelp": "Con ellas, {{name}} puede proponer su objetivo, sus hitos y sus seguimientos, además de registrar su progreso. También puede cambiar su propio nombre, su descripción y su cara cuando se lo pidas, y pedir otro modelo, modo de aprobación o herramientas en una tarjeta que tú confirmas.",
+    "platformOfferApproval": "Al guardar, estas herramientas se añaden solo a {{name}} (no a otros compañeros con esta plantilla) y se aprueban automáticamente.",
+    "platformOfferEnrollFirst": "Marca “{{enroll}}” arriba para añadir estas herramientas.",
+    "platformOfferRow": "Añadido solo para {{name}}: no forma parte de la plantilla",
     "permissionsReview": "Esta página no puede cambiar las aprobaciones de {{member}}: su archivo de agente en ~/.kiro/agents tiene ajustes de permisos escritos a mano. Quítalos y luego pulsa Recargar desde el servidor. Tu borrador se conserva. Los ajustes son un bloque permissions editado a mano, autoAllowReadonly o una lista allowed o trusted en toolsSettings.",
     "unreviewableDrift": "El archivo de agente {{file}} de {{member}} se editó fuera de esta página en un ajuste que esta página no puede mostrar, así que esta página no puede escribir la corrección y Revisar cambios queda desactivado. Deshaz esa edición externa en ~/.kiro/agents/{{file}} y luego pulsa Recargar desde el servidor."
   },

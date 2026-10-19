@@ -34,6 +34,12 @@ const DETACH_BLOCKED_COPY = {
   detach_removal_unkept: 'crewCapabilities.detachRemoval',
 } as const
 
+/** Whether two draft operations make the same change: the same row, the same
+ * action and, for a set, the same value. */
+const sameOperation = (a: CapabilityOperation, b: CapabilityOperation) =>
+  capabilityKey(a) === capabilityKey(b) && a.action === b.action
+  && JSON.stringify(a.action === 'set' && 'value' in a ? a.value : null) === JSON.stringify(b.action === 'set' && 'value' in b ? b.value : null)
+
 /** Why a reviewed approval will not land, one line per backend reason. */
 const WITHHELD_REASON_COPY = {
   governed: 'crewCapabilities.withheldGoverned',
@@ -227,10 +233,33 @@ export default function CrewCapabilitiesPane({ member, members = [], hidden, onD
     if (Object.keys(value).length === 1 && typeof value.disabled === 'boolean') return false
     return typeof (value.command ?? value.url) !== 'string' || !(value.command ?? value.url)
   })
+  const offer = view?.platform_offer ?? null
+  // The server the offer adds: its one MCP server row.
+  const offerServer = offer?.operations.find(op => op.section === 'mcpServers')?.id
   const rows: CapabilityRow[] = [...(view?.rows ?? [])]
+  // Set when the draft adds the offered server. That row is managed, but its
+  // template does not carry it, so it gets its own note and no restore.
+  let offerRowKey: string | undefined
   for (const op of operations) {
-    if (!rows.some(row => capabilityKey(row) === capabilityKey(op))) rows.push({ ...op, label: (op.section === 'skills' ? view?.skills : view?.connections)?.find(item => item.id === op.id)?.label ?? op.id, state: 'local', present: true, value: op.action === 'set' && 'value' in op ? op.value : true })
+    // The offered server shows as the managed row it becomes once saved.
+    const offered = offer && op.section === 'mcpServers' && op.id === offerServer ? offer : null
+    if (rows.some(row => capabilityKey(row) === capabilityKey(op))) continue
+    rows.push({ ...op, label: (op.section === 'skills' ? view?.skills : view?.connections)?.find(item => item.id === op.id)?.label ?? op.id, state: 'local', present: true, value: offered ? offered.value : op.action === 'set' && 'value' in op ? op.value : true, ...(offered ? { managed: true } : {}) })
+    if (offered) offerRowKey = capabilityKey(op)
   }
+  // Ticked only while the draft holds every row of the offer unchanged, so
+  // removing, inheriting or muting the added server unticks it. Ticking adds all
+  // of its rows and unticking drops them all; other edits stay.
+  const offerAdded = !!offer && offer.operations.every(op => operations.some(item => sameOperation(item, op)))
+  const toggleOffer = (checked: boolean) => {
+    if (!offer) return
+    const keys = new Set(offer.operations.map(capabilityKey))
+    edit(current => ({ ...current, operations: [...current.operations.filter(op => !keys.has(capabilityKey(op))), ...(checked ? offer.operations : [])] }))
+  }
+  // The added server's row notes that it is this member's only. Its parent has
+  // nothing to restore, so once removed it has no restore button; the box adds
+  // the offer back, as do the row's own Enabled box and Override.
+  const offerNote = t('crewCapabilities.platformOfferRow', { name: member })
   const visibleSections: CapabilitySection[] = category === 'autoApprove' ? ['allowedTools', 'autoApprove'] : [category]
   const addReference = () => {
     const id = reference.trim()
@@ -312,6 +341,18 @@ export default function CrewCapabilitiesPane({ member, members = [], hidden, onD
           </div>
           <div className="shrink-0 overflow-x-auto border-b border-border pb-2"><Tablist tabs={CATEGORIES.map(key => ({ key, label: t(CATEGORY_KEYS[key]) }))} value={category} onChange={setCategory} ariaLabel={t('crewCapabilities.title')} /></div>
           <fieldset disabled={!enabled || busy} className="min-w-0">
+            {category === 'mcpServers' && offer && offerServer && <label htmlFor="crew-capabilities-offer" className="mb-3 flex items-start gap-2 rounded-md border border-border p-3 text-[13px]" data-testid="capability-offer">
+              <Checkbox id="crew-capabilities-offer" aria-labelledby="crew-capabilities-offer-label" aria-describedby={`${enrollmentBlocksEditing ? 'crew-capabilities-offer-enroll ' : ''}crew-capabilities-offer-approval crew-capabilities-offer-help`} checked={offerAdded} disabled={!enabled || busy} onChange={e => toggleOffer(e.target.checked)} />
+              <span className="min-w-0 break-words">
+                <span id="crew-capabilities-offer-label" className="block">{t('crewCapabilities.platformOffer', { server: offerServer })}</span>
+                {/* Greyed for the same reason as every row; the reason is named here, beside the box. */}
+                {enrollmentBlocksEditing && <span id="crew-capabilities-offer-enroll" className="mt-1 block text-text" data-testid="capability-offer-enroll-first">{t('crewCapabilities.platformOfferEnrollFirst', { enroll: t('crewCapabilities.enroll') })}</span>}
+                {/* The approval first, then what the tools let the crewmate do,
+                    both in body text: the box grants both, so neither is muted. */}
+                <span id="crew-capabilities-offer-approval" className="mt-1 block text-text">{t('crewCapabilities.platformOfferApproval', { name: member })}</span>
+                <span id="crew-capabilities-offer-help" className="mt-1 block text-text">{t('crewCapabilities.platformOfferHelp', { name: member })}</span>
+              </span>
+            </label>}
             {category === 'mcpServers' && <SearchableSelect aria-label={t('crewCapabilities.connection')} triggerFallback={t('crewCapabilities.connection')} value="" disabled={!enabled || busy} options={view.connections.map(item => ({ value: item.id, label: item.label, disabled: item.managed, sublabel: item.managed ? t('crewCapabilities.managed') : undefined }))} onChange={id => changeRow({ section: 'mcpServers', id, action: 'set', connection_id: id })} modal />}
             {category === 'mcpServers' && <div className="mt-3 flex flex-col gap-2">
               <label className="text-[13px]">{t('crewCapabilityEditing.connectionName')}<Input value={connectionName} onChange={e => { setConnectionName(e.target.value); setPreview(null); setReviewedRequest(null) }} /></label>
@@ -336,7 +377,7 @@ export default function CrewCapabilitiesPane({ member, members = [], hidden, onD
               const sectionRows = rows.filter(row => row.section === section)
               return <div key={section}>
                 {category === 'autoApprove' && sectionRows.length > 0 && <PanelSectionHeader label={t(section === 'allowedTools' ? 'crewCapabilities.allowedTools' : 'crewCapabilities.serverApproval')} />}
-                {sectionRows.map(row => <CapabilityRowEditor key={capabilityKey(row)} row={row} models={models} operation={operations.find(op => capabilityKey(op) === capabilityKey(row))} disabled={!enabled || busy} onChange={changeRow} />)}
+                {sectionRows.map(row => <CapabilityRowEditor key={capabilityKey(row)} row={row} models={models} operation={operations.find(op => capabilityKey(op) === capabilityKey(row))} disabled={!enabled || busy} addedNote={capabilityKey(row) === offerRowKey ? offerNote : undefined} onChange={changeRow} />)}
               </div>
             })}
           </fieldset>

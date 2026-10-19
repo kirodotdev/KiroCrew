@@ -2,12 +2,14 @@
 
 ``member_mate_tools.grant_mate_tools_to_new_member`` enrolls a just-created
 crewmate whose template lacks ``kirocrew-mate`` through the capability editor;
-the identity sentence, the first welcome and the goal nudges name those tools
-only when its spec mounts them.
+``member_mate_tools.platform_offer`` offers an existing one the same rows on its
+Capabilities pane; the identity sentence, the first welcome and the goal nudges
+name those tools only when its spec mounts them.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -159,6 +161,277 @@ def test_a_refresh_keeps_a_per_tool_restriction_the_copy_holds(monkeypatch) -> N
     spec = {"mcpServers": {"kirocrew-mate": held}}
     agent_capabilities._maintain_owned({"parent_spec": {"mcpServers": {}}}, spec)
     assert spec["mcpServers"]["kirocrew-mate"] == {**moved, "disabledTools": ["update_self"]}
+
+
+def _offer_for(service, member="A"):
+    loader._invalidate_config_cache()
+    return service.get(member)["platform_offer"]
+
+
+def _mate_row(view):
+    return next(
+        (r for r in view["rows"] if r["section"] == "mcpServers" and r["id"] == "kirocrew-mate"),
+        None,
+    )
+
+
+def test_an_existing_member_is_offered_what_creation_grants(granting) -> None:
+    service, home, specs, parent = granting
+    view = service.get("A")
+    # The member's spec has no row for the server, so the offer is the way to add it.
+    assert view["mode"] == "shared" and _mate_row(view) is None
+    assert view["platform_offer"] == {
+        "value": TRANSPORT,
+        "operations": [
+            {
+                "section": "mcpServers",
+                "id": "kirocrew-mate",
+                "action": "set",
+                "value": {"disabled": False},
+            },
+            {"section": "tools", "id": "@kirocrew-mate", "action": "set", "value": True},
+            *(
+                {"section": "allowedTools", "id": grant, "action": "set", "value": True}
+                for grant in agent._MATE_AUTO_GRANTS
+            ),
+        ],
+    }
+    # Offering writes nothing.
+    assert _binding(home)["kiro_agent"] == "parent"
+    assert json.loads((specs / "parent.json").read_text()) == parent
+
+
+def test_saving_the_offer_gives_the_next_session_the_mate_tools(granting) -> None:
+    from kiro_crew.acp.session_mcp import native_mount_withholding
+    from kiro_crew.agent_capabilities import prepare_member_capabilities
+
+    service, home, specs, parent = granting
+    offer = _offer_for(service)
+    save(service, offer["operations"], enroll=True)
+    loader._invalidate_config_cache()
+    spec = spec_for(home, specs)
+    # The entry creation writes: the default template's, with no ``disabled`` key.
+    assert spec["mcpServers"]["kirocrew-mate"] == TRANSPORT
+    assert (
+        native_mount_withholding("kirocrew-mate", spec["mcpServers"]["kirocrew-mate"], ()) is None
+    )
+    assert "@kirocrew-mate" in spec["tools"]
+    assert set(agent._MATE_AUTO_GRANTS) <= set(spec["allowedTools"])
+    assert spec["mcpServers"]["search"] == parent["mcpServers"]["search"]
+    # The chat-start seam accepts the saved copy and launches the server.
+    assert "kirocrew-mate" in prepare_member_capabilities("A")["mcp_servers"]
+    assert member_mate_tools.member_has_mate_tools("A") is True
+    view = service.get("A")
+    assert _mate_row(view)["present"] is True and view["platform_offer"] is None
+    # B shares the template and was not touched.
+    assert _binding(home, "B")["kiro_agent"] == "parent"
+
+
+def test_a_member_of_an_owned_conductor_template_gets_the_refreshed_entry(
+    granting, monkeypatch
+) -> None:
+    """A crewmate on the owned ``kirocrew-conductor`` template, with no private copy."""
+    import sys
+
+    from kiro_crew.acp.session_mcp import native_mount_withholding
+    from kiro_crew.agent_capabilities import prepare_member_capabilities
+    from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
+
+    service, home, specs, parent = granting
+    managed = {name: {"command": sys.executable, "args": [name]} for name in ("kirocrew-core",)}
+    managed["kirocrew-mate"] = {"command": sys.executable, "args": ["mcp-mate"]}
+    monkeypatch.setattr(agent, "_MANAGED_MCP_SERVERS", managed)
+    allowed = ["@kirocrew-core/send_message"]
+    conductor = {
+        **parent,
+        "name": "kirocrew-conductor",
+        "tools": ["fs_read", "@kirocrew-core"],
+        "allowedTools": allowed,
+        "permissions": derived_agent_permissions(allowed, "kirocrew-conductor"),
+        "mcpServers": {"kirocrew-core": {"command": sys.executable, "args": ["kirocrew-core"]}},
+    }
+    (specs / "kirocrew-conductor.json").write_text(json.dumps(conductor), encoding="utf-8")
+    config = json.loads((home / "config.json").read_text())
+    config["agents"]["A"]["kiro_agent"] = "kirocrew-conductor"
+    (home / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    offer = _offer_for(service)
+    save(service, offer["operations"], enroll=True)
+    loader._invalidate_config_cache()
+    spec = spec_for(home, specs)
+    entry = spec["mcpServers"]["kirocrew-mate"]
+    assert (entry["command"], entry["args"]) == (sys.executable, ["mcp-mate"])
+    assert "disabled" not in entry and native_mount_withholding("kirocrew-mate", entry, ()) is None
+    assert {"@kirocrew-core", "@kirocrew-mate"} <= set(spec["tools"])
+    assert set(agent._MATE_AUTO_GRANTS) | set(allowed) <= set(spec["allowedTools"])
+    assert "kirocrew-mate" in prepare_member_capabilities("A")["mcp_servers"]
+    assert member_mate_tools.member_has_mate_tools("A") is True
+
+
+def test_an_enrolled_member_is_offered_it_too(granting) -> None:
+    service, home, specs, _ = granting
+    save(service, [], enroll=True)
+    offer = _offer_for(service)
+    assert service.get("A")["mode"] == "inherited"
+    save(service, offer["operations"])
+    loader._invalidate_config_cache()
+    assert member_mate_tools.member_has_mate_tools("A") is True
+    assert _offer_for(service) is None
+
+
+def test_a_member_with_a_legacy_private_copy_is_offered_it_and_keeps_its_choices(
+    granting,
+) -> None:
+    """A private copy from before enrollment existed, which lacks the server too."""
+    from kiro_crew import agent_state
+
+    service, home, specs, parent = granting
+    private = {**parent, "name": "private", "prompt": "legacy"}
+    (specs / "private.json").write_text(json.dumps(private), encoding="utf-8")
+    agent_state.set_fork_info("private", "parent", "A")
+    config = json.loads((home / "config.json").read_text())
+    config["agents"]["A"]["kiro_agent"] = "private"
+    (home / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    loader._invalidate_config_cache()
+    view = service.get("A")
+    assert view["mode"] == "legacy_snapshot" and _mate_row(view) is None
+    # The same rows a shared member on that template is offered.
+    offer = view["platform_offer"]
+    assert offer == _offer_for(service, "B")
+    save(service, offer["operations"], enroll=True)
+    loader._invalidate_config_cache()
+    spec = spec_for(home, specs)
+    assert spec["mcpServers"]["kirocrew-mate"] == TRANSPORT
+    assert "@kirocrew-mate" in spec["tools"]
+    assert set(agent._MATE_AUTO_GRANTS) <= set(spec["allowedTools"])
+    # Following the parent kept the copy's own choice.
+    assert spec["prompt"] == "legacy"
+    assert member_mate_tools.member_has_mate_tools("A") is True
+    assert _offer_for(service) is None
+
+
+def _write_parent(specs, parent, **changes):
+    (specs / "parent.json").write_text(json.dumps({**parent, **changes}), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["mounted", "muted", "removed", "default_template", "policy", "unavailable", "backend"],
+)
+def test_no_offer_where_creation_would_skip(granting, monkeypatch, case) -> None:
+    service, home, specs, parent = granting
+    servers = parent["mcpServers"]
+    if case == "mounted":
+        mate = {"kirocrew-mate": dict(TRANSPORT)}
+        _write_parent(specs, parent, tools=["@kirocrew-mate"], mcpServers={**servers, **mate})
+    elif case == "muted":
+        mate = {"kirocrew-mate": {**TRANSPORT, "disabled": True}}
+        _write_parent(specs, parent, mcpServers={**servers, **mate})
+    elif case == "removed":
+        save(
+            service,
+            [{"section": "mcpServers", "id": "kirocrew-mate", "action": "remove"}],
+            enroll=True,
+        )
+        assert _mate_row(service.get("A"))["state"] == "removed"
+    elif case == "default_template":
+        (specs / "kirocrew.json").write_text(
+            json.dumps({**parent, "name": "kirocrew"}), encoding="utf-8"
+        )
+        config = json.loads((home / "config.json").read_text())
+        config["agents"]["A"]["kiro_agent"] = "kirocrew"
+        (home / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    elif case == "policy":
+        monkeypatch.setattr(member_mate_tools, "_policy_permits", lambda member: False)
+    elif case == "unavailable":
+        monkeypatch.setattr(
+            "kiro_crew.agent_capabilities._member_platform_transport", lambda name: None
+        )
+    else:
+        monkeypatch.setattr(
+            "kiro_crew.agent_capabilities.member_backend_warning", lambda spec: {"backend": "x"}
+        )
+    assert _offer_for(service) is None
+    if case in ("removed", "default_template"):
+        # A choice about A alone: B, on the same template, is still offered.
+        assert _offer_for(service, "B")["operations"][0]["id"] == "kirocrew-mate"
+
+
+def test_a_parent_that_gains_the_server_is_a_parent_change_not_an_offer(granting) -> None:
+    service, _, specs, parent = granting
+    save(service, [], enroll=True)
+    mate = {"kirocrew-mate": dict(TRANSPORT)}
+    _write_parent(
+        specs, parent, tools=["read", "@kirocrew-mate"], mcpServers={**parent["mcpServers"], **mate}
+    )
+    view = service.get("A")
+    assert any(c["id"] == "kirocrew-mate" for c in view["parent_changes"])
+    assert view["platform_offer"] is None
+
+
+def test_an_offer_that_cannot_be_worked_out_is_not_made(granting, monkeypatch) -> None:
+    service, _, _, _ = granting
+
+    def broken(member):
+        raise RuntimeError("governance unavailable")
+
+    monkeypatch.setattr(member_mate_tools, "_policy_permits", broken)
+    view = service.get("A")
+    assert view["platform_offer"] is None and view["mode"] == "shared"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user,app_id", [("intruder", ""), ("owner", "some-app")])
+async def test_only_the_owner_sees_or_saves_the_offer(granting, user, app_id) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard.handlers.agent_capabilities import _SERVICE
+    from kiro_crew.dashboard.routes.agents import register
+
+    service, home, specs, _ = granting
+    view = await asyncio.to_thread(service.get, "A")
+    offer = view["platform_offer"]
+    body = {
+        "revision": view["revision"],
+        "enroll": True,
+        "operations": offer["operations"],
+        "accept_parent": [],
+        "accept_members": [],
+    }
+
+    def build(caller, scoped_app):
+        @web.middleware
+        async def identity(request, handler):
+            request["user"], request["app"] = caller, scoped_app
+            return await handler(request)
+
+        app = web.Application(middlewares=[identity])
+        app["state"] = SimpleNamespace(owner_id="owner", push_refresh=lambda *_: None)
+        app[_SERVICE] = service
+        register(app)
+        return app
+
+    async with TestClient(TestServer(build(user, app_id))) as client:
+        for method, suffix in (("get", ""), ("post", "/preview"), ("put", "")):
+            kwargs = {} if method == "get" else {"json": {**body, "preview_token": "x"}}
+            response = await getattr(client, method)(
+                "/api/agents/A/capabilities" + suffix, **kwargs
+            )
+            assert response.status == 403
+            assert "platform_offer" not in await response.text()
+    assert (await asyncio.to_thread(_binding, home))["kiro_agent"] == "parent"
+    async with TestClient(TestServer(build("owner", ""))) as client:
+        response = await client.get("/api/agents/A/capabilities")
+        assert response.status == 200
+        assert (await response.json())["platform_offer"] == offer
+        preview = await client.post("/api/agents/A/capabilities/preview", json=body)
+        token = (await preview.json())["preview_token"]
+        saved = await client.put(
+            "/api/agents/A/capabilities", json={**body, "preview_token": token}
+        )
+        assert saved.status == 200
+        assert (await saved.json())["platform_offer"] is None
+    assert "@kirocrew-mate" in (await asyncio.to_thread(spec_for, home, specs))["tools"]
 
 
 def test_has_mate_tools_reads_the_spec_the_member_runs(granting) -> None:

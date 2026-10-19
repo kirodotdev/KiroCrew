@@ -272,6 +272,11 @@
     "withheldManaged": "{{productName}}이(가) 이 연결을 직접 다시 만들며, 다시 만든 연결에는 승인이 남지 않습니다.",
     "withheldUnexplained": "{{productName}}은(는) 이 승인을 저장하지 않으며, 그 이유를 설명하는 알려진 설정은 없습니다. 버그로 신고해 주세요.",
     "withheldOpenTab": "MCP 서버 탭 열기(초안 유지)",
+    "platformOffer": "목표 도구 추가({{server}})",
+    "platformOfferHelp": "{{name}}이(가) 자신의 목표, 마일스톤, 정기 점검을 제안하고 진행 상황을 기록할 수 있게 합니다. 요청하면 자신의 이름, 설명, 얼굴을 바꿀 수도 있고, 확인해야 적용되는 카드로 다른 모델, 승인 모드, 도구를 요청할 수도 있습니다.",
+    "platformOfferApproval": "저장하면 이 도구들이 {{name}}에만 추가되고(이 템플릿을 쓰는 다른 크루메이트에는 추가되지 않음) 자동 승인됩니다.",
+    "platformOfferEnrollFirst": "이 도구를 추가하려면 위의 ‘{{enroll}}’을(를) 선택하세요.",
+    "platformOfferRow": "{{name}}용으로만 추가됨 — 템플릿에 포함되지 않음",
     "permissionsReview": "이 페이지에서는 {{member}}의 승인을 변경할 수 없습니다. ~/.kiro/agents에 있는 에이전트 파일에 직접 작성한 권한 설정이 있습니다. 이를 제거한 뒤 ‘서버에서 다시 불러오기’를 눌러 주세요. 초안은 유지됩니다. 해당 설정은 직접 편집한 permissions 블록, autoAllowReadonly, 또는 toolsSettings의 allowed/trusted 목록입니다.",
     "unreviewableDrift": "{{member}}의 에이전트 파일 {{file}}이(가) 이 페이지에서 표시할 수 없는 설정으로 페이지 밖에서 편집되어, 이 페이지에서는 수정 내용을 기록할 수 없고 ‘변경 사항 검토’는 꺼진 상태로 남습니다. ~/.kiro/agents/{{file}}에서 그 외부 편집을 되돌린 뒤 ‘서버에서 다시 불러오기’를 눌러 주세요."
   },

@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../integration/mocks/server'
 import '../api/client'
-import { crewCapabilitiesApi, type CapabilityDraft, type CapabilityView } from '../api/crewCapabilities'
+import { crewCapabilitiesApi, type CapabilityDraft, type CapabilityOperation, type CapabilityView } from '../api/crewCapabilities'
 import CrewCapabilitiesPane from '../components/crew/CrewCapabilitiesPane'
 
 const endpoint = '/api/agents/crewA/capabilities'
@@ -1103,6 +1103,133 @@ describe('crew capability draft editor with mocked HTTP', () => {
     await review()
     expect(previewBodies[0].operations).toEqual([{ section: 'prompt', id: 'prompt', action: 'set', value: 'First line\nSecond line' }, { section: 'model', id: 'model', action: 'set', value: 'catalog-model' }])
     expect(screen.queryByRole('textbox', { name: 'Model', exact: true })).not.toBeInTheDocument()
+  })
+
+  describe('a platform server the member lacks', () => {
+    const offerOps: CapabilityOperation[] = [
+      { section: 'mcpServers', id: 'kirocrew-mate', action: 'set', value: { disabled: false } },
+      { section: 'tools', id: '@kirocrew-mate', action: 'set', value: true },
+      { section: 'allowedTools', id: '@kirocrew-mate/set_goal', action: 'set', value: true },
+      { section: 'allowedTools', id: '@kirocrew-mate/set_check_ins', action: 'set', value: true },
+    ]
+    const offerName = 'Add the goal tools (kirocrew-mate)'
+    const approval = 'Saving adds these tools to crewA only (not other crewmates on this template) and auto-approves them.'
+    const help = 'Lets crewA propose its goal, milestones and check-ins and track its progress. It can also change its own name, description and face when you ask, and request a different model, approval mode or tools on a card you confirm.'
+    const rowNote = 'Added for crewA only — not part of the template'
+    const clickRowEnabled = () => fireEvent.click(within(screen.getByTestId('capability-mcpServers-kirocrew-mate')).getByRole('checkbox', { name: 'Enabled' }))
+    beforeEach(() => {
+      view.mode = 'shared'
+      view.platform_offer = { value: { command: 'kirocrew', args: ['mcp-mate'] }, operations: offerOps }
+    })
+
+    it.each(['shared', 'legacy_snapshot'] as const)('is offered behind the enroll box and adds every creation row in one draft (%s)', async mode => {
+      view.mode = mode
+      server.use(http.put(endpoint, async ({ request }) => {
+        saveBodies.push(await request.json() as CapabilityDraft & { preview_token: string })
+        view = { ...view, mode: 'inherited', revision: 'r2', platform_offer: null, rows: [...view.rows, { section: 'mcpServers', id: 'kirocrew-mate', label: 'kirocrew-mate', state: 'local', present: true, value: { command: 'kirocrew', args: ['mcp-mate'] }, managed: true }] }
+        return HttpResponse.json(view)
+      }))
+      const { saved } = mount(); await ready()
+      const offer = screen.getByRole('checkbox', { name: offerName })
+      // Read-only like every other row until the member follows its parent, and
+      // the box itself names the box that lifts that.
+      expect(offer).toBeDisabled()
+      expect(offer).toHaveAccessibleDescription(`Check “Follow the parent template” above to add these tools. ${approval} ${help}`)
+      expect(screen.queryByTestId('capability-mcpServers-kirocrew-mate')).toBeNull()
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Follow the parent template' }))
+      // The approval comes before the help, which names every tool it covers,
+      // and neither is muted.
+      expect(offer).toHaveAccessibleDescription(`${approval} ${help}`)
+      expect(screen.queryByTestId('capability-offer-enroll-first')).toBeNull()
+      expect(screen.getByText(approval)).not.toHaveClass('text-muted')
+      expect(screen.getByText(help)).not.toHaveClass('text-muted')
+      fireEvent.click(offer)
+      expect(offer).toBeChecked()
+      // The server shows as the managed row it becomes: enabled, transport
+      // read-only, with a note that it is this member's, not the template's.
+      const row = within(screen.getByTestId('capability-mcpServers-kirocrew-mate'))
+      expect(row.getByRole('checkbox', { name: 'Enabled' })).toBeChecked()
+      expect(row.getByText(rowNote)).toBeInTheDocument()
+      expect(row.queryByText('Comes with the template — read-only here')).toBeNull()
+      fireEvent.click(row.getByText('Connection settings'))
+      expect(row.getByLabelText('Command')).toHaveValue('kirocrew')
+      expect(row.getByLabelText('Command')).toBeDisabled()
+      await review()
+      expect(previewBodies).toEqual([{ revision: 'r1', enroll: true, operations: offerOps, accept_parent: [], accept_members: [] }])
+      fireEvent.click(screen.getByRole('button', { name: 'Save reviewed changes' }))
+      await waitFor(() => expect(saved).toHaveBeenCalled())
+      expect(saveBodies).toEqual([{ revision: 'r1', enroll: true, operations: offerOps, accept_parent: [], accept_members: [], preview_token: 'signed-preview' }])
+      // Saved: the offer is gone and the row is the member's own.
+      await waitFor(() => expect(screen.queryByRole('checkbox', { name: offerName })).toBeNull())
+      expect(within(screen.getByTestId('capability-mcpServers-kirocrew-mate')).getByRole('checkbox', { name: 'Enabled' })).toBeChecked()
+    })
+
+    it('leaves the draft whole when unticked, keeping rows the owner set before', async () => {
+      mount(); await ready()
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Follow the parent template' }))
+      await pickState('Search', 'Removed')
+      const offer = screen.getByRole('checkbox', { name: offerName })
+      fireEvent.click(offer)
+      fireEvent.click(offer)
+      expect(offer).not.toBeChecked()
+      expect(screen.queryByTestId('capability-mcpServers-kirocrew-mate')).toBeNull()
+      await review()
+      expect(previewBodies[0].operations).toEqual([{ section: 'mcpServers', id: 'search', action: 'remove' }])
+    })
+
+    it.each([
+      { change: 'removed', act: () => pickState('kirocrew-mate', 'Removed') },
+      { change: 'muted', act: async () => { clickRowEnabled() } },
+    ])('unticks once the added server is $change, and ticking again restores every row', async ({ act }) => {
+      mount(); await ready()
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Follow the parent template' }))
+      const offer = screen.getByRole('checkbox', { name: offerName })
+      fireEvent.click(offer)
+      await act()
+      // The draft no longer adds the server as offered, so the box does not claim it does.
+      expect(offer).not.toBeChecked()
+      fireEvent.click(offer)
+      expect(offer).toBeChecked()
+      await review()
+      expect(previewBodies[0].operations).toEqual(offerOps)
+    })
+
+    it.each([
+      { way: 'the box', act: async () => { fireEvent.click(screen.getByRole('checkbox', { name: offerName })) } },
+      { way: 'its Enabled box', act: async () => { clickRowEnabled() } },
+      { way: 'Override', act: () => pickState('kirocrew-mate', 'Override') },
+    ])('gives the added row nothing to inherit or restore, and adds it back through $way', async ({ act }) => {
+      mount(); await ready()
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Follow the parent template' }))
+      const offer = screen.getByRole('checkbox', { name: offerName })
+      fireEvent.click(offer)
+      // Its parent has no entry for this server, so Inherited is not a choice.
+      fireEvent.click(screen.getByRole('combobox', { name: 'Source for kirocrew-mate' }))
+      expect(await screen.findByRole('option', { name: 'Removed', exact: true })).toBeInTheDocument()
+      expect(screen.queryByRole('option', { name: 'Inherited', exact: true })).toBeNull()
+      fireEvent.click(screen.getByRole('option', { name: 'Removed', exact: true }))
+      // Removed, it is not added for the member, so the row carries no note, and
+      // with nothing in its parent it has no restore button of any label.
+      const row = within(screen.getByTestId('capability-mcpServers-kirocrew-mate'))
+      expect(row.queryByText(rowNote)).toBeNull()
+      expect(row.queryByText('Comes with the template — read-only here')).toBeNull()
+      expect(row.queryByRole('button')).toBeNull()
+      expect(offer).not.toBeChecked()
+      // The box adds it back, and so do the row's own controls, as on any
+      // managed row; either way the draft holds the whole offer again.
+      await act()
+      expect(offer).toBeChecked()
+      expect(within(screen.getByTestId('capability-mcpServers-kirocrew-mate')).getByText(rowNote)).toBeInTheDocument()
+      await review()
+      expect(previewBodies[0].operations).toHaveLength(offerOps.length)
+      expect(previewBodies[0].operations).toEqual(expect.arrayContaining(offerOps))
+    })
+
+    it('is not shown when the view offers nothing', async () => {
+      view.platform_offer = null
+      mount(); await ready()
+      expect(screen.queryByTestId('capability-offer')).toBeNull()
+    })
   })
 
   it('encodes the exact member identity in the HTTP path', async () => {

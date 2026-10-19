@@ -13,6 +13,9 @@ Two questions about that one server, answered in one place:
   ``tools`` reference and :data:`kiro_crew.agent._MATE_AUTO_GRANTS` on the
   member's private copy and leaves every other row inheriting, so the copy keeps
   following its template. An existing crewmate is never touched.
+* :func:`platform_offer` -- for an existing crewmate, those same rows as an
+  opt-in the Capabilities pane offers its owner. Nothing is written until the
+  owner turns it on and saves through the pane's own preview and save.
 
 Blocking IO throughout; callers run it off the event loop.
 """
@@ -178,6 +181,81 @@ def _operations(view: dict) -> list[dict] | str:
     return ops
 
 
+def _mate_operations(member: str, view: dict) -> list[dict] | str:
+    """The operations that give *member* the mate set, or the outcome that skips it.
+
+    The rule creation and the Capabilities pane's offer share, so the pane never
+    offers rows creation would refuse: the template already mounts or mutes the
+    server, POLICY ∩ PROFILE withholds it, or a fresh build would not emit it.
+    """
+    ops = _operations(view)
+    if isinstance(ops, str):
+        return ops
+    if not _policy_permits(member):
+        return POLICY_WITHHOLDS
+    if any(op["section"] == "mcpServers" for op in ops):
+        from kiro_crew.agent_capabilities import _member_platform_transport
+
+        if _member_platform_transport(MATE_SERVER) is None:
+            return SERVER_UNAVAILABLE
+    return ops
+
+
+def platform_offer(snap: dict, view: dict) -> dict | None:
+    """The mate set as an opt-in for the member a Capabilities view describes.
+
+    *snap* is the editor's snapshot and *view* the view built from it. An
+    existing crewmate whose template lacks ``kirocrew-mate`` shows no row for it,
+    since rows are read from its spec; this is that row, offered. The offer holds
+    the entry the copy would carry (``value``, display only: the save takes the
+    transport from Crew, never from the request) and the operations creation
+    would save. The owner turns it on and saves through the ordinary preview and
+    save; nothing is written here.
+
+    ``None`` when creation would skip too: the default template ``kirocrew`` or
+    the reserved ``default`` member, a Parent that carries the server in any form
+    (mounted or muted), a row the member already has for it (set or removed), a
+    policy that withholds it, a build that would not emit it, or a backend the
+    member's chats start on that cannot load a private copy. Never raises: an
+    offer that cannot be worked out is not made.
+    """
+    try:
+        return _offer(snap, view)
+    except Exception:
+        logger.debug("no mate offer for %r", snap.get("member"), exc_info=True)
+        return None
+
+
+def _offer(snap: dict, view: dict) -> dict | None:
+    from kiro_crew.agent_capabilities import (
+        _member_platform_transport,
+        _platform_entry,
+        member_backend_warning,
+        safe_view,
+    )
+    from kiro_crew.agent_files import AGENT_FILENAME
+
+    member = snap["member"]
+    if member == "default" or snap["error"]:
+        return None
+    if snap["parent"].get("name") == Path(AGENT_FILENAME).stem:
+        return None
+    if MATE_SERVER in (snap["parent_spec"].get("mcpServers") or {}):
+        return None
+    if any(
+        row.get("section") == "mcpServers" and row.get("id") == MATE_SERVER
+        for row in view.get("rows", [])
+    ):
+        return None
+    ops = _mate_operations(member, view)
+    if isinstance(ops, str) or member_backend_warning(snap["spec"]):
+        return None
+    transport = _member_platform_transport(MATE_SERVER)
+    if transport is None:
+        return None
+    return {"value": safe_view(_platform_entry(transport, False)), "operations": ops}
+
+
 def _policy_permits(member: str) -> bool:
     """Whether POLICY ∩ PROFILE lets the member's sessions reach the server at all.
 
@@ -249,16 +327,9 @@ def _grant(member: str, catalog: Callable[[str], dict[str, str]]) -> str:
         return f"refused:{exc.code}"
     if view.get("mode") != "shared":
         return ALREADY_ENROLLED
-    ops = _operations(view)
+    ops = _mate_operations(member, view)
     if isinstance(ops, str):
         return ops
-    if not _policy_permits(member):
-        return POLICY_WITHHOLDS
-    if any(op["section"] == "mcpServers" for op in ops):
-        from kiro_crew.agent_capabilities import _member_platform_transport
-
-        if _member_platform_transport(MATE_SERVER) is None:
-            return SERVER_UNAVAILABLE
     body = {"revision": view["revision"], "enroll": True, "operations": ops}
     try:
         preview = service.preview(member, body)
