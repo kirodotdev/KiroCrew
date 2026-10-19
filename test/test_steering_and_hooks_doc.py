@@ -16,6 +16,7 @@ where a behaviour-preserving rewrite of the prose leaves the assertion green.
 Prose claims about what a hook *does* are the reviewer's job, not this file's.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -74,7 +75,7 @@ class TestHookEvents:
     """The five lifecycle events, as the page's own table lists them."""
 
     def test_event_table_lists_exactly_the_shipped_events_in_order(self, doc_text: str) -> None:
-        table = _section(doc_text, "### The five events")
+        table = _section(doc_text, "### The six events")
         rows = [ln for ln in table.splitlines() if ln.startswith("|")]
         # Row 0 is the header, row 1 the alignment rule; the rest are events.
         listed = [_backticked(r)[0] for r in rows[2:] if _backticked(r)]
@@ -95,7 +96,7 @@ class TestHookEvents:
         and makes every other non-zero exit there a block. If another event ever
         gains that power the doc's "the only event" sentence is wrong.
         """
-        body = _section(doc_text, "### The five events")
+        body = _section(doc_text, "### The six events")
         assert "`PreToolUse` is the only event whose exit code can decide" in body
         # The carve-out belongs beside the contract: PreToolUse also fires as a
         # notification once kiro-cli has already approved the call, where no exit
@@ -201,4 +202,38 @@ class TestRegisterHook:
         assert set(_backticked(sentence)) == required, (
             f"the doc requires {set(_backticked(sentence))}; "
             f"{REGISTER_HOOK_SCHEMA.tool_name} requires {required}"
+        )
+
+
+class TestQuotedOnScreenText:
+    """Text the doc tells an operator to look for must be text the page renders.
+
+    The doc quotes the Hooks page's own marks so a reader can match what the doc
+    says against what is in front of them. Nothing else ties a quote to the
+    catalog entry behind it, so a renamed value leaves the doc naming text the
+    page cannot show, and the reader hunts for a string that is not there. One
+    assertion per key, because a combined one cannot name which quote is stale.
+    """
+
+    #: hooksPage key -> the doc is expected to quote its English value verbatim.
+    QUOTED = ("awaiting_agent",)
+
+    @pytest.fixture(scope="class")
+    def hooks_page_strings(self) -> dict[str, str]:
+        catalog = json.loads(
+            (REPO / "website" / "src" / "i18n" / "locales" / "en.manual.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        return catalog["pages"]["hooksPage"]
+
+    @pytest.mark.parametrize("key", QUOTED)
+    def test_the_doc_quotes_the_value_the_page_renders(
+        self, doc_text: str, hooks_page_strings: dict[str, str], key: str
+    ) -> None:
+        value = hooks_page_strings[key]
+        assert f"`{value}`" in doc_text, (
+            f"the doc does not quote hooksPage.{key} ({value!r}); "
+            "either the catalog value changed and the doc still names the old text, "
+            "or the doc stopped quoting it and this key should leave QUOTED"
         )
