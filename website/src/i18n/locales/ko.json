@@ -5804,7 +5804,6 @@
       "no_matches": "일치하는 항목 없음",
       "set_default_agent": "<agent/>을(를) 새 세션의 기본값으로 설정",
       "group_templates_hint": "커스텀 에이전트는 다시 쓸 수 있는 에이전트 설정입니다.",
-      "group_templates_hint_default_workspace": "커스텀 에이전트는 다시 쓸 수 있는 에이전트 설정입니다. 선택하면 기본 워크스페이스와 공유 메모리를 사용하며, 새 크루메이트는 만들어지지 않습니다.",
       "own_memory": "자체 메모리",
       "shared_memory": "공유 메모리",
       "label_own_memory": "{{label}} · 자체 메모리",
@@ -7175,7 +7174,14 @@
       "chat_folder_retry": "다시 시도",
       "chat_folder_retrying": "다시 시도 중…",
       "chat_folder_none_yet": "아직 폴더가 없습니다. 이 작업을 먼저 저장한 뒤, 채팅 사이드바에서 폴더를 만들고 작업을 다시 열어 선택하세요.",
-      "chat_folder_was_deleted": "이 작업이 정리하던 폴더가 삭제되었습니다. 다른 폴더를 선택하거나, 저장해 실행을 정리하지 않도록 하세요."
+      "chat_folder_was_deleted": "이 작업이 정리하던 폴더가 삭제되었습니다. 다른 폴더를 선택하거나, 저장해 실행을 정리하지 않도록 하세요.",
+      "runs_as": "실행 방식",
+      "runs_as_custom_agent": "커스텀 에이전트",
+      "runs_as_crewmate": "크루메이트",
+      "runs_as_custom_agent_hint": "자체 채팅에서 공유 메모리로 실행됩니다.",
+      "runs_as_crewmate_hint": "{{name}}의 채팅에서 {{name}}의 메모리와 파일로 실행됩니다. 크루메이트 페이지에도 표시됩니다.",
+      "runs_as_fixed": "작업은 만든 뒤에 커스텀 에이전트와 크루메이트 사이를 바꿀 수 없습니다.",
+      "runs_as_no_crewmates": "아직 크루메이트가 없습니다. 크루메이트 페이지에서 추가하세요."
     },
     "jobLogsView": {
       "cancel": "취소",

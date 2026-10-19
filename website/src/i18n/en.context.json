@@ -785,6 +785,13 @@
     "apps.papyrus.page.rename_paper": "Verb on the button that edits the name a paper is listed under. {{name}} is the paper's current displayed name.",
     "apps.papyrus.page.rename_title_rejected": "Error banner in the Papyrus paper list after a rename was refused because the typed name had no visible characters left once invisible ones were removed. {{name}} is the paper's folder name (for example 6a16ddbf), which the list shows again when the field is cleared. 'Clear the field' means delete everything typed in it.",
     "apps.papyrus.page.rename_config_refused": "Error banner in the Papyrus paper list after a rename could not be saved because the paper's own settings could not be written. 'Settings' means this paper's stored options, not app-wide settings.",
-    "apps.papyrus.page.rename_paper_replaced": "Error banner in the Papyrus paper list after a rename was refused because the paper was deleted and recreated under the same folder name since the list loaded. The list has already reloaded; 'Enter' is the keyboard key."
+    "apps.papyrus.page.rename_paper_replaced": "Error banner in the Papyrus paper list after a rename was refused because the paper was deleted and recreated under the same folder name since the list loaded. The list has already reloaded; 'Enter' is the keyboard key.",
+    "components.jobForm.runs_as": "Label above a two-option switch in the scheduled-job form that chooses what the job runs as: a custom agent or a crewmate.",
+    "components.jobForm.runs_as_custom_agent": "Switch option in the scheduled-job form: the job opens a new session on a custom agent (an agent template). Keep it short; it sits in a segmented control.",
+    "components.jobForm.runs_as_crewmate": "Switch option in the scheduled-job form: the job is delivered to one crewmate (a named member of the crew). Use the same word as the Crewmates page.",
+    "components.jobForm.runs_as_custom_agent_hint": "Line under the switch when Custom agent is chosen: the job runs in a chat of its own, which it reuses on every run, with shared (global) memory.",
+    "components.jobForm.runs_as_crewmate_hint": "Line under the switch when Crewmate is chosen. {{name}} is the crewmate's name. The job runs in that crewmate's chat with the crewmate's own memory and files (its workspace), and also shows on its Crewmates page.",
+    "components.jobForm.runs_as_fixed": "Line under the switch when editing a job, explaining why the other option is greyed out: a job cannot switch between custom agent and crewmate after it is created.",
+    "components.jobForm.runs_as_no_crewmates": "Line under the switch, explaining why the Crewmate option is greyed out: the user has no crewmates yet, and says where to add one (the Crewmates page)."
   }
 }

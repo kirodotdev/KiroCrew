@@ -102,19 +102,12 @@ name-only consumers (cron `agent_id`, channel and project bindings, the cycle
 shortcuts). The pop-up draws the group headers and the custom-agents hint only when it
 lists more than one kind: a header that separates nothing is chrome, and the hint
 contrasts a template against a crewmate the list must then be showing. The folded
-rows keep their `selection_kind`, and `AgentSelector` (the shared roster picker)
-groups by it under the same two headers when a caller passes `groupByKind`, in its
-own order and with its own hint: the schedule job form does, so a cron's agent field
-offers **Crewmates** then **Custom agents** in one dropdown, the custom-agents
-group there keeping the longer hint (`group_templates_hint_default_workspace`: the
-job runs the template on the default workspace with shared memory and enrols no
-crewmate, which is the fact an unattended job needs), and a template pick stores
-the bare template name -- the backend's name-first resolution runs an unaliased
-template on `default_workspace` and Global memory, so no cron contract changes.
-The chrome follows the same one-kind rule, decided on the unfiltered roster so a
-filter that narrows to one group keeps its header; the `role="group"` label stays
-for assistive technology either way. Callers that do not opt in, and any name-only
-roster, render flat as before. Unless the config key
+rows keep their `selection_kind`. `AgentSelector` (the shared roster picker) always
+renders its rows flat; the schedule job form splits the kinds itself with a **Runs
+as** switch (Custom agent / Crewmate) and hands the selector one kind at a time
+(#18772). A template pick stores the bare template name -- the backend's name-first
+resolution runs an unaliased template on `default_workspace` and Global memory, so
+no cron contract changes. Unless the config key
 `dashboard.crewmates_in_agent_picker` is on (off by default, read from the shared
 `/api/config/kirocrew` query), `useAgents.ts` withholds from `choices` every member
 row a listed template already COVERS (`withoutCoveredCrewmates`): the member has no

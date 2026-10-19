@@ -6036,7 +6036,6 @@
       "no_matches": "Aucun résultat",
       "set_default_agent": "Définir <agent/> par défaut pour les nouvelles sessions",
       "group_templates_hint": "Un agent personnalisé est une configuration d’agent réutilisable.",
-      "group_templates_hint_default_workspace": "Un agent personnalisé est une configuration d’agent réutilisable. En choisir un utilise ton espace de travail par défaut et la mémoire partagée ; aucun nouveau coéquipier n’est créé.",
       "own_memory": "Mémoire propre",
       "shared_memory": "Mémoire partagée",
       "label_own_memory": "{{label}} · mémoire propre",
@@ -7423,7 +7422,14 @@
       "chat_folder_retry": "Réessayer",
       "chat_folder_retrying": "Nouvelle tentative…",
       "chat_folder_none_yet": "Aucun dossier pour l'instant. Enregistrez cette tâche maintenant ; créez un dossier dans la barre latérale de discussion, puis rouvrez la tâche pour le choisir.",
-      "chat_folder_was_deleted": "Le dossier dans lequel cette tâche classait ses exécutions a été supprimé. Choisissez-en un autre, ou enregistrez pour ne plus les classer."
+      "chat_folder_was_deleted": "Le dossier dans lequel cette tâche classait ses exécutions a été supprimé. Choisissez-en un autre, ou enregistrez pour ne plus les classer.",
+      "runs_as": "S'exécute en tant que",
+      "runs_as_custom_agent": "Agent personnalisé",
+      "runs_as_crewmate": "Coéquipier",
+      "runs_as_custom_agent_hint": "S’exécute dans un chat à part, avec la mémoire partagée.",
+      "runs_as_crewmate_hint": "S’exécute dans le chat de {{name}}, avec la mémoire et les fichiers de {{name}}. Aussi listé sur sa page Coéquipiers.",
+      "runs_as_fixed": "Une tâche ne peut pas passer d’agent personnalisé à coéquipier, ni l’inverse, après sa création.",
+      "runs_as_no_crewmates": "Aucun coéquipier pour le moment. Ajoutes-en un sur la page Coéquipiers."
     },
     "jobLogsView": {
       "cancel": "Annuler",

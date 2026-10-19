@@ -5834,7 +5834,6 @@
       "no_matches": "无匹配项",
       "set_default_agent": "将 <agent/> 设为新会话的默认选择",
       "group_templates_hint": "自定义代理是可复用的代理配置。",
-      "group_templates_hint_default_workspace": "自定义代理是可复用的代理配置。选择它会使用默认工作区和共享记忆；不会新建队友。",
       "own_memory": "自己的记忆",
       "shared_memory": "共享记忆",
       "label_own_memory": "{{label}} · 自己的记忆",
@@ -7175,7 +7174,14 @@
       "chat_folder_retry": "重试",
       "chat_folder_retrying": "正在重试…",
       "chat_folder_none_yet": "还没有文件夹。请先保存此任务；在聊天侧边栏中创建一个文件夹，然后重新打开此任务再选择它。",
-      "chat_folder_was_deleted": "此任务原先归档的文件夹已被删除。请另选一个，或直接保存以不再归档运行记录。"
+      "chat_folder_was_deleted": "此任务原先归档的文件夹已被删除。请另选一个，或直接保存以不再归档运行记录。",
+      "runs_as": "运行方式",
+      "runs_as_custom_agent": "自定义代理",
+      "runs_as_crewmate": "队友",
+      "runs_as_custom_agent_hint": "在它自己的聊天中运行，使用共享记忆。",
+      "runs_as_crewmate_hint": "在 {{name}} 的聊天中运行，使用 {{name}} 自己的记忆和文件。也会显示在它的队友页面上。",
+      "runs_as_fixed": "任务创建后不能在自定义代理和队友之间切换。",
+      "runs_as_no_crewmates": "还没有队友。请在队友页面添加。"
     },
     "jobLogsView": {
       "cancel": "取消",

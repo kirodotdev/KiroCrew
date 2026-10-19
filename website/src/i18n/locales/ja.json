@@ -5804,7 +5804,6 @@
       "no_matches": "マッチするものがありません",
       "set_default_agent": "<agent/> を新しいセッションのデフォルトに設定",
       "group_templates_hint": "カスタムエージェントは再利用できるエージェント設定です。",
-      "group_templates_hint_default_workspace": "カスタムエージェントは再利用できるエージェント設定です。選ぶと既定のワークスペースと共有メモリを使います。新しいクルーメイトは作成されません。",
       "own_memory": "独自のメモリ",
       "shared_memory": "共有メモリ",
       "label_own_memory": "{{label}} · 独自のメモリ",
@@ -7175,7 +7174,14 @@
       "chat_folder_retry": "再試行",
       "chat_folder_retrying": "再試行中…",
       "chat_folder_none_yet": "フォルダーはまだありません。まずこのジョブを保存し、チャットサイドバーでフォルダーを作成してから、ジョブを開き直して選んでください。",
-      "chat_folder_was_deleted": "このジョブが振り分けていたフォルダーは削除されました。別のフォルダーを選んでください。保存すれば振り分けなくなります。"
+      "chat_folder_was_deleted": "このジョブが振り分けていたフォルダーは削除されました。別のフォルダーを選んでください。保存すれば振り分けなくなります。",
+      "runs_as": "実行方法",
+      "runs_as_custom_agent": "カスタムエージェント",
+      "runs_as_crewmate": "クルーメイト",
+      "runs_as_custom_agent_hint": "専用のチャットで、共有メモリを使って実行されます。",
+      "runs_as_crewmate_hint": "{{name}} のチャットで、{{name}} 自身のメモリとファイルを使って実行されます。クルーメイトページにも表示されます。",
+      "runs_as_fixed": "ジョブは作成後にカスタムエージェントとクルーメイトを切り替えられません。",
+      "runs_as_no_crewmates": "クルーメイトはまだいません。クルーメイトページで追加してください。"
     },
     "jobLogsView": {
       "cancel": "キャンセル",

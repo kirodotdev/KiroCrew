@@ -6036,7 +6036,6 @@
       "no_matches": "Nessuna corrispondenza",
       "set_default_agent": "Imposta <agent/> come predefinito per le nuove sessioni",
       "group_templates_hint": "Un agente personalizzato è una configurazione di agente riutilizzabile.",
-      "group_templates_hint_default_workspace": "Un agente personalizzato è una configurazione di agente riutilizzabile. Sceglierne uno usa il tuo spazio di lavoro predefinito e la memoria condivisa; non viene creato nessun nuovo compagno.",
       "own_memory": "Memoria propria",
       "shared_memory": "Memoria condivisa",
       "label_own_memory": "{{label}} · memoria propria",
@@ -7423,7 +7422,14 @@
       "chat_folder_retry": "Riprova",
       "chat_folder_retrying": "Nuovo tentativo…",
       "chat_folder_none_yet": "Nessuna cartella per ora. Salva questa attività adesso; crea una cartella nella barra laterale della chat, poi riapri l'attività per sceglierla.",
-      "chat_folder_was_deleted": "La cartella in cui questa attività archiviava è stata eliminata. Scegline un'altra, o salva per lasciare le esecuzioni non archiviate."
+      "chat_folder_was_deleted": "La cartella in cui questa attività archiviava è stata eliminata. Scegline un'altra, o salva per lasciare le esecuzioni non archiviate.",
+      "runs_as": "Viene eseguito come",
+      "runs_as_custom_agent": "Agente personalizzato",
+      "runs_as_crewmate": "Compagno",
+      "runs_as_custom_agent_hint": "Viene eseguito in una chat tutta sua, con la memoria condivisa.",
+      "runs_as_crewmate_hint": "Viene eseguito nella chat di {{name}}, con la memoria e i file di {{name}}. Elencato anche nella sua pagina Compagni.",
+      "runs_as_fixed": "Dopo la creazione, un job non può passare da agente personalizzato a compagno o viceversa.",
+      "runs_as_no_crewmates": "Ancora nessun compagno. Aggiungine uno nella pagina Compagni."
     },
     "jobLogsView": {
       "cancel": "Annulla",

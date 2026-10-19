@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Zap } from 'lucide-react'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { Btn, Input, SendBtn } from './ui'
 import { SettingsToggle } from './settings'
-import AgentSelector, { type KiroCrewAgent } from './AgentSelector'
+import AgentSelector, { crewDisplayName, type KiroCrewAgent } from './AgentSelector'
+import SegmentedControl from './SegmentedControl'
 import SimpleSelect from './SimpleSelect'
 import type { ChatFolder, CronJob } from '../types'
 import { orderFoldersWithPaths } from '../utils/folderTree'
@@ -26,6 +27,10 @@ const dayNames = () => [1, 2, 3, 4, 5, 6, 7].map((iso) => fmtWeekday(iso))
 const GRID_TO_CRON_DOW = [0, 1, 2, 3, 4, 5, 6, 0] // grid 1-7 → cron dow
 const CRON_DOW_TO_GRID: Record<number, number> = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 0: 7, 7: 7 }
 
+/** What a job runs as: a custom agent (template) or a crewmate. */
+type RunsAs = 'template' | 'member'
+/** A roster row's kind, read the way AgentSelector groups it. */
+const runsAsOf = (a: KiroCrewAgent): RunsAs => a.selection_kind ?? 'member'
 
 
 /** The pinned crew, rendered as a fact rather than a disabled selector — a
@@ -288,6 +293,45 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   const [name, setName] = useState(init.name)
   const [msg, setMsg] = useState(init.message)
   const [agent, setAgent] = useState(defaults.agent)
+  // "Runs as" (#18772): a job either opens a new session on a custom agent (a
+  // template) or is a crewmate's own schedule. The Schedule page's roster holds
+  // both kinds, so the switch picks the kind and the picker lists only that
+  // kind. A crewmate pick still goes out as `agent`; the create endpoint turns
+  // it into `member_id`. Hidden where the host pins the agent, and on a roster
+  // that does not say which row is which. A job never changes kind, and a
+  // crewmate job carries `member_id`, which pins it above (`locked`), so a job
+  // that reaches the switch in edit mode is a custom-agent job: the switch is
+  // held there. The kind is read from `member_id`, never from `agent`, which
+  // the backend empties for a crewmate job.
+  const showRunsAs = !locked && agents.some(a => a.selection_kind)
+  // Only a crewmate with its own memory: `split_cron_agent_member` makes a
+  // crewmate job only for a name with a `member_id`, which exists only with
+  // member memory. The stock `default` crew (shared memory) would be saved as
+  // a custom-agent job, so it is not offered here.
+  const crewmates = useMemo(
+    () => agents.filter(a => runsAsOf(a) === 'member' && a.memory_store !== 'default'),
+    [agents],
+  )
+  const templates = useMemo(() => agents.filter(a => runsAsOf(a) === 'template'), [agents])
+  const [pickedRunsAs, setPickedRunsAs] = useState<RunsAs>('template')
+  const runsAs: RunsAs = job ? 'template' : pickedRunsAs
+  // An older job can name a crewmate in `agent` with no `member_id`; it runs as
+  // a template, so it edits here, and its own row stays pickable.
+  const templatesWithStored = useMemo(() => {
+    const stored = job && !templates.some(a => a.name === defaults.agent)
+      ? agents.find(a => a.name === defaults.agent)
+      : undefined
+    return stored ? [...templates, stored] : templates
+  }, [job, templates, agents, defaults.agent])
+  const changeRunsAs = (next: RunsAs) => {
+    // SegmentedControl reports a click on the selected option too; that is no
+    // change, so it must not reset the pick.
+    if (next === runsAs) return
+    setPickedRunsAs(next)
+    // '' means the default custom agent; a crewmate job always names one.
+    setAgent(next === 'member' ? (crewmates[0]?.name ?? '') : '')
+  }
+  const runsAsLayoutId = useId()
   const [model, setModel] = useState(defaults.model)
   const { data: modelList = [] } = useQuery<{ name: string; description?: string }[]>({
     queryKey: ['models'],
@@ -524,6 +568,47 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   if (submitRef) submitRef.current = submit
 
   const vertical = layout === 'vertical'
+  const pickedCrewmate = crewmates.find(a => a.name === agent)
+  const runsAsField = showRunsAs ? (
+    <div className="flex flex-col gap-1">
+      <SegmentedControl<RunsAs>
+        segments={[
+          {
+            key: 'template',
+            label: i18nT('components.jobForm.runs_as_custom_agent'),
+          },
+          {
+            key: 'member',
+            label: i18nT('components.jobForm.runs_as_crewmate'),
+            disabled: !!job || crewmates.length === 0,
+          },
+        ]}
+        value={runsAs}
+        onChange={changeRunsAs}
+        ariaLabel={i18nT('components.jobForm.runs_as')}
+        layoutId={runsAsLayoutId}
+        collapse={false}
+        wrap="hug"
+      />
+      <span className="text-[11px] text-muted/70">
+        {runsAs === 'member'
+          ? i18nT('components.jobForm.runs_as_crewmate_hint', { name: pickedCrewmate ? crewDisplayName(pickedCrewmate) : agent })
+          : i18nT('components.jobForm.runs_as_custom_agent_hint')}
+      </span>
+      {/* Why an option is greyed out, said as text rather than a hover tooltip. */}
+      {job
+        ? <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.runs_as_fixed')}</span>
+        : crewmates.length === 0 && <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.runs_as_no_crewmates')}</span>}
+      <AgentSelector
+        agents={runsAs === 'member' ? crewmates : templatesWithStored}
+        defaultAgent={runsAs === 'member' ? '' : defaultAgent}
+        value={agent}
+        onChange={(name) => setAgent(name)}
+        rosterFailure={rosterFailure}
+        modal
+      />
+    </div>
+  ) : null
 
   /** The job's timezone picker, rendered identically by the weekly and the
    *  cron-expression branch (it was the same markup twice).
@@ -577,7 +662,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           <Input placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
           {locked
             ? <LockedAgentValue name={locked} member={memberNoun} hint={lockedAgentHint} />
-            : <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} groupByKind modal />}
+            : runsAsField ?? <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />}
           <SimpleSelect
             options={modelOptions.values}
             optionLabels={modelOptions.labels}
@@ -673,12 +758,12 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
             run no LLM, so hide them (consistent with the LLM-less create surface). */}
         {!isLlmless && (<>
         <div className="flex flex-col gap-1">
-          <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.agent')}</span>
+          <span className="text-[12px] text-muted font-medium">{runsAsField ? i18nT('components.jobForm.runs_as') : i18nT('components.jobForm.agent')}</span>
           {locked
             ? <LockedAgentValue name={locked} member={memberNoun} hint={lockedAgentHint} />
-            : (<>
+            : runsAsField ?? (<>
               <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.which_agent_handles_this_job_leave_default_for_t')}</span>
-              <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} groupByKind modal />
+              <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />
             </>)}
         </div>
         </>)}

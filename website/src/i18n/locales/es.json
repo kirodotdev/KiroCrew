@@ -6036,7 +6036,6 @@
       "no_matches": "Sin coincidencias",
       "set_default_agent": "Establecer <agent/> como predeterminado para las nuevas sesiones",
       "group_templates_hint": "Un agente personalizado es una configuración de agente reutilizable.",
-      "group_templates_hint_default_workspace": "Un agente personalizado es una configuración de agente reutilizable. Elegir uno usa tu espacio de trabajo predeterminado y la memoria compartida; no se crea ningún compañero nuevo.",
       "own_memory": "Memoria propia",
       "shared_memory": "Memoria compartida",
       "label_own_memory": "{{label}} · memoria propia",
@@ -7423,7 +7422,14 @@
       "chat_folder_retry": "Reintentar",
       "chat_folder_retrying": "Reintentando…",
       "chat_folder_none_yet": "Aún no hay carpetas. Guarda esta tarea ahora; crea una carpeta en la barra lateral del chat y vuelve a abrir la tarea para elegirla.",
-      "chat_folder_was_deleted": "La carpeta en la que archivaba esta tarea se eliminó. Elige otra o guarda para dejar las ejecuciones sin archivar."
+      "chat_folder_was_deleted": "La carpeta en la que archivaba esta tarea se eliminó. Elige otra o guarda para dejar las ejecuciones sin archivar.",
+      "runs_as": "Se ejecuta como",
+      "runs_as_custom_agent": "Agente personalizado",
+      "runs_as_crewmate": "Compañero",
+      "runs_as_custom_agent_hint": "Se ejecuta en un chat propio, con memoria compartida.",
+      "runs_as_crewmate_hint": "Se ejecuta en el chat de {{name}}, con la memoria y los archivos propios de {{name}}. También aparece en su página de compañeros.",
+      "runs_as_fixed": "Una tarea no puede cambiar entre agente personalizado y compañero después de crearse.",
+      "runs_as_no_crewmates": "Aún no hay compañeros. Añade uno en la página de compañeros."
     },
     "jobLogsView": {
       "cancel": "Cancelar",

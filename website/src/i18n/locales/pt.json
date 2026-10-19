@@ -6036,7 +6036,6 @@
       "no_matches": "Nenhum resultado",
       "set_default_agent": "Definir <agent/> como padrão para novas sessões",
       "group_templates_hint": "Um agente personalizado é uma configuração de agente reutilizável.",
-      "group_templates_hint_default_workspace": "Um agente personalizado é uma configuração de agente reutilizável. Escolher um usa seu espaço de trabalho padrão e a memória compartilhada; nenhum colega novo é criado.",
       "own_memory": "Memória própria",
       "shared_memory": "Memória compartilhada",
       "label_own_memory": "{{label}} · memória própria",
@@ -7423,7 +7422,14 @@
       "chat_folder_retry": "Tentar novamente",
       "chat_folder_retrying": "Tentando novamente…",
       "chat_folder_none_yet": "Ainda não há pastas. Salve esta tarefa agora; crie uma pasta na barra lateral de conversa e reabra a tarefa para escolhê-la.",
-      "chat_folder_was_deleted": "A pasta em que esta tarefa arquivava foi excluída. Escolha outra ou salve para deixar as execuções sem arquivar."
+      "chat_folder_was_deleted": "A pasta em que esta tarefa arquivava foi excluída. Escolha outra ou salve para deixar as execuções sem arquivar.",
+      "runs_as": "Executa como",
+      "runs_as_custom_agent": "Agente personalizado",
+      "runs_as_crewmate": "Colega",
+      "runs_as_custom_agent_hint": "Roda em um chat próprio, com a memória compartilhada.",
+      "runs_as_crewmate_hint": "Roda no chat de {{name}}, com a memória e os arquivos de {{name}}. Também aparece na página de Colegas.",
+      "runs_as_fixed": "Uma tarefa não pode trocar entre agente personalizado e colega depois de criada.",
+      "runs_as_no_crewmates": "Ainda não há colegas. Adicione um na página de Colegas."
     },
     "jobLogsView": {
       "cancel": "Cancelar",

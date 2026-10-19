@@ -4725,7 +4725,14 @@
       "suppress_automatic_message_delivery_the_agent_co": "Suppress automatic message delivery. The agent controls when to notify.",
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "The prompt or task sent to the agent when this job fires",
       "weekly_schedule": "Weekly schedule",
-      "which_agent_handles_this_job_leave_default_for_t": "Which agent handles this job. Leave default for the primary agent."
+      "which_agent_handles_this_job_leave_default_for_t": "Which agent handles this job. Leave default for the primary agent.",
+      "runs_as": "Runs as",
+      "runs_as_custom_agent": "Custom agent",
+      "runs_as_crewmate": "Crewmate",
+      "runs_as_custom_agent_hint": "Runs in a chat of its own, with shared memory.",
+      "runs_as_crewmate_hint": "Runs in {{name}}'s chat, with {{name}}'s own memory and files. Also listed on its Crewmates page.",
+      "runs_as_fixed": "A job can't switch between custom agent and crewmate after it's created.",
+      "runs_as_no_crewmates": "No crewmates yet. Add one on the Crewmates page."
     },
     "jobLogsView": {
       "cancel": "Cancel",

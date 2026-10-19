@@ -5935,7 +5935,6 @@
       "no_matches": "Keine Treffer",
       "set_default_agent": "<agent/> als Standard für neue Sitzungen festlegen",
       "group_templates_hint": "Ein benutzerdefinierter Agent ist eine wiederverwendbare Agent-Konfiguration.",
-      "group_templates_hint_default_workspace": "Ein benutzerdefinierter Agent ist eine wiederverwendbare Agent-Konfiguration. Wer einen wählt, nutzt deinen Standard-Arbeitsbereich und das gemeinsame Gedächtnis; es wird kein neuer Crew-Kamerad angelegt.",
       "own_memory": "Eigenes Gedächtnis",
       "shared_memory": "Gemeinsames Gedächtnis",
       "label_own_memory": "{{label}} · eigenes Gedächtnis",
@@ -7299,7 +7298,14 @@
       "chat_folder_retry": "Wiederholen",
       "chat_folder_retrying": "Wird wiederholt…",
       "chat_folder_none_yet": "Noch keine Ordner. Speichere diesen Auftrag jetzt; lege in der Chat-Seitenleiste einen Ordner an und öffne den Auftrag dann erneut, um ihn zu wählen.",
-      "chat_folder_was_deleted": "Der Ordner, in den dieser Auftrag ablegte, wurde gelöscht. Wähle einen anderen, oder speichere, damit die Ausführungen nicht abgelegt werden."
+      "chat_folder_was_deleted": "Der Ordner, in den dieser Auftrag ablegte, wurde gelöscht. Wähle einen anderen, oder speichere, damit die Ausführungen nicht abgelegt werden.",
+      "runs_as": "Läuft als",
+      "runs_as_custom_agent": "Eigener Agent",
+      "runs_as_crewmate": "Crew-Kamerad",
+      "runs_as_custom_agent_hint": "Läuft in einem eigenen Chat, mit gemeinsamem Gedächtnis.",
+      "runs_as_crewmate_hint": "Läuft im Chat von {{name}}, mit dem eigenen Gedächtnis und den eigenen Dateien von {{name}}. Auch auf der Crewmates-Seite aufgeführt.",
+      "runs_as_fixed": "Ein Job kann nach dem Erstellen nicht zwischen eigenem Agenten und Crew-Kamerad wechseln.",
+      "runs_as_no_crewmates": "Noch keine Crew-Kameraden. Füge einen auf der Crewmates-Seite hinzu."
     },
     "jobLogsView": {
       "cancel": "Abbrechen",

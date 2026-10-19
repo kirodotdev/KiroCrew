@@ -5068,8 +5068,10 @@ Shared `AgentSelector` component (`website/src/components/AgentSelector.tsx`) us
 - `SourceBadge` source pills (`package` uses the `--aim` design token, `project` the ok token, everything else the muted default)
 - ARIA: `role="listbox"`, `role="option"`, `aria-selected`, `aria-expanded`, `aria-haspopup`
 - Outside-click-to-close via `setTimeout` + `document.addEventListener`
-- Props: `agents`, `defaultAgent`, `value`, `onChange`, `modal` (opt-in for a selector inside a Radix modal dialog such as the Schedule job form, so the popup takes over the wheel lock), `rosterFailure` (`{reloading, onReload}` when the roster read failed), `groupByKind`
-- The roster comes from the caller's `agents`; the component does no fetching of its own
+- Props: `agents`, `defaultAgent`, `value`, `onChange`, `modal` (opt-in for a selector inside a Radix modal dialog such as the Schedule job form, so the popup takes over the wheel lock), `rosterFailure` (`{reloading, onReload}` when the roster read failed)
+- The roster comes from the caller's `agents`; the component does no fetching of its own, and renders its rows flat
+
+The Schedule job form puts a **Runs as** switch (`SegmentedControl`: Custom agent / Crewmate) above its selector whenever the roster carries `selection_kind` and no host pins the agent (#18772). The selector then lists only the chosen kind: Custom agent offers templates (empty = the default custom agent) and opens a new session in the default workspace with shared memory; Crewmate offers only crewmates with their own memory (not the shared-memory `default` crew, which has no `member_id` and would be saved as a custom-agent job), preselects the first, and sends the name as `agent`, which `POST /api/crons` turns into `member_id` (`split_cron_agent_member`). A crewmate job carries `member_id`, so editing it shows the pinned crewmate, not the switch; a job that reaches the switch in edit mode is a custom-agent job, held on Custom agent with Crewmate disabled, since a job never changes kind. Why an option is disabled is said in a line under the switch. A name-only roster, or a host-pinned agent (the Crewmates page), keeps the plain selector.
 
 ### InfoTip Component
 
