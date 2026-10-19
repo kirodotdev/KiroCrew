@@ -1167,7 +1167,13 @@ class TestClientSeam:
         assert options["strictMcpConfig"] is True
         assert options["allowDangerouslySkipPermissions"] is False
         assert "settingSources" not in options
-        assert options["settings"]["permissions"]["ask"] == ["WebFetch", "WebSearch"]
+        assert options["settings"]["permissions"]["ask"] == [
+            "Read",
+            "Grep",
+            "Glob",
+            "WebFetch",
+            "WebSearch",
+        ]
         assert options["settings"]["disableAllHooks"] is True
         assert [p for m, p in sent if m == "session/set_mode"] == [
             {"sessionId": client._session_id, "modeId": "default"}
@@ -1198,7 +1204,7 @@ class TestClientSeam:
         assert options["settingSources"] == ["user"]
         permissions = options["settings"]["permissions"]
         assert "Read(./secrets/**)" in permissions["deny"]
-        assert permissions["ask"] == ["WebFetch", "WebSearch"]
+        assert permissions["ask"] == ["WebFetch", "Read", "Grep", "Glob", "WebSearch"]
         assert options["tools"] == ["Read", "Grep", "Glob", "WebFetch", "WebSearch"]
 
     @pytest.mark.parametrize(("side_read_only", "builtin"), [(True, "fs_read"), (False, "")])
