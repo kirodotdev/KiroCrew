@@ -343,6 +343,23 @@ class TestGateLauncher:
         assert "--extension" in body
         assert body.rstrip().endswith("'/site/gate'\"'\"'s.ts'"), body
 
+    def test_a_side_launcher_disables_discovered_extensions(self, monkeypatch):
+        monkeypatch.setattr(acp_client.platform_compat, "IS_WINDOWS", False)
+        body = _pi_gate_launcher_body("/opt/pi", "/site/gate.ts", confine=True)
+        assert "--no-extensions" in body
+        assert "--no-approve" in body
+        assert '"$@"' in body
+        assert body.index("--no-extensions") < body.index('"$@"')
+        assert body.rstrip().endswith("--extension '/site/gate.ts'") or body.rstrip().endswith(
+            "--extension /site/gate.ts"
+        )
+
+    def test_a_main_chat_launcher_does_not_confine(self, monkeypatch):
+        monkeypatch.setattr(acp_client.platform_compat, "IS_WINDOWS", False)
+        body = _pi_gate_launcher_body("/opt/pi", "/site/gate.ts")
+        assert "--no-extensions" not in body
+        assert "--no-approve" not in body
+
     def test_the_windows_body_is_a_cmd_that_forwards_arguments(self, monkeypatch):
         monkeypatch.setattr(acp_client.platform_compat, "IS_WINDOWS", True)
         body = _pi_gate_launcher_body("C:\\tools\\pi.cmd", "C:\\site\\gate.ts")
@@ -364,6 +381,11 @@ class TestGateLauncher:
         # Different inputs are a different launcher, not a stale one.
         other = _ensure_pi_gate_launcher(str(tmp_path / "pi2"), str(tmp_path / "gate.ts"))
         assert other != first
+        confined = _ensure_pi_gate_launcher(
+            str(tmp_path / "pi"), str(tmp_path / "gate.ts"), confine=True
+        )
+        assert confined != first
+        assert "--no-extensions" in Path(confined).read_text(encoding="utf-8")
 
     def test_nothing_is_written_into_the_work_dir_or_the_pi_directory(self, monkeypatch, tmp_path):
         run_dir = tmp_path / "run"

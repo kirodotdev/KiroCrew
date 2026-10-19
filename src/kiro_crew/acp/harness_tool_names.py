@@ -128,6 +128,21 @@ GOOSE_READ_ONLY_BUILTINS: dict[tuple[str, str], str] = {
     ("developer", "read_image"): "fs_read",
 }
 
+#: pi's read-only built-ins a Side Chat session may run, keyed by the bare tool
+#: name pi's gate-extension envelope carries (pi stamps no tool name on its own
+#: frames). Mapped to the kiro-cli built-in that does the same job, named on the
+#: permission event as ``harness_builtin_tool``. ``read`` reads a file
+#: (``fs_read``); ``grep`` searches (``grep``); ``find`` finds files (``glob``);
+#: ``ls`` lists a directory (``fs_read``, as ``list_directory`` maps there).
+#: MCP-rewritten titles never match these bare names. ``bash`` is judged by the
+#: shell branch, never here.
+PI_READ_ONLY_BUILTINS: dict[str, str] = {
+    "read": "fs_read",
+    "grep": "grep",
+    "find": "glob",
+    "ls": "fs_read",
+}
+
 #: The backends whose permission event carries a qualified harness tool id.
 HARNESS_TOOL_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
     ACP_BACKEND_GOOSE: GOOSE_TOOL_IDS_BY_KIRO_TOOL,

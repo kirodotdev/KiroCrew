@@ -13,11 +13,16 @@ the corpus does and does not prove.
 | `member-panel-mount-live.jsonl` | live | the initialize and `session/new` responses for a crew member session, a `tool_call` for `mcp__kirocrew_panel__panel_publish`, the `session/request_permission` forwarded from the gate extension, the update through `completed` carrying the panel server's own answer, and the result |
 | `zero-tools-refused-live.jsonl` | live | four turns on an agent spec declaring `"tools": []`: a `write`, a `bash` and an `mcp__probe_server__echo` call, each with the `session/request_permission` the gate extension raised and the `tool_call_update` that ended it `failed`, and a `frobnicate` call pi failed itself with no permission frame |
 | `steering-live.jsonl` | live | the initialize, `session/new` and set-model responses, a `tool_call` for a `bash` sleep, the `session/request_permission` forwarded from Kiro Crew's gate extension, the updates through `completed`, the extension's consumed-steer notification (an `agent_message_chunk` carrying `_meta.piAcp.notify`), the model's answer to the steer, `usage_update`, and the `end_turn` result |
+| `side-read-only-live.jsonl` | live | two read-only turns through the confined Side Chat launcher (`--no-extensions --no-approve` plus the gate extension): a `read` of an absolute path (kind `read`) and three shell calls (kind `execute`), each with the `session/request_permission` the adapter forwarded from the extension first, the updates through `completed`, and each turn's result |
 
-Captured off `pi-acp` 0.0.33 spawning `pi` 0.85.1 and driving a locally
-served model configured in pi's own `models.json`, with agent-to-client lines
-verbatim. The working directory in the frames is a scratch project, not a home
-directory.
+Except for `side-read-only-live.jsonl`, captured off `pi-acp` 0.0.33 spawning
+`pi` 0.85.1 and driving a locally served model configured in pi's own
+`models.json`, with agent-to-client lines verbatim. The working directory in
+the frames is a scratch project, not a home directory. `side-read-only-live.jsonl`
+was taken off `pi-acp` 0.0.33 spawning `pi` 1.3.0 and driving the signed-in
+`meta/muse-spark-1.3` model through the confined Side Chat launcher, with the
+same verbatim rule; the working directory reads as `/work` and the session,
+tool-call and dialog ids are fixed synthetic values.
 
 ## What the compaction capture establishes
 
