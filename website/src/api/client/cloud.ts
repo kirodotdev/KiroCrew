@@ -64,6 +64,13 @@ export interface CloudPreflight {
   session_manager_plugin_refused_owner?: string
   /** For 'other_owner': the owning account's uid; otherwise null. */
   session_manager_plugin_refused_owner_uid?: number | null
+  /** The same five fields for an `aws` CLI the gateway found and refused, set
+   *  only when credentials did not resolve. No command: none is known to clear it. */
+  aws_cli_refused_path?: string
+  aws_cli_refused_reason?: string
+  aws_cli_refused_code?: string
+  aws_cli_refused_owner?: string
+  aws_cli_refused_owner_uid?: number | null
 }
 
 /** One remote-instance provisioner the gateway offers, from

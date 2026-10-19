@@ -9,7 +9,7 @@ export const SESSION_MANAGER_PLUGIN_INSTALL_URL =
   'https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html'
 
 // The pre-flight troubleshooting entry of the Remote Crew on EC2 guide: it covers
-// both the missing credential helper and a refused plugin.
+// the missing credential helper and a refused plugin or AWS CLI.
 export const REMOTE_CREW_PREFLIGHT_GUIDE_URL =
   'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/remote-crew-on-ec2.md#set-up-pre-flight-credential-helper-not-found-or-plugin-refused'
 
@@ -28,21 +28,56 @@ export function credentialHelperMissingSentence(name: string): string {
   })
 }
 
+/** A binary the gateway found and refused, read from one preflight's fields. */
+type ToolRefusal = {
+  path: string
+  reason: string
+  code?: string
+  owner?: string
+  ownerUid?: number | null
+  /** The command that clears the refusal, or "" when none is known. */
+  command: string
+}
+
+function pluginRefusalOf(p: CloudPreflight): ToolRefusal {
+  return {
+    path: p.session_manager_plugin_refused_path ?? '',
+    reason: p.session_manager_plugin_refused_reason ?? '',
+    code: p.session_manager_plugin_refused_code,
+    owner: p.session_manager_plugin_refused_owner,
+    ownerUid: p.session_manager_plugin_refused_owner_uid,
+    command: p.session_manager_plugin_command ?? '',
+  }
+}
+
+/** The CLI's refusal carries no command: none is known to clear it. */
+function awsCliRefusalOf(p: CloudPreflight): ToolRefusal {
+  return {
+    path: p.aws_cli_refused_path ?? '',
+    reason: p.aws_cli_refused_reason ?? '',
+    code: p.aws_cli_refused_code,
+    owner: p.aws_cli_refused_owner,
+    ownerUid: p.aws_cli_refused_owner_uid,
+    command: '',
+  }
+}
+
 /** The diagnosis in the reader's language, from the kind of refusal the gateway
  *  names. Null for a kind this build has no sentence for: the caller then puts
  *  the safety check's own English reason in the generic sentence. */
-export function pluginRefusalSentence(p: CloudPreflight, path: string): string | null {
-  switch (p.session_manager_plugin_refused_code) {
+function refusalSentence(r: ToolRefusal): string | null {
+  const path = r.path
+  switch (r.code) {
     case 'other_owner':
-      if (p.session_manager_plugin_refused_owner) {
+      if (r.owner) {
         return i18nT('pages.settings.remoteCrewPanel.plugin_refused_other_owner', {
           path,
-          owner: p.session_manager_plugin_refused_owner,
-          uid: String(p.session_manager_plugin_refused_owner_uid ?? ''),
+          owner: r.owner,
+          uid: String(r.ownerUid ?? ''),
         })
       }
-      return typeof p.session_manager_plugin_refused_owner_uid === 'number'
-        ? i18nT('pages.settings.remoteCrewPanel.plugin_refused_other_owner_uid', { path, uid: String(p.session_manager_plugin_refused_owner_uid) })
+      return typeof r.ownerUid === 'number'
+        ? i18nT('pages.settings.remoteCrewPanel.plugin_refused_other_owner_uid', { path, uid: String(r.ownerUid) })
         : null
     case 'world_writable':
       return i18nT('pages.settings.remoteCrewPanel.plugin_refused_world_writable', { path })
@@ -55,8 +90,13 @@ export function pluginRefusalSentence(p: CloudPreflight, path: string): string |
   }
 }
 
+/** The plugin row's diagnosis for a plugin refused at *path*; see refusalSentence. */
+export function pluginRefusalSentence(p: CloudPreflight, path: string): string | null {
+  return refusalSentence({ ...pluginRefusalOf(p), path })
+}
+
 export type PluginRefusalCopy = {
-  /** The diagnosis: where the plugin was found and why it was refused. */
+  /** The diagnosis: where the binary was found and why it was refused. */
   failure: string
   /** The safety check's own English reason, under a translated one, as the
    *  notice's smaller second line. */
@@ -75,22 +115,17 @@ function nextStep(code: string | undefined): string {
   return i18nT('pages.settings.remoteCrewPanel.plugin_refused_next')
 }
 
-/** The plugin row's wording for a plugin that is installed but refused, or null
- *  when it was accepted or is simply not installed. */
-export function pluginRefusalCopy(p: CloudPreflight): PluginRefusalCopy | null {
-  const path = p.session_manager_plugin_refused_path
-  if (p.session_manager_plugin || !path) return null
-  const raw = p.session_manager_plugin_refused_reason ?? ''
-  const translated = pluginRefusalSentence(p, path)
-  const failure = translated ?? i18nT('pages.settings.remoteCrewPanel.plugin_refused_found', { path, reason: raw })
-  const failureDetail = translated && raw ? raw : undefined
-  if (!p.session_manager_plugin_command) {
+function refusalCopy(r: ToolRefusal): PluginRefusalCopy {
+  const translated = refusalSentence(r)
+  const failure = translated ?? i18nT('pages.settings.remoteCrewPanel.plugin_refused_found', { path: r.path, reason: r.reason })
+  const failureDetail = translated && r.reason ? r.reason : undefined
+  if (!r.command) {
     // No fix command is known for this refusal, so point at the guide's entry.
     return {
       failure,
       failureDetail,
       steps: {
-        text: nextStep(p.session_manager_plugin_refused_code),
+        text: nextStep(r.code),
         link: { href: REMOTE_CREW_PREFLIGHT_GUIDE_URL, label: i18nT('pages.settings.remoteCrewPanel.plugin_refused_guide') },
       },
     }
@@ -108,19 +143,43 @@ export function pluginRefusalCopy(p: CloudPreflight): PluginRefusalCopy | null {
   }
 }
 
-/** What "Ask the agent" on the refused-plugin notice carries: the sentence on
+/** The plugin row's wording for a plugin that is installed but refused, or null
+ *  when it was accepted or is simply not installed. */
+export function pluginRefusalCopy(p: CloudPreflight): PluginRefusalCopy | null {
+  if (p.session_manager_plugin || !p.session_manager_plugin_refused_path) return null
+  return refusalCopy(pluginRefusalOf(p))
+}
+
+/** The credentials row's wording when the gateway found an `aws` CLI and refused
+ *  it, or null when credentials resolved or no CLI was refused. Reporting that as
+ *  the CLI's "not found" error would send the reader to reinstall the same file. */
+export function awsCliRefusalCopy(p: CloudPreflight): PluginRefusalCopy | null {
+  if ((p.reachable && p.account) || !p.aws_cli_refused_path) return null
+  const copy = refusalCopy(awsCliRefusalOf(p))
+  return { ...copy, failure: i18nT('pages.settings.remoteCrewPanel.aws_cli_refused', { diagnosis: copy.failure }) }
+}
+
+/** What "Ask the agent" on a refused-binary notice carries: the sentence on
  *  screen, plus the refusal's code and the safety check's own words, which the
  *  row shows only as a muted line. The pre-flight answered, so this is a
  *  `system` report, not a failed request. */
-export function pluginRefusalReport(p: CloudPreflight, copy: PluginRefusalCopy): ErrorReport {
+function refusalReport(id: string, r: ToolRefusal, copy: PluginRefusalCopy): ErrorReport {
   return {
-    id: 'remote-crew-plugin-refused',
+    id,
     at: Date.now(),
     source: 'system',
-    code: p.session_manager_plugin_refused_code || undefined,
+    code: r.code || undefined,
     message: copy.failure,
-    detail: p.session_manager_plugin_refused_reason || undefined,
+    detail: r.reason || undefined,
     endpoint: '/api/cloud/preflight',
     route: window.location.pathname,
   }
+}
+
+export function pluginRefusalReport(p: CloudPreflight, copy: PluginRefusalCopy): ErrorReport {
+  return refusalReport('remote-crew-plugin-refused', pluginRefusalOf(p), copy)
+}
+
+export function awsCliRefusalReport(p: CloudPreflight, copy: PluginRefusalCopy): ErrorReport {
+  return refusalReport('remote-crew-aws-cli-refused', awsCliRefusalOf(p), copy)
 }

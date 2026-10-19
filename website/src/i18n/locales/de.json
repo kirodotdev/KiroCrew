@@ -17957,6 +17957,7 @@
         "auto_connect": "Crews automatisch verbinden",
         "auto_connect_desc": "Wenn aktiviert, verbindet das Öffnen der Web-App jede Crew automatisch und stellt die Verbindung wieder her, sobald du zum Tab zurückkehrst. Deaktivieren, um eine Crew nur beim Wechsel zu ihr zu verbinden.",
         "awaiting_sign_in": "Wartet auf deine Bestätigung",
+        "aws_cli_refused": "Deine AWS-Anmeldedaten wurden nicht geprüft. {{diagnosis}}",
         "before_you_start": "Before you start — your AWS setup",
         "billing": "This runs in your AWS account and is billed to you — one EC2 instance, its disk, and a small S3 bucket used during setup. Charges depend on your region, size, and any discounts.",
         "cancel": "Cancel",

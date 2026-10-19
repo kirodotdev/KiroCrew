@@ -82,7 +82,7 @@ import { setCrewEnabled } from '../../lib/crewEnabled'
 import { i18nT } from '../../i18n/t'
 import { AddInstanceForm } from './InstancesPanel'
 import { CrewVersionsReadError } from './CrewVersionStatus'
-import { credentialHelperMissingSentence, pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
+import { awsCliRefusalCopy, awsCliRefusalReport, credentialHelperMissingSentence, pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
 import {
   instanceFormFromView,
 } from './InstanceFormFields'
@@ -812,6 +812,9 @@ export function RemoteCrewPanel() {
   // Found but refused is not "not installed": the install command would put the
   // same refused file back, so the plugin row says why it was refused instead.
   const pluginRefusal = preflight ? pluginRefusalCopy(preflight) : null
+  // The same for an `aws` CLI the gateway found and refused: the credentials row
+  // says why, instead of the CLI's "not found" error and its install link.
+  const cliRefusal = preflight ? awsCliRefusalCopy(preflight) : null
   const blockingOk = !!preflight
     && preflight.reachable
     && !!preflight.account
@@ -1269,6 +1272,8 @@ export function RemoteCrewPanel() {
                     : ''}
                   failure={preflight.reachable && preflight.account
                     ? undefined
+                    : cliRefusal
+                      ? cliRefusal.failure
                     : preflight.credential_helper_missing
                       // The helper's name is the actionable part, so the sentence
                       // leads; the CLI's own error sits under it (failureDetail)
@@ -1277,7 +1282,11 @@ export function RemoteCrewPanel() {
                       : (preflight.detail || i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
                   failureDetail={preflight.reachable && preflight.account
                     ? undefined
-                    : (preflight.credential_helper_missing && preflight.detail) || undefined}
+                    : cliRefusal
+                      ? cliRefusal.failureDetail
+                      : (preflight.credential_helper_missing && preflight.detail) || undefined}
+                  failureReport={cliRefusal ? awsCliRefusalReport(preflight, cliRefusal) : undefined}
+                  steps={cliRefusal?.steps}
                   onRecheck={runCheck}
                   rechecking={preflightQuery.isFetching}
                 />

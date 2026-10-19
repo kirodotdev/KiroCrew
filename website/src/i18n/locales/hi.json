@@ -17957,6 +17957,7 @@
         "auto_connect": "crew स्वतः कनेक्ट करें",
         "auto_connect_desc": "चालू होने पर, वेब ऐप खोलने पर हर crew अपने आप कनेक्ट हो जाता है और टैब पर लौटने पर फिर से कनेक्ट हो जाता है। बंद करने पर crew से तभी कनेक्ट होता है जब उस पर स्विच किया जाए।",
         "awaiting_sign_in": "तुम्हारी पुष्टि का इंतज़ार है",
+        "aws_cli_refused": "तुम्हारे AWS क्रेडेंशियल नहीं जाँचे गए। {{diagnosis}}",
         "before_you_start": "Before you start — your AWS setup",
         "billing": "This runs in your AWS account and is billed to you — one EC2 instance, its disk, and a small S3 bucket used during setup. Charges depend on your region, size, and any discounts.",
         "cancel": "Cancel",

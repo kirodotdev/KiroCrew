@@ -415,6 +415,9 @@ async def api_cloud_preflight(request: web.Request) -> web.Response:
         plugin_cmd = refusal.remedy_command
     else:
         plugin_cmd = await _in_executor(ssm.session_manager_plugin_install_command)
+    # The same for the CLI: when the gateway found an `aws` and refused it, the
+    # credentials row says so instead of the CLI's "not found" error.
+    cli_refusal = None if reach.get("reachable") else await _in_executor(ssm.aws_cli_refusal)
     _audit("preflight", "success")
     return web.json_response(
         {
@@ -428,6 +431,11 @@ async def api_cloud_preflight(request: web.Request) -> web.Response:
             "session_manager_plugin_refused_code": refusal.code if refusal else "",
             "session_manager_plugin_refused_owner": refusal.owner if refusal else "",
             "session_manager_plugin_refused_owner_uid": refusal.owner_uid if refusal else None,
+            "aws_cli_refused_path": cli_refusal.path if cli_refusal else "",
+            "aws_cli_refused_reason": cli_refusal.reason if cli_refusal else "",
+            "aws_cli_refused_code": cli_refusal.code if cli_refusal else "",
+            "aws_cli_refused_owner": cli_refusal.owner if cli_refusal else "",
+            "aws_cli_refused_owner_uid": cli_refusal.owner_uid if cli_refusal else None,
         }
     )
 

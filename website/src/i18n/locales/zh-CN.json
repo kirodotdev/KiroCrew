@@ -17691,6 +17691,7 @@
         "auto_connect": "自动连接 crew",
         "auto_connect_desc": "开启后，打开网页应用时会自动连接所有 crew，并在你切回该标签页时重新连接。关闭后，仅在切换到某个 crew 时才连接它。",
         "awaiting_sign_in": "等待你确认",
+        "aws_cli_refused": "未检查你的 AWS 凭证。{{diagnosis}}",
         "before_you_start": "Before you start — your AWS setup",
         "billing": "This runs in your AWS account and is billed to you — one EC2 instance, its disk, and a small S3 bucket used during setup. Charges depend on your region, size, and any discounts.",
         "cancel": "Cancel",

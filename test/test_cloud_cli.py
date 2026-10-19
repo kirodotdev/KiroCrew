@@ -668,6 +668,49 @@ class TestDoctor:
         assert out.index("reinstall it from AWS first") < out.index("sudo chown -R root:wheel")
         assert "session-manager-plugin not found" not in out
 
+    @pytest.mark.parametrize(
+        ("code", "next_step"),
+        [
+            ("other_owner", "Fix the file's ownership or permissions"),
+            ("world_writable", "Fix the file's ownership or permissions"),
+            ("root_gateway", "Start the gateway from a regular account instead of root"),
+            ("strict_policy", "Install it where only root can change the file"),
+        ],
+    )
+    def test_doctor_reports_a_refused_aws_cli_as_refused_not_missing(
+        self, monkeypatch, capsys, code, next_step
+    ):
+        """Found but refused is not missing: the install link would put the same file back."""
+        monkeypatch.setattr(cli_cloud, "resolve_aws_bin", lambda: "aws")
+        monkeypatch.setattr(shutil, "which", lambda *_a, **_k: None)
+        monkeypatch.setattr(cli_cloud, "_resolve", lambda _args: ("dev", "us-west-2"))
+        monkeypatch.setattr(
+            cli_cloud.ssm,
+            "aws_cli_refusal",
+            lambda: cli_cloud.ssm.PluginRefusal(
+                path="/opt/homebrew/bin/aws",
+                reason="the check's words",
+                remedy_command="",
+                code=code,
+            ),
+        )
+        monkeypatch.setattr(cli_cloud.ssm, "session_manager_plugin_installed", lambda: True)
+        monkeypatch.setattr(
+            cli_cloud.iam,
+            "reachability_check",
+            lambda profile, region: {"reachable": False, "note": "Profile did not resolve"},
+        )
+
+        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 0
+        out = capsys.readouterr().out
+        assert "aws CLI found at /opt/homebrew/bin/aws but refused: the check's words" in out
+        assert next_step in out
+        assert "aws CLI not found" not in out
+        assert "https://aws.amazon.com/cli/" not in out
+        # The profile was never checked, so its advice would point the wrong way.
+        assert "Profile did not resolve" not in out
+        assert "The aws CLI above was refused, so the profile was not checked." in out
+
 
 _ACCT = "123456789012"
 _DENIED_CREATE = (

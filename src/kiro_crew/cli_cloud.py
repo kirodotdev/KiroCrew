@@ -551,6 +551,18 @@ def _cloud_iam_boundary(args: argparse.Namespace) -> int:
     return 0
 
 
+#: The doctor's next step for a refused ``aws`` CLI, by ``ssm`` refusal code. A
+#: root gateway and the strict policy are not cleared by an ownership change.
+_REFUSAL_NEXT_STEP = {
+    "root_gateway": "Start the gateway from a regular account instead of root, then rerun.",
+    "strict_policy": (
+        "Install it where only root can change the file and its folders, at a path "
+        "with no symbolic links, then rerun."
+    ),
+    "": "Fix the file's ownership or permissions so the check passes, then rerun.",
+}
+
+
 def _cloud_doctor(args: argparse.Namespace) -> int:
     """Read-only diagnostics for the cloud launcher prerequisites."""
     import shutil
@@ -561,8 +573,13 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
     # (the shared deploy-engine resolver), so the doctor's verdict agrees with
     # what `kirocrew cloud` commands actually run under a GUI-launched
     # gateway's minimal PATH.
+    cli_refusal = None
     if shutil.which(resolve_aws_bin()):
         ui.ok("aws CLI found")
+    elif (cli_refusal := ssm.aws_cli_refusal()) is not None:
+        # Found but refused: the install link would put the same refused file back.
+        ui.fail(f"aws CLI found at {cli_refusal.path} but refused: {cli_refusal.reason}")
+        ui.detail(_REFUSAL_NEXT_STEP.get(cli_refusal.code, _REFUSAL_NEXT_STEP[""]))
     else:
         ui.fail("aws CLI not found — install it (https://aws.amazon.com/cli/)")
     if ssm.session_manager_plugin_installed():
@@ -595,7 +612,13 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
             )
     else:
         ui.fail("AWS not reachable")
-        ui.detail(reach.get("note", ""))
+        # With the CLI refused, the profile was never checked: the note's
+        # credential or helper advice would send the user to the wrong fix.
+        ui.detail(
+            "The aws CLI above was refused, so the profile was not checked."
+            if cli_refusal is not None
+            else reach.get("note", "")
+        )
     return 0
 
 

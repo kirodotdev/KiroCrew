@@ -9796,6 +9796,7 @@
         "approve_your_code_sso": "Approve with your company SSO account",
         "approve_your_code_sso_for": "Approve the code for {{name}} with your company SSO account",
         "awaiting_sign_in": "Waiting for your approval",
+        "aws_cli_refused": "Your AWS credentials were not checked. {{diagnosis}}",
         "before_you_start": "Before you start — your AWS setup",
         "billing": "This runs in your AWS account and is billed to you — one EC2 instance, its disk, and a small S3 bucket used during setup. Charges depend on your region, size, and any discounts.",
         "cancel": "Cancel",

@@ -18223,6 +18223,7 @@
         "auto_connect": "Conectar crews automaticamente",
         "auto_connect_desc": "Quando ativado, abrir o app web conecta cada crew automaticamente e os reconecta quando você volta para a aba. Desative para conectar um crew somente ao alternar para ele.",
         "awaiting_sign_in": "Aguardando sua aprovação",
+        "aws_cli_refused": "Suas credenciais da AWS não foram verificadas. {{diagnosis}}",
         "before_you_start": "Before you start — your AWS setup",
         "billing": "This runs in your AWS account and is billed to you — one EC2 instance, its disk, and a small S3 bucket used during setup. Charges depend on your region, size, and any discounts.",
         "cancel": "Cancel",

@@ -18489,6 +18489,7 @@
         "auto_connect": "Автоподключение команд",
         "auto_connect_desc": "Когда включено, открытие веб-приложения автоматически подключает каждую команду и переподключает их при возврате на вкладку. Отключите, чтобы подключать команду только при переходе к ней.",
         "awaiting_sign_in": "Ждёт вашего подтверждения",
+        "aws_cli_refused": "Твои учётные данные AWS не проверены. {{diagnosis}}",
         "before_you_start": "Before you start — your AWS setup",
         "billing": "This runs in your AWS account and is billed to you — one EC2 instance, its disk, and a small S3 bucket used during setup. Charges depend on your region, size, and any discounts.",
         "cancel": "Cancel",

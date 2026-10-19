@@ -17691,6 +17691,7 @@
         "auto_connect": "crew 자동 연결",
         "auto_connect_desc": "켜면 웹 앱을 열 때 모든 crew에 자동으로 연결하고, 탭으로 돌아오면 다시 연결합니다. 끄면 crew로 전환할 때만 연결합니다.",
         "awaiting_sign_in": "회원님의 승인을 기다리는 중",
+        "aws_cli_refused": "AWS 자격 증명을 확인하지 못했습니다. {{diagnosis}}",
         "before_you_start": "Before you start — your AWS setup",
         "billing": "This runs in your AWS account and is billed to you — one EC2 instance, its disk, and a small S3 bucket used during setup. Charges depend on your region, size, and any discounts.",
         "cancel": "Cancel",

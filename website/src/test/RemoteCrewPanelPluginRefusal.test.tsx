@@ -10,6 +10,8 @@ import { renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 import {
   REMOTE_CREW_PREFLIGHT_GUIDE_URL,
+  awsCliRefusalCopy,
+  awsCliRefusalReport,
   credentialHelperMissingSentence,
   pluginRefusalCopy,
   pluginRefusalReport,
@@ -260,5 +262,68 @@ describe('pluginRefusalCopy', () => {
   it('adds the command note only when there is a command', () => {
     expect(pluginRefusalCopy(refused(base))?.commandNote).toBeUndefined()
     expect(pluginRefusalCopy(refused({ ...base, session_manager_plugin_command: CHOWN }))?.commandNote).toMatch(/^Run it in a terminal/)
+  })
+})
+
+describe('RemoteCrewPanel refused AWS CLI', () => {
+  const CLI = '/opt/homebrew/bin/aws'
+  const cliRefused = (over: Partial<CloudPreflight> = {}): CloudPreflight => ({
+    ...PREFLIGHT_OK,
+    reachable: false,
+    account: '',
+    detail: 'aws CLI not found — install it first (https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)',
+    credential_helper_missing: 'aws',
+    aws_cli_refused_path: CLI,
+    aws_cli_refused_reason: 'executable is owned by another user (uid 502)',
+    aws_cli_refused_code: 'other_owner',
+    aws_cli_refused_owner: 'workbrew',
+    aws_cli_refused_owner_uid: 502,
+    ...over,
+  })
+
+  it('says where the CLI was found and why, not that it is missing', async () => {
+    vi.mocked(api.cloudPreflight).mockResolvedValue(cliRefused())
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    const notice = (await screen.findByText(/^Your AWS credentials were not checked\. Found at \/opt\/homebrew\/bin\/aws, /)).closest('[role="alert"]') as HTMLElement
+    expect(notice).toHaveTextContent(/belongs to another account \(workbrew, user ID 502\)/)
+    expect(within(notice).getByText('executable is owned by another user (uid 502)')).toBeInTheDocument()
+    const row = notice.closest('li') as HTMLElement
+    // No install link, no helper advice and no command: none clears this refusal.
+    expect(row).not.toHaveTextContent(/not found|install it first|credential_process/)
+    expect(within(row).queryByRole('button', { name: /Copy command/i })).toBeNull()
+    const next = within(row).getByText(/^Fix the file’s ownership or permissions, then re-check\./)
+    expect(notice.contains(next)).toBe(false)
+    expect(within(row).getByRole('link', { name: 'Open the troubleshooting steps in the Remote Crew on EC2 guide' }))
+      .toHaveAttribute('href', REMOTE_CREW_PREFLIGHT_GUIDE_URL)
+  })
+
+  it('gives a root gateway the step that clears it', () => {
+    const copy = awsCliRefusalCopy(cliRefused({ aws_cli_refused_code: 'root_gateway' }))
+    expect(copy?.failure).toMatch(/is running as root, and it runs no helper program as root\.$/)
+    expect(copy?.steps.text).toMatch(/^Start .+ from a regular account instead of root, then re-check\.$/)
+    expect(copy?.commandNote).toBeUndefined()
+  })
+
+  it('gives a world-writable CLI the ownership step', () => {
+    const copy = awsCliRefusalCopy(cliRefused({ aws_cli_refused_code: 'world_writable' }))
+    expect(copy?.steps.text).toMatch(/^Fix the file’s ownership or permissions, then re-check\./)
+  })
+
+  it('hands the agent its own report id, code and the check’s words', () => {
+    const p = cliRefused()
+    const copy = awsCliRefusalCopy(p)!
+    expect(awsCliRefusalReport(p, copy)).toMatchObject({
+      id: 'remote-crew-aws-cli-refused',
+      code: 'other_owner',
+      message: copy.failure,
+      detail: 'executable is owned by another user (uid 502)',
+    })
+  })
+
+  it('has nothing to say once credentials resolve or when no CLI was refused', () => {
+    expect(awsCliRefusalCopy(cliRefused({ reachable: true, account: '1234' }))).toBeNull()
+    expect(awsCliRefusalCopy(cliRefused({ aws_cli_refused_path: '' }))).toBeNull()
   })
 })
