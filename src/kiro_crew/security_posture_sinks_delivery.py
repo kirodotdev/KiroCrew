@@ -298,6 +298,53 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "shared code: a channel cannot forget what it does not call.",
     ),
     (
+        "iMessage session title",
+        "imessage/transport_dispatch.py",
+        "The session title this channel derives from a new conversation's first inbound "
+        "message, stored in transcript metadata and served to dashboard readers. Scrubbed "
+        "before the 40-character cut, so a credential straddling it is not halved past the "
+        "scan; the row itself is scrubbed at `_redact_at_write_boundary`. This module's "
+        "`redact_handle` is gate-side log hygiene, which is why its siblings "
+        "`imessage/client.py` and `imessage/transport.py` are non-egress.",
+    ),
+    (
+        "Webex session title",
+        "webex/transport_dispatch.py",
+        "Same session-title egress as the iMessage entry.",
+    ),
+    (
+        "Feishu session title",
+        "feishu/transport_dispatch.py",
+        "Same session-title egress as the iMessage entry.",
+    ),
+    (
+        "Teams session title",
+        "teams/transport_dispatch.py",
+        "Same session-title egress as the iMessage entry.",
+    ),
+    (
+        "WeCom session title",
+        "wecom/transport_dispatch.py",
+        "Same session-title egress as the iMessage entry.",
+    ),
+    (
+        "Weixin session title",
+        "weixin/transport_dispatch.py",
+        "Same session-title egress as the iMessage entry.",
+    ),
+    (
+        "WhatsApp session title",
+        "whatsapp/transport_dispatch.py",
+        "Same session-title egress as the iMessage entry.",
+    ),
+    (
+        "Telegram live dashboard projection",
+        "telegram/dispatch/turn_engine.py",
+        "Both halves of a turn, scrubbed before `project_channel_turn_live` broadcasts "
+        "them to the linked dashboard slot, which does not route through the write "
+        "boundary. The scrubbed body also feeds the persisted rows.",
+    ),
+    (
         "Webex delivery",
         "webex/renderer.py",
         "The Webex DELIVERY boundary. Webex renders markdown, so it reassembles a "

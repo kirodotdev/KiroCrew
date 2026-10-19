@@ -68,6 +68,7 @@ from kiro_crew.messaging.link import (
 )
 from kiro_crew.messaging.queue_drain import entries_queued_by, owner_token
 from kiro_crew.mirror_admission import sign_mirror_admission
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.safety_override import safety_override
 from kiro_crew.session_lifecycle import (
     STOP_DECLINED_COMPACTING_TEXT,
@@ -501,7 +502,8 @@ class WeComDispatcher:
                 session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
             )
         if is_new:
-            title = (user_text or "").strip().replace("\n", " ")[:40] or "WeCom"
+            title = redact_log_via_context(user_text or "").strip().replace("\n", " ")[:40]
+            title = title or "WeCom"
             self.conv_log.set_title(session_key, title)
 
     async def _notice_bubble(self, inbound: "WeComInbound", text: str) -> None:

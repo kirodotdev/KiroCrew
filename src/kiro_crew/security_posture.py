@@ -443,7 +443,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # can reassemble a credential that scan could not see.
         "imessage/client.py",
         "imessage/transport.py",
-        "imessage/transport_dispatch.py",
         # The WhatsApp turn lifecycle. What the scan matches here is the
         # post-answer redaction NOTICE pair -- ``count_redaction_tags`` over the
         # delivered chunks and ``redaction_notice`` to build the follow-up
@@ -998,7 +997,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "slack/gateway_runtime/cron_fire.py",
         "slack/gateway_runtime/heartbeat_turns.py",
         "slack/gateway_runtime/install_repair.py",
-        "slack/gateway_runtime/nudge_channel_fire.py",
         "slack/gateway_runtime/nudge_wiring.py",
         "slack/gateway_runtime/result_egress.py",
         "slack/gateway_runtime/service_boot.py",

@@ -46,6 +46,7 @@ from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.session_lifecycle import (
     STOP_DECLINED_COMPACTING_TEXT,
     compaction_in_flight,
@@ -725,7 +726,8 @@ class WhatsAppDispatcher:
         if reply_text:
             self.conv_log.append(session_key, "assistant", reply_text, mid=mint_row_mid())
         if is_new:
-            title = (user_text or "").strip().replace("\n", " ")[:40] or "WhatsApp"
+            title = redact_log_via_context(user_text or "").strip().replace("\n", " ")[:40]
+            title = title or "WhatsApp"
             self.conv_log.set_title(session_key, title)
 
     async def _say(self, chat_jid: str, text: str) -> bool:

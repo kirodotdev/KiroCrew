@@ -59,6 +59,7 @@ from kiro_crew.messaging.renderer import SilentRenderer
 from kiro_crew.messaging.session_resume import persisted_session_agent
 from kiro_crew.messaging.session_trust import is_session_trusted
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.safety_override import safety_override
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.start_priority import person_priority
@@ -465,18 +466,22 @@ async def _run_turn(
             # writer were skipped.
             dashboard_restricted = await self._session_restricted(session_key)
             if not dashboard_restricted:
+                # BOTH sinks and BOTH halves: a persist-side scrub is too late.
+                safe_text, safe_reply = await asyncio.to_thread(
+                    lambda: (redact_log_via_context(text), redact_log_via_context(accumulated))
+                )
                 mirror_mids = project_channel_turn_live(
                     self.dashboard_state,
                     session_key,
-                    text,
-                    accumulated,
+                    safe_text,
+                    safe_reply,
                     broadcast_user=True,
                 )
                 await asyncio.to_thread(
                     self._persist_turn,
                     session_key,
-                    text,
-                    accumulated,
+                    safe_text,
+                    safe_reply,
                     is_new_own_session,
                     agent=agent,
                     mirror_mids=mirror_mids,

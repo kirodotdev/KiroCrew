@@ -25,6 +25,7 @@ from kiro_crew.dashboard.state import (
     row_mid,
 )
 from kiro_crew.history import append_rows_if_absent_off_loop
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -723,7 +724,7 @@ def inject_cron_result_to_dashboard(
     # Rows this call owes the durable transcript, in the order they happened.
     # Collected rather than written per row: the pair is flushed once, below,
     # under a single ``atomic_appends`` hold -- see the flush for why.
-    durable_rows: list[tuple[str, str, str, str | None]] = []
+    durable_rows: list[tuple[str, str, str, "str | None"]] = []
     durable_meta: list[dict[str, Any] | None] = []
 
     def _reflect(role: str, content: str, cls: str, meta: dict[str, Any] | None = None) -> None:
@@ -807,8 +808,7 @@ def inject_cron_result_to_dashboard(
             # run boundary and the user/assistant alternation hold whichever body
             # it gets. Redacted BEFORE the comparison, because the redacted form
             # is what a previous run stored.
-            safe_prompt, _ = redact_exfiltration_urls(prompt)
-            safe_prompt, _ = redact_credentials(safe_prompt)
+            safe_prompt = redact_log_via_context(prompt)
             if _prompt_already_recorded(slot, safe_prompt, marker):
                 # Mark the row a reference STRUCTURALLY: the invisible
                 # _REFERENCE_MARKER rides in the header's protected block right
@@ -826,8 +826,7 @@ def inject_cron_result_to_dashboard(
                 f"# Cron Run: {safe_name}{stamp}{header_marker}\n\n{prompt_body}",
                 "msg msg-u",
             )
-        safe_result, _ = redact_exfiltration_urls(result_text)
-        safe_result, _ = redact_credentials(safe_result)
+        safe_result = redact_log_via_context(result_text)
         _reflect(
             "assistant",
             f"# Cron Job Result: {safe_name}{stamp}{marker}\n\n{safe_result}",

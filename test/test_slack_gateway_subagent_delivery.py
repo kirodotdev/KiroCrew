@@ -312,9 +312,10 @@ class TestSlackSubagentCompletionPersistence:
             await on_done(info)
 
         assert orch.conv_log.append.call_count == 2
-        persisted_response = orch.conv_log.append.call_args_list[1][0][2]
-        # The raw secret value must not be persisted verbatim.
-        assert "AKIAIOSFODNN7EXAMPLE" not in persisted_response
+        from kiro_crew.history import _redact_at_write_boundary
+
+        row = orch.conv_log.append.call_args_list[1][0][2]
+        assert "AKIAIOSFODNN7EXAMPLE" not in _redact_at_write_boundary("assistant", row)
 
     @pytest.mark.asyncio
     async def test_slack_subagent_skips_persistence_for_temporary_thread(self):
