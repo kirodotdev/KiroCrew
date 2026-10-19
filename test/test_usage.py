@@ -67,22 +67,15 @@ class TestParseSessions:
             # ``s.refused_transcripts ?? 0`` would synthesise the promise of
             # completeness the payload never made.
             "refused_transcripts": 0,
-            # No session documents either, so the token estimate is a zero
-            # measurement in the same complete shape.
-            "estimated_tokens": {
-                "this_month": {"input": 0, "output": 0, "requests": 0},
-                "last_month": {"input": 0, "output": 0, "requests": 0},
-                "unreadable_sessions": 0,
-            },
         }
         assert sessions_dir.exists() == directory_exists
 
-    def test_listing_oserror(self, tmp_path):
+    def test_iterdir_oserror(self, tmp_path):
         d = tmp_path / "cli"
         d.mkdir()
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch("os.scandir", side_effect=OSError("boom")),
+            patch("pathlib.Path.iterdir", side_effect=OSError("boom")),
         ):
             result = _parse_sessions()
             assert "error" in result
@@ -92,7 +85,7 @@ class TestParseSessions:
             assert result["error"] == "cannot read sessions directory"
             assert result["code"] == "sessions_dir_unreadable"
 
-    def test_listing_oserror_keeps_the_whole_statistics_shape(self, tmp_path):
+    def test_iterdir_oserror_keeps_the_whole_statistics_shape(self, tmp_path):
         """An unreadable directory reports the reason WITHOUT changing the shape.
 
         Consumers read the period keys unconditionally --
@@ -115,7 +108,7 @@ class TestParseSessions:
         d.mkdir()
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch("os.scandir", side_effect=OSError("boom")),
+            patch("pathlib.Path.iterdir", side_effect=OSError("boom")),
         ):
             result = _parse_sessions()
 
@@ -658,7 +651,7 @@ class TestApiKiroUsage:
     async def test_an_unreadable_directory_still_answers_the_full_shape(self, tmp_path):
         """The reason rides WITH the statistics, and billing is unaffected.
 
-        A file where the transcript directory should be makes ``os.scandir()`` raise
+        A file where the transcript directory should be makes ``iterdir()`` raise
         a real ``NotADirectoryError`` -- no mock -- which is the branch a
         roaming-profile or permission-denied home takes. The route answers 200
         because billing is a separate half of the payload, so the sessions half

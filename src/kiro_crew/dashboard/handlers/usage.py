@@ -777,9 +777,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _parse_token_history,
     )
     from kiro_crew.dashboard.handlers.usage_sessions import (  # noqa: F401
-        _CLI_SESSION_JSON_MAX_BYTES,
-        _EST_CHARS_PER_TOKEN,
-        _EST_COUNT_MAX,
         _SESSIONS_CACHE,
         _SESSIONS_CACHE_LOCK,
         _SESSIONS_CACHE_TS,
@@ -787,12 +784,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _USAGE_SESSION_WAIT_SECONDS,
         _cached_parse_sessions,
         _empty_session_summary,
-        _est_count,
-        _est_percent,
-        _estimate_cli_tokens,
         _parse_sessions,
-        _sum_estimate,
-        _turn_window,
     )
     from kiro_crew.dashboard.handlers.usage_spend import (  # noqa: F401
         _BARE_CHAT_SLOT_RE,
@@ -833,10 +825,6 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.paths import data_home, kiro_sessions_dir  # noqa: F401
     from kiro_crew.constants import crew_log_enabled, env_file_display  # noqa: F401
     from kiro_crew.context_blocks import USER_LABEL  # noqa: F401
-    from kiro_crew.hooks import (  # noqa: F401
-        FileTooLargeError,
-        safe_read_file_bytes_nolink,
-        validate_file_path,
-    )
+    from kiro_crew.hooks import validate_file_path  # noqa: F401
     from kiro_crew.jsonl_util import bounded_records  # noqa: F401
     from kiro_crew.messaging.link import telemetry_channel_of  # noqa: F401
