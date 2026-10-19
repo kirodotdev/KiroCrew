@@ -298,6 +298,7 @@ async def api_hook_test(request: web.Request) -> web.Response:
     # circular import: kiro_crew.hooks pulls dashboard state at module load, so
     # this handler defers the import to call time (matches _get_hook_store above).
     from kiro_crew.hooks import (  # noqa: F811
+        HOOK_EVENT_SESSION_LANE_CHANGED,
         HOOK_EVENT_STOP,
         HOOK_EVENT_USER_PROMPT_SUBMIT,
         run_script_hook,
@@ -338,6 +339,15 @@ async def api_hook_test(request: web.Request) -> web.Response:
             "hook_event_name": hook.event,
             "cwd": os.getcwd(),
             "assistant_text": context,
+        }
+    elif hook.event == HOOK_EVENT_SESSION_LANE_CHANGED:
+        # Test has no transition, so the ids here are placeholders.
+        hook_event = {
+            "hook_event_name": hook.event,
+            "cwd": os.getcwd(),
+            "slot": "chat-1",
+            "added": ["done"],
+            "removed": ["review"],
         }
     result = await run_script_hook(hook, context, hook_event)
     _sel().log_tool_invocation(

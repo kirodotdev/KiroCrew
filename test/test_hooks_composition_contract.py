@@ -68,10 +68,15 @@ _BASE_NAMES = frozenset("""
     jsonl_util
     Any AutoReplyHook CORE_MCP_SERVER CU_CLASS_OBSERVE Callable ContextRule ContextVar
     FileTooLargeError GATE_CRASH_REASON HOOK_EVENTS HOOK_EVENTS_AGENT_REQUESTED
-    HOOK_EVENTS_ALL HOOK_EVENTS_KAS_ONLY HOOK_EVENT_AGENT_SPAWN HOOK_EVENT_FILE_CREATED
+    HOOK_EVENTS_ALL HOOK_EVENTS_KAS_ONLY
+    HOOK_EVENT_AGENT_SPAWN HOOK_EVENT_FILE_CREATED
+    _TOKEN_ALLOWED
+    _lane_dispatch_is_permitted _lane_dispatch_tasks _session_lane_matcher_context
+    _status_tag_ids dispatch_session_lane_changed_bulk
     HOOK_EVENT_FILE_DELETED HOOK_EVENT_FILE_EDITED HOOK_EVENT_POST_TASK_EXECUTION
     HOOK_EVENT_POST_TOOL_USE HOOK_EVENT_PRE_TASK_EXECUTION HOOK_EVENT_PRE_TOOL_USE
     HOOK_EVENT_STOP HOOK_EVENT_USER_PROMPT_SUBMIT HOOK_EVENT_USER_TRIGGERED
+    HOOK_EVENT_SESSION_LANE_CHANGED
     HOOK_INJECT_CONTEXT HOOK_MODIFY HOOK_PASSTHROUGH HOOK_REPLY HOOK_TIMEOUT_DEFAULT
     HOOK_TIMEOUT_MAX HOOK_TIMEOUT_MIN HookManager HookResult HooksConfig Iterable
     MAX_FILE_BYTES Mapping Path ScriptHook ScriptHookResult ScriptHookStore Sequence
@@ -223,6 +228,10 @@ _FACADE_DEFS = (
     "_screen_windows_links",
     "FileTooLargeError",
     "ScriptHook",
+    # The SessionLaneChanged matcher grammar. Kept on the facade beside
+    # HOOK_EVENT_SESSION_LANE_CHANGED because the grammar is the EVENT's
+    # compatibility surface once a hook binds to it, not the writer's.
+    "_session_lane_matcher_context",
 )
 
 #: Collaborators the facade re-offers that belong to another module. Their identity is
@@ -311,7 +320,7 @@ def _run_child(tmp_path: Path, script: str, *args: str) -> None:
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
     """Over a hundred production modules and the tests read private names off this module as
     well as public ones, so every module-level binding survives the split."""
-    assert len(_BASE_NAMES) == 197
+    assert len(_BASE_NAMES) == 204
     assert sorted(name for name in _BASE_NAMES if not hasattr(hooks_mod, name)) == []
 
 
@@ -485,7 +494,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     assert defined == set(_FACADE_DEFS)
-    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 93
+    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 94
 
 
 def test_the_owners_log_as_the_facade() -> None:
