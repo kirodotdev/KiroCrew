@@ -95,6 +95,30 @@ CREW_LEVEL_EVENT_KIND = RADAR_CREW_LEVEL_EVENT_KIND
 SKIP_SCOPES = RADAR_SKIP_SCOPES
 DEFAULT_SKIP_SCOPE = RADAR_DEFAULT_SKIP_SCOPE
 
+#: The scopes a HUMAN can hand back. A pass with one of these left the issue waiting
+#: on a person; when that person removes the needs-human label (a removal the crew
+#: made does not count) the gateway records the answer and the pass stops standing in
+#: the shared index (:func:`read_skips`). The scope-gate passes (``architecture``,
+#: ``new-feature``, ``needs-design``, ``breaking-change``) are here too: each says
+#: "somebody has to decide whether to do this", and a maintainer removing the label
+#: after deciding on the issue is that decision. Every other scope is a finding about
+#: the issue itself (duplicate, already fixed, not reproducible, ...) and stays skipped.
+ANSWERABLE_SKIP_SCOPES = frozenset(
+    {
+        "needs-decision",
+        "needs-investigation",
+        "architecture",
+        "new-feature",
+        "needs-design",
+        "breaking-change",
+    }
+)
+
+#: The progress-line kind an answer is filed under. An answer is the human's reply to
+#: the question the crew published, and ``reply`` is the closed vocabulary's word for
+#: that; a kind of its own would widen what the record tool accepts.
+ANSWERED_EVENT_KIND = "reply"
+
 #: Work-item fields an update may EMPTY by name. An omitted field means
 #: "unchanged"; the only way to erase one is to name it here (the route's and the
 #: tool's ``clear`` list, or an explicit ``None`` in a store-level patch), which the

@@ -666,6 +666,7 @@ def _crew_page(owner: str, repo: str, crew_id: str, limit: int, root: Any) -> di
             # ``issue_radar_crew_read`` serves.
             "evicted_items": folded["evicted_items"],
             "evicted_skips": folded["evicted_skips"],
+            "evicted_answers": int(folded.get("evicted_answers") or 0),
         },
     }
 

@@ -9,6 +9,8 @@ here through :mod:`kiro_crew.apps.builtins.issue_radar.backend.crew_store`.
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +35,8 @@ from .crew_store_log import (
     crew_log_units,
 )
 from .crew_store_records import (
+    ANSWERABLE_SKIP_SCOPES,
+    ANSWERED_EVENT_KIND,
     CREW_LEVEL_EVENT_KIND,
     EDITING_PHASES,
     EVENT_KINDS,
@@ -187,17 +191,67 @@ def read_skips(owner: str, repo: str, root: Path | None = None) -> dict[str, dic
     decision that already stood. A pass whose unit crew-log retention has already
     collected is gone from this index; that is the same bound every fold of the crew
     log lives under, and the spec states it.
+
+    HUMAN ANSWERS. A pass with a scope in ``ANSWERABLE_SKIP_SCOPES`` (``needs-decision``,
+    ``needs-investigation`` and the four scope gates) stops standing once a human
+    answers it -- the gateway's sweep records the answer when
+    a person, not a crew, removes the needs-human label
+    (:func:`record_human_answer`). The pass itself is never deleted: a row older than
+    the newest answer on its number is left out here, and a pass recorded AFTER the
+    answer stands again, so "still undecided, skipped again" re-indexes the number.
     """
+    ledgers = _all_ledgers(owner, repo, root)
+    answers = _newest_answers(ledgers)
     out: dict[str, dict[str, Any]] = {}
-    for crew in list_crews(owner, repo, root, include_retired=True):
-        cid = str(crew.get("id") or "")
-        if not cid:
-            continue
-        for key, row in read_ledger(owner, repo, cid, root)["skips"].items():
+    for ledger in ledgers:
+        for key, row in ledger["skips"].items():
+            if _answered_over(row, answers.get(key)):
+                continue
             standing = out.get(key)
             if standing is None or _skip_precedence(row) < _skip_precedence(standing):
                 out[key] = dict(row)
     return out
+
+
+def _all_ledgers(owner: str, repo: str, root: Path | None) -> list[dict[str, Any]]:
+    """Every crew's folded ledger in the repository, retired crews included."""
+    out: list[dict[str, Any]] = []
+    for crew in list_crews(owner, repo, root, include_retired=True):
+        cid = str(crew.get("id") or "")
+        if cid:
+            out.append(read_ledger(owner, repo, cid, root))
+    return out
+
+
+def _newest_answers(ledgers: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """The newest human answer per number across *ledgers*, keyed by ``str(number)``."""
+    out: dict[str, dict[str, Any]] = {}
+    for ledger in ledgers:
+        for key, row in (ledger.get("answered") or {}).items():
+            standing = out.get(key)
+            if standing is None or str(row.get("at") or "") > str(standing.get("at") or ""):
+                out[key] = dict(row)
+    return out
+
+
+def _answered_over(row: Mapping[str, Any], answer: Mapping[str, Any] | None) -> bool:
+    """Whether *answer* hands the pass *row* back: an answerable scope, answered later.
+
+    A row whose writer had already seen this answer (or a newer one) when it recorded
+    the pass (``answered_at``) is causally after it, so it stands whatever its clock.
+    """
+    if answer is None or row.get("scope") not in ANSWERABLE_SKIP_SCOPES:
+        return False
+    at = str(answer.get("at") or "")
+    seen = str(row.get("answered_at") or "")
+    if seen and seen >= at:
+        return False
+    return at > str(row.get("decided_at") or "")
+
+
+def read_answers(owner: str, repo: str, root: Path | None = None) -> dict[str, dict[str, Any]]:
+    """The newest recorded human answer per number, across the repository's crews."""
+    return _newest_answers(_all_ledgers(owner, repo, root))
 
 
 def _skip_precedence(row: dict[str, Any]) -> tuple[bool, str, str]:
@@ -280,6 +334,7 @@ def _entry_data(
     skip_reason: str | None = None,
     skip_scope: str = "",
     skip_deferred: bool = False,
+    skip_answered_at: str = "",
 ) -> dict[str, Any]:
     """The ``radar/recorded`` entry for one update -- only the fields the call set.
 
@@ -335,6 +390,8 @@ def _entry_data(
             # Another crew's decision on this number already stood when this pass was
             # recorded: the token that orders the two without a clock.
             data["skip"]["deferred"] = True
+        if skip_answered_at:
+            data["skip"]["answered_at"] = skip_answered_at
     data["event"] = event_text
     data["event_kind"] = event_kind
     return data
@@ -530,6 +587,67 @@ def record_crew_checkpoint(
         return _append(crew_id, session_id, data, base, root)
 
 
+def record_human_answer(
+    owner: str,
+    repo: str,
+    crew_id: str,
+    number: int,
+    actor: str,
+    at: str,
+    root: Path | None = None,
+    *,
+    session_id: str = "",
+) -> dict[str, Any]:
+    """Record that a human answered a needs-human pass on *number*, into *crew_id*'s log.
+
+    Written by the gateway's sweep, never by the record tool: the tool's entry builder
+    has no ``answered`` field, so a crew cannot hand an issue back to itself. *at* is
+    when the forge says the needs-human label was removed; it is normalised to the
+    fold's own UTC spelling so it compares with a pass's ``decided_at`` as text. The
+    entry patches no work item (see the ``radar`` fold); the pass stays recorded and
+    :func:`read_skips` stops answering for it.
+    """
+    number = int(number)
+    stamp = normalize_forge_time(at)
+    if not stamp:
+        raise CrewStoreError(f"unreadable answer time {at!r}")
+    who = str(actor or "").strip()
+    if not who:
+        raise CrewStoreError("an answer needs the forge user who gave it")
+    _require_crew_log(session_id)
+    with _crew_write_lock(crew_id):
+        base = _prepare_write(owner, repo, crew_id, session_id, root)
+        data: dict[str, Any] = {"crew_id": crew_id, "owner": owner, "repo": repo, "number": number}
+        data["answered"] = {"actor": who[:256], "at": stamp}
+        data["event"] = (
+            f"a human answered (needs-human label removed by @{who[:256]}); "
+            "the pass no longer stands"
+        )
+        data["event_kind"] = ANSWERED_EVENT_KIND
+        return _append(crew_id, session_id, data, base, root)
+
+
+def normalize_forge_time(value: Any) -> str:
+    """A forge ISO-8601 stamp as the fold's ``%Y-%m-%dT%H:%M:%S.%fZ`` UTC text, or ``""``.
+
+    GitHub answers ``...Z``, GitLab ``....123Z`` or ``+00:00``; the pass's
+    ``decided_at`` is the fold's own spelling, and the two are compared as strings, so
+    every answer time is brought to that one spelling first.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.endswith("Z") or text.endswith("z"):
+        text = text[:-1] + "+00:00"
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return ""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
 def _prepare_write(owner: str, repo: str, crew_id: str, session_id: str, root: Path | None) -> Any:
     """The fold a write validates against, with the one-time carry run -- the SAME
     sequence for every writer.
@@ -682,12 +800,14 @@ def commit_work_progress(
                         "commit that before entering an editing phase on another issue"
                     )
         deferred = False
+        answered_at = ""
         if skip_reason is not None:
             # Observe the shared index BEFORE recording: a pass on a number another
             # crew already decided defers to that decision, and says so in the entry,
             # so the union orders the two by what this writer saw and not by clocks.
             standing = read_skips(owner, repo, root).get(str(number))
             deferred = standing is not None and str(standing.get("crew_id") or "") != crew_id
+            answered_at = _answer_over_own_pass(owner, repo, root, number)
         data = _entry_data(
             owner,
             repo,
@@ -699,5 +819,20 @@ def commit_work_progress(
             skip_reason=skip_reason,
             skip_scope=skip_scope,
             skip_deferred=deferred,
+            skip_answered_at=answered_at if skip_reason is not None else "",
         )
         return _append(crew_id, session_id, data, base, root)
+
+
+def _answer_over_own_pass(owner: str, repo: str, root: Path | None, number: int) -> str:
+    """The repository-wide answer time on *number* when the writer is recording a pass
+    after it, else ``""``.
+
+    The sweep writes an answer into the log of the crew it woke, which is another crew
+    whenever the one that recorded the pass is paused. That crew's own fold then never
+    sees the answer, and without it a re-skip could not replace the superseded row.
+    The time is also the causal mark that orders the new pass after the answer: the
+    writer observed it, so a local clock behind the forge cannot hide the pass.
+    """
+    answer = read_answers(owner, repo, root).get(str(int(number)))
+    return str((answer or {}).get("at") or "")
