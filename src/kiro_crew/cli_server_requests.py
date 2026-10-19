@@ -19,7 +19,6 @@ import sys
 import urllib.error
 import urllib.request
 
-from kiro_crew.app_lifecycle_client import _deadline_expired
 from kiro_crew.cli_server_peer import (
     _CLI_LOOPBACK,
     _GatewayPeerRefused,
@@ -157,7 +156,9 @@ def _token(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
     except Exception as exc:
-        if _deadline_expired(exc):
+        from kiro_crew.loopback_http import deadline_expired
+
+        if deadline_expired(exc):
             # Something is listening and took the request, so the gateway is
             # alive. Saying "could not reach" sends the operator to restart a
             # healthy gateway. The line names no other probe command: the
@@ -328,8 +329,20 @@ def _logout(port: int) -> None:
     except urllib.error.HTTPError as e:
         print(f"❌ Failed to revoke sessions: HTTP {e.code}")
         sys.exit(1)
-    except (urllib.error.URLError, OSError):
-        print("❌ Gateway not running — start it with: kirocrew gateway")
+    except (urllib.error.URLError, OSError) as e:
+        # A timeout means the gateway took the request and is still working, so
+        # it is up but busy, not gone -- saying "not running" would send the
+        # operator to restart a healthy gateway. A refused connection keeps the
+        # not-running remedy.
+        from kiro_crew.loopback_http import deadline_expired
+
+        if deadline_expired(e):
+            print(
+                f"❌ Gateway on port {port} is up but did not answer in time "
+                "(busy) — try again in a moment."
+            )
+        else:
+            print("❌ Gateway not running — start it with: kirocrew gateway")
         sys.exit(1)
 
 
@@ -410,8 +423,21 @@ def _update_approve() -> None:
             f"❌ Gateway refused the approval (HTTP {e.code})" + (f": {detail}" if detail else "")
         )
         sys.exit(1)
-    except (urllib.error.URLError, OSError):
-        print("❌ Gateway is not running — start it, or update directly with: kirocrew update")
+    except (urllib.error.URLError, OSError) as e:
+        # A timeout means the gateway took the request and is still working, so
+        # it is up but busy, not gone. A refused connection keeps the
+        # not-running remedy. The request carries a single-use nonce the gateway
+        # may already have consumed, so the busy line does not invite a retry
+        # (a re-run would read the nonce as gone and look like a stale arm).
+        from kiro_crew.loopback_http import deadline_expired
+
+        if deadline_expired(e):
+            print(
+                f"❌ Gateway on port {port} is up but busy (did not answer); it may "
+                "have taken the request — check the dashboard before re-running."
+            )
+        else:
+            print("❌ Gateway is not running — start it, or update directly with: kirocrew update")
         sys.exit(1)
     print(f"\n✅ Approved. The gateway is applying v{body.get('version', pending.version)}")
     print("   and will restart itself; watch progress in the dashboard.")

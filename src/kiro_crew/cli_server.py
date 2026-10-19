@@ -28,7 +28,6 @@ from typing import TYPE_CHECKING, NoReturn
 
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import __version__, dep_sync, platform_compat
-from kiro_crew.app_lifecycle_client import _deadline_expired
 from kiro_crew.beacon import distribution, is_default_home
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
@@ -190,8 +189,26 @@ def _file_delivery_approve() -> None:
             f"❌ Gateway refused the approval (HTTP {e.code})" + (f": {detail}" if detail else "")
         )
         sys.exit(1)
-    except (urllib.error.URLError, OSError):
-        print("❌ Gateway is not running — start it, then re-run: kirocrew file-delivery approve")
+    except (urllib.error.URLError, OSError) as e:
+        # A timeout means the gateway took the request and is still working, so
+        # it is up but busy, not gone. A refused connection keeps the
+        # not-running remedy. The request carries a single-use nonce the gateway
+        # may already have consumed, so the busy line does not invite a retry
+        # (a re-run would read the nonce as gone and look like a stale arm).
+        # Imported in-function: a module-scope import would surface on this
+        # split module's star-import facade.
+        from kiro_crew.loopback_http import deadline_expired
+
+        if deadline_expired(e):
+            print(
+                f"❌ Gateway on port {port} is up but busy (did not answer); it may "
+                "have taken the request — check the dashboard before re-running."
+            )
+        else:
+            print(
+                "❌ Gateway is not running — start it, then re-run: "
+                "kirocrew file-delivery approve"
+            )
         sys.exit(1)
     grant = body.get("grant") if isinstance(body, dict) else None
     dest = grant.get("destination_class") if isinstance(grant, dict) else pending.destination_class
@@ -212,9 +229,20 @@ def _status(args: argparse.Namespace) -> None:
         else:
             print(f"Kiro Crew gateway is running but returned HTTP {e.code}.")
         return
-    except (urllib.error.URLError, OSError):
-        print("Kiro Crew gateway is not running.")
-        print("  Start it with: kirocrew gateway")
+    except (urllib.error.URLError, OSError) as e:
+        # A timeout means something took the request, so a gateway IS listening
+        # -- it is up but busy (a loop thread starved of the GIL), not gone.
+        # Saying "not running" here would send the operator to restart a
+        # healthy gateway. Imported in-function: a module-scope import would
+        # surface on this split module's star-import facade.
+        from kiro_crew.loopback_http import deadline_expired
+
+        if deadline_expired(e):
+            print(f"Kiro Crew gateway is running on port {port} but is busy (did not answer).")
+            print("  It may be under load; try again in a moment.")
+        else:
+            print("Kiro Crew gateway is not running.")
+            print("  Start it with: kirocrew gateway")
         return
     except Exception:
         print("Kiro Crew gateway is running but returned an unexpected response.")

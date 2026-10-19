@@ -94,6 +94,20 @@ class TestTriggerCronJob:
         assert ok is False
         assert "cannot reach gateway" in msg
 
+    def test_slow_gateway_reports_busy(self, tmp_path):
+        """A read timeout means the gateway took the trigger but is slow: busy, not unreachable."""
+        secret_path = tmp_path / ".local_secret"
+        secret_path.write_text("fake")
+        with patch(
+            "kiro_crew.cron_trigger.loopback_urlopen",
+            side_effect=TimeoutError("timed out"),
+        ):
+            ok, msg = trigger_cron_job("abc12345", 19999, secret_path)
+        assert ok is False
+        assert "busy" in msg
+        assert "the trigger may have run" in msg
+        assert "cannot reach gateway" not in msg
+
     def test_sends_secret_header(self, mock_dashboard):
         port, cfg_dir = mock_dashboard
         trigger_cron_job("abc12345", port, cfg_dir / ".local_secret")

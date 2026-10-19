@@ -636,6 +636,26 @@ gateway that answered 403 or is busy is running. A loop thread starved of the GI
 answers in 12-14 s while healthy, and calling that unreachable sends the
 operator to restart a gateway that works.
 
+The same busy-vs-unreachable split applies to the other CLI calls that reach the
+local gateway (`TimeoutError` is an `OSError`, so a timeout must be told apart
+from a refused connection or a slow live gateway reads as down). `kirocrew spawn
+list`/`spawn run`, `kirocrew logout`, `kirocrew update` approve, `kirocrew
+file-delivery approve`, `kirocrew cron trigger` and `kirocrew status` classify a
+timeout through the one public `loopback_http.deadline_expired` seam (beside
+`loopback_urlopen`): a read timeout or a `URLError` wrapping a connect timeout
+reports the gateway as up but busy, and only a refused connection keeps the
+not-running remedy. The two `kirocrew doctor` gateway reads — the Connectivity
+gateway row and the adaptive-controller row — use a short 2 s timeout, which on
+native Windows coincides with the SYN-retry delay before a closed loopback port
+reports a refusal; so they count only a bare read `TimeoutError` (the connection
+was accepted and the gateway then stalled) as busy and report a connect-phase
+timeout as not running, rather than reading a stopped gateway as busy. A call
+whose request is not idempotent does not advise a blind retry: `spawn run` and
+`cron trigger` carry a request the gateway may act on after the client times out
+(spawn points at `kirocrew spawn list`), and `update` approve and `file-delivery`
+approve carry a single-use nonce the gateway may already have consumed, so their
+busy lines point at the dashboard rather than inviting a re-run.
+
 The contract exists because stdout is parsed, not just read by a human. The
 remote-mint path (`kiro_crew.instances.token_mint.mint_remote_token`) runs
 `kirocrew token` on a remote host over SSH and regex-extracts the JWT from its

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from kiro_crew.config.loader import read_local_secret
 from kiro_crew.dashboard.urls import dashboard_socket_path
-from kiro_crew.loopback_http import unix_socket_urlopen
+from kiro_crew.loopback_http import deadline_expired, unix_socket_urlopen
 from kiro_crew.port_resolution import resolve_client_port_ex
 from kiro_crew.terminal_safe import safe_terminal_line
 
@@ -76,17 +76,6 @@ def _socket_unavailable(exc: OSError) -> bool:
     return (
         isinstance(reason, OSError) and "AF_UNIX" in str(reason) and "not available" in str(reason)
     )
-
-
-def _deadline_expired(exc: BaseException) -> bool:
-    """Whether the action request ended because OUR deadline passed, not the peer's.
-
-    ``urllib`` surfaces a read timeout as ``TimeoutError`` (``socket.timeout``) and a
-    connect timeout wrapped in ``URLError.reason``; either means the gateway may
-    still be working, which is the one outcome the CLI must not report as a refusal.
-    """
-    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
-    return isinstance(reason, TimeoutError)
 
 
 def toggle_app(
@@ -193,7 +182,7 @@ def _post_lifecycle_action(
     except urllib.error.HTTPError as exc:
         raise AppGatewayError(_gateway_error_detail(exc)) from exc
     except Exception as exc:  # noqa: BLE001 — peer bytes must not crash the CLI
-        if _deadline_expired(exc):
+        if deadline_expired(exc):
             raise AppGatewayTimeout(
                 f"the gateway did not finish {action} for {subject} within "
                 f"{_ACTION_TIMEOUT_SECS} s; it may still be applying it. Check "

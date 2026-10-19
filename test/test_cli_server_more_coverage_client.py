@@ -454,6 +454,18 @@ class TestPortOwnershipGuard:
         assert exc.value.code == 1
         assert "Gateway not running" in capsys.readouterr().out
 
+    def test_timeout_reports_busy_not_down(self, monkeypatch, secret_home, capsys) -> None:
+        def boom(*a, **k):
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr(cli_server, "loopback_urlopen", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._logout(5476)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "busy" in out
+        assert "Gateway not running" not in out
+
 
 # --------------------------------------------------------------------------
 # _owner_verified_secret_urlopen — the secret rides a proof-bound transport

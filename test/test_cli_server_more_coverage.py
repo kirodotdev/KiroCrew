@@ -27,6 +27,7 @@ live in ``cli_server_more_coverage_helpers.py``.
 
 import subprocess
 import sys
+import types
 import urllib.error
 from pathlib import Path
 
@@ -1321,3 +1322,64 @@ class TestStatusMemoryLine:
         cli_server._status(SimpleNamespace(port=None))
         out = capsys.readouterr().out
         assert "Memory:      412 MiB rss, session ceiling 1536 MiB" in out
+
+
+class TestApproveBusyVsDown:
+    """The update-approve and file-delivery-approve CLI paths report a slow
+    gateway as busy, and a refused connection as not running. Both carry a
+    single-use nonce, so the busy line points at the dashboard, never a retry.
+    """
+
+    def test_update_approve_timeout_reports_busy(self, monkeypatch, capsys) -> None:
+        from kiro_crew.platform import update_capability, update_stepup
+
+        monkeypatch.setattr(
+            update_capability,
+            "derive_capability",
+            lambda: types.SimpleNamespace(managed_by="source"),
+        )
+        pending = types.SimpleNamespace(
+            version="1.2.3", channel="stable", expires_in=60, nonce="n" * 64
+        )
+        monkeypatch.setattr(update_stepup, "read_pending", lambda: pending)
+        # resolve_client_port / read_local_secret / _owner_verified_secret_urlopen
+        # are bound by more than one mirror-family member, so they are patched
+        # on the facade (cli_server), which routes the setattr to the owner.
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 7777)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _p, **_kw: "")
+
+        def _timeout(*a, **k):
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr(cli_server, "_owner_verified_secret_urlopen", _timeout)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update_approve()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "busy" in out
+        assert "is not running" not in out
+
+    def test_file_delivery_approve_timeout_reports_busy(self, monkeypatch, capsys) -> None:
+        from kiro_crew import file_delivery_consent
+        from kiro_crew.dashboard import urls as dashboard_urls
+
+        pending = types.SimpleNamespace(destination_class="owner", expires_in=60, nonce="n" * 64)
+        monkeypatch.setattr(file_delivery_consent, "read_pending_grant", lambda: pending)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 7777)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _p, **_kw: "")
+        # No usable unix socket path -> the TCP loopback transport is used, which
+        # is the seam this stub raises a timeout at.
+        monkeypatch.setattr(
+            dashboard_urls, "dashboard_socket_path", lambda _p: (_ for _ in ()).throw(OSError())
+        )
+
+        def _timeout(*a, **k):
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr(cli_server, "loopback_urlopen", _timeout)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._file_delivery_approve()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "busy" in out
+        assert "is not running" not in out

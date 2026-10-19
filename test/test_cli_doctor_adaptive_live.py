@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import urllib.error
 from types import SimpleNamespace
 from typing import Any, Optional
 from unittest.mock import AsyncMock
@@ -220,6 +221,51 @@ def test_nothing_listening_reads_as_no_answer(
 ) -> None:
     port = _free_port()
     _point_doctor_at(monkeypatch, port)
+
+    # A refused connection is stubbed at the transport seam rather than relying
+    # on a real connect to a free port: on Windows that connect can surface as a
+    # connect timeout (WSAETIMEDOUT) instead of a refusal, and the assertion
+    # would be platform-dependent on a real socket.
+    def _refused(*_args: object, **_kwargs: object) -> None:
+        raise ConnectionRefusedError("nothing listening")
+
+    monkeypatch.setattr(loopback_http, "loopback_urlopen", _refused)
+    workload._doctor_adaptive_live()
+    out = capsys.readouterr().out
+    assert out == f"  adaptive controller: not read on port {port}: no gateway answered\n"
+
+
+def test_a_slow_gateway_reads_as_busy_not_gone(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A read timeout means a gateway is listening but slow, so doctor says busy."""
+    port = _free_port()
+    _point_doctor_at(monkeypatch, port)
+
+    def _times_out(*_args: object, **_kwargs: object) -> None:
+        raise TimeoutError("read timed out")
+
+    monkeypatch.setattr(loopback_http, "loopback_urlopen", _times_out)
+    workload._doctor_adaptive_live()
+    out = capsys.readouterr().out
+    assert out == (
+        f"  adaptive controller: not read on port {port}: "
+        "the gateway is busy (up but did not answer)\n"
+    )
+
+
+def test_a_connect_timeout_reads_as_no_answer_not_busy(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A connect-phase timeout (URLError wrapping one) is how a closed loopback
+    port surfaces on Windows, so it reads as no answer, not busy."""
+    port = _free_port()
+    _point_doctor_at(monkeypatch, port)
+
+    def _connect_timeout(*_args: object, **_kwargs: object) -> None:
+        raise urllib.error.URLError(TimeoutError("connect timed out"))
+
+    monkeypatch.setattr(loopback_http, "loopback_urlopen", _connect_timeout)
     workload._doctor_adaptive_live()
     out = capsys.readouterr().out
     assert out == f"  adaptive controller: not read on port {port}: no gateway answered\n"
