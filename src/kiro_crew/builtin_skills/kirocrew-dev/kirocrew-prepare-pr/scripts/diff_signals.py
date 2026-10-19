@@ -25,7 +25,10 @@ With ``--check-body`` it also reads the PR body the skill writes --
   contract's "three short paragraphs at most" come to. Over it is exit 21. The
   accounting check already guarantees nothing is hidden, so a cap cannot cut a
   true fact -- only a restated one: the body says what changed for the reader
-  and why; the diff is the evidence.
+  and why; the diff is the evidence. Table rows there are bounded too, by
+  ``TABLE_ROW_LIMIT`` -- the "eight rows" ceiling ``references/body-picture.md``
+  sets for a picture -- so a recital cannot move into a table to dodge the count.
+  A body with no ``## What changed`` section is left to the template check below.
 * **Template (hard).** The repo's own ``.github/scripts/pr-description-check.sh``
   -- the script CI's PR Hygiene runs -- is read from ``origin/<base>``, never from
   the checkout, so a branch cannot weaken its own check, and run on the body.
@@ -65,6 +68,11 @@ SIGNALS = [
 # stops is the 800-word per-file recital. SKILL.md's PR description contract
 # states the same number next to its paragraph rule; a test keeps the two equal.
 WORD_LIMIT = 500
+
+# Table rows (header and |---| separator not counted) allowed in What changed,
+# summed over every table there. references/body-picture.md's "eight rows is the
+# ceiling" for a picture; a test keeps the two equal.
+TABLE_ROW_LIMIT = 8
 
 # git prints every path with forward slashes, on every OS. These helpers split
 # and join git's own output, never filesystem paths, so the separator is git's.
@@ -184,15 +192,46 @@ def unaccounted_areas(paths, body):
     return missing
 
 
+def _what_changed_unfenced(body):
+    """The ``## What changed`` section with fenced blocks removed, or None if absent."""
+    m = re.search(r"^## +What changed[^\n]*\n(.*?)(?=^## |\Z)", body, re.MULTILINE | re.DOTALL)
+    if not m:
+        return None
+    return re.sub(r"^```.*?^```[ \t]*$", "", m.group(1), flags=re.MULTILINE | re.DOTALL)
+
+
+_TABLE_SEPARATOR = re.compile(r"^\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$")
+
+
+def what_changed_table_rows(body):
+    """Table rows in ``## What changed``, outside fences; headers and separators excluded.
+
+    Each ``|---|`` separator marks the row above it as a header. Returns None when
+    the body has no such section.
+    """
+    section = _what_changed_unfenced(body)
+    if section is None:
+        return None
+    rows = 0
+    for line in section.splitlines():
+        s = line.strip()
+        if not s.startswith("|"):
+            continue
+        if _TABLE_SEPARATOR.match(s):
+            rows -= 1  # the line above was the header, not a row
+        else:
+            rows += 1
+    return max(rows, 0)
+
+
 def what_changed_prose(body):
     """The ``## What changed`` section with fences, table rows and image lines removed.
 
     Returns None when the body has no such section (template absent or renamed).
     """
-    m = re.search(r"^## +What changed[^\n]*\n(.*?)(?=^## |\Z)", body, re.MULTILINE | re.DOTALL)
-    if not m:
+    section = _what_changed_unfenced(body)
+    if section is None:
         return None
-    section = re.sub(r"^```.*?^```[ \t]*$", "", m.group(1), flags=re.MULTILINE | re.DOTALL)
     kept = []
     for line in section.splitlines():
         s = line.strip()
@@ -225,8 +264,18 @@ def check_body(body, name_status, word_limit=WORD_LIMIT):
     prose = what_changed_prose(body)
     too_long = False
     if prose is None:
+        # The template check (exit 22) already fails this body; not a second gate.
         print("WARN: no '## What changed' section found - length check skipped")
     else:
+        rows = what_changed_table_rows(body)
+        if rows > TABLE_ROW_LIMIT:
+            too_long = True
+            print(
+                "TOO MANY ROWS: What changed has {} table rows (limit {}) - a picture shows "
+                "only the delta; move the walkthrough out, the diff is the evidence".format(
+                    rows, TABLE_ROW_LIMIT
+                )
+            )
         n = word_count(prose)
         if n > word_limit:
             too_long = True
