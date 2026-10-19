@@ -1439,3 +1439,4 @@ class TaskStore:
     list_rows: Callable[..., Any] = _store_reads.list_rows
     active_rows: Callable[..., Any] = _store_reads.active_rows
     oldest_wait_secs: Callable[..., Any] = _store_reads.oldest_wait_secs
+    overdue_unleased_rows: Callable[..., Any] = _store_reads.overdue_unleased_rows

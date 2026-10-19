@@ -114,6 +114,7 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "oldest_wait_secs": ("function", "8aa6421280b2", "store_reads"),
     "open": ("function", "5f5c89c6d664", "store"),
     "orphaned_children": ("function", "e6c27deb2e7c", "store_waits"),
+    "overdue_unleased_rows": ("function", "042e8a3e0db4", "store_reads"),
     "owed_reports": ("function", "543929ec8760", "store"),
     "path": ("property", "b08d8e6a45bd", "store"),
     "pending_lanes": ("function", "ff1b8b9a51eb", "store_reads"),

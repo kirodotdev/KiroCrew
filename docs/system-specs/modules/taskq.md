@@ -30,7 +30,7 @@ Files:
 | `store_vocab.py` | What every owner shares: `TaskStoreUnavailable` (its `__module__` stays `kiro_crew.taskq.store`), `_typed_read` (a read's `sqlite3.Error` becomes `TaskStoreUnavailable`), and the state-set SQL fragments several owners filter on. |
 | `store_events.py` | The `task_events` log: `_append_event_in_tx` (each write's own event), `append_event`, `events`, `latest_events`, `lost_owner_recoveries`. |
 | `store_waits.py` | The wait-row writes and reads behind `waits.WaitLedger`: `enter_wait`, `update_wait`, `wake_wait`, `children_of`, `waiting_rows`, `orphaned_children`. |
-| `store_reads.py` | Row reads: `get`, `state_of`, the dispatch reads (`fetch_dispatchable`, `fetch_dispatchable_fair`, `pending_lanes`, `next_eligible_at`), the pending listings (`list_pending`, `fetch_pending_by_batch`), the counts (`count_pending`, `count`, `count_by_state`, `oldest_wait_secs`), `list_rows`, `active_rows`. |
+| `store_reads.py` | Row reads: `get`, `state_of`, the dispatch reads (`fetch_dispatchable`, `fetch_dispatchable_fair`, `pending_lanes`, `next_eligible_at`), the pending listings (`list_pending`, `fetch_pending_by_batch`), the counts (`count_pending`, `count`, `count_by_state`, `oldest_wait_secs`), `list_rows`, `active_rows`, and `overdue_unleased_rows` (the doctor's stranded-row read). |
 | `migrate.py` | Schema versioning (`SCHEMA_VERSION`, `apply_schema`) and the idempotent legacy import. |
 | `reconcile.py` | `reconcile_on_boot`: settle every row a dead incarnation still owned. |
 | `__init__.py` | `open_default_store(home)`: open, import, reconcile, in that order. |
@@ -1187,6 +1187,19 @@ the mode and skip detection (a forced `delete` still warns, naming the key).
 The store never refuses to open over the filesystem. `store.doctor_lines()` renders depth,
 oldest wait and the warnings for `kirocrew doctor` (`doctor_checks/workload.py` prints
 them under the task-store section).
+
+The same section names stranded rows: `store.overdue_unleased_rows(3600)` returns every
+row that is not terminal, has no `lease_owner`, and whose `next_run_at` is set and more
+than an hour past (`workload._STRANDED_OVERDUE_SECS`), oldest due first. Doctor names
+the first five by id, state, session key and hours overdue (`+N more` for the rest).
+With a live gateway holding the home's lock, or when the lock probe cannot tell, that
+is a warning and one issue; with no gateway running it is advisory and no issue, since
+the next start claims due rows. It is a report only: the store is opened
+`diagnostic=True` and nothing is written, so the row is left for the boot reconcile or
+its dispatcher. A claimable sub-agent row in this shape still counts toward its
+parent's `count_pending`, which is why its parent slot answers
+`409 slot_subagents_running`. A read the store refuses prints `not checked` and no
+issue.
 
 ## Legacy import (`migrate.import_legacy`)
 
