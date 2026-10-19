@@ -900,6 +900,86 @@ class TestRunChatRecoveryLadders:
         assert slot._acp_pipe_death_retries == 0
 
     @pytest.mark.asyncio
+    async def test_a_requeued_turn_makes_a_marker_durable_without_placing_it(self, tmp_path):
+        """Both halves matter and they pull apart. A marker held mid-turn has no durable
+        copy until something writes one, so a restart before the next save drops it. But
+        RELEASING it at this seam appends its row before the re-queued turn's reply, which
+        moves the boundary permanently. So the seam persists the hold and writes no row,
+        and the ladder's own later seam is what places the marker — after everything the
+        re-queued turn produced, never before it."""
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.session_directive_apply import SECTION_MARKER_ROLE
+
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+
+        _set_stream(client, [_complete()])
+        slot._deferred_notes.append(
+            {
+                "content": "— End of section: item-42 —",
+                "cls": "",
+                "context": None,
+                "session": effective_session_key(slot),
+                "role": SECTION_MARKER_ROLE,
+                "meta": {"label": "item-42"},
+            }
+        )
+        saved: list[list[str]] = []
+        persisted: list[str] = []
+
+        async def _spy(_state, saved_slot):
+            saved.append([m.get("role") for m in saved_slot.messages])
+
+        def _persist_spy(_log, _slot_arg, key):
+            persisted.append(key)
+            return True
+
+        slot._empty_response_retries = 0
+        with (
+            _quiet_sel(),
+            patch.object(chat_runner, "save_slot_off_loop", new=_spy),
+            patch.object(chat_runner, "persist_held_markers_sync", new=_persist_spy),
+        ):
+            await chat_runner._run_chat(state, slot, "hello")
+        await _settle(slot)
+
+        assert persisted, "the held marker was never given a durable copy"
+        for roles in saved:
+            assert (
+                SECTION_MARKER_ROLE not in roles
+            ), "a save wrote the marker row ahead of the auto-continued reply"
+        roles = [m.get("role") for m in slot.messages]
+        if SECTION_MARKER_ROLE in roles:
+            at = roles.index(SECTION_MARKER_ROLE)
+            earlier = [r for r in roles[:at] if r in ("user", "assistant", "inject")]
+            later = [r for r in roles[at + 1 :] if r in ("user", "assistant", "inject")]
+            assert earlier, "the marker was placed before any row of the re-queued turn"
+            assert not later, (
+                "the marker was released at the re-queue seam, so rows the turn wrote "
+                f"afterwards now sit below the boundary: {roles}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_requeued_turn_with_nothing_held_still_saves_nothing(self, tmp_path):
+        """The re-queue skips persistence so it cannot bank an empty turn or skew
+        the reliability counters. Only a marker that would otherwise be lost earns
+        a save here, so with nothing held the skip must still hold."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        _set_stream(client, [_complete()])
+        saved: list[str] = []
+
+        async def _spy(_state, _slot):
+            saved.append("save")
+
+        slot._empty_response_retries = 0
+        with _quiet_sel(), patch.object(chat_runner, "save_slot_off_loop", new=_spy):
+            await chat_runner._run_chat(state, slot, "hello")
+        await _settle(slot)
+
+        assert saved == [], "an empty re-queue with nothing held must not persist"
+
+    @pytest.mark.asyncio
     async def test_a_throttled_compaction_requeues_the_abandoned_message(self, tmp_path):
         """A summarization call that was throttled has nothing wrong with it, so
         the turn it abandoned is worth running again. Dropping the message here

@@ -137,7 +137,8 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
     redact_local_paths,
 )
-from kiro_crew.sel import sel  # noqa: F401
+from kiro_crew.sel import sel
+from kiro_crew.session_directive import SECTION_MARKER_ROLE  # noqa: F401
 from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
 
 logger = logging.getLogger("kiro_crew.dashboard.session_transfer")
@@ -553,10 +554,35 @@ def _assemble_bundle(
     over a tunnel is byte-identical with and without this feature.
     """
     messages: list[dict[str, Any]] = []
+    section_markers: list[dict[str, Any]] = []
     for m in all_messages:
         if is_warm_task_brief_message(m):
             continue
         role = m.get("role")
+        if role == SECTION_MARKER_ROLE:
+            # Carried OUT-OF-BAND: ``messages`` keeps exactly the roles a v1/v2
+            # importer validates, so an older peer ignores this and does not reject.
+            marker_meta = m.get("meta")
+            label = marker_meta.get("label", "") if isinstance(marker_meta, dict) else ""
+            # The label is a SECOND copy of caller text, so it needs the same egress
+            # scrub as the rendered content beside it, not just a type coercion.
+            marker_label = label if isinstance(label, str) else ""
+            marker_label, _ = redact_exfiltration_urls(marker_label)
+            marker_label, _ = redact_credentials(marker_label)
+            marker_content = m.get("content", "")
+            if not isinstance(marker_content, str):
+                marker_content = ""
+            marker_content, _ = redact_exfiltration_urls(marker_content)
+            marker_content, _ = redact_credentials(marker_content)
+            section_markers.append(
+                {
+                    "at": len(messages),
+                    "label": marker_label,
+                    "content": marker_content,
+                    "ts": m.get("ts", ""),
+                }
+            )
+            continue
         if role not in _VISIBLE_ROLES:
             continue
         content = m.get("content", "")
@@ -596,6 +622,10 @@ def _assemble_bundle(
         "agent": agent,
         "messages": messages,
     }
+    # Additive and omitted when empty, so a bundle from a session with no markers
+    # is shaped exactly as this code produced before markers existed.
+    if section_markers:
+        bundle["section_markers"] = section_markers
     # Layer B rides along only when the session has one. Its events were already
     # egress-redacted in :func:`_read_layer_b`; the envelope carries no secret
     # (its paths and title are neutralised on import).

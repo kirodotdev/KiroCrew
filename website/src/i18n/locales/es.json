@@ -12125,6 +12125,10 @@
         "load_failed": "No se pudieron cargar los mensajes anteriores",
         "retry": "Reintentar"
       },
+      "sectionMarkerRow": {
+        "end_of": "Fin de la sección: {{label}}",
+        "end_of_section": "Fin de la sección"
+      },
       "sessionSummary": {
         "empty_body": "El resumen se escribe cuando termina un turno. Envía un mensaje para obtener uno de esta sesión.",
         "empty_generate_body": "Esta sesión aún no se ha resumido.",

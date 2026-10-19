@@ -20,6 +20,7 @@ from kiro_crew.validation import (
     CHAT_TAG_SCHEMA,
     NOTHING_TO_DO_SCHEMA,
     RESET_CONVERSATION_SCHEMA,
+    SECTION_MARKER_SCHEMA,
     SET_PROJECT_SCHEMA,
     SUGGEST_FOLLOWUP_SCHEMA,
     validate_tool_args,
@@ -178,6 +179,25 @@ def chat_tag(name: str, args: dict[str, Any]) -> str:
         "agent-writable it takes effect when this turn's result is processed, "
         "and the result reports the session's resulting tags. A human-only tag, "
         "an unknown tag, or a headless caller (cron/subagent) is refused.",
+    )
+
+
+def section_marker(name: str, args: dict[str, Any]) -> str:
+    args = validate_tool_args(args, SECTION_MARKER_SCHEMA)
+    # Stateless: the session-aware consumer (chat_runner) appends the row to ITS
+    # OWN slot's transcript — no session identity resolved here.
+    #
+    # The confirmation HEDGES because the applier refuses on three paths this tool
+    # cannot see; both consumer paths then replace this text with the real outcome.
+    return _emit_directive(
+        "section_marker",
+        {
+            "label": args.get("label", "") or "",
+        },
+        "Section break requested. If this turn is user-facing and not inside a "
+        "multi-stage plan, it appears at the end of this turn, after this turn's "
+        "closing message — but this tool does not apply it, so do not assume it "
+        "rendered. It changes only what is rendered — no model context is dropped.",
     )
 
 

@@ -255,22 +255,23 @@ async def _finish_queue_cycle(
     # the next turn, so flushing after that turn started would let the note shape
     # a turn its visible line appears below. Synthesis is withheld from, since a
     # note is owed to the next USER turn; the cycle after synthesis flushes it.
-    if not will_synthesize:
-        try:
-            slot.flush_deferred_notes()
-        except Exception:
-            # Below this are the two ways a cycle ends: the synthesis dispatch and
-            # the terminal append("done") / slot.task = None / chat_done. A raise
-            # reaches _run_pending_synthesis, whose only handler is a narrow
-            # (asyncio.TimeoutError, TimeoutError) around its await and a finally
-            # that clears _synthesis_inflight -- neither emits done -- and it is
-            # dispatched fire-and-forget, so the error is discarded and the slot
-            # wedges with its spinner up. Log and let the cycle finish.
-            logger.warning(
-                "flush_deferred_notes failed at the queue-cycle end for slot %s",
-                slot.key,
-                exc_info=True,
-            )
+    # A marker is exempt from that withhold: a note is a MESSAGE owed to the next
+    # user turn, but a marker is a BOUNDARY that must not move.
+    try:
+        slot.flush_deferred_notes(markers_only=will_synthesize)
+    except Exception:
+        # Below this are the two ways a cycle ends: the synthesis dispatch and
+        # the terminal append("done") / slot.task = None / chat_done. A raise
+        # reaches _run_pending_synthesis, whose only handler is a narrow
+        # (asyncio.TimeoutError, TimeoutError) around its await and a finally
+        # that clears _synthesis_inflight -- neither emits done -- and it is
+        # dispatched fire-and-forget, so the error is discarded and the slot
+        # wedges with its spinner up. Log and let the cycle finish.
+        logger.warning(
+            "flush_deferred_notes failed at the queue-cycle end for slot %s",
+            slot.key,
+            exc_info=True,
+        )
 
     if not slot._queue:
         slot._stopping = False

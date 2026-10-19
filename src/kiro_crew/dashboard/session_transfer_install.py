@@ -24,6 +24,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import validation
 from kiro_crew.agent_discovery import list_agents
 from kiro_crew.atomic_write import fsync_dir, replace_with_retry
 from kiro_crew.dashboard.arrival_folders import (
@@ -62,6 +63,7 @@ from kiro_crew.dashboard.token_auth import effective_request_app
 from kiro_crew.history import mint_row_mid, monotonic_transcript_ts
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import SECTION_MARKER_ROLE
 
 # Layering: chat_handlers must stay importable before this module finishes
 # loading, so a MODULE-LEVEL import of chat_handlers here risks an import cycle:
@@ -83,7 +85,54 @@ logger = logging.getLogger("kiro_crew.dashboard.session_transfer")
 _IMPORT_WINDOW = 500
 
 
-def _build_redacted_rows(messages: list[dict[str, Any]]) -> list[dict]:
+def _splice_section_markers(rows: list[dict], markers: list[dict[str, Any]]) -> list[dict]:
+    """Insert bundle section markers into *rows* at the positions they held.
+
+    Markers travel OUT-OF-BAND in the bundle so that ``messages`` carries only the
+    roles a v1/v2 importer validates. Import puts them back by SPLICING them into
+    the row sequence rather than appending them to a built slot: the shared
+    materialiser hydrates whatever role a row carries, so a marker needs no append
+    path of its own and lands between the same two turns it separated on the source.
+
+    A marker's ``at`` indexes the MESSAGE sequence, so one recorded at ``len(rows)``
+    trails the last turn — hence the range runs to ``len(rows)`` inclusive rather
+    than stopping at the final message, which is the off-by-one that would silently
+    drop a trailing marker.
+
+    The LABEL is scrubbed HERE even though the caller content-redacts rows
+    afterwards, because that pass is content-only and the label is a second copy of
+    caller text — and it is the field both renderers actually draw
+    (``meta?.label ?? content``). Re-capped AFTER redaction, as every other label
+    surface does: a placeholder can be longer than the secret it replaced.
+    """
+    if not markers:
+        return rows
+    by_index: dict[int, list[dict[str, Any]]] = {}
+    for sm in markers:
+        by_index.setdefault(sm["at"], []).append(sm)
+    cap = validation.max_section_label()
+    out: list[dict] = []
+    for position in range(len(rows) + 1):
+        for sm in by_index.get(position, ()):
+            label, _ = redact_exfiltration_urls(sm["label"])
+            label, _ = redact_credentials(label)
+            out.append(
+                {
+                    "role": SECTION_MARKER_ROLE,
+                    "content": sm["content"],
+                    "ts": sm["ts"],
+                    "meta": {"label": label[:cap]},
+                }
+            )
+        if position < len(rows):
+            out.append(rows[position])
+    return out
+
+
+def _build_redacted_rows(
+    messages: list[dict[str, Any]],
+    section_markers: list[dict[str, Any]] | None = None,
+) -> list[dict]:
     """The receive-side rows for ``messages``, content-redacted, each carrying the
     ``meta.mid`` and ``ts`` it is persisted and hydrated with. **Runs in a
     thread**: the build and the redaction both scale with the message count.
@@ -91,11 +140,15 @@ def _build_redacted_rows(messages: list[dict[str, Any]]) -> list[dict]:
     Minted here, once, because the prefix rows go to disk and the window rows go
     to the slot: a row minted in two places would reach the transcript with one
     id and the window with another, and the save would keep both copies.
+
+    Markers are spliced in BEFORE the redaction pass, so an imported marker's
+    content is scrubbed by the same call as every turn around it.
     """
     # Function-local for the same import-cycle reason as in the handler.
     from kiro_crew.dashboard.chat_handlers import _redact_history_rows
 
     rows = [{"role": m["role"], "content": m["content"], "ts": m["ts"]} for m in messages]
+    rows = _splice_section_markers(rows, section_markers or [])
     rows = _redact_history_rows(rows)
     now = datetime.now(timezone.utc)
     previous: str | None = None
@@ -103,17 +156,25 @@ def _build_redacted_rows(messages: list[dict[str, Any]]) -> list[dict]:
         if not row.get("ts"):
             row["ts"] = monotonic_transcript_ts(previous, now)
         previous = row["ts"]
-        row["meta"] = {"mid": mint_row_mid()}
+        # Merged, not replaced: a spliced marker arrives carrying the ``label`` the
+        # renderers draw, and assigning a fresh dict here would drop it.
+        row["meta"] = {**(row.get("meta") or {}), "mid": mint_row_mid()}
     return rows
 
 
 def _prefix_row(row: dict) -> dict:
     """A prefix row in the shape :meth:`_ChatSlot.append` gives a window row."""
     role = row.get("role", "assistant")
+    if role == SECTION_MARKER_ROLE:
+        # A marker is a rule between turns, not a message: a message class would
+        # draw it inside a bubble. Matches the class its own applier enqueues.
+        cls = ""
+    else:
+        cls = "msg msg-u" if role == "user" else "msg msg-a"
     return {
         "role": role,
         "content": row.get("content", ""),
-        "cls": "msg msg-u" if role == "user" else "msg msg-a",
+        "cls": cls,
         "ts": row.get("ts", ""),
         "meta": row["meta"],
     }
@@ -264,6 +325,75 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
         ts = m.get("ts", "")
         messages.append({"role": role, "content": content, "ts": ts if isinstance(ts, str) else ""})
 
+    # ADDITIVE and OPTIONAL: absent from every v1/v2 bundle, so absence is normal.
+    # Peer-supplied, so shape-checked exactly like ``messages`` above, and under
+    # the same stance: no count or total-size ceiling, which this validator leaves
+    # to the stream-to-disk, the arrival permit and the memory admission.
+    raw_markers = body.get("section_markers", [])
+    if not isinstance(raw_markers, list):
+        return {}, _reject("section_markers must be a list", "transfer_bad_section_markers")
+    section_markers: list[dict[str, Any]] = []
+    for i, sm in enumerate(raw_markers):
+        if not isinstance(sm, dict):
+            return {}, _reject(
+                f"section marker {i} is not an object",
+                "transfer_section_marker_not_object",
+            )
+        at = sm.get("at")
+        if isinstance(at, bool) or not isinstance(at, int) or not 0 <= at <= len(messages):
+            return {}, _reject(
+                f"section marker {i} has out-of-range at {sm.get('at')!r}",
+                "transfer_section_marker_bad_at",
+            )
+        label = sm.get("label", "")
+        marker_content = sm.get("content", "")
+        if not isinstance(label, str) or not isinstance(marker_content, str):
+            return {}, _reject(
+                f"section marker {i} label and content must be strings",
+                "transfer_section_marker_bad_text",
+            )
+        # No producer writes a marker content anywhere near this, so an over-cap
+        # value is a malformed bundle: reject it rather than silently shortening.
+        if len(marker_content) > _MAX_TITLE_CHARS:
+            return {}, _reject(
+                f"section marker {i} content too long ({len(marker_content)} > {_MAX_TITLE_CHARS})",
+                "transfer_section_marker_too_long",
+            )
+        # Redact BEFORE the cap below: a credential straddling the cut leaves a prefix
+        # the whole-token patterns miss, and a peer bundle is untrusted.
+        marker_content, _ = redact_exfiltration_urls(marker_content)
+        marker_content, _ = redact_credentials(marker_content)
+        marker_ts = sm.get("ts", "")
+        # Bound the RAW label before the validator sees it: a peer bundle is untrusted
+        # and validation on a multi-megabyte string is work done on the caller's behalf.
+        label_cap = validation.max_section_label()
+        if len(label) > label_cap:
+            return {}, _reject(
+                f"section marker {i} label too long ({len(label)} > {label_cap})",
+                "transfer_section_marker_bad_label",
+            )
+        # A marker CREATED here passes SECTION_MARKER_SCHEMA; an IMPORTED one never goes
+        # through creation, so the same schema has to be the gate on this path too.
+        try:
+            cleaned_marker = validation.validate_tool_args(
+                {"label": label}, validation.SECTION_MARKER_SCHEMA
+            )
+        except validation.ValidationError as exc:
+            return {}, _reject(
+                f"section marker {i} label is not importable: {exc}",
+                "transfer_section_marker_bad_label",
+            )
+        section_markers.append(
+            {
+                "at": at,
+                # The CLEANED label: the schema refuses an over-cap or line-broken one
+                # outright, but STRIPS Cc/Cf/Cs, so raw would import bidi/zero-width spoofs.
+                "label": cleaned_marker["label"],
+                "content": marker_content[:_MAX_TITLE_CHARS],
+                "ts": marker_ts if isinstance(marker_ts, str) else "",
+            }
+        )
+
     title = body.get("title", "")
     if not isinstance(title, str):
         return {}, _reject("title must be a string", "transfer_bad_title")
@@ -281,6 +411,7 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
         # downstream -- and this is what tells a degraded import apart from a
         # session that simply never had a kiro-cli context.
         "layer_b_skipped": bool(body.get("layer_b_skipped")),
+        "section_markers": section_markers,
         "title": title[:_MAX_TITLE_CHARS],
         "origin": origin[:_MAX_TITLE_CHARS],
         "agent": agent,
@@ -460,7 +591,9 @@ async def _install_arrived_bundle(
     # materialiser is then synchronous and does no content redaction. This is the
     # importer's own egress-mirroring scrub (defense-in-depth; it must not assume
     # the sender scrubbed).
-    rows = await asyncio.to_thread(_build_redacted_rows, messages)
+    rows = await asyncio.to_thread(
+        _build_redacted_rows, messages, bundle.get("section_markers") or []
+    )
 
     # The marked title travels as the persisted title so the shared path restores
     # it; ``origin`` is NOT set on the metadata snapshot -- that key is the

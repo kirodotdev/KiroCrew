@@ -1,20 +1,23 @@
 ---
 title: Transcript Section Markers — chapter breaks for one-at-a-time work
-status: draft
+status: in-progress
 author: rnoack
 created: 2026-08-29
 last-audited: 2026-10-06
 audited-at: 9348a25a34
 doc-pr: 7033
-implementation-prs: []
+implementation-prs: [7163]
 tracking-issues: []
 supersedes: []
 superseded-by: []
 ---
 # RFC: Transcript Section Markers — chapter breaks for one-at-a-time work
 
-- Status: draft — nothing implemented. All four phases are proposals; phases 3
-  and 4 are blocked on open questions.
+- Status: in-progress — Phase 1 (the event, the directive, the applier, and a
+  renderer in both paths) is implemented in
+  [#7163](https://github.com/kirodotdev/KiroCrew/pull/7163). Phase 1 carries no
+  collapse behaviour, deliberately. Phases 2–4 remain proposals; phases 3 and 4
+  are blocked on open questions.
 - Author: rnoack
 - Created: 2026-08-29
 - Verified on `main` at `202770d13`. Code is cited by symbol; where a file is
@@ -186,7 +189,7 @@ edit.
 ```jsonc
 {
   "role": "section_marker",
-  "content": "— Section: <label> —",   // human-readable fallback, see §8
+  "content": "— End of section: <label> —",   // human-readable fallback, see §8
   "ts": "2026-08-29T20:41:12.184301+00:00",
   "meta": {
     "mid": "…",                        // minted by Slot.append as for any row
@@ -314,14 +317,19 @@ onto an endpoint whose contract is "both writes always happen".
 ### 5.6 MCP tool signature
 
 ```
-section_marker(label?: string, collapse_earlier?: boolean = true) -> string
+section_marker(label?: string) -> string
 ```
 
-- `label` — optional, ≤120 chars, control characters rejected. Validate with the
-  helper `/note` uses (`_validate_content` at `dashboard/chat_api/pending_context.py`).
-- `collapse_earlier` — whether this marker sets the default viewport or is a
-  visual rule only. Defaults true; present so a caller can annotate a boundary
-  without moving the reader's window.
+- `label` — optional, ≤120 chars. Line breaks and tabs (`\n`, `\r`, `\t`) are
+  rejected by the schema: the label is drawn as a one-line rule caption, so a
+  newline in it splits the caption. This is a separate guard from the shared
+  hidden-category sweep, which strips zero-width and similar characters but passes
+  ASCII whitespace controls through.
+- Phase 1 ships no collapse field. A `collapse_earlier?: boolean = true`
+  parameter was specified here originally, but Phase 1 is "the event and the rule
+  (no collapse)" and nothing in it reads such a flag — so recording it on every
+  row would ship Phase 2's surface with zero consumers. Phase 2 adds it, treating
+  an absent key as true, which is byte-compatible with every row Phase 1 wrote.
 - Returns a human-readable confirmation. Per the directive contract it must not
   over-claim: the effect is applied by the consumer *after* the model has already
   received this string, and may be refused
@@ -414,7 +422,7 @@ What changes, at a glance:
 
 | Layer | Change |
 | ------------------ | ---------------------------------------------------------------------- |
-| MCP tool | new `section_marker(label?, collapse_earlier?)` in `mcp_tools/` |
+| MCP tool | new `section_marker(label?)` in `mcp_tools/` |
 | Directive registry | add to `DIRECTIVE_TOOLS` (`session_directive.py`) |
 | Applier | new branch in `dashboard/session_directive_apply.py` |
 | Append path | reuse `/note`'s deferral through a role-parameterised hold on the `flush_deferred_notes` seam (`dashboard/slot_buffers.py`) |
@@ -504,7 +512,7 @@ and nothing was deleted to achieve it.
 assistant bubble (`bubbleRenderer` in `pages/ChatPage.tsx`). The second is cosmetically wrong but
 not broken — and it is why §5.2 puts a human-readable string in `content` rather
 than leaving it empty or stuffing JSON there. An old client shows
-`— Section: second-item —` as a stray line, which is a legible degradation.
+`— End of section: second-item —` as a stray line, which is a legible degradation.
 **`content` is the compatibility surface; `meta` is the machine surface.**
 
 **New frontend, old transcript.** No markers, so nothing collapses and the view is
@@ -669,9 +677,19 @@ marker would vanish on one of the two write paths.
    Hiding a large prefix changes the measured set substantially. Not traced
    whether the virtualizer needs more than a shorter `items` array, or whether
    scroll anchoring needs a hint at the collapse boundary.
-6. **Fork and transfer.** `chat_fork` and `session_transfer` re-append historical
-   rows with `broadcast=False` (`dashboard/state_parts/slot_transcript.py`). Should a fork
-   inherit markers, and should the fork point itself become one?
+6. **Fork and transfer.** ~~Should a fork inherit markers, and should the fork point
+   itself become one?~~ **ANSWERED, and shipped in this phase.** A fork and a
+   transfer both inherit markers: dropping them silently relocated every section
+   boundary while keeping every turn, which is a worse artifact than not copying at
+   all. `chat_fork` copies `_FORKED_ROLES` over a span tracked separately from the
+   fork-point index space, so `at_message_index` still counts user/assistant turns
+   only. `session_transfer` carries them in an ADDITIVE top-level `section_markers`
+   field rather than inside `messages`, because the importer validates message roles
+   strictly and an older peer would reject a whole bundle carrying an unknown role;
+   the field is omitted when a session has no markers, and import splices them back
+   at the positions they held (`dashboard/session_transfer_install.py`). Both label
+   and content take the redactors at each boundary. The fork point does NOT become a
+   marker: that would author a boundary the user never asked for.
 7. **Interaction with `collapseAllSteps`.** Should the global setting
    (`pages/chat/ChatSettings.tsx`) gain a sibling for section collapse, or is
    derive-from-transcript sufficient without a user-facing switch?

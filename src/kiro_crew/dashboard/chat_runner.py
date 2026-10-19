@@ -585,6 +585,11 @@ from kiro_crew.dashboard.session_directive_apply import (  # noqa: F401
     apply_session_directive,
     apply_session_directive_outcome,
 )
+from kiro_crew.dashboard.slot_buffers import (
+    DeferredHoldFull,
+    DeferredHoldRebound,
+    persist_held_markers_sync,
+)
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
 from kiro_crew.dashboard.state import (  # noqa: F401
     _MAX_SLOT_MESSAGES,
@@ -2604,6 +2609,9 @@ async def _run_chat(
         # the same finally, which compare-and-clears only an identity this
         # turn actually published, so a successor's key is never wiped.
         slot._active_turn_session_key = session_key
+        # The hold guard pins a write to the TRANSCRIPT authorized at enqueue, which
+        # is not the session key: an unbound channel slot resolves a phantom one.
+        slot._active_turn_history_key = slot_history_key(slot)
 
         if slot.mode == DM_SLOT_MODE and not is_dispatchable_member_name(slot.agent):
             logger.warning(
@@ -5971,6 +5979,20 @@ async def _run_chat(
                                 session_key,
                                 event.tool_call_id,
                             )
+                        # The SEL row and the warnings above reach an operator. The
+                        # AGENT saw only the tool's own non-committal text, so a
+                        # directive this build cannot carry read exactly like one
+                        # that landed. Same note form as the sub-agent refusal in
+                        # this chain, and the sentinel goes with it so a forged
+                        # marker cannot reach the transcript verbatim.
+                        _out = _redact_tool_field(
+                            session_directive.strip_marker(_out)
+                            + (
+                                "\n\n[Not applied: the tool call carried no "
+                                "verifiable identity, so nothing changed.]"
+                            )
+                        )
+                        _dir_consumed_out[event.tool_call_id] = _out
                 if not _dir_tool and event.tool_call_id in _dir_consumed_out:
                     # A LATER frame for a directive we already consumed: replay
                     # the output we produced instead of letting the raw marker
@@ -10288,8 +10310,70 @@ async def _run_chat(
             # finally's shutdown check must still see the marker to preserve it.
             if _stop_reason != STOP_REASON_CANCELLED:
                 _retire_local_turn_marker(slot, _local_turn_marker_generation)
+            # A marker must be IN this save, not merely appended after it: `append`
+            # only marks the slot dirty, so an exit before the 5s flush loses the row.
+            # A compaction recovery has queued a CONTINUATION whose reply is still to come,
+            # so releasing here would write the seam ahead of rows it never covered.
+            if _recovering_compaction:
+                _compaction_log = getattr(state, "conversation_log", None)
+                if _compaction_log is not None:
+                    try:
+                        await asyncio.to_thread(
+                            persist_held_markers_sync,
+                            _compaction_log,
+                            slot,
+                            getattr(slot, "_active_turn_history_key", "") or slot_history_key(slot),
+                        )
+                    except (DeferredHoldFull, DeferredHoldRebound) as exc:
+                        logger.warning(
+                            "Slot %s could not persist a held marker before a compaction "
+                            "continuation (%s); the row stays held and undurable until "
+                            "the next save",
+                            slot.key,
+                            type(exc).__name__,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Slot %s could not persist a held marker before a compaction "
+                            "continuation; the row stays held",
+                            slot.key,
+                        )
+            else:
+                try:
+                    slot.flush_deferred_notes(markers_only=True)
+                except Exception:
+                    logger.exception(
+                        "Slot %s could not flush a held marker before the turn save; "
+                        "the row stays held for the end-of-cycle flush",
+                        slot.key,
+                    )
             # Save to history and trigger memory consolidation
             await save_slot_off_loop(state, slot)
+        else:
+            # PERSIST, never release: this turn is about to be re-queued and its reply
+            # appended, so a released row would sit before it and move the boundary.
+            _conversation_log = getattr(state, "conversation_log", None)
+            if _conversation_log is not None:
+                try:
+                    await asyncio.to_thread(
+                        persist_held_markers_sync,
+                        _conversation_log,
+                        slot,
+                        getattr(slot, "_active_turn_history_key", "") or slot_history_key(slot),
+                    )
+                except (DeferredHoldFull, DeferredHoldRebound) as exc:
+                    logger.warning(
+                        "Slot %s could not persist a held marker before a re-queued turn "
+                        "(%s); the row stays held and undurable until the next save",
+                        slot.key,
+                        type(exc).__name__,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Slot %s could not persist a held marker before a re-queued turn; "
+                        "the row stays held for the seam that owes it",
+                        slot.key,
+                    )
         # Reset ALL retry budgets once the cycle completes (success OR the
         # terminal second-empty error) so each new user turn gets fresh budgets.
         # Guarded by _retrying_empty, _recovering_promise and _noticed_leak:
@@ -12821,6 +12905,7 @@ async def _run_chat(
             # has something to retire.
             if slot._active_turn_session_key == session_key:
                 slot._active_turn_session_key = ""
+                slot._active_turn_history_key = ""
             # Spelling-independent backstop for a directive call whose tool
             # identity and result marker were both lost by the backend. The
             # validated payload reached the gateway, but no frame claimed it,

@@ -56,7 +56,7 @@ class DirectiveOutcome:
 # admitted by the dispatcher's user-surface provenance gate, then separately requires
 # the current turn to own the slot it would mutate. (``ask_question`` is not a
 # directive: it blocks and returns the answers as its own tool result.)
-_DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup"})
+_DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup", "section_marker"})
 _USER_SURFACE_DIRECTIVES = frozenset({"set_project", "reset_conversation", "chat_tag"})
 # Directives whose effect is "this session will be woken later". A refusal of
 # one of these is the failure the caller can least observe: the MCP tool has
@@ -297,7 +297,9 @@ def _describe_next_wake(loop: Any, *, verb: str = "first wake") -> str:
 # The provenance gate's set: the user-surface directives plus ``suggest_followup``,
 # whose surface gate alone (``_DASHBOARD_ONLY_DIRECTIVES``) only asks whether a tab
 # exists -- which a cron or sub-agent turn riding a user's slot satisfies.
-_USER_ORIGIN_DIRECTIVES = _USER_SURFACE_DIRECTIVES | frozenset({"suggest_followup"})
+_USER_ORIGIN_DIRECTIVES = _USER_SURFACE_DIRECTIVES | frozenset(
+    {"suggest_followup", "section_marker"}
+)
 
 
 def _has_user_surface(session_key: str) -> bool:

@@ -518,6 +518,7 @@ from kiro_crew.security import (  # noqa: F401
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import SECTION_MARKER_ROLE  # noqa: F401
 from kiro_crew.session_agent_selection import (  # noqa: F401
     SelectionChange,
     record_agent_selection,

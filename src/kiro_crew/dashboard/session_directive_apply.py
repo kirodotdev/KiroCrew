@@ -75,10 +75,12 @@ from kiro_crew.dashboard.session_directive_apply_slot import (
     _apply_chat_tag,
     _nothing_to_do,
     _refuse_unvouched_wake_reset,
+    _section_marker,
     _reset_conversation,
     _set_project,
     _suggest_followup,
 )
+from kiro_crew.session_directive import SECTION_MARKER_ROLE
 from kiro_crew.session_surface import has_dashboard_surface
 
 logger = logging.getLogger("kiro_crew.dashboard.session_directive_apply")
@@ -221,6 +223,15 @@ async def apply_session_directive_outcome(
         # A cron turn can run on a user's slot and a sub-agent can share its
         # parent's slot, so both inherit a surface they never opened.
         _audit(session_key, kind, "denied")
+        logger.warning(
+            "session directive REFUSED by the producer-provenance gate: %r on %r "
+            "(user-facing producer: %s). A cron, sub-agent, task-runner or "
+            "self-wake turn is refused here even with an open dashboard tab; "
+            "nothing was changed.",
+            kind,
+            session_key,
+            producer_is_user_facing,
+        )
         if kind in _USER_SURFACE_DIRECTIVES:
             # Unchanged wording: extending the set must not silently reword an
             # unrelated tool's refusal.
@@ -323,6 +334,8 @@ async def apply_session_directive_outcome(
                 )
         elif kind == "chat_tag":
             result = await _apply_chat_tag(state, slot, session_key, args)
+        elif kind == "section_marker":
+            result = await _section_marker(slot, session_key, args)
         elif kind == "suggest_followup":
             result = await _suggest_followup(state, slot, args)
         elif kind == "nothing_to_do":
@@ -448,6 +461,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew import (  # noqa: F401
+        validation,
+    )
     from kiro_crew.apps.builtins.auto_research.session_keys import (  # noqa: F401
         is_owned_research_slot,
     )
@@ -464,6 +480,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.messaging.link import (  # noqa: F401
         is_channel_session_key,
+    )
+    from kiro_crew.security import (  # noqa: F401
+        redact_credentials,
+        redact_exfiltration_urls,
     )
 
 # This module is the facade of directive application: every name is reached through it

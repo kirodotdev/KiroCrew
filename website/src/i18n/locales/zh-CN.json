@@ -11763,6 +11763,10 @@
         "load_failed": "无法加载更早的消息",
         "retry": "重试"
       },
+      "sectionMarkerRow": {
+        "end_of": "章节 {{label}} 结束",
+        "end_of_section": "本节结束"
+      },
       "sessionSummary": {
         "empty_body": "摘要在一轮对话结束时生成。发送一条消息即可为此会话生成摘要。",
         "empty_generate_body": "此会话尚未生成摘要。",

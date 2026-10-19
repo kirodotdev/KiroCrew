@@ -1901,6 +1901,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # surfaces that SHOW the report are the registered sinks (the dashboard
         # slot snapshot and the live stream).
         "acp/mcp_session_report.py",
+        # Capture-side too: scrubs a restored deferred row as it comes back OFF
+        # DISK, before the label cap; the slot append that ships it is the sink.
+        "dashboard/slot_buffers.py",
         # Same shape: the workflow previewer scrubs the script-authored strings it
         # RETAINS (an agent label, a prompt fallback label, a phase title) inside
         # `_bounded`, before its own 120-char title cap. Redacting first is the

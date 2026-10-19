@@ -157,7 +157,9 @@ async def _reconcile_slot_window(state: DashboardState, slot: "_ChatSlot") -> No
     )
     for msg in fresh:
         role = msg.get("role", "assistant")
-        cls = msg.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
+        cls = msg.get("cls") or (
+            "" if role == SECTION_MARKER_ROLE else "msg msg-u" if role == "user" else "msg msg-a"
+        )
         content = msg.get("content", "")
         if role != "user":
             content, _ = redact_exfiltration_urls(content)
@@ -650,7 +652,9 @@ def _hydrate_slot_from_history(
         # ``is_stop_event_row``), so a resumed session dropping it reads the
         # user's deliberate Stop as an interrupted turn. Import rows carry none
         # and fall through to the role default as before.
-        cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
+        cls = m.get("cls") or (
+            "" if role == SECTION_MARKER_ROLE else "msg msg-u" if role == "user" else "msg msg-a"
+        )
         content = m.get("content", "")
         slot.append(
             role,

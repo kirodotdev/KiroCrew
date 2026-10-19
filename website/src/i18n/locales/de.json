@@ -11944,6 +11944,10 @@
         "load_failed": "Frühere Nachrichten konnten nicht geladen werden",
         "retry": "Erneut versuchen"
       },
+      "sectionMarkerRow": {
+        "end_of": "Ende des Abschnitts: {{label}}",
+        "end_of_section": "Ende des Abschnitts"
+      },
       "sessionSummary": {
         "empty_body": "Die Zusammenfassung entsteht am Ende eines Zugs. Sende eine Nachricht, um eine für diese Sitzung zu erhalten.",
         "empty_generate_body": "Diese Sitzung wurde noch nicht zusammengefasst.",

@@ -443,6 +443,9 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # lifecycle owner (installed once the turn is committed, cleared after
     # its session is released).
     self._active_turn_session_key = ""
+    # The TRANSCRIPT this turn authorized, captured beside the identity above:
+    # an unbound channel slot resolves a different key on each side.
+    self._active_turn_history_key = ""
     # Process-local human priority; queue/history metadata cannot restore it.
     self._responsive = None
     self._side = None
@@ -602,9 +605,14 @@ def deferred_context_count(self: _ChatSlot) -> int:
     return self._buffers.deferred_context_count(self)
 
 
-def flush_deferred_notes(self: _ChatSlot) -> int:
-    """Flush held notes in order, restoring the unwritten suffix on failure."""
-    return self._buffers.flush_deferred_notes(self, logger=logger)
+def flush_deferred_notes(self: _ChatSlot, *, markers_only: bool) -> int:
+    """Flush held notes in order, restoring the unwritten suffix on failure.
+
+    ``markers_only`` has no default ON PURPOSE: the hold carries two element
+    classes with opposite release policies, and neither wrong choice fails
+    visibly, so a new seam must state which class it releases.
+    """
+    return self._buffers.flush_deferred_notes(self, logger=logger, markers_only=markers_only)
 
 
 def register_approval(

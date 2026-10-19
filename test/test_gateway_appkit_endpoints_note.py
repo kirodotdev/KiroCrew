@@ -503,13 +503,13 @@ class TestNoteEndpoint:
 
         assert len(slot.messages) == 0
         slot.task = None
-        assert slot.flush_deferred_notes() == 2
+        assert slot.flush_deferred_notes(markers_only=False) == 2
         assert [m["content"] for m in slot.messages] == ["first", "second"]
         assert [m["role"] for m in slot.messages] == ["inject", "inject"]
         assert slot.messages[0]["cls"] == "reconcile-note"
         # Drained, so a second turn end cannot re-write them.
         assert slot._deferred_notes == []
-        assert slot.flush_deferred_notes() == 0
+        assert slot.flush_deferred_notes(markers_only=False) == 0
         # Both halves land together, in order, so the next turn sees the text
         # whose visible line it sits under.
         assert [e["content"] for e in slot._pending_context] == ["first", "second"]
@@ -540,7 +540,7 @@ class TestNoteEndpoint:
         assert drain_pending_context(slot) == ""
 
         slot.task = None
-        assert slot.flush_deferred_notes() == 1
+        assert slot.flush_deferred_notes(markers_only=False) == 1
         # The next turn's drain does see it.
         prefix = drain_pending_context(slot)
         assert "moved 3 sessions" in prefix
@@ -566,7 +566,7 @@ class TestNoteEndpoint:
 
         assert len(slot._deferred_notes) == 0
         assert len(slot._pending_context) == 0
-        assert slot.flush_deferred_notes() == 0
+        assert slot.flush_deferred_notes(markers_only=False) == 0
         slot.task = None
 
     @pytest.mark.asyncio
@@ -597,7 +597,7 @@ class TestNoteEndpoint:
 
         assert slot._deferred_notes[0]["context"] is None
         slot.task = None
-        assert slot.flush_deferred_notes() == 1
+        assert slot.flush_deferred_notes(markers_only=False) == 1
         assert [m["content"] for m in slot.messages] == ["held"]
         # The skipped half added nothing at flush either.
         assert len(slot._pending_context) == 10
@@ -664,7 +664,7 @@ class TestNoteEndpoint:
         # Exactly what cron_inject does when its job completes.
         slot.linked_session_key = "cron:job42"
 
-        assert slot.flush_deferred_notes() == 0
+        assert slot.flush_deferred_notes(markers_only=False) == 0
         assert all("AUTHORIZED-ELSEWHERE" not in m.get("content", "") for m in slot.messages)
         # The context half is dropped with it -- promoting it alone would hand
         # the payload to the cron's next turn without the visible line.
@@ -683,7 +683,7 @@ class TestNoteEndpoint:
             resp = await client.post("/api/chat/slots/s1/note", json={"content": "STILL-MINE"})
             assert resp.status == 200
 
-        assert slot.flush_deferred_notes() == 1
+        assert slot.flush_deferred_notes(markers_only=False) == 1
         assert any("STILL-MINE" in m.get("content", "") for m in slot.messages)
         assert len(slot._pending_context) == 1
         slot.task = None
@@ -1380,7 +1380,7 @@ class TestNoteEndpoint:
                 }
             )
 
-        slot.flush_deferred_notes()
+        slot.flush_deferred_notes(markers_only=False)
 
         contents = [e["content"] for e in slot._pending_context]
         assert len([c for c in contents if c.startswith("live-")]) == _MAX_PENDING_CONTEXT
@@ -1547,7 +1547,7 @@ class TestNoteEndpoint:
             assert (await resp.json())["contextSkipped"] is True
 
         slot.task = None
-        assert slot.flush_deferred_notes() == 2
+        assert slot.flush_deferred_notes(markers_only=False) == 2
         busy = [e for e in slot._pending_context if e.get("source") == "busy"]
         assert len(busy) == 10
         assert [m["content"] for m in slot.messages] == ["tenth", "eleventh"]

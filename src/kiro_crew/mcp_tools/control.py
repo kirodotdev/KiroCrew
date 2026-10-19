@@ -37,6 +37,7 @@ from kiro_crew.mcp_tools.control_parts.directive import (
     chat_tag,
     nothing_to_do,
     reset_conversation,
+    section_marker,
     set_project,
     suggest_followup,
 )
@@ -623,6 +624,7 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], "str | DeferredTool"]] = {
     "set_project": set_project,
     "reset_conversation": reset_conversation,
     "chat_tag": chat_tag,
+    "section_marker": section_marker,
     "suggest_followup": suggest_followup,
 }
 

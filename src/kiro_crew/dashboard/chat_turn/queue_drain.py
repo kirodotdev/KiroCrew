@@ -9,6 +9,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
+from kiro_crew.dashboard.chat_utils_injected_rows import SYNTHETIC_RECOVERY_KIND
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -402,6 +403,23 @@ def subagents_hold_user_messages(state: DashboardState, session_key: str) -> boo
     return any(not (isinstance(a, dict) and a.get("stalled")) for a in agents)
 
 
+def _next_queued_is_recovery_continuation(slot: _ChatSlot) -> bool:
+    """Whether the head of the queue continues THIS turn rather than succeeding it.
+
+    An empty-response recovery re-queue carries ``SYNTHETIC_RECOVERY_KIND``: the reply
+    it produces is the one a pending boundary CLOSES, not the first row of the next
+    unit of work. Releasing a held marker ahead of it would therefore place the
+    boundary one row too early, and permanently — the row is in the transcript.
+
+    Distinct from the origin-tag withhold beside it, which asks whether the successor
+    is a USER turn. A cron notification IS a successor whose rows a boundary precedes;
+    this one is not a successor at all.
+    """
+    if not slot._queue:
+        return False
+    return str(slot._queue[0].get("kind") or "") == SYNTHETIC_RECOVERY_KIND
+
+
 async def _start_next_queued_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -482,9 +500,15 @@ async def _start_next_queued_turn(
     # notification or a runner-injected recovery prompt -- for the same reason
     # _finish_queue_cycle withholds from synthesis: a note is owed to the next
     # USER turn, and that cycle's own flush delivers it afterwards.
-    if not (slot._queue and slot._queue[0].get("kind")):
+    # A recovery re-queue is skipped whole: it CONTINUES this turn, so neither class is
+    # due -- the marker would land before the reply it closes, the note before a non-user turn.
+    if not _next_queued_is_recovery_continuation(slot):
+        # A marker is exempt from the origin-tag withhold: a note is a MESSAGE owed
+        # to the next user turn, but a marker is a BOUNDARY, so holding it past the
+        # successor moves the seam over rows it never covered.
+        structural_next = bool(slot._queue and slot._queue[0].get("kind"))
         try:
-            slot.flush_deferred_notes()
+            slot.flush_deferred_notes(markers_only=structural_next)
         except Exception:
             # Everything below this point is the successor handoff -- the dequeue,
             # the row append and spawn_guarded_turn. A raise here would return

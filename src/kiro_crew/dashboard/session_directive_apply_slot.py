@@ -16,9 +16,13 @@ import asyncio
 import logging
 import os
 import time
+import uuid
 from typing import Any
 
+from kiro_crew import validation
 from kiro_crew.dashboard.session_directive_apply_monitor import _binding
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.session_directive import SECTION_MARKER_ROLE
 from kiro_crew.dashboard.session_directive_apply_outcome import (
     QUIET_END_OUTCOME_PREFIX,
     DirectiveOutcome,
@@ -548,6 +552,138 @@ async def _apply_chat_tag(state: Any, slot: Any, session_key: str, args: dict[st
     names = [str(name_by_id.get(tid, tid)) for tid in slot.tags]
     shown = ", ".join(names) if names else "(none)"
     return f"Board tags updated. This session now carries: {shown}."
+
+
+async def _section_marker(slot: Any, session_key: str, args: dict[str, Any]) -> str:
+    """Hold a labelled chapter-break row for this slot's next turn boundary.
+
+    DEFERRED, not appended here, and the reason is positional rather than about
+    teardown. When a turn builds its prompt it passes ``exclude_last_n=1`` so the
+    current turn's user message is not fed back as history, and that exclusion is
+    a RAW POSITIONAL SLICE applied BEFORE role filtering (``context._replay_rows``
+    / ``_recall_rows``, ``history.recent``). So a row appended after the
+    current-turn user row becomes the physical tail, absorbs the exclusion, and
+    the user's message survives the slice and is replayed — sending the request
+    twice. Keeping the role out of ``RECALL_ROLES`` does NOT rescue this:
+    membership governs whether the row itself is replayed, never which row the
+    positional slice removes.
+
+    That is the same hazard ``/note`` defers its visible line for, so this reuses
+    ``/note``'s hold (``slot._deferred_notes``, flushed by
+    ``flush_deferred_notes`` at the seams that already call it) rather than adding
+    a third notion of "held". Deferral is arguably correct here anyway: a marker
+    held to the turn's end lands after the closing message for the item just
+    finished and before anything for the next one, which is where a chapter break
+    belongs. The honest limit, stated in the tool description too: a marker
+    separates TURNS, so several emitted in one turn clump at that turn's end.
+
+    Records the session THIS TURN runs on, captured by the caller, for the same
+    reason ``_reset_conversation`` does: a slot's ``linked_session_key`` is
+    mutable, so a cron or workflow injection can rebind the live slot between the
+    turn that asked and the flush that writes, and ``flush_deferred_notes``
+    re-checks this key against the live session before writing.
+    """
+    # circular import: ``chat_handlers`` cannot be imported at module scope from
+    # here. Measured — importing ``kiro_crew.dashboard.chat_handlers`` as the
+    # entry point raises ImportError from a partially initialised
+    # ``kiro_crew.artifacts`` (artifacts <-> validation), while importing THIS
+    # module first succeeds; hoisting would put that fragile subtree on the turn
+    # loop's import path, which chat_runner reaches before chat_handlers. This is
+    # AUTOSDE ``top-level-imports``' circular-import exception. The redactors used
+    # below are at module scope instead, since ``kiro_crew.security`` imports
+    # cleanly in both orders and carries no such cycle.
+    from kiro_crew.dashboard.chat_handlers import _MAX_DEFERRED_NOTES
+
+    label = str(args.get("label") or "").strip()
+    # Scrub the LABEL itself, not merely the rendered fallback built from it.
+    # ``label`` is caller-controlled text (an LLM's, or an injection that reached
+    # one through untrusted tool/web/channel content) and it reaches the visible
+    # transcript by TWO routes, not one: ``content`` below, and ``meta["label"]``
+    # — which is the field BOTH renderers actually draw (``meta?.label ?? content``).
+    # The row is appended with ``broadcast=True``, and on the live global-SSE path
+    # ``state._broadcast_chat_message`` merges direct meta UNREDACTED on the way
+    # out; that path's safety argument is that live tool meta is redacted AT ITS
+    # SOURCE, and this handler is that source. Redacting only ``content`` left the
+    # drawn field raw, so a credential or exfil URL reached the dashboard
+    # unscanned and was scrubbed only by ``_redact_meta`` on a later HTTP
+    # refetch — i.e. after it had already been rendered.
+    #
+    # Ordered BEFORE the length cap deliberately. Truncating first can cut a
+    # credential mid-pattern so the regex misses it, which would leave
+    # a partial secret in both surfaces; redacting first replaces it whole.
+    # Redaction can lengthen the string (a 20-char key becomes a 22-char tag), so
+    # the cap is applied to the scrubbed value and still binds.
+    label, _ = redact_exfiltration_urls(label)
+    label, _ = redact_credentials(label)
+    cap = validation.max_section_label()
+    if len(label) > cap:
+        # Belt to the schema's braces: the tool validates, but the applier is
+        # also reachable from the channel consumer, and a structural row must
+        # never carry a paragraph of prose however it arrived.
+        label = label[:cap]
+
+    # ``content`` is the COMPATIBILITY surface: an older frontend that does not
+    # know the role draws this string rather than nothing (ChatPage) or renders
+    # nothing at all (the SDK path), so a legible degradation beats an empty row.
+    # ``meta`` is the machine surface and carries the label a renderer reads.
+    # Both are now derived from the one scrubbed ``label`` above, so the drawn
+    # field carries the same guarantee as the fallback rather than a weaker one.
+    content = f"— End of section: {label} —" if label else "— End of section —"
+
+    deferred = bool(getattr(slot, "running", False))
+    meta = {"label": label}
+    if not deferred:
+        # No turn in flight, so no positional tail to steal: write it now.
+        slot.append(role=SECTION_MARKER_ROLE, content=content, cls="", broadcast=True, meta=meta)
+        return (
+            f"Section break drawn{f' — {label}' if label else ''}. It changes only "
+            "what is rendered; no model context was dropped."
+        )
+
+    if len(slot._deferred_notes) >= _MAX_DEFERRED_NOTES:
+        # Shares /note's per-turn hold cap, so a caller cannot park unbounded
+        # rows on one turn. The code string matches the HTTP endpoint's 429 body
+        # so both surfaces name the same condition.
+        raise _DirectiveDenied(
+            f"Error: this turn already holds {_MAX_DEFERRED_NOTES} deferred rows "
+            "(deferred_notes_full); the section break was not queued. Markers "
+            "separate turns — draw one at the seam rather than several per turn."
+        )
+
+    slot._deferred_notes.append(
+        {
+            # Same shape as a /note hold id: without one a held marker replayed
+            # after a rows-only handover AND lost its durable copy at the union.
+            "id": uuid.uuid4().hex[:12],
+            "content": content,
+            "cls": "",
+            # No context half. That is the whole reason /note itself is not
+            # reused: /note ALWAYS queues a _pending_context entry drained into
+            # the next user message, and a chapter break must never enter a
+            # model's prompt.
+            "context": None,
+            "role": SECTION_MARKER_ROLE,
+            "meta": meta,
+            # The CALLER's key for this turn, not ``effective_session_key(slot)``.
+            # Re-deriving it from the slot defeats the very check it feeds:
+            # ``flush_deferred_notes`` compares this value against the slot's LIVE
+            # key, so if a cron or workflow result binds an unbound slot mid-turn
+            # BEFORE this directive is applied, a slot-derived key records the
+            # cron's key, matches the same rebound slot at flush, and writes this
+            # turn's marker into the cron's transcript. Both sides of the
+            # comparison would have followed the rebind, so the mismatch is
+            # undetectable by construction. ``session_key`` is captured by the
+            # consumer, which is the only layer that knows the authoritative
+            # session — the same reason ``_reset_conversation`` stores it rather
+            # than resolving the slot.
+            "session": session_key,
+        }
+    )
+    return (
+        f"Section break queued{f' — {label}' if label else ''}; it will appear at "
+        "the end of this turn, after this turn's closing message. It changes only "
+        "what is rendered; no model context is dropped."
+    )
 
 
 async def _suggest_followup(state: Any, slot: Any, args: dict[str, Any]) -> str:

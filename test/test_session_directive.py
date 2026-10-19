@@ -27,6 +27,7 @@ _CASES = {
     "nothing_to_do": {"note": "patrol: no new activity"},
     "reset_conversation": {},
     "chat_tag": {"set_state": "review"},
+    "section_marker": {"label": "item-42"},
 }
 
 

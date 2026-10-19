@@ -814,9 +814,11 @@ class TestFinishQueueCycle:
     async def test_a_held_note_is_withheld_from_an_automatic_synthesis_turn(self, tmp_path):
         """A note is owed to the next USER turn, so synthesis must not drain it.
 
-        Synthesis is dispatched from this same function, so flushing here would
-        hand the held context to a turn the user never asked for. The user-turn
-        seams flush on their own, so withholding cannot lose the note.
+        Synthesis is dispatched from this same function, so flushing the NOTE here
+        would hand its held context to a turn the user never asked for. The
+        user-turn seams flush on their own, so withholding cannot lose the note.
+        The flush is still CALLED, in markers-only mode: a marker is a boundary
+        rather than a message, so it is the one row released at this seam.
         """
         state, slot = _state(tmp_path), _slot()
         state._slots[slot.key] = slot  # a live slot is registered
@@ -832,7 +834,8 @@ class TestFinishQueueCycle:
             await asyncio.sleep(0)
 
         assert slot._synthesis_inflight is True
-        flush.assert_not_called()
+        # markers_only=True is what withholds the note: anything else would drain it.
+        flush.assert_called_once_with(markers_only=True)
         if slot.task is not None:
             slot.task.cancel()
 
@@ -904,3 +907,78 @@ class TestFinishQueueCycle:
             },
         )
         assert slot._cycle_reached_provider is False, "the next cycle starts unserved"
+
+
+class TestFinishQueueCycleSynthesisSeam:
+    """``_finish_queue_cycle`` withholds the whole flush when it is about to
+    dispatch synthesis, because a ``/note`` is a MESSAGE owed to the next USER
+    turn and synthesis is not one. A marker is a BOUNDARY, so the same withhold
+    carries it past the synthesis rows and marks a seam over content it never
+    covered.
+    """
+
+    @staticmethod
+    def _armed(tmp_path):
+        """A slot with synthesis armed and eligible, plus the state it needs."""
+        state, slot = _state(tmp_path), _slot()
+        slot._pending_synthesis = True
+        slot._subagent_deliveries_inflight = 0
+        state.subagents = _no_children()
+        state._slots[slot.key] = slot
+        return state, slot
+
+    @staticmethod
+    async def _run(slot, state):
+        """Dispatch the cycle and let the synthesis successor write its row."""
+
+        async def _fake_synthesis(_state, s):
+            s.append(role="inject", content="synthesis row", cls="", meta={"k": "synthesis"})
+
+        with patch.object(chat_runner, "_run_pending_synthesis", _fake_synthesis):
+            await chat_runner._finish_queue_cycle(state, slot)
+            # flake-ok: zero-length yield that lets the task the call scheduled run,
+            # matching the dispatch the sibling tests in this file already use.
+            await asyncio.sleep(0)
+            task = slot.task
+            if task is not None and not task.done():
+                await task
+
+    @pytest.mark.asyncio
+    async def test_a_held_marker_lands_above_the_synthesis_rows(self, tmp_path):
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.session_directive_apply import SECTION_MARKER_ROLE
+
+        state, slot = self._armed(tmp_path)
+        slot._deferred_notes.append(
+            {
+                "content": "— End of section: item-42 —",
+                "cls": "",
+                "context": None,
+                "role": SECTION_MARKER_ROLE,
+                "meta": {"label": "item-42"},
+                "session": effective_session_key(slot),
+            }
+        )
+
+        await self._run(slot, state)
+
+        roles = [m["role"] for m in slot.messages]
+        assert SECTION_MARKER_ROLE in roles, "the marker was never written"
+        assert "inject" in roles, "fixture: the synthesis row is missing"
+        assert roles.index(SECTION_MARKER_ROLE) < roles.index(
+            "inject"
+        ), "the marker landed AFTER the synthesis rows, so it marks the wrong boundary"
+
+    @pytest.mark.asyncio
+    async def test_a_plain_note_is_still_withheld_from_synthesis(self, tmp_path):
+        """Negative control: releasing the marker must not release a ``/note``
+        sharing the same hold. A fix that flushed everything would pass the test
+        above while delivering a note to a turn it is not owed to.
+        """
+        state, slot = self._armed(tmp_path)
+        slot._deferred_notes.append({"content": "held-note", "cls": "reconcile-note"})
+
+        await self._run(slot, state)
+
+        assert "held-note" not in [m["content"] for m in slot.messages]
+        assert any(n["content"] == "held-note" for n in slot._deferred_notes)

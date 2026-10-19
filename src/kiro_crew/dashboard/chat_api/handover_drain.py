@@ -223,7 +223,7 @@ async def _persist_handover_tail(
             name,
         )
     try:
-        slot.flush_deferred_notes()
+        slot.flush_deferred_notes(markers_only=False)
     except Exception:
         # The flush puts the unwritten suffix back before raising, so this count is
         # what is still held. The hold also has a durable copy in the slot's

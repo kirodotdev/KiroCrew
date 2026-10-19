@@ -12125,6 +12125,10 @@
         "load_failed": "Impossibile caricare i messaggi precedenti",
         "retry": "Riprova"
       },
+      "sectionMarkerRow": {
+        "end_of": "Fine della sezione: {{label}}",
+        "end_of_section": "Fine della sezione"
+      },
       "sessionSummary": {
         "empty_body": "Il riepilogo viene scritto quando un turno finisce. Invia un messaggio per ottenerne uno per questa sessione.",
         "empty_generate_body": "Questa sessione non è ancora stata riassunta.",

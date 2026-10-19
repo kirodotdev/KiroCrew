@@ -2307,7 +2307,7 @@ answers `tools/list` from):
 - **Session-bound directives** (`session_directive.DIRECTIVE_TOOLS`):
   `nothing_to_do`, `suggest_followup`, `monitor_start`, `monitor_watch`,
   `monitor_update`, `monitor_stop`, `autonudge_stop`, `set_project`,
-  `reset_conversation`, `chat_tag`. `ask_question` is not one: it blocks and
+  `reset_conversation`, `chat_tag`, `section_marker`. `ask_question` is not one: it blocks and
   returns the answers as its own result (see the stateful-tool model below).
 - **Memory recall (V1 and V2):** `memory_recall` resolves authenticated session identity
   once through `require_strict_session_key` and passes that same identity to the gateway.
@@ -2427,7 +2427,7 @@ of its responsibility:
 |---|---|
 | `control.py` | `task_run`, `wait` and its deferred step, `route_crew`, `select_crew`, `register_hook`, `ask_question` and its card wait, `HANDLERS` |
 | `control_parts/schemas.py` | every control descriptor, and the structured-arming and runtime-ceiling reads that shape one |
-| `control_parts/directive.py` | `_emit_directive`, and the tools whose effect is one directive: `nothing_to_do`, `set_project`, `reset_conversation`, `chat_tag`, `suggest_followup` |
+| `control_parts/directive.py` | `_emit_directive`, and the tools whose effect is one directive: `nothing_to_do`, `set_project`, `reset_conversation`, `chat_tag`, `section_marker`, `suggest_followup` |
 | `control_parts/monitor.py` | `monitor_start`, `monitor_watch`, `monitor_inspect`, `monitor_update`, `monitor_stop`, `autonudge_stop`, and their context and preflight refusals |
 | `spawn.py` | `spawn_run` with its deferred step and receipt, `spawn_continue`, `spawn_steer`, `spawn_release`, `resource_status`, `HANDLERS` |
 | `spawn_parts/schemas.py` | every spawn descriptor, the agent roster hint and the parent allowlist filter |
@@ -4530,7 +4530,7 @@ in its parent's slot.
 **Return a session directive and let the session-aware consumer apply it.** This
 is what `nothing_to_do`, `monitor_start`, `monitor_watch`, `monitor_update`,
 `monitor_stop`, `autonudge_stop`, `set_project`, `suggest_followup`,
-`reset_conversation` and `chat_tag` do (`session_directive.DIRECTIVE_TOOLS`). The tool validates its arguments and
+`reset_conversation`, `chat_tag` and `section_marker` do (`session_directive.DIRECTIVE_TOOLS`). The tool validates its arguments and
 returns a human-readable confirmation plus a marker line carrying the validated
 payload and **no session key**. `dashboard/chat_runner`'s tool-result handler
 decodes the marker, applies the effect against **its own** `slot.key`, then
