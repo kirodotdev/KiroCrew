@@ -112,7 +112,6 @@
 12647 test/test_security.py
 5509 test/test_sel.py
 9530 test/test_session.py
-7444 test/test_session_storage.py
 6415 test/test_session_transfer.py
 3082 test/test_skills.py
 2650 test/test_slack_handler_composition_contract.py

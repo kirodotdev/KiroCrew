@@ -1,7 +1,7 @@
 """Tests for the session storage endpoints.
 
 These cover the wire contract and the guards, not the filesystem mechanics —
-those live in ``test_session_storage.py``. Two properties are load-bearing here:
+those live in ``test_session_storage.py`` and its topic files. Two properties are load-bearing here:
 every mutation is refused for a restricted session and audited when it succeeds,
 and the payload never splits a session's size across the two stores it occupies.
 """
@@ -29,7 +29,7 @@ _DAY = 86400.0
 
 @pytest.fixture(autouse=True)
 def _fresh_scan_cache() -> None:
-    """No cached filesystem pass leaks between tests. See test_session_storage.py."""
+    """No cached filesystem pass leaks between tests. See session_storage_helpers.py."""
     session_storage_module.invalidate_scan_cache()
 
 

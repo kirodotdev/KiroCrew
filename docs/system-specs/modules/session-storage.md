@@ -1242,7 +1242,7 @@ Emptying is the one worth spelling out. An interrupted batch can list *zero*
 sessions while holding real files, so the trash shows it as empty — meaning a
 user's "empty this batch" is consent for nothing while destroying something. Such a
 batch is skipped and logged rather than deleted, so `freed_bytes` under-reports
-instead of the trash over-deleting. `TestEmptyTrash` and
+instead of the trash over-deleting. `TestEmptyTrashApproval` and
 `test_restore_never_deletes_a_file_the_manifest_omits` cover both directions.
 
 All three now also re-establish the answer through the descriptor they remove by, not only
