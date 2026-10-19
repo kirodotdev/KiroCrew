@@ -57,6 +57,7 @@
     "open_session": "Apri sessione",
     "open_to_answer": "Questa vista non può verificare la richiesta. Apri la sessione per esaminarla e rispondere.",
     "explicit_input": "Solo il tuo invio esplicito trasmette una risposta o un’approvazione.",
+    "session_only_options": "Alcune opzioni si possono scegliere solo nella sessione.",
     "recorded": "La tua risposta è stata registrata.",
     "send_refused": "La sessione non ha accettato questa risposta.",
     "send_unknown": "La consegna è incerta. La risposta è conservata. Controlla la sessione prima di riprovare per evitare invii duplicati.",

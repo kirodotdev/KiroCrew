@@ -272,6 +272,40 @@ describe('FollowUpBar', () => {
       render(<FollowUpBar options={['Go']} picked={new Set(['First'])} onSelect={() => {}} onSend={() => {}} quickSend />)
       expect(screen.getByRole('button', { name: 'Send now: Go' })).toBeInTheDocument()
     })
+
+    it('withholds the send segment from a command-shaped label, which no click path sends', () => {
+      render(<FollowUpBar options={['/clear', 'Go']} picked={new Set()} onSelect={() => {}} onSend={() => {}} />)
+      expect(screen.queryByRole('button', { name: 'Send now: /clear' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Send now: Go' })).toBeInTheDocument()
+    })
+
+    it('picks a command-shaped label on double-click instead of sending it', () => {
+      const onSelect = vi.fn()
+      const onSend = vi.fn()
+      render(<FollowUpBar options={['/clear', 'Go']} picked={new Set()} onSelect={onSelect} onSend={onSend} />)
+      fireEvent.dblClick(screen.getByRole('button', { name: '/clear' }))
+      expect(onSend).not.toHaveBeenCalled()
+      expect(onSelect).toHaveBeenCalledTimes(1)
+      expect(onSelect.mock.calls[0][0]).toBe('/clear')
+      fireEvent.dblClick(screen.getByRole('button', { name: 'Go' }))
+      expect(onSend).toHaveBeenCalledWith('Go', undefined)
+    })
+
+    it('does not promise a double-click send on a picked command-shaped chip, which that gesture un-picks', () => {
+      render(<FollowUpBar options={['/clear', 'Go']} picked={new Set(['/clear', 'Go'])} onSelect={() => {}} onSend={() => {}} />)
+      fireEvent.focus(screen.getByRole('button', { name: '/clear' }))
+      expect(screen.getByRole('tooltip').textContent).not.toMatch(/double-click/i)
+      fireEvent.blur(screen.getByRole('button', { name: '/clear' }))
+      fireEvent.focus(screen.getByRole('button', { name: 'Go' }))
+      expect(screen.getByRole('tooltip').textContent).toMatch(/double-click/i)
+    })
+
+    it('tells an unpicked command-shaped chip on a single-select row that it replaces the pick', () => {
+      render(<FollowUpBar options={['/clear', 'Go']} picked={new Set(['Go'])} onSelect={() => {}} onSend={() => {}} multi={false} />)
+      fireEvent.focus(screen.getByRole('button', { name: '/clear' }))
+      expect(screen.getByRole('tooltip').textContent).toMatch(/replace/i)
+      expect(screen.getByRole('tooltip').textContent).not.toMatch(/double-click/i)
+    })
   })
 
   // ─── Single-select [OPTION:] rows: tooltip must not promise multi-select ──

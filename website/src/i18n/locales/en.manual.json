@@ -56,6 +56,7 @@
     "open_session": "Open session",
     "open_to_answer": "This view cannot verify the request. Open the session to review and respond.",
     "explicit_input": "Only your explicit submission sends an answer or approval.",
+    "session_only_options": "Some options can only be answered in the session.",
     "recorded": "Your response was recorded.",
     "send_refused": "The session did not accept this answer.",
     "send_unknown": "Delivery is uncertain. Your answer is preserved. Check the session before retrying to avoid sending it twice.",
