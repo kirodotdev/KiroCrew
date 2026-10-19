@@ -476,6 +476,42 @@ async def _cleanup_memory_consolidation_session(
         logger.debug("memory consolidation artifact cleanup failed", exc_info=True)
 
 
+async def _start_fresh_conversation(sessions: Any, key: str, client: Any) -> None:
+    """Leave *key* on an empty conversation before its permit is released.
+
+    The cheap path is ``new_conversation()``: a fresh ``session/new`` on the SAME
+    running process, then the old session's teardown, which removes that one
+    session's backend record (KAS ``_kiro/session/delete``; kiro-cli terminate
+    plus the guarded unlink of ``sessions/cli/<sid>.json(+.jsonl)``). If the
+    provider has none or it raises, ``reset`` replaces the process, and the key's
+    stateless classification means the next turn starts with no history. The
+    same two steps ``WorkerPool.reset`` uses for a reused pool worker.
+
+    Logs at INFO which path ran, once per call. Never raises ``Exception``.
+    """
+    try:
+        await sessions.end_children_for(key)
+    except Exception:
+        logger.debug("ending %s's children before a fresh conversation failed", key, exc_info=True)
+    new_conversation = getattr(client, "new_conversation", None)
+    if callable(new_conversation):
+        try:
+            await new_conversation()
+        except Exception:
+            logger.debug("new_conversation failed for %s", key, exc_info=True)
+        else:
+            logger.info("Background session %s: fresh conversation on the same runtime", key)
+            return
+    try:
+        await sessions.reset(key, ends_conversation=True)
+    except Exception:
+        logger.warning(
+            "Background session %s: could not start a fresh conversation", key, exc_info=True
+        )
+        return
+    logger.info("Background session %s: reset to a new runtime for a fresh conversation", key)
+
+
 @asynccontextmanager
 async def background_turn(
     sessions: Any,
@@ -486,6 +522,7 @@ async def background_turn(
     crew_log_kind: str = "",
     crew_log_session_key: str = "",
     session_key: str | None = None,
+    fresh_conversation: bool = False,
 ) -> "AsyncIterator[Any]":
     """Take the shared background session for ONE turn, then release and account.
 
@@ -509,6 +546,11 @@ async def background_turn(
     session is created AS, so injecting a default here would silently change that
     for callers that deliberately pass none. The recorded row still names the
     background agent so the dimension is never blank.
+
+    ``fresh_conversation`` ends the turn's conversation before the permit is
+    released, so the next caller on the key starts from an empty context (see
+    :func:`_start_fresh_conversation`). It replaces the recycle for that key and
+    is ignored with ``memory_store``, whose key already lives for one turn.
 
     Exceptions are deliberately NOT swallowed. Callers distinguish "the session
     could not be acquired" (nothing was sent, so nothing was billed) from "the turn
@@ -572,15 +614,19 @@ async def background_turn(
         # entirely. This read is a synchronous attribute walk, so taking it here
         # costs nothing and keeps release ahead of every await.
         usage = provider_last_turn_usage(client, since=stats_before)
-        # Release before any await: it is synchronous, so no cancellation can
-        # land between the turn ending and the next caller being unblocked.
-        # CancelledError is a BaseException that no `except Exception` catches,
-        # and an await ordered ahead of this would let a cancelled task hold the
-        # shared semaphore forever.
+        # Release is synchronous and runs in a ``finally``, so no cancellation can
+        # leave this task holding the shared semaphore: CancelledError is a
+        # BaseException that no `except Exception` catches. The one await ahead
+        # of it, the fresh conversation, runs while the permit is still held, so
+        # no waiter can take the key between this turn and the reset.
         try:
-            sessions.release(key)
-        except Exception:
-            logger.debug("background session release failed task=%s", task, exc_info=True)
+            if fresh_conversation and not memory_store:
+                await _start_fresh_conversation(sessions, key, client)
+        finally:
+            try:
+                sessions.release(key)
+            except Exception:
+                logger.debug("background session release failed task=%s", task, exc_info=True)
         # Recycle sits in a finally for the same cancellation reason, and follows
         # accounting because it may replace the provider entirely.
         try:
@@ -623,6 +669,9 @@ async def background_turn(
             try:
                 if memory_store:
                     await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+                elif fresh_conversation:
+                    # The fresh conversation above already emptied the context.
+                    pass
                 elif key == BACKGROUND_KEY:
                     await sessions.recycle_background()
                 else:

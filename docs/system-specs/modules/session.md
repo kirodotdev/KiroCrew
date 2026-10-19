@@ -2893,6 +2893,7 @@ those callers are:
 | `cron_service/service/run_kill.py` — `_reset_and_kill_once`, reached from `cancel` / `_force_reap` | the job is cancelled or reaped, so its conversation is over |
 | `taskrunner_parts/run_scope.py` — `TaskRunner._cleanup_run_sessions` | cancel cleanup ends every step conversation of the run |
 | `workflows/agent_pool.py` — `reset` | the pool STARTS A NEW conversation on a pooled key |
+| `llm_helpers_parts/background_turns.py` — `_start_fresh_conversation`, reached from `background_turn(fresh_conversation=True)` | the turn's conversation is over; the reset is the fallback when `new_conversation` is unavailable |
 | `session_compaction.py` — critical reset after a failed compaction (`clear_conversation=True`) | the overflowed conversation is cleared, so it is over |
 
 The default is the recycle because that is what the overwhelming majority of `reset`'s

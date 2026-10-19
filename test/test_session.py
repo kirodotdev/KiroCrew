@@ -9621,6 +9621,9 @@ class TestParentEndCancelsItsChildren:
             "taskrunner_parts/run_scope.py",
             # The pool starts a NEW conversation on a pooled key.
             "workflows/agent_pool.py",
+            # A fresh-conversation background turn ends its conversation when the
+            # cheap ``new_conversation`` path is unavailable.
+            "llm_helpers_parts/background_turns.py",
             # ``clear_conversation`` throws the conversation away: sid cleared, replay
             # suppressed, so the successor cold-starts with none of its history.
             "session_compaction.py",

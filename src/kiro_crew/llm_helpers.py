@@ -103,6 +103,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cleanup_memory_consolidation_session,
         _raise_if_unfinished,
         _record_background_crew_log,
+        _start_fresh_conversation,
         background_turn,
         run_bg_oneliner,
     )

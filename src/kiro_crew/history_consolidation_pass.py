@@ -1263,6 +1263,9 @@ async def _call_llm(
                     task="consolidation",
                     agent="kirocrew-lite",
                     session_key=CONSOLIDATE_KEY,
+                    # Every job starts on an empty conversation of the same warm
+                    # runtime, so no job's request carries an earlier job's text.
+                    fresh_conversation=True,
                     # This turn is spent on ONE session's transcript, so its
                     # cost belongs in that session's log even though the user
                     # never asked for it. Callers that pass no key -- skill
@@ -1300,9 +1303,13 @@ async def _call_llm(
                 allow_image=False,
             )
         except Exception:
+            # The model and the prompt size are the two facts a context-window
+            # overflow or a 429 is diagnosed from.
             self._logger.warning(
-                "LLM consolidation turn failed after %.1fs",
+                "LLM consolidation turn failed after %.1fs (model=%s prompt_chars=%d)",
                 _time.monotonic() - t_start,
+                str(getattr(client, "served_model", "") or "") or "unknown",
+                len(prompt),
                 exc_info=True,
             )
             return None

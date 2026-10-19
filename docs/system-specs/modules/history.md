@@ -2000,7 +2000,16 @@ The separate session removes semaphore contention between long extraction turns
 and short `_bg` metadata jobs; cheap dedupe and merge judges remain on `_bg`.
 It can idle-expire and is recreated on demand without native session-map resume.
 Active turns hold the existing session semaphore and survive idle cleanup.
-Live reuse retains provider context until expiry or context-driven recycling.
+The session semaphore queues jobs, and every job starts on an empty conversation:
+`_call_llm` asks `background_turn` for `fresh_conversation=True`, which, before
+the permit is released and whether the turn succeeded or failed, opens a new
+conversation on the same running process (`new_conversation()`). The old
+session's teardown deletes its backend record (KAS `_kiro/session/delete`;
+kiro-cli terminate plus the guarded `sessions/cli/<sid>` unlink). When the
+provider has no `new_conversation` or it raises, the key is `reset` instead,
+so the next job starts on a new process with no history. INFO names the path
+taken, once per job, and the context-driven recycle does not run for this key.
+A failed turn's warning names the served model and the prompt size.
 Private V2 extraction retains its per-store `memory-consolidation:` session and
 cleanup path. Acquisition timing includes startup and semaphore acquisition;
 it is not a measurement of queue wait alone.
