@@ -14824,6 +14824,7 @@
       "folder_order_unstamped_note": "Папки, созданные до того, как даты стали записываться, не имеют даты; они идут последними, в своём порядке",
       "folder_created_on": "Создана {{date}}",
       "folder_created_unrecorded": "Дата создания не записана — остаётся в своём порядке",
+      "unfiled_sessions_above_folders": "Сессии без папки над папками",
       "sort_sessions_by": "Сортировать сессии по",
       "sort_newest": "Сначала новые",
       "sort_oldest": "Сначала старые",

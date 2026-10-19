@@ -14488,6 +14488,7 @@
       "folder_order_unstamped_note": "As pastas criadas antes de as datas serem registradas não têm data; ficam por último, na sua ordem personalizada",
       "folder_created_on": "Criada em {{date}}",
       "folder_created_unrecorded": "Nenhuma data de criação registrada — fica na sua ordem personalizada",
+      "unfiled_sessions_above_folders": "Sessões sem pasta acima das pastas",
       "sort_sessions_by": "Ordenar sessões por",
       "sort_newest": "Mais recentes",
       "sort_oldest": "Mais antigas",

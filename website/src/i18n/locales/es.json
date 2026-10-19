@@ -14488,6 +14488,7 @@
       "folder_order_unstamped_note": "Las carpetas creadas antes de que se registraran las fechas no tienen fecha; van al final, en tu orden personalizado",
       "folder_created_on": "Creada el {{date}}",
       "folder_created_unrecorded": "Sin fecha de creación registrada — se mantiene en tu orden personalizado",
+      "unfiled_sessions_above_folders": "Sesiones sin clasificar encima de las carpetas",
       "sort_sessions_by": "Ordenar sesiones por",
       "sort_newest": "Más recientes",
       "sort_oldest": "Más antiguas",

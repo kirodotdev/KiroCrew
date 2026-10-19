@@ -6624,6 +6624,7 @@
       "folder_order_unstamped_note": "Folders made before dates were recorded have no date; they come last, in your Custom order",
       "folder_created_on": "Created {{date}}",
       "folder_created_unrecorded": "No creation date recorded — kept in your Custom order",
+      "unfiled_sessions_above_folders": "Unfiled sessions above folders",
       "sort_sessions_by": "Sort sessions by",
       "clear_named_filter": "Clear {{filter}} filter",
       "pause_all_filters": "Pause all filters",
