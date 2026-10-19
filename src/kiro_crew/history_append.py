@@ -39,6 +39,7 @@ from kiro_crew.owner_only_files import (
     mkdirs_owner_only,
     owner_only_opener,
 )
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -48,20 +49,21 @@ _LOGGER = logging.getLogger("kiro_crew.history")
 
 
 def _redact_at_write_boundary(role: str, content: str) -> str:
-    """Redact model-authored *content* on its way into a transcript.
+    """Redact *content* on its way into a transcript.
 
-    One transcript, one redaction rule. A conversation's dashboard tab and its
-    channel thread persist to the same file through different code paths, so the
-    rule has to live where the bytes are written rather than in either caller.
+    A conversation's dashboard tab and its channel thread persist to the same
+    file through different code paths, so the rule lives where the bytes are
+    written rather than in either caller. A user row goes through the host's
+    composed policy: a credential typed into a channel outlives the
+    conversation once it is at rest. Other roles keep the baseline pair, which
+    never withholds a row. The dashboard slot save does not route through
+    here, so a row typed into the dashboard is still stored verbatim.
 
-    The gate is ``role != "user"``, matching the dashboard's own write-back
-    boundary: text the user typed is stored verbatim, and everything the model or
-    the system produced is scrubbed of credentials and exfiltration URLs.
     Idempotent, so a caller that already redacted loses nothing by passing
     through here.
     """
     if role == "user":
-        return content
+        return redact_log_via_context(content)
     content, _ = redact_exfiltration_urls(content)
     content, _ = redact_credentials(content)
     return content
@@ -78,7 +80,7 @@ def _persist_inline_attachments(self: ConversationLog, key: str, role: str, cont
     this the transcript keeps the reference long after the bytes are gone.
     See :mod:`kiro_crew.chat_attachments` for the copy contract.
 
-    Gated on ``role != "user"``, the same gate the redaction boundary uses:
+    Gated on ``role != "user"``:
     an inline image is something the agent produced, and a path the user
     typed names a file of their own that this must not duplicate.
 
@@ -332,11 +334,11 @@ def append_if_absent(
         # a persisted row and would append this message a second time.
         content = self._persist_inline_attachments(key, role, content)
         if self._path(key).exists():
-            # Compare against the form ``append`` actually stores: the
-            # write boundary redacts non-user content, so matching on the
-            # raw text would never recognise an already-persisted message
-            # that contained a credential and would append it twice.
-            persisted = _redact_at_write_boundary(role, content)
+            # A prebuilt *entry* is written as-is and a dashboard user row is
+            # stored raw by the slot save, while the id-less path redacts. A
+            # row on disk in any of those forms is this message.
+            redacted = _redact_at_write_boundary(role, content)
+            bodies = (redacted,) if redacted == content else (redacted, content)
             durable: Iterable[dict] = self._read_messages(key)
             if include_rotated:
                 # By the PHYSICAL file stem, which rotation names segments
@@ -346,7 +348,10 @@ def append_if_absent(
                     self._read_projection.read_rotated_messages(self._path(key).stem),
                     durable,
                 )
-            if self._holds_identical_row(key, durable, role, persisted, supplied_mid):
+            if any(
+                self._holds_identical_row(key, rows, role, body, supplied_mid)
+                for rows, body in zip(itertools.tee(durable, len(bodies)), bodies)
+            ):
                 return False
         # Reentrant: ``append`` re-enters ``_locked`` for the same key on
         # this thread (RLock + refcounted flock), so the write stays inside

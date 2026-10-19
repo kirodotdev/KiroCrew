@@ -723,7 +723,7 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
 
         # ── Bidirectional sync: mirror to dashboard if routed to a dashboard session ──
         if linked_session_key and _dashboard_state and answer.accumulated and not _skip_writes:
-            _mirror_to_dashboard(linked_session_key, text, answer.accumulated)
+            await _mirror_to_dashboard(linked_session_key, text, answer.accumulated)
         # A Link click while this turn ran may have imported its answer unfinished.
         if _dashboard_state and answer.accumulated and not _skip_writes:
             _backfill_late_link(
