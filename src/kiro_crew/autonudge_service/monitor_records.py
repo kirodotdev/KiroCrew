@@ -40,6 +40,7 @@ from kiro_crew.autonudge_service.timers import (
     _MONITOR_RETRY_MAX_BACKOFF_SECS,
     _REARM_BACKOFF_MAX_SHIFT,
 )
+from kiro_crew.metrics import monitor_loops as monitor_loop_metrics
 from kiro_crew.monitoring.decision import (
     decide_monitor,
     monitor_budget_reason,
@@ -312,6 +313,14 @@ async def _add_monitor_locked(
             if self._on_monitor_tick is not None:
                 self._arm_from_deadline(loop)
     self._emit("added", loop)
+    # The structured arm's own commit point, counted for the same reason the
+    # prompt path counts its own: a monitor record never passes through
+    # ``_add_unserialized``, so without this its stop would be counted with no
+    # matching arm and stops could outnumber starts for ``kind=monitor``. Placed
+    # after the snapshot write has committed, so a rolled-back arm counts
+    # nothing. ``rollback_monitor_replacement`` deliberately does NOT count the
+    # row it restores: that loop was armed once and is already counted.
+    monitor_loop_metrics.record_loop_started(loop)
     return loop
 
 

@@ -56,6 +56,7 @@ from kiro_crew.autonudge_service.timers import (
     _REARM_MAX_BACKOFF_SECS,
     _current_task_or_none,
 )
+from kiro_crew.metrics import monitor_loops as monitor_loop_metrics
 from kiro_crew.monitoring.models import MonitorOutcome
 
 if TYPE_CHECKING:
@@ -378,6 +379,22 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
         # a loop removed during the observation is not resurrected by its own
         # in-flight tick.
         if loop.active and loop.id in self._loops:
+            # The gate's saving, counted -- INSIDE this guard, not above it. A
+            # terminal verdict ("the pull request merged") also answers quiet
+            # while having just deactivated the loop, and that tick is a STOP:
+            # the store's commit point records it on
+            # ``kirocrew.autonudge.loops.stopped``, so counting it here as well
+            # would report one event twice and break this counter's own rule
+            # that a tick which ended the loop records nothing. Past the guard,
+            # the loop is still live and the tick genuinely only declined to
+            # spend a turn.
+            #
+            # Recorded here rather than inside the gate because this branch is
+            # what SPENDS nothing: the gate is also consulted on paths that fall
+            # through to a fire, and a reading taken there is a reading, not a
+            # tick decision. Its counterpart lives in ``_run_fire_cycle``, so a
+            # tick that reaches a verdict about a turn lands on one of the two.
+            monitor_loop_metrics.record_tick(loop, monitor_loop_metrics.OUTCOME_QUIET)
             now = time.time()
             fresh = now + loop.idle_secs
             if pushed and loop.next_due_ts > now:
@@ -441,10 +458,12 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
     # Read before the dispatch, which is a long await an owner can re-aim the loop
     # inside; see ``_record_delivered_reading``.
     delivery_basis = _delivery_basis(loop)
+    callback_raised = False
     try:
         delivered = await self._on_fire(loop)
     except Exception:
         delivered = False
+        callback_raised = True
         # Full traceback only on the first failure of a streak; subsequent
         # failures stay at debug so a permanently-wedged callback can't spam
         # a traceback every re-arm.
@@ -456,6 +475,25 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
                 loop.id,
                 self._rearm_fail_count.get(loop.id, 0) + 1,
             )
+    # The tick's verdict about spending a turn, counted once, immediately after
+    # the dispatch settles and before any of the bookkeeping below can take an
+    # early exit. ``failed`` and ``refused`` are kept apart deliberately: both
+    # leave ``delivered`` False and the loop re-armed, but a refusal is the
+    # system declining on purpose (the slot was mid-turn) while an exception is
+    # a defect, and folded together a wedged fire callback is indistinguishable
+    # from a busy session.
+    monitor_loop_metrics.record_tick(
+        loop,
+        (
+            monitor_loop_metrics.OUTCOME_FAILED
+            if callback_raised
+            else (
+                monitor_loop_metrics.OUTCOME_DELIVERED
+                if delivered
+                else monitor_loop_metrics.OUTCOME_REFUSED
+            )
+        ),
+    )
     claimed_wake = loop.id in self._pending_monitor_wake
     # Taken, not merely tested: the claim carries the wake's own text, and the
     # re-owe below has to put the same text back rather than an empty one.

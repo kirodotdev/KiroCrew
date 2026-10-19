@@ -34,6 +34,7 @@ from typing import Any, Callable, Iterator, Mapping
 
 from kiro_crew import autonudge_stop_log, platform_compat
 from kiro_crew.autonudge_service.model import AutoNudgeStoreUnvetted, NudgeLoop
+from kiro_crew.metrics import monitor_loops as monitor_loop_metrics
 from kiro_crew.monitoring.models import monitor_state_to_dict
 from kiro_crew.owner_only_files import (
     ensure_directory,
@@ -268,6 +269,16 @@ class LoopStore:
             for record in records:
                 autonudge_stop_log.log_record(record)
                 autonudge_stop_log.append_record(self.path.parent, record)
+                # Counted from the SAME record as the log line and the stop
+                # file, which is what makes the count exactly-once: a record
+                # exists only for a loop that was active in the last committed
+                # store and is not active now, so a second stop on an
+                # already-stopped loop produces no record here, and the dozen
+                # paths that can stop a loop cannot double-count between them.
+                # In-memory add, so it costs the commit nothing; the record's
+                # free-text reason is mapped to a closed value by the metrics
+                # module and never travels as itself.
+                monitor_loop_metrics.record_loop_stopped(record)
         except Exception:  # noqa: BLE001 - the store write already committed
             logger.warning("AutoNudge: could not record a loop stop", exc_info=True)
         finally:

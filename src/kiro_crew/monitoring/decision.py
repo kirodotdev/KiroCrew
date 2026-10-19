@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
+from kiro_crew.metrics import monitor_loops as monitor_loop_metrics
 from kiro_crew.monitoring import models
 
 # A skip that made no API call is not evidence about the target, and this module
@@ -100,15 +101,22 @@ def decide_monitor(
     the verdict it digests does not exist before then.
     """
     entries = (observation,)
-    return MonitorVerdict(
-        decision=_fold_stall_streak(
-            state,
-            _decide_effect(state, observation, now=now),
-            entries,
-            now=now,
-        ),
-        entries=entries,
+    decision = _fold_stall_streak(
+        state,
+        _decide_effect(state, observation, now=now),
+        entries,
+        now=now,
     )
+    # One increment per call, at the one place every path through this policy
+    # converges: the decision is already folded, so what is counted is the
+    # verdict the caller acts on rather than the effect a later step may still
+    # replace. Only the decision's own value and the monitored kind travel --
+    # never the target, the objective or any fingerprint. An in-memory add,
+    # which is why a pure policy may carry it: nothing here reads a clock, a
+    # file or a socket for it, and the emit swallows its own failures, so this
+    # module stays deterministic for its callers and its tests.
+    monitor_loop_metrics.record_monitor_decision(decision, state.kind)
+    return MonitorVerdict(decision=decision, entries=entries)
 
 
 def _verdict_digest(

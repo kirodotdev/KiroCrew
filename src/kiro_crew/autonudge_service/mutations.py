@@ -63,6 +63,7 @@ from kiro_crew.autonudge_service.subject import (
     needs_session_texts,
     read_session_texts,
 )
+from kiro_crew.metrics import monitor_loops as monitor_loop_metrics
 from kiro_crew.monitoring.limits import validate_runtime_secs
 from kiro_crew.monitoring.models import MONITOR_STATE_VERSION, MonitorCreationSurface
 
@@ -474,6 +475,15 @@ async def _add_unserialized(
             self._revoke_self_arm_for(existing)
             self._emit("removed", existing)
     self._emit("added", loop)
+    # Counted HERE and nowhere else, which is what makes the number a count of
+    # ARMS. The store write above has committed and its rollback window has
+    # closed, so a refused admission, a 409 on an existing record or a failed
+    # persist leaves this counter untouched; and the restore path rebuilds loops
+    # from the store file without reaching this function, so a gateway restart
+    # that brings nine persisted loops back adds nothing. Outside the lock, with
+    # the ``added`` event: it is an in-memory add either way, and nothing holding
+    # the service lock should wait on it.
+    monitor_loop_metrics.record_loop_started(loop)
     logger.info("AutoNudge: added loop %s on slot %s (idle=%ds)", loop.id, slot_key, idle_secs)
     return loop
 
