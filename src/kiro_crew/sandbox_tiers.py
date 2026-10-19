@@ -484,7 +484,7 @@ _STRICT_DIRS: list[str] = [
     ".kiro/crew/.vault",
     ".kirocrew/.vault",
     # The centrally-distributed governance ceiling's cache
-    # (``platform/policy_distribution.py``). Bind-mount-hidden in every mode for the
+    # (``platform/policy_distribution_cache.py``). Bind-mount-hidden in every mode for the
     # reason the vault above is: ``is_sensitive_path`` is the shared read+write gate for
     # the agent's in-process tool calls, but a spawned ``python -c`` does an OS
     # ``open()`` that never routes through it. That matters more here than for the
@@ -511,7 +511,7 @@ _STANDARD_DIRS: list[str] = [
     ".kiro/crew/.vault",
     ".kirocrew/.vault",
     # The centrally-distributed governance ceiling's cache
-    # (``platform/policy_distribution.py``). Bind-mount-hidden in every mode for the
+    # (``platform/policy_distribution_cache.py``). Bind-mount-hidden in every mode for the
     # reason the vault above is: ``is_sensitive_path`` is the shared read+write gate for
     # the agent's in-process tool calls, but a spawned ``python -c`` does an OS
     # ``open()`` that never routes through it. That matters more here than for the
@@ -542,7 +542,7 @@ _CC_DIRS: list[str] = [
     ".kiro/crew/.vault",
     ".kirocrew/.vault",
     # The centrally-distributed governance ceiling's cache
-    # (``platform/policy_distribution.py``). Bind-mount-hidden in every mode for the
+    # (``platform/policy_distribution_cache.py``). Bind-mount-hidden in every mode for the
     # reason the vault above is: ``is_sensitive_path`` is the shared read+write gate for
     # the agent's in-process tool calls, but a spawned ``python -c`` does an OS
     # ``open()`` that never routes through it. That matters more here than for the
@@ -961,7 +961,7 @@ _AGENT_DENIED_ENV_KEYS: list[str] = [
     "BITBUCKET_API_TOKEN",
     "KIROCREW_OWNER_ID",
     # The central-governance fetch configuration — see
-    # ``platform/policy_distribution.py``. The URL is listed as well as the header,
+    # ``platform/policy_distribution_source.py``. The URL is listed as well as the header,
     # deliberately:
     #
     # * ``KIROCREW_POLICY_HEADERS`` is a live bearer credential for the fleet's own

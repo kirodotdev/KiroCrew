@@ -2843,7 +2843,7 @@ Writers: `apps/registry_pipeline/sources.py` (`_effective_registries`,
 `_pinned_registries`, `_registry_trust_tier`, `_is_owner_designated_repo`,
 `_sel_credential_decision`), `apps/registry_pipeline/indexes.py`
 (`_owner_tier_confirmed`), `apps/registry_pipeline/subprocess_env.py`
-(`anonymous_git_env`), `platform/interfaces.py`
+(`anonymous_git_env`), `platform/interfaces_structural.py`
 (`AppsLoader.default_registries`), `config/loader.py`
 (`ExternalRegistryConfig.trust`), `apps/routes.py` (`handle_registries`).
 

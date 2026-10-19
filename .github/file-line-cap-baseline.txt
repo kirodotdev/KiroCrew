@@ -55,9 +55,6 @@
 2129 src/kiro_crew/members.py
 2440 src/kiro_crew/name_grant.py
 2646 src/kiro_crew/pinned_fs.py
-2030 src/kiro_crew/platform/interfaces.py
-2998 src/kiro_crew/platform/policy_distribution.py
-2275 src/kiro_crew/platform/wheel_engine.py
 2787 src/kiro_crew/portability.py
 2258 src/kiro_crew/safety_override.py
 2284 src/kiro_crew/sandbox_launcher_program.py

@@ -354,7 +354,7 @@ def stat_writable_by_current_user(st: os.stat_result) -> bool:
     instead of about whatever the name resolves to a moment later.
 
     Callers refuse an agent-writable governance source with it
-    (``platform/policy_distribution.py``): a distribution source the account Kiro Crew
+    (``platform/policy_distribution_source.py``): a distribution source the account Kiro Crew
     runs as can rewrite is one an agent subprocess can rewrite, because it runs as the
     same uid.
 

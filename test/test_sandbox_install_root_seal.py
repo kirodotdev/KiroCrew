@@ -354,6 +354,10 @@ _SANDBOX_WRAPPERS = frozenset(
 _UPDATER_MODULES = (
     "dashboard/handlers/updates.py",
     "platform/wheel_engine.py",
+    "platform/wheel_engine_contract.py",
+    "platform/wheel_engine_layout.py",
+    "platform/wheel_engine_build_child.py",
+    "platform/wheel_engine_transfer.py",
     "platform/update_provider.py",
     "platform/update_layout.py",
     "platform/wheel_apply.py",

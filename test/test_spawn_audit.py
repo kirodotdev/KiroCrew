@@ -412,7 +412,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # gateway's own update coordinator (auto_update or a policy floor, against
         # the check's own verdict) — the agent's own bash path is closed by the
         # self-update denied rule.
-        "platform/wheel_engine.py::_spawn_build_child",
+        "platform/wheel_engine_build_child.py::_spawn_build_child",
         # The userns probe child: ONE fixed argv, `sys.executable -I -S -c <shim>`,
         # no shell, no cwd, stdin/stdout are the two handshake pipes. Nothing is
         # agent-influenced -- the shim is a module-level string constant and takes

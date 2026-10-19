@@ -67,6 +67,19 @@ validated, then runs the shadow apply itself and
 restarts. The full drain lease (§5) and hash-pinned dependency constraints
 remain open. pipx installs keep the installer re-run.
 
+`platform/wheel_engine.py` is the engine's import path and patch surface, a
+mirror facade (`_facade_mirror`) that keeps the offline trust root and the
+manifest signature check that reads it, `download_verified_wheel`, the shadow
+build and promotion, pruning, the update lease and the apply. Four owners hold
+the rest, and new work of each kind goes to its owner:
+`platform/wheel_engine_contract.py` (the bounds, the manifest grammar, the
+error family and the cancel flag), `platform/wheel_engine_layout.py` (the
+layout, the trees' names and the restart interpreter),
+`platform/wheel_engine_build_child.py` (one child process of the apply) and
+`platform/wheel_engine_transfer.py` (the bounded download of a release's
+bytes, where `_download_to_file` compares the wheel's SHA-256 to the signed
+digest; `download_verified_wheel` in the facade is its one caller).
+
 **Landed in [#16202](https://github.com/kirodotdev/KiroCrew/pull/16202)** (with
 [#15838](https://github.com/kirodotdev/KiroCrew/pull/15838) stopping an in-flight
 installer gracefully): the engine hardening, and the gateway's unattended apply

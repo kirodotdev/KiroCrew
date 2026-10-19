@@ -301,7 +301,7 @@ def userns_available() -> bool:
 
     Stable cross-module entry point for the namespace-support probe, shared by
     the OS-level sandbox here and the JailProvider extension point
-    (``platform/interfaces.py``), so consumers do not depend on the private
+    (``platform/interfaces_runtime.py``), so consumers do not depend on the private
     ``_probe_unshare`` name.
     """
     return _probe_unshare()

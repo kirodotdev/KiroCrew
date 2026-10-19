@@ -24,6 +24,13 @@ The dependency runs one way: **the companion depends on the core; the core never
 depends on the companion.** Because the core ships a default for every
 interface, the public edition is complete standalone.
 
+Every extension point is imported from `platform/interfaces.py`, its one import
+path. The boot-layer points are defined there; the install / structural points
+and the feature apps are defined in `platform/interfaces_structural.py`, and the
+runtime-service / frontend points in `platform/interfaces_runtime.py`, both
+re-exported by `interfaces.py`. A new extension point goes to the module of its
+kind.
+
 The execution catalog reads `ProviderRegistry.agent_runtime_policy(engine_identity)`
 through `current_context()` and `safe_context_call` for owner-visible member rows.
 The lookup key is the agent the member runs: its `kiro_agent` through

@@ -389,7 +389,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Central policy fetch failures",
-        "platform/policy_distribution.py",
+        "platform/policy_distribution_boot.py",
         "The failure text of a central governance-policy fetch, which reaches TWO "
         "surfaces: `kirocrew policy fetch` on stdout and a `logger` line (durable, "
         "and served to the dashboard by `GET /api/logs`). The bytes are not ours -- a "
@@ -1865,6 +1865,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # (platform/wheel_apply.py); redacting at capture is what keeps a
         # credential from being split by the cut and surviving in halves.
         "platform/wheel_engine.py",
+        "platform/wheel_engine_build_child.py",
         # Same shape: redacts the unparseable LLM decomposition response before
         # writing the diagnostic ERROR line to the gateway log. Defensive log
         # hygiene so a response echoing a credential or exfiltration URL cannot

@@ -1312,8 +1312,8 @@ must not be published: a malformed document reaches the text through a parser er
 `json`'s errors quote the offending bytes — so an endpoint echoing back the request's
 `Authorization` header (its own request reflected, a proxy error page) would carry that
 credential to both surfaces. Those bytes are not ours, which is why
-`platform/policy_distribution.py` is a registered `_REDACTION_SINKS` entry rather than an
-allowlisted non-egress use.
+`platform/policy_distribution_boot.py`, where `_sanitize_detail` lives, is a registered
+`_REDACTION_SINKS` entry rather than an allowlisted non-egress use.
 
 `refresh_now()` **never raises**; it returns a `RefreshOutcome` whose `status` is one
 of `not_configured` / `unchanged` / `applied` / `rejected` / `unreachable`. Named
@@ -2585,7 +2585,7 @@ denials leave the same forensic trail.
 - **Windows has no machine-policy managed tier today, so the central ceiling is
   advisory against a local account.** There is no machine-scoped policy pin on
   Windows, so `resolve_distribution`
-  ([`src/kiro_crew/platform/policy_distribution.py`](../../../src/kiro_crew/platform/policy_distribution.py))
+  ([`src/kiro_crew/platform/policy_distribution_source.py`](../../../src/kiro_crew/platform/policy_distribution_source.py))
   lets a per-setting environment override stand: a standard user can set the
   `KIROCREW_POLICY_URL` environment variable to a document of their own and
   replace the whole central rung. Read the Windows guidance accordingly —
@@ -3688,7 +3688,17 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   (env ∘ the policy's `distribution` block), the append-only
   `register_policy_fetcher` transport seam, the last-known-good cache, the
   `refresh_now` / `validate_ceiling` / `apply_ceiling` / `start_refresher`
-  live-refresh path.
+  live-refresh path. It stays the import path and patch surface, a mirror facade
+  (`_facade_mirror`) that keeps the live-refresh path, the refresher thread and
+  `distribution_posture`, over three owners:
+  - `platform/policy_distribution_source.py` — the `KIROCREW_POLICY_*` settings,
+    the fetch records, `register_policy_fetcher` and the built-in transports, and
+    `resolve_distribution`;
+  - `platform/policy_distribution_cache.py` — the last-known-good cache and the
+    tier's process state, with `reset_process_state`;
+  - `platform/policy_distribution_boot.py` — `parse_distributed_policy`,
+    `load_distributed_policy`, `fetch_once`, `validate_ceiling` and the
+    `_sanitize_detail` redaction sink.
 - `platform/governance_profiles.py` — `ProfileStore` (hot-reload),
   `resolve_active_scope`, `governance_permits`, `governance_floor_ordinal`,
   `GOVERNANCE_ERROR_REASON` (the eval-error marker consumers match on),

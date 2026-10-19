@@ -149,7 +149,7 @@ DECLARED_SITES = frozenset(
         ("messaging/outbound_files.py", "session_scratch_root"),
         ("node_modules_txn.py", "_gone"),
         ("pinned_fs.py", "open_pinned_descendant_dir"),
-        ("platform/policy_distribution.py", "_cache_write_lock"),
+        ("platform/policy_distribution_cache.py", "_cache_write_lock"),
         ("platform_compat_files.py", "ensure_owner_rwx_dirs"),
         ("pod/provision.py", "build_dist"),
         ("pod/runtime_home.py", "_pin_created_dir_windows"),
