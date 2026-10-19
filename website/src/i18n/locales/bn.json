@@ -3569,7 +3569,7 @@
         "trust_all_base": "সব {{base}} কমান্ড বিশ্বাস করুন",
         "trust_all_tools": "এই সেশনের সব টুল বিশ্বাস করুন",
         "trust_hint": "«বিশ্বাস করো» এই সেশনের বাকি সময়ে প্রতিটি টুলকে নিজে থেকেই অনুমোদন দেবে।",
-        "trust_this_command": "«{{cmd}}» বিশ্বাস করুন",
+        "trust_this_command": "<mono>{{cmd}}</mono> বিশ্বাস করো",
         "trusted": "বিশ্বস্ত"
       },
       "chat": {
@@ -8921,11 +8921,11 @@
       "trust_all_base_today": "যেকোনো <mono>{{base}}</mono> কমান্ড মধ্যরাত পর্যন্ত বিশ্বাস করো ({{time}})",
       "trust_all_tools": "এই সেশনের সব টুল বিশ্বাস করুন",
       "trust_all_tools_channel": "এই চ্যানেলের সব টুল বিশ্বাস করুন — রিস্টার্টের পরেও বজায় থাকে",
-      "trust_this_command": "«<mono>{{cmd}}</mono>» বিশ্বাস করুন",
-      "trust_this_command_channel": "«<mono>{{cmd}}</mono>» @{{role}}-এর জন্য বিশ্বাস করো — {{productName}} রিস্টার্ট পর্যন্ত",
-      "trust_this_command_hour": "«<mono>{{cmd}}</mono>» এক ঘণ্টার জন্য বিশ্বাস করো ({{time}} পর্যন্ত)",
-      "trust_this_command_session": "«<mono>{{cmd}}</mono>» এই সেশনের জন্য বিশ্বাস করো",
-      "trust_this_command_today": "«<mono>{{cmd}}</mono>» মধ্যরাত পর্যন্ত বিশ্বাস করো ({{time}})"
+      "trust_this_command": "<mono>{{cmd}}</mono> বিশ্বাস করো",
+      "trust_this_command_channel": "<mono>{{cmd}}</mono> @{{role}}-এর জন্য বিশ্বাস করো — {{productName}} রিস্টার্ট পর্যন্ত",
+      "trust_this_command_hour": "<mono>{{cmd}}</mono> এক ঘণ্টার জন্য বিশ্বাস করো ({{time}} পর্যন্ত)",
+      "trust_this_command_session": "<mono>{{cmd}}</mono> এই সেশনের জন্য বিশ্বাস করো",
+      "trust_this_command_today": "<mono>{{cmd}}</mono> মধ্যরাত পর্যন্ত বিশ্বাস করো ({{time}})"
     },
     "tunnelStatus": {
       "connected": "সংযুক্ত",

@@ -3352,8 +3352,8 @@
         "trust_all_base": "[Ţŕùşţ àĺĺ {{base}} çøɱɱàñðş ·················]",
         "trust_all_tools": "[Ţŕùşţ àĺĺ ţøøĺş ƒøŕ ţĥìş şèşşìøñ ················]",
         "trust_hint": "[Ţŕùşţ àùţø-àþþŕøṽèş èṽèŕý ţøøĺ ƒøŕ ţĥè ŕèşţ øƒ ţĥìş şèşşìøñ. ·····················]",
-        "trust_this_command": "[Ţŕùşţ “{{cmd}}” ············]",
-        "trusted": "[Ţŕùşţèð ···········]"
+        "trusted": "[Ţŕùşţèð ···········]",
+        "trust_this_command": "[Ţŕùşţ <mono>{{cmd}}</mono> ·········]"
       },
       "chat": {
         "ask_placeholder": "[Àşķ {{name}}... ···········]",
@@ -7902,11 +7902,11 @@
       "trust_all_base_session": "[Ţŕùşţ àñý <mono>{{base}}</mono> çøɱɱàñð ƒøŕ ţĥìş şèşşìøñ ··················]",
       "trust_all_base_today": "[Ţŕùşţ àñý <mono>{{base}}</mono> çøɱɱàñð ùñţìĺ ɱìðñìğĥţ ({{time}}) ··················]",
       "trust_all_tools_channel": "[Ţŕùşţ àĺĺ ţøøĺş ìñ ţĥìş çĥàññèĺ — þèŕşìşţş àçŕøşş ŕèşţàŕţş ····················]",
-      "trust_this_command": "[Ţŕùşţ “<mono>{{cmd}}</mono>” ············]",
-      "trust_this_command_channel": "[Ţŕùşţ “<mono>{{cmd}}</mono>” ƒøŕ @{{role}} — ùñţìĺ {{productName}} ŕèşţàŕţş ················]",
-      "trust_this_command_hour": "[Ţŕùşţ “<mono>{{cmd}}</mono>” ƒøŕ àñ ĥøùŕ (ùñţìĺ {{time}}) ····················]",
-      "trust_this_command_session": "[Ţŕùşţ “<mono>{{cmd}}</mono>” ƒøŕ ţĥìş şèşşìøñ ··················]",
-      "trust_this_command_today": "[Ţŕùşţ “<mono>{{cmd}}</mono>” ùñţìĺ ɱìðñìğĥţ ({{time}}) ··················]"
+      "trust_this_command": "[Ţŕùşţ <mono>{{cmd}}</mono> ·········]",
+      "trust_this_command_channel": "[Ţŕùşţ <mono>{{cmd}}</mono> ƒøŕ @{{role}} — ùñţìĺ {{productName}} ŕèşţàŕţş ·····················]",
+      "trust_this_command_hour": "[Ţŕùşţ <mono>{{cmd}}</mono> ƒøŕ àñ ĥøùŕ (ùñţìĺ {{time}}) ···················]",
+      "trust_this_command_session": "[Ţŕùşţ <mono>{{cmd}}</mono> ƒøŕ ţĥìş şèşşìøñ ················]",
+      "trust_this_command_today": "[Ţŕùşţ <mono>{{cmd}}</mono> ùñţìĺ ɱìðñìğĥţ ({{time}}) ·················]"
     },
     "tunnelStatus": {
       "tunnel": "[Ţùññèĺ ·········]",

@@ -65,6 +65,7 @@ import type { ApprovalTarget } from '../../panel/panelBridge'
 import { i18nT } from '../../../../i18n/t'
 import { useLanguageGeneration } from '../../../../i18n/useLanguageGeneration'
 import { i18next } from '../../../../i18n'
+import { Trans } from 'react-i18next'
 import { electronPlatform, isElectron } from '../../../../lib/electron'
 import { moodLabel, stateLabel } from '../../i18nKeys'
 
@@ -2197,6 +2198,13 @@ const trustScopeBtnStyle: React.CSSProperties = {
   textAlign: 'left',
 }
 
+/** Monospace chip for the exact-command label in the trust row.
+ *  Mirrors TrustDropdown's font-mono span; component-scoped because Mochi
+ *  has no Tailwind — a class here would be inert. */
+const monoChipStyle: React.CSSProperties = {
+  fontFamily: 'monospace',
+}
+
 // Exported for the capture harness (capture/mochi-trust-label.tsx), which mounts
 // the real approval card as screenshot evidence; not part of the app's API.
 export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: string) => void; onImageClick?: (b64: string) => void; onApproval?: (id: string, action: string, pattern?: string, trustGrantable?: boolean, target?: ApprovalTarget) => void; onEdit?: (content: string) => void; animate?: boolean }>(({ message, onOption, onImageClick, onApproval, onEdit, animate = true }) => {
@@ -2318,7 +2326,11 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
                       title carries the whole command, so hovering reads the
                       middle the clamp elides. */}
                   <span style={{ minWidth: 0, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>
-                    {i18nT('apps.mochi.approval.trust_this_command', { cmd: truncateCommandLabel(req.fullCommand) })}
+                    <Trans
+                      i18nKey="apps.mochi.approval.trust_this_command"
+                      values={{ cmd: truncateCommandLabel(req.fullCommand) }}
+                      components={{ mono: <code style={monoChipStyle} /> }}
+                    />
                   </span></button>
               )}
               {showTrustBase && (
