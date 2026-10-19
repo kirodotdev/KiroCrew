@@ -28,6 +28,7 @@ import pytest
 from kiro_crew.hooks import (
     HOOK_EVENT_AGENT_SPAWN,
     HOOK_EVENT_PRE_TOOL_USE,
+    HOOK_EVENT_SESSION_LANE_CHANGED,
     HOOK_EVENT_USER_PROMPT_SUBMIT,
     HOOK_EVENTS,
     HOOK_EVENTS_AGENT_REQUESTED,
@@ -90,14 +91,18 @@ def _valid(**overrides) -> dict:
 
 
 class TestTheVocabulary:
-    """The three sets, and the boundary between them."""
+    """The event groups, and the boundaries between them."""
 
-    def test_the_fired_five_are_unchanged(self) -> None:
+    def test_the_fired_events_are_the_five_lifecycle_ones_plus_the_lane(self) -> None:
         """``HOOK_EVENTS`` is the promise that something calls ``fire``.
 
-        The new triggers have no lifecycle call site, so widening this tuple
-        would make the exit-code contract in ``steering-and-hooks.md`` a claim
-        about events that never run.
+        The six Kiro Agent triggers have no lifecycle call site here, so widening
+        this tuple to include one would make the exit-code contract in
+        ``steering-and-hooks.md`` a claim about events that never run.
+        ``SessionLaneChanged`` is in it because the dashboard's tag writers do call
+        ``fire`` -- it is the one member whose call site is not a turn boundary, and
+        the order is asserted whole because the doc's event table and the picker
+        both mirror it.
         """
         assert HOOK_EVENTS == (
             "AgentSpawn",
@@ -105,15 +110,36 @@ class TestTheVocabulary:
             "PreToolUse",
             "PostToolUse",
             "Stop",
+            "SessionLaneChanged",
         )
 
     def test_the_six_new_triggers_are_the_pascal_twins(self) -> None:
         assert set(HOOK_EVENTS_KAS_ONLY) == set(TWINS.values())
         assert len(HOOK_EVENTS_KAS_ONLY) == 6
 
-    def test_the_two_groups_do_not_overlap(self) -> None:
+    def test_the_groups_do_not_overlap(self) -> None:
         assert not set(HOOK_EVENTS) & set(HOOK_EVENTS_KAS_ONLY)
-        assert len(set(HOOK_EVENTS_ALL)) == 11
+        # SessionLaneChanged is in HOOK_EVENTS, which is the promise that a call
+        # site fires it: the dashboard's tag writers do.
+        assert HOOK_EVENT_SESSION_LANE_CHANGED in HOOK_EVENTS
+        assert HOOK_EVENT_SESSION_LANE_CHANGED not in HOOK_EVENTS_KAS_ONLY
+        assert len(set(HOOK_EVENTS_ALL)) == 12
+
+    def test_the_unfired_group_is_now_exactly_the_six_agent_triggers(self) -> None:
+        """There is no third distance to running: an event is fired here or by an agent.
+
+        The dashboard's tag writers fire ``SessionLaneChanged``, so it belongs to
+        ``HOOK_EVENTS`` and what remains unfired is exactly the six a Kiro Agent
+        owns. An event whose emitter lives in this codebase needs no group of its
+        own; one waiting on an agent's request does.
+
+        Pinned from both directions on purpose. ``HOOK_EVENTS_KAS_ONLY`` is what
+        the store's activation contract reads, so an event wrongly left in it
+        would be stored switched off and never run, and an event wrongly added to
+        ``HOOK_EVENTS`` would promise a ``fire`` call site that does not exist.
+        """
+        assert HOOK_EVENT_SESSION_LANE_CHANGED not in HOOK_EVENTS_KAS_ONLY
+        assert not set(HOOK_EVENTS) & set(HOOK_EVENTS_KAS_ONLY)
 
     def test_the_requested_subset_is_the_two_task_triggers(self) -> None:
         """The distance to running differs inside the six.
@@ -685,14 +711,25 @@ class TestTheKiroCliSpecBoundary:
 class TestTheFormOffersThem:
     """The authoring surface, pinned to the code the way ``MATCHER_MODES`` is."""
 
-    def test_the_picker_offers_every_authorable_event_in_order(self, wire_values: str) -> None:
+    def test_the_picker_offers_every_authorable_event(self, wire_values: str) -> None:
+        """The picker offers every authorable event, with nothing withheld.
+
+        The authoring surface and the store's vocabulary are the same set: every
+        event the store accepts is an event something fires, so there is no name
+        whose only content would be a label.
+
+        Asserted as the derived list, in order, so neither side can drift: a new
+        authorable event that reaches the store without reaching the picker fails
+        here instead of being unauthorable in the UI.
+        """
         declared = re.search(r"export const EVENTS = \[(.*?)\]", wire_values, re.S)
         assert declared, "EVENTS no longer declared in hookEventWireValues.ts"
         offered = re.findall(r"'([^']+)'", declared.group(1))
         assert offered == list(HOOK_EVENTS_ALL), (
-            f"hookEventWireValues offers {offered}; hooks.HOOK_EVENTS_ALL "
-            f"ships {list(HOOK_EVENTS_ALL)}"
+            f"hookEventWireValues offers {offered}; expected {list(HOOK_EVENTS_ALL)} "
+            f"(every authorable event, in HOOK_EVENTS_ALL order)"
         )
+        assert HOOK_EVENT_SESSION_LANE_CHANGED in offered
 
     @pytest.mark.parametrize(
         "name,expected",
