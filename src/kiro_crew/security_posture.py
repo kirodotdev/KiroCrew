@@ -674,7 +674,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "md-notebook error middleware",
-        "apps/builtins/md_notebook/server.py",
+        "apps/builtins/md_notebook/server_http.py",
         "Every md-notebook API error body. Handlers drive git and filesystem work "
         "over caller-supplied vault URLs, ids and note paths, so an unmodeled "
         "exception carries absolute paths and git stderr; `_safe_error` scrubs "
