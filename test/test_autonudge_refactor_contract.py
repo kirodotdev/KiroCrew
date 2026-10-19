@@ -228,7 +228,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_serialized_loops": ("method", "297c6249aa5f"),
     "_set_monitor_deadline": ("method", "a9f111186976"),
     "_settle_delivered_terminal": ("method+async", "fa9fb3019298"),
-    "_settle_fire_cycle": ("method+async", "61536fe5efbf"),
+    "_settle_fire_cycle": ("method+async", "1146844abf1f"),
     "_sidecar_transaction": ("method", "140eaa502228"),
     "_start_persistence": ("method", "3582b2532748"),
     "_stop_monitor_admitted": ("method+async", "5cc2e2081504"),
@@ -443,8 +443,7 @@ _GOLDEN_STORE = """\
       "self_armed": false,
       "config_generation": 0,
       "default_patrol": false,
-      "inflight_cycle": 4,
-      "inflight_undelivered": true
+      "inflight_cycle": 4
     },
     {
       "id": "gated001",
@@ -711,7 +710,6 @@ async def _write_golden_scenario(base: Path) -> AutoNudgeService:
                         "created_ts": _FIXED_NOW - 500,
                         "next_due_ts": 0.0,
                         "inflight_cycle": 4,
-                        "inflight_undelivered": True,
                     },
                     {"id": _HELD_ID, "slot_key": "chat-3-300", "message": "held aside"},
                     {"id": "broken01", "slot_key": "chat-4-400"},

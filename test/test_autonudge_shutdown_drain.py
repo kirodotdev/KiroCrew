@@ -445,6 +445,8 @@ async def test_shutdown_cuts_an_inflight_channel_turn_but_drains_admitted_bookke
     drains the bookkeeping a delivery that already returned is writing."""
     delivering = asyncio.Event()
     delivery_cancelled = asyncio.Event()
+    settle_entered = asyncio.Event()
+    settle_release = asyncio.Event()
 
     async def on_fire(loop):
         if loop.slot_key == "slack:C1:T1":
@@ -456,6 +458,9 @@ async def test_shutdown_cuts_an_inflight_channel_turn_but_drains_admitted_bookke
             except asyncio.CancelledError:
                 delivery_cancelled.set()
                 raise
+        else:
+            settle_entered.set()
+            await asyncio.wait_for(settle_release.wait(), timeout=_LOST_RUN_SECS)
         return True
 
     svc = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
@@ -464,13 +469,15 @@ async def test_shutdown_cuts_an_inflight_channel_turn_but_drains_admitted_bookke
     settling = await svc.add(slot_key="slack:C2:T2", message="settle", idle_secs=60)
     svc._cancel_timer(turning.id)
     svc._cancel_timer(settling.id)
+    svc._arm_timer(turning, delay=0.0)
+    await asyncio.wait_for(delivering.wait(), timeout=_LOST_RUN_SECS)
+    svc._arm_timer(settling, delay=0.0)
+    await asyncio.wait_for(settle_entered.wait(), timeout=_LOST_RUN_SECS)
     # Held so the second loop's settlement parks BEFORE it submits its write: the
     # one place where cancelling the callback would lose the delivered cycle.
     await asyncio.wait_for(svc._lock.acquire(), timeout=_LOST_RUN_SECS)
     try:
-        svc._arm_timer(turning, delay=0.0)
-        await asyncio.wait_for(delivering.wait(), timeout=_LOST_RUN_SECS)
-        svc._arm_timer(settling, delay=0.0)
+        settle_release.set()
         settling_timer = svc._timers[settling.id]
         for _ in range(100):
             if settling_timer in _an._timers._drain_registered_owners(svc):
@@ -572,8 +579,14 @@ async def test_cancelled_shutdown_drains_started_timer_persistence(tmp_path, mon
     real_write = svc._write_state
     write_started = threading.Event()
     release_write = threading.Event()
+    writes = 0
 
     def blocking_write(payload):
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            real_write(payload)
+            return
         write_started.set()
         assert release_write.wait(timeout=5)
         real_write(payload)

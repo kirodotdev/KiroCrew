@@ -809,6 +809,8 @@ async def _update_unserialized(
         #: when both the instruction and the watched subject move together.
         generation_advanced = False
         was_active = loop.active
+        restored_claim: int | None = None
+        claim_undelivered = False
         if message is not None:
             retarget = message != loop.message
             loop.message = message
@@ -1191,6 +1193,13 @@ async def _update_unserialized(
                     # operator can undo; dropping it costs a wasted cycle and
                     # the silence this stop exists to end.
                     if not was_active:
+                        restored_claim = self._store.unreconciled_claim.pop(loop.id, None)
+                        claim_undelivered = loop.id in self._store.undelivered_claim
+                        if restored_claim is not None:
+                            # A turn that may have gone out is charged; one known unsent is not.
+                            self._store.undelivered_claim.discard(loop.id)
+                            if not claim_undelivered:
+                                loop.cycle_count = max(loop.cycle_count, restored_claim)
                         loop.approval_stalled = False
                         loop.waiting_on_person = False
                         loop.waiting_on_person_at = 0.0
@@ -1294,6 +1303,10 @@ async def _update_unserialized(
             for field_name, value in previous.items():
                 setattr(loop, field_name, value)
             restore_runtime_anchor(loop, previous_anchor)
+            if restored_claim is not None:
+                self._store.unreconciled_claim[loop.id] = restored_claim
+                if claim_undelivered:
+                    self._store.undelivered_claim.add(loop.id)
             if previous_hold is not None:
                 held_on, held_digest, held_count = previous_hold
                 held_on.short_reading_digest = held_digest

@@ -569,7 +569,13 @@ async def test_a_cancelled_settlement_still_counts_the_delivered_turn(tmp_path, 
     service._loops[loop.id] = loop
     before = loop.cycle_count
 
+    writes = {"n": 0}
+    real_write = service._write_monitor_snapshot_locked
+
     async def _cancel_mid_write(*_a, **_k):
+        writes["n"] += 1
+        if writes["n"] == 1:
+            return await real_write(*_a, **_k)
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _cancel_mid_write)

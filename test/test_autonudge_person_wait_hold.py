@@ -195,7 +195,11 @@ async def test_a_hold_the_store_refuses_is_not_announced_and_fires(
     events: list[str] = []
     svc.subscribe(lambda ev, lp: events.append(ev))
 
+    real_write = svc._write_monitor_snapshot_locked
+
     async def _refuse(*_args):
+        if loop.id in svc._store.delivering_claim:
+            return await real_write(*_args)
         raise OSError("disk full")
 
     monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", _refuse)
