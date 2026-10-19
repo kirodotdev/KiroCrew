@@ -37,13 +37,14 @@ from kiro_crew.sandbox import (
     RLIMIT_PROFILE_NONE,
     RLIMIT_PROFILE_SESSION_HOST,
     RLIMIT_PROFILE_TOOL,
+    RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST,
     create_subprocess_limited,
     popen_limited,
     run_limited,
     spawn_shim_argv,
 )
 from kiro_crew.testing.clock import ManualClock
-from kiro_crew.testing.wait import finished
+from kiro_crew.testing.wait import default_timeout, finished
 
 # The shim exists to deliver POSIX rlimits, and `spawn_shim_argv` returns an empty
 # prefix on Windows, so there is nothing here to exercise there. Skipping at import
@@ -321,6 +322,18 @@ class TestSpawnShimArgv:
         prefix = spawn_shim_argv(RLIMIT_PROFILE_SESSION_HOST)
         assert "--rlimits=RLIMIT_NOFILE:hard" in prefix
         assert "--oom-bias" not in prefix
+
+    def test_unbounded_session_host_keeps_headroom_and_is_an_oom_target(self):
+        # No cgroup scope over the tree: same NOFILE headroom, plus the bias.
+        prefix = spawn_shim_argv(RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST)
+        assert "--rlimits=RLIMIT_NOFILE:hard" in prefix
+        assert "--oom-bias" in prefix
+
+    def test_unbounded_session_host_fallback_keeps_the_session_host_preexec(self):
+        # A shim-less install drops the bias but must keep the descriptor
+        # headroom, not fall through to the tool's 1024 cap.
+        preexec = sandbox._preexec_for_profile(RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST)
+        assert preexec is sandbox.session_host_preexec()
 
     def test_build_profile_raises_the_descriptor_ceiling(self):
         tool = [a for a in spawn_shim_argv(RLIMIT_PROFILE_TOOL) if a.startswith("--rlimits=")]
@@ -1283,3 +1296,45 @@ class TestRealChild:
         else:
             expected = gateway_hard
         assert int(out.decode().strip()) == expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(sys.platform != "linux", reason="oom_score_adj is Linux-only")
+    async def test_unbounded_session_host_biases_what_its_harness_runs(self):
+        # The harness runs shell commands itself, outside any ``tool`` spawn, so
+        # the bias has to reach a GRANDCHILD by inheritance, not just the host.
+        with open("/proc/self/oom_score_adj", encoding="ascii") as fh:
+            own = int(fh.read())
+        if own == 1000:
+            # Every child already inherits 1000, so both profiles would read
+            # alike and the assertions below could not fail.
+            pytest.skip("this runner is itself an OOM target, so the bias is unobservable")
+        # The grandchild's bound sits inside the outer wait's, so a hung grandchild
+        # is killed by its own parent, which then exits non-zero with the reason.
+        grandchild_bound = default_timeout() / 2
+        probe = (
+            "import subprocess,sys;"
+            "print(open('/proc/self/oom_score_adj').read().strip(),"
+            " subprocess.run([sys.executable,'-c',"
+            "\"print(open('/proc/self/oom_score_adj').read().strip())\"],"
+            f" capture_output=True,text=True,timeout={grandchild_bound}).stdout.strip())"
+        )
+        scores = {}
+        for profile in (RLIMIT_PROFILE_SESSION_HOST, RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST):
+            proc = await create_subprocess_limited(
+                sys.executable,
+                "-c",
+                probe,
+                profile=profile,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                out, err = await finished(proc.communicate(), f"the {profile} probe's output")
+            finally:
+                if proc.returncode is None:
+                    proc.kill()
+                    await finished(proc.wait(), f"the killed {profile} probe")
+            assert proc.returncode == 0, err.decode()
+            scores[profile] = tuple(int(v) for v in out.decode().split())
+        assert scores[RLIMIT_PROFILE_SESSION_HOST] == (own, own)
+        assert scores[RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST] == (1000, 1000)
