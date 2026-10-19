@@ -95,6 +95,7 @@ from kiro_crew.config.sections import (
     SessionConfig,
     SessionEnvironmentsConfig,
     SessionSummaryConfig,
+    SignalConfig,
     SkillsConfig,
     SlackConfig,
     SttConfig,
@@ -323,6 +324,14 @@ class KiroCrewConfig:
             "iMessage",
             "iMessage integration settings (macOS only, local bridge, no bot token).",
             tags=["imessage"],
+        ),
+    )
+    signal: SignalConfig = field(
+        default_factory=SignalConfig,
+        metadata=_meta(
+            "Signal",
+            "Signal integration settings (local signal-cli over JSON-RPC, no bot token).",
+            tags=["signal"],
         ),
     )
     dashboard: DashboardConfig = field(
@@ -664,6 +673,7 @@ class KiroCrewConfig:
             "feishu": asdict(self.feishu),
             "teams": asdict(self.teams),
             "imessage": asdict(self.imessage),
+            "signal": asdict(self.signal),
             "dashboard": asdict(self.dashboard),
             "tunnel": asdict(self.tunnel),
             "hooks": self.hooks,

@@ -46,6 +46,27 @@ class TestDescriptorData:
         row = ChannelReadiness("imessage", enabled=True, missing_credentials=())
         assert row.ready is True
 
+    def test_signal_needs_no_credential_but_does_need_its_account(self) -> None:
+        # signal-cli keeps its own key store, so there is nothing to store here; but
+        # the gateway cannot launch signal-cli without the account number, so an
+        # enabled channel with none must read as not ready and name the key.
+        by_name = {d.channel_type: d for d in builtin_channel_descriptors()}
+        assert by_name["signal"].credentials == ()
+        assert by_name["signal"].required_config == ("account",)
+        rows = {
+            r.channel_type: r
+            for r in channel_readiness(_cfg(signal=SimpleNamespace(enabled=True, account="")), {})
+        }
+        assert rows["signal"].ready is False
+        assert rows["signal"].missing_config == ("account",)
+        rows = {
+            r.channel_type: r
+            for r in channel_readiness(
+                _cfg(signal=SimpleNamespace(enabled=True, account="+15550100")), {}
+            )
+        }
+        assert rows["signal"].ready is True
+
 
 class TestReadiness:
     def test_an_enabled_channel_with_no_token_is_not_ready_and_says_which(self) -> None:
@@ -124,7 +145,16 @@ class TestStatusPayload:
         state = object.__new__(DashboardState)
         state.slack_client = None
         state.slack_socket_connected = False
-        for name in ("telegram", "discord", "webex", "wecom", "teams", "weixin", "imessage"):
+        for name in (
+            "telegram",
+            "discord",
+            "webex",
+            "wecom",
+            "teams",
+            "weixin",
+            "imessage",
+            "signal",
+        ):
             setattr(state, f"{name}_connected", False)
             setattr(state, f"{name}_connect_error", "")
         state.telegram_connected = True
@@ -143,7 +173,16 @@ class TestStatusPayload:
         state = object.__new__(DashboardState)
         state.slack_client = None
         state.slack_socket_connected = False
-        for name in ("telegram", "discord", "webex", "wecom", "teams", "weixin", "imessage"):
+        for name in (
+            "telegram",
+            "discord",
+            "webex",
+            "wecom",
+            "teams",
+            "weixin",
+            "imessage",
+            "signal",
+        ):
             setattr(state, f"{name}_connected", False)
             setattr(state, f"{name}_connect_error", "")
         state.telegram_connect_error = "x" * 5000

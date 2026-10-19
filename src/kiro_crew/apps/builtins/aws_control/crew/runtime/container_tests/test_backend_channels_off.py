@@ -204,7 +204,7 @@ def test_the_exception_is_not_empty_and_is_not_the_whole_posture() -> None:
 
 
 def test_a_flag_only_transport_is_covered() -> None:
-    """``imessage`` and ``whatsapp`` need no credential, so only the config reaches them.
+    """``imessage``, ``signal`` and ``whatsapp`` need no credential, so only config reaches them.
 
     Named individually because they are the reason this file exists as well as the
     credential strip. Stripping secrets cannot disable a transport that never needed
@@ -212,6 +212,7 @@ def test_a_flag_only_transport_is_covered() -> None:
     """
     assert "imessage" in backend_mod.CHANNEL_SECTIONS
     assert "whatsapp" in backend_mod.CHANNEL_SECTIONS
+    assert "signal" in backend_mod.CHANNEL_SECTIONS
 
 
 def test_a_config_that_enables_a_transport_loses(tmp_path: Path) -> None:

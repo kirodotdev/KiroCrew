@@ -25,7 +25,7 @@ from kiro_crew.messaging.registry import ChannelDescriptor
 
 
 class TestRegistryRoster:
-    def test_the_nine_builtin_channels_are_registered(self) -> None:
+    def test_the_builtin_channels_are_registered(self) -> None:
         members = registry.governed_members(builtin_channel_descriptors())
         assert set(members) == {
             "slack",
@@ -36,6 +36,7 @@ class TestRegistryRoster:
             "teams",
             "weixin",
             "imessage",
+            "signal",
             "whatsapp",
             "feishu",
         }
@@ -45,6 +46,7 @@ class TestRegistryRoster:
         from kiro_crew.discord.transport import DiscordTransport
         from kiro_crew.feishu.transport import FeishuTransport
         from kiro_crew.imessage.transport import IMessageTransport
+        from kiro_crew.signal_cli.transport import SignalTransport
         from kiro_crew.slack.transport import SlackTransport
         from kiro_crew.teams.transport import TeamsTransport
         from kiro_crew.telegram.transport import TelegramTransport
@@ -64,6 +66,7 @@ class TestRegistryRoster:
                 TeamsTransport,
                 WeixinTransport,
                 IMessageTransport,
+                SignalTransport,
                 WhatsAppTransport,
                 FeishuTransport,
             )
@@ -84,7 +87,7 @@ class TestRegistryRoster:
         by_type = {d.channel_type: d for d in descs}
         assert by_type["slack"].start is None
         assert "slack" not in {d.channel_type for d in registry.bootable(descs)}
-        assert len(registry.bootable(descs)) == 9
+        assert len(registry.bootable(descs)) == 10
 
 
 class TestRegistryBootLoop:

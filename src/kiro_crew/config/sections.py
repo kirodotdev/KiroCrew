@@ -191,6 +191,7 @@ from kiro_crew.config.sections_channels import (  # noqa: F401
     DiscordConfig,
     FeishuConfig,
     IMessageConfig,
+    SignalConfig,
     TeamsConfig,
     WebexConfig,
     WeComConfig,

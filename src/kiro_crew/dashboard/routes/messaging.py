@@ -31,6 +31,8 @@ def register(app: web.Application) -> None:
     app.router.add_put("/api/webex/config", handlers.api_webex_config_save)
     app.router.add_get("/api/imessage/config", handlers.api_imessage_config_get)
     app.router.add_put("/api/imessage/config", handlers.api_imessage_config_save)
+    app.router.add_get("/api/signal/config", handlers.api_signal_config_get)
+    app.router.add_put("/api/signal/config", handlers.api_signal_config_save)
     app.router.add_get("/api/wecom/config", handlers.api_wecom_config_get)
     app.router.add_put("/api/wecom/config", handlers.api_wecom_config_save)
     app.router.add_get("/api/feishu/config", handlers.api_feishu_config_get)

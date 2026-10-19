@@ -11,6 +11,7 @@ import { FeishuLogo } from '../../components/FeishuLogo'
 import { TeamsIcon } from '../../components/TeamsIcon'
 import { WeixinLogo } from '../../components/WeixinLogo'
 import { IMessageIcon } from '../../components/IMessageIcon'
+import { SignalLogo } from '../../components/SignalLogo'
 import { WhatsAppLogo } from '../../components/WhatsAppLogo'
 import { SlackPanel } from './SlackPanel'
 import { DiscordPanel } from './DiscordPanel'
@@ -22,6 +23,7 @@ import { ChannelDisabledPanel } from './ChannelDisabledPanel'
 import { TeamsPanel } from './TeamsPanel'
 import { WeixinPanel } from './WeixinPanel'
 import { IMessagePanel } from './IMessagePanel'
+import { SignalPanel } from './SignalPanel'
 import { WhatsAppPanel } from './WhatsAppPanel'
 
 import { i18nT } from '../../i18n/t'
@@ -54,6 +56,7 @@ const CHANNELS: ChannelEntry[] = [
   { key: 'teams', name: 'Microsoft Teams', logo: <TeamsIcon size={20} />, queryKey: 'teams-config', getConfig: () => api.getTeamsConfig(), Panel: TeamsPanel },
   { key: 'weixin', name: 'WeChat', logo: <WeixinLogo size={20} />, queryKey: 'weixin-config', getConfig: () => api.getWeixinConfig(), Panel: WeixinPanel },
   { key: 'imessage', name: 'iMessage', logo: <IMessageIcon size={20} />, queryKey: 'imessage-config', getConfig: () => api.getIMessageConfig(), Panel: IMessagePanel },
+  { key: 'signal', name: 'Signal', logo: <SignalLogo size={20} />, queryKey: 'signal-config', getConfig: () => api.getSignalConfig(), Panel: SignalPanel },
   { key: 'whatsapp', name: 'WhatsApp', logo: <WhatsAppLogo size={20} />, queryKey: 'whatsapp-config', getConfig: () => api.getWhatsAppConfig(), Panel: WhatsAppPanel },
 ]
 

@@ -156,7 +156,7 @@ the WeCom console — re-add it and restart.
 
 ## Related docs
 
-- [Channel capabilities](channel-capabilities.md): the ten-channel matrix — streaming, buttons, uploads, reply length, approval timeout
+- [Channel capabilities](channel-capabilities.md): the eleven-channel matrix — streaming, buttons, uploads, reply length, approval timeout
 - [Slack Integration](slack-integration.md)
 - [Telegram Integration](telegram-integration.md)
 - [Getting Started](getting-started.md)

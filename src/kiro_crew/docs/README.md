@@ -70,6 +70,7 @@ organized for someone browsing the repository.
 | [whatsapp-integration.md](whatsapp-integration.md) | WhatsApp (QR-linked personal account) setup, and the risks to read first. |
 | [feishu-integration.md](feishu-integration.md) | Feishu (Lark/飞书) setup and behavior. |
 | [imessage-integration.md](imessage-integration.md) | iMessage setup and behavior on a Mac that owns the Messages database. |
+| [signal-integration.md](signal-integration.md) | Signal through a local signal-cli: a dedicated bot number or Note to Self on your own account, and notifications to your phone. |
 | [channel-capabilities.md](channel-capabilities.md) | One matrix of what every channel can do: streaming, buttons, uploads, reply length, approval timeout. |
 
 ## Platform

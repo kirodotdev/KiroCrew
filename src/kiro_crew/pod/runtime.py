@@ -1186,6 +1186,11 @@ SEED_DISABLED_SECTIONS: tuple[str, ...] = (
     # send from the operator's real number using a credential that is not an env
     # var this env can scrub (the session store lives under the data home).
     "whatsapp",
+    # Signal is the same shape: signal-cli keeps its key store in its own data
+    # directory on the host, often as a linked device of the operator's own
+    # number, so nothing in the pod env stands between a seeded enable flag and
+    # sending as the operator.
+    "signal",
     "feishu",
 )
 

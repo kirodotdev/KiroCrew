@@ -195,7 +195,17 @@ _SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 #: mid-turn override parsing, attachment handling, media ingestion), and in
 #: several cases the busy path is not a plain ``on_busy(session_key)``.
 #: Listing them here would assert a migration that has not happened.
-_PRE_TURN_CHANNELS = ("webex", "imessage", "feishu")
+_PRE_TURN_CHANNELS = ("webex", "imessage", "feishu", "signal")
+
+#: Channel types whose package directory is not named after them. Signal's
+#: package is ``signal_cli`` because ``signal`` would shadow the stdlib module.
+_PACKAGE_DIRS = {"signal": "signal_cli"}
+
+
+def _dispatch_src(channel: str) -> str:
+    package = _PACKAGE_DIRS.get(channel, channel)
+    return (_SRC / package / "transport_dispatch.py").read_text(encoding="utf-8")
+
 
 #: Rostered channels deliberately NOT on the shared helper. telegram, discord,
 #: teams and slack carry extra pre-turn work between the busy check and
@@ -226,7 +236,7 @@ def _calls_pre_turn_helper(path: pathlib.Path) -> bool:
 class TestPreTurnRatchet:
     @pytest.mark.parametrize("channel", _PRE_TURN_CHANNELS)
     def test_dispatcher_uses_the_shared_helper(self, channel: str) -> None:
-        src = (_SRC / channel / "transport_dispatch.py").read_text(encoding="utf-8")
+        src = _dispatch_src(channel)
         assert "resolve_pre_turn(" in src, f"{channel} does not call resolve_pre_turn"
 
     @pytest.mark.parametrize("channel", _PRE_TURN_CHANNELS)
@@ -237,7 +247,7 @@ class TestPreTurnRatchet:
         unreviewed copy of the sequence -- which is exactly how the ordering
         drifted per channel before.
         """
-        src = (_SRC / channel / "transport_dispatch.py").read_text(encoding="utf-8")
+        src = _dispatch_src(channel)
         assert "maybe_rotate(" not in src, f"{channel} still rotates outside the helper"
 
     @pytest.mark.parametrize("channel", _PRE_TURN_CHANNELS)
@@ -247,7 +257,7 @@ class TestPreTurnRatchet:
         into a once-ever one -- silent, and only visible as "it stopped warning
         me". Cheap to assert, and it was got wrong once.
         """
-        src = (_SRC / channel / "transport_dispatch.py").read_text(encoding="utf-8")
+        src = _dispatch_src(channel)
         assert "clear_awaiting(" in src, f"{channel} never releases the awaiting latch"
 
     def test_every_rostered_channel_is_accounted_for(self) -> None:
