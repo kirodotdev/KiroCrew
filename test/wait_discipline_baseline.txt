@@ -89,7 +89,7 @@
  1 test_chat_slot_switch_atomicity_alias_and_bulk.py
  1 test_chat_title.py
  1 test_ci_pytest_progress.py
- 1 test_cli.py
+ 1 test_cli_chat_permission.py
  1 test_cli_manifest_signature.py
  2 test_cloud_connect.py
  2 test_cloud_ssm.py
