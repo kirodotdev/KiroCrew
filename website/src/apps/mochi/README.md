@@ -31,7 +31,7 @@ at the `api` seam. Keeping the original's internal layout (including its own
 ported line-for-line. It is intentional, not a nesting mistake.
 
 - `src/renderer/`, `src/shared/` — vendored original code. Change sparingly;
-  prefer changing the seam. One sanctioned exception: the two players.
+  prefer changing the seam. Two sanctioned exceptions. First, the two players.
   `SpriteRenderer.tsx`'s and `LottieRenderer.tsx`'s implementations live in
   core (`website/src/components/appearancePacks/`), shared by both companion
   apps and by the crew avatar that wears a pack; each file here is a one-line
@@ -40,7 +40,14 @@ ported line-for-line. It is intentional, not a nesting mistake.
   line-for-line. The Lottie one matters for more than deduplication: core's
   player refuses a clip that names a remote image or font before
   `loadAnimation`, and the re-export keeps that fenced player the only call
-  site in the tree.
+  site in the tree. Second, the chat panel: `ChatPanel.tsx` keeps the panel
+  component and stays the only import path, while its pinned-files side panel,
+  markdown pipeline and message bubble live in `ChatPanelPinnedFiles.tsx`,
+  `ChatPanelMarkdown.tsx` and `ChatPanelBubble.tsx`, which keep it under the
+  repo's 2,000-line cap. It re-exports `PinnedSidePanel`, `Bubble`,
+  `fixStreamingFences`, `parseApproval` and `externalApprovalApproved`, so every
+  `./ChatPanel` import stays unchanged; a fix ported from upstream's
+  `ChatPanel.tsx` lands in whichever of the four files holds that code.
 - `src/mochiApi.ts` — **the** seam. The composed `api` handle every vendored
   file imports. Original IPC calls resolve here to HTTP routes, WS events, or
   Electron preload channels. Spread order matters (web transports win over

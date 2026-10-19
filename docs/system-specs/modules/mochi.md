@@ -48,6 +48,27 @@ the reconcile tick re-arms it once a target answers.
 | `website/src/apps/mochi/` | vendored renderer (`ChatPanel`, `WatchlistPanel`, `GalleryPanel`, `SettingsPanel`, pet overlay) + the `mochiApi` seam |
 | `website/electron/mochi/` | the Electron main-process shell (pet overlay windows, panel/settings/avatar windows, global shortcuts, multi-instance) |
 
+### Chat panel files
+
+`website/src/apps/mochi/src/renderer/ChatPanel.tsx` is the chat panel's one import
+path: `ChatApp.tsx`, the capture harnesses and the specs import from it, and it
+re-exports `PinnedSidePanel`, `Bubble`, `fixStreamingFences`, `parseApproval` and
+`externalApprovalApproved` from the owners that define them. It keeps the panel
+component (header, transcript, composer, slash commands, the send-failure line and
+the context ring). Owners never import it, and nothing outside the panel's own
+files, bar its specs, imports an owner.
+
+| Owner | Holds |
+|---|---|
+| `ChatPanelPinnedFiles.tsx` | the pinned-files side panel (`PinnedSidePanel`) and its file chips |
+| `ChatPanelMarkdown.tsx` | message markdown: the remark and rehype chains, the element overrides (inline file chips, local images) and the streaming renderer (`StreamingMarkdown`, `fixStreamingFences`) |
+| `ChatPanelBubble.tsx` | one transcript message (`Bubble`): the approval card and its scoped-trust rows, `parseApproval`, `externalApprovalApproved` and the relative timestamp |
+
+New work for a responsibility in the table goes to its owner; anything else starts
+in `ChatPanel.tsx`. A fix ported from upstream Mochi's `ChatPanel.tsx` lands in
+whichever of the four files holds that code. `ChatPanel.owners.test.tsx` pins the
+owner set, the re-exports and the import direction.
+
 ## Load-bearing contracts
 
 The desktop shell rate-limits repeated instance-resolution diagnostics per
