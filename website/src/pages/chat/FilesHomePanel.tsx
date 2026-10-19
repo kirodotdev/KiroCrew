@@ -74,7 +74,7 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
   // A failed reveal (policy-blocked path, no file manager) renders under the
   // header; askAgent on — the Files panel holds no draft.
   const reveal = useRevealFailure(projectDir ?? undefined)
-  const treeState = useTreeState(projectDir)
+  const treeState = useTreeState(projectDir, active)
   // Every failed read lands in this panel's own error arm below, whichever of `useTreeState`'s
   // two failure states names it. The `recoverable` split exists for FolderPanel, which names the
   // tree over its one-level listing, and re-reads it on Refresh, only when another read can answer
@@ -83,7 +83,7 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
   // The failed read's own error, for the notice's copy: the verdict above says only that it
   // failed, and a refused or missing root must not read as an outage. Same key as the verdict's
   // query, so this is a second observer on the one request, not a second request.
-  const { error: treeErr } = useTreeQuery(projectDir)
+  const { error: treeErr } = useTreeQuery(projectDir, active)
   const treeAvailable = treeState === 'ready'
   // "Open in external terminal": the user's own terminal app, beside the
   // integrated one and never in its place. Offered only in the desktop shell
@@ -103,14 +103,14 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
   const appsQ = useQuery({
     queryKey: ['externalTerminalApps'],
     queryFn: detectExternalTerminals,
-    enabled: externalWanted,
+    enabled: externalWanted && active,
   })
   const shellCapable = appsQ.data?.capable === true
   const shellRefused = appsQ.data?.capable === false
   const cfgQ = useQuery<{ dashboard?: { terminal?: { external_app?: unknown } } }>({
     queryKey: ['kirocrewConfig'],
     queryFn: () => api.kirocrewConfig(),
-    enabled: externalWanted && shellCapable,
+    enabled: externalWanted && shellCapable && active,
   })
   // Either read failing means the row's absence says nothing, so it is said
   // instead of leaving the menu silently without it. A window the shell

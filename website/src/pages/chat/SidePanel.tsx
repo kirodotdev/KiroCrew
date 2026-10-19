@@ -897,9 +897,10 @@ export default function SidePanel({
             unmounting a live browser for that moment would destroy its page. */}
         {tabs.map(t => {
           const isActive = t.id === activeId
-          // Category views: mount only the active one. They hold no editable
-          // buffer, so unmounting an inactive one loses nothing, and it keeps
-          // exactly one panel-level Escape handler live at a time.
+          // Category views mount only while active (VIEW_KINDS below): they hold
+          // no editable buffer, so unmounting an inactive one loses nothing, and
+          // it keeps exactly one panel-level Escape handler live at a time. Files
+          // and Command Center are kept mounted instead, each for its own reason.
           // App tabs render from `allAppTabs` below (one stable key for every slot);
           // rendering them here too would mount the same body twice. Both
           // body-owning kinds skip: an MCP frame's iframe and an app-contributed
@@ -923,13 +924,13 @@ export default function SidePanel({
           // The pinned Files tab renders the file-browser home directly — it
           // is not one of ActivityViewer's multiplexed session views.
           if (t.kind === 'files') {
-            if (!isActive) return null
-            // A panel kept mounted but hidden (a Dynamic Dashboard or app tab holds
-            // it) keeps the tree's scroll and expansion, with its polling paused.
+            // Kept mounted while another tab is selected, as a hidden panel keeps
+            // it: unmounting drops the tree's scroll position, which the user then
+            // has to find again. `active` pauses its polling while it is not shown.
             return (
-              <div key={t.id} className="absolute inset-0">
+              <div key={t.id} className="absolute inset-0" hidden={!isActive}>
                 <FilesHomePanel
-                  active={!panelHidden}
+                  active={isActive && !panelHidden}
                   projectDir={projectDir ?? ''}
                   // A diff open from the Changed segment opens the working-tree
                   // diff as its OWN tab (coexisting with any plain file tab for

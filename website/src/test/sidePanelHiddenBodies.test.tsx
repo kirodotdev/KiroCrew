@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -72,5 +72,51 @@ describe('a side panel kept mounted but hidden', () => {
     renderPanel(view, true)
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(screen.queryByTestId(testId)).toBeNull()
+  })
+})
+
+function SwitchingHarness() {
+  const tabsCtl = usePanelTabs('slot-a')
+  const openView = tabsCtl.openView
+  useEffect(() => { openView('files') }, [openView])
+  return (
+    <>
+      <button data-testid="to-workflows" onClick={() => openView('workflows')}>workflows</button>
+      <button data-testid="to-files" onClick={() => openView('files')}>files</button>
+      <SidePanel tabsCtl={tabsCtl} slot="slot-a" projectDir="/repo" onFileOpen={vi.fn()} onFileSave={async () => {}} onClose={() => {}} panelHidden={false} />
+    </>
+  )
+}
+
+describe('the Files tab while another tab is selected', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    __resetPanelTabs()
+  })
+
+  // The Files body stays the same mounted instance across tab switches, so the
+  // browser-owned scroll position of its tree survives the round trip.
+  it('stays mounted, hidden and inactive, and comes back as the same body', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Provider store={createTestStore()}>
+          <SwitchingHarness />
+        </Provider>
+      </QueryClientProvider>,
+    )
+    const files = await screen.findByTestId('files-home')
+    expect(files.dataset.active).toBe('true')
+
+    fireEvent.click(screen.getByTestId('to-workflows'))
+    await screen.findByTestId('activity-viewer')
+    expect(screen.getByTestId('files-home')).toBe(files)
+    expect(files.dataset.active).toBe('false')
+    expect(files.parentElement).not.toBeVisible()
+
+    fireEvent.click(screen.getByTestId('to-files'))
+    await waitFor(() => expect(files.dataset.active).toBe('true'))
+    expect(screen.getByTestId('files-home')).toBe(files)
+    expect(files.parentElement).toBeVisible()
   })
 })

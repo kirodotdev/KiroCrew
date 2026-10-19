@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -97,19 +97,21 @@ describe('file tab project tree rail', () => {
 
   it('starts hidden and remains available through the file toolbar toggle', async () => {
     renderPanel()
+    // Scoped to the file tab: the pinned Files tab stays mounted (hidden) with a tree of its own.
     const panel = await screen.findByTestId('markdown-panel')
     expect(panel).toHaveAttribute('data-rail-open', 'false')
-    expect(screen.queryByTestId('file-browser-tree')).toBeNull()
+    expect(within(panel).queryByTestId('file-browser-tree')).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Toggle file browser' }))
+    fireEvent.click(within(panel).getByRole('button', { name: 'Toggle file browser' }))
     expect(panel).toHaveAttribute('data-rail-open', 'true')
-    expect(screen.getByTestId('file-browser-tree')).toBeInTheDocument()
+    expect(within(panel).getByTestId('file-browser-tree')).toBeInTheDocument()
   })
 
   it('honours an explicit saved preference to show the rail', async () => {
     localStorage.setItem('mc-files-rail-open', '1')
     renderPanel()
-    expect(await screen.findByTestId('file-browser-tree')).toBeInTheDocument()
+    const panel = await screen.findByTestId('markdown-panel')
+    expect(await within(panel).findByTestId('file-browser-tree')).toBeInTheDocument()
   })
 
   it('keeps the toggle and denied notice reachable when the tree read is refused', async () => {
@@ -119,10 +121,11 @@ describe('file tab project tree rail', () => {
     )
     renderPanel()
 
-    expect(await screen.findByText('No access to this folder')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Toggle file browser' })).toBeInTheDocument()
-    expect(screen.getByLabelText('Refresh')).toBeInTheDocument()
-    expect(screen.queryByTestId('file-browser-tree')).toBeNull()
+    const panel = await screen.findByTestId('markdown-panel')
+    expect(await within(panel).findByText('No access to this folder')).toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: 'Toggle file browser' })).toBeInTheDocument()
+    expect(within(panel).getByLabelText('Refresh')).toBeInTheDocument()
+    expect(within(panel).queryByTestId('file-browser-tree')).toBeNull()
   })
 
 })

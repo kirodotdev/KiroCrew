@@ -54,8 +54,8 @@ afterEach(() => {
 })
 
 describe('PierreWorkspaceTreeImpl — expansion persistence', () => {
-  // The Files tab mounts only while active, so opening a file remounts the
-  // whole tree; `persistExpansion` remembers the expanded directories (keyed
+  // A file tab's rail remounts on in-place navigation, so the tree is rebuilt
+  // often; `persistExpansion` remembers the expanded directories (keyed
   // by projectDir) and restores them through `resetPaths`'
   // `initialExpandedPaths`. Off by default: the other hosts of this shared
   // tree keep their collapsed-by-default behavior.
