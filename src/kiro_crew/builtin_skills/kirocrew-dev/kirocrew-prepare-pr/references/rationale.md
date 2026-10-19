@@ -626,16 +626,16 @@ both silent abandonment and duplicate poll drivers. Monitor cycles are not serve
 rounds, so a wall-clock bound must accompany the cycle budget. The execution
 procedure owns those budgets rather than a second copy here.
 
-## Why a pinned reviewer fleet hides a whole-design CONCERNS
+## Why a whole-design CONCERNS still stops a pinned reviewer fleet
 
-`pr_status.py` exits `20` on an unanswered CONCERNS only for a lane whose verdict it
-collected, and it collects a verdict only for a lane the run names: `verdicts[name]`
-is written inside `only is None or name in only`. The loop pins `--reviewers gpt,opus`
-so a lane that never posted cannot pass silently, which means Design, First Principles
-and UX are never collected and their CONCERNS never moves the exit code. The
-`Whole-design punchlines` block is printed every cycle on purpose and changes no exit
-code, so it is the place a CONCERNS for those lanes shows up; treat one there as the
-stop the exit code did not give.
+The loop pins `--reviewers gpt,opus` so a lane that never posted cannot pass silently.
+The marker verdicts are collected only for the lanes a run names (`only is None or name
+in only`), so under that pin they hold no Design, First Principles or UX verdict. The
+unanswered-CONCERNS check therefore also reads those three lanes from their own
+comments with `design_lane_verdicts()`, which ignores the pin, and exits `20` on an
+unanswered CONCERNS from any of them. Until #21808 it read only the pinned verdicts, so
+a whole-design CONCERNS changed no exit code and the loop could arm auto-merge past it.
+The `Whole-design punchlines` block still changes no exit code; the exit code is the stop.
 
 ## Why a hold heard after arming goes into the live loop
 
