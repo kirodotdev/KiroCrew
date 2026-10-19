@@ -148,8 +148,16 @@ const LAUNCH_PREVIEW_ERROR_KEY: Record<string, string> = {
   launch_resolve_failed: 'pages.mcpManagement.launch_preview_error_failed',
 }
 
+export type LaunchPreviewFailure = { code: string }
+
+function isLaunchPreviewFailure(error: unknown): error is LaunchPreviewFailure {
+  if (typeof error !== 'object' || error === null || error instanceof ApiError) return false
+  return typeof (error as { code?: unknown }).code === 'string'
+}
+
 export function launchPreviewErrorKey(error: unknown): string {
   const fallback = 'pages.mcpManagement.launch_preview_error_failed'
+  if (isLaunchPreviewFailure(error)) return LAUNCH_PREVIEW_ERROR_KEY[error.code] || fallback
   if (!(error instanceof ApiError)) return fallback
   let code: unknown
   try {
@@ -158,6 +166,29 @@ export function launchPreviewErrorKey(error: unknown): string {
     return fallback
   }
   return (typeof code === 'string' && LAUNCH_PREVIEW_ERROR_KEY[code]) || fallback
+}
+
+const LAUNCH_PREVIEW_BATCH = 200
+
+export async function readLaunchPreviews(names: string[]): Promise<BulkCandidate[]> {
+  const chunks: string[][] = []
+  for (let i = 0; i < names.length; i += LAUNCH_PREVIEW_BATCH) {
+    chunks.push(names.slice(i, i + LAUNCH_PREVIEW_BATCH))
+  }
+  const results: BulkCandidate[] = []
+  for (const chunk of chunks) {
+    try {
+      const { launches, errors } = await api.mcpGatewayLaunchPreviews(chunk)
+      for (const name of chunk) {
+        const preview = launches?.[name]
+        if (preview) results.push({ name, preview })
+        else results.push({ name, error: { code: errors?.[name] ?? 'launch_resolve_failed' } })
+      }
+    } catch (error) {
+      for (const name of chunk) results.push({ name, error })
+    }
+  }
+  return results
 }
 
 /** The two sub-views: the decisions, and the evidence behind them. */

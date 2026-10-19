@@ -22,9 +22,14 @@ from __future__ import annotations
 import logging
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
-from kiro_crew.mcp_gateway.launch_approval import LaunchApprovals, ResolvedLaunch, target_stem
+from kiro_crew.mcp_gateway.launch_approval import (
+    LaunchApprovals,
+    ResolvedLaunch,
+    display_launches,
+    target_stem,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
@@ -134,3 +139,50 @@ def resolve_launches(
         if launches and name not in over_cap:
             resolved[name] = [launches[fp] for fp in sorted(launches)]
     return resolved
+
+
+def resolve_each_launch(names: Iterable[str]) -> ResolvedLaunches:
+    """:func:`resolve_launches` for *names*, each resolved as a single read would.
+
+    Two names sharing a :func:`target_stem` cannot share a pass: the gateway
+    keys a launch by stem, so one pass merges their launches. Each name goes in
+    the first pass that holds no other name with its stem, so a batch with no
+    shared stem is still one pass. BLOCKING, like :func:`resolve_launches`.
+    """
+    rounds: list[dict[str, str]] = []
+    for name in dict.fromkeys(names):
+        stem = target_stem(name)
+        free = next((r for r in rounds if stem not in r), None)
+        if free is None:
+            free = {}
+            rounds.append(free)
+        free[stem] = name
+    merged = ResolvedLaunches()
+    over_cap: set[str] = set()
+    for index, round_names in enumerate(rounds):
+        part = resolve_launches(list(round_names.values()), refresh_specs=index == 0)
+        merged.update(part)
+        over_cap |= getattr(part, "over_cap", set())
+    merged.over_cap = frozenset(over_cap)
+    return merged
+
+
+LAUNCH_PREVIEW_ERRORS = {
+    "launch_over_cap": "the launch set exceeds the approval limit",
+    "launch_unresolved": "no launch resolves for this server",
+}
+
+
+def launch_preview(
+    name: str, launches: Mapping[str, list[ResolvedLaunch]]
+) -> tuple[str | None, dict[str, Any] | None]:
+    """``(error_code, None)`` or ``(None, display)`` for *name* in *launches*.
+
+    The one mapping both launch-preview routes answer with, so a name lands in
+    the same bucket whether it is read alone or in a batch.
+    """
+    if name in getattr(launches, "over_cap", ()):
+        return "launch_over_cap", None
+    if not launches.get(name):
+        return "launch_unresolved", None
+    return None, display_launches(name, launches[name])

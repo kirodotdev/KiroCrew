@@ -54,6 +54,19 @@ function preview(name: string, over: Record<string, unknown> = {}) {
   }
 }
 
+function batchPreviews(read: (name: string) => unknown) {
+  return vi.spyOn(api, 'mcpGatewayLaunchPreviews').mockImplementation((async (names: string[]) => {
+    const launches: Record<string, unknown> = {}
+    const errors: Record<string, string> = {}
+    for (const name of names) {
+      const result = read(name)
+      if (typeof result === 'string') errors[name] = result
+      else launches[name] = result
+    }
+    return { launches, errors }
+  }) as never)
+}
+
 /**
  * Turn a row's STUB switch on.
  *
@@ -866,9 +879,7 @@ describe('stub every server the evidence allows', () => {
         { ...server({ name: 'http-mcp', can_stub: false }), recommendation: declared },
       ],
     } as never)
-    const read = vi
-      .spyOn(api, 'mcpGatewayLaunchPreview')
-      .mockImplementation((async (name: string) => preview(name)) as never)
+    const read = batchPreviews(name => preview(name))
     const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockImplementation(
       (async (name: string) => ({
         ok: true,
@@ -896,7 +907,8 @@ describe('stub every server the evidence allows', () => {
     expect(screen.queryByText('measured-mcp@1')).toBeNull()
     expect(screen.queryByText('bad-mcp@1')).toBeNull()
     // The read still happens, to carry each server's launch identity on the write.
-    expect(read).toHaveBeenCalledTimes(3)
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(read).toHaveBeenCalledWith(['good-mcp', 'measured-mcp', 'bad-mcp'])
     expect(setStub).not.toHaveBeenCalled()
     // Nothing was unmeasured, so no spawns were paid for.
     expect(start).not.toHaveBeenCalled()
@@ -926,9 +938,7 @@ describe('stub every server the evidence allows', () => {
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
       servers: [{ ...server({ name: 'good-mcp' }), recommendation: declared }],
     } as never)
-    vi.spyOn(api, 'mcpGatewayLaunchPreview').mockImplementation(
-      (async (name: string) => preview(name)) as never,
-    )
+    batchPreviews(name => preview(name))
     const setStub = vi.spyOn(api, 'mcpGatewaySetStub')
 
     mount()
@@ -963,9 +973,7 @@ describe('stub every server the evidence allows', () => {
             { ...server({ name: 'late-mcp' }), recommendation: declared },
           ],
         } as never)
-      vi.spyOn(api, 'mcpGatewayLaunchPreview').mockImplementation(
-        (async (name: string) => preview(name)) as never,
-      )
+      batchPreviews(name => preview(name))
       const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({
         ok: true,
         name: 'late-mcp',
@@ -1017,9 +1025,7 @@ describe('stub every server the evidence allows', () => {
         .mockResolvedValue({
           servers: [{ ...server({ name: 'fresh-mcp' }), recommendation: declared }],
         } as never)
-      const read = vi
-        .spyOn(api, 'mcpGatewayLaunchPreview')
-        .mockImplementation((async (name: string) => preview(name)) as never)
+      const read = batchPreviews(name => preview(name))
 
       mount()
       // The unmeasured row is what enables the button here — the eligible set is
@@ -1029,7 +1035,7 @@ describe('stub every server the evidence allows', () => {
       // Past the first progress poll, which reports the pass already finished.
       await vi.advanceTimersByTimeAsync(2 * 1000)
 
-      await vi.waitFor(() => expect(read).toHaveBeenCalledWith('fresh-mcp'))
+      await vi.waitFor(() => expect(read).toHaveBeenCalledWith(['fresh-mcp']))
       expect(start).toHaveBeenCalledTimes(1)
       expect(servers.mock.calls.length).toBeGreaterThan(1)
     } finally {
@@ -1053,10 +1059,11 @@ describe('stub every server the evidence allows', () => {
         { ...server({ name: 'huge-mcp' }), recommendation: declared },
       ],
     } as never)
-    const read = vi.spyOn(api, 'mcpGatewayLaunchPreview').mockImplementation((async (name: string) =>
-      name === 'huge-mcp'
-        ? preview(name, { complete: false, expected_launch: undefined })
-        : preview(name)) as never)
+    batchPreviews(name =>
+      name === 'huge-mcp' ? preview(name, { complete: false, expected_launch: undefined }) : preview(name))
+    const read = vi
+      .spyOn(api, 'mcpGatewayLaunchPreview')
+      .mockImplementation((async (name: string) => preview(name)) as never)
     vi.spyOn(api, 'mcpGatewaySetStub').mockImplementation((async (name: string) => {
       if (name === 'moved-mcp') {
         throw new ApiError(
@@ -1128,13 +1135,7 @@ describe('stub every server the evidence allows', () => {
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
       servers: [{ ...server({ name: 'other-mcp' }), recommendation: declared }],
     } as never)
-    vi.spyOn(api, 'mcpGatewayLaunchPreview').mockRejectedValue(
-      new ApiError(
-        409,
-        'unresolved',
-        JSON.stringify({ error: 'unresolved', code: 'launch_unresolved' }),
-      ),
-    )
+    batchPreviews(() => 'launch_unresolved')
     const setStub = vi.spyOn(api, 'mcpGatewaySetStub')
 
     mount()
@@ -1197,7 +1198,7 @@ describe('stub every server the evidence allows', () => {
       vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
         servers: [server({ name: 'fresh-mcp' })],
       } as never)
-      const read = vi.spyOn(api, 'mcpGatewayLaunchPreview')
+      const read = vi.spyOn(api, 'mcpGatewayLaunchPreviews')
       const setStub = vi.spyOn(api, 'mcpGatewaySetStub')
 
       mount()
