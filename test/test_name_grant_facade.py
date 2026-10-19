@@ -129,10 +129,31 @@ def _owner_reads() -> dict[str, set[str]]:
 # --------------------------------------------------------------------------- #
 
 
+def _tests_type_checking(test: ast.expr) -> bool:
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    return isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+
+
+def _binding_statements(tree: ast.Module) -> list[ast.stmt]:
+    """Module-level statements, plus what a facade declares under ``if TYPE_CHECKING``.
+
+    A facade does not import at runtime the foreign names it SERVES -- its mirror answers
+    those reads -- so its own import of them sits under ``TYPE_CHECKING`` while the
+    attribute stays real, and patchable, on the live module.
+    """
+    nodes: list[ast.stmt] = []
+    for node in tree.body:
+        nodes.append(node)
+        if isinstance(node, ast.If) and _tests_type_checking(node.test):
+            nodes.extend(node.body)
+    return nodes
+
+
 @functools.lru_cache(maxsize=1)
 def _spellings() -> dict[str, str]:
-    """The facade's dotted name, plus ``<module>.name_grant`` for each src module that binds
-    it at module level -- another spelling of the same object a test can patch through."""
+    """The facade's dotted name, plus ``<module>.name_grant`` for each src module the name
+    is readable through -- another spelling of the same object a test can patch through."""
     spellings = {FACADE: FACADE}
     for path, text in source_corpus.iter_candidate_sources(require_all=("name_grant",)):
         if not path.is_relative_to(_SRC):
@@ -140,7 +161,7 @@ def _spellings() -> dict[str, str]:
         module = ".".join(path.relative_to(_SRC.parent).with_suffix("").parts)
         if module.endswith(".__init__"):
             module = module.rpartition(".")[0]
-        for node in ast.parse(text).body:
+        for node in _binding_statements(ast.parse(text)):
             if isinstance(node, ast.ImportFrom) and node.module == "kiro_crew" and not node.level:
                 for alias in node.names:
                     if alias.name == "name_grant":
