@@ -34,7 +34,7 @@ from kiro_crew.executors import (
     EmbedAdmissionTimeout,
     run_in_embed_pool,
 )
-from kiro_crew.history import mint_row_mid
+from kiro_crew.history import _redact_at_write_boundary, mint_row_mid
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_kwargs
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
 from kiro_crew.messaging.attachments import IngestLimits, append_attachment_context
@@ -628,18 +628,25 @@ async def _run_turn(
             # writer were skipped.
             dashboard_restricted = await self._session_restricted(session_key)
             if not dashboard_restricted:
+                # BOTH sinks and BOTH halves: a persist-side scrub is too late.
+                safe_text, safe_reply = await asyncio.to_thread(
+                    lambda: (
+                        _redact_at_write_boundary("user", text),
+                        _redact_at_write_boundary("assistant", accumulated),
+                    )
+                )
                 mirror_mids = project_channel_turn_live(
                     self.dashboard_state,
                     session_key,
-                    text,
-                    accumulated,
+                    safe_text,
+                    safe_reply,
                     broadcast_user=True,
                 )
                 await asyncio.to_thread(
                     self._persist_turn,
                     session_key,
-                    text,
-                    accumulated,
+                    safe_text,
+                    safe_reply,
                     is_new_own_session,
                     agent=agent,
                     mirror_mids=mirror_mids,
