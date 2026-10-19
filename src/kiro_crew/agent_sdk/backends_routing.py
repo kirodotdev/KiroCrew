@@ -102,6 +102,17 @@ from kiro_crew.agent_sdk.backends import (
 #   refused and left no file. No MCP server is mounted, only that built-in ``read``
 #   is named ``fs_read`` (``acp._dispatch.is_strands_side_read``), and every other
 #   call is refused before the gate (``side_read_only_refusal``).
+# * pi: Crew's gate extension asks about EVERY tool call (pi runs every call
+#   unasked by design, and no allowedTools/autoApprove bypass exists), so every
+#   call reaches the READ_ONLY gate with no pre-approval surface to close.
+#   Captured on pi-acp 0.0.33 over pi 1.3.0 through the confined Side Chat
+#   launcher (``test/fixtures/acp_frames/pi/side-read-only-live.jsonl``): a read
+#   of an absolute path and three shell calls each asked through the extension
+#   first. A read is proven from the envelope's bare tool name
+#   (``PI_READ_ONLY_BUILTINS``: read/grep/find/ls), which is proof only because
+#   the Side Chat launcher passes ``--no-extensions --no-approve``, so no
+#   operator extension can register those names; the shell is judged by
+#   ``is_read_only_bash``.
 #
 # Off this set (and on goose off POSIX) the side turn runs ``REJECT_ALL`` and its
 # footer says tools are unavailable:
@@ -109,8 +120,6 @@ from kiro_crew.agent_sdk.backends import (
 #   read.
 # * opencode: its calls do ask, but through its own ``permission`` setting; it
 #   reads no kiro agent spec, so the derived spec cannot express a read-only posture.
-# * pi: Crew's gate extension asks about every call but expresses no read-only
-#   posture.
 # * mimocode: for opencode's reason, and one of its own: its ``memory``, ``history``
 #   and ``task`` tools run without asking (``ACP_BACKENDS_UNASKED_NATIVE_TOOLS``), so
 #   a side turn could not be confined to reads even if every asked call were.
@@ -122,6 +131,7 @@ ACP_BACKENDS_SIDE_READONLY = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_PI,
     }
 )
 

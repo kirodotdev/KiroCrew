@@ -1,0 +1,444 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Reading that file now."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Reading that file now.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "path": "/work/note.txt"
+        },
+        "title": "read",
+        "tool_call_id": "call_pi_side_1|fc_pi_side_1",
+        "tool_input": "{\n  \"path\": \"/work/note.txt\"\n}",
+        "tool_kind": "read",
+        "wire_title": "read"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "path": "/work/note.txt"
+        },
+        "tool_call_id": "call_pi_side_1|fc_pi_side_1",
+        "tool_input": "{\n  \"path\": \"/work/note.txt\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "yes",
+            "label": "Yes"
+          },
+          {
+            "id": "no",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "path": "/work/note.txt"
+        },
+        "request_id": 1,
+        "shell_classified": true,
+        "title": "read",
+        "tool_call_id": "call_pi_side_1|fc_pi_side_1",
+        "tool_input": "{\n  \"path\": \"/work/note.txt\"\n}",
+        "tool_kind": "read"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "yes",
+      "once": "yes",
+      "reject": "no"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_pi_side_1|fc_pi_side_1",
+        "tool_final": true,
+        "tool_output": "hello from the probe\n",
+        "tool_output_bytes": 21,
+        "tool_output_digest": "dbda0a1ec0ef6c78b410c4bbb5af9c9e4f4c73c59c95ec07e870b3d70d4fde6a",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "File contents: hello from"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "File contents: hello from",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " the probe"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " the probe",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Running those three lookups with the tools I have."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Running those three lookups with the tools I have.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "title": "grep -r \"hello\" /work 2>&1 || echo \"grep found nothing\"",
+        "tool_call_id": "call_pi_side_2|fc_pi_side_2",
+        "tool_kind": "execute",
+        "wire_title": "grep -r \"hello\" /work 2>&1 || echo \"grep found nothing\""
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "title": "ls -la /work",
+        "tool_call_id": "call_pi_side_3|fc_pi_side_3",
+        "tool_kind": "execute",
+        "wire_title": "ls -la /work"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "title": "echo probe-ok",
+        "tool_call_id": "call_pi_side_4|fc_pi_side_4",
+        "tool_kind": "execute",
+        "wire_title": "echo probe-ok"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "title": "grep -r \"hello\" /work 2>&1 || echo \"grep found nothing\"",
+        "tool_call_id": "call_pi_side_2|fc_pi_side_2",
+        "tool_kind": "execute",
+        "wire_title": "grep -r \"hello\" /work 2>&1 || echo \"grep found nothing\""
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "yes",
+            "label": "Yes"
+          },
+          {
+            "id": "no",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "grep -r \"hello\" /work 2>&1 || echo \"grep found nothing\""
+        },
+        "request_id": 3,
+        "shell_classified": true,
+        "title": "bash",
+        "tool_call_id": "call_pi_side_2|fc_pi_side_2",
+        "tool_input": "{\n  \"command\": \"grep -r \\\"hello\\\" /work 2>&1 || echo \\\"grep found nothing\\\"\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "yes",
+      "once": "yes",
+      "reject": "no"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "title": "ls -la /work",
+        "tool_call_id": "call_pi_side_3|fc_pi_side_3",
+        "tool_kind": "execute",
+        "wire_title": "ls -la /work"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "yes",
+            "label": "Yes"
+          },
+          {
+            "id": "no",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "ls -la /work"
+        },
+        "request_id": 4,
+        "shell_classified": true,
+        "title": "bash",
+        "tool_call_id": "call_pi_side_3|fc_pi_side_3",
+        "tool_input": "{\n  \"command\": \"ls -la /work\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "yes",
+      "once": "yes",
+      "reject": "no"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "title": "echo probe-ok",
+        "tool_call_id": "call_pi_side_4|fc_pi_side_4",
+        "tool_kind": "execute",
+        "wire_title": "echo probe-ok"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "yes",
+            "label": "Yes"
+          },
+          {
+            "id": "no",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "echo probe-ok"
+        },
+        "request_id": 5,
+        "shell_classified": true,
+        "title": "bash",
+        "tool_call_id": "call_pi_side_4|fc_pi_side_4",
+        "tool_input": "{\n  \"command\": \"echo probe-ok\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "yes",
+      "once": "yes",
+      "reject": "no"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_pi_side_4|fc_pi_side_4",
+        "tool_final": true,
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_pi_side_2|fc_pi_side_2",
+        "tool_final": true,
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_pi_side_3|fc_pi_side_3",
+        "tool_final": true,
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 6,
+    "stop_reason": "end_turn"
+  }
+]
