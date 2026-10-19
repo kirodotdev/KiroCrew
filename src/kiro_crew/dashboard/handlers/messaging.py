@@ -195,9 +195,11 @@ from kiro_crew.dashboard.messaging_api.proactive_send import (  # noqa: F401
     _deliver_send_message_fallback,
     _post_send_message_to_slack,
     _proactive_source_line,
+    _published_blocks_refusal,
     _publishing_session_meta,
     _read_send_message,
     _redact_all,
+    _reserved_action_refusal,
     _resolve_session_link_url,
     _resolve_session_target,
     _sanitize_blocks,
@@ -244,12 +246,14 @@ from kiro_crew.dashboard.messaging_api.run_views import (  # noqa: F401
     api_spawn_status,
 )
 from kiro_crew.dashboard.messaging_api.slack_settings import (  # noqa: F401
+    _save_code_channel_dispatch_locked,
     _slack_config_save_locked,
     _validate_slack_token,
     api_slack_code_channel_agents,
     api_slack_config_get,
     api_slack_config_save,
     api_slack_manifest_status,
+    save_code_channel_dispatch,
 )
 from kiro_crew.dashboard.messaging_api.slack_workspace import (  # noqa: F401
     _missing_scope_message,
@@ -669,6 +673,9 @@ async def api_send_message(request: web.Request) -> web.Response:
         blocks = _sanitize_blocks(
             blocks, redact_exfiltration_urls, redact_credentials, display_form=True
         )
+        # Every Block Kit guard again, on the tree that is published.
+        if (refused := _published_blocks_refusal(blocks)) is not None:
+            return refused
 
     # render [OPTIONS: ...] tags as interactive buttons on the
     # plain-text path (when the caller did not supply explicit blocks — those

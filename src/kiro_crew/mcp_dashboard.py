@@ -834,6 +834,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _run_session_stop,
     _run_session_summary,
     _run_work_dispatch,
+    _status_activity_suffix,
     _summary_time,
     _worker_capabilities_line,
 )

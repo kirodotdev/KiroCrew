@@ -18,8 +18,10 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import conductor_patrol, ledger_wake, session_ledger, work_ledger
+from kiro_crew.dashboard import session_control
 from kiro_crew.dashboard.handlers.work_ledger_caller import (
     _caller_key,
+    _code_channel_caller,
     _contained_channel_caller,
     _own_ledger,
 )
@@ -70,6 +72,11 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
         return bad
     assert options is not None
     compact = bool(options.get("compact", False))
+    # A code channel's conductor reads the published-fields projection alone, so
+    # there is no event tail to read for it.
+    published_only = _code_channel_caller(request)
+    if published_only:
+        compact = True
     tail = int(options.get("events", _MAX_EVENT_TAIL))
     remote_on = await asyncio.to_thread(_remote_dispatch_on)
     if remote_on:
@@ -157,6 +164,12 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
             f"read, so it is no longer one to return it to: {why}.",
         )
     _audit(key, "work_ledger_read", "ok", resources=f"{len(rows)} item(s)")
+    if published_only:
+        return web.json_response(
+            _published_payload(
+                record, [(item, bool(row.get("stale"))) for item, row in zip(shown, rows)]
+            )
+        )
     # ``goal_items_used`` and ``cap_exceeded`` are derived, never stored: the
     # goal's item count, and whether it has gone past ``item_cap`` (which the
     # conductor tells the user once), both read off the same header.
@@ -240,6 +253,46 @@ def _row_with_flags(
     row["pending_overdue"] = work_ledger.is_pending_overdue(item)
     row["report_undelivered"] = report_undelivered
     return row
+
+
+#: Why a code channel's conductor reads less than a dashboard conductor does.
+_PUBLISHED_NOTE = (
+    "This session is a Slack code channel, and what it reads is posted there, so "
+    "the ledger answers with the published fields only: the first line of the goal, "
+    "and each item's title, state, the first line of its worker's report, its "
+    "branch, its PR and CI state. Acceptance bars, decisions and event tails stay "
+    "in the dashboard."
+)
+
+
+def _published_payload(
+    record: work_ledger.ConductorRecord | None,
+    items: list[tuple[work_ledger.WorkItem, bool]],
+) -> dict[str, Any]:
+    """A ledger read (or a record reply) as a code channel's conductor may see it.
+
+    Built from ``session_control.published_item_fields`` and nothing else, so the
+    rule for what reaches a code channel lives in ONE place. The conductor header
+    keeps its counters and the goal's first line (``session_control.published_goal``).
+    """
+    conductor: dict[str, Any] = {}
+    if record is not None:
+        conductor = {
+            "round": record.round,
+            "depth": record.depth,
+            "goal_items_used": record.goal_items_used,
+            "cap_exceeded": record.cap_exceeded,
+            "goal": session_control.published_goal(record.goal),
+        }
+    return {
+        "conductor": conductor,
+        "items": [
+            session_control.published_item_fields(item, stale=stale) for item, stale in items
+        ],
+        "compact": True,
+        "published_fields_only": True,
+        "note": _PUBLISHED_NOTE,
+    }
 
 
 #: The fields a ``compact=true`` row carries: what a patrol cycle reads to decide
