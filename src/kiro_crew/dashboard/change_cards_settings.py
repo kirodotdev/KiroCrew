@@ -617,3 +617,10 @@ def check_setting_value(spec: dict[str, Any], value: Any) -> None:
     elif kind == "dict":
         if not isinstance(value, dict) or set(value) != set(spec.get("keys", {})):
             raise err("invalid_value", "value must be a record with every declared key")
+    elif kind == "normalized":
+        # The route's own normalizer, so a value it would refuse never reaches
+        # the user as a card (it raises ``ValueError`` naming the field).
+        try:
+            spec["normalize"](value)
+        except ValueError as exc:
+            raise err("invalid_value", str(exc)) from exc

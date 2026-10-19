@@ -31,6 +31,7 @@ import { GUIDE_LAYER_SELECTOR } from './probeRegistry'
 import { Btn, IconButton } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
 import { useGuardedLeave } from '../components/NavigationLeaveGuard'
+import { memberSlugOfSlot } from '../hooks/unreadOnAttention'
 import { membersRosterQuery } from '../api/membersQuery'
 import type { MemberRosterRow } from '../api/client'
 import { GUIDE_ONLY_WITH_ITEMS } from '../uiLocations/guidePlans.gen'
@@ -741,16 +742,8 @@ function FindMissing({ query, findKey, reason }: { query: FindQuery; findKey: st
 /** Where the finish chip's way back leads: the chat the guide was offered in. */
 export type GuideReturn = { kind: 'chat'; to: string }
 
-/**
- * A crewmate thread's slot key (`member-<slug>`, or `member-<slug>.memory-<store>`
- * once the crewmate has a private memory store) -> that slug; anything else
- * -> null. Mirrors the gateway's `member_slot_key` (members.py): the prefix,
- * the slug pattern, and the store suffix that belongs to the SLOT, not the slug.
- */
-const MEMBER_SLOT_KEY = /^member-([a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?)(?:\.memory-.+)?$/
-export function memberSlugOfSlot(slotKey: string): string | null {
-  return MEMBER_SLOT_KEY.exec(slotKey)?.[1] ?? null
-}
+// Re-exported for the callers and tests that read it from here.
+export { memberSlugOfSlot }
 
 const toMember = (name: string): GuideReturn => ({ kind: 'chat', to: `/members?member=${encodeURIComponent(name)}` })
 

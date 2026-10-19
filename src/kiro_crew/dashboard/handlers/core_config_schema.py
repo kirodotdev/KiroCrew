@@ -9,6 +9,7 @@ import and patch; this module never imports it."""
 
 from __future__ import annotations
 
+import kiro_crew.config.session_environments as _session_environments
 from kiro_crew.acp_backends import selectable_backend_values, selectable_stored_backend_values
 from kiro_crew.apps.manifest import KEBAB_RE
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
@@ -464,6 +465,26 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "int",
         "min": DECISION_BUCKET_MIN,
         "max": DECISION_BUCKET_MAX,
+    },
+    # Session Environments holds credential-free profiles only, so the masked GET
+    # may return it. ``normalize`` is the loader's own validator, so this gate
+    # refuses what a load would drop; leaf paths update one scalar key alone.
+    # Profiles have no leaf path: only the whole section writes them.
+    "session_environments": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_session_environments,
+    },
+    "session_environments.coder_url": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_coder_url,
+    },
+    "session_environments.default_profile": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_default_profile,
+    },
+    "session_environments.stop_on_shutdown": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_stop_on_shutdown,
     },
 }
 

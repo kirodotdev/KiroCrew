@@ -195,9 +195,11 @@ session has a message the choice is locked unless its remote workspace was
 never created (`GET` reports `locked`; a changing `PUT` answers 409
 `environment_locked`), and the composer chip (`SessionEnvironmentChip`) becomes
 a status. A changed choice arms the slot's deferred reset; only a choice back to
-this machine prewarms. A bound session bypasses the warm pool, whose children
-are local engines (`kirocrew.session.pool.decision` outcome
-`bypass_remote_environment`).
+this machine prewarms. `session_environments.default_profile` binds a new owner
+dashboard chat (`apply_default_environment`, only while it has no choice and no
+messages; any failure leaves it local); scheduled jobs, channels and peer chats
+are untouched. A bound session bypasses the warm pool, whose children are local
+engines (`kirocrew.session.pool.decision` outcome `bypass_remote_environment`).
 
 Preparing reserves a row in the Coder ownership registry before any compute
 exists (a non-empty `deployment_id` is required and never retargeted; rows of
@@ -220,8 +222,19 @@ owner's workspace. The child takes the dedicated-process arm with its own
 worker and fence; an unreadable choice or a malformed `parent` refuses the run.
 Its spawn owes only the local engine's reserve ([subagent](subagent.md)).
 
-Coder lifecycle calls run under the Coder client's output and timeout bounds,
-not the 64 KB guest-command bound.
+### Start progress
+
+A first start can take minutes, so `session_environment.report_start_stage`
+records `checking`, `provisioning` (only when compute is created or started),
+`connecting` and `starting_agent`, plus `entered` (stages so far) and
+`reconnect` (this gateway already had the session attached). The record is in
+memory, bounded, and cleared in the `finally` of
+`AcpProvider._start_kiro_runtime`. `GET /api/chat/slots/{slot}/environment`
+returns it as `starting`; the chip polls once a second only while a turn runs.
+The setup card shows every stage before the current one as done, and appears
+only for a first connection or a restart that enters `provisioning`. Coder
+lifecycle calls run under the Coder client's output and timeout bounds, not the
+64 KB guest-command bound.
 
 ### Archive, retention and shutdown
 
@@ -256,6 +269,24 @@ pending approvals are dropped and their commands never ran remotely. An active
 `run_command` dies with its process group when the guest worker retires or
 orphans; detached background processes are not tracked. The next message
 reconnects to the same workspace.
+
+### Dashboard views
+
+Views that read the gateway's project switch on `useSlotRemoteEnvironment`:
+the composer drops the project chip, the Git view gets no folder, and the Files
+tab renders `RemoteFilesPanel`. It reads through
+`GET /api/chat/slots/{slot}/environment/browse?op=list|read&path=`
+(owner-only; `coder.session_browse` runs `workspace_tools.py --browse` with the
+request on stdin and the tools' confinement and caps) and saves through
+`PUT /api/chat/slots/{slot}/environment/file` `{path, content, expected}`
+(owner-only, SEL-audited, the separate `--write` mode). A save whose `expected`
+differs from the file answers 409 `file_changed`, a truncated or binary read is
+not offered for saving, a stopped workspace answers 409 `workspace_stopped`, and
+outdated guest files are reinstalled once before a retry. A terminal opened
+from a remote chat carries `remote_slot` and opens
+`coder ssh --disable-autostart <workspace>`, or closes the socket with a coded
+error (`terminal_wrong_machine`, or `terminal_placement_unavailable` while the
+chat's placement cannot be read) rather than opening a local shell.
 
 ### Provider requirements
 

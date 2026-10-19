@@ -511,6 +511,28 @@ def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str, str]:
     )
 
 
+async def _runs_on_a_session_environment(session_key: str) -> bool:
+    """Whether ``session_key`` is bound to a remote Session Environment profile.
+
+    Read from the persisted choice, never from what one request just did, so no
+    caller can prewarm a bound chat. An unreadable choices store answers yes: a
+    skipped prewarm costs one cold start, a wrong one starts billed compute.
+    Always no while the developer flag is off (the choice is never read).
+    """
+    from kiro_crew.session_environment import (
+        SessionEnvironmentUnavailable,
+        _choices,
+        session_environments_enabled,
+    )
+
+    if not session_environments_enabled():
+        return False
+    try:
+        return await asyncio.to_thread(_choices().get, session_key) is not None
+    except (OSError, ValueError, SessionEnvironmentUnavailable):
+        return True
+
+
 async def _eager_spawn(
     state: "DashboardState",
     slot: "_ChatSlot",
@@ -572,6 +594,10 @@ async def _eager_spawn(
                 # simply stands down.
                 return
             session_key = effective_session_key(slot)
+            if await _runs_on_a_session_environment(session_key):
+                # Its start creates or wakes a billed remote workspace: that is
+                # left to the first real message, whichever signal armed this.
+                return
             if allow_resume:
                 # The focus signal only ever adds the RESUME case; fresh eager
                 # spawn stays owned by the create/project/agent signals. This

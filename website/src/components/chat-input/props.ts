@@ -229,6 +229,9 @@ export interface ChatInputProps {
    *  user who was not typing does not get the composer focused under them. */
   onModelClick?: (rect: DOMRect, trigger?: HTMLElement, composerHadFocus?: boolean) => void
   onProjectClick?: (rect: DOMRect, trigger?: HTMLElement) => void
+  /** Session Environment chip for this slot (`SessionEnvironmentChip`). It owns
+   *  its own separated shelf group and renders nothing until profiles exist. */
+  environmentSlot?: string | null
   /** App-contributed session controls (contributes.sessionControls in app.json). */
   sessionControls?: {
     key: string

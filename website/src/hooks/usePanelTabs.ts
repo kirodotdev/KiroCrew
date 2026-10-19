@@ -184,6 +184,9 @@ export interface PanelTab {
   sessionId?: string
   /** Working directory the shell spawns in (the chat's project dir, if any). */
   cwd?: string
+  /** Set for a shell in a chat's REMOTE session workspace: the gateway opens it
+   *  over `coder ssh` for this slot instead of spawning a local shell. */
+  remoteSlot?: string
 }
 
 /**
@@ -1278,10 +1281,14 @@ export function usePanelTabs(
    *  per-slot bucketing makes those sessions chat-specific automatically. At
    *  the per-chat cap we focus (reuse) the most-recent terminal instead of
    *  spawning another. Returns the session id to connect / run against. */
-  const openTerminal = useCallback((opts?: { cwd?: string }): string => {
+  const openTerminal = useCallback((opts?: { cwd?: string; remoteSlot?: string; title?: string }): string => {
     const terms = tabs.filter(t => t.kind === 'terminal')
     if (terms.length >= MAX_TERMINALS_PER_CHAT) {
-      const last = terms[terms.length - 1]
+      // Reuse only a terminal on the same machine: a remote request must never
+      // land in a gateway shell, nor a local one in a workspace. None: refuse.
+      const same = terms.filter(t => (t.remoteSlot ?? '') === (opts?.remoteSlot ?? ''))
+      const last = same[same.length - 1]
+      if (!last) return ''
       setActive(last.id)
       return last.sessionId ?? ''
     }
@@ -1294,7 +1301,9 @@ export function usePanelTabs(
     upsert({
       id: `terminal:${sessionId}`, kind: 'terminal',
       title: opts?.cwd ? basename(opts.cwd) : 'Terminal',
+      ...(opts?.title ? { title: opts.title } : {}),
       sessionId, cwd: opts?.cwd,
+      ...(opts?.remoteSlot ? { remoteSlot: opts.remoteSlot } : {}),
     })
     return sessionId
   }, [tabs, upsert, setActive])

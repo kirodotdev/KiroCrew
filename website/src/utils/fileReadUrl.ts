@@ -44,9 +44,15 @@ export function isAbsolutePath(filePath: string): boolean {
   return /^(?:\/|~(?:$|\/)|[A-Za-z]:[\\/]|\\\\)/.test(filePath)
 }
 
+/** `&slot=<chat>` for a read made on behalf of one chat, so the gateway can
+ *  refuse a chat that runs on a remote environment; empty otherwise. */
+export function chatSlotParam(slot?: string | null): string {
+  return slot ? '&slot=' + encodeURIComponent(slot) : ''
+}
+
 /** Build the /api/file-read URL, appending resolve=1 for relative paths. */
-export function fileReadUrl(filePath: string): string {
-  return withResolve('/api/file-read?path=' + encodeURIComponent(filePath), filePath)
+export function fileReadUrl(filePath: string, slot?: string | null): string {
+  return withResolve('/api/file-read?path=' + encodeURIComponent(filePath) + chatSlotParam(slot), filePath)
 }
 
 /** Build the /api/file-download URL — streams raw bytes for binary downloads.

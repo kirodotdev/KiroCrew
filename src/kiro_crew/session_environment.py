@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING
@@ -15,6 +16,39 @@ if TYPE_CHECKING:
 
 class SessionEnvironmentUnavailable(RuntimeError):
     """A persisted or selected environment provider cannot serve a session."""
+
+
+# -- start progress, so the chat can tell a slow start from a hang --
+
+#: Ordered start stages: sign-in and lookup, compute, guest worker, local engine.
+START_STAGES: tuple[str, ...] = ("checking", "provisioning", "connecting", "starting_agent")
+_START_PROGRESS_MAX = 256
+#: key -> (stage, entered at, began at, stages entered, reconnect)
+_start_progress: dict[str, tuple[str, float, float, tuple[str, ...], bool]] = {}
+
+
+def report_start_stage(session_key: str | None, stage: str) -> None:
+    """Record that ``session_key``'s environment start entered ``stage``."""
+    if not session_key or stage not in START_STAGES:
+        return
+    now = time.monotonic()
+    previous = _start_progress.get(session_key)
+    began = previous[2] if previous is not None else now
+    entered = previous[3] if previous is not None else ()
+    if stage not in entered:
+        entered = (*entered, stage)
+    # Decided when the start begins: an already-attached session is reconnecting.
+    reconnect = previous[4] if previous is not None else session_key in _remote_workspaces
+    if previous is None and len(_start_progress) >= _START_PROGRESS_MAX:
+        # Bounded against leaks; the oldest goes first.
+        _start_progress.pop(next(iter(_start_progress)))
+    _start_progress[session_key] = (stage, now, began, entered, reconnect)
+
+
+def clear_start_stage(session_key: str | None) -> None:
+    """The start finished (ready, failed or cancelled): stop reporting a stage."""
+    if session_key:
+        _start_progress.pop(session_key, None)
 
 
 # -- live remote workspaces, for the per-message context (set at runtime start) --
@@ -223,3 +257,21 @@ def refuse_local_only_tool(session_key: str | None, server: str, tool: str) -> s
         f"{tool} would act on the gateway machine instead. Use the workspace tools for "
         "files and commands in the remote workspace."
     )
+
+
+def start_progress(session_key: str | None) -> dict[str, object] | None:
+    """``{"stage", "stage_elapsed_s", "elapsed_s", "entered"}`` while a start is in
+    flight; ``entered`` lists every stage so far, since one can finish between polls.
+    """
+    entry = _start_progress.get(session_key or "")
+    if entry is None:
+        return None
+    stage, stage_since, began, entered, reconnect = entry
+    now = time.monotonic()
+    return {
+        "stage": stage,
+        "stage_elapsed_s": round(now - stage_since, 1),
+        "elapsed_s": round(now - began, 1),
+        "entered": list(entered),
+        "reconnect": reconnect,
+    }

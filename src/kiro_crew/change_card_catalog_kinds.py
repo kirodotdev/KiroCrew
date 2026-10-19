@@ -226,6 +226,10 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "session.pool_size",
         "session.pool_ttl_secs",
         "session.timeout_secs",
+        # Shutdown only decides how long the operator's own workspaces run; the
+        # default picks among saved profiles.
+        "session_environments.default_profile",
+        "session_environments.stop_on_shutdown",
         "session_summary.enabled",
         # Listed for exactly-one completeness, not because a card can reach it: a card
         # carries no list value (``setting.change.value`` is scalar and ``op``/``item``
@@ -265,6 +269,10 @@ _CODE_EXEC_SETTINGS: frozenset[str] = frozenset(
         "agent.kas_bundle",
         "dashboard.terminal.shell",
         "session.pool_agent",
+        # The Coder deployment and the template a session's workspace is built
+        # from decide which machine runs that session's commands.
+        "session_environments",
+        "session_environments.coder_url",
     }
 )
 

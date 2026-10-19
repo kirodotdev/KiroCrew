@@ -376,7 +376,9 @@ def _package_reexports() -> list[str]:
 
 def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
     """Every route the gateway registers for a file handler and every name the
-    handlers package re-exports is the facade's object."""
+    handlers package re-exports is the facade's object. A route over this
+    machine's files runs behind the remote-chat guard, which wraps the facade's
+    object itself (``__wrapped__``)."""
     from kiro_crew.dashboard import routes
 
     app = web.Application()
@@ -388,7 +390,19 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
         and route.handler.__module__ == _FACADE
     ]
     assert len({id(h) for h in served}) == 34
-    assert [h.__name__ for h in served if getattr(files, h.__name__) is not h] == []
+    inner = [getattr(h, "__wrapped__", h) for h in served]
+    assert [h.__name__ for h in inner if getattr(files, h.__name__) is not h] == []
+    assert sorted({h.__name__ for h in served if hasattr(h, "__wrapped__")}) == [
+        "api_file_diff",
+        "api_file_raw",
+        "api_file_read",
+        "api_file_stream",
+        "api_file_watch",
+        "api_file_write",
+        "api_project_git",
+        "api_project_git_log",
+        "api_project_git_status",
+    ]
     reexports = _package_reexports()
     assert len(reexports) == 36
     assert [n for n in reexports if getattr(handlers_pkg, n) is not getattr(files, n)] == []

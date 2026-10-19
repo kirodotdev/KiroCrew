@@ -23,17 +23,33 @@ export interface InlineComment {
   codePosition?: number
 }
 
+/** Unfinished inline edits of pending comments, by `<list draft key>#<comment
+ *  id>`: in memory for this page's lifetime only, like `extraPromptDrafts`.
+ *  An edit is kept while its row is open and dropped when it is saved,
+ *  cancelled or its comment removed. */
+const rowEditDrafts = new Map<string, string>()
+
 /** Single comment row with inline edit support. */
-function CommentRow({ comment, onEdit, onRemove, onEditingChange }: {
+function CommentRow({ comment, onEdit, onRemove, onEditingChange, draftKey }: {
   comment: InlineComment; onEdit: (id: string, text: string) => void; onRemove: (id: string) => void
   onEditingChange?: (id: string, editing: boolean) => void
+  /** Keeps an open edit across an unmount; see `rowEditDrafts`. */
+  draftKey?: string
 }) {
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(comment.text)
+  const editKey = draftKey !== undefined ? `${draftKey}#${comment.id}` : undefined
+  const keptEdit = editKey !== undefined ? rowEditDrafts.get(editKey) : undefined
+  const [editing, setEditing] = useState(keptEdit !== undefined)
+  const [draft, setDraft] = useState(keptEdit ?? comment.text)
   const inputRef = useRef<HTMLInputElement>(null)
   const cancelledRef = useRef(false)
   const committedRef = useRef(false)
   const ime = useImeGuard()
+  // Dropped here, not only when `editing` turns false: a save that lands as
+  // the row unmounts never re-runs the effect below.
+  const dropEdit = useCallback(() => { if (editKey !== undefined) rowEditDrafts.delete(editKey) }, [editKey])
+  useEffect(() => {
+    if (editKey !== undefined && editing) rowEditDrafts.set(editKey, draft)
+  }, [editKey, editing, draft])
 
   const commitEdit = useCallback(() => {
     if (cancelledRef.current) { cancelledRef.current = false; return }
@@ -41,8 +57,9 @@ function CommentRow({ comment, onEdit, onRemove, onEditingChange }: {
     const trimmed = draft.trim()
     if (trimmed && trimmed !== comment.text) onEdit(comment.id, trimmed)
     committedRef.current = true
+    dropEdit()
     setEditing(false)
-  }, [draft, comment.id, comment.text, onEdit])
+  }, [draft, comment.id, comment.text, onEdit, dropEdit])
 
   const preventBlur = useCallback((e: React.MouseEvent) => e.preventDefault(), [])
 
@@ -65,7 +82,7 @@ function CommentRow({ comment, onEdit, onRemove, onEditingChange }: {
             {...ime.bindComposition<HTMLInputElement>({ onBlur: commitEdit })}
             onKeyDown={e => {
               if (e.key === 'Enter' && draft.trim()) { if (ime.claimEnter(e)) commitEdit() }
-              if (e.key === 'Escape') { ime.reset(); cancelledRef.current = true; setDraft(comment.text); setEditing(false) }
+              if (e.key === 'Escape') { ime.reset(); cancelledRef.current = true; dropEdit(); setDraft(comment.text); setEditing(false) }
             }}
             className="bg-bg border border-border rounded px-1.5 py-0.5 text-text text-[13px] w-full outline-hidden focus-ring" />
         ) : (
@@ -83,7 +100,7 @@ function CommentRow({ comment, onEdit, onRemove, onEditingChange }: {
       ) : (
         <button aria-label={i18nT('components.commentOverlay.edit')} className="text-muted hover:text-accent text-[12px] shrink-0 cursor-pointer bg-transparent border-none" onClick={() => { setDraft(comment.text); setEditing(true) }}><Pencil className="lucide-inline" /></button>
       )}
-      <button aria-label={i18nT('components.commentOverlay.remove')} onMouseDown={preventBlur} className="text-muted hover:text-danger text-[12px] shrink-0 cursor-pointer bg-transparent border-none" onClick={() => onRemove(comment.id)}><X className="lucide-inline" /></button>
+      <button aria-label={i18nT('components.commentOverlay.remove')} onMouseDown={preventBlur} className="text-muted hover:text-danger text-[12px] shrink-0 cursor-pointer bg-transparent border-none" onClick={() => { dropEdit(); onRemove(comment.id) }}><X className="lucide-inline" /></button>
     </div>
   )
 }
@@ -95,8 +112,24 @@ function CommentRow({ comment, onEdit, onRemove, onEditingChange }: {
  *  single (comment) input box rather than two competing inputs. Its value is
  *  passed to `onSubmitAll` alongside the comments only when it was opened, and
  *  it collapses again after submit. */
-function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPrompt, connected = true, onEditingChange }: {
+/** Unsent "Add instruction" text per document, in memory for this page's
+ *  lifetime only: never persisted to storage or sent anywhere. The key names
+ *  the chat as well as the document (see `MarkdownPanel`), so one chat's draft
+ *  never shows in another. */
+const extraPromptDrafts = new Map<string, { text: string; open: boolean }>()
+
+/** The instruction-draft key for a document a side-panel tab shows: the tab's
+ *  chat-scoped identity (slot + tab id) and the gateway-local path. No tab
+ *  identity, no key: such a draft is not kept. */
+export function instructionDraftKeyFor(tabKey: string | undefined, filePath: string): string | undefined {
+  return tabKey ? `local:${tabKey}:${filePath}` : undefined
+}
+
+function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPrompt, connected = true, onEditingChange, draftKey }: {
   comments: InlineComment[]; onEdit: (id: string, text: string) => void; onRemove: (id: string) => void; onSubmitAll: (extraPrompt?: string) => void; enableExtraPrompt?: boolean
+  /** Keeps the typed instruction across an unmount (the panel withholding the
+   *  tab for a moment, say), keyed by the document it belongs to. */
+  draftKey?: string
   /** Told when a row opens or closes an inline edit (typed, not yet saved). */
   onEditingChange?: (id: string, editing: boolean) => void
   /** Gateway connection flag — mirrors ChatInput's Send gating so a batch
@@ -104,8 +137,28 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
    *  silently refuse it. Defaults true for non-chat embeddings. */
   connected?: boolean
 }) {
-  const [extraPrompt, setExtraPrompt] = useState('')
-  const [showExtraPrompt, setShowExtraPrompt] = useState(false)
+  const kept = draftKey !== undefined ? extraPromptDrafts.get(draftKey) : undefined
+  const [extraPrompt, setExtraPrompt] = useState(kept?.text ?? '')
+  const [showExtraPrompt, setShowExtraPrompt] = useState(kept?.open ?? false)
+  // Kept only while the box is open with text and comments to send it with:
+  // closing the box or removing every comment is a discard, and Submit All
+  // empties it.
+  const keep = showExtraPrompt && extraPrompt !== '' && comments.length > 0
+  useEffect(() => {
+    if (draftKey === undefined) return
+    if (keep) extraPromptDrafts.set(draftKey, { text: extraPrompt, open: true })
+    else extraPromptDrafts.delete(draftKey)
+  }, [draftKey, keep, extraPrompt])
+  // An edit kept for a comment that is no longer pending (sent, or removed
+  // while the list was away) has nothing to return to.
+  const pendingIds = comments.map(c => c.id).join('\n')
+  useEffect(() => {
+    if (draftKey === undefined) return
+    const live = new Set(pendingIds === '' ? [] : pendingIds.split('\n'))
+    for (const key of rowEditDrafts.keys()) {
+      if (key.startsWith(`${draftKey}#`) && !live.has(key.slice(draftKey.length + 1))) rowEditDrafts.delete(key)
+    }
+  }, [draftKey, pendingIds])
   const extraPromptRef = useRef<HTMLTextAreaElement>(null)
   // Focus the textarea when the toggle reveals it.
   useEffect(() => { if (showExtraPrompt) extraPromptRef.current?.focus() }, [showExtraPrompt])
@@ -129,7 +182,7 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
         <SendBtn disabled={!connected} {...offlineProps(connected, i18nT('utils.offline.submit_comments'), i18nT('components.commentOverlay.submit_all'))} onClick={() => { onSubmitAll(enableExtraPrompt && showExtraPrompt ? extraPrompt : undefined); setExtraPrompt(''); setShowExtraPrompt(false) }}>{i18nT('components.commentOverlay.submit_all')} <Send className="lucide-inline" /></SendBtn>
       </div>
       <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
-        {comments.map(c => <CommentRow key={c.id} comment={c} onEdit={onEdit} onRemove={onRemove} onEditingChange={onEditingChange} />)}
+        {comments.map(c => <CommentRow key={c.id} comment={c} onEdit={onEdit} onRemove={onRemove} onEditingChange={onEditingChange} draftKey={draftKey} />)}
       </div>
       {enableExtraPrompt && showExtraPrompt && (
         <textarea

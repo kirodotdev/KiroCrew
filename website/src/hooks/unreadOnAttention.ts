@@ -89,6 +89,17 @@ export function isMemberThreadSlot(slotKey: string, slots: ReadonlyArray<{ key: 
   return entry ? entry.mode === 'member' : slotKey.startsWith(MEMBER_SLOT_KEY_PREFIX)
 }
 
+/**
+ * A crewmate thread's slot key (`member-<slug>`, or `member-<slug>.memory-<store>`
+ * once the crewmate has a private memory store) -> that slug; anything else
+ * -> null. Mirrors the gateway's `member_slot_key` (members.py): the prefix,
+ * the slug pattern, and the store suffix that belongs to the SLOT, not the slug.
+ */
+const MEMBER_SLOT_KEY = /^member-([a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?)(?:\.memory-.+)?$/
+export function memberSlugOfSlot(slotKey: string): string | null {
+  return MEMBER_SLOT_KEY.exec(slotKey)?.[1] ?? null
+}
+
 /** Roles the gateway never saves to disk (`_TRANSIENT_ROLES` in
  *  `dashboard/state_parts/transcript_rows.py`). A gateway restart drops these rows, so the slot's
  *  `last_ts` never again reaches their timestamps. */

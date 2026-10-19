@@ -5,7 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check, PlugZap, AppWindow } from 'lucide-react'
-import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, retryTerminalConnection } from '../utils/terminalRegistry'
+import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, useTerminalWrongMachine, retryTerminalConnection } from '../utils/terminalRegistry'
 import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } from '../hooks/useTerminalFont'
 import { ansiPaletteFromVars } from '../utils/terminalPalette'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
@@ -275,7 +275,7 @@ function touchSelectHint(status: TouchSelectStatus): string {
   }
 }
 
-function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: string; cwd?: string; visible: boolean; onSendToChat?: (text: string) => void }) {
+function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToChat }: { sessionId: string; cwd?: string; remoteSlot?: string; chatSlot?: string; visible: boolean; onSendToChat?: (text: string) => void }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
   const entryRef = useRef<{ term: Terminal; fit: FitAddon } | null>(null)
@@ -298,6 +298,7 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
   // to avoid flicker; only a manual retry sets manualRetry.
   const connStatus = useTerminalConnStatus(sessionId)
   const invalidCwd = useTerminalInvalidCwd(sessionId)
+  const wrongMachine = useTerminalWrongMachine(sessionId)
   const manualRetry = useTerminalManualRetry(sessionId)
   // The manual "Reconnecting…" state: the user clicked Reconnect and the dial
   // has not yet resolved. On failure the status flips back to 'disconnected'
@@ -332,8 +333,8 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
   // panel/route unmounts; torn down only on explicit tab close. Unmounting this
   // component does not disconnect — the module-level manager owns the socket.
   useEffect(() => {
-    ensureTerminalConnection(sessionId, term, fit, cwd)
-  }, [sessionId, term, fit, cwd])
+    ensureTerminalConnection(sessionId, term, fit, cwd, remoteSlot, chatSlot)
+  }, [sessionId, term, fit, cwd, remoteSlot, chatSlot])
 
   // Attach terminal to DOM
   useEffect(() => {
@@ -598,10 +599,13 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
                 className={invalidCwd ? 'w-full min-w-0 min-h-0' : 'min-w-0 flex-auto'}
                 message={invalidCwd
                   ? i18nT('components.cliPanel.invalid_cwd_message', { cwd })
-                  : i18nT('components.cliPanel.disconnected_message')}
+                  : wrongMachine
+                    ? i18nT('components.cliPanel.wrong_machine_message')
+                    : i18nT('components.cliPanel.disconnected_message')}
               />
             )}
             <div className="flex shrink-0 flex-wrap items-center gap-2">
+              {!wrongMachine && (
               <Btn
                 type="button"
                 onClick={() => retryTerminalConnection(sessionId)}
@@ -612,6 +616,7 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
                   ? i18nT('components.cliPanel.use_here')
                   : i18nT('components.cliPanel.reconnect')}
               </Btn>
+              )}
               {invalidCwd && (
                 <Btn
                   type="button"
@@ -707,16 +712,20 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
  * Sessions are chat-specific by virtue of living in usePanelTabs' per-slot
  * bucket; the module-level termCache keeps them warm across tab/chat switches.
  */
-export default function CliPanel({ sessionId, cwd, visible = true, onSendToChat }: {
+export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible = true, onSendToChat }: {
   sessionId: string
   cwd?: string
+  /** Open the shell in this chat's REMOTE session workspace instead of locally. */
+  remoteSlot?: string
+  /** The chat a local shell belongs to: the gateway refuses it if that chat is remote. */
+  chatSlot?: string
   visible?: boolean
   onSendToChat?: (text: string) => void
 }) {
   useEffect(() => { ensureThemeObserver(); ensureTerminalFontSync() }, [])
   return (
     <div className="flex flex-col w-full h-full overflow-hidden bg-bg px-3 pt-2">
-      <TerminalView sessionId={sessionId} cwd={cwd} visible={visible} onSendToChat={onSendToChat} />
+      <TerminalView sessionId={sessionId} cwd={cwd} remoteSlot={remoteSlot} chatSlot={chatSlot} visible={visible} onSendToChat={onSendToChat} />
     </div>
   )
 }

@@ -1098,7 +1098,8 @@ describe('ChatPage — side panel callbacks', () => {
   it('writes an edited file through the file-write endpoint', async () => {
     await renderWithPanel()
     await act(async () => { await sidePanelProps!.onFileSave('/repo/main/a.ts', 'next') })
-    expect(fetchMock).toHaveBeenCalledWith('/api/file-write', expect.objectContaining({
+    // The save names its chat, so the gateway can refuse one that runs remotely.
+    expect(fetchMock).toHaveBeenCalledWith('/api/file-write?slot=chat-1', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({ path: '/repo/main/a.ts', content: 'next' }),
     }))

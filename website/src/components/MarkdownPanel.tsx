@@ -10,7 +10,7 @@ import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { useConfirm } from './ConfirmDialog'
 import Clickable from './Clickable'
-import { formatCommentsMessage, type InlineComment } from './CommentOverlay'
+import { formatCommentsMessage, instructionDraftKeyFor, type InlineComment } from './CommentOverlay'
 import SelectionToolbar, { type SelectionAction, type SelectionComposer } from './SelectionToolbar'
 import MarkdownOutlineRail from './MarkdownToc'
 import { usePersistedBool } from '../hooks/usePersistedBool'
@@ -306,6 +306,10 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // coexisting panels cannot overwrite each other's drafts. Hydrating `[]` here
   // (plus skipping the persistence effect below) keeps the read-only panel out
   // of the store entirely.
+  // The unsent overall instruction is kept across an unmount (in memory only)
+  // per chat and document: the tab's slot-scoped key, then this gateway-local
+  // path. Without a chat to scope it to, it is not kept at all.
+  const instructionDraftKey = readOnly ? undefined : instructionDraftKeyFor(scrollMemoryKey, filePath)
   const draftsRef = useRef<ReturnType<typeof loadCommentDrafts>>(null!)
   if (draftsRef.current === null) draftsRef.current = loadCommentDrafts()
   const [comments, setComments] = useState<InlineComment[]>(() => readOnly ? [] : (draftsRef.current[filePath] ?? []))
@@ -1375,7 +1379,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           Text selected in a code block is anchored by the preview only: the diff
           view has no preview root for `resolveSelectionCoords` to read. */}
       {!fullscreen && !editing && <SelectionToolbar key={filePath} containerRef={sidePanelScrollRef} actions={selectionActions} composer={selectionComposer} suspended={!active} codeSelection={!diffViewShown} />}
-      {!fullscreen && <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} onEditingChange={trackRowEditing} />}
+      {!fullscreen && <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} onEditingChange={trackRowEditing} draftKey={instructionDraftKey} />}
     </DetailPanel>
     {fullscreen && <OverlayPortal>{
       // The onKeyDown here implements a focus trap for the modal dialog; a
@@ -1448,7 +1452,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={fullscreenBodyRef} />}
         </div>
         {!editing && <SelectionToolbar key={filePath} containerRef={fullscreenBodyRef} actions={selectionActions} composer={selectionComposer} suspended={!active} codeSelection={!diffViewShown} />}
-        <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} onEditingChange={trackRowEditing} />
+        <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} onEditingChange={trackRowEditing} draftKey={instructionDraftKey} />
         {/* Footer */}
         <Clickable className="shrink-0 flex items-center px-3 h-6 text-[11px] text-muted font-mono truncate cursor-pointer hover:text-text transition-colors" title={i18nT('components.markdownPanel.click_to_copy_path')} onClick={() => copyToClipboard(filePath)}>{filePath}</Clickable>
       </div>

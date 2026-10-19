@@ -24,6 +24,8 @@ vi.mock('../../api/client', () => ({
     monitorForSlot: vi.fn(() => Promise.resolve({ enabled: true, monitor: null })),
     // reuse_current off: the run path, not the copy path.
     kirocrewConfig: vi.fn(() => Promise.resolve({})),
+    // The member's chat runs on this machine, so Run in terminal may open a local tab.
+    chatSlotEnvironment: vi.fn(() => Promise.resolve({ profile: null, profiles: [] })),
   },
 }))
 

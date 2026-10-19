@@ -44,6 +44,8 @@ vi.mock('../api/client', () => ({
     screenshot: vi.fn().mockResolvedValue({ path: null }),
     fileSearch: vi.fn().mockResolvedValue({ root: '/repo', results: [] }),
     chatSlotAgent: vi.fn().mockResolvedValue(undefined),
+    // Confirmed local: `!` commands wait for the chat's Session Environment placement.
+    chatSlotEnvironment: vi.fn().mockResolvedValue({ profile: null, profiles: [] }),
   },
   SEARCH_MIN_CHARS: 2,
   ApiError: class ApiError extends Error {
@@ -847,7 +849,7 @@ describe('ChatPane terminal attachment and session boundaries', () => {
     expect(dialog).toHaveTextContent('/work/pane-project')
     expect(bottomTerminal.addTab).not.toHaveBeenCalled()
     await user.click(within(dialog).getByRole('button', { name: 'Run', exact: true }))
-    expect(bottomTerminal.addTab).toHaveBeenCalledExactlyOnceWith('/work/pane-project')
+    expect(bottomTerminal.addTab).toHaveBeenCalledExactlyOnceWith('/work/pane-project', 'pane-terminal-folder')
     expect(terminalRegistry.sendToTerminalSession).toHaveBeenCalledExactlyOnceWith('pane-terminal', 'pwd ', { preserveTrailingWhitespace: true })
     expect(box).toHaveValue('! pwd ')
     expect(api.sendChat).not.toHaveBeenCalled()

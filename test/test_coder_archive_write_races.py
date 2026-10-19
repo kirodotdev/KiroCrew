@@ -192,7 +192,7 @@ def test_workspace_writes_use_distinct_staging_paths(tmp_path, monkeypatch):
     assert set(tmp_path.iterdir()) == {tmp_path / "same.txt", tmp_path / wt.LOCK_DIR}
 
 
-def test_overlapping_guest_writes_keep_their_own_contents(tmp_path, monkeypatch):
+def test_overlapping_guest_and_dashboard_writes_keep_their_own_contents(tmp_path, monkeypatch):
     ws = wt.Workspace(str(tmp_path))
     entered, release = threading.Event(), threading.Event()
     real_replace = os.replace
@@ -210,14 +210,14 @@ def test_overlapping_guest_writes_keep_their_own_contents(tmp_path, monkeypatch)
         first = pool.submit(ws.write_file, "same.txt", "agent")
         try:
             assert entered.wait(30), "first writer did not stage its content"
-            second = pool.submit(ws.write_file, "same.txt", "second")
+            second = pool.submit(wt.write_request, ws, {"path": "same.txt", "content": "dashboard"})
             assert staging[0].read_text() == "agent"
         finally:
             release.set()
             first.result(timeout=30)
-        assert second.result(timeout=30).startswith("wrote")
+        assert second.result(timeout=30)["ok"]
     assert len(staging) == len(set(staging)) == 2
-    assert (tmp_path / "same.txt").read_text() == "second"
+    assert (tmp_path / "same.txt").read_text() == "dashboard"
     assert set(tmp_path.iterdir()) == {tmp_path / "same.txt", tmp_path / wt.LOCK_DIR}
 
 

@@ -564,6 +564,20 @@ describe('index assembly', () => {
     expect(missing['zh-CN']).toContain('k.toggle')
   })
 
+  it('gives a setting and a sub-page on a preview-gated tab the tab\'s preview requirement', () => {
+    const { index, errors } = build({
+      settingsTabPreview: { chat: 'mc-preview-x' },
+      previewEnablers: { 'mc-preview-x': 'chat.a-setting' },
+      settingsSubs: { chat: [{ id: 'sub', key: 'tab.chat' }] },
+    })
+    expect(errors).toEqual([])
+    const byId = Object.fromEntries(index.locations.map(l => [l.id, l]))
+    const want = [{ kind: 'preview_flag', flag: 'mc-preview-x', location: 'setting:chat.a-setting' }]
+    expect(byId['settings.tab.chat'].placements[0].requires).toEqual(want)
+    expect(byId['settings.sub.chat.sub'].placements[0].requires).toEqual(want)
+    expect(byId['setting:chat.a-setting'].placements[0].requires).toEqual(want)
+  })
+
   it('derives a chain through a registered parent', () => {
     const descriptors = {
       ...baseInputs().descriptors,
@@ -1400,6 +1414,16 @@ describe('the committed index', () => {
     expect(settings.map(s => s.setting_id).sort()).toEqual(SETTINGS_REGISTRY.map(e => e.id).sort())
     const preview = byId.get('setting:chat.link-previews')!
     expect(preview.placements[0].parent_ids).toEqual(['page.settings', 'settings.tab.chat', 'settings.sub.chat.transcript'])
+  })
+
+  it('keeps the Session Environments tab and every setting on it behind its preview', () => {
+    const want = [{ kind: 'preview_flag', flag: 'mc-preview-session-environments', location: 'setting:developer.session-environments' }]
+    expect(byId.get('settings.tab.session-environments')!.placements[0].requires).toEqual(want)
+    const onTab = committed.locations.filter(l => l.kind === 'setting' && l.setting_id?.startsWith('session-environments.'))
+    expect(onTab.map(l => l.setting_id)).toContain('session-environments.coder-url')
+    for (const loc of onTab) expect(loc.placements[0].requires).toEqual(want)
+    // The switch that shows the tab is not itself behind it.
+    expect(byId.get('setting:developer.session-environments')!.placements[0].requires).toEqual([])
   })
 
   it('keeps Mates behind its preview, naming the switch that shows it', () => {

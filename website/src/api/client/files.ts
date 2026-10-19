@@ -6,6 +6,7 @@
  */
 
 import { COMPOSER_UPLOAD_PATH, uploadComposerFiles } from '../../utils/composerUpload'
+import { chatSlotParam } from '../../utils/fileReadUrl'
 import type { ClientTransport } from './transport'
 
 /** Response of POST /api/reveal. When the backend cannot drive a file manager
@@ -155,7 +156,8 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
 
   const fileOps = {
     pickFiles: () => post('/api/upload').then(j) as Promise<{ paths: string[] }>,
-    fileDiff: (path: string) => fetch('/api/file-diff?path=' + encodeURIComponent(path)).then(j) as Promise<{ diff: string; original: string; status?: 'clean' | 'modified' | 'untracked' | 'not_git' | 'error' }>,
+    /** `slot` names the chat asking; the gateway refuses one that runs remotely. */
+    fileDiff: (path: string, slot?: string | null) => fetch('/api/file-diff?path=' + encodeURIComponent(path) + chatSlotParam(slot)).then(j) as Promise<{ diff: string; original: string; status?: 'clean' | 'modified' | 'untracked' | 'not_git' | 'error' }>,
     /** Fuzzy file search for @-mention picker. `kind` distinguishes folder hits from files.
      *  `kinds` narrows the result set server-side — 'files' or 'dirs'; omitted returns both.
      *  Filtering server-side rather than dropping unwanted hits here matters because the

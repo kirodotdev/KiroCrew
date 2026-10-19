@@ -1,6 +1,6 @@
-"""A remote session's unsaved work, read over ``coder ssh`` with the guest's
-read-only ``--browse``. It never autostarts a stopped workspace; the request goes
-on stdin.
+"""Dashboard access to a remote session's workspace over ``coder ssh``: read-only
+``--browse``, a separate ``--write`` that refuses a stale ``expected``, and an
+interactive shell. None autostarts a stopped workspace; requests go on stdin.
 """
 
 from __future__ import annotations
@@ -26,6 +26,10 @@ from kiro_crew.session_environment import SessionEnvironmentUnavailable
 #: The guest caps a read at 256 KB of text; JSON escaping can roughly double it.
 _BROWSE_OUTPUT_MAX = 2 * 1024 * 1024
 _BROWSE_TIMEOUT = 45.0
+_MAX_PATH = 4096
+#: Largest file body the dashboard editor may save (the guest allows more).
+MAX_WRITE_BYTES = 1024 * 1024
+READ_OPS = ("list", "read", "git_status")
 
 
 class NotRemote(LookupError):
@@ -34,6 +38,10 @@ class NotRemote(LookupError):
 
 class WorkspaceNotRunning(SessionEnvironmentUnavailable):
     """The session's workspace is stopped (or not created yet)."""
+
+
+class WorkdirChanged(LookupError):
+    """The profile's working folder is not the one the edit was made under."""
 
 
 @dataclass(frozen=True)
@@ -64,7 +72,9 @@ async def _resolve(session_key: str) -> _Target:
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)
     section = config.session_environments
-    provider = CoderSessionEnvironments(section, home)
+    # Resolved once, off the loop: the PATH search can stall on a slow mount.
+    coder_bin = await asyncio.to_thread(resolve_coder_bin)
+    provider = CoderSessionEnvironments(section, home, coder_bin=coder_bin)
     profile = provider.profile(profile_id)
     registry = WorkspaceBindingRegistry(home / "coder" / "session-envs.json")
     binding = await asyncio.to_thread(registry.get_by_session, owner)
@@ -93,7 +103,7 @@ async def _resolve(session_key: str) -> _Target:
     ):
         raise SessionEnvironmentUnavailable("this session's workspace identity has changed")
     return _Target(
-        CoderShell(resolve_coder_bin(), binding.workspace_name, provider.url),
+        CoderShell(coder_bin, binding.workspace_name, provider.url),
         profile.workdir,
         binding.binding_id,
     )
@@ -116,13 +126,27 @@ async def _ask(target: _Target, mode: str, request: dict[str, Any]) -> dict[str,
             timeout=_BROWSE_TIMEOUT,
         )
 
+    def outdated(out: bytes) -> bool:
+        # Every op sent here is one these guest files serve, so an "op must be"
+        # refusal can only come from older guest files that know fewer ops.
+        try:
+            reply = json.loads(out)
+        except ValueError:
+            return False
+        error = reply.get("error") if isinstance(reply, dict) else None
+        return isinstance(error, str) and error.startswith("op must be")
+
     try:
         try:
             out = await once()
+            stale = outdated(out)
         except RemoteWorkerError as exc:
-            # Guest files predating this mode: install the current ones and retry once.
+            # Guest files predating this mode exit with a usage error naming it.
             if f"--{mode}" not in str(exc) and "No such file" not in str(exc):
                 raise
+            stale = True
+        if stale:
+            # Install the current guest files and retry once.
             await RemoteWorkerLaunch(target.binding_id, target.shell).install()
             out = await once()
     except asyncio.TimeoutError as exc:
@@ -138,6 +162,48 @@ async def _ask(target: _Target, mode: str, request: dict[str, Any]) -> dict[str,
     if not isinstance(result, dict):
         raise SessionEnvironmentUnavailable("the remote workspace sent an invalid reply")
     return result
+
+
+def _check_path(path: str) -> str:
+    if not isinstance(path, str) or len(path) > _MAX_PATH or "\x00" in path:
+        raise ValueError("path is invalid")
+    return path or "."
+
+
+async def browse_session(session_key: str, op: str, path: str) -> dict[str, Any]:
+    """A read-only request: ``list``/``read`` a path, or a git view of the root."""
+    if op not in READ_OPS:
+        raise ValueError("op must be one of " + ", ".join(READ_OPS))
+    return await _ask(await _resolve(session_key), "browse", {"op": op, "path": _check_path(path)})
+
+
+async def write_session_file(
+    session_key: str,
+    path: str,
+    content: str,
+    expected: str | None,
+    *,
+    workdir: str | None = None,
+) -> dict[str, Any]:
+    """Save ``content`` to ``path``; refused when the file does not hold ``expected``.
+
+    ``workdir`` is the working folder the edit was made under: checked against
+    the one target this write resolves, so a profile re-pointed at another folder
+    (whose same path is another file) raises ``WorkdirChanged`` before anything
+    is written. None skips the check, for a caller that sends no folder.
+    """
+    path = _check_path(path)
+    if path == ".":
+        raise ValueError("a file path is required")
+    if not isinstance(content, str) or len(content.encode("utf-8")) > MAX_WRITE_BYTES:
+        raise ValueError(f"content must be text of at most {MAX_WRITE_BYTES} bytes")
+    request: dict[str, Any] = {"path": path, "content": content}
+    if isinstance(expected, str):
+        request["expected"] = expected
+    target = await _resolve(session_key)
+    if workdir is not None and workdir != target.workdir:
+        raise WorkdirChanged(session_key)
+    return await _ask(target, "write", request)
 
 
 _AHEAD_RE = re.compile(r"\[(?:[^\]]*\b)?ahead (\d+)")
@@ -172,3 +238,10 @@ async def unsaved_work(session_key: str) -> str | None:
     if not isinstance(result, dict) or not result.get("git"):
         return None
     return summarize_unsaved(str(result.get("output") or ""))
+
+
+async def remote_terminal_argv(session_key: str) -> list[str]:
+    """argv for a login shell in the workspace (the template sets its directory)."""
+    target = await _resolve(session_key)
+    # Coder never autostarts a stopped workspace here.
+    return list(target.shell.interactive_argv())

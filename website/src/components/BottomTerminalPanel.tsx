@@ -604,7 +604,7 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
         )}
         {tabs.map(t => (
           <div key={t.id} className="absolute inset-0" style={{ display: t.id === activeId ? 'block' : 'none' }}>
-            <CliPanel sessionId={t.id} cwd={t.cwd} visible={t.id === activeId} />
+            <CliPanel sessionId={t.id} cwd={t.cwd} chatSlot={t.chatSlot} visible={t.id === activeId} />
           </div>
         ))}
       </div>

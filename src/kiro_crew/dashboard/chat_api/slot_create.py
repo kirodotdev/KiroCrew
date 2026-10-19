@@ -915,7 +915,22 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     #
     # Skipped for a relay archive: it never runs, so a spawned kiro-cli would
     # idle until it timed out.
-    if slot.executor != "remote":
+    #
+    # A NEW owner chat starts on the default session environment when one is set,
+    # unprewarmed: a local spawn would run on the wrong machine, a remote one would
+    # start billed compute for a chat that may never send a message.
+    bound_remote = False
+    if slot.executor != "remote" and existing_slot is None and is_owner_dashboard_request(request):
+        from kiro_crew.dashboard.handlers.session_environments import (
+            apply_default_environment,
+        )
+
+        bound_remote = await apply_default_environment(
+            slot,
+            getattr(state, "sessions", None),
+            getattr(state, "_terminal_sessions", None),
+        )
+    if slot.executor != "remote" and not bound_remote:
         schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
     created = _created_slot_row(state, request, slot)
     if session_folder_notice:

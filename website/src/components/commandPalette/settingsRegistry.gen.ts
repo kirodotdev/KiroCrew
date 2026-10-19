@@ -1912,6 +1912,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.session-environments",
+    "label": "Session Environments",
+    "labelKey": "sessionEnvironments.title",
+    "description": "Shows the Session Environments settings. Existing chats stay on this machine; a chat moves only if you pick a profile for it before its first message.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.webhooks",
     "label": "Webhooks",
     "labelKey": "pages.developer.featurePreviewsTab.webhooks",
@@ -2543,6 +2552,43 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     },
     "label": "Your custom denies",
     "description": "Add your own deny patterns (Python-compatible regex). These are enforced at {{productName}}'s PreToolUse gate alongside the built-in rules."
+  },
+  {
+    "id": "session-environments.coder-url",
+    "label": "Coder URL",
+    "labelKey": "sessionEnvironments.url",
+    "description": "Use the deployment URL without credentials, query parameters, or fragments, for example https://coder.example.com.",
+    "tab": "session-environments",
+    "type": "input",
+    "occurrence": 1,
+    "configKey": "session_environments.coder_url"
+  },
+  {
+    "id": "session-environments.default-for-new-chats",
+    "label": "Default for new chats",
+    "labelKey": "sessionEnvironments.defaultProfile",
+    "description": "New chats you start in the dashboard run here unless you pick another profile in the “Run this chat on” menu before the first message. Existing chats, scheduled jobs and channel conversations keep running where they do now.",
+    "tab": "session-environments",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "session-environments.start-new-chats-on-a-profile",
+    "label": "Start new chats on a profile",
+    "labelKey": "sessionEnvironments.defaultEnabled",
+    "tab": "session-environments",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "session_environments.default_profile"
+  },
+  {
+    "id": "session-environments.stop-workspaces-when-kiro-crew-shuts-down",
+    "label": "Stop workspaces when Kiro Crew shuts down",
+    "labelKey": "sessionEnvironments.stopOnShutdown",
+    "tab": "session-environments",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "session_environments.stop_on_shutdown"
   },
   {
     "id": "shortcuts.enable-shortcuts",

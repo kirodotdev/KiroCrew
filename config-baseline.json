@@ -3403,6 +3403,7 @@
       "defaultValue": {
         "coder_url": "",
         "profiles": [],
+        "default_profile": "",
         "stop_on_shutdown": true
       }
     },
@@ -3517,6 +3518,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "session_environments.default_profile",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Default Environment",
+      "help": "Profile id new dashboard chats start on; empty runs them on this machine. Applied once, when a chat is created, and changeable in its composer until the first message. Scheduled jobs, channels and subagents are unaffected (a subagent follows its parent).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "session_environments.stop_on_shutdown",
