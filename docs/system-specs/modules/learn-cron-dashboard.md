@@ -5439,9 +5439,11 @@ objective routes directly to a finite legacy loop instead of asking the
 structured tool to represent an evidence scope it cannot enforce. The fallback
 recipe sets `gate: false` so provider-fact gating cannot
 suppress cycles that must inspect unobserved comments or advisory feedback.
-The kirocrew-prepare-pr recipe likewise disables provider gating and pairs its 280-cycle
+Its 48 cycles at 300 seconds cover its 14,400-second runtime.
+The kirocrew-prepare-pr recipe likewise disables provider gating and pairs its 288-cycle
 poll budget with an explicit 24-hour runtime cap, so the four-hour default does
-not truncate its longer review loop.
+not truncate its longer review loop. Both recipes keep interval x `max_cycles` at
+or above `max_runtime_secs`, so the runtime, not the cycle cap, ends the loop.
 Legacy monitor MCP calls require positive cycle and runtime caps;
 omitted caps default to 24 cycles and 14,400 seconds. The controller persists
 changed canonical allowlisted facts,

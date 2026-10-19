@@ -233,7 +233,8 @@ def test_comment_aware_recipes_are_finite_ungated_and_keep_repair_routing():
         assert recipe["gate"] is False
         assert recipe["interval_secs"] > 0
         assert recipe["max_cycles"] > 0
-        assert recipe["max_runtime_secs"] > recipe["interval_secs"] * recipe["max_cycles"]
+        # The runtime, not the cycle cap, ends the loop.
+        assert recipe["interval_secs"] * recipe["max_cycles"] >= recipe["max_runtime_secs"]
         for contract in (
             "Review repair routing",
             "model-pinned",
@@ -244,6 +245,6 @@ def test_comment_aware_recipes_are_finite_ungated_and_keep_repair_routing():
             "autonudge_stop",
         ):
             assert contract in recipe["message"]
-    assert (prepare["max_cycles"], prepare["max_runtime_secs"]) == (280, 86400)
-    assert (legacy["max_cycles"], legacy["max_runtime_secs"]) == (24, 14400)
-    assert "`max_cycles=280` and `max_runtime_secs=86400`" in _text(PREPARE)
+    assert (prepare["max_cycles"], prepare["max_runtime_secs"]) == (288, 86400)
+    assert (legacy["max_cycles"], legacy["max_runtime_secs"]) == (48, 14400)
+    assert "`max_cycles=288` and `max_runtime_secs=86400`" in _text(PREPARE)

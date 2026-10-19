@@ -356,7 +356,7 @@ that view; no local round log is needed.
   ambiguous large conflict; a hard external blocker (infra, permissions, a check
   that never runs). Recurrence, round count, a re-raised finding or self-added
   code is never one. When you pause, name the option you would take.
-- `monitor_start` is bounded to `max_cycles=280` and `max_runtime_secs=86400`
+- `monitor_start` is bounded to `max_cycles=288` and `max_runtime_secs=86400`
   (24 hours, Phase 4's watch included); the agent never raises either. At
   exhaustion, hand over `--rounds` and open findings. Phase 2 separately caps
   local review at 10 passes.
@@ -559,7 +559,7 @@ comes after a record, never instead of one:
                "Merged, terminal state, user stop, blocker or spent budget: "
                "report the outcome, overrides and open findings, then call "
                "autonudge_stop.",
-       interval_secs=300, max_cycles=280, max_runtime_secs=86400, gate=False,
+       interval_secs=300, max_cycles=288, max_runtime_secs=86400, gate=False,
        banner="kirocrew-prepare-pr: polling PR #123")
      ```
 
