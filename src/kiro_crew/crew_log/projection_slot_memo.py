@@ -701,6 +701,39 @@ def _continuable(marks: "tuple[_UnitMark, ...]", held: "tuple[_UnitMark, ...]") 
     )
 
 
+def _note_slot_fold_origin(origin: str) -> None:
+    """Stamp where this slot pass got its starting state, for the metrics side.
+
+    Function-local import and swallowed failure, the policy
+    :mod:`kiro_crew.crew_log.eager` already follows for this same package: a
+    telemetry package that will not load costs a fold its metric and nothing
+    else, and ``kiro_crew.metrics`` stays out of this family's module-scope
+    imports so the projection facade need not re-export it.
+
+    STAMPS, never records: the eager fold worker turns the mark into a point
+    after the pass, OUTSIDE the per-cell lock this runs under -- a first
+    ``get_recorder()`` builds the telemetry provider synchronously, and doing
+    that while holding this lock would stall a reader waiting on the same cell.
+    No ``exc_info``: this module's frames bind open ``CrewLog`` handles.
+    """
+    try:
+        from kiro_crew.metrics.crew_log_health import SCOPE_SLOT, note_fold_origin
+
+        note_fold_origin(SCOPE_SLOT, origin)
+    except Exception:  # pragma: no cover - a broken install loses the metric only
+        logger.debug("crew log fold origin metric unavailable")
+
+
+def _note_slot_fold_idle() -> None:
+    """Stamp that this slot pass advanced nothing. See :func:`_note_slot_fold_origin`."""
+    try:
+        from kiro_crew.metrics.crew_log_health import SCOPE_SLOT, note_fold_idle
+
+        note_fold_idle(SCOPE_SLOT)
+    except Exception:  # pragma: no cover - a broken install loses the metric only
+        logger.debug("crew log fold idle metric unavailable")
+
+
 def fold_slot_warm(name: str, unit_ids: Sequence[str], *, slot: str) -> Checkpoint:
     """*name* folded over *slot*'s units, CONTINUED from where the last read left it.
 
@@ -802,8 +835,17 @@ def _fold_slot_warm_locked(
             # NOTHING FOLDED, so the cell keeps the revision it was built with. Minting
             # one here would move the number on every poll of an idle board, and a client
             # would re-seed from a frame that carries the value it already holds.
+            #
+            # Counted as a WARM start all the same: the pass started and the cell
+            # answered it, which is what the origin reports. ``fold.apply`` is
+            # what separates a pass that moved a value from one that did not --
+            # which is why this branch, the ONLY one that advances nothing, is also
+            # the only one that marks the pass idle.
+            _note_slot_fold_origin("warm")
+            _note_slot_fold_idle()
             return _slot_checkpoint(name, memo)
         if _continuable(marks, memo.marks) and _folded_prefix_holds(units[-1], memo, marks[-1]):
+            _note_slot_fold_origin("warm")
             before = _digest_to_carry(units, marks)
             tail = _SlotStream(
                 units[-1:],
@@ -834,9 +876,13 @@ def _fold_slot_warm_locked(
     if known and units:
         resumed = _resume_slot_fold(name, units, marks, slot=slot)
         if resumed is not None:
+            _note_slot_fold_origin("savepoint")
             resumed = _persist_slot_fold(name, resumed, slot=slot, sampled=marks[-1])
             _remember_slot_fold(key, resumed)
             return _slot_checkpoint(name, resumed)
+    # Nothing warm and no savepoint: every unit of the slot is streamed from its
+    # first record. The counter exists to make that share visible.
+    _note_slot_fold_origin("cold")
     cold = _SlotStream(units)
     registry = ProjectionRegistry(seq_of=_ordinal_seq)
     registry.register(_SlotFold(_FOLDS[name], slot))

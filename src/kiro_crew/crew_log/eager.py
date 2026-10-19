@@ -78,7 +78,7 @@ import logging
 import queue
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from typing import Any, Final, NamedTuple
 
@@ -315,8 +315,30 @@ def _enqueue(wake: _Wake) -> None:
         _queued += 1
 
 
+def dropped_wakes() -> int:
+    """How many wakes the full queue could not hold since the last reset.
+
+    NOT a hole in any log: a dropped wake leaves one memo behind the file and the
+    next READ carries it forward, so the folds stay correct and a dashboard sees
+    the value later than the entry landed. Read by the telemetry callback that
+    reports ``kirocrew.crew_log.write.lost{cause=wake_dropped}``, which exists so
+    that lateness is visible without this path gaining any work: the count is
+    already kept here, and the callback runs on the metrics reader's own thread.
+    O(1), and the append path is not involved in the read.
+    """
+    with _lock:
+        return _dropped
+
+
 def _count_drop(unit_id: str, entry_type: str) -> None:
-    """Record one dropped wake. Logged at DEBUG: the COUNT is the signal, not the line."""
+    """Record one dropped wake. Logged at DEBUG: the COUNT is the signal, not the line.
+
+    NO METRIC IS RECORDED HERE, deliberately. This runs on the APPEND thread --
+    :func:`note_commit`'s ``queue.Full`` branch is its only caller -- and that
+    path is the one a turn waits on, so it keeps doing what it already did:
+    increment a counter the telemetry side READS later from another thread (see
+    :func:`dropped_wakes`). ``test_crew_log_health_threads.py`` pins it.
+    """
     global _dropped
     with _lock:
         _dropped += 1
@@ -391,6 +413,88 @@ def _ensure_worker() -> "queue.Queue[_Wake]":
         return _queue
 
 
+def _claim_thread_for_metrics() -> None:
+    """Let this thread record the crew log's fold metrics, and only this one.
+
+    ``fold.apply`` and ``fold.start`` count EAGER folding. The same fold code is
+    reached from a dashboard read, a CLI and a test, so the record sites ask
+    whether they are on this thread rather than recording whatever called them --
+    and this is where that answer is installed, once per worker.
+
+    Function-local import and swallowed failure, for the two reasons the rest of
+    this module gives: the import is the boot-path gate (the metrics package
+    reaches the OTEL SDK), and a telemetry package that will not load must cost
+    the fold worker nothing but its metrics.
+    """
+    try:
+        # boot-path import gate: see this module's docstring and ``_projection``.
+        from kiro_crew.metrics.crew_log_health import claim_fold_worker_thread
+
+        claim_fold_worker_thread()
+    except Exception:  # pragma: no cover - a broken install loses the metric only
+        # Through :func:`_log_exc`, never ``exc_info``: this module's rule, and it
+        # binds here for the reason that function gives -- a retained traceback
+        # reaches this frame's CALLERS through ``f_back``, and the fold worker's
+        # stack binds open ``CrewLog`` handles whose leases a finalizer releases.
+        _log_exc(logging.DEBUG, "crew log fold metrics unavailable")
+
+
+def _health() -> Any:
+    """The crew log health metrics module, imported on first use.
+
+    Function-local for the reason :func:`_projection` is: this module is reachable
+    from the gateway's boot path and the metrics package is not.
+    """
+    # boot-path import gate: see this module's docstring and ``_projection``.
+    from kiro_crew.metrics import crew_log_health
+
+    return crew_log_health
+
+
+def _begin_pass() -> "float | None":
+    """Open a fold pass for the metrics side. ``None`` when metrics will not load.
+
+    One ``monotonic()`` on the worker thread, plus clearing the thread's stamps so
+    a pass can only report its own start branch. ``None`` only when the metrics
+    package will not import, and then :func:`_close_pass` records nothing.
+    """
+    try:
+        return _health().begin_fold_pass()
+    except Exception:  # pragma: no cover - a broken install loses the metric only
+        return None
+
+
+def _close_pass(*, slot: bool, folds: "Iterable[str]", started: "float | None") -> None:
+    """Record what the pass that began at *started* started from and applied.
+
+    *slot* picks the scope: ``True`` for a slot fold, ``False`` for a session
+    fold. The scope strings themselves are read from the metrics module, which
+    owns them, so there is one spelling of each.
+
+    Called OUTSIDE the fold's own locks, which is why the fold branches only leave
+    a thread-local mark: a first ``get_recorder()`` builds the telemetry provider
+    synchronously, and doing that under a per-cell fold lock would hold up a
+    dashboard read waiting on the same cell.
+
+    Never raises: a fold must not fail because a counter did.
+    """
+    if started is None:
+        # :func:`_begin_pass` could not load the metrics module, so there is no
+        # pass to close.
+        return
+    try:
+        health = _health()
+        scope = health.SCOPE_SLOT if slot else health.SCOPE_SESSION
+        health.note_fold_pass(scope, folds, started)
+    except Exception:  # pragma: no cover - telemetry must never cost a fold
+        # :func:`_log_exc` rather than ``exc_info``, and here it is load-bearing
+        # rather than stylistic: this runs in ``_advance``'s ``finally``, whose
+        # own frame and whose callees bind open ``CrewLog`` handles, so a record
+        # carrying the traceback would pin those handles -- and their write
+        # leases -- for as long as a record-keeping handler held it.
+        _log_exc(logging.DEBUG, "crew log fold pass metric failed")
+
+
 def _settle(count: int) -> None:
     """Record that *count* more wakes have been folded."""
     global _settled
@@ -408,6 +512,7 @@ def _run() -> None:
     reaches. So a batch is COALESCED -- the newest seq per (unit, board, type) wins -- and
     each affected (slot, fold) is folded once.
     """
+    _claim_thread_for_metrics()
     while not _stopping.is_set():
         first = _await_wake()
         if first is None:
@@ -605,8 +710,18 @@ def _fold_batch(
 
 
 def _advance_session(unit_id: str) -> None:
-    """Continue *unit_id*'s session folds, then publish each one that moved."""
+    """Continue *unit_id*'s session folds, then publish each one that moved.
+
+    The pass is TIMED and each fold it moved is counted
+    (``kirocrew.crew_log.fold.apply``). One pass covers every session fold of the
+    unit in one walk of its file, so the duration is the pass's and is attributed
+    to each fold that moved -- there is no per-fold duration to attribute,
+    because there is no per-fold pass. A pass that moved nothing counts nothing:
+    it applied nothing.
+    """
     projection = _projection()
+    started = _begin_pass()
+    warm = None
     try:
         warm = projection.fold_session_warm(unit_id)
     except CrewLogError as exc:
@@ -615,6 +730,11 @@ def _advance_session(unit_id: str) -> None:
     except Exception:
         _log_exc(logging.WARNING, "crew log eager session fold failed for %s", unit_id)
         return
+    finally:
+        # In a ``finally`` so a pass that refused or raised still reports the start
+        # it chose, with no apply. That difference IS the failing-fold signal, and
+        # it would be invisible if the start were recorded only on success.
+        _close_pass(slot=False, folds=getattr(warm, "changed", ()) or (), started=started)
     if not warm.changed:
         return
     # boot-path import gate: see this module's docstring and ``_projection``.
@@ -669,8 +789,14 @@ def _advance(slot: str, name: str) -> None:
 
     Still on THIS thread and not on the append path. The bus contract says a subscriber
     hands real work to its own loop, exactly as the emitter's growth listener does.
+
+    The pass is TIMED and counted (``kirocrew.crew_log.fold.apply``) once it has
+    folded. A refusal and a failure count nothing: neither applied the fold, and
+    ``fold.start`` above ``fold.apply`` is how that shows up.
     """
     projection = _projection()
+    started = _begin_pass()
+    folded = None
     try:
         folded = projection.read_slot_projection(slot, name)
     except CrewLogError:
@@ -682,6 +808,10 @@ def _advance(slot: str, name: str) -> None:
     except Exception:
         _log_exc(logging.WARNING, "crew log eager fold failed for %s/%s", slot, name)
         return
+    finally:
+        # In a ``finally`` for the reason ``_advance_session`` gives: a refused or
+        # raised pass still reports the start it chose, and no apply.
+        _close_pass(slot=True, folds=(name,) if folded is not None else (), started=started)
     _publish_fold(slot, name, folded)
 
 

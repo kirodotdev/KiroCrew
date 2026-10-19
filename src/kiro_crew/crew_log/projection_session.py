@@ -162,6 +162,29 @@ def fold_session(
     )
 
 
+def _note_session_fold_origin(origin: str) -> None:
+    """Stamp where this session pass got its starting state, for the metrics side.
+
+    Function-local import and swallowed failure, which is the policy
+    :mod:`kiro_crew.crew_log.eager` already follows for this same package: a
+    telemetry package that will not load costs a fold its metric and nothing
+    else. It also keeps ``kiro_crew.metrics`` out of this family's module-scope
+    imports, so the projection facade does not have to re-export a name that is
+    an implementation detail of one record site.
+
+    STAMPS, never records: the mark is turned into a point by the eager fold
+    worker after the pass, outside the per-cell locks. Off that worker's thread
+    the stamp itself is a no-op, so a dashboard read pays one attribute lookup.
+    No ``exc_info``: this module's frames bind open ``CrewLog`` handles.
+    """
+    try:
+        from kiro_crew.metrics.crew_log_health import SCOPE_SESSION, note_fold_origin
+
+        note_fold_origin(SCOPE_SESSION, origin)
+    except Exception:  # pragma: no cover - a broken install loses the metric only
+        logger.debug("crew log fold origin metric unavailable")
+
+
 def _fold_attempt(
     session_id: str,
     wanted: Sequence[str],
@@ -251,6 +274,7 @@ def _fold_attempt(
         base: dict[str, Checkpoint] = {name: since.checkpoints[name] for name in wanted}
         saved_seq = since.saved_seq
         reused_cached_state = True
+        _note_session_fold_origin("warm")
     else:
         # No bundle in hand, so ask the disk before folding the file. A savepoint
         # covers the names it has and is silent about the rest, and each checkpoint
@@ -269,6 +293,13 @@ def _fold_attempt(
             base.update(resumed.checkpoints)
             saved_seq = resumed.saved_seq
             resumed_from = resumed
+            _note_session_fold_origin("savepoint")
+        else:
+            # Nothing warm and nothing on disk: this pass rebuilds from the first
+            # record. The counter exists to make that share visible, because a
+            # rising cold share is what a savepoint that is not being kept looks
+            # like from the outside.
+            _note_session_fold_origin("cold")
     from kiro_crew.crew_log import checkpoint as savepoints
 
     # The digest a savepoint is written with has to be read BEFORE the pass consumes

@@ -1128,16 +1128,25 @@ class CrewLogWriter:
         the dropped count is exact.
 
         A ``FOLLOW_ON`` job in the dropped batch is submitted once more instead of being
-        lost (see :data:`_POLICY`), and the count is corrected FIRST: a marker is authored
-        by a LATER pass of the one writer thread, and this runs inside the pass that
-        recorded the debt, so no reader can have seen the count yet. Only the count moves:
-        a follow-on carries no body, so the marker's byte total was already exact.
+        lost (see :data:`_POLICY`), so it is NEVER ADDED to ``_dropped_count`` at all --
+        rather than added here and taken back out by
+        :meth:`_uncount_one_requeued_drop` a moment later. Adding it and correcting it
+        would rest on no reader seeing the count in between, which holds only while
+        every reader is a caller on this thread: :meth:`stats` is sampled from the
+        metrics reader's own thread, a reader landing in that window sees a count about
+        to be corrected, and an exported counter must not go backwards -- so it cannot
+        un-count, and one requeued job becomes a permanent inflated loss. The per-unit
+        marker debt is still adjusted over there, because that debt is consumed by a
+        later pass of this one thread and no reader samples it.
+
+        Only the count is affected: a follow-on carries no body, so the marker's byte
+        total is exact either way.
         """
         with self._lock:
             self._pending_total_bytes -= sum(job.nbytes for job in jobs if job.counted)
             for job in jobs:
                 job.counted = False
-            self._dropped_count += len(jobs)
+            self._dropped_count += sum(1 for job in jobs if not job.policy.requeue_on_drop)
             self._record_loss_locked(unit, jobs, mark)
             total = self._dropped_count
             first = unit not in self._dropped_reported
@@ -1204,10 +1213,13 @@ class CrewLogWriter:
         Debt that falls to nothing is REMOVED rather than left at zero, so a unit whose
         only dropped entry is coming back does not append a marker announcing that
         nothing is missing.
+
+        ``_dropped_count`` is NOT adjusted here, because :meth:`_drop` never counts a
+        requeued job in the first place -- see the reason there. This debt is different:
+        it is consumed by a later pass of this one writer thread rather than sampled by a
+        reader, so correcting it after the fact is safe.
         """
         with self._lock:
-            if self._dropped_count > 0:
-                self._dropped_count -= 1
             loss = self._pending_loss.get(unit)
             if loss is None:
                 return
