@@ -10,6 +10,7 @@ import type { NavIntent } from '../utils/popoutController'
 import type { ChatSlot } from '../types'
 import { i18nT } from '../i18n/t'
 import { errMessage } from '../utils/thunkError'
+import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { artifactReferencePrompt } from './artifactReference.prompt'
 
 /** How many live sessions the menu lists. The menu is a quick hand-off, not a
@@ -112,7 +113,7 @@ export function ArtifactSendToSessionSubmenu({ state }: { state: ArtifactSendToS
         {state.listed.length > 0 && <DropdownMenuSeparator />}
         {state.listed.map((s) => (
           <DropdownMenuItem key={s.key} onSelect={() => state.sendTo(s.key)}>
-            <span className="truncate">{s.title || i18nT('pages.artifactDetailPage.untitled_session')}</span>
+            <span className="truncate">{sessionDisplayTitle(s)}</span>
           </DropdownMenuItem>
         ))}
       </DropdownMenuSubContent>

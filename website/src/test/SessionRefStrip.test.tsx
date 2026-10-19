@@ -45,9 +45,32 @@ describe('SessionRefStrip', () => {
     expect(counts.some(t => /\b0\b/.test(t) && t !== 'Fresh session')).toBe(true)
   })
 
-  it('falls back to the session key when the title is empty', () => {
-    render(<SessionRefStrip refs={[ref('chat-9-1785440411', '')]} />)
-    expect(screen.getByText('chat-9-1785440411')).toBeTruthy()
+  it('labels an untitled reference "Untitled session", never its internal key (#20907)', async () => {
+    const onRemove = vi.fn()
+    render(<SessionRefStrip refs={[ref('chat-9-1785440411', ''), ref('b', 'Named one')]} onRemove={onRemove} />)
+    const [untitled, named] = screen.getAllByTestId('session-ref-chip')
+    expect(untitled.textContent).toContain('Untitled session')
+    expect(untitled.textContent).not.toContain('chat-9-1785440411')
+    expect(untitled.getAttribute('title')).toBe('Untitled session')
+    // Identity is still the key: the chip is tagged with it and removal targets it.
+    expect(untitled).toHaveAttribute('data-session-ref', 'chat-9-1785440411')
+    const [removeUntitled, removeNamed] = screen.getAllByRole('button')
+    expect(removeUntitled.getAttribute('aria-label')).toContain('Untitled session')
+    expect(removeUntitled.getAttribute('aria-label')).not.toContain('chat-9-1785440411')
+    await userEvent.click(removeUntitled)
+    expect(onRemove).toHaveBeenCalledWith('chat-9-1785440411')
+    // A named reference keeps its name.
+    expect(named.textContent).toContain('Named one')
+    expect(removeNamed.getAttribute('aria-label')).toContain('Named one')
+  })
+
+  it('labels a dragged untitled reference, whose title is its key, "Untitled session"', () => {
+    // A sidebar drag stages an untitled session with its key as the title.
+    render(<SessionRefStrip refs={[ref('chat-9-1785440411', 'chat-9-1785440411')]} onRemove={vi.fn()} />)
+    const chip = screen.getByTestId('session-ref-chip')
+    expect(chip.textContent).toContain('Untitled session')
+    expect(chip.textContent).not.toContain('chat-9-1785440411')
+    expect(screen.getByRole('button').getAttribute('aria-label')).not.toContain('chat-9-1785440411')
   })
 
   it('removes the chip the user clicked, not the first one', async () => {

@@ -24,6 +24,7 @@ import { api, type MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
 import { useQuery } from '@tanstack/react-query'
 import { timeAgo } from '../../utils/timeAgo'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import CrewProfilePanel, { type ProfileTab } from './CrewProfilePanel'
 import CrewGoalsPane, { useMemberGoals } from './CrewGoals'
 import { sendTurn } from '../../chat-core/transport/sendTurn'
@@ -585,7 +586,7 @@ export function MembersPageProfileCard({
             const status = DRIVING_STATUS[kind]
             const label = t(status.label)
             const activityTs = lastActivityEpoch(s)
-            const title = s.title || s.key
+            const title = sessionDisplayTitle(s)
             return (
               <li key={s.key} className="border-t border-border first:border-t-0">
                 <button

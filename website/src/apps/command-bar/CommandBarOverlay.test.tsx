@@ -1039,6 +1039,53 @@ describe('CommandBarOverlay rows', () => {
     expect(screen.getAllByText(/New Session/)).toHaveLength(1)
   })
 
+  it('labels an untitled attention row "Untitled session", not its key (#20909)', () => {
+    storeState.dashboard.slots = [
+      { key: 'chat-4-1785440411', title: '', pending_approval: true, messages: 4 },
+      { key: 'slot-b', title: 'Draft the launch email', needs_input: true, messages: 2 },
+    ]
+    mount()
+    const rows = screen.getAllByRole('option')
+    const untitled = rows.find(r => r.textContent?.includes('Approve'))!
+    expect(untitled.textContent).toContain('Untitled session')
+    expect(untitled.textContent).not.toContain('chat-4-1785440411')
+    expect(rows.find(r => r.textContent?.includes('Answer'))!.textContent).toContain('Draft the launch email')
+    // Activation still targets the session's own key.
+    resolvingDispatch()
+    fireEvent.mouseDown(untitled)
+    expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'chat-4-1785440411', announceOnMissing: true })
+  })
+
+  it('labels an untitled recent row "Untitled session", not its key (#20910)', () => {
+    storeState.dashboard.slots = [
+      { key: 'chat-5-1785440411', title: '', messages: 3, last_activity_ts: 3_000 },
+      { key: 'slot-named', title: 'Named thread', messages: 2, last_activity_ts: 1_000 },
+    ]
+    mount()
+    const rows = screen.getAllByRole('option')
+    // Recency order is unchanged: the untitled, newer session still leads.
+    expect(rows[0].textContent).toContain('Untitled session')
+    expect(rows[0].textContent).not.toContain('chat-5-1785440411')
+    expect(rows[1].textContent).toContain('Named thread')
+    resolvingDispatch()
+    fireEvent.mouseDown(rows[0])
+    expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'chat-5-1785440411', announceOnMissing: true })
+  })
+
+  it('still finds an untitled session row by its key once the key is no longer shown', () => {
+    storeState.dashboard.slots = [
+      { key: 'chat-5-1785440411', title: '', messages: 3, last_activity_ts: 3_000 },
+      { key: 'chat-6-1785440411', title: '', pending_approval: true, messages: 2 },
+    ]
+    mount()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'chat-5-1785440411' } })
+    const hit = screen.getAllByRole('option').find(r => r.textContent?.includes('Untitled session'))
+    expect(hit).toBeTruthy()
+    resolvingDispatch()
+    fireEvent.mouseDown(hit!)
+    expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'chat-5-1785440411', announceOnMissing: true })
+  })
+
   it('always gives the typed text a way to reach an agent', async () => {
     // Every other surface in this product ends in saying something to one, so this is
     // the general case rather than a corner-of-the-screen fallback for failed search.
