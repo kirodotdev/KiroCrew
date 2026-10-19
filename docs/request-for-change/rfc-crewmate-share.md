@@ -211,8 +211,8 @@ Rules:
 
 - `propose` returns a card id. It never returns a crew key until the card is `applied`, and then only the key.
 - `propose_export` returns bundle content only after the owner's press, and only to the app that asked.
-- An app's live cards are capped by the store's existing per-slot cap (`MAX_LIVE_CARDS_PER_SLOT` in `dashboard/change_cards.py`), counted on the app's key (§5.6).
-- A pending card expires after 24 hours, like every card (`CARD_TTL_SECONDS` in `dashboard/change_cards.py`).
+- An app's live cards are capped by the store's existing per-slot cap (`MAX_LIVE_CARDS_PER_SLOT` in `dashboard/change_cards_records.py`), counted on the app's key (§5.6).
+- A pending card expires after 24 hours, like every card (`CARD_TTL_SECONDS` in `dashboard/change_cards_records.py`).
 - The capability creates nothing and reads nothing by itself. Every effect runs through an existing owner route on the owner's press, and `change_card_middleware` refuses an app token on those routes.
 - Adding either permission in an app update disables the app until the owner enables it again, the rule `sessionApproval` follows (`docs/app-kit/manifest-reference.md`, Permissions).
 

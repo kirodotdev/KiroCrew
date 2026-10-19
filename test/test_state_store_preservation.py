@@ -255,7 +255,7 @@ class TestTagsPreservation:
         )
         st = self._fresh()
         st.load_tags()
-        # The chat_tags.py write path captures an active snapshot then persists.
+        # The chat_tags_store.py write path captures an active snapshot then persists.
         snapshot = [dict(t) for t in st._tags]
         st.save_tags_snapshot(snapshot)
         on_disk = json.loads(path.read_text(encoding="utf-8"))

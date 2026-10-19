@@ -113,7 +113,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "The settings diagnosis",
-        "dashboard/change_cards.py",
+        "dashboard/change_cards_settings.py",
         "Current and default values of every setting `diagnose_settings` reports, "
         "on their way to an agent's model context. A credential-like key is "
         "reduced to whether it is set, and every remaining string passes the "
@@ -1589,7 +1589,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Tag definitions (HTTP + auto-tag)",
-        "dashboard/chat_tags.py",
+        "dashboard/chat_tags_vocabulary.py",
         "Tag names supplied by both the POST /api/chat/tags HTTP handler and the "
         "background auto-tag task are LLM-authored or project-derived and persist "
         "to tags.json, the dashboard sidebar, and Slack notifications. Both paths "
@@ -1820,6 +1820,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # args or url, and REFUSES the guide when it would. Nothing it returns is
         # redacted text.
         "guide_catalog.py",
+        # Gate-side the same way: a change card's reason and parameters are refused
+        # when the redactor WOULD change them, and nothing it returns is redacted.
+        "dashboard/change_cards_records.py",
         # Inbound / gate-side: redacts what comes IN or what a gate logs, not what
         # goes out to a human.
         "context.py",
@@ -2389,7 +2392,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Pre-redacts follow-up items before handing to the WS egress in
         # state_parts/slots_push.py; its own return string is re-redacted by
         # chat_runner before broadcast. Not itself an egress boundary.
-        "dashboard/session_directive_apply.py",
+        "dashboard/session_directive_apply_slot.py",
+        # The same consumer's other owners scrub a monitor notice row before
+        # `append_and_surface` records it, and a stop reason before the loop keeps it.
+        "dashboard/session_directive_apply_outcome.py",
+        "dashboard/session_directive_apply_monitor.py",
         "dashboard/cron_inject.py",
         "dashboard/ws.py",
         # The gateway bootstrap's owner DM and workflow-result turn (owners that

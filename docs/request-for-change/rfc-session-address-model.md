@@ -216,7 +216,7 @@ This does not make attachment useless — it is what says *where else this conve
 |---|---|---|
 | `can_render_rich_html` | `context.py` · `_resolve_prompt_templates` | the widget block in the system prompt |
 | `can_render_interactive_card` | `context_assembly/turn.py` · `interactive_guidance`; `mcp_tools/control.py` · `ask_question`; `session_directive_apply.py` · `apply_session_directive` | the question/card feature at the prompt, tool and directive-consumer boundaries — three sites, one name, must not diverge |
-| `has_mutable_slot` | `session_directive_apply.py` · `_has_user_surface` | one input to whether a user-originated directive may retarget project or CWD |
+| `has_mutable_slot` | `session_directive_apply_outcome.py` · `_has_user_surface` | one input to whether a user-originated directive may retarget project or CWD |
 | `can_inject_turn` | `subagent_manager/monitoring.py` · `_notify_orphan_impl` | orphan notice as a turn, or fall back to a DM digest |
 
 Each surface type declares its set once. The four are not asked the same way, and the split follows §5.3: the first three are **delivery** questions, resolved against the capabilities of this turn's delivery surface. `can_inject_turn` is a **reachability** question — it is asked by a subagent with no turn of its own, so it has no ingress, and it resolves against `channels[]` plus the always-present host.

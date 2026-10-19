@@ -151,9 +151,9 @@ class TestTheReaderOnlyAnswersForItsOwnSubject:
     def test_every_hop_between_the_tool_and_the_loop_names_it(self) -> None:
         from kiro_crew import autonudge_authz
         from kiro_crew.autonudge import AutoNudgeService
-        from kiro_crew.dashboard import session_directive_apply
+        from kiro_crew.dashboard import session_directive_apply_monitor
 
-        applier = inspect.getsource(session_directive_apply)
+        applier = inspect.getsource(session_directive_apply_monitor)
         assert 'judge=patch.get("judge")' in applier, "this applier names every kwarg"
         assert "judge" in inspect.signature(autonudge_authz.authorize_and_update_nudge).parameters
         assert "judge=judge" in inspect.getsource(autonudge_authz.authorize_and_update_nudge)

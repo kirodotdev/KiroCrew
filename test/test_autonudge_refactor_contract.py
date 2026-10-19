@@ -1471,7 +1471,7 @@ class TestTheOwnersReadTheSeamsThroughTheFacade:
 #: was read at its call site: the consumer imports the name from ``kiro_crew.autonudge``
 #: inside the function under test, so the patch reaches it, and the service is a stub there.
 _FACADE_PATCHES_FOR_CONSUMERS = {
-    # dashboard/session_directive_apply.py imports is_structured_monitor_loop per call;
+    # dashboard/session_directive_apply_monitor.py imports is_structured_monitor_loop per call;
     # these tests hand it a SimpleNamespace service, so no owner code runs.
     ("test/test_autonudge_member_self_arm.py", "is_structured_monitor_loop"): "directive consumer",
 }
