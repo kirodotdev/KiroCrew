@@ -97,8 +97,8 @@ test/test_installer_shim_and_cleanup.py::test_first_run_delivers_shim_and_purge
 test/test_installer_shim_and_cleanup.py::test_first_run_no_global_mcp
 test/test_installer_shim_and_cleanup.py::test_first_run_purge_is_one_time
 test/test_instances_run_marker.py::TestRunMarker::test_write_read_clear
-test/test_mcp_discovery.py::TestProbeServerStderrCapture::test_stderr_captured_when_child_exits_before_response
-test/test_mcp_discovery.py::TestProbeServerStderrCapture::test_successful_probe_does_not_mention_stderr
+test/test_mcp_discovery_probe_stdio.py::TestProbeServerStderrCapture::test_stderr_captured_when_child_exits_before_response
+test/test_mcp_discovery_probe_stdio.py::TestProbeServerStderrCapture::test_successful_probe_does_not_mention_stderr
 # Needs symlink-creation privilege: builds an in-vault FILE symlink
 # (Alias.md -> One.md); a junction is directory-only and cannot model it.
 test/test_memory_selfheal.py::TestFtsSelfHealGating::test_genuine_corruption_still_self_heals

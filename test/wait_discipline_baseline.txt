@@ -208,7 +208,7 @@
  3 test_mcp_apps_render.py
  1 test_mcp_caller.py
  1 test_mcp_cron_security_wiring.py
- 1 test_mcp_discovery.py
+ 1 test_mcp_discovery_probe_stdio.py
  3 test_mcp_gateway_bluegreen.py
  1 test_mcp_gateway_daemon_control.py
  1 test_mcp_gateway_exclusive_backend.py

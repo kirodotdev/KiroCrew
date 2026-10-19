@@ -95,7 +95,6 @@
 4353 test/test_hooks.py
 4427 test/test_job_sdk.py
 2631 test/test_llm_pool.py
-7022 test/test_mcp_discovery.py
 2449 test/test_mcp_gatewayd_coverage.py
 2096 test/test_monitor_directive_apply.py
 5822 test/test_onboarding_import.py
