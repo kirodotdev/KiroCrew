@@ -264,7 +264,8 @@ def test_the_owners_click_turns_hand_off_on_through_the_audited_save(world):
     assert any(a[1] == handoff.OPERATION and a[2] == "allowed" for a in world.audits)
     channel, upd_ts, text, blocks = world.slack.updates[-1]
     assert (channel, upd_ts, text) == (CHANNEL, ts, handoff.DONE_TEXT)
-    assert "Hand-off is on. Ask again or say retry." in blocks[0]["text"]["text"]
+    assert handoff.DONE_TEXT == "Hand-off is on. Send your request again."
+    assert handoff.DONE_TEXT in blocks[0]["text"]["text"]
     assert not any(b.get("type") == "actions" for b in blocks), "the button is gone"
     messaging._hot_apply_after_write.assert_awaited()
 
@@ -273,7 +274,9 @@ def test_a_non_owner_is_refused_and_nothing_is_written(world):
     ts = _issue(world)
     assert asyncio.run(handoff.handle_handoff_click(None, _click(OTHER, ts=ts))) is True
     assert not _dispatch_on(world.cfg)
-    assert world.slack.ephemerals == [(CHANNEL, OTHER, handoff.NOT_OWNER_TEXT)]
+    assert world.slack.ephemerals == [
+        (CHANNEL, OTHER, handoff.NOT_OWNER_TEXT.format(owner=cc_surface.owner_name()))
+    ]
     assert world.slack.updates == []
     assert not [c for c in world.sel.calls if c.get("outcome") == "ok"]
     assert any(a[1] == handoff.OPERATION and a[2] == "denied" for a in world.audits)
@@ -333,15 +336,94 @@ def test_an_overlay_pin_refuses_the_click_as_the_card_does(world, tmp_path):
     )
     asyncio.run(handoff.handle_handoff_click(None, _click(OWNER, ts=ts)))
     assert not _dispatch_on(world.cfg)
-    assert world.slack.updates == []
-    _, _, text = world.slack.ephemerals[-1]
-    assert "config.local.json" in text
+    # Said once, on the notice itself: no private copy of the same refusal.
+    assert world.slack.ephemerals == []
     denied = [c for c in world.sel.calls if c.get("outcome") == "denied"]
     assert denied and denied[-1]["operation"] == "slack.config.update"
-    # Nothing changed, so the notice still stands for a click once it is fixed.
-    (tmp_path / "config.local.json").unlink()
+    # The button can only fail again while the file pins it: it is swapped for
+    # where the setting lives, and a replayed click is refused as stale.
+    _, updated_ts, _, blocks = world.slack.updates[-1]
+    assert updated_ts == ts and not any(b["type"] == "actions" for b in blocks)
+    # Outside the home directory the channel sees the file's name, not a host path.
+    pinned = handoff.PINNED_TEXT.format(path="config.local.json")
+    assert blocks[-1]["elements"][0]["text"] == pinned
+    assert str(tmp_path) not in json.dumps(blocks)
     asyncio.run(handoff.handle_handoff_click(None, _click(OWNER, ts=ts)))
-    assert _dispatch_on(world.cfg)
+    assert world.slack.ephemerals[-1][2] == handoff.STALE_TEXT
+    assert not _dispatch_on(world.cfg)
+
+
+def test_a_pinning_file_under_home_is_named_from_home(world, tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    ts = _issue(world)
+    (tmp_path / "config.local.json").write_text(
+        json.dumps({"slack": {"code_channel_dispatch": False}}), encoding="utf-8"
+    )
+    asyncio.run(handoff.handle_handoff_click(None, _click(OWNER, ts=ts)))
+    blocks = world.slack.updates[-1][3]
+    assert blocks[-1]["elements"][0]["text"] == handoff.PINNED_TEXT.format(
+        path="~/config.local.json"
+    )
+
+
+def test_a_policy_revoked_while_the_click_waited_writes_nothing(world, monkeypatch):
+    """Asked again under the lock: the save is the next thing after the answer."""
+    ts = _issue(world)
+    answers = iter([True, False])
+    monkeypatch.setattr(
+        cc_surface, "outbound_permitted", AsyncMock(side_effect=lambda: next(answers))
+    )
+    asyncio.run(handoff.handle_handoff_click(None, _click(OWNER, ts=ts)))
+    assert not _dispatch_on(world.cfg)
+    assert any(a[-1] == "channels governance policy" for a in world.audits)
+
+
+def test_an_inbound_policy_revoked_while_the_click_waited_writes_nothing(world, monkeypatch):
+    import kiro_crew.messaging.identity as identity
+
+    ts = _issue(world)
+    monkeypatch.setattr(identity, "channel_inbound_permitted", AsyncMock(return_value=False))
+    asyncio.run(handoff.handle_handoff_click(None, _click(OWNER, ts=ts)))
+    assert not _dispatch_on(world.cfg)
+
+
+def test_a_channel_gate_shut_while_the_click_waited_writes_nothing(world, monkeypatch):
+    """The synchronous gates are read again after the last await before the save."""
+    ts = _issue(world)
+    answers = iter([True, False])
+    monkeypatch.setattr(
+        routing, "channel_and_origin_permit", lambda cfg, channel, origin: next(answers)
+    )
+    asyncio.run(handoff.handle_handoff_click(None, _click(OWNER, ts=ts)))
+    assert not _dispatch_on(world.cfg)
+    assert world.slack.ephemerals[-1][2] == handoff.NOT_ALLOWED_TEXT
+
+
+def test_a_cancelled_save_keeps_the_notice_live(world, monkeypatch):
+    ts = _issue(world)
+    monkeypatch.setattr(
+        messaging,
+        "save_code_channel_dispatch",
+        AsyncMock(side_effect=asyncio.CancelledError()),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(handoff.handle_handoff_click(None, _click(OWNER, ts=ts)))
+    assert handoff._noticed[CHANNEL] == ts
+
+
+def test_a_policy_revoked_during_the_notice_checks_posts_nothing(world, monkeypatch):
+    answers = iter([True, False])
+    monkeypatch.setattr(
+        cc_surface, "outbound_permitted", AsyncMock(side_effect=lambda: next(answers))
+    )
+
+    async def body() -> None:
+        assert handoff.notice_soon(CHANNEL) is True
+        await _drain()
+
+    asyncio.run(body())
+    assert world.slack.posts == []
+    assert CHANNEL not in handoff._noticed, "released for the next refusal"
 
 
 def test_the_click_is_not_ours_while_code_channels_are_off(world, monkeypatch):
@@ -371,7 +453,11 @@ def test_the_interaction_router_reaches_the_owner_check(world, monkeypatch):
     ts = _issue(world)
     asyncio.run(interactions.dispatch({"type": "block_actions", **_click(OTHER, ts=ts)}))
     assert not _dispatch_on(world.cfg)
-    assert world.slack.ephemerals[-1] == (CHANNEL, OTHER, handoff.NOT_OWNER_TEXT)
+    assert world.slack.ephemerals[-1] == (
+        CHANNEL,
+        OTHER,
+        handoff.NOT_OWNER_TEXT.format(owner=cc_surface.owner_name()),
+    )
     asyncio.run(interactions.dispatch({"type": "block_actions", **_click(OWNER, ts=ts)}))
     assert _dispatch_on(world.cfg)
 
@@ -441,3 +527,61 @@ def test_a_superseded_attempt_neither_releases_nor_posts_for_the_newer_one(world
 
     asyncio.run(body())
     assert len(world.slack.posts) == 1
+
+
+def test_a_failed_config_write_keeps_the_button_for_a_retry(world, monkeypatch):
+    """Full disk / read-only storage: a refusal, the notice still stands."""
+    ts = _issue(world)
+    real = messaging._LockedSectionWrite.commit
+
+    async def _full(self: Any) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(messaging._LockedSectionWrite, "commit", _full)
+    asyncio.run(handoff.handle_handoff_click(None, _click(OWNER, ts=ts)))
+    assert not _dispatch_on(world.cfg)
+    assert world.slack.ephemerals[-1][2] == handoff.FAILED_TEXT.format(
+        reason="config.json could not be written"
+    )
+    denied = [c for c in world.sel.calls if c.get("outcome") == "denied"]
+    assert denied and denied[-1]["error"] == "config.json could not be written"
+    monkeypatch.setattr(messaging._LockedSectionWrite, "commit", real)
+    asyncio.run(handoff.handle_handoff_click(None, _click(OWNER, ts=ts)))
+    assert _dispatch_on(world.cfg), "the storage recovered: the same button works"
+
+
+def test_an_unexpected_save_error_keeps_the_button(world, monkeypatch):
+    ts = _issue(world)
+    monkeypatch.setattr(
+        messaging, "save_code_channel_dispatch", AsyncMock(side_effect=RuntimeError())
+    )
+    asyncio.run(handoff.handle_handoff_click(None, _click(OWNER, ts=ts)))
+    assert world.slack.ephemerals[-1][2].startswith("I couldn't turn on hand-off:")
+    assert handoff._noticed[CHANNEL] == ts, "still the current notice"
+
+
+def test_a_pinned_refusal_falls_back_to_a_private_reply_when_the_notice_cannot_change(
+    world, tmp_path, monkeypatch
+):
+    ts = _issue(world)
+    (tmp_path / "config.local.json").write_text(
+        json.dumps({"slack": {"code_channel_dispatch": False}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(world.slack, "update_message", AsyncMock(side_effect=RuntimeError()))
+    asyncio.run(handoff.handle_handoff_click(None, _click(OWNER, ts=ts)))
+    assert world.slack.ephemerals[-1][2].startswith("Hand-off for code channels is set in")
+
+
+def test_the_pinned_reply_names_the_setting_and_file_not_a_button_or_key():
+    text = handoff.PINNED_TEXT.format(path="~/.kiro/crew/config.local.json")
+    assert text.startswith("Hand-off for code channels is set in `~/.kiro/crew/config.local.json`")
+    assert "button" not in text and "slack.code_channel_dispatch" not in text
+
+
+def test_the_hand_off_refusal_names_the_owner(world, monkeypatch):
+    monkeypatch.setattr(slack_handler, "_owner_id", OWNER)
+    ts = _issue(world)
+    asyncio.run(handoff.handle_handoff_click(None, _click(OTHER, ts=ts)))
+    assert world.slack.ephemerals[-1][2] == (
+        f":no_entry: Only the Kiro Crew owner (<@{OWNER}>) can turn on hand-off."
+    )

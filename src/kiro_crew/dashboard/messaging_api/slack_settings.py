@@ -455,6 +455,10 @@ async def _save_code_channel_dispatch_locked(
                 await cfg_write.commit()
             except ConfigReadError:
                 return _deny("config.json is corrupt")
+            except OSError:
+                # Full disk, read-only storage: the atomic write left the file as
+                # it was, so this is a refusal the caller can report and retry.
+                return _deny("config.json could not be written")
     _sel().log_api_access(
         caller=caller,
         operation="slack.config.update",

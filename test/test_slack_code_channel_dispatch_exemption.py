@@ -18,6 +18,7 @@ exemption cannot admit. These tests pin both directions:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -65,19 +66,11 @@ def _enabled(_floor_monkeypatch, tmp_path):
     create_rate_limit.reset_for_tests()
     audience.clear()
     cce.forget_senders()
-    # The dispatch switch's config-path reading is taken off the loop by every verb
-    # before it judges; tests that call the judgement directly take it here. Its
-    # freshness window is widened so a slow host never reads it as stale (the
-    # staleness test sets the stamp itself).
-    _floor_monkeypatch.setattr(cce, "_PATH_CHECK_TTL_S", 1e9)
-    cce._forget_config_path_check()
     live_config_mod._clear_torn_files()
-    asyncio.run(cce.refresh_config_path_check())
     yield
     set_store(None)
     audience.clear()
     cce.forget_senders()
-    cce._forget_config_path_check()
     live_config_mod._clear_torn_files()
     create_rate_limit.reset_for_tests()
 
@@ -823,35 +816,65 @@ def test_the_guidance_answers_status_questions_from_the_state_read():
 
 def test_the_guidance_is_not_seeded_while_hand_off_is_off(monkeypatch):
     """With the switch off (its default) the guidance would steer the conductor
-    into a refused call (First Principles, round 4)."""
+    into a refused call."""
     from kiro_crew.slack.code_channels import routing
 
     monkeypatch.setattr(cce, "_live_config", lambda: _cfg(dispatch=False))
     assert cce.CONDUCTOR_GUIDANCE not in routing._seed_framing("C0ORIGIN01", "")
 
 
+def test_the_guidance_checks_a_stalled_worker_before_nudging_or_reporting():
+    """A worker that opened a pull request but could not send its report must not
+    be described as having stopped silently with no PR. On a stall wake the
+    guidance makes the conductor check the worker's state, its PR and CI on the
+    forge, and the ledger first, then say what it found."""
+    guidance = cce.CONDUCTOR_GUIDANCE
+    assert "reason=stall" in guidance, "names the wake it governs"
+    for check in ("session_status", "gh pr list --head", "gh pr checks", "work_ledger_read"):
+        assert check in guidance, check
+    assert "gh pr list --state all --search" in guidance, "a fallback with no known branch"
+    assert guidance.index("reason=stall") < guidance.index("gh pr list --head")
+    assert "check before you nudge" in guidance
+    assert "only mean no report arrived, not that no PR exists" in guidance
+    assert "PR #22488 is open, CI 62/85 passing; it couldn't send its report" in guidance
+    assert 'Never say "stopped without telling me why"' in guidance
+    assert 'never write "PR: none yet" unless gh found none' in guidance
+
+
+def test_the_guidance_names_only_verbs_the_exemption_admits():
+    """The stall checks stay inside the exemption: every session verb the guidance
+    tells the conductor to call is one it may call, and the transcript tools are
+    never suggested (they are refused by design, not an oversight)."""
+    import re
+
+    guidance = cce.CONDUCTOR_GUIDANCE
+    assert "session_read_message" not in guidance and "session_summary" not in guidance
+    tool_ops = {
+        "session_create": cce.CREATE_OPERATION,
+        "session_send": "send",
+        "session_status": "status",
+        "session_close": "close",
+        "session_stop": "stop",
+        "session_end_wait": "end_wait",
+    }
+    named = set(re.findall(r"\bsession_[a-z_]*[a-z]", guidance))
+    assert named, "the guidance names its verbs"
+    assert named <= set(tool_ops), named - set(tool_ops)
+    admitted = cce.EXEMPT_TARGET_OPERATIONS | {cce.CREATE_OPERATION}
+    assert {tool_ops[n] for n in named} <= admitted
+
+
 @pytest.mark.parametrize(
     "payload",
     [
-        {"bindings": {CHANNEL: {"channel_id": CHANNEL}}},  # a row missing its fields
-        {
-            "bindings": {
-                "C0OTHER": {
-                    "channel_id": CHANNEL,
-                    "team_id": "T",
-                    "session_key": "s",
-                    "anchor_ts": "1",
-                }
-            }
-        },
         {"bindings": [], "retired_session_keys": []},
         {"bindings": {}, "retired_session_keys": "chat-1"},
         {"bindings": {}, "retired_session_keys": ["chat-1", 7]},
     ],
 )
 def test_a_structurally_malformed_store_reads_as_unavailable_not_empty(tmp_path, payload):
-    """Rows that do not read back whole may have named a conductor; the lineage
-    refuses rather than answering "no code channels" (verifier finding)."""
+    """A table that is not the right shape may have named a conductor; the lineage
+    refuses rather than answering "no code channels"."""
     from kiro_crew.slack.code_channels.store import StoreUnavailable
 
     path = tmp_path / "slack-code-channels.json"
@@ -860,6 +883,51 @@ def test_a_structurally_malformed_store_reads_as_unavailable_not_empty(tmp_path,
     loaded.load()
     with pytest.raises(StoreUnavailable):
         loaded.session_keys()
+
+
+@pytest.mark.parametrize(
+    ("payload", "channel", "keys"),
+    [
+        ({"bindings": {CHANNEL: {"channel_id": CHANNEL}}}, CHANNEL, frozenset()),
+        (
+            {
+                "bindings": {
+                    "C0OTHER": {
+                        "channel_id": CHANNEL,
+                        "team_id": "T",
+                        "session_key": "s",
+                        "anchor_ts": "1",
+                    }
+                }
+            },
+            "C0OTHER",
+            frozenset({"s"}),
+        ),
+        (
+            {
+                "bindings": {
+                    CHANNEL: {
+                        "channel_id": CHANNEL,
+                        "team_id": "T",
+                        "session_key": ["chat-x"],
+                        "anchor_ts": 1,
+                    }
+                }
+            },
+            CHANNEL,
+            frozenset(),
+        ),
+    ],
+)
+def test_a_row_that_does_not_read_back_whole_fences_its_channel(tmp_path, payload, channel, keys):
+    """A single binding row that does not read back whole fences its own channel;
+    a session key it still names stays a code-channel key."""
+    path = tmp_path / "slack-code-channels.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    loaded = CodeChannelStore(path=path)
+    loaded.load()
+    assert loaded.session_keys() == keys
+    assert loaded.is_quarantined(channel) and loaded.get_binding(channel) is None
 
 
 def test_a_well_formed_or_absent_store_answers(tmp_path):
@@ -948,19 +1016,152 @@ def test_an_unreadable_store_fences_every_caller_but_an_unloaded_one_does_not(
     assert sc.code_channel_root(state, tab) == sc.LINEAGE_UNAVAILABLE
 
 
-def test_an_older_store_with_a_row_the_base_skipped_now_fences_callers(tmp_path, monkeypatch):
-    """Accepted break (PR body, Backwards compatibility): a binding row that does
-    not read back whole -- the base skipped it silently -- now makes the store
-    unavailable, because that row may have named a conductor whose workers the
-    one-level fence must still recognise. Every caller is refused with the
-    store's name until the file is repaired."""
+def test_a_mistyped_binding_is_refused_at_write_time(tmp_path):
+    """A row written now must read back whole, or the next start fences its channel."""
+    from kiro_crew.slack.code_channels.store import StoreWriteError
+
+    store = CodeChannelStore(path=tmp_path / "slack-code-channels.json")
+    store.load()
+    good = Binding(channel_id="C0TYPED001", team_id=TEAM, session_key="chat-t", anchor_ts="1.1")
+    good = store.put_binding(good)
+    with pytest.raises(StoreWriteError):
+        store.update_binding("C0TYPED001", anchor_ts=None)
+    with pytest.raises(StoreWriteError):
+        store.put_binding(dataclasses.replace(good, channel_id="C0TYPED002", team_id=None))
+    assert store.get_binding("C0TYPED001") == good
+    reread = CodeChannelStore(path=tmp_path / "slack-code-channels.json")
+    reread.load()
+    assert reread.get_binding("C0TYPED001") == good
+    assert not reread.is_quarantined("C0TYPED001")
+
+
+def test_a_resume_record_can_be_taken_back_only_while_unchanged(tmp_path):
+    store = CodeChannelStore(path=tmp_path / "slack-code-channels.json")
+    store.load()
+    store.record_resume("chat-k", {"turn": "t1", "at": "1"})
+    assert store.replace_resume_if("chat-k", {"turn": "t0", "at": "0"}, None) is False
+    assert store.replace_resume_if("chat-k", {"turn": "t1", "at": "1"}, None) is True
+    assert store.resume_record("chat-k") is None
+
+
+def test_a_malformed_binding_row_fences_only_its_own_channel(tmp_path, monkeypatch):
+    """A binding row that does not read back whole fences its OWN channel only:
+    the other channels and every person's tab go on, the session the row names
+    stays a code-channel key, and every write carries the row back unchanged."""
+    from kiro_crew.slack.code_channels.store import StoreWriteError
+
     state = _state(tmp_path, monkeypatch)
     tab = state.get_or_create_slot("chat-a-persons-tab")
+    worker = state.get_or_create_slot("chat-old-rows-worker")
+    worker._created_by = "chat-old-row-session"
+    bad_row = {"channel_id": "C0ELSEWHERE", "session_key": "chat-old-row-session"}
+    good = Binding(channel_id="C0GOODROW1", team_id=TEAM, session_key="chat-good", anchor_ts="1.1")
+    path = tmp_path / "slack-code-channels.json"
+    path.write_text(
+        json.dumps(
+            {
+                "bindings": {
+                    "C0OLDROW01": bad_row,
+                    "C0NOKEYROW": ["not", "a", "row"],
+                    "C0GOODROW1": dataclasses.asdict(good),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    older = CodeChannelStore(path=path)
+    older.load()
+    set_store(older)
+    assert older.unreadable is False
+    assert older.get_binding("C0GOODROW1") == good
+    assert older.get_binding("C0OLDROW01") is None and older.is_quarantined("C0OLDROW01")
+    assert older.is_quarantined("C0NOKEYROW")
+    # A person's tab is not fenced; the row's session still makes a worker.
+    assert sc.code_channel_root(state, tab) == ""
+    assert sc._caller_is_ownership_fenced(state, tab.key) is False
+    assert sc.code_channel_root(state, worker) == "chat-old-row-session"
+    # The fenced channel is never bound again over its row...
+    with pytest.raises(StoreWriteError):
+        older.put_binding(
+            Binding(channel_id="C0OLDROW01", team_id=TEAM, session_key="x", anchor_ts="2")
+        )
+    # ...and a write elsewhere keeps both rows exactly as read.
+    older.record_worker("chat-new-worker", "chat-good")
+    written = json.loads(path.read_text(encoding="utf-8"))["bindings"]
+    assert written["C0OLDROW01"] == bad_row
+    assert written["C0NOKEYROW"] == ["not", "a", "row"]
+    assert written["C0GOODROW1"]["session_key"] == "chat-good"
+
+
+def test_a_fenced_channel_gets_no_new_session_or_kickoff(tmp_path, monkeypatch):
+    """A message in the fenced channel is not adopted into a new session: nothing
+    is posted or created before the refusal."""
+    from kiro_crew.slack.code_channels import routing
+    from kiro_crew.slack.code_channels.binding import BindingUnavailable
+
     path = tmp_path / "slack-code-channels.json"
     path.write_text(
         json.dumps({"bindings": {"C0OLDROW01": {"channel_id": "C0ELSEWHERE"}}}),
         encoding="utf-8",
     )
+    older = CodeChannelStore(path=path)
+    older.load()
+    set_store(older)
+    posts: list[Any] = []
+
+    async def _post(*a: Any, **k: Any) -> str:
+        posts.append(a)
+        return "1.1"
+
+    monkeypatch.setattr(routing, "_post", _post)
+    monkeypatch.setattr(routing, "_dashboard_state", lambda: object())
+    with pytest.raises(BindingUnavailable):
+        asyncio.run(
+            routing._bind_channel(
+                None,
+                channel="C0OLDROW01",
+                team_id=TEAM,
+                title="t",
+                origin_channel_id="",
+                origin_ts="",
+                origin_thread_ts="",
+                created_by_us=False,
+            )
+        )
+    assert posts == []
+
+
+def test_a_row_with_no_readable_session_key_keeps_its_workers_fenced(tmp_path, monkeypatch):
+    """The row names no session, but the worker record written at the worker's
+    birth still keeps it one level deep, its ``created_by`` edited away or not."""
+    state = _state(tmp_path, monkeypatch)
+    worker = state.get_or_create_slot("chat-recorded-worker")
+    worker._created_by = ""
+    path = tmp_path / "slack-code-channels.json"
+    path.write_text(
+        json.dumps(
+            {
+                "bindings": {"C0NOKEYROW": ["not", "a", "row"]},
+                "workers": {worker.key: "chat-lost-conductor"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = CodeChannelStore(path=path)
+    loaded.load()
+    set_store(loaded)
+    assert loaded.is_quarantined("C0NOKEYROW") and loaded.unreadable is False
+    assert sc.code_channel_root(state, worker) == "chat-lost-conductor"
+    assert sc._caller_is_ownership_fenced(state, worker.key) is True
+
+
+def test_a_malformed_bindings_table_still_fences_every_caller(tmp_path, monkeypatch):
+    """A table that is not an object leaves nothing to tell which sessions it
+    covered: unavailable, and every caller is refused with the store's name."""
+    state = _state(tmp_path, monkeypatch)
+    tab = state.get_or_create_slot("chat-a-persons-tab")
+    path = tmp_path / "slack-code-channels.json"
+    path.write_text(json.dumps({"bindings": ["C0OLDROW01"]}), encoding="utf-8")
     older = CodeChannelStore(path=path)
     older.load()
     set_store(older)
@@ -1113,12 +1314,7 @@ def config_files(tmp_path):
 _OPTED_IN = {"slack": {"code_channels": True, "code_channel_dispatch": True}}
 
 
-_NOT_A_FILE = "could not be read as a whole file"
-
-
-def _read_paths() -> None:
-    """Take the switch's off-loop config-path reading, as every verb does first."""
-    asyncio.run(cce.refresh_config_path_check())
+_NOT_A_FILE = "could not be read whole"
 
 
 def test_a_torn_read_under_the_live_watcher_refuses(config_files, monkeypatch):
@@ -1127,10 +1323,10 @@ def test_a_torn_read_under_the_live_watcher_refuses(config_files, monkeypatch):
     (opted-in) snapshot. The probe lists the torn file and the exemption refuses on
     it rather than on the stale value (round-8 verifier, live.py probe). The tear
     is NOT written to the loader's process-wide degradation record, which other
-    gates read (CI round-3 First Principles / Design). A later whole probe does
+    gates read. A later whole probe does
     NOT clear it: the watcher may never adopt that result (a held settings
-    transaction discards it), so the kept snapshot can still predate the opt-out
-    (round-10 security review)."""
+    transaction discards it), so the kept snapshot can still predate the
+    opt-out."""
     from kiro_crew.config.live import ConfigWatch, torn_config_files
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.config.resolution import observed_degraded_sections
@@ -1157,33 +1353,70 @@ def test_a_torn_read_under_the_live_watcher_refuses(config_files, monkeypatch):
     assert str(local) in torn_config_files()
     assert observed_degraded_sections() == before, "no process-wide mark"
     monkeypatch.setattr(cce, "_live_config", lambda: snap)
-    _read_paths()
     assert _NOT_A_FILE in cce._switch_refusal()
     # The recovery probe reads the files whole; the kept snapshot is still the
     # opted-in one, and the switch must stay off.
     assert ConfigWatch._document_is_torn() is False
     assert str(local) in torn_config_files()
-    _read_paths()
     assert _NOT_A_FILE in cce._switch_refusal()
     assert observed_degraded_sections() == before
 
 
-def test_an_overlay_path_that_is_a_directory_refuses(config_files, monkeypatch):
-    """A ``config.local.json`` that exists but is not a file may stand where the
-    opt-out was; the switch reads it as unknown. The loader keeps reading it as
-    absent, so no other gate moves (round-8; CI round-3 First Principles)."""
+def test_an_overlay_path_that_is_not_a_file_refuses(config_files, monkeypatch):
+    """First Principles' own test, round on ab90c3719f: an opt-out lost while the
+    loader reports no degradation and dispatch reads on. ``config.local.json`` is a
+    link to a share that is not mounted right now (the file holding the opt-out is
+    there, just unreachable), or a directory: the loader reads it as absent and
+    records nothing, so the merged config opts in. The watcher's probe lists it and
+    the switch refuses. Fails without the probe (fresh-context review)."""
+    from kiro_crew.config.live import ConfigWatch, torn_config_files
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.config.resolution import observed_degraded_sections
 
     base, local = config_files
     base.write_text(json.dumps(_OPTED_IN), encoding="utf-8")
-    local.mkdir()
+    _symlink_or_skip(local, local.parent / "unmounted-share" / "kc.json")
     before = observed_degraded_sections()
     cfg = KiroCrewConfig.load()
-    assert observed_degraded_sections() == before
+    assert observed_degraded_sections() == before, "the loader records nothing"
+    assert cfg.slack.code_channel_dispatch is True, "dispatch reads on"
     monkeypatch.setattr(cce, "_live_config", lambda: cfg)
-    _read_paths()
+    # Not a tear: the watcher still adopts the load, so other settings reload.
+    assert ConfigWatch._document_is_torn() is False
+    assert str(local) in torn_config_files()
     assert _NOT_A_FILE in cce._switch_refusal()
+    assert observed_degraded_sections() == before, "no other gate moves"
+
+
+def test_an_overlay_directory_refuses_too(config_files, monkeypatch):
+    from kiro_crew.config.live import ConfigWatch
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    base, local = config_files
+    base.write_text(json.dumps(_OPTED_IN), encoding="utf-8")
+    local.mkdir()
+    cfg = KiroCrewConfig.load()
+    monkeypatch.setattr(cce, "_live_config", lambda: cfg)
+    ConfigWatch._document_is_torn()
+    assert _NOT_A_FILE in cce._switch_refusal()
+
+
+def test_the_watcher_takes_the_probe_when_it_starts(config_files):
+    """The first cycle is one poll interval away; the record must not wait for it."""
+    from kiro_crew.config.live import ConfigWatch, torn_config_files
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    base, local = config_files
+    base.write_text(json.dumps(_OPTED_IN), encoding="utf-8")
+    _symlink_or_skip(local, local.parent / "unmounted-share" / "kc.json")
+
+    async def boot() -> None:
+        w = ConfigWatch()
+        await w.start(KiroCrewConfig.load())
+        await w.stop()
+
+    asyncio.run(boot())
+    assert str(local) in torn_config_files()
 
 
 def _symlink_or_skip(link, target) -> None:
@@ -1191,36 +1424,6 @@ def _symlink_or_skip(link, target) -> None:
         link.symlink_to(target)
     except (OSError, NotImplementedError):  # pragma: no cover - Windows without privilege
         pytest.skip("this host cannot create symlinks")
-
-
-def test_a_dangling_overlay_symlink_refuses(config_files, monkeypatch):
-    """An overlay symlink whose target is gone may stand where the opt-out was
-    (round-9 security review)."""
-    from kiro_crew.config.loader import KiroCrewConfig
-
-    base, local = config_files
-    base.write_text(json.dumps(_OPTED_IN), encoding="utf-8")
-    _symlink_or_skip(local, local.parent / "gone.json")
-    cfg = KiroCrewConfig.load()
-    monkeypatch.setattr(cce, "_live_config", lambda: cfg)
-    _read_paths()
-    assert _NOT_A_FILE in cce._switch_refusal()
-
-
-def test_a_dangling_overlay_after_a_cached_load_still_refuses(config_files, monkeypatch):
-    """A healthy load with no overlay is cached; a dangling overlay appearing next
-    reuses that cache, and the switch's own path check still refuses."""
-    from kiro_crew.config.loader import KiroCrewConfig
-
-    base, local = config_files
-    base.write_text(json.dumps(_OPTED_IN), encoding="utf-8")
-    assert KiroCrewConfig.load().slack.code_channel_dispatch is True
-    assert KiroCrewConfig.load().slack.code_channel_dispatch is True  # a cache hit
-    _symlink_or_skip(local, local.parent / "gone.json")
-    cfg = KiroCrewConfig.load()
-    monkeypatch.setattr(cce, "_live_config", lambda: cfg)
-    _read_paths()
-    assert _NOT_A_FILE in cce._switch_refusal()
 
 
 def test_a_lost_base_config_can_never_widen_dispatch(config_files, monkeypatch):
@@ -1243,58 +1446,13 @@ def test_a_lost_base_config_can_never_widen_dispatch(config_files, monkeypatch):
     assert KiroCrewConfig.load().slack.code_channel_dispatch is False
 
 
-# ── round-10 security review ──────────────────────────────────────────────
-
-
-def test_the_config_path_reading_runs_off_the_loop_and_errs_off_until_taken(monkeypatch):
-    """The switch's synchronous gate never stats a file: with no fresh reading it
-    refuses and starts one in a thread, which the next judgement reads."""
-    import threading
-
-    threads: list[str] = []
-    real = cce._check_config_paths_blocking
-
-    def recorded() -> str:
-        threads.append(threading.current_thread().name)
-        return real()
-
-    monkeypatch.setattr(cce, "_check_config_paths_blocking", recorded)
-
-    async def body() -> None:
-        cce._forget_config_path_check()
-        assert "not been checked yet" in cce._switch_refusal()
-        assert threads == [], "the gate itself read nothing"
-        for _ in range(50):
-            await asyncio.sleep(0.01)
-            if cce._path_check is not None:
-                break
-        assert cce._switch_refusal() == ""
-
-    asyncio.run(body())
-    assert threads and all(name != threading.main_thread().name for name in threads)
-
-
-def test_a_stale_config_path_reading_errs_off(monkeypatch):
-    import time
-
-    monkeypatch.setattr(cce, "_PATH_CHECK_TTL_S", 10.0)
-    with cce._path_check_lock:
-        cce._path_check = (time.monotonic() - 11.0, "")
-    assert "not been checked yet" in cce._switch_refusal()
-
-
-def test_verbs_take_the_config_path_reading_before_judging(monkeypatch):
-    """``load_code_channel_lineage`` -- awaited by every session-control verb's
-    prewarm and by every work-ledger route -- refreshes the reading."""
-    cce._forget_config_path_check()
-    asyncio.run(sc.load_code_channel_lineage())
-    assert cce._path_check is not None and cce._switch_refusal() == ""
+# ── store integrity ───────────────────────────────────────────────────────
 
 
 def test_a_store_whose_routes_are_not_an_object_reads_as_unavailable(tmp_path, monkeypatch):
     """A structural error anywhere in the document -- here ``routes`` as a list
-    beside an intact worker record -- used to escape the load and leave the store
-    unloaded, so the lineage fell back to the editable ``created_by`` (round-10)."""
+    beside an intact worker record -- must not escape the load and leave the store
+    unloaded, or the lineage would fall back to the editable ``created_by``."""
     state = _state(tmp_path, monkeypatch)
     worker = state.get_or_create_slot("chat-a-worker")
     worker._created_by = ""
@@ -1314,7 +1472,7 @@ def test_a_store_whose_routes_are_not_an_object_reads_as_unavailable(tmp_path, m
 def test_a_dangling_store_symlink_is_unavailable_and_never_overwritten(tmp_path, monkeypatch):
     """A store path whose symlink target is gone is not an absent store: it may
     have held worker records. Read as unavailable, and no write replaces the link
-    with a fresh file that has lost them (round-10)."""
+    with a fresh file that has lost them."""
     from kiro_crew.slack.code_channels.store import Route, StoreWriteError
 
     state = _state(tmp_path, monkeypatch)

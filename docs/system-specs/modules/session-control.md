@@ -1866,14 +1866,25 @@ own folder, beside its session, so the sidebar's lineage lane nests it under the
 any other folder, a new one inside it, or a folder-walk preflight is refused
 (`code_channel_folder`). The conductor is told this, and to answer status questions from
 `session_status`, in `CONDUCTOR_GUIDANCE` (seeded by `routing._seed_framing`, repeated on its
-`session_create` replies).
+`session_create` replies). The same text governs a `reason=stall` ledger wake: before nudging,
+the conductor checks the worker's `session_status`, its item (`work_ledger_read`) and its PR
+and CI on the forge (`gh pr list --head <branch>`, or `--state all --search` by issue or title
+when no branch is known, then `gh pr checks`), then states what it found; `last_status=(none
+yet)` or an empty `pr`/`branch` only means no report arrived, and a quiet worker may have
+finished and failed to report. It never claims a worker "stopped
+without telling me why", nor "PR: none yet" unless `gh` found none. The checks use only verbs
+the exemption admits; `read`/`summary` stay refused.
 A worker is one level deep: `code_channel_root` reads the worker record `create_session`
 writes into the code-channel store at birth -- for the resolved slot AND every live slot that
 answers to the same caller key (`_slots_sharing_identity`), since `caller_slot_key` takes the
 first match -- then the worker's `_created_by` against every
 session key a channel ever ran in (current and retired, never evicted), from the loaded
 snapshot only (the async entry points load it off the loop first; an unloaded, unreadable or
-malformed store refuses an agent-created caller). Refusals: `code_channel_worker_caller` on
+malformed store refuses an agent-created caller). A single binding row that does not read back
+whole fences only its own channel (`CodeChannelStore.is_quarantined`): the channel is not
+routed or bound again, every write carries the row back unchanged, and a `session_key` the row
+still names stays among the channel session keys; worker records are unaffected.
+Refusals: `code_channel_worker_caller` on
 create, `depth_exceeded` on a ledger goal/create; the channel's own ledger opens at
 `MAX_DEPTH - 1`. The same record keeps a worker creator-fenced
 (`_caller_is_ownership_fenced`) when its transcript `created_by` has been edited away.
@@ -1900,7 +1911,7 @@ channel and origin admission, channels governance), and confirmed once by Slack'
 It writes the switch through `messaging_api/slack_settings.save_code_channel_dispatch`, the
 card's save path (config lock, `validate_code_settings` with its overlay 409s,
 `_LockedSectionWrite` under `live.hold()`, SEL `slack.config.update` with `source=slack`, hot
-apply), then edits the notice to "Hand-off is on. Ask again or say retry." It never re-runs the
+apply), then edits the notice to "Hand-off is on. Send your request again." It never re-runs the
 refused call; the conductor's next turn dispatches.
 
 **What reaches the channel.** Ledger reads and record replies for an exempt caller are the
@@ -1923,6 +1934,19 @@ the tunnel when `slack.use_tunnel_url` opts in), a path link with no sign-in tok
 through the outbound credential/exfiltration filter and dropped whole if anything
 credential-shaped remains. Transcript verbs (`read`, `summary`) stay refused; their refusal
 names `session_status` and, for its own worker only, that link (`transcript_read_hint`).
+
+**Restart resume** (`slack/code_channels/resume.py`). After the memory barrier, once Slack is
+connected, each bound, live, not archived and not wrapped-up code channel's interrupted work
+is continued through `continue_slot_turn(require_interrupted=True)` -- the channel's session
+and its own workers (store worker records plus the crew-log tree), nothing else. The
+interrupted turn (its opening row's ts) is recorded in the code-channel store's `resume` table
+before the continue; a recorded turn is never auto-resumed again. The stale status is settled
+(`status.settle_after_stop`) before the conductor's turn is continued, and one top-level
+notice follows; anything held back gets an owner-only Resume
+button (`kc_code_channel_resume_<hash>`) honoured only on the recorded notice ts and claimed by
+compare-and-set; it resumes what is interrupted in the channel now (identity and admission
+re-checked under the lock) and is given back when nothing could be resumed.
+`resume.subscribe` hands each channel's report to the work board.
 
 **Agents cannot wear the gateway's buttons.** Agent-supplied Block Kit on both the send and
 the edit path is refused (`blocks_reserved_action`) when an `action_id` or `block_id` starts

@@ -225,124 +225,16 @@ def _live_config() -> Any | None:
     return live_config()
 
 
-#: How long an off-loop reading of the config paths (:func:`refresh_config_path_check`)
-#: answers the synchronous gate. Every session-control verb and every work-ledger
-#: route refreshes it immediately before judging, so this only bounds a re-judgement
-#: later in the same request (the ledger routes re-check after their reads).
-_PATH_CHECK_TTL_S = 10.0
+def _torn_config_file() -> str:
+    """The config file the live watcher has found torn since start, ``""`` when none.
 
-#: ``(time.monotonic() stamp, answer)`` of the last off-loop reading, or None.
-_path_check: tuple[float, str] | None = None
-_path_check_lock = threading.Lock()
-_path_refreshing = False
-
-#: The answer while no fresh reading exists: unknown, so the switch errs off.
-_PATH_CHECK_PENDING = "the config files have not been checked yet"
-
-
-def _check_config_paths_blocking() -> str:
-    """The first config file present but not readable as one, ``""`` when none.
-
-    BLOCKING (``lstat``/``stat``): only :func:`refresh_config_path_check` calls it,
-    off the event loop. The loader reads a config path that is a directory or a
-    dangling symlink as absent, which is right for every other setting: such a
-    path holds no document. This opt-in reads it as unknown instead, since it can
-    stand where an opt-out was, and the switch errs off.
+    Read ONLY by this switch, so nothing else in the gateway changes. While a tear
+    is unresolved the watcher keeps the snapshot from before it, and a later whole
+    read is not proof that snapshot was replaced, so an opt-out written during the
+    tear may never have been adopted -- and the loader records no degradation for
+    it (:func:`kiro_crew.config.live.torn_config_files`, sticky until restart;
+    pinned by ``test_a_torn_read_under_the_live_watcher_refuses``). No disk access.
     """
-    import os
-    import stat as _stat
-
-    from kiro_crew.config.loader import config_local_path, config_path
-
-    for path in (config_path(), config_local_path()):
-        try:
-            st = os.lstat(path)
-        except FileNotFoundError:
-            continue
-        except OSError:
-            return path.name
-        try:
-            if _stat.S_ISLNK(st.st_mode):
-                st = os.stat(path)  # FileNotFoundError: a dangling link
-            if not _stat.S_ISREG(st.st_mode):
-                return path.name
-        except OSError:
-            return path.name
-    return ""
-
-
-async def refresh_config_path_check() -> None:
-    """Read the config paths OFF the event loop for :func:`_unreadable_config_paths`.
-
-    Awaited right before the synchronous gates by every session-control verb (via
-    ``load_code_channel_lineage``) and by every work-ledger route, so the gate
-    never touches the filesystem on the loop. Never raises: a failed reading is
-    recorded as unreadable.
-    """
-    import asyncio
-    import time
-
-    global _path_check
-    try:
-        answer = await asyncio.to_thread(_check_config_paths_blocking)
-    except Exception:  # pragma: no cover - fail closed on an unexpected error
-        logger.debug("code-channel dispatch: config path check failed", exc_info=True)
-        answer = "the config files could not be checked"
-    with _path_check_lock:
-        _path_check = (time.monotonic(), answer)
-
-
-def _refresh_config_path_check_soon() -> None:
-    """Start one background reading from a synchronous gate that found none fresh."""
-    import asyncio
-
-    global _path_refreshing
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    with _path_check_lock:
-        if _path_refreshing:
-            return
-        _path_refreshing = True
-
-    async def _run() -> None:
-        global _path_refreshing
-        try:
-            await refresh_config_path_check()
-        finally:
-            with _path_check_lock:
-                _path_refreshing = False
-
-    try:
-        loop.create_task(_run())
-    except Exception:  # pragma: no cover - no task, try again next call
-        with _path_check_lock:
-            _path_refreshing = False
-
-
-def _forget_config_path_check() -> None:
-    """Drop the cached reading (tests)."""
-    global _path_check
-    with _path_check_lock:
-        _path_check = None
-
-
-def _unreadable_config_paths() -> str:
-    """The first config file not readable as one, ``""`` when none. No disk access.
-
-    Read ONLY by this switch, so nothing else in the gateway changes. Two sources,
-    each erring off:
-
-    - a file the live watcher has found torn since the gateway started
-      (:func:`kiro_crew.config.live.torn_config_files`, sticky until restart: a
-      tear can hide an opt-out the snapshot the watcher kept never adopted);
-    - the last off-loop reading of the paths (:func:`refresh_config_path_check`):
-      a directory or a dangling symlink at either path. With no reading younger
-      than :data:`_PATH_CHECK_TTL_S` the answer is unknown, and one is started.
-    """
-    import time
-
     from kiro_crew.config.live import torn_config_files
     from kiro_crew.config.loader import config_local_path, config_path
 
@@ -350,12 +242,7 @@ def _unreadable_config_paths() -> str:
     for path in (config_path(), config_local_path()):
         if str(path) in torn:
             return path.name
-    with _path_check_lock:
-        reading = _path_check
-    if reading is None or time.monotonic() - reading[0] > _PATH_CHECK_TTL_S:
-        _refresh_config_path_check_soon()
-        return _PATH_CHECK_PENDING
-    return reading[1]
+    return ""
 
 
 #: The refusal while the owner has not turned hand-off on. It names the control a
@@ -386,10 +273,9 @@ def _switch_refusal() -> str:
     # this snapshot's ``degraded_sections`` and in the process-wide record every
     # read writes (the loader's own, sticky until restart; nothing here adds to
     # it). Both are read: the live Slack config is a cached object a reload copies
-    # fields onto, and it does not carry the degradation. A path that is a
-    # directory, a dangling link or ever torn under the live watcher is this
-    # switch's own check (:func:`_unreadable_config_paths`, read off the loop), so
-    # no other gate moves.
+    # fields onto, and it does not carry the degradation. A file torn under the
+    # live watcher is this switch's own check (:func:`_torn_config_file`), so no
+    # other gate moves.
     from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG, observed_degraded_sections
 
     degraded = frozenset(getattr(cfg, "degraded_sections", None) or ()) | (
@@ -407,16 +293,11 @@ def _switch_refusal() -> str:
         return "Slack code channels are off"
     if getattr(getattr(cfg, "slack", None), "code_channel_dispatch", False) is not True:
         return DISPATCH_OFF_REFUSAL
-    if unreadable := _unreadable_config_paths():
-        if unreadable == _PATH_CHECK_PENDING:
-            return (
-                "the config files have not been checked yet, so whether code-channel "
-                "dispatch is turned off is unknown; try again in a moment"
-            )
+    if torn := _torn_config_file():
         return (
-            f"{unreadable} could not be read as a whole file, so whether code-channel "
-            "dispatch is turned off is unknown; fix the file (a file found torn also "
-            "needs a gateway restart)"
+            f"{torn} could not be read whole (it was read mid-write, or is not a regular "
+            "file), so whether code-channel dispatch is turned off is unknown; fix the "
+            "file and restart the gateway"
         )
     return ""
 
@@ -679,7 +560,10 @@ def withheld_clause(verdict: CodeChannelVerdict) -> str:
 #: What a code channel's conductor is told about handing off work and reporting on
 #: it, seeded into the channel's session (``routing._seed_framing``) and repeated
 #: on each ``session_create`` reply it gets. It answers "is it still running?" from
-#: the state read, never by hedging about transcripts it cannot read.
+#: the state read, never by hedging about transcripts it cannot read. A stall wake
+#: is checked the same way, from what IS readable here -- the worker's state, its
+#: PR and CI on the forge, the ledger -- because a quiet worker may have finished
+#: and only failed to report; the transcript verbs stay refused.
 CONDUCTOR_GUIDANCE = (
     "Handing off work from this channel: create workers with session_create and "
     "leave the folder out -- they are filed beside you and nest under this session. "
@@ -688,7 +572,18 @@ CONDUCTOR_GUIDANCE = (
     '"Fix #21964: working, last activity 40s ago", or "waiting on you: approve '
     'shell" when it shows pending_approval. Use its dashboard_link when you name a '
     "worker. A worker's transcript is not readable from a code channel, and you "
-    "need not say so: its state is the answer."
+    "need not say so: its state is the answer. "
+    "On a work-ledger wake with reason=stall, check before you nudge: session_status "
+    "for the worker, work_ledger_read for its item, and on the forge gh pr list --head "
+    "<branch> (the branch you gave it, or the one its report names; if you know none, "
+    'gh pr list --state all --search "<issue number or item title>") and gh pr checks '
+    "for any PR found. last_status=(none yet) and an empty pr or branch on the item "
+    "only mean no report arrived, not that no PR exists: a quiet worker may have "
+    "finished and failed to report. Then tell the person what you found, e.g. "
+    "\"Fix #22452 (GitLab): PR #22488 is open, CI 62/85 passing; it couldn't send "
+    'its report". Nudge it only if that leaves work undone. Never say '
+    '"stopped without telling me why", and never write "PR: none yet" unless gh '
+    "found none."
 )
 
 #: The verbs that would put another session's transcript into the channel. Never

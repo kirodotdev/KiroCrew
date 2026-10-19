@@ -589,7 +589,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Let the conductor hand off work (Slack)",
     "labelKey": "pages.settings.slackPanel.slackCode.code_channel_dispatch",
     "labelSuffix": "Slack",
-    "description": "The conductor is the agent that runs each code channel. With this on, it can start worker sessions for the channel's task when you message it, and track them on its work ledger.",
+    "description": "The conductor is the agent that runs each code channel. With this on, it can start helper agents in this channel's folder to do the coding and report back here. Helpers ask before changing files unless the channel is in Trust mode.",
     "tab": "channels",
     "type": "toggle",
     "occurrence": 1,

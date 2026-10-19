@@ -622,6 +622,12 @@ class ConfigWatch:
             fingerprint = await asyncio.to_thread(self._current_fingerprint)
             cfg = await asyncio.to_thread(self._load)
             self.prime(cfg, fingerprint)
+        # The torn / not-a-file record before the first cycle runs (one poll
+        # interval away): the dispatch switch reads it from the first request.
+        try:
+            await asyncio.to_thread(self._document_is_torn)
+        except Exception:  # noqa: BLE001 - the first cycle takes it again
+            logger.debug("config watch: initial file probe failed", exc_info=True)
         self._task = loop.create_task(self._run(), name="config-watch")
         self._task.add_done_callback(self._on_task_done)
 
@@ -911,11 +917,26 @@ class ConfigWatch:
         The answer is also added, per file, to :func:`torn_config_files`, which
         keeps it until restart. Nothing here touches the loader's process-wide
         degradation record, so no gate that reads that record moves on a tear.
+
+        A ``config.local.json`` that exists but is not a regular file (a directory,
+        or a symlink whose target is gone -- an unmounted share) is listed there
+        too: the loader reads it as absent, yet it can stand where an opt-out was.
+        It is NOT reported as torn, so the watcher still adopts the load and every
+        other setting reloads as before; only the dispatch switch reads the list.
         """
+        import os
+
         from kiro_crew.config.loader import config_local_path, config_path, read_config_text
 
         torn: set[str] = set()
-        for path in (config_path(), config_local_path()):
+        unknown: set[str] = set()
+        local = config_local_path()
+        try:
+            if os.path.lexists(local) and not local.is_file():
+                unknown.add(str(local))
+        except OSError:  # EIO/ESTALE on a broken mount: what it holds is unknown
+            unknown.add(str(local))
+        for path in (config_path(), local):
             try:
                 if not path.exists():
                     continue
@@ -925,7 +946,7 @@ class ConfigWatch:
                 continue
             if not isinstance(data, dict):
                 torn.add(str(path))
-        _set_torn_files(torn)
+        _set_torn_files(torn | unknown)
         return bool(torn)
 
 

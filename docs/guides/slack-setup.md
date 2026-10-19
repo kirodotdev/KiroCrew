@@ -399,13 +399,18 @@ When the conductor tries to hand off work while this is off, it tells you where 
 channel gets one short notice with a **Turn on hand-off for code channels** button. Only you,
 the owner, can press it; anyone else is told so privately. It asks you to confirm, then saves
 the same setting the toggle saves (it turns hand-off on for every code channel) and the notice
-changes to "Hand-off is on. Ask again or say retry." Nothing is retried for you: ask the
-conductor again. The notice is posted once per channel while hand-off stays off.
+changes to "Hand-off is on. Send your request again." Nothing is retried for you: send your
+request to the conductor again. The notice is posted once per channel while hand-off stays off.
 
 While its workers run, the conductor can tell you each one's state (working, idle, queued,
 waiting on an approval, closed or lost) and how long since it last did anything, with a link
 to the worker's chat in the dashboard. It never reads a worker's transcript into the channel,
 and the link carries no sign-in: opening it still asks you to sign in to the dashboard.
+
+If the gateway restarts while a code channel is working, it picks the work up by itself once
+Slack reconnects -- the channel's own conversation and the workers it started -- and says so in
+the channel. It does that only once per interrupted piece of work: if that work is cut off
+again, the channel instead gets a **Resume** button that only you can press.
 
 ### Choosing each code channel's agent
 

@@ -192,6 +192,8 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
   // What an unset folder means (the server's rule): the top-level auto folder,
   // created with the conductor on first use. Matched here too so a folder made a
   // moment ago through "New folder…" counts before the next GET.
+  // Where config.local.json lives, as the server names it (home shown as ~).
+  const overlayPath = data.code_channel_dispatch_overlay_path || '~/.kiro/crew/config.local.json'
   const autoInfo = data.code_channel_auto_folder
   // Top-level folders with the auto name: one is the auto folder, none means it
   // is created on first use, two or more are ambiguous (the server's rule:
@@ -366,16 +368,20 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
                     disabled={readOnly || data.code_channel_dispatch_overlay === true}
                     configKey="slack.code_channel_dispatch"
                   />
-                  {data.code_channel_dispatch_overlay === true && (
-                    <div className="flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2 mt-1" data-testid="slack-code-dispatch-overlay">
-                      <Info size={12} className="text-muted flex-none mt-0.5" />
-                      <span className="text-[12px] text-muted">{i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_overlay')}</span>
+                  {data.code_channel_dispatch_overlay === true && data.code_channel_dispatch_overlay_state === 'unreadable' && (
+                    /* No hand-off: the card sits beside the unsaved Slack settings
+                       draft, and the agent-chat navigation would discard it. The
+                       toggle stays disabled until the file reads again. */
+                    <div className="mt-1" data-testid="slack-code-dispatch-overlay" data-state="unreadable">
+                      <ErrorNotice variant="inline" message={i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_overlay_unreadable', { path: overlayPath })} />
                     </div>
                   )}
-                  {!draft.dispatch && data.code_channel_dispatch_overlay !== true && (
-                    <div className="flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2 mt-1" data-testid="slack-code-dispatch-off">
+                  {data.code_channel_dispatch_overlay === true && data.code_channel_dispatch_overlay_state !== 'unreadable' && (
+                    <div className="flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2 mt-1" data-testid="slack-code-dispatch-overlay" data-state="pinned">
                       <Info size={12} className="text-muted flex-none mt-0.5" />
-                      <span className="text-[12px] text-muted">{i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_off')}</span>
+                      <span className="text-[12px] text-muted">{data.code_channel_dispatch === true
+                        ? i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_overlay_on', { path: overlayPath })
+                        : i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_overlay_off', { path: overlayPath })}</span>
                     </div>
                   )}
                 </div>

@@ -323,7 +323,7 @@
       "label": "Let the conductor hand off work (Slack)",
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=key%3Aslack.code_channel_dispatch",
-      "description": "The conductor is the agent that runs each code channel. With this on, it can start worker sessions for the channel's task when you message it, and track them on its work ledger.",
+      "description": "The conductor is the agent that runs each code channel. With this on, it can start helper agents in this channel's folder to do the coding and report back here. Helpers ask before changing files unless the channel is in Trust mode.",
       "configKey": "slack.code_channel_dispatch"
     },
     {

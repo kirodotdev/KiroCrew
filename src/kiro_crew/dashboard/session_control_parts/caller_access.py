@@ -918,18 +918,6 @@ async def load_code_channel_lineage() -> None:
             await asyncio.to_thread(current.load)
     except Exception:  # pragma: no cover - the store swallows its own read errors
         logger.debug("code-channel store load failed", exc_info=True)
-    # The dispatch switch's config-path reading, for the same reason: the gate that
-    # reads it is synchronous and must not stat files on the loop. Skipped (no
-    # thread hop) while code channels are off: the switch refuses before it looks.
-    from kiro_crew.dashboard.session_control_parts import code_channel_exemption as _cce
-    from kiro_crew.slack.code_channels.binding import code_channels_on
-
-    try:
-        on = code_channels_on(_cce._live_config())
-    except Exception:  # pragma: no cover - an unreadable config: the switch is off anyway
-        on = False
-    if on:
-        await _cce.refresh_config_path_check()
 
 
 #: What :func:`code_channel_root` answers when the code-channel store's file could

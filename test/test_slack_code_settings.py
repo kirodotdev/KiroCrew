@@ -222,16 +222,23 @@ class TestDispatchSubToggle:
             _, body = _call(env, "GET")
             assert body["code_channel_dispatch"] is True
             assert body["code_channel_dispatch_overlay"] is True
+            assert body["code_channel_dispatch_overlay_state"] == "pinned"
+            assert body["code_channel_dispatch_overlay_path"].endswith("config.local.json")
             status, res = _call(env, "PUT", {"code_channel_dispatch": False})
             assert status == 409 and "config.local.json" in res["error"]
+            assert res["error"].startswith("Hand-off is set in config.local.json (slack.")
             base = json.loads(env["cfg"].read_text(encoding="utf-8")) if env["cfg"].exists() else {}
             assert "code_channel_dispatch" not in (base.get("slack") or {}), "nothing staged"
             # Other Slack Code fields still save.
             assert _call(env, "PUT", {"code_channels": True})[0] == 200
+            overlay.write_text("{ torn", encoding="utf-8")
+            _, body = _call(env, "GET")
+            assert body["code_channel_dispatch_overlay_state"] == "unreadable"
         finally:
             overlay.unlink(missing_ok=True)
         _, body = _call(env, "GET")
         assert body["code_channel_dispatch_overlay"] is False
+        assert body["code_channel_dispatch_overlay_state"] == "absent"
 
     @pytest.mark.parametrize("text", ["{ torn", "[1]", '{"slack": "on"}', '{"slack": null}'])
     def test_an_unreadable_overlay_refuses_the_save(self, env: dict, text: str) -> None:

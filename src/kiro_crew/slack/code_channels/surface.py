@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -160,6 +161,29 @@ async def fenced_unrecorded(binding: Binding) -> bool:
         return False
     current = await asyncio.to_thread(store().get_binding, binding.channel_id)
     return not (current or binding).archived_at
+
+
+_SLACK_USER_ID = re.compile(r"[UW][A-Z0-9]+")
+
+
+def owner_name() -> str:
+    """Who "the owner" is, for a refusal: ``the Kiro Crew owner (<@U…>)``.
+
+    The owner is this gateway's configured Slack owner (``slack.owner_id``), the
+    one ``is_owner`` checks; a reader can't otherwise tell whether a refusal means
+    the channel's, the workspace's or the app's owner.
+    """
+    try:
+        from kiro_crew.slack import handler
+
+        owner = str(getattr(handler, "_owner_id", "") or "")
+    except Exception:  # pragma: no cover - the plain wording still holds
+        owner = ""
+    # Only a well-formed Slack user id becomes a mention: anything else could
+    # break out of ``<@…>`` and inject formatting.
+    if not _SLACK_USER_ID.fullmatch(owner):
+        return "the Kiro Crew owner"
+    return f"the Kiro Crew owner (<@{owner}>)"
 
 
 def workspace_admitted(team_id: str) -> bool:

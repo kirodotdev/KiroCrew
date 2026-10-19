@@ -375,3 +375,27 @@ async def test_the_receipt_matches_the_redacted_transcript_row(
     binding = env.store.get_binding("C0CODE")
     assert binding is not None
     assert await routing._session_took_request(binding, request) is True
+
+
+async def test_a_channel_whose_binding_row_cannot_be_read_drops_every_message(
+    env: Env, tmp_path: Any
+) -> None:
+    """The fenced channel's kickoff thread still links to its old session; no
+    message there reaches it, directed or not."""
+    import json
+
+    from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
+
+    path = tmp_path / "fenced.json"
+    path.write_text(
+        json.dumps({"bindings": {"C0CODE": {"channel_id": "C0CODE", "session_key": "chat-9-1"}}}),
+        encoding="utf-8",
+    )
+    fenced = CodeChannelStore(path)
+    fenced.load()
+    set_store(fenced)
+    assert fenced.is_quarantined("C0CODE")
+    reply = {**_msg("400.000002", "status?"), "thread_ts": "300.000001"}
+    assert (await _gate(env, reply)).gate is Gate.DROP
+    assert (await _gate(env, mention(channel="C0CODE"))).gate is Gate.DROP
+    assert env.routed == [] and env.created_sessions == []

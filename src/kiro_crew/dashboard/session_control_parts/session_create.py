@@ -326,12 +326,6 @@ async def create_session(
         )
         if not any(str(folder.get("id") or "") == folder_id for folder in folder_snapshot):
             raise SessionControlError("folder not found", code="folder_not_found")
-        if channel_folder and not _folder_within(folder_snapshot, folder_id, channel_folder):
-            raise SessionControlError(
-                "a code channel's workers are filed in the channel's own folder (or a "
-                "folder inside it)",
-                code="code_channel_folder",
-            )
         folder_project_raw, folder_project_error = _folder_declared_project(
             folder_snapshot, folder_id
         )
@@ -891,9 +885,6 @@ async def create_session(
         ) -> tuple[bool, str | None, str | None]:
             tree = _safe_folder_tree(folders)
             exists = any(str(folder.get("id") or "") == folder_id for folder in tree)
-            if exists and channel_folder and not _folder_within(tree, folder_id, channel_folder):
-                # Reparented out of the channel's folder while this create waited.
-                return exists, None, "the folder is no longer inside the code channel's folder"
             raw_project, error = _folder_declared_project(tree, folder_id)
             return exists, raw_project, error
 
@@ -954,7 +945,7 @@ async def create_session(
         )
     if via_code_channel and str(getattr(live_caller, "folder_id", "") or "") != channel_folder:
         # The conductor was refiled while this create waited: its worker must file
-        # beside it, where it is NOW, so the decision above no longer holds.
+        # beside it, where it is NOW, so the decision above does not hold.
         raise SessionControlError(
             "this code channel's session moved folder while its worker was being "
             "created; call again",
@@ -1421,23 +1412,6 @@ async def create_session(
         ),
         **({"guidance": CONDUCTOR_GUIDANCE} if via_code_channel else {}),
     }
-
-
-def _folder_within(folders: list[dict[str, Any]], folder_id: str, ancestor_id: str) -> bool:
-    """Whether *folder_id* is *ancestor_id* or nested (at any depth) inside it.
-
-    Walks ``parent_id`` up from *folder_id* over the snapshot; a cycle or a
-    dangling parent ends the walk as "not inside", the fail-closed answer.
-    """
-    parents = {str(f.get("id") or ""): str(f.get("parent_id") or "") for f in folders}
-    seen: set[str] = set()
-    current = folder_id
-    while current and current not in seen:
-        if current == ancestor_id:
-            return True
-        seen.add(current)
-        current = parents.get(current, "")
-    return False
 
 
 def _model_pin_refusal(model_name: str, cfg: KiroCrewConfig) -> str | None:

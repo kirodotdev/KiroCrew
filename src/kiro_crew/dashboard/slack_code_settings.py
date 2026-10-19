@@ -90,6 +90,16 @@ def _dispatch_overlay_state() -> str:
     return "pinned" if DISPATCH_KEY in slack else "absent"
 
 
+def _overlay_display_path() -> str:
+    """``config.local.json``'s path with the home directory shown as ``~``. No I/O."""
+    from pathlib import Path
+
+    from kiro_crew.config.loader import config_local_path
+
+    path, home = str(config_local_path()), str(Path.home())
+    return "~" + path[len(home) :] if path.startswith(home + "/") else path
+
+
 def _dispatch_overlay_pins() -> bool:
     """Whether ``config.local.json`` may set ``slack.code_channel_dispatch`` (an
     unreadable overlay counts: what it holds is unknown)."""
@@ -200,6 +210,11 @@ async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
         # ``config.local.json`` sets it: a save writes the base file, which the
         # overlay wins over, so the card disables the toggle and the PUT refuses.
         f"{DISPATCH_KEY}_overlay": await asyncio.to_thread(_dispatch_overlay_pins),
+        # Which: "pinned" (the value shown is the one it sets) or "unreadable"
+        # (what it sets is unknown), so the card never states a value it cannot know.
+        f"{DISPATCH_KEY}_overlay_state": await asyncio.to_thread(_dispatch_overlay_state),
+        # Where that file is, home shown as ``~``, so the card can name it.
+        f"{DISPATCH_KEY}_overlay_path": _overlay_display_path(),
         "code_channel_defaults": {
             "folder": defaults.folder,
             "agent": defaults.agent,
@@ -308,14 +323,14 @@ async def validate_code_settings(
         overlay = await asyncio.to_thread(_dispatch_overlay_state)
         if overlay == "pinned":
             raise CodeSettingsError(
-                f"slack.{DISPATCH_KEY} is set in config.local.json, which overrides "
-                "this setting; change it there",
+                f"Hand-off is set in config.local.json (slack.{DISPATCH_KEY}), which "
+                "overrides this setting; change it there",
                 status=409,
             )
         if overlay == "unreadable":
             raise CodeSettingsError(
-                "config.local.json cannot be read, so whether it overrides "
-                f"slack.{DISPATCH_KEY} is unknown; fix the file and try again",
+                "config.local.json cannot be read, so whether it sets hand-off "
+                f"(slack.{DISPATCH_KEY}) is unknown; fix the file and try again",
                 status=409,
             )
         if val != (stored.get(DISPATCH_KEY) is True):
