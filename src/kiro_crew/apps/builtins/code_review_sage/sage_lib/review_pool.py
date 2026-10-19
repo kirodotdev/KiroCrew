@@ -47,6 +47,8 @@ if _APP_ROOT not in sys.path:
     sys.path.insert(0, _APP_ROOT)
 
 try:
+    # The backend registry ships with the runtime, so it has no fallback of its
+    # own: without ``AcpRuntime`` the pool refuses before any backend is read.
     from kiro_crew.acp.runtime import AcpRuntime
     from kiro_crew.acp.types import (
         EVENT_COMPLETE,
@@ -55,6 +57,13 @@ try:
         EVENT_TOOL_CALL,
         STOP_REASON_STALE_RECOVER,
         STOP_REASON_TOOL_STALL,
+    )
+    from kiro_crew.acp_backends import (
+        ACP_BACKEND_KIRO,
+        ACP_BACKENDS_ACP_RUNTIME,
+        ACP_BACKENDS_EFFORT_OVERLAY,
+        backend_from_stored,
+        resolve_selected_backend,
     )
     from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR, refusal_for
 except ImportError:  # pragma: no cover - standalone / test fallback
@@ -115,6 +124,12 @@ try:  # same resolver the AcpRuntime spawn path uses to locate the agent CLI
 except Exception:  # pragma: no cover - standalone / test fallback
     resolve_kiro_cli = None  # type: ignore[assignment]
 
+try:  # the loader's own stored-value reader: config.local.json first, then config.json
+    from kiro_crew.config.loader import _ABSENT_AGENT_KEY, _stored_agent_value
+except Exception:  # pragma: no cover - standalone / test fallback
+    _ABSENT_AGENT_KEY = None
+    _stored_agent_value = None  # type: ignore[assignment]
+
 try:  # the fail-close a backend-less host raises instead of running unaudited
     from kiro_crew.sandbox import SandboxUnavailableError
 except Exception:  # pragma: no cover - standalone / test fallback
@@ -136,16 +151,53 @@ from sage_lib import followup, store  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+# Configured backends already warned about: the pool respawns once per batch, so
+# without this the same fallback line would repeat on every review run.
+_WARNED_FALLBACK_BACKENDS: set[str] = set()
+
+
+def review_backend() -> str:
+    """The ACP backend the shared review runtime spawns under.
+
+    The pool drives ONE multiplexed ``AcpRuntime``, so it can follow
+    ``agent.acp_backend`` only for a backend that runtime serves
+    (``ACP_BACKENDS_ACP_RUNTIME``). No declared backend means kiro-cli.
+    Any other declared backend (e.g. ``claude``, which needs a
+    per-session client) also runs on kiro-cli, with one warning naming the
+    configured backend so a review failure can be traced to the right provider.
+
+    The stored value is read by the loader's own reader (``config.local.json``
+    first, then ``config.json``). Synchronous disk read: callers on the event
+    loop offload it to a thread.
+    """
+    stored = _stored_agent_value("acp_backend") if _stored_agent_value is not None else None
+    selection = backend_from_stored(None if stored is _ABSENT_AGENT_KEY else stored)
+    if selection is None:
+        return ACP_BACKEND_KIRO
+    resolved = resolve_selected_backend(selection)
+    if resolved in ACP_BACKENDS_ACP_RUNTIME:
+        return resolved
+    key = resolved if isinstance(resolved, str) else repr(resolved)
+    if key not in _WARNED_FALLBACK_BACKENDS:
+        _WARNED_FALLBACK_BACKENDS.add(key)
+        logger.warning(
+            "Code Review Sage: agent.acp_backend=%r is not served by the shared "
+            "review runtime; reviews run on kiro-cli instead",
+            resolved,
+        )
+    return ACP_BACKEND_KIRO
+
 
 def runtime_preflight() -> str:
     """Cheap, read-only check that a reviewer session could actually be spawned.
 
     Returns ``""`` when the runtime looks usable, else a message naming exactly
     what is missing. Mirrors what ``_ensure_runtime_locked`` needs to spawn the
-    shared runtime — an importable ``AcpRuntime`` driving a ``kiro-cli``
-    subprocess — using the same resolver (``resolve_kiro_cli``) the runtime's
-    own spawn path goes through, so the answer here matches what a real spawn
-    would find. Without this check a review on a host with no usable agent CLI
+    shared runtime — an importable ``AcpRuntime`` and, when ``review_backend()``
+    is kiro-cli, a ``kiro-cli`` executable found by the same resolver
+    (``resolve_kiro_cli``) the runtime's own spawn path goes through, so the
+    answer here matches what a real spawn would find. A kas or codex runtime
+    resolves its own executable at spawn. Without this check a review on a host with no usable agent CLI
     completes with nothing written and reports an undiscriminated "no result
     record", which cannot be triaged.
 
@@ -158,7 +210,10 @@ def runtime_preflight() -> str:
     if AcpRuntime is None:
         return ("the reviewer cannot run: the ACP runtime "
                 "(kiro_crew.acp.runtime) is not importable in this install")
-    if resolve_kiro_cli is not None and resolve_kiro_cli() is None:
+    # Only a kiro-cli runtime looks for kiro-cli; a kas or codex runtime
+    # resolves its own executable at spawn and reports a miss there.
+    if (resolve_kiro_cli is not None and review_backend() == ACP_BACKEND_KIRO
+            and resolve_kiro_cli() is None):
         return ("the reviewer cannot run: no kiro-cli executable was found on "
                 "this host (the reviewer session is driven by kiro-cli — "
                 "install it or add it to PATH)")
@@ -496,10 +551,12 @@ class _BatchRuntimeHolder:
             await self._kill(rt)
         if AcpRuntime is None:
             raise RuntimeError("AcpRuntime unavailable (kiro_crew.acp.runtime not importable)")
+        backend = await asyncio.to_thread(review_backend)
         # Effort overlay is read by kiro-cli at each session/new, so it must be on
         # disk before spawn. Keyed on the resolved model (config override -> agent
-        # default). Best-effort — a bad overlay never blocks the review.
-        if self._work_dir:
+        # default). Best-effort — a bad overlay never blocks the review. Only a
+        # backend that reads the cli.json overlay gets one.
+        if self._work_dir and backend in ACP_BACKENDS_EFFORT_OVERLAY:
             try:
                 _write_effort_overlay(
                     self._work_dir, _reviewer_model(self._agent),
@@ -510,7 +567,8 @@ class _BatchRuntimeHolder:
         # OS sandbox scrubs credential paths/env for this LLM-directed subprocess
         # (GitHub fetch/post run via the `gh` CLI's own auth; the worker only
         # writes data/results and runs `python3 sage_lib/pipeline.py`).
-        rt = AcpRuntime(agent=self._agent, work_dir=self._work_dir, sandbox_mode="auto")
+        rt = AcpRuntime(agent=self._agent, work_dir=self._work_dir, sandbox_mode="auto",
+                        acp_backend=backend)
         try:
             await rt.spawn()
         except _SANDBOX_UNAVAILABLE as exc:
@@ -522,8 +580,8 @@ class _BatchRuntimeHolder:
             # caught to retry unsandboxed: the refusal is the correct outcome.
             raise ReviewRuntimeUnavailable(sandbox_unavailable_message(exc)) from exc
         self._runtime = rt
-        logger.info("code-review-sage runtime spawned (agent=%s, cwd=%s)",
-                    self._agent, self._work_dir)
+        logger.info("code-review-sage runtime spawned (agent=%s, backend=%s, cwd=%s)",
+                    self._agent, backend or "kiro", self._work_dir)
         return rt
 
     async def _kill(self, rt: "AcpRuntime") -> None:
@@ -711,7 +769,11 @@ class ReviewPool:
                 # Keep the transcript AFTER the health gate above: a session whose
                 # turn died has no findings to be asked about, and recording it
                 # would leave a file nothing will ever load.
-                if keep_session_key:
+                # Only kiro-cli keeps a terminated session on disk where
+                # ``followup`` looks for it; KAS deletes it and codex keeps its
+                # own store, so no follow-up is offered on those runtimes.
+                if keep_session_key and getattr(
+                        runtime, "acp_backend", ACP_BACKEND_KIRO) == ACP_BACKEND_KIRO:
                     self._keep_resumable(handle, keep_session_key)
                 return "".join(parts)
             finally:
