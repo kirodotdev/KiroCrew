@@ -160,7 +160,7 @@ def _handle_compaction_status(self: AcpClient, msg: JsonRpcMessage) -> None:
     reset cannot be missed by one path. Without it the pre-compaction
     counts survive — and their ``context_tokens_from_usage=True`` flag
     blocks ``_track_metadata`` from applying any fresh percentage — so the
-    dashboard's context meter kept showing the old usage after a compact.
+    dashboard's context meter would keep showing the old usage after a compact.
     """
     params = msg.params or {}
     status = params.get("status", "")
@@ -170,7 +170,7 @@ def _handle_compaction_status(self: AcpClient, msg: JsonRpcMessage) -> None:
     # populated on success but typically empty on failure). Log the full
     # raw params at WARNING so a future occurrence is actually debuggable
     # instead of surfacing only "unknown error" to the user with nothing
-    # to grep for server-side. See Mesh compaction-spam investigation.
+    # to grep for server-side.
     s_type = status.get("type", "") if isinstance(status, dict) else str(status)
     if s_type == "failed":
         if self.memory_mode == "persistent":
@@ -293,11 +293,12 @@ def _codex_compaction_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
     logger.info("Compaction status (codex): %s", status_type)
     # The start's call id, so an unmarked (2.2.2) terminal can be matched to it.
     call_id = update.get("toolCallId")
-    self._codex_compaction_pending = (
-        (call_id if isinstance(call_id, str) and call_id else True)
-        if status_type == "started"
-        else False
-    )
+    if status_type != "started":
+        self._codex_compaction_pending = False
+    elif isinstance(call_id, str) and call_id:
+        self._codex_compaction_pending = call_id
+    else:
+        self._codex_compaction_pending = True
     if status_type == "completed":
         self._compaction_failed_at = None
         self.last_prompt_stats.reset_after_compaction()

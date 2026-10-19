@@ -193,9 +193,9 @@ def _compacts_inline(self: AcpSessionHandle) -> bool:
     handle built through ``__new__`` has no ``_runtime`` at all, which is the
     shape several suites use to exercise the queue drain without spawning a
     process. Returning False there leaves such a handle on the waiting arm,
-    the behaviour it had before this capability existed. Claiming the
-    capability instead would tell every one of those callers a compaction
-    completed that nothing ever ran.
+    the one every backend outside ``ACP_BACKENDS_INLINE_COMPACTION`` takes.
+    Claiming the capability instead would tell every one of those callers a
+    compaction completed that nothing ever ran.
     """
     runtime = getattr(self, "_runtime", None)
     backend = getattr(runtime, "acp_backend", None)
@@ -349,10 +349,11 @@ async def _drain_post_compaction_metadata(
                     # Late compaction credits. This drain runs BETWEEN
                     # turns on the auto-compact path — credits tracked
                     # here land in a stats window nothing reads and the
-                    # next prompt's re-init wipes them. Pass the frame
-                    # through untouched instead: the re-queue hands it to
-                    # the next turn's dispatch loop, which bills it like
-                    # any other metering frame (the pre-drain behavior).
+                    # next prompt's re-init wipes them. Re-queuing the
+                    # frame untouched does not bill it either: on that path
+                    # the next turn's pre-turn drain in ``_run_turn``
+                    # discards it with the other leftover frames, so these
+                    # credits go uncounted.
                     frames.append(msg)
                     continue
                 self._track_metadata(msg)
@@ -537,11 +538,12 @@ def _codex_compaction_event(self: AcpSessionHandle, update: dict[str, Any]) -> A
     logger.info("Compaction status (codex): %s", status_type)
     # The start's call id, so an unmarked (2.2.2) terminal can be matched to it.
     call_id = update.get("toolCallId")
-    self._codex_compaction_pending = (
-        (call_id if isinstance(call_id, str) and call_id else True)
-        if status_type == "started"
-        else False
-    )
+    if status_type != "started":
+        self._codex_compaction_pending = False
+    elif isinstance(call_id, str) and call_id:
+        self._codex_compaction_pending = call_id
+    else:
+        self._codex_compaction_pending = True
     if status_type == "completed":
         self._compaction_failed_at = None
         self.last_prompt_stats.reset_after_compaction()
