@@ -265,6 +265,7 @@ _OPAQUE: Final[dict[str, str]] = {
     "subagents.by_id": "a subagent id",
     "ledger.artifacts": "an artifact name",
     "radar.skips": "an item id",
+    "radar.answered": "an item id",
     "radar.phase_lines": "an item id",
     "panel.data": "a key the publishing crew chose",
     "panel.owners": "an owning crew key",

@@ -266,6 +266,7 @@ Moved by: `radar/recorded`.
 
 | Field | Type | Optional |
 |---|---|---|
+| `answered` | `object` | no |
 | `counts` | `object` | no |
 | `crew_id` | `string` | no |
 | `events` | `array` | no |

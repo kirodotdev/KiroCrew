@@ -202,6 +202,62 @@ stated where an operator touches the knob: the setting's own help text
 log on, Issue Radar's shared skip memory and open work items -- so shortening it
 for disk reasons is a choice made knowing what else it shortens.
 
+**A human answer hands a needs-human pass back.** A pass with an answerable scope
+-- `needs-decision`, `needs-investigation`, and the four scope gates `architecture`,
+`new-feature`, `needs-design` and `breaking-change`
+(`crew_store.ANSWERABLE_SKIP_SCOPES`) -- stops standing in the index once a human
+answers it. The
+answer is the NEEDS-HUMAN LABEL being removed, on an open issue, after the pass
+was recorded, by an actor who is not the crew's forge login: the authenticated
+`gh` / `glab` user of the gateway, which every crew on the host also acts through,
+read afresh on every sweep that needs it (an unknown login means nothing fires). A
+removal under that login is never an answer, even when a person made it, because
+the forge cannot tell the two apart. So the answer needs a second account: run the
+gateway's CLI login as a dedicated crew account (a machine user on GitHub, a project
+or group access token's bot user on GitLab) with write access to the repository, and
+answer from your own account; or keep your own login on the gateway and answer from
+another account (#22527 tracks separating the agent and operator identities inside
+the gateway). A comment alone is not an answer. Every other scope
+(`duplicate`, `already-fixed`, `not-reproducible`, `wrong-root-cause`,
+`gate-config`, `other`) is a finding about the issue and stays skipped. The gateway's sweep (`crew_runtime.detect_human_answers`) finds it
+with no LLM: only numbers whose standing pass has an answerable scope, whose issue
+is open and carries no needs-human label on the forge's first page of open issues
+(`list_open_issues_first_page`, newest update first, the same read the dashboard's
+first paint uses on every provider; when that read fails the sweep reads nothing and
+the next sweep retries), are read -- one timeline call each (`list_issue_timeline`,
+at most 10 per sweep). The sweep keeps only the number, labels and `updated_at` of
+each row. A read that finds no human removal is remembered in
+`crew-answer-checks.json` against that pass's `decided_at` AND the issue's
+`updated_at`: any later activity on the issue (a comment, a timeline event that
+lagged the list, a second removal) moves `updated_at` and re-arms the read. A
+removal under the gateway's own forge login is logged once as a warning naming the
+login, at the read that marks it, so an operator who shares that login sees why the
+hand-back did nothing. The removal cutoff is the later of the pass's `decided_at`
+and its `answered_at`, so an answer a pass was recorded after never wakes a crew
+again, whatever the clocks. A candidate
+missing from the page is unknown, neither closed nor answered: the page may stop
+before an older issue, and removing the label moves the issue to the top of it. A
+found answer is ONE
+`radar/recorded` entry carrying `answered: {actor, at}` (event kind `reply`),
+written by the gateway into the log of the crew that recorded the pass when it is
+live with a session, else the crew it wakes; the record tool cannot write one. The
+wake reason names the actor, `#N human-answered by @<actor>`. It
+patches no work item. The fold keeps the newest answer per number (`answered`,
+500 per crew, oldest evicted -- which re-indexes that pass, the safe direction). The
+pass is never deleted: the index leaves out a row of an answerable scope whose
+`decided_at` is older than the newest answer on its number across all crews, and
+a pass recorded AFTER the answer stands again -- in the crew's own fold it replaces
+the row the answer superseded, which is the one exception to first-decision-wins.
+The crew that recorded the pass is woken (else the first live crew by id) with
+`[crew wake: #N human-answered by @<actor>]`. The wake goes out only once the answer
+entry is durable: a write still queued in the crew log writer is kept in
+`crew-answer-checks.json` and woken on the sweep that reads it back. Every pass
+recorded while an answer stands on its number carries that answer's time as
+`skip.answered_at`: the writer observed the answer before recording, so the pass is
+ordered after it by that observation, not by clocks. It supersedes the crew's own
+older row even when the answer was written into another crew's log, and a local
+clock running behind the forge cannot make the shared index drop it.
+
 **Reads are checkpointed, not cached.** Folding is O(the log), and a crew's log
 carries its message bodies, so the fold is continued rather than redone. The warm
 fold is the crew log's shared slot memo (`crew_log.projection.fold_slot_warm`, keyed
@@ -228,7 +284,8 @@ the tool's `1..1_000_000_000`, `claim_comment_id` to its `1..10^18` -- so a
 thousand-digit number read off a file is dropped, as a number of the wrong type
 already was, rather than kept as an item or skip key and re-served in every later
 checkpoint and response. `counts`
-reports `evicted_items` and `evicted_skips` beside `open`, so a bounded record is
+reports `evicted_items`, `evicted_skips` and `evicted_answers` beside `open`, so a
+bounded record is
 told from a complete one. The bounds are far above any crew's working set; a crew
 that has touched more distinct issues than this has a history, not a working set,
 and the working set is what a resume needs. An evicted pass is one the repository

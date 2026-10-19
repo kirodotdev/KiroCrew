@@ -718,6 +718,11 @@
       "answers": "An issue crew's items, counts, phase lines and recorded skips",
       "fields": [
         {
+          "name": "answered",
+          "type": "object",
+          "optional": false
+        },
+        {
           "name": "counts",
           "type": "object",
           "optional": false

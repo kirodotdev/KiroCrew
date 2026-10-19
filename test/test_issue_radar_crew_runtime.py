@@ -529,7 +529,12 @@ class TestProviderVocabulary(unittest.TestCase):
         # The sweep is the only production caller, and it holds the real key.
         source = inspect.getsource(cr.sweep_repo)
         self.assertIn("watchdog_cycle(state, key.owner, key.repo, crews, scope, key)", source)
-        self.assertRegex(source, r"wake_crew\(\s*state,\s*key\.owner,\s*key\.repo,[\s\S]*?\bkey,")
+        # Wakes go through one helper, so the key it forwards is pinned there.
+        self.assertIn("_wake_for(state, key,", source)
+        self.assertRegex(
+            inspect.getsource(cr._wake_for),
+            r"wake_crew\(\s*state,\s*key\.owner,\s*key\.repo,[\s\S]*?\bkey,",
+        )
 
 
 # ── provider scoping of the crew ledger ─────────────────────────────────────
@@ -552,7 +557,7 @@ class TestCrewStoreScoping(unittest.TestCase):
     """
 
     #: ``crew_store`` members that are not per-repo and take no ``root``.
-    _ROOTLESS = frozenset({"is_crew_id"})
+    _ROOTLESS = frozenset({"is_crew_id", "normalize_forge_time"})
 
     def _offenders(self, module: Any) -> list[str]:
         tree = ast.parse(Path(inspect.getfile(module)).read_text(encoding="utf-8"))
