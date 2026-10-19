@@ -533,8 +533,7 @@ all four, backing up the replaced documents into `pre-restore-<ts>/` first. The 
 and its writers are in [config](config.md#settings-import-dashboard-merge).
 
 Each rule above has one owner. `kiro_crew.snapshot` is the command and API facade: it
-holds `snapshot_main` and `restore_main`, the `MANIFEST.json` writer (`_build_snapshot`),
-the outbound redaction seam, the merge-mode driver and the notification copy.
+holds `snapshot_main` and `restore_main` and the outbound redaction seam.
 `restore_main` sequences extraction and the bundle-shape refusals, and writes their
 `state_restore_rejected` audits. The facade re-exports the owners' names, so every existing
 import keeps resolving. The owners read the helpers, drivers and limits a test replaces
@@ -563,6 +562,12 @@ module outside the snapshot family imports an owner.
   with its rollback.
 - `kiro_crew.snapshot_merge` owns the merge algorithms: memory rows, cron jobs,
   notification records and no-overwrite trees.
+- `kiro_crew.snapshot_build` builds a bundle: the size estimate
+  (`_estimate_selected_bytes`) and the `MANIFEST.json` writer (`_build_snapshot`), which
+  stages the selected components and publishes the owner-only tarball.
+- `kiro_crew.snapshot_merge_driver` owns the merge-mode driver (`_do_merge`), which runs
+  each selected component through those algorithms, and the notification copy
+  (`_copy_notifications`).
 
 | `kirocrew config get [key]` | Print full config or a dot-path value |
 | `kirocrew config set <key> <val>` | Set a config value (auto type detection). A key whose schema declares an enum refuses a value outside it on every write (exit 1, naming the selectable values), because the load path answers such a value by degrading it with a warning rather than rejecting it — the write is the last point where the mistake is still attributable to the command. What is written is the enum's own spelling: a case variant is canonicalised (`agent.log_level debug` stores `DEBUG`), and a key with a loader-side alias table (`stt.model`, through `stt.models.canonical_name`) stores the row the alias names (`turbo` stores `large-v3-turbo`). Only declared enums on concrete registry paths are checked; a wildcard path (`slack_channels.*.activation`) keeps reaching the loader's own degrade rule. Type is checked only on a declared leaf's first write (`_declared_type_error`); the enum check has no stored value to stand in for it. A **list-typed** key (declared `array` in the registry, wildcard paths matched segment by segment) never goes through the scalar parser: `_parse_list_value` accepts a JSON array and nothing else, and otherwise exits 1 before anything is written, on `--local` too. The case it exists for is Windows PowerShell 5.1, which strips the inner quotes of `'["a","b"]'` so the CLI receives `[a,b]`; the scalar parser stored that as a string and the loader then dropped the whole list field to its default (`agent.apps_trusted` un-trusting its apps). No comma-list spelling is accepted, because a list field's item type (`list[int]` or `list[str]`) is not known at the write. The refusal prints retry forms that survive PowerShell 7.3+, Windows PowerShell 5.1 and sh. The loader is unchanged. **`--value-base64=<token>`** carries the value as standard Base64 of its UTF-8 text, as ONE attached argument, in place of the positional `VALUE`. After a strict decode (`base64.b64decode(validate=True)`, then UTF-8) the text goes through the same list/scalar parser and the same writer as a positional value, so the stored config is identical. It exists because Windows PowerShell 5.1 drops a separate empty-string argument before a `.cmd` shim and rewrites quotes, so no positional spelling is safe in every shell; an attached token has no quotes and no empty argument. The empty token (`--value-base64=`) is the empty string, detected with `is not None` (never truthiness) and so is a value, not a missing one: a scalar key stores empty text, and a list key refuses it as not a JSON array (an empty list is the token `W10=`, the text `[]`). Combined with a positional `VALUE` or with `--file` it exits 1 before any write; a malformed alphabet, bad padding or non-UTF-8 bytes exit 1 with a `--value-base64:` message and write nothing. `--local` and the key argument work as before. The Settings command rows (see learn-cron-dashboard) generate only this form. |

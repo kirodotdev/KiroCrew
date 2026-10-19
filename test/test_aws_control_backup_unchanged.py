@@ -9,7 +9,7 @@ Three layers, because each answers a question the others cannot:
   a case where the value it drops is the ONLY difference, and a second case proving a
   neighbouring value still counts.
 * ``TestRealBundleAssumption`` pins an ASSUMPTION about a module this one does not
-  own. The skip rests on ``created_at`` being the only field ``snapshot.py`` rewrites
+  own. The skip rests on ``created_at`` being the only field ``snapshot_build.py`` rewrites
   on a rebuild; that is measured rather than assumed, and this builds two real
   bundles so the day a second volatile field appears CI goes red instead of the skip
   quietly never firing again.
@@ -297,7 +297,7 @@ class TestTreeFingerprint:
 
 
 # ---------------------------------------------------------------------------
-# The assumption about snapshot.py, pinned rather than trusted
+# The assumption about snapshot_build.py, pinned rather than trusted
 # ---------------------------------------------------------------------------
 
 
@@ -315,7 +315,7 @@ def _manifest_field(archive: Path, field: str) -> Any:
 def _build_real_bundle(out: Path) -> Path:
     """Build one real snapshot bundle into *out* and return the archive it wrote.
 
-    The staging mode is the platform's, not a preference. ``snapshot.py`` refuses to
+    The staging mode is the platform's, not a preference. ``snapshot_build.py`` refuses to
     stage the data home where the platform cannot open a directory relative to a
     descriptor, because a by-name walk is exactly the mechanism an ancestor swapped
     mid-walk redirects; the documented way to proceed there is to ask for that walk
@@ -341,7 +341,7 @@ class TestRealBundleAssumption:
         self, tmp_path, monkeypatch
     ):
         # The whole skip rests on a fact about a module this one does not own: of
-        # everything `snapshot.py` writes into a bundle, only MANIFEST.json's
+        # everything `snapshot_build.py` writes into a bundle, only MANIFEST.json's
         # `created_at` changes when the tree has not. Prose cannot fail, so this
         # measures it against the real engine. The day a second volatile field is
         # added, this goes RED -- instead of the skip silently never firing again and

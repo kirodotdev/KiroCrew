@@ -172,7 +172,7 @@ every time a break was drawn.
 A new role is cheap on the wire: `ChatMessage.role` is an open `string`
 (`website/src/types/index.ts`), and the transcript read path has no role
 allowlist — `_read_messages_locked` skips only the `_type: "metadata"` header and
-appends every other JSON line verbatim (`history_projection.py`,
+appends every other JSON line verbatim (`history_projection_reads.py`,
 `TranscriptReadProjection`).
 
 One thing to *not* do: leave the new role out of `_QUESTION_RETIRING_ROLES`
@@ -516,7 +516,7 @@ absent.
 `_recall_rows` — an old session resumed by a new gateway, or the
 reverse, sees no prompt change.
 
-**Read path.** No role allowlist (`history_projection.py`,
+**Read path.** No role allowlist (`history_projection_reads.py`,
 `TranscriptReadProjection`), so an older gateway
 reading a transcript containing markers parses them as ordinary rows.
 

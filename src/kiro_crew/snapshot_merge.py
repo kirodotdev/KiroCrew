@@ -2,7 +2,7 @@
 
 Additive by construction. Memory rows merge through an allowlisted SQL path, cron jobs by
 name, notification records byte for byte, and trees copy in only what the destination
-lacks. The merge driver, :func:`kiro_crew.snapshot._do_merge`, sequences these per
+lacks. The merge driver, :func:`kiro_crew.snapshot_merge_driver._do_merge`, sequences these per
 component. It skips a component whose data cannot be merged file by file, and refuses a
 selection of nothing else (:data:`kiro_crew.snapshot_components._REPLACE_ONLY_COMPONENTS`);
 replace restores those.

@@ -88,8 +88,24 @@ use:
   the facade owner.
 - `history_search.py` owns query parsing plus the list/search/snippet catalog
   projection.
-- `history_projection.py` owns bounded transcript reads, tab-chain/index
-  projection, metadata reads and updates, permanent deletion, and previews.
+- `history_projection.py` owns locked metadata updates and permanent deletion
+  (`SessionMetadataProjection`) and is a mirrored facade
+  (`kiro_crew._facade_mirror`) over two sibling owners, lowest layer first:
+  `history_projection_contract.py` (the metadata-line states,
+  `DISPLAY_ONLY_ROLES`, the chained page and revision types, the bounded
+  readers' tuning and chunked line splitter, `drop_persisted_tail_prefix`, and
+  the `kiro_crew.history` logger the projections share) and
+  `history_projection_reads.py` (`TranscriptReadProjection`: bounded transcript
+  reads, tab-chain/index projection, metadata reads, and previews). The facade
+  binds every name it imported and serves the moved ones, so a patch of
+  `kiro_crew.history_projection.<name>` reaches every owner that reads it.
+  `TranscriptRevisionChanged` keeps `kiro_crew.history_projection` as its
+  `__module__`, because its name reaches tracebacks; `TranscriptPage` and
+  `TranscriptReadProjection` name their owner (nothing reads it). New read work
+  goes to `history_projection_reads.py`, which is close to the line cap, so a
+  new read family gets an owner of its own; a name both projections need goes
+  to `history_projection_contract.py`. `test/test_history_projection_facade.py`
+  pins the owners, the exception's module, the logger and the patch reach.
 - `history_rewrite.py` owns locked compaction rewrites and size-based rotation.
 - `history_consolidation.py` defines `HistoryConsolidator` (construction,
   `reconfigure`, retry accounting, off-loop counting and every scheduling entry

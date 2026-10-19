@@ -24,7 +24,6 @@
 2802 src/kiro_crew/apps/builtins/md_notebook/server.py
 2449 src/kiro_crew/apps/builtins/spec_builder/backend/repository.py
 5184 src/kiro_crew/apps/routes.py
-2093 src/kiro_crew/autonudge.py
 2317 src/kiro_crew/browser_cli/install.py
 2579 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status.py
 2232 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/push_guard.py
@@ -49,7 +48,6 @@
 2795 src/kiro_crew/deploy/handlers.py
 2177 src/kiro_crew/discord/client.py
 2103 src/kiro_crew/discord/renderer.py
-2128 src/kiro_crew/history_projection.py
 2038 src/kiro_crew/history_search.py
 2007 src/kiro_crew/knowledge/ingestion.py
 3928 src/kiro_crew/llm_helpers.py
@@ -71,7 +69,6 @@
 2421 src/kiro_crew/session_ledger.py
 3685 src/kiro_crew/slack/events.py
 3892 src/kiro_crew/slack/interactions.py
-2115 src/kiro_crew/snapshot.py
 2594 src/kiro_crew/subagent_persistence.py
 2272 src/kiro_crew/tool_call_title.py
 2250 src/kiro_crew/ui_index.py

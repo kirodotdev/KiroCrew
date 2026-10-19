@@ -2071,8 +2071,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # chunks go to the module that asked for them, which is the registered
         # sink (slack/format.py, messaging/renderer.py and the channel renderers).
         "messaging/split.py",
-        # ``autonudge.py``'s ``_load`` credential-scrubs a persisted ``banner`` in
-        # memory and attempts to persist the masked value back, so a banner
+        # ``autonudge_service/store_loader.py``'s ``_load`` credential-scrubs a persisted
+        # ``banner`` in memory and attempts to persist the masked value back, so a banner
         # written to the store out-of-band (a hand-edited file, or a direct
         # ``AutoNudgeService.add`` that skips the authorizer) is masked on the next
         # load rather than served raw — best-effort, since a failed re-persist
@@ -2081,7 +2081,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # ``dashboard/handlers/autonudge.py`` serializer and the gateway broadcast;
         # this is at-rest sanitisation at the trust boundary where the store is
         # read, not an egress pass.
-        "autonudge.py",
+        "autonudge_service/store_loader.py",
         "autonudge_authz.py",
         # Applies no redactor at all: the pipeline conductor's fleet probe BUILDS a
         # command fragment for a `BANNED` line out of what can hold no secret -- a

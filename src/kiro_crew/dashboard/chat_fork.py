@@ -65,7 +65,8 @@ _MAX_MESSAGE_ID_CHARS = 256
 
 
 def drop_persisted_tail_prefix(full_disk: list[dict], tail: list[dict]) -> list[dict]:
-    """Re-exported from ``history_projection``, which owns the identity rule.
+    """Re-exported from ``history_projection`` (defined in ``history_projection_contract``,
+    which owns the identity rule).
 
     Kept importable from here because this module was its first consumer and is
     where callers and tests reach for it.

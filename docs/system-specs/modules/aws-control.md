@@ -524,7 +524,7 @@ loses a backup it had.
 
 Two normalizations are part of the digest's definition, each measured against the real
 engine rather than assumed. `_VOLATILE_MANIFEST_FIELDS` drops `created_at` from
-`MANIFEST.json`, the one field `snapshot.py` rewrites on a rebuild of an unchanged tree;
+`MANIFEST.json`, the one field `snapshot_build.py` rewrites on a rebuild of an unchanged tree;
 the member's other fields stay, because `purpose`, `staging` and `version` are not
 derivable from the file set. The snapshot bundle's root directory carries a timestamp, so
 snapshots pass `volatile_root=True` while the sessions archive passes `False` -- its

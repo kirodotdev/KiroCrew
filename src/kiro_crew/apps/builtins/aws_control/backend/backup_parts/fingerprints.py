@@ -106,7 +106,7 @@ _SNAPSHOT_MANIFEST_NAME = "MANIFEST.json"
 #:
 #: Measured, not assumed: two bundles built from one untouched home differ in exactly
 #: one member (``MANIFEST.json``) and inside it in exactly one field (``created_at``)
-#: -- ``snapshot.py`` writes it as ``datetime.now(...)`` beside ``hostname``, ``user``
+#: -- ``snapshot_build.py`` writes it as ``datetime.now(...)`` beside ``hostname``, ``user``
 #: and ``kirocrew_dir``, which are stable on an install and are therefore KEPT. The
 #: rest of the manifest is real signal and is compared: ``purpose``, ``staging``
 #: (pinned vs unpinned) and ``version`` are not derivable from the file set at all, so

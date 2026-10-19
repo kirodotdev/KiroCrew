@@ -3680,9 +3680,8 @@ defined before the split resolves there as its owner's own object, and so does e
 name it imported from the rest of the package. It also keeps what
 must stay defined in it: `get_instance()` / `_INSTANCE`, the lock registries
 `_MAINTENANCE_LOCKS` and `_MUTATION_LOCK_OWNERS` (the boot smoke tracks them by name),
-the loader `_load` with `repair_sentinel_path` and the stored judge-field bounds (the
-loader vets and scrubs every stored row at the trust boundary), the scrub helpers
-`scrub_loop_text`, `scrubbed_judge_spec` and `redact_store_value`, and the arming rules
+`repair_sentinel_path` (tests patch the `config_dir` and `is_sensitive_path` it reads
+there), and the arming rules
 `binding_key_for`, `structured_monitor_binding_key_for` and `enabled()`, and the
 alternate constructor `load_for_maintenance`, whose return annotation names the class. The
 owners, each
@@ -3700,6 +3699,7 @@ importing at load time only those listed before it and never the facade:
 | `autonudge_service/firing.py` | `_timer`, `_run_fire_cycle`, `fire_now` |
 | `autonudge_service/mutations.py` | `add()`, `update()`, `remove()` and their unserialized bodies, `remove_sync`, `remove_by_slot`, `clear_terminal_monitor` |
 | `autonudge_service/monitor_records.py` | `add_monitor`, `apply_monitor_probe`, `update_monitor`, `record_monitor_turn_completion` and every other structured-monitor transition |
+| `autonudge_service/store_loader.py` | the loader `_load`, which vets and scrubs every stored row at the trust boundary; the stored judge-field bounds, `ADDRESSING_FIELDS` and its guard, `_repair_number` and `_is_torn_deactivation`; and the scrub helpers every other entrance shares, `scrub_loop_text`, `scrubbed_judge_spec` and `redact_store_value` |
 
 Each owner function that takes the service as `self` is a service method, bound on
 `AutoNudgeService` by name in one table, so a patch on the instance reaches every internal
@@ -3713,9 +3713,10 @@ helpers in `maintenance.py`, and the backoff constants and helpers in `timers.py
 `gate.py`. The facade re-exports each as the same object, but a patch on the facade's
 binding reaches only callers that read it through `kiro_crew.autonudge`, never owner code,
 so the contract test fails any test in the tree that patches such a name on the facade.
-Owner code reads eight names through `kiro_crew.autonudge` at call time: the four tests patch
+Owner code reads ten names through `kiro_crew.autonudge` at call time: the six tests patch
 there (`_OVERDUE_REARM_SECS`, `_RECONCILE_INTERVAL_SECS`, `replace_with_retry`,
-`fsync_dir`) and the four defined there (`scrubbed_judge_spec`, `_INSTANCE`,
+`fsync_dir`, `scrubbed_judge_spec`, `_bounded_judge_verdict`) and the four defined there
+(`repair_sentinel_path`, `_INSTANCE`,
 `_MAINTENANCE_LOCKS`, `_MUTATION_LOCK_OWNERS`). The service keeps the runtime state its
 owners share, because a lock order and a delete-wins rule hold only where one object
 owns them:
