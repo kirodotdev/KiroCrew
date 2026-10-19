@@ -107,6 +107,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _emit_embed_timing,
         _free_llama,
         _InferJob,
+        _install_bounded_decode,
         _install_metadata_kv_clear,
         _trim_native_heap,
     )
