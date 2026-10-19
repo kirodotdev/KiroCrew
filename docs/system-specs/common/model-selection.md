@@ -463,7 +463,10 @@ its own once the cache refreshes with a list that carries it.
   read or the agent-pin read fails (`useSettingsDefaultModel` reports `failed`),
   the composer shows an inline "failed to load config" notice instead.
 - **A dashboard chat slot with an empty `slot.model` inherits**, and keeps inheriting
-  across turns. When neither the slot nor its crewmate pins a model, the turn asks
+  across turns and across a restart: a metadata line whose `model` is `""` restores
+  `""`. Only a line with no `model` key, saved before every save wrote one, takes the
+  agent's configured model (`metadata_codec._read_model`). When neither the slot nor
+  its crewmate pins a model, the turn asks
   `get_or_create` for no model and the allocation resolves the ladder itself; the turn
   reads the same resolver over the session manager's config
   (`_inherited_default_model`) only to know which default the slot inherits. Neither

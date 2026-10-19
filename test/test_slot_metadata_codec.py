@@ -21,6 +21,7 @@ import json
 import pytest
 from chat_test_helpers import _make_state
 
+from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.dashboard import chat_persistence as cp
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
 from kiro_crew.dashboard.slot_buffers import (
@@ -222,14 +223,19 @@ def _populated(state, *, app: str = "app-1"):
     return slot
 
 
-def _purpose(purpose: str, *, name: str, member=None, listed: object = "Listed"):
+def _purpose(purpose: str, *, name: str, member=None, listed: object = "Listed", **inputs):
+    """Build *purpose*; *inputs* are extra constructor keywords (the restore inputs)."""
     if purpose == codec.RESTORE:
-        return codec.Restore(name=name, member=member)
+        return codec.Restore(name=name, member=member, **inputs)
     if purpose == codec.RECENT:
         return codec.Recent(
-            name=name, member=member, listing={"title": listed}, history_key=f"dashboard_{name}"
+            name=name,
+            member=member,
+            listing={"title": listed},
+            history_key=f"dashboard_{name}",
+            **inputs,
         )
-    return codec.Resume(member=member, history_key=f"dashboard:{name}")
+    return codec.Resume(member=member, history_key=f"dashboard:{name}", **inputs)
 
 
 def _slot_folds(slot) -> codec.SaveFolds:
@@ -533,6 +539,60 @@ def test_a_line_with_no_model_falls_back_to_the_agents_configured_model(tmp_path
     assert slot.model == "model-of-writer"
     resume, _, _ = _read_back(state, {"agent": "writer"}, codec.RESUME)
     assert resume.model == ""
+
+
+#: A line saved before ``model`` was a key of the metadata line.
+_NO_MODEL_KEY = object()
+
+
+@pytest.mark.parametrize("purpose", [codec.RESTORE, codec.RECENT])
+@pytest.mark.parametrize(
+    ("line_model", "restored"),
+    [
+        (_NO_MODEL_KEY, "model-of-kirocrew"),
+        ("", ""),
+        ("model-of-kirocrew", "model-of-kirocrew"),
+        ("picked-model", "picked-model"),
+    ],
+    ids=["legacy-line", "follows-the-default", "pin-equal-to-agent-model", "pin"],
+)
+def test_a_restart_takes_the_agents_model_only_for_a_line_with_no_model_key(
+    purpose, line_model, restored, tmp_path, monkeypatch
+):
+    """Every save writes ``model``, and ``""`` there is a chat that follows the default.
+
+    Filling that in from the agent's spec would pin the chat to whatever the default
+    was at the restart. A pin comes back as it was, even when it names the same model
+    the agent's spec does.
+    """
+    state = _state(tmp_path, monkeypatch)
+    meta: dict = {"agent": "kirocrew"}
+    if line_model is not _NO_MODEL_KEY:
+        meta["model"] = line_model
+    slot, _, _ = _read_back(
+        state, meta, purpose, agent="kirocrew", model_map={"kirocrew": "model-of-kirocrew"}
+    )
+    assert slot.model == restored
+
+
+@pytest.mark.parametrize("purpose", [codec.RESTORE, codec.RECENT])
+def test_a_crewmate_thread_that_follows_the_default_stays_unpinned(purpose, tmp_path, monkeypatch):
+    """A crewmate thread resolves the legacy fallback through its crewmate's kiro agent;
+    a thread whose line says ``""`` must not get that agent's model as a pin."""
+    state = _state(tmp_path, monkeypatch)
+    cfg = KiroCrewConfig()
+    cfg.agents["mate"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+    inputs = {"cfg": cfg, "model_map": {"kirocrew": "model-of-kirocrew"}}
+    meta = {"agent": "mate", "mode": "member", "model": ""}
+    slot, _, _ = _read_back(
+        state, meta, purpose, name="member-mate", member=("mate", "member"), **inputs
+    )
+    assert (slot.agent, slot.model) == ("mate", "")
+    del meta["model"]
+    legacy, _, _ = _read_back(
+        state, meta, purpose, name="member-mate-legacy", member=("mate", "member"), **inputs
+    )
+    assert legacy.model == "model-of-kirocrew"
 
 
 @pytest.mark.parametrize(

@@ -394,8 +394,9 @@ def _restore_model_fields(slot: Any, meta: dict, *, cfg: Any, effort_marker: boo
     *effort_marker* is the off-loop ``_has_validated_effort_marker`` read for
     this effort value. The effort allowlist is process state that stays on
     ``chat_persistence``, so the check is made there.
-    Returns True when the metadata carried a model, so a caller can fall
-    back to the agent's default model when it did not.
+    Returns True when the metadata carried a model. False also covers a
+    ``model`` of ``""``, a slot that follows the default, so a caller that falls
+    back to the agent's model must check that the key is absent.
     """
     from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
 
@@ -649,9 +650,12 @@ def _read_model(r: _Read) -> None:
         not _restore_model_fields(
             r.slot, r.meta, cfg=purpose.cfg, effort_marker=purpose.effort_marker
         )
+        and "model" not in r.meta
         and r.slot.agent
     ):
-        # A legacy line with no ``model``: the agent's configured model.
+        # A legacy line with no ``model`` key: the agent's configured model. Every
+        # save writes the key, and ``""`` there is a slot that follows the default
+        # model; filling it in from the agent's spec would pin it.
         try:
             mc = purpose.cfg.agents.get(r.slot.agent) if purpose.cfg else None
             kiro_name = mc.kiro_agent if mc and mc.kiro_agent else r.slot.agent
