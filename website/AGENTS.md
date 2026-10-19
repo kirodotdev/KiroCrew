@@ -23,7 +23,7 @@ them.
 | a registered find_ui location: `src/uiLocations/` area descriptors, a `{...uiLocation(id)}` spread, `conditions.ts`, or anything the generated index is cut from (a registry, marker, descriptor or catalog) | [find_ui and the UI location index](../docs/architecture/mcp.md#find_ui-and-the-ui-location-index) + [Adding a UI location](../docs/architecture/mcp.md#adding-a-ui-location) — register at both sites, then run `npm run gen:ui` and commit the regenerated index, or the freshness gate fails |
 | tests (vitest, MSW, Playwright, Electron), or a test that fails only in CI | [testing](docs/testing.md) |
 | the Electron desktop shell | [electron/README.md](electron/README.md) |
-| a file nearing 2,000 lines, or splitting one | [code-style § No file over 2,000 lines](../docs/system-specs/common/code-style.md#no-file-over-2000-lines): `scripts/check_file_line_cap.py` enforces it in CI's lint jobs |
+| a file nearing 2,000 lines, or splitting one | [code-style § No file over 2,000 lines](../docs/system-specs/common/code-style.md#no-file-over-2000-lines): `scripts/check_file_line_cap.py` enforces it in CI's lint jobs. A change that takes a file past 1,600 lines splits it per [§ Splitting a file](../docs/system-specs/common/code-style.md#splitting-a-file): the facade re-exports with explicit `export { … } from` lists, never `export *`, and no owner imports it |
 | anything backend, or a whole-system question | [`../AGENTS.md`](../AGENTS.md) |
 
 Everything under `website/docs/` is indexed by [its README](docs/README.md).

@@ -998,7 +998,7 @@ jobs:
             #     an-invariant-line-needs-a-mutation-pin, tests-are-deterministic,
             #     an-async-test-respects-the-on-loop-lock, a-stopwatch-is-not-a-
             #     barrier,
-            #     a-bound-bounds-every-field-it-retains,
+            #     a-bound-bounds-every-field-it-retains, keep-modules-small,
             #     an-operator-facing-string-states-what-was-measured, and the
             #     website UI rules other than frontend-security --
             #     availability/hygiene classes with bounded harm.

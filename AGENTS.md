@@ -297,12 +297,15 @@ human passes `--full`. See
   --max-worker-restart=2`; a bare override silently drops `--dist loadgroup` and
   scatters `@pytest.mark.xdist_group` tests into flaky races.
 
-**No hand-written file over 2,000 lines; put new code in a new module.** When a
-file nears the cap, move whole definitions into a sibling module and keep the
+**No hand-written file over 2,000 lines; put new code in a new module.** A new
+responsibility gets a new module, never a new section in a large file, and a change
+that takes a code file past 1,600 lines splits it in the same PR or in one before it.
+Split by responsibility, moving whole definitions into a sibling module, and keep the
 original path as the import path callers use. `scripts/check_file_line_cap.py`
-enforces it in CI's lint jobs; run it before you push. The files already over are
-listed in `.github/file-line-cap-baseline.txt`, which only shrinks, so never add a
-row. Details: [code-style](docs/system-specs/common/code-style.md).
+enforces the cap in CI's lint jobs; run it before you push. The files already over
+are listed in `.github/file-line-cap-baseline.txt`, which only shrinks, so never add
+a row. How to split without losing a patch seam:
+[code-style § Splitting a file](docs/system-specs/common/code-style.md#splitting-a-file).
 
 Gates, the seven flake classes, the conftest isolation floor and the traps that are
 invisible when reading a test: [code-style](docs/system-specs/common/code-style.md) +

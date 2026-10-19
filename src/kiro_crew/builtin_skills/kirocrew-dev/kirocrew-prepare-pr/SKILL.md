@@ -415,8 +415,7 @@ full suites are CI's job and the Phase 3 poll is the authority on them.
    reports failing tests**: reproduce EXACTLY the node ids from
    `gh run view <run-id> --log-failed`; fix; push.
 
-   **The setup and gate lists are data** in `profiles/kirocrew.json`;
-   `test/test_prepare_pr_profiles.py` pins the floor to `ci.yml` and `fast-gate.yml`. **Before you add,
+   **The setup and gate lists are data** in `profiles/kirocrew.json`. **Before you add,
    change or remove setup or a gate, read `references/gate-floor.md`.**
 
    - **Check exit codes, never piped output.** `cmd | tail` makes `$?` tail's status. Redirect to a file and test `$?`.
@@ -424,6 +423,7 @@ full suites are CI's job and the Phase 3 poll is the authority on them.
    - **Every new guard or validator helper must have a non-test caller.** `grep` outside `test/`. A change under `src/kiro_crew/deploy/` must be diffed against its `scripts/*.sh` counterpart, and vice versa.
    - **Run the flake-pattern ratchet** when the diff adds or changes a test: `python -m pytest -n0 test/test_flake_pattern_ratchet.py`. It counts the flaky shapes the semgrep rules below miss and compares each changed file with your merge-base, so first fetch the remote your branch was cut from (`upstream` for a fork). CI's Backend Tests run the same comparison and fail on a rise; the related-test runner does not select it, so run it here to see that first.
    - **Run the repository's semgrep rules on the diff** when it adds or changes code or tests: `semgrep scan --config semgrep/ --baseline-commit "$(git merge-base origin/<base> HEAD)" --error`. CI's SAST job runs the same rules diff-scoped and blocking (alongside the registry packs), and none of them is in `gates[]`.
+   - **Split a code file the diff takes past 1,600 lines**: `docs/system-specs/common/code-style.md` § Splitting a file.
 
 2. **Local review — one subagent per profile reviewer**, briefed from CI's own workflows. Run `python3 $SKILL_DIR/scripts/local_review.py --base origin/<base>` from the worktree: it resolves both SHAs itself and writes one task file per reviewer (`local-review-<name>.md`) with that reviewer's prompt **extracted literally from its `contract` workflow**, plus the base-ref `AUTOSDE.yaml` snapshots, the `BASE...HEAD` diff and the PR intent inside the workflow's own UNTRUSTED framing. It never calls a model.
 
