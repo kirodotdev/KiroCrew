@@ -2,9 +2,13 @@ import { useState, useCallback, useMemo, type RefObject } from 'react'
 import type { CrewmateIdentity } from '../pages/chat/CrewmateMessage'
 import { queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { store, type AppDispatch, type RootState } from '../store'
-import { capturePendingAskId, confirmOptimisticSend, markSendUnconfirmed, resolveOptimisticSteer, selectSendAccepted, selectSendConfirmed, appendSlotMessage, pendingQuestionFor } from '../store/chatSlice'
+import { capturePendingAskId, confirmOptimisticSend, markSendUnconfirmed, resolveOptimisticSteer, selectSendAccepted, selectSendConfirmed, selectSlotRunEpoch, appendSlotMessage, pendingQuestionFor } from '../store/chatSlice'
+import { warnDeliveryUnconfirmed } from '../utils/deliveryWarning'
+import { announceIfRemovedSendDelivered } from './useDeliveryWarningStrip'
 import { readPaneDraft, writePaneDraft } from '../utils/chatPaneDrafts'
-import { expandAll as expandPasteTokens } from '../utils/pasteTokens'
+import { expandAll as expandPasteTokens, carryPastes, type PasteBlock } from '../utils/pasteTokens'
+import { prependQuote, type MessageQuote } from '../chat-core/composer/messageQuote'
+import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { sendTurn, mintSendId, type SendReceiptStatus } from '../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
 import { useMessageQuote } from '../chat-core/composer/useMessageQuote'
@@ -36,6 +40,29 @@ const PANE_REFUSED_COMMANDS: readonly string[] = ['/kb']
 /** Delay before the post-send bottom pin, so the optimistic bubble's commit has
  *  landed in the tail window the pin mounts (ChatPage uses the same figure). */
 const SCROLL_AFTER_RENDER_MS = 100
+
+/** What a pane send consumed, in the shape the pane's `restoreIntoComposer` puts back. A crewmate
+ *  pane raises none: its transcript draws messages only, so the notice that a removed send was
+ *  delivered after all could never reach the user there. */
+export interface PaneSentRestore {
+  text: string
+  files: string[]
+  pastes: PasteBlock[]
+  quote: MessageQuote | null
+}
+
+/** Two pane sends' payloads as one, so a single restore puts both back. The stage holds one
+ *  quote, so a second goes into its own text. */
+export function mergePaneSends(earlier: PaneSentRestore, later: PaneSentRestore): PaneSentRestore {
+  const laterText = earlier.quote && later.quote ? prependQuote(later.text, later.quote) : later.text
+  const carried = carryPastes(laterText, later.pastes, earlier.pastes)
+  return {
+    text: mergeRecoveredDraft(earlier.text, carried.text),
+    files: [...new Set([...earlier.files, ...later.files])],
+    pastes: carried.pastes,
+    quote: earlier.quote ?? later.quote,
+  }
+}
 
 export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent }: {
   slotKey: string
@@ -260,6 +287,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         message: { role: 'user', content: displayTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { ...meta, ...(crewmate ? { responsiveSend: true } : {}) } },
       }))
     }
+    const sendEpoch = selectSlotRunEpoch(store.getState(), slotKey)
     // Sending is explicit intent to be at the end, so the pane force-pins the
     // transcript exactly as ChatPage does after its own optimistic append: the
     // reader lands on the bubble they just sent, and follow is re-armed for the
@@ -326,7 +354,8 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         warnUnconfirmed: () => {
           if (bubbleMinted) {
             dispatch(markSendUnconfirmed({ slot: slotKey, sendId }))
-            dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed_pending'), cls: '' } }))
+            if (!crewmate) warnDeliveryUnconfirmed<PaneSentRestore>(slotKey, { sendId, surface: 'pane', epoch: sendEpoch, sent: { text, files, pastes: bubblePastes, quote: sentQuote } })
+            dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT(crewmate ? 'pages.chatPage.delivery_unconfirmed_resend_manually' : 'pages.chatPage.delivery_unconfirmed_pending'), cls: '', meta: { deliveryNoticeFor: sendId } } }))
           } else if (!optionText) {
             dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'), cls: '' } }))
           }
@@ -355,6 +384,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
             sendId,
             mid: typeof receipt.body.mid === 'string' ? receipt.body.mid : undefined,
           }))
+          announceIfRemovedSendDelivered(dispatch, slotKey, sendId)
         },
         // The receipt names the queue entry this send became: bind the pre-send
         // composer state to it so cancelling that card restores the TYPED text

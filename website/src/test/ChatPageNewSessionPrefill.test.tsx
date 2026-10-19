@@ -36,6 +36,7 @@ import { loadFileDrafts, saveFileDrafts } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts, __resetForTests as resetPasteDrafts } from '../utils/chatPasteDrafts'
 import { loadSessionRefDrafts, saveSessionRefDrafts, __resetSessionRefDraftsForTests as resetSessionRefs } from '../utils/chatSessionRefDrafts'
 import { formatToken } from '../utils/pasteTokens'
+import { i18nT } from '../i18n/t'
 import type { useKnowledgeFetch } from '../pages/chat/useKnowledgeFetch'
 
 let knowledgeInTest: ReturnType<typeof useKnowledgeFetch>
@@ -346,6 +347,20 @@ describe('App SDK chat launch intent', () => {
     await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
     expect(sendChat.mock.calls[0]).toContain('chat-old')
     expect(createChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('keeps the full resend guidance when a launched send times out, since a launch raises no strip', async () => {
+    sendChat.mockImplementation(async () => { throw new DOMException('aborted', 'AbortError') })
+    launch({ message: PROMPT, slotKey: 'chat-old' })
+    const store = await renderAt('/chat?sid=chat-old')
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+    const notice = await waitFor(() => {
+      const row = store.getState().chat.messages.find(m => m.role === 'notice' && m.meta?.deliveryNoticeFor)
+      expect(row).toBeDefined()
+      return row!
+    })
+    expect(notice.content).toBe('\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed_resend_manually'))
+    expect(screen.queryByTestId('delivery-exit-dismiss')).toBeNull()
   })
 
   it('shows a restored-answer notice on the session page after its question is gone', async () => {
