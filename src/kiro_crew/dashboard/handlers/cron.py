@@ -177,6 +177,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         prefetch_cron_dismissed,
         restore_cron_turn_timeout,
     )
+    from kiro_crew.dashboard.cron_timeout_field import (  # noqa: F401
+        timeout_secs_from_body,
+    )
     from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
         _blocks_reads_session,
         _get_active_workspace,

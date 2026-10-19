@@ -674,10 +674,11 @@ calendar fields), each for a reason a follow-up `update_job` cannot serve:
   asserts `AUTO_APPROVE` with no approval callback for `"auto"` and
   `HOOK_BASED` with one for `""`.
 - **`timeout_secs`** (the per-wake budget) is cross-validated against the
-  subprocess timeout only in `build_job`, at create. `apply_job_update`
-  range-checks it and does not re-run that cross-check, so setting it after the
-  fact skips the check that refuses a budget too short to cover its own
-  subprocess — the duplicate-launch hazard that check exists to prevent.
+  subprocess timeout in `build_job`, at create, and again in
+  `apply_job_update` on the post-update values whenever an update changes
+  either one. So a budget too short to cover its own subprocess, the
+  duplicate-launch hazard that check exists to prevent, is refused on both
+  paths.
 - **`timeout`** is what makes `timeout_secs` usable on the command and script
   jobs apps most often register: the cross-check compares the budget against
   this value, falling back to 300s for a command and 30s for a script when it is
@@ -813,6 +814,12 @@ cannot forge "already applied". The digest is computed over the DEFINITION, not
 the job — the job holds the resolved script path and folder id, which differ
 between hosts for one manifest. Pinned by `test/test_app_cron_manifest_resync.py`
 against a real `CronService`.
+
+### Run Time Limit (`timeout_secs`)
+
+A job's `timeout_secs` is its whole-run budget: `_execute_with_timeout` stops a run still going after it and records the run as timed out (`Timed out after <N>s`). Valid values are `1..86400`, and a job without one, or with a stored value outside that range, runs under `_JOB_TIMEOUT_SECS` (1800 s). `effective_wake_budget` (`cron_service/execution.py`) is that rule. A command or script job also has `timeout`, its subprocess bound, and its `timeout_secs` must cover that bound plus cleanup (see the App SDK allowlist above).
+
+The dashboard reads and writes it. `GET /api/crons` returns each job's `timeout_secs` as `effective_wake_budget`, so the form shows the limit a run actually gets. `POST /api/crons` and `PATCH /api/crons/{id}` take an optional `timeout_secs` through `dashboard/cron_timeout_field.timeout_secs_from_body`: a JSON integer in range, else `400 invalid_timeout_secs` before anything is written (a boolean, a float, a string and `null` are refused, not coerced). The store's cover check still applies after it, and its `ValueError` is the `400` the form shows. In the Schedule job form (`JobForm`), **Time limit** is a whole-minutes field (1 to 1440) in both layouts, for every job kind. It sends `timeout_secs` only when the minutes change, so a limit set elsewhere in seconds, which the field can only show rounded, survives an unrelated edit. The comparison is against the limit the field was seeded from, not the live job: when the job re-fetches under an open form (another tab saved a new limit), an untouched field follows the new value and an unrelated save sends no limit, so a stale tab cannot write its old limit back. The field holds raw text while typed, so it can be cleared and retyped, and is clamped to the range on blur. The subprocess `timeout` of a command or script job is not in the form: the dashboard does not create those jobs, and the CLI and cron tools set it. `test/test_cron_timeout_secs_api.py` and `website/src/test/JobForm.timeLimit.test.tsx` pin both halves.
 
 ### Hide in Chat (`hide_in_chat`)
 

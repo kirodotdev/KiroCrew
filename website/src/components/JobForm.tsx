@@ -74,9 +74,20 @@ export function jobKindOf(job?: CronJob): JobKind {
 /** Highest auto-pause limit the backend accepts (`_AUTO_PAUSE_MAX`). */
 const AUTO_PAUSE_MAX = 10000
 
+/** A run's time limit when the job sets none: the cron service's own
+ *  `_JOB_TIMEOUT_SECS`. */
+export const DEFAULT_RUN_LIMIT_SECS = 1800
+/** The largest limit the cron service accepts (`timeout_secs` 1..86400), in minutes. */
+export const MAX_RUN_LIMIT_MIN = 1440
+
+/** A run limit in whole minutes, as the form shows it. */
+export function runLimitMinutes(secs: number): number {
+  return Math.min(MAX_RUN_LIMIT_MIN, Math.max(1, Math.round(secs / 60)))
+}
+
 /** Parse a CronJob into initial form state */
 function parseJobDefaults(job?: CronJob) {
-  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, minimalContext: false, chatFolderId: '', jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '' }
+  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, minimalContext: false, chatFolderId: '', jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '', savedTimeoutSecs: DEFAULT_RUN_LIMIT_SECS, timeLimitMin: runLimitMinutes(DEFAULT_RUN_LIMIT_SECS) }
   const isInterval = !!(job.every_secs || (job.schedule || '').match(/^every\s+\d+/))
   const secs = job.every_secs || (() => { const m = (job.schedule || '').match(/^every\s+(\d+)\s*([smh])/); if (!m) return 3600; return parseInt(m[1]) * (m[2] === 'h' ? 3600 : m[2] === 'm' ? 60 : 1) })()
   // Largest unit that divides `secs` EVENLY, not the largest unit that is merely
@@ -123,7 +134,7 @@ function parseJobDefaults(job?: CronJob) {
     weekDays = expandDow(cronParts[4]).map(d => CRON_DOW_TO_GRID[d] || 1)
     weekTime = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
   }
-  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, minimalContext: job.minimal_context || false, chatFolderId: job.chat_folder_id || '', jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw }
+  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, minimalContext: job.minimal_context || false, chatFolderId: job.chat_folder_id || '', jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw, savedTimeoutSecs: job.timeout_secs || DEFAULT_RUN_LIMIT_SECS, timeLimitMin: runLimitMinutes(job.timeout_secs || DEFAULT_RUN_LIMIT_SECS) }
 }
 
 /** Build the API body from form state. Returns null if validation fails (sets error). */
@@ -159,6 +170,10 @@ function buildBody(
   body.silent = f.silent
   body.strict_schedule = f.strictSchedule
   body.hide_in_chat = f.hideInChat
+  // Sent only when the minutes moved. The field shows whole minutes, so a limit
+  // set elsewhere in seconds (the CLI, an agent) reads rounded here, and sending
+  // it back unchanged would rewrite the stored value on an unrelated edit.
+  if (f.timeLimitMin !== runLimitMinutes(f.savedTimeoutSecs)) body.timeout_secs = f.timeLimitMin * 60
   // Always sent for a job that can HAVE a tab, create and edit alike: "" is the
   // real value for "do not file this job's runs", so omitting it when empty would
   // make clearing the picker a no-op on the PATCH and leave the job filed into a
@@ -372,6 +387,25 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   // stopped the save. Kept apart from `error` so it is never shown through
   // ErrorNotice (errors-use-error-notice).
   const [autoPauseHint, setAutoPauseHint] = useState('')
+  // The limit the field was seeded from, held in state rather than read off
+  // `defaults`: `job` is re-fetched while the form is open (another tab's save,
+  // a window refocus), and comparing the stale field against the NEW stored
+  // value would read as an edit and send the old limit back on an unrelated save.
+  const [timeLimitBase, setTimeLimitBase] = useState(defaults.savedTimeoutSecs)
+  // The raw text, so the field can be cleared and retyped; it is clamped on blur.
+  const [timeLimitText, setTimeLimitText] = useState(String(defaults.timeLimitMin))
+  // The whole text, as the number input means it: parseInt would read '1e2'
+  // (100) as 1. Empty is a draft, not a value.
+  const parsedLimit = timeLimitText.trim() === '' ? NaN : Number(timeLimitText)
+  const timeLimitMin = Number.isNaN(parsedLimit)
+    ? runLimitMinutes(timeLimitBase)
+    : Math.min(MAX_RUN_LIMIT_MIN, Math.max(1, Math.round(parsedLimit)))
+  if (defaults.savedTimeoutSecs !== timeLimitBase) {
+    // The stored limit moved under the form. An untouched field follows it; an
+    // edited one keeps the user's value, which is then compared to the new one.
+    if (timeLimitMin === runLimitMinutes(timeLimitBase)) setTimeLimitText(String(runLimitMinutes(defaults.savedTimeoutSecs)))
+    setTimeLimitBase(defaults.savedTimeoutSecs)
+  }
   const [schedMode, setSchedMode] = useState(init.schedMode)
   const [intVal, setIntVal] = useState(init.intVal)
   const [intUnit, setIntUnit] = useState(init.intUnit)
@@ -395,6 +429,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     minimalContext !== defaults.minimalContext ||
     chatFolderId !== defaults.chatFolderId ||
     autoPause !== initialAutoPause ||
+    timeLimitMin !== runLimitMinutes(timeLimitBase) ||
     intVal !== init.intVal || intUnit !== init.intUnit ||
     weekTime !== init.weekTime || cronExpr !== init.cronExpr ||
     weekDays.length !== init.weekDays.length || weekDays.some((d, i) => d !== init.weekDays[i])
@@ -523,9 +558,32 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     return { values, labels }
   }, [modelList, model])
 
+  /** The run time limit, in minutes: the whole run's budget (`timeout_secs`),
+   *  after which the run is stopped and reported as timed out. One control for
+   *  both layouts. The horizontal row has no field headings, so there it carries
+   *  its own label, as its checkbox neighbours do. */
+  const timeLimitInput = (width: number, labelled = false) => (
+    <span className="inline-flex items-center gap-1.5">
+      {labelled && <label htmlFor="jobform-time-limit" className="text-muted text-[13px]">{i18nT('components.jobForm.time_limit')}</label>}
+      <Input
+        id="jobform-time-limit"
+        type="number"
+        min={1}
+        max={MAX_RUN_LIMIT_MIN}
+        style={{ flex: `0 0 ${width}px`, width }}
+        aria-label={i18nT('components.jobForm.time_limit_minutes')}
+        title={i18nT('components.jobForm.time_limit_description')}
+        value={timeLimitText}
+        onChange={e => setTimeLimitText(e.target.value)}
+        onBlur={() => setTimeLimitText(String(timeLimitMin))}
+      />
+      <span className="text-muted text-[13px]">{i18nT('components.jobForm.minutes')}</span>
+    </span>
+  )
+
   const submit = async () => {
     setError(''); setSaving(true)
-    const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, chatFolderId: submittedChatFolderId, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr }
+    const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, chatFolderId: submittedChatFolderId, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr, savedTimeoutSecs: timeLimitBase, timeLimitMin }
     const body = buildBody(f, tz, setError, !!job, job ? undefined : prefill)
     if (!body) { setSaving(false); return }
     // Sent only when changed, so an unrelated edit never rewrites the limit
@@ -713,6 +771,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           <label htmlFor="jobform-strict-schedule" className="flex items-center gap-1.5 text-muted text-[13px] cursor-pointer"><input id="jobform-strict-schedule" aria-label={i18nT('components.jobForm.strict_schedule')} type="checkbox" checked={strictSchedule} onChange={e => setStrictSchedule(e.target.checked)} /> {i18nT('components.jobForm.strict_schedule')}</label>
           <label htmlFor="jobform-hide-in-chat" className="flex items-center gap-1.5 text-muted text-[13px] cursor-pointer"><input id="jobform-hide-in-chat" aria-label={i18nT('components.jobForm.hide_in_chat')} type="checkbox" checked={hideInChat} onChange={e => setHideInChat(e.target.checked)} /> {i18nT('components.jobForm.hide_in_chat')}</label>
           <label htmlFor="jobform-minimal-context" className="flex items-center gap-1.5 text-muted text-[13px] cursor-pointer"><input id="jobform-minimal-context" aria-label={i18nT('components.jobForm.minimal_context')} type="checkbox" checked={minimalContext} onChange={e => setMinimalContext(e.target.checked)} /> {i18nT('components.jobForm.minimal_context')}</label>
+          {timeLimitInput(70, true)}
           <SimpleSelect
             options={folderOptions.values}
             optionLabels={folderOptions.labels}
@@ -817,6 +876,11 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.channel_id')}</span>
           <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.slack_channel_to_post_results_to_leave_empty_for')}</span>
           <Input id="jobform-channel" aria-label={i18nT('components.jobForm.channel_id')} value={channel} onChange={e => setChannel(e.target.value)} placeholder={i18nT('components.jobForm.optional')} />
+        </div>
+        <div className="flex flex-col gap-1">
+          <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.time_limit')}</span>
+          <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.time_limit_description')}</span>
+          {timeLimitInput(90)}
         </div>
         {!isLlmless && (
         <div className="flex flex-col gap-1">

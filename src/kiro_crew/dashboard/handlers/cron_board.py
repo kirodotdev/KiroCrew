@@ -40,7 +40,12 @@ async def api_crons(request: web.Request) -> web.Response:
     # needs this symbol, so paying for it per request keeps that cycle out of
     # module import order entirely.
     from kiro_crew.apps.cron_sdk import app_owner_name
-    from kiro_crew.cron import compute_next_run_ts, format_schedule, get_local_tz  # noqa: F811
+    from kiro_crew.cron import (  # noqa: F811
+        compute_next_run_ts,
+        effective_wake_budget,
+        format_schedule,
+        get_local_tz,
+    )
     from kiro_crew.cron_service.schedule import backoff_delaying_next_run
 
     state: DashboardState = request.app["state"]
@@ -146,6 +151,9 @@ async def api_crons(request: web.Request) -> web.Response:
             # of defaulting the control to off and silently clearing the flag on
             # the next save.
             "minimal_context": j.minimal_context,
+            # What the service enforces, not the raw field: a stored value
+            # outside its range runs under the default instead.
+            "timeout_secs": effective_wake_budget(j),
             # Same reason: without it a form control for the flag would default
             # to the store's True and a save would silently re-enable the
             # persistent session on a job the user set to ephemeral.
