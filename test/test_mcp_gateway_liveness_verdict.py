@@ -67,17 +67,36 @@ async def test_a_loaded_daemon_that_answers_the_escalated_probe_is_not_killed(
     """The whole defect: a slow reply is load, not death."""
     monkeypatch.setattr(mgr, "_LIVENESS_PING_INTERVAL_SECS", 0.0)
     m = _manager(tmp_path)
-    payload, calls = _fast_miss_then({"type": "pong"})
+    inner, calls = _fast_miss_then({"type": "pong"})
+    # Wait on the loop's own progress, not on a wall-clock window: how many
+    # cycles fit in a fixed span depends on runner load, and a loaded Windows
+    # worker can fit exactly the threshold and nothing more. One fast probe past
+    # the threshold means every earlier cycle already passed the point where a
+    # verdict would have been returned.
+    past_threshold = asyncio.Event()
+
+    async def payload(*, timeout=None):
+        pong = await inner(timeout=timeout)
+        if calls["fast"] > mgr._LIVENESS_MAX_CONSECUTIVE_FAILURES:
+            past_threshold.set()
+        return pong
+
     monkeypatch.setattr(m, "_ping_payload", payload)
 
     task = asyncio.create_task(m._liveness_probe_loop())
-    with pytest.raises(asyncio.TimeoutError):
+    waiter = asyncio.create_task(past_threshold.wait())
+    try:
+        # The timeout only bounds a hang; it is not what the test measures.
+        await asyncio.wait({task, waiter}, timeout=30.0, return_when=asyncio.FIRST_COMPLETED)
         # A verdict here at all would be the bug. Every cycle must reset.
-        await asyncio.wait_for(asyncio.shield(task), timeout=0.3)
-    task.cancel()
+        assert not task.done(), f"loop returned a verdict: {task.result()!r}"
+        # It really did keep probing -- not passing because the loop stalled.
+        assert past_threshold.is_set(), f"loop stalled after {calls['fast']} fast probes"
+    finally:
+        task.cancel()
+        waiter.cancel()
+        await asyncio.gather(task, waiter, return_exceptions=True)
 
-    # It really did keep probing -- the assertion above is not passing because
-    # the loop stalled somewhere before the verdict.
     assert calls["fast"] > mgr._LIVENESS_MAX_CONSECUTIVE_FAILURES
     assert calls["escalated"] == calls["fast"]
 
