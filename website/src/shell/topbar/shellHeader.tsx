@@ -145,7 +145,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
   const {
     connected, updateAvailable, authRequired, colorTheme, resolvedMode, branding, avatar, isMobile, focusMode,
     toggleFocusMode, focusActive, topPeek, topPeekSurface, topChromeShown, slotOwners, commandPalette,
-    setKiroUsageOpen, kiroUsageState, kiroCreditSurface, metrics, capsuleCollapsed, setCapsuleCollapsed,
+    setKiroUsageOpen, kiroUsageState, usageSegmentHidden, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, setReportProblemOpen,
     requestFeature, toggleNav, mobileSingle,
   } = shell
@@ -515,7 +515,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             }
             if (!capsuleCollapsed) {
             if (!isMobile) segments.push(metricsSegment(metrics, seg))
-            const usage = kiroUsageSegment({ kiroUsageState, kiroCreditSurface, setKiroUsageOpen }, seg, isMobile)
+            const usage = kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUsageOpen }, seg, isMobile)
             if (usage) segments.push(usage)
             }
             // Extension slot: downstream-registered capsule segments (e.g. an

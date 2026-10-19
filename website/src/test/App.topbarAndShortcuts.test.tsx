@@ -682,12 +682,16 @@ describe('Kiro credits pill', () => {
 })
 
 describe('Kiro credits pill — edge cases', () => {
-  it('stays in loading state if the usage fetch rejects', async () => {
+  it('renders no credit segment when the usage fetch rejects on a non-kiro harness', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api.sessionsUsage).mockRejectedValueOnce(new Error('boom'))
     renderWithProviders(<App />, { route: '/chat' })
-    // useQuery (retry:false) surfaces the error and leaves data undefined; pill stays in the checking/loading state
-    expect(await screen.findByTitle(/Kiro credit usage/)).toBeInTheDocument()
+    // This suite's harness is `claude`, which has no Kiro credit balance, so a
+    // failed read has nothing true to show and the segment is dropped. The
+    // capsule itself still renders, which makes the absence meaningful, and
+    // waiting for it takes the read after the harness verdict has settled.
+    await waitFor(() => expect(document.querySelector('.tb-capsule')).toBeTruthy())
+    await waitFor(() => expect(screen.queryByTitle(/Kiro credit usage/)).toBeNull())
   })
 
   it('opens the modal in a loading state when clicked before data resolves', async () => {

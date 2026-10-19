@@ -618,7 +618,7 @@ export function useAppShell() {
     toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
   })
 
-  const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, kiroCreditSurface, kiroAccountEntry } = useKiroUsageReadout()
+  const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroAccountEntry } = useKiroUsageReadout()
   // Both forms use the side groups' container-query ladders. On desktop the
   // measured ladder (`.topbar.tb-measured`, index.css) adds folds when those
   // rungs still leave a group's contents overflowing; its level classes can
@@ -812,7 +812,7 @@ export function useAppShell() {
     appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT, appsExpanded,
     toggleAppsExpanded, slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
-    kiroUsageState, kiroCreditSurface, kiroAccountEntry, metrics, capsuleCollapsed, setCapsuleCollapsed,
+    kiroUsageState, usageSegmentHidden, kiroAccountEntry, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, devMode, devPageSeen,
     subscribeLogs, subscribeSubagents, forceReconnect, updateFlow, updating, setUpdating, showUpdateModal,
     setShowUpdateModal, showChangelog, updateError, setUpdateError, startupVideo, reportProblemOpen,
