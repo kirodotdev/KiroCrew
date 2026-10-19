@@ -1,25 +1,35 @@
 ---
 title: Conductor rolling reset -- a conductor drops its chat after a turn that closes an item or fills a free seat
-status: draft
+status: superseded
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-19
 last-audited: 2026-10-19
-audited-at: 0adc85c233
-doc-pr: null
+audited-at: c3f2b27de7
+doc-pr: 22088
 implementation-prs: []
 tracking-issues: [22082]
 supersedes: []
-superseded-by: []
+superseded-by: [rfc-conductor-context-cap.md]
 ---
 
 # RFC: Conductor rolling reset
 
-- Status: draft. The decision belongs to the operator who owns the conductor
-  patrol and wrote [rfc-conductor-round-reset.md](rfc-conductor-round-reset.md)
-  (iamwhatever), and it is pending. This document lands on its own first,
-  because the First Principles lane reads an RFC's status off the base branch,
-  and the implementation changes what the `kirocrew-conductor` agent and the
-  goal-conductor skill do by default.
+> **Superseded before acceptance.** On 2026-10-19 the operator who owns the
+> conductor patrol (iamwhatever) decided that a prompt rule cannot bound the
+> conductor's context, and that the gateway bounds it instead:
+> [rfc-conductor-context-cap.md](rfc-conductor-context-cap.md) replaced this
+> proposal. Nothing here was built, and its amendment of
+> [rfc-conductor-round-reset.md](rfc-conductor-round-reset.md) never took
+> effect. The sections below are the record of the proposal and of the
+> measurements that led to it.
+
+- Status: superseded. While it was a draft, the decision belonged to the
+  operator who owns the conductor patrol and wrote
+  [rfc-conductor-round-reset.md](rfc-conductor-round-reset.md) (iamwhatever).
+  This document landed on its own first, because the First Principles lane
+  reads an RFC's status off the base branch, and the implementation would have
+  changed what the `kirocrew-conductor` agent and the goal-conductor skill do
+  by default.
 - Amends [rfc-conductor-round-reset.md](rfc-conductor-round-reset.md) in three
   named places: its first goal (when a conductor resets), its non-goal
   "Resetting mid-round, or on a timer" (what mid-round means) and the "Skill and
