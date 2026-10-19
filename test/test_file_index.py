@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 
 from kiro_crew.dashboard.file_index import FileIndex, FileIndexRegistry
+from kiro_crew.testing.wait import async_wait_until
 
 
 def _populate(tmp_path):
@@ -41,7 +43,7 @@ class TestFileIndex:
     async def test_index_builds_and_searches(self, tmp_path):
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             assert idx.is_ready
             assert idx.entry_count >= 3  # hello.py, hello_world.py, readme.md, src/hello_util.py
@@ -57,7 +59,7 @@ class TestFileIndex:
     async def test_index_excludes_hidden_and_skip_dirs(self, tmp_path):
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             all_names = {e[1] for e in idx._entries}  # name is at index 1
             assert ".secret" not in all_names
@@ -70,7 +72,7 @@ class TestFileIndex:
     async def test_search_returns_empty_for_no_match(self, tmp_path):
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             results = idx.search("zzzzz", _scorer)
             assert results == []
@@ -82,7 +84,7 @@ class TestFileIndex:
         for i in range(20):
             (tmp_path / f"match_{i:02d}.txt").write_text("x")
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             results = idx.search("match", _scorer, max_results=5)
             assert len(results) == 5
@@ -90,58 +92,118 @@ class TestFileIndex:
             idx.stop()
 
     @pytest.mark.asyncio
-    async def test_stop_cancels_refresh(self, tmp_path):
+    async def test_maybe_refresh_rebuilds_when_stale(self, tmp_path):
         (tmp_path / "a.py").write_text("x")
         idx = FileIndex(str(tmp_path))
-        await idx.start()
-        assert idx._task is not None
+        await idx.build()
+        try:
+            from kiro_crew.dashboard import file_index as fi_mod
+
+            # Fresh (built just now): no rebuild is scheduled.
+            idx._built_at = time.monotonic()
+            idx.maybe_refresh()
+            assert idx._task is None
+            # Age the index past the TTL by backdating its build stamp, add a
+            # file, and a rebuild is scheduled and completes. Driving staleness
+            # through the index's own stamp keeps the fake out of the stdlib
+            # clock, which every thread and the event loop share.
+            idx._built_at = time.monotonic() - (fi_mod._REFRESH_TTL_SECS + 1)
+            (tmp_path / "b.py").write_text("y")
+            idx.maybe_refresh()
+            assert idx._task is not None
+            await idx._task
+            names = {e[1] for e in idx._entries}
+            assert "b.py" in names
+        finally:
+            idx.stop()
+
+    @pytest.mark.asyncio
+    async def test_truncated_index_is_not_refreshed(self, tmp_path):
+        (tmp_path / "a.py").write_text("x")
+        idx = FileIndex(str(tmp_path))
+        await idx.build()
+        try:
+            idx._truncated = True
+            idx._built_at = time.monotonic() - 10_000
+            idx.maybe_refresh()
+            assert idx._task is None  # the search endpoint never uses it
+        finally:
+            idx.stop()
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_inflight_rebuild(self, tmp_path):
+        import asyncio
+        import contextlib
+
+        (tmp_path / "a.py").write_text("x")
+        idx = FileIndex(str(tmp_path))
+        await idx.build()
+        idx._built_at = time.monotonic() - 10_000
+        idx.maybe_refresh()
+        task = idx._task
+        assert task is not None
         idx.stop()
         assert idx._task is None
+        # Let the cancelled task settle so its executor job does not outlive the
+        # test on the shared path-transfer pool.
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 class TestFileIndexRegistry:
     @pytest.mark.asyncio
-    async def test_acquire_creates_index(self, tmp_path):
+    async def test_ensure_builds_in_background_first_call_returns_none(self, tmp_path):
         (tmp_path / "test.py").write_text("x")
         reg = FileIndexRegistry()
+        root = os.path.realpath(str(tmp_path))
         try:
-            idx = await reg.acquire(str(tmp_path))
+            # First call starts the build and returns None (caller walks meanwhile).
+            assert await reg.ensure(str(tmp_path)) is None
+            idx = reg._indexes[root]
+            assert idx is not None and idx._task is not None
+            await idx._task
+            # Once ready, ensure returns the index.
+            assert await reg.ensure(str(tmp_path)) is idx
             assert idx.is_ready
             assert idx.entry_count >= 1
         finally:
             reg.stop_all()
 
     @pytest.mark.asyncio
-    async def test_acquire_same_root_shares_index(self, tmp_path):
+    async def test_ensure_same_root_shares_index(self, tmp_path):
         (tmp_path / "test.py").write_text("x")
         reg = FileIndexRegistry()
+        root = os.path.realpath(str(tmp_path))
         try:
-            idx1 = await reg.acquire(str(tmp_path))
-            idx2 = await reg.acquire(str(tmp_path))
-            assert idx1 is idx2
+            await reg.ensure(str(tmp_path))
+            idx = reg._indexes[root]
+            await idx._task
+            # A second ensure for the same root returns the same instance.
+            assert await reg.ensure(str(tmp_path)) is idx
+            assert reg._indexes[root] is idx
         finally:
             reg.stop_all()
 
     @pytest.mark.asyncio
-    async def test_release_stops_index_at_zero_refcount(self, tmp_path):
-        (tmp_path / "test.py").write_text("x")
+    async def test_ensure_triggers_ttl_refresh_once_ready(self, tmp_path):
+        (tmp_path / "a.py").write_text("x")
         reg = FileIndexRegistry()
-        idx = await reg.acquire(str(tmp_path))
         root = os.path.realpath(str(tmp_path))
-        assert reg.get(root) is idx
-        await reg.release(root)
-        assert reg.get(root) is None
+        from kiro_crew.dashboard import file_index as fi_mod
 
-    @pytest.mark.asyncio
-    async def test_release_keeps_index_with_remaining_refs(self, tmp_path):
-        (tmp_path / "test.py").write_text("x")
-        reg = FileIndexRegistry()
         try:
-            await reg.acquire(str(tmp_path))
-            await reg.acquire(str(tmp_path))  # refcount = 2
-            root = os.path.realpath(str(tmp_path))
-            await reg.release(root)  # refcount = 1
-            assert reg.get(root) is not None
+            await reg.ensure(str(tmp_path))
+            idx = reg._indexes[root]
+            await idx._task
+            # Backdate the build stamp past the TTL, add a file, ensure() again:
+            # a refresh runs. Driving staleness through the index's own stamp
+            # keeps the fake out of the shared stdlib clock.
+            idx._built_at = time.monotonic() - (fi_mod._REFRESH_TTL_SECS + 1)
+            (tmp_path / "b.py").write_text("y")
+            assert await reg.ensure(str(tmp_path)) is idx
+            assert idx._task is not None
+            await idx._task
+            assert "b.py" in {e[1] for e in idx._entries}
         finally:
             reg.stop_all()
 
@@ -149,54 +211,189 @@ class TestFileIndexRegistry:
     async def test_stop_all_clears_everything(self, tmp_path):
         (tmp_path / "test.py").write_text("x")
         reg = FileIndexRegistry()
-        await reg.acquire(str(tmp_path))
+        await reg.ensure(str(tmp_path))
         reg.stop_all()
-        assert reg.get(os.path.realpath(str(tmp_path))) is None
+        assert reg._indexes == {}
 
     @pytest.mark.asyncio
-    async def test_acquire_failure_cleans_up(self, tmp_path, monkeypatch):
-        """Failed start() must not leave orphan entries in registry."""
+    async def test_ensure_failed_build_marks_walk_only_and_does_not_retry(
+        self, tmp_path, monkeypatch
+    ):
+        """A failed or timed-out build marks the root walk-only, serves from the
+        walk, and never retries -- so a slow/dead mount cannot pile abandoned
+        walks onto the shared pool with one more per search."""
         reg = FileIndexRegistry()
+        root = os.path.realpath(str(tmp_path))
         from kiro_crew.dashboard import file_index as fi_mod
 
-        async def _fail_start(self):
-            raise RuntimeError("boom")
+        calls = {"n": 0}
 
-        monkeypatch.setattr(fi_mod.FileIndex, "start", _fail_start)
-        with pytest.raises(RuntimeError, match="boom"):
-            await reg.acquire(str(tmp_path))
-        root = os.path.realpath(str(tmp_path))
-        assert reg.get(root) is None
-        assert reg._refcounts.get(root) is None
+        async def _fail_rebuild(self):
+            calls["n"] += 1
+            raise TimeoutError("walk exceeded the ceiling")
 
-    @pytest.mark.asyncio
-    async def test_release_on_never_acquired_root_is_safe(self, tmp_path):
-        """release() on a root that was never acquire()'d must not corrupt state."""
-        reg = FileIndexRegistry()
-        (tmp_path / "a.py").write_text("x")
+        monkeypatch.setattr(fi_mod.FileIndex, "_rebuild", _fail_rebuild)
         try:
-            idx = await reg.acquire(str(tmp_path))
-            root = os.path.realpath(str(tmp_path))
-            other = os.path.realpath(str(tmp_path / "nonexistent"))
-            # Release a root that was never acquired
-            await reg.release(other)
-            # Original index must be unaffected
-            assert reg.get(root) is idx
-            assert reg._refcounts[root] == 1
+            # First ensure starts the build and returns None (caller walks).
+            assert await reg.ensure(str(tmp_path)) is None
+            idx = reg._indexes[root]
+            await idx._task  # _refresh_once swallows the error and sets walk-only
+            assert idx._walk_only is True
+            assert idx.usable is False
+            # Backdate so the TTL alone would allow a refresh; walk-only must
+            # still suppress it, and repeated ensure() must schedule no new walk.
+            idx._built_at = time.monotonic() - (fi_mod._REFRESH_TTL_SECS + 1)
+            assert await reg.ensure(str(tmp_path)) is None
+            assert await reg.ensure(str(tmp_path)) is None
+            # The finished task reference may remain, but no NEW walk was
+            # scheduled: the rebuild ran exactly once.
+            assert idx._task is None or idx._task.done()
+            assert calls["n"] == 1, "the walk ran exactly once; no retry storm"
         finally:
             reg.stop_all()
 
     @pytest.mark.asyncio
-    async def test_slot_delete_releases_index(self, tmp_path):
-        """Simulates slot delete path: release must decrement refcount to 0."""
+    async def test_ensure_evicts_least_recently_searched_past_cap(self, tmp_path, monkeypatch):
+        """The registry holds at most _MAX_CACHED_ROOTS indexes, LRU-evicting."""
+        from kiro_crew.dashboard import file_index as fi_mod
+
+        monkeypatch.setattr(fi_mod, "_MAX_CACHED_ROOTS", 2)
         reg = FileIndexRegistry()
-        (tmp_path / "a.py").write_text("x")
-        root = os.path.realpath(str(tmp_path))
-        await reg.acquire(root)
-        assert reg.get(root) is not None
-        # Same release call api_chat_slot_delete makes.
-        await reg.release(root)
-        assert reg.get(root) is None
+        roots = []
+        for name in ("a", "b", "c"):
+            d = tmp_path / name
+            d.mkdir()
+            (d / "f.py").write_text("x")
+            roots.append(os.path.realpath(str(d)))
+        try:
+            # Build a and b, then touch a so b is the least-recently-searched.
+            await reg.ensure(roots[0])
+            a_idx = reg._indexes[roots[0]]
+            await reg.ensure(roots[1])
+            b_idx = reg._indexes[roots[1]]
+            await reg.ensure(roots[0])  # a is now most-recently-searched
+            # Adding c evicts b (the LRU), keeping the cache at 2.
+            await reg.ensure(roots[2])
+            c_idx = reg._indexes[roots[2]]
+            assert set(reg._indexes) == {roots[0], roots[2]}
+            assert roots[1] not in reg._indexes
+            # Drain every scheduled build (b's was cancelled by eviction) so none
+            # outlives the test on the shared path-transfer pool.
+            import asyncio
+            import contextlib
+
+            for idx in (a_idx, b_idx, c_idx):
+                if idx._task is not None:
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await idx._task
+        finally:
+            reg.stop_all()
+
+    @pytest.mark.asyncio
+    async def test_walk_timeout_backoff_survives_eviction_and_revisit(self, tmp_path, monkeypatch):
+        """A root whose walk timed out stays walk-only after LRU eviction.
+
+        The backoff must outlive the cached FileIndex: otherwise evicting the
+        slow root and searching it again starts a fresh walk, and cycling more
+        than _MAX_CACHED_ROOTS slow roots piles abandoned walks onto the shared
+        path-transfer pool.
+        """
+        import threading
+
+        from kiro_crew.dashboard import file_index as fi_mod
+
+        monkeypatch.setattr(fi_mod, "_MAX_CACHED_ROOTS", 1)
+        monkeypatch.setattr(fi_mod, "_WALK_EXEC_CEILING_SECS", 0.05)
+        slow = tmp_path / "slow"
+        fast = tmp_path / "fast"
+        slow.mkdir()
+        fast.mkdir()
+        slow_root = os.path.realpath(str(slow))
+        fast_root = os.path.realpath(str(fast))
+        release = threading.Event()
+        slow_done = threading.Event()
+        slow_walks = {"n": 0}
+
+        def _walk(self):
+            if self.root == slow_root:
+                slow_walks["n"] += 1
+                try:
+                    release.wait(5)  # a hung mount, until the test releases it
+                finally:
+                    slow_done.set()
+            return [], False
+
+        monkeypatch.setattr(fi_mod.FileIndex, "_walk", _walk)
+        reg = FileIndexRegistry()
+        try:
+            assert await reg.ensure(slow_root) is None
+            await reg._indexes[slow_root]._task  # times out -> walk-only
+            assert reg._indexes[slow_root]._walk_only is True
+            # Let the abandoned walk thread finish, so only the backoff (not a
+            # still-running walk) can stop the revisit from walking again.
+            release.set()
+            await async_wait_until(
+                lambda: slow_done.is_set()
+                and slow_root not in getattr(fi_mod, "_RUNNING_WALKS", ())
+            )
+            # Searching another root evicts the slow one (cap 1).
+            await reg.ensure(fast_root)
+            assert slow_root not in reg._indexes
+            # Revisit: the walk-only verdict must come back with the root.
+            assert await reg.ensure(slow_root) is None
+            revisited = reg._indexes[slow_root]
+            assert revisited._walk_only is True
+            assert revisited._task is None
+            assert slow_walks["n"] == 1, "a revisit after eviction must not start a new walk"
+        finally:
+            release.set()
+            reg.stop_all()
+
+    @pytest.mark.asyncio
+    async def test_revisit_while_evicted_walk_still_runs_starts_no_second_walk(
+        self, tmp_path, monkeypatch
+    ):
+        """Eviction cancels only the await; the walk thread keeps running.
+
+        Re-searching that root while its walk thread is still alive must not
+        start a second walk beside it on the shared pool.
+        """
+        import threading
+
+        from kiro_crew.dashboard import file_index as fi_mod
+
+        monkeypatch.setattr(fi_mod, "_MAX_CACHED_ROOTS", 1)
+        slow = tmp_path / "slow"
+        fast = tmp_path / "fast"
+        slow.mkdir()
+        fast.mkdir()
+        slow_root = os.path.realpath(str(slow))
+        fast_root = os.path.realpath(str(fast))
+        started = threading.Event()
+        release = threading.Event()
+        slow_walks = {"n": 0}
+
+        def _walk(self):
+            if self.root == slow_root:
+                slow_walks["n"] += 1
+                started.set()
+                release.wait(5)
+            return [], False
+
+        monkeypatch.setattr(fi_mod.FileIndex, "_walk", _walk)
+        reg = FileIndexRegistry()
+        try:
+            assert await reg.ensure(slow_root) is None
+            await async_wait_until(started.is_set)
+            await reg.ensure(fast_root)  # evicts slow mid-walk
+            assert slow_root not in reg._indexes
+            assert await reg.ensure(slow_root) is None
+            # The revisit scheduled no build at all while the first walk runs.
+            assert reg._indexes[slow_root]._task is None
+            assert slow_walks["n"] == 1, "no second walk while the first still runs"
+        finally:
+            release.set()
+            reg.stop_all()
 
 
 class TestFileIndexTruncation:
@@ -209,7 +406,7 @@ class TestFileIndexTruncation:
         for i in range(10):
             (tmp_path / f"file_{i}.py").write_text("x")
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             assert idx.truncated
             assert idx.entry_count == 3
@@ -221,7 +418,7 @@ class TestFileIndexTruncation:
         """Index must not be truncated for small projects."""
         (tmp_path / "a.py").write_text("x")
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             assert not idx.truncated
         finally:
