@@ -437,7 +437,7 @@ class TestGates:
         resp = await hi.api_instances_capabilities(_request(state))
 
         assert resp.status == 503
-        assert (await _body(resp))["code"] == "instances_unavailable"
+        assert (await _body(resp))["code"] == "instances_manager_unavailable"
 
     async def test_the_feature_flag_is_enforced(self, monkeypatch):
         monkeypatch.setattr(

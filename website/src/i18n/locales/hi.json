@@ -16808,6 +16808,7 @@
         "configured_instances": "कॉन्फ़िगर किए गए रिमोट क्रू",
         "connect": "कनेक्ट करें",
         "connect_failed": "{{id}} से कनेक्ट करना विफल: {{error}}",
+        "connect_needs_restart": "{{id}} से कनेक्ट करना विफल: पहले गेटवे को पुनरारंभ करना होगा। नीचे दिया नोट देखें।",
         "connected_switch_from_tab_strip": "“{{name}}” कनेक्ट हो गया। ऊपर हेडर की टैब पट्टी से उस पर जाओ।",
         "connecting": "कनेक्ट हो रहा है…",
         "connection_did_not_complete_try_diagnose_for_det": "कनेक्शन पूरा नहीं हुआ। विवरण के लिए निदान आज़माएँ।",

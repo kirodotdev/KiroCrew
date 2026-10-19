@@ -149,6 +149,26 @@ def _guard(request: web.Request, operation: str) -> web.Response | None:
     return None
 
 
+#: The one answer every route gives when the feature is enabled but no tunnel
+#: manager exists. ``instances.enabled`` is a restart-marked field and the
+#: manager is built only by the gateway's startup hook, so turning the flag on in
+#: a running gateway passes ``_guard`` yet leaves ``instances_manager`` unset
+#: until a restart. The message names that fix; the code lets the dashboard say
+#: it without parsing prose.
+MANAGER_UNAVAILABLE_CODE = "instances_manager_unavailable"
+MANAGER_UNAVAILABLE_MESSAGE = (
+    "instances manager not running: restart the gateway (kirocrew restart) to start remote crews"
+)
+
+
+def _manager_unavailable_response() -> web.Response:
+    """The 503 for a request that reached a route with no instances manager."""
+    return web.json_response(
+        {"error": MANAGER_UNAVAILABLE_MESSAGE, "code": MANAGER_UNAVAILABLE_CODE},
+        status=503,
+    )
+
+
 def _registry(state: "DashboardState"):
     """Return the live InstancesRegistry, creating a standalone one if needed."""
     reg = getattr(state, "instances_registry", None)

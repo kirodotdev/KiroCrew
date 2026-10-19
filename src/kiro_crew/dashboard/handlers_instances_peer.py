@@ -28,8 +28,11 @@ from kiro_crew.dashboard.handlers._shared import _owner_denial_response, read_ca
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.handlers_instances_gate import (
     _PEER_FIELD_MAX_CHARS,
+    MANAGER_UNAVAILABLE_CODE,
+    MANAGER_UNAVAILABLE_MESSAGE,
     _audit,
     _guard,
+    _manager_unavailable_response,
     _registry,
 )
 from kiro_crew.dashboard.peer_redaction import redact_peer_text
@@ -331,10 +334,7 @@ async def api_instances_capabilities(request: web.Request) -> web.Response:
     mgr = getattr(state, "instances_manager", None)
     if mgr is None:
         _audit("capabilities", "denied", error="instances manager unavailable")
-        return web.json_response(
-            {"error": "remote crews are not available", "code": "instances_unavailable"},
-            status=503,
-        )
+        return _manager_unavailable_response()
 
     paths = ("/api/version", "/api/agents", "/api/models", "/api/effort-levels", "/api/workspaces")
     results = await asyncio.gather(
@@ -459,10 +459,7 @@ async def api_instances_approval_state(request: web.Request) -> web.Response:
     mgr = getattr(state, "instances_manager", None)
     if mgr is None:
         _audit("approval_state", "denied", error="instances manager unavailable")
-        return web.json_response(
-            {"error": "remote crews are not available", "code": "instances_unavailable"},
-            status=503,
-        )
+        return _manager_unavailable_response()
     peer_yolo: bool | None = None
     try:
         ok, payload = await mgr.peer_capability(instance_id, "/api/status")
@@ -726,8 +723,8 @@ async def read_peer_slots(
     mgr = getattr(state, "instances_manager", None)
     if mgr is None:
         raise PeerSlotsUnavailable(
-            "instances_unavailable",
-            "remote crews are not available",
+            MANAGER_UNAVAILABLE_CODE,
+            MANAGER_UNAVAILABLE_MESSAGE,
             503,
             "instances manager unavailable",
             outcome="denied",
@@ -1033,10 +1030,7 @@ async def api_instances_proxy(request: web.Request) -> web.StreamResponse:
     mgr = getattr(state, "instances_manager", None)
     if mgr is None:
         _audit("proxy", "failure", request_id=instance_id, error="manager unavailable")
-        return web.json_response(
-            {"error": "instances manager unavailable", "code": "instances_manager_unavailable"},
-            status=503,
-        )
+        return _manager_unavailable_response()
 
     # Forward the query WITHOUT the hub's own credential: the browser may
     # authenticate this request with ?token=<hub token>, and forwarding it

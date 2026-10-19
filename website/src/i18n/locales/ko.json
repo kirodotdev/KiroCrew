@@ -16543,6 +16543,7 @@
         "configured_instances": "설정된 원격 크루",
         "connect": "연결",
         "connect_failed": "{{id}}에 연결하지 못했습니다: {{error}}",
+        "connect_needs_restart": "{{id}}에 연결하지 못했습니다: 먼저 게이트웨이를 다시 시작해야 합니다. 아래 안내를 확인하세요.",
         "connected_switch_from_tab_strip": "‘{{name}}’에 연결했습니다. 상단 헤더의 탭 목록에서 전환하세요.",
         "connecting": "연결 중…",
         "connection_did_not_complete_try_diagnose_for_det": "연결이 완료되지 않았습니다. 자세한 내용은 진단을 실행하세요.",

@@ -53,6 +53,7 @@ from kiro_crew.dashboard.handlers_instances_gate import (
     _guard,
     _instance_view,
     _is_correlated_cloud_instance,
+    _manager_unavailable_response,
     _registry,
     _status_for,
 )
@@ -663,10 +664,7 @@ async def api_instances_connect(request: web.Request) -> web.Response:
     mgr = getattr(state, "instances_manager", None)
     if mgr is None:
         _audit("connect", "denied", request_id=instance_id, error="manager unavailable")
-        return web.json_response(
-            {"error": "instances manager not running", "code": "instances_manager_unavailable"},
-            status=503,
-        )
+        return _manager_unavailable_response()
     # `?rebuild=1` is the pane's Retry after a load watchdog fired on a document
     # that DID navigate: every probe says the tunnel is fine, yet one stream in it
     # stalled and the pane will wait on it forever. Only a fresh forwarder on a
@@ -843,7 +841,7 @@ async def api_instances_refresh_token(request: web.Request) -> web.Response:
     mgr = getattr(state, "instances_manager", None)
     if mgr is None:
         _audit("refresh_token", "denied", request_id=instance_id, error="manager unavailable")
-        return web.json_response({"error": "instances manager not running"}, status=503)
+        return _manager_unavailable_response()
     token = await mgr.refresh_token(instance_id)
     if not token:
         _audit(
@@ -887,10 +885,7 @@ async def api_instances_embed_token(request: web.Request) -> web.Response:
     mgr = getattr(state, "instances_manager", None)
     if mgr is None:
         _audit("embed_token", "denied", request_id=instance_id, error="manager unavailable")
-        return web.json_response(
-            {"error": "instances manager not running", "code": "instances_manager_unavailable"},
-            status=503,
-        )
+        return _manager_unavailable_response()
     try:
         body = await request.json()
     except Exception:
@@ -957,7 +952,7 @@ async def api_instances_restart(request: web.Request) -> web.Response:
     mgr = getattr(state, "instances_manager", None)
     if mgr is None:
         _audit("restart", "denied", request_id=instance_id, error="manager unavailable")
-        return web.json_response({"error": "instances manager not running"}, status=503)
+        return _manager_unavailable_response()
     result = await mgr.restart_remote(instance_id)
     if result.get("ok"):
         _audit("restart", "success", request_id=instance_id)
@@ -1017,10 +1012,7 @@ async def api_instances_update_remote(request: web.Request) -> web.Response:
     mgr = getattr(state, "instances_manager", None)
     if mgr is None:
         _audit("update_remote", "denied", request_id=instance_id, error="manager unavailable")
-        return web.json_response(
-            {"error": "instances manager not running", "code": "instances_unavailable"},
-            status=503,
-        )
+        return _manager_unavailable_response()
     result = await mgr.start_remote_update(instance_id)
     if result.get("ok"):
         _audit("update_remote", "success", request_id=instance_id)
@@ -1267,10 +1259,7 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
     mgr = getattr(state, "instances_manager", None)
     if mgr is None:
         _audit("send_session", "denied", request_id=instance_id, error="manager unavailable")
-        return web.json_response(
-            {"error": "instances manager not running", "code": "instances_manager_down"},
-            status=503,
-        )
+        return _manager_unavailable_response()
 
     try:
         body = await request.json()
@@ -1488,7 +1477,11 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 #: What a star import binds: every public name of the unsplit module's namespace.
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
-    from kiro_crew.dashboard.handlers_instances_gate import _is_slack_origin  # noqa: F401
+    from kiro_crew.dashboard.handlers_instances_gate import (  # noqa: F401
+        MANAGER_UNAVAILABLE_CODE,
+        MANAGER_UNAVAILABLE_MESSAGE,
+        _is_slack_origin,
+    )
     from kiro_crew.dashboard.handlers_instances_peer import (  # noqa: F401
         _CAP_MAX_ROWS,
         _CAP_MAX_STR,

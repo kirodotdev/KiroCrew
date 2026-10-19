@@ -565,7 +565,14 @@ export function RemoteCrewPanel() {
         })
       }
     },
-    onError: (e, id) => setActionErr(i18nT('pages.settings.instancesPanel.connect_failed', { id, error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })),
+    onError: (e, id) => {
+      // The flag was turned on after the gateway started, so no tunnel manager
+      // exists until a restart. The not-active banner already says how; the error
+      // points at it, keyed on the gateway's code, instead of quoting its message.
+      setActionErr(e instanceof ApiError && parseErrorCode(e.body) === 'instances_manager_unavailable'
+        ? i18nT('pages.settings.instancesPanel.connect_needs_restart', { id })
+        : i18nT('pages.settings.instancesPanel.connect_failed', { id, error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) }))
+    },
     onSettled: reloadInstances,
   })
   const disconnectMutation = useMutation({
@@ -997,7 +1004,7 @@ export function RemoteCrewPanel() {
             {needsRestart && (
               <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
                 <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
-                <span>{i18nT('pages.settings.instancesPanel.disabled_in_config_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>) {i18nT('pages.settings.instancesPanel.to_fully_tear_down_any_tunnels_still_running_fro')}</span>
+                <span>{i18nT('pages.settings.instancesPanel.enabled_but_not_active_yet_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>) {i18nT('pages.settings.instancesPanel.to_start_the_ssh_tunnel_manager_and_activate_ins')}</span>
               </div>
             )}
             {listLoading ? (

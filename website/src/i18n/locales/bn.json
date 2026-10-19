@@ -16808,6 +16808,7 @@
         "configured_instances": "কনফিগার করা রিমোট ক্রু",
         "connect": "সংযোগ করো",
         "connect_failed": "{{id}}-এ সংযোগ করা যায়নি: {{error}}",
+        "connect_needs_restart": "{{id}}-এ সংযোগ করা যায়নি: আগে গেটওয়ে রিস্টার্ট করতে হবে। নিচের নোট দেখো।",
         "connected_switch_from_tab_strip": "“{{name}}” সংযুক্ত হয়েছে। উপরের হেডারের ট্যাব স্ট্রিপ থেকে এতে স্যুইচ করো।",
         "connecting": "সংযোগ করা হচ্ছে…",
         "connection_did_not_complete_try_diagnose_for_det": "সংযোগ সম্পূর্ণ হয়নি। বিস্তারিত জানতে Diagnose দেখো।",
