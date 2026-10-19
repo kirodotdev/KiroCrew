@@ -18,7 +18,7 @@ member routes.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -130,7 +130,7 @@ class TestOrder:
         assert status == 200
         assert order == ["discard"]
         state.sessions.discard_conversation.assert_awaited_once_with(
-            effective_session_key(slot), replay=False, skip_if_busy=True
+            effective_session_key(slot), replay=False, skip_if_busy=True, refuse_if=ANY
         )
         assert body["slot"] == slot.key
         assert body["reset_at"]

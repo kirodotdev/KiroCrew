@@ -297,6 +297,7 @@ KIRO_CLI_MISSING_KIND = "kiro_cli_missing"
 #: text will not have the kind tag and will correctly classify as plain input.
 SUBAGENT_COMPLETION_KIND = "subagent_completion"
 CRON_NOTIFICATION_KIND = "cron_notification"
+
 #: An embedded MCP App's ui/message delivery (SEP-1865 return channel) — see
 #: ``dashboard.handlers.mcp_apps.api_mcp_apps_message``. System injection like
 #: the two above: app-authored, never user speech, must break user-message
@@ -507,6 +508,29 @@ def _stamped_turn_actor(item: dict) -> Any:
     return meta.get(TURN_ACTOR_META_KEY, "") if isinstance(meta, dict) else ""
 
 
+def teardown_hold_active(state, slot) -> bool:
+    """Whether a deferred conversation discard holds *slot*'s queue.
+
+    A deferred project reset is not a cause: every turn consumes it before it
+    acquires a session (``_turn_admit``), so no prompt reaches the stale session,
+    and a reset whose key has no session declines on every call and would park
+    the queue for good.
+
+    Nor is a wake's discard while a question or approval is pending. That
+    discard waits for the card to clear, and only the person's answer, run as a
+    turn, clears it, so holding the answer would hold the discard for good.
+    """
+    if slot._pending_discard_conversation_key is None:
+        return False
+    if not getattr(slot, "_pending_discard_from_wake", False):
+        return True
+    # deferred: session_directive_apply loads autonudge and the monitor stack at
+    # import, which this leaf module must not pull into every importer.
+    from kiro_crew.dashboard.session_directive_apply import _slot_has_pending_interaction
+
+    return not _slot_has_pending_interaction(state, slot)
+
+
 def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     """Drain the queue: merge non-cron messages or pop the first one.
 
@@ -541,8 +565,8 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     return item["content"], [item]
 
 
-def _dequeue_next_system_message(slot) -> tuple:
-    """Pop the first queued entry the sub-agent hold releases, leaving plain
+def _dequeue_next_system_message(slot, *, system_only: bool = False) -> tuple:
+    """Pop the first queued entry the hold in force releases, leaving plain
     user messages queued.
 
     Implements the (always-on) queue-during-subagents behavior: while background
@@ -552,9 +576,17 @@ def _dequeue_next_system_message(slot) -> tuple:
     and so is a steer that fell back to the queue
     (:func:`releases_past_subagent_hold`). Returns ``(content, [item])`` for the
     drained item, or ``(None, [])`` when only held (user) messages remain queued.
+
+    ``system_only`` narrows that to :func:`is_system_injection_item`, for the
+    conversation-discard hold. The steer exemption is a choice about not waiting
+    for children; it says nothing about WHICH conversation answers, so a steer
+    that degraded into a queue entry must not drain into a conversation the
+    person asked to drop. The successor's own admission consume does not allow
+    discards, so nothing downstream would catch it.
     """
+    release = is_system_injection_item if system_only else releases_past_subagent_hold
     for i, item in enumerate(slot._queue):
-        if releases_past_subagent_hold(item):
+        if release(item):
             popped = slot.queue_pop(i)
             return popped["content"], [popped]
     return None, []

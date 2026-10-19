@@ -1312,7 +1312,6 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
     # _turn_admit; each lives only in its homes, so the turn's own copy stays there.
     r"await _consume_pending_reset\(state, slot\)": (
         "dashboard/chat_turn/eager_spawn.py",
-        "dashboard/chat_turn/session_reset.py",
         "dashboard/chat_turn/turn_admission.py",
     ),
     r"_requested_model = slot\.model": (

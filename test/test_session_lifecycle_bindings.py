@@ -85,7 +85,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "close_replay_gap": ("function", False, "958babeb61c8", "turn_stop"),
     "destroy": ("function", True, "90a6b2cda311", "teardown"),
     "destroy_if": ("function", True, "b2e16ab8f2dd", "teardown"),
-    "discard_conversation": ("function", True, "b225e6bcbd95", "teardown"),
+    "discard_conversation": ("function", True, "185d63c540e6", "teardown"),
     "drain_active_turns": ("function", True, "5944c6af44b2", "fleet"),
     "drain_all_providers": ("function", True, "0624c13b3dee", "fleet"),
     "end_children_for": ("function", True, "958babeb61c8", "parent_end"),
