@@ -6423,6 +6423,7 @@
       "let_the_agent_read_one_of_your_files": "एजेंट को अपनी कोई फ़ाइल पढ़ने दें",
       "message_input": "संदेश इनपुट",
       "message_placeholder": "{{bot}} को मैसेज करो… (/command · @file · $skill)",
+      "message_placeholder_crewmate": "{{bot}} को मैसेज करो…",
       "message_placeholder_terminal": "{{bot}} को मैसेज करो… (/command · @file · $skill · ! शेल कमांड)",
       "model": "मॉडल",
       "model_2": "मॉडल: {{name}}",

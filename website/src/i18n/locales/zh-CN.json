@@ -6313,6 +6313,7 @@
       "let_the_agent_read_one_of_your_files": "让代理读取你的某个文件",
       "message_input": "消息输入",
       "message_placeholder": "给 {{bot}} 发消息… (/command · @file · $skill)",
+      "message_placeholder_crewmate": "给 {{bot}} 发消息…",
       "message_placeholder_terminal": "给 {{bot}} 发消息… (/command · @file · $skill · ! shell 命令)",
       "model": "模型",
       "model_2": "模型：{{name}}",

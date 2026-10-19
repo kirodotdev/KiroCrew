@@ -6423,6 +6423,7 @@
       "let_the_agent_read_one_of_your_files": "Dem Agenten erlauben, eine Ihrer Dateien zu lesen",
       "message_input": "Nachrichteneingabe",
       "message_placeholder": "Nachricht an {{bot}}… (/command · @file · $skill)",
+      "message_placeholder_crewmate": "Nachricht an {{bot}}…",
       "message_placeholder_terminal": "Nachricht an {{bot}}… (/command · @file · $skill · ! Shell-Befehl)",
       "model": "Modell",
       "model_2": "Modell: {{name}}",

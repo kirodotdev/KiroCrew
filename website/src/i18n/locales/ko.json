@@ -6313,6 +6313,7 @@
       "let_the_agent_read_one_of_your_files": "에이전트가 내 파일을 읽도록 허용",
       "message_input": "메시지 입력",
       "message_placeholder": "{{bot}}에게 메시지… (/command · @file · $skill)",
+      "message_placeholder_crewmate": "{{bot}}에게 메시지…",
       "message_placeholder_terminal": "{{bot}}에게 메시지… (/command · @file · $skill · ! 셸 명령어)",
       "model": "모델",
       "model_2": "모델: {{name}}",

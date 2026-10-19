@@ -2193,6 +2193,7 @@
       "detached_head_at": "Detached HEAD at {{branch}}",
       "message_placeholder": "Message {{bot}}… (/command · @file · $skill)",
       "message_placeholder_terminal": "Message {{bot}}… (/command · @file · $skill · ! shell command)",
+      "message_placeholder_crewmate": "Message {{bot}}…",
       "approve": "Approve",
       "approve_all": "Approve all",
       "could_not_submit_that_decision_see_the_console_f": "Could not submit that decision — see the console for details.",

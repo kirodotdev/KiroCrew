@@ -1072,8 +1072,11 @@ export default function ChatPane({
           onFollowUpSend={(text?: string) => doSend(text)}
           project={paneSlot?.project ?? ''}
           // A crewmate's chat is a DM with one named crewmate, so the composer
-          // addresses it by name rather than the product ("Message Kiro Crew…").
-          placeholder={crewmate ? i18nT('components.chatInput.message_placeholder', { bot: crewmate.label || crewmate.name }) : undefined}
+          // addresses it by name rather than the product ("Message Kiro Crew…")
+          // and carries no sigil hint: next to a person's name the shortcut list
+          // reads as noise. The sigils themselves still work here; only the
+          // plain chat's placeholder teaches them.
+          placeholder={crewmate ? i18nT('components.chatInput.message_placeholder_crewmate', { bot: crewmate.label || crewmate.name }) : undefined}
           onUploadFiles={uploadFiles}
           onCancelUpload={uploadCount > 0 ? cancelUpload : undefined}
           uploadCount={uploadCount}

@@ -6643,6 +6643,7 @@
       "let_the_agent_read_one_of_your_files": "Разрешить агенту прочитать один из ваших файлов",
       "message_input": "Поле ввода сообщения",
       "message_placeholder": "Написать {{bot}}… (/command · @file · $skill)",
+      "message_placeholder_crewmate": "Написать {{bot}}…",
       "message_placeholder_terminal": "Написать {{bot}}… (/command · @file · $skill · ! команда оболочки)",
       "model": "Модель",
       "model_2": "Модель: {{name}}",

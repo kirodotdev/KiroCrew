@@ -6313,6 +6313,7 @@
       "let_the_agent_read_one_of_your_files": "エージェントにファイルを読み込ませる",
       "message_input": "メッセージ入力",
       "message_placeholder": "{{bot}} にメッセージ… (/command · @file · $skill)",
+      "message_placeholder_crewmate": "{{bot}} にメッセージ…",
       "message_placeholder_terminal": "{{bot}} にメッセージ… (/command · @file · $skill · ! シェルコマンド)",
       "model": "モデル",
       "model_2": "モデル：{{name}}",
