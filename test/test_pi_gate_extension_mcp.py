@@ -119,6 +119,7 @@ def _run(
     payload, _names = pi_mcp_handoff_payload(elements or [_ELEMENT], handoff_nonce, _KEY)
     handoff = tmp_path / "handoff.json"
     handoff.write_bytes(payload)
+    receipt = tmp_path / "registration.json"
     harness = tmp_path / "harness.mjs"
     harness.write_text(_HARNESS, encoding="utf-8")
     # A copy beside the harness, so Node resolves the type-only import it erases
@@ -137,6 +138,7 @@ def _run(
         "KIROCREW_PI_MCP_HANDOFF": str(handoff),
         "KIROCREW_PI_MCP_KEY": (key if key is not None else _KEY).hex(),
         "GATE_BASE_PROMPT": base_prompt,
+        "KIROCREW_PI_MCP_RECEIPT": str(receipt),
     }
     completed = subprocess.run(
         [*node, str(harness), str(extension), str(project), *calls],
@@ -150,6 +152,7 @@ def _run(
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     result["handoff_left"] = handoff.exists()
+    result["receipt"] = json.loads(receipt.read_text(encoding="utf-8"))
     return result
 
 
@@ -166,6 +169,11 @@ def test_the_handoff_servers_are_registered_for_direct_use(node, tmp_path) -> No
     assert out["results"] == {"mcp__kirocrew_core__send_message": "allowed"}
     # Removed once read where the directory allows it.
     assert out["handoff_left"] is False
+    assert out["receipt"] == {
+        "kiro-crew-mcp-registration": 1,
+        "nonce": _NONCE,
+        "servers": ["kirocrew-core"],
+    }
 
 
 def test_a_same_named_server_in_pi_mcp_json_is_refused(node, tmp_path) -> None:
@@ -181,6 +189,7 @@ def test_a_same_named_server_in_pi_mcp_json_is_refused(node, tmp_path) -> None:
     assert out["results"]["mcp__other__tool"] == "allowed"
     assert out["results"]["read"] == "allowed"
     assert any("kirocrew-core" in n["message"] for n in out["notes"])
+    assert out["receipt"]["servers"] == []
 
 
 def test_a_tool_name_that_keeps_the_dash_is_refused_too(node, tmp_path) -> None:
@@ -207,12 +216,14 @@ def test_a_handoff_under_another_key_registers_nothing(node, tmp_path) -> None:
     """A sibling session's file does not open under this process's key."""
     out = _run(node, tmp_path, mcp_json=None, calls=[], key=bytes(32))
     assert out["registered"] == []
+    assert out["receipt"]["servers"] == []
 
 
 def test_a_handoff_for_another_nonce_registers_nothing(node, tmp_path) -> None:
     """The file is bound to the session: one written for a different nonce is ignored."""
     out = _run(node, tmp_path, mcp_json=None, calls=[], handoff_nonce="f" * 32)
     assert out["registered"] == []
+    assert out["receipt"]["servers"] == []
 
 
 _CRON_ELEMENT = {**_ELEMENT, "name": "kirocrew-cron"}
