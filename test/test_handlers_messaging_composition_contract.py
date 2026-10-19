@@ -252,7 +252,9 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
 #: ``_BASE_OWNERS``, captured from the facade before the split that moved it: each
 #: moved name keeps the kind and signature it had there.
-_BASE_SHAPE_DIGEST = "66b4494d6fbf53f0767bed2f2cc698ce1b8f79181925565702d2875021de1caf"
+#: One deliberate divergence since: ``_deliver_to_channel`` answers
+#: ``(sent, code, detail)``, so a refusal is distinguishable from a delivery fault.
+_BASE_SHAPE_DIGEST = "a588aafbdf7f1400df487f5562c6d24fd64f1d56eae1b792fe5c0e4ed27eed28"
 
 
 #: Helpers the split of ``api_send_message`` added to the send owner: the body it
