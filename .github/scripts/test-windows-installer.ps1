@@ -160,22 +160,23 @@ if (-not $productName -or -not $productFilename) {
 }
 $expectedDisplayName = "$productName $($package.version)"
 
-# Exercise the install-root ownership boundary with an existing directory. Keep
-# the install itself on the local temp volume: a synced workspace (OneDrive on a
-# developer machine) can recreate or hold files while NSIS removes them, which
+# Exercise the install-root ownership boundary with an existing directory on
+# the same local volume as the per-user default. A synced workspace (OneDrive on
+# a developer machine) can recreate or hold files while NSIS removes them, which
 # tests the sync client rather than the installer. Evidence still lives under
 # the workspace for artifact upload. The /D argument must remain last for NSIS.
 #
-# The root is kept as SHORT as the per-user default (`%LOCALAPPDATA%\Programs\
-# <product>`), because the uninstaller is bound by MAX_PATH: NSIS deletes with the
-# plain Win32 calls, which refuse a path of 260 characters or more, and the
-# bundle's deepest files sit ~190 characters below the install root. Measured on
-# the runner with a 73-character root: exactly the three bytecode files whose
-# full paths came to 260, 261 and 262 characters survived a silent uninstall,
-# while the 259-character neighbour was removed. A deeper root than a user's
-# default would therefore fail this script on a limit the product does not
-# promise to beat, and hide nothing about the default install it certifies.
-$requestedInstallRoot = Join-Path ([IO.Path]::GetFullPath($env:TEMP)) "kci-$PID"
+# NSIS deletes with Win32 calls that refuse paths of 260 characters or more.
+# A five-digit PID under `%LOCALAPPDATA%\Temp\kci-<pid>` made one bundled .pyc's
+# path exactly 260 characters, so the uninstaller left that file behind while
+# the same artifact passed with a shorter PID. Keep the nested test install no
+# deeper than the normal `%LOCALAPPDATA%\Programs\<product>` install.
+$requestedInstallRoot = Join-Path ([IO.Path]::GetFullPath($env:LOCALAPPDATA)) "k-$PID"
+$testInstallRoot = Join-Path $requestedInstallRoot $productFilename
+$defaultInstallRoot = Join-Path $env:LOCALAPPDATA "Programs\$productFilename"
+if ($testInstallRoot.Length -gt $defaultInstallRoot.Length) {
+  throw "Installer test path is deeper than the per-user default: $testInstallRoot"
+}
 # A TREE, not one file. The boundary being tested is "the uninstaller removes the
 # subdirectory it created and nothing else in the parent", and a single witness
 # cannot distinguish that from a recursive delete that happens to spare one name.
