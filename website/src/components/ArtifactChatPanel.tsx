@@ -34,7 +34,8 @@ import { i18nT } from '../i18n/t'
  *   invariant never observably breaks).
  * - **Open in chat page** — full-page escape hatch; routes through the page's
  *   nav dispatcher so it forwards correctly from popout windows.
- * - **×** — closes the *panel* only; the session stays active and bound.
+ * - **×** — closes the *panel* only; the session stays active and bound, unless
+ *   the user never wrote in it (the page then discards it).
  */
 export function ArtifactChatPanel({
   slotKey,

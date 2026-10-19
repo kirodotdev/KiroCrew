@@ -597,16 +597,23 @@ function closeRefusalIsHistoryWrite(err: unknown): boolean {
   }
 }
 
+/** `discard`: the server closes the slot and deletes its history row only while the
+ *  session is empty, and its refusal is quiet: the caller never asked the user to
+ *  close anything. */
+export type DeleteSlotArg = string | { key: string; discard: true }
+
 export const deleteSlot = createAsyncThunk<
   string,
-  string,
+  DeleteSlotArg,
   // `alreadyGone` marks a close the server answered with 404: this request
   // closed nothing, so `deleteSlot.fulfilled` must not tear down the tab's
   // view state for a slot the close that did pop it may still restore.
   { fulfilledMeta: { alreadyGone: boolean } }
 >(
   'chat/deleteSlot',
-  async (key: string, { dispatch, getState, requestId, fulfillWithValue }) => {
+  async (arg: DeleteSlotArg, { dispatch, getState, requestId, fulfillWithValue }) => {
+    const key = typeof arg === 'string' ? arg : arg.key
+    const discard = typeof arg !== 'string' && arg.discard === true
     const root = getState() as RootState
     const deletedSlot = root.dashboard.slots.find(s => s.key === key)
     // A new close press retires the last refusal's notice.
@@ -673,7 +680,7 @@ export const deleteSlot = createAsyncThunk<
     // so it completes the close instead of failing it.
     let alreadyGone = false
     try {
-      await api.deleteChatSlot(key).catch((err: unknown) => {
+      await (discard ? api.discardChatSlot(key) : api.deleteChatSlot(key)).catch((err: unknown) => {
         if (!isNotFoundError(err)) throw err
         alreadyGone = true
       })
@@ -704,6 +711,7 @@ export const deleteSlot = createAsyncThunk<
       // the refetch reply must not be filtered out by the hold it exists to undo.
       dispatch(releaseCloseHold({ key, requestId }))
       dispatch(fetchSlots())
+      if (discard) throw new Error('discard refused')
       // The row is about to come back; say why, whichever path pressed close.
       // The title is read from before the optimistic removal took the row away.
       // An untitled row stores null, not the localized label: the notice outlives

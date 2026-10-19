@@ -165,6 +165,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # same way, through _switch_target_busy.
                 ("crewmate_worker_reload.py", "_is_busy"),
                 ("chat_api/slot_lifecycle.py", "api_chat_slot_reset_conversation"),
+                # Discard refuses a reserved slot, before the close and again at
+                # its pre-pop re-check: a dispatched first turn is not empty.
+                ("chat_api/slot_lifecycle.py", "api_chat_slot_discard"),
                 ("chat_api/resume.py", "api_chat_slot_resume"),
                 ("chat_api/session_relaunch.py", "api_chat_slot_workspace"),
                 ("chat_api/slot_lifecycle.py", "api_chat_slots_cleanup"),

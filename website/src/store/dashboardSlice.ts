@@ -468,6 +468,9 @@ const evictSlotSubagents = (state: DashboardState, slotKey: string): void => {
  *  the rest of the reply still applies. */
 /** Wall-clock cap on the in-flight hold; well past any healthy close, short of a reload. */
 const CLOSE_IN_FLIGHT_MAX_MS = 30_000
+/** `deleteSlot`'s argument (`DeleteSlotArg` in chatSlice), restated for the type-string matchers. */
+type DeleteSlotArgShape = string | { key: string }
+const deleteSlotArgKey = (arg: DeleteSlotArgShape): string => (typeof arg === 'string' ? arg : arg.key)
 /** Wall-clock cap on the confirmed hold: however many straggler lists or
  *  unsettled pre-confirmation fetches remain, the row is shown again past this
  *  if the server still lists it. A pre-pop reply cannot legitimately trail the
@@ -1862,17 +1865,18 @@ const dashboardSlice = createSlice({
       // BEFORE the thunk body's `removeSlotOptimistic`, so the hold is armed by
       // the time the row leaves the list and no frame can slip between the two.
       .addMatcher(
-        (action): action is { type: string; meta: { arg: string; requestId: string } } => action.type === 'chat/deleteSlot/pending',
+        (action): action is { type: string; meta: { arg: DeleteSlotArgShape; requestId: string } } => action.type === 'chat/deleteSlot/pending',
         (state, action) => {
+          const key = deleteSlotArgKey(action.meta.arg)
           // The key is server-minted, but it is still a dynamic property name on
           // a plain record: refuse the prototype keys the way every other
           // per-slot map here does, rather than let Immer throw inside `pending`
           // and leave the DELETE undispatched.
-          if (isUnsafeKey(action.meta.arg)) return
+          if (isUnsafeKey(key)) return
           if (!state.closingSlots) state.closingSlots = {}
           // A retry on the same key takes over the hold; the earlier attempt's
           // later lifecycle actions no longer match and are ignored.
-          state.closingSlots[action.meta.arg] = {
+          state.closingSlots[key] = {
             requestId: action.meta.requestId,
             inFlightUntil: Date.now() + CLOSE_IN_FLIGHT_MAX_MS,
             graceFrames: CLOSE_CONFIRMED_GRACE_FRAMES,
@@ -1892,7 +1896,7 @@ const dashboardSlice = createSlice({
         },
       )
       .addMatcher(
-        (action): action is { type: string; meta: { arg: string; requestId: string } } => action.type === 'chat/deleteSlot/rejected',
+        (action): action is { type: string; meta: { arg: DeleteSlotArgShape; requestId: string } } => action.type === 'chat/deleteSlot/rejected',
         (state, action) => {
           // Belt and braces: the thunk releases the hold itself before its
           // recovery refetch (see `releaseCloseHold`), because `rejected` only
@@ -1900,7 +1904,7 @@ const dashboardSlice = createSlice({
           // reply can land first. This covers a rejection that never reached
           // that catch (a thrown `switchSlot` peer selection, a test harness).
           // Owner-checked: this `rejected` can trail a same-key retry's `pending`.
-          releaseHold(state, action.meta.arg, action.meta.requestId)
+          releaseHold(state, deleteSlotArgKey(action.meta.arg), action.meta.requestId)
         },
       )
   },

@@ -5,6 +5,7 @@ cleanup sweep, and the fresh-conversation reset.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
         save_slot_off_loop,
         sel,
         select_idle_slot_keys,
+        slot_history_key,
         slot_not_found,
         time,
     )
@@ -1025,6 +1027,64 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
         # The pre-pop re-check that raises other statuses is session-control's
         # path, not this handler's.
         return web.json_response({"error": exc.message, "code": exc.code}, status=500)
+    return web.json_response({"ok": True})
+
+
+async def api_chat_slot_discard(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/discard — close a session nothing was written in,
+    and delete its history row.
+
+    The emptiness check runs on the live slot, both before the close and again in
+    its pre-pop re-check, so a message that lands while the close awaits is never
+    closed. The history row is deleted only when no slot holds the key after the
+    close: a send can recreate the key while the close saves history, and that
+    replacement owns the transcript.
+    """
+    from kiro_crew.dashboard.handlers.sessions_parts.delete_routes import (
+        _claim_history_delete,
+        _delete_claimed_session,
+    )
+    from kiro_crew.dashboard.slot_projection import summary_rows
+
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return slot_not_found()
+    request_app = str(request.get("app") or "")
+    denied = deny_app_slot_access(request_app, slot, name, "slot_discard")
+    if denied is not None:
+        return denied
+    history_key = _history_key_for(name)
+    # A linked slot's transcript belongs to its channel, cron or workflow.
+    if slot_history_key(slot) != history_key:
+        return web.json_response(
+            {"error": "only a dashboard-owned session can be discarded", "code": "not_discardable"},
+            status=409,
+        )
+
+    def refuse_unless_empty() -> None:
+        if slot.running:
+            raise SlotCloseError(
+                "a turn is running on this slot", code="turn_in_flight", status=409
+            )
+        if summary_rows(slot) or slot.queue_depth:
+            raise SlotCloseError("the session is not empty", code="slot_not_empty", status=409)
+
+    try:
+        refuse_unless_empty()
+        await close_slot(state, slot, name, pre_pop_check=refuse_unless_empty)
+    except SlotCloseError as exc:
+        if exc.status == 409:
+            return web.json_response({"error": exc.message, "code": exc.code}, status=409)
+        return web.json_response({"error": exc.message, "code": exc.code}, status=500)
+
+    # No await from this check to the claim below, so no slot can take the key between them.
+    if state.get_slot(name) is None and state.conversation_log:
+        with contextlib.ExitStack() as delete_window:
+            claim = _claim_history_delete(delete_window, state, history_key)
+            if claim.slot is None:
+                await _delete_claimed_session(state, history_key, claim, request_app)
     return web.json_response({"ok": True})
 
 
