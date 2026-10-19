@@ -1906,6 +1906,16 @@ broadcasts.
 maintained by the frontend flow. The backend accepts any valid slug and does
 not enforce uniqueness.
 
+**Untouched-session discard (frontend)** — opening the chat panel with no bound
+session creates one before the user types. When the panel stops showing that
+session (closed, switched to comments, moved to another artifact, or the page
+left), the page discards it if it is still untouched: no transcript row, no turn
+running or queued, and an empty composer draft. Discard is the sidebar close
+(`deleteSlot`) followed by `DELETE /api/sessions/dashboard:<slot>`, because the
+pinned title keeps an empty archived row listed in History. Leaving through
+"Open in chat page" keeps the session, and a session with anything in it is
+never discarded.
+
 **Live refresh** — the artifact mutation funnel broadcasts a typed
 `artifact_update {slug, version, deleted}` WS event
 (`DashboardState.push_artifact_update`, called via the handlers'

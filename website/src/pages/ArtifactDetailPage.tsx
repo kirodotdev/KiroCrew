@@ -223,8 +223,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     )
   }, [artifact, commentCount])
   const companionRead = useArtifactDetailPageCompanion({
-    durableComments, setPanel, sidebarUserToggledRef, buildCompanionContext, popout, stateRead, documentRead,
-    commentsRead,
+    durableComments, panel, setPanel, sidebarUserToggledRef, buildCompanionContext, popout, stateRead,
+    documentRead, commentsRead,
   })
   const {
     sendNav, slotsLoaded, boundSlot, sessionOpBusyRef, injectedVersionRef, injectContextMut,

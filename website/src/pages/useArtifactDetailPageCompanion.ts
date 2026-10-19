@@ -10,14 +10,16 @@
  * is a behaviour change even when every test of the moved code still passes.
  */
 import {
-  useCallback, useMemo, useRef, useState, type Dispatch, type MutableRefObject,
+  useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject,
   type SetStateAction,
 } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { useAppSelector, useAppStore } from '../store'
-import { switchSlot } from '../store/chatSlice'
+import { useAppSelector, useAppStore, type RootState } from '../store'
+import { deleteSlot, switchSlot } from '../store/chatSlice'
 import { fetchSlots, addSlotOptimistic, removeSlotOptimistic, armConfirmedCloseHold } from '../store/dashboardSlice'
 import { api } from '../api/client'
+import { dashboardSessionKey } from '../hooks/useSessionControls'
+import { loadDrafts } from '../utils/chatDrafts'
 import { sendTurn } from '../chat-core/transport/sendTurn'
 import { slotBusySteer } from '../components/chat-input/busySend'
 import { useJevAutoSend } from './chat/useJevAutoSend'
@@ -56,19 +58,31 @@ export function pickBoundSlot(slots: ChatSlot[] | undefined, slug: string): Chat
   return [...matches].sort(byRecentActivity)[0]
 }
 
+/** True while the session holds nothing the user wrote: no transcript row, no
+ *  turn running or queued, and no unsent composer text. */
+function isUntouchedSession(state: RootState, slotKey: string): boolean {
+  const slot = state.dashboard.slots.find((x) => x.key === slotKey)
+  if (!slot || slot.messages > 0 || slot.running || (slot.queue_depth ?? 0) > 0) return false
+  // A send shows here as an optimistic row before the slots snapshot counts it.
+  const rows = state.chat.activeSlot === slotKey ? state.chat.messages : state.chat.slotMessages[slotKey]
+  if (rows?.length) return false
+  return !loadDrafts()[slotKey]?.trim()
+}
+
 /** Carries the SLUG as well as the version: the retraction is artifact-scoped, and this page
  *  survives a slug change, so a bare version cannot say which artifact a result belongs to. */
 type InjectVars = { slotKey: string; version: number; slug: string; refresh?: boolean }
 
 /** The companion chat session, its context entry and the batch submit of pending comments. */
 export function useArtifactDetailPageCompanion({
-  stateRead, documentRead, commentsRead, durableComments, setPanel, sidebarUserToggledRef,
+  stateRead, documentRead, commentsRead, durableComments, panel, setPanel, sidebarUserToggledRef,
   buildCompanionContext, popout,
 }: {
   stateRead: ArtifactDetailPageStateRead
   documentRead: ArtifactDetailPageDocumentRead
   commentsRead: ArtifactDetailPageCommentsRead
   durableComments: ArtifactComment[]
+  panel: 'none' | 'comments' | 'chat'
   setPanel: Dispatch<SetStateAction<'none' | 'comments' | 'chat'>>
   sidebarUserToggledRef: MutableRefObject<boolean>
   buildCompanionContext: () => string
@@ -295,6 +309,38 @@ export function useArtifactDetailPageCompanion({
     }
   }, [boundSlots, createBoundSession, dispatch, setSaveError])
 
+  /** Close the session the way the sidebar's × does, then delete the history row
+   *  that close leaves: an untouched session has nothing to resume, but its pinned
+   *  title keeps the row listed in History. */
+  const discardIfUntouched = useCallback((slotKey: string) => {
+    if (!isUntouchedSession(appStore.getState(), slotKey)) return
+    dispatch(deleteSlot(slotKey)).unwrap()
+      .then(() => api.deleteSession(dashboardSessionKey(slotKey)))
+      .catch(() => {})
+  }, [appStore, dispatch])
+
+  // The panel creates its session on open, before anything is typed, so an
+  // untouched one is discarded when the panel stops showing it (closed, switched
+  // to comments, another artifact, or the page left). The check waits a microtask
+  // because the embedded ChatPage saves its composer draft as it unmounts, which
+  // can run after this cleanup.
+  const shownSlotKey = panel === 'chat' ? boundSlot?.key ?? null : null
+  const shownSlotKeyRef = useRef<string | null>(null)
+  // "Open in chat page" takes the session along, so leaving through it keeps it.
+  const keptSlotKeyRef = useRef<string | null>(null)
+  useEffect(() => {
+    shownSlotKeyRef.current = shownSlotKey
+    if (!shownSlotKey) return
+    return () => {
+      shownSlotKeyRef.current = null
+      queueMicrotask(() => {
+        // Re-run with the same key (a changed callback, StrictMode): still shown.
+        if (shownSlotKeyRef.current === shownSlotKey || keptSlotKeyRef.current === shownSlotKey) return
+        discardIfUntouched(shownSlotKey)
+      })
+    }
+  }, [shownSlotKey, discardIfUntouched])
+
   // ── batch submit to the companion session ──
   // Sent-id tracking is shared with the chat side panel's Submit.
   const { sentIds, markSent } = useSentCommentIds(slug)
@@ -364,6 +410,7 @@ export function useArtifactDetailPageCompanion({
    *  intent to a main window instead of remounting the dashboard in-frame. */
   const openChatFull = useCallback(() => {
     if (!boundSlot) return
+    keptSlotKeyRef.current = boundSlot.key
     sendNav({ path: '/chat', slotKey: boundSlot.key })
   }, [boundSlot, sendNav])
 
