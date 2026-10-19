@@ -658,6 +658,47 @@ async def test_side_turn_grants_read_only_tools_on_a_member_backend(
     assert "lookups work here, but changes don't" in stream_mock.await_args.args[1]
 
 
+@pytest.mark.asyncio
+async def test_side_turn_on_pi_runs_read_only_without_deriving_a_spec(
+    tmp_path, monkeypatch, _published_readonly_spec
+):
+    """Pi is in ``ACP_BACKENDS_SIDE_READONLY`` via its gate extension, not a
+    derived spec: the extension asks about every tool call, so there is no
+    pre-approval bypass to close. The turn binds the resolved (base) agent
+    under READ_ONLY, marks the session for the harness-builtin proof, and
+    streams the lookup prompt."""
+    from kiro_crew.acp_backends import ACP_BACKEND_PI, ACP_BACKENDS_SIDE_READONLY
+    from kiro_crew.llm_helpers import ToolApprovalPolicy
+
+    assert ACP_BACKEND_PI in ACP_BACKENDS_SIDE_READONLY
+    _configure_backend(monkeypatch, ACP_BACKEND_PI)
+    state = _make_state(tmp_path)
+    _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    parent._side.append_user(_SIDE_QUESTION)
+    parent._side.last_run_id = "run-pi"
+    parent._side.is_complete = False
+    created: list[dict] = []
+
+    async def _fake_get_or_create(key, **kwargs):
+        created.append(kwargs)
+        return MagicMock(), True, False
+
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+    stream_mock = AsyncMock(return_value=_SIDE_ANSWER)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", stream_mock)
+
+    await _run_side_turn(state, parent, "run-pi", _SIDE_QUESTION, is_first_turn=True)
+
+    assert not _published_readonly_spec, "pi turns derive no read-only spec"
+    assert created[0]["side_read_only"] is True
+    assert parent._side.binding[2] == "pi_read_only"
+    assert stream_mock.await_args.kwargs["approval_policy"] is ToolApprovalPolicy.READ_ONLY
+    assert "lookups work here, but changes don't" in stream_mock.await_args.args[1]
+
+
 def _side_turn_fixture(tmp_path, run_id: str):
     """A state whose parent slot has an open sidecar with one pending question,
     plus the list the fake ``get_or_create`` records each call's kwargs into."""

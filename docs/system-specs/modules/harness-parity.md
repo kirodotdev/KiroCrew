@@ -273,19 +273,21 @@ to queue, so pi joins `ACP_BACKENDS_STEERING_REQUEST` and `steer_needs_loss_reco
 like goose (`steering-live.jsonl`, `test_pi_steer.py`,
 `test_pi_gate_extension_steer.py`).
 
-One card line stays unavailable on pi, on a driven observation:
+Side Chat tools ship through the confined launch below, not through membership
+alone:
 
-- **Side Chat tools.** The READ_ONLY gate would have to trust the tool NAME in the
-  gate envelope, and on pi a name proves nothing: an extension that registers a tool
-  called `read` replaces the built-in one (driven: the gate saw `read` and the call
-  wrote a file), and user-level extensions, installed pi packages and a trusted
-  project's extensions all load beside Crew's. The known route is a side-chat pi
-  process launched with `-ne` (no discovered, configured or built-in extensions;
-  explicit `--extension` paths still load) and `--no-approve`, so only Crew's sealed
-  gate runs and the built-in names can be trusted, plus a pi tool table for the
-  READ_ONLY proof and a refusal of sensitive paths that pi's own settings cannot
-  pre-approve. That is a change to how side sessions launch, not a membership edit,
-  and it has not been built.
+- **Side Chat tools.** The READ_ONLY gate trusts the tool NAME in the gate
+  envelope only because a Side Chat pi process is launched with `--no-extensions`
+  and `--no-approve` (`_pi_gate_launcher_body(confine=True)`): discovered,
+  configured and built-in extensions stay unloaded, an explicit `--extension`
+  still loads Crew's sealed gate, and project-local files are ignored. Driven
+  live on pi 1.3.0: the confined launcher's read-back lists the sealed gate
+  and an auto-discovered `shadow-probe` command stays unloaded, while the
+  unconfined launcher loads it. A name on a main-chat pi process still proves
+  nothing — an extension that registers `read` replaces the built-in — so
+  that launch is Side Chat only. The read proof is `PI_READ_ONLY_BUILTINS`,
+  and a `search` kind from the extension is rewritten to `read` at the pi
+  dispatch site once the name mapped.
 
 ### Heartbeat tools on a harness with no adapter-authored tool identity
 

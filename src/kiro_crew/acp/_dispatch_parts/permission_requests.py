@@ -15,6 +15,7 @@ import logging
 import posixpath
 import re
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any, cast
 
 from kiro_crew.acp._dispatch_parts.surfaced_text import (
@@ -33,6 +34,7 @@ from kiro_crew.acp._dispatch_parts.tool_call_provenance import scoped_tool_cache
 from kiro_crew.acp.harness_tool_names import (
     CLAUDE_READ_ONLY_BUILTINS,
     GOOSE_READ_ONLY_BUILTINS,
+    PI_READ_ONLY_BUILTINS,
     qualified_harness_tool_id,
 )
 from kiro_crew.acp.types import (
@@ -869,6 +871,42 @@ def build_permission_event(
         # call is that search, so the kind is read as ``read`` for those two
         # alone; every other kind is kept as stated.
         if _harness_builtin_tool in ("grep", "glob") and tool_kind == "search":
+            tool_kind = "read"
+    # pi states no tool name on its own frames; the gate-extension envelope
+    # carries the harness's own tool name, nonce-verified in gate_envelope().
+    # A bare builtin name proves the call; an MCP-rewritten title matches
+    # nothing here. Side Chat only.
+    elif side_read_only and harness_backend == ACP_BACKEND_PI and envelope is not None:
+        _envelope_title = envelope.get("title", "")
+        _harness_builtin_tool = PI_READ_ONLY_BUILTINS.get(
+            _envelope_title if isinstance(_envelope_title, str) else "", ""
+        )
+        # A bare name proves the call but not its target: pi resolves a
+        # relative ``path`` against the session's work dir, while the
+        # sensitive-path and ``filesystem.read`` tiers resolve it against the
+        # gateway's own, so ``../../.ssh/id_rsa`` would pass them and then
+        # auto-approve. Require the envelope's path absolute (``~`` allowed),
+        # and map nothing when it is missing or relative -- the same guard
+        # ``_is_deepseek_read_only_builtin`` applies. Without a mapped name
+        # the call falls through to the surface's own approval instead.
+        _pi_input = envelope.get("input")
+        _pi_path = _pi_input.get("path") if isinstance(_pi_input, dict) else None
+        try:
+            _pi_absolute = isinstance(_pi_path, str) and Path(_pi_path).expanduser().is_absolute()
+        except RuntimeError:
+            # `~unknown-user/...`: no such account, so expansion itself
+            # raises. Not a proven target -- map nothing and let the call
+            # fall through to approval instead of failing the turn.
+            _pi_absolute = False
+        if not _pi_absolute:
+            _harness_builtin_tool = ""
+        # pi's gate extension renders grep/find/ls as kind ``search``. Once the
+        # name mapped to a read builtin, that label is not a non-read. Rewrite
+        # it here, the way goose rewrites ``other``, so the shared gate's
+        # "search narrows" rule stays intact for claude (whose Grep is also
+        # kind search and must still ask). A title that mapped to nothing keeps
+        # the kind the extension stated.
+        if _harness_builtin_tool and tool_kind == "search":
             tool_kind = "read"
     # goose states its tool on the tool_call frame as an (extension, tool) pair.
     # The pair is read as goose wrote it: the extension from the trusted identity
