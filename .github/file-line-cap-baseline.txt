@@ -81,4 +81,3 @@
 2145 website/src/apps/design-tweak/DesignTweakPage.tsx
 2125 website/src/pages/AppDetailPage.tsx
 2026 website/src/pages/connections/ConnectionsPage.tsx
-2004 website/src/test/InstancesViewport.test.tsx
