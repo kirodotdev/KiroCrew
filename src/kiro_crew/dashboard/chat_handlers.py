@@ -472,6 +472,7 @@ from kiro_crew.dashboard.chat_title_fork import (  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _MANUAL_CONTINUE_MSG,
     _MANUAL_RESUME_MSG,
+    REQUEUED_STEER_ROW_MID_META,
     SESSION_START_FAILED_KIND,
     SLOT_DETAIL_MAX_LIMIT,
     SYNTHETIC_RECOVERY_KIND,
@@ -755,6 +756,12 @@ _SESSION_RELOAD_NOTICE = (
 #: caller-supplied one would label typed text as a page's, or the reverse.
 #: ``SLACK_TEXT_META_KEY`` is the gateway's record that a row was copied in from a
 #: Slack thread, which the fallback title reads as Slack mrkdwn.
+#: ``steer``, ``steerState`` and ``requeued_steer_row_mid`` are the gateway's
+#: record of a steer's lifecycle (``chat_delivery``, ``chat_turn/steer_queue``).
+#: A row stamped ``steerState: superseded`` is hidden from the transcript
+#: (``groupDisplayItems.isSupersededSteerRow``), so a caller-supplied pair would
+#: hide the only row of a prompt that ran. Clients send a steer as the top-level
+#: ``steer`` flag, never in ``meta``.
 RESERVED_ROW_META_KEYS = frozenset(
     {
         "decisions_strip",
@@ -769,6 +776,11 @@ RESERVED_ROW_META_KEYS = frozenset(
         "noteRowFor",
         CARD_ORIGIN_META_KEY,
         SLACK_TEXT_META_KEY,
+        "steer",
+        "steerState",
+        # Redirects a pin or link on a superseded row (`_retire_superseded_steer_row`).
+        "supersededBy",
+        REQUEUED_STEER_ROW_MID_META,
     }
 )
 

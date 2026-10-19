@@ -247,6 +247,93 @@ export function preserveSettledMcpOauth(existing: ChatMessage[], merged: ChatMes
  *
  *  Deliberately scoped to these two in-place-upsert types; it is the sibling of
  *  the stop/mcp_oauth rules, not a general merge rewrite. */
+/** Whether `page` carries an older copy of a steer row this tab already shows
+ *  as `superseded`.
+ *
+ *  `superseded` is terminal: the queue drain sets it on a requeued steer's old
+ *  row only AFTER it appended that turn's own row (`queue_drain.py`
+ *  `_retire_superseded_steer_row`), and nothing moves it back. So a page holding
+ *  the same `(mid, ts)` steer in any other state was captured before that drain,
+ *  and it also lacks the successor row. Merging it would drop the successor the
+ *  tab already shows, so the caller keeps its own newer view, the way an
+ *  ended-turn page is dropped. A switch keeps its view only when that view holds
+ *  the page's first row; otherwise the page applies and
+ *  `preserveSettledUpsertRows` carries `superseded` over. That is safe because
+ *  the transcript hides a superseded row only while its successor is in the same
+ *  list (`isHiddenSupersededSteer`), so a page that lacks it draws the old row. */
+export function pageRegressesSupersededSteer(existing: ChatMessage[], page: ChatMessage[]): boolean {
+  const steerKey = (m: ChatMessage): string | undefined => {
+    const meta = m.meta as { mid?: unknown; steer?: unknown } | undefined
+    if (m.role !== 'user' || !meta?.steer || typeof meta.mid !== 'string' || !meta.mid) return undefined
+    return JSON.stringify([meta.mid, m.ts ?? null])
+  }
+  const superseded = new Set<string>()
+  for (const m of existing) {
+    const key = steerKey(m)
+    if (key && (m.meta as { steerState?: unknown }).steerState === 'superseded') superseded.add(key)
+  }
+  if (!superseded.size) return false
+  return page.some(m => {
+    const key = steerKey(m)
+    return key !== undefined && superseded.has(key)
+      && (m.meta as { steerState?: unknown }).steerState !== 'superseded'
+  })
+}
+
+/** The queue of a page that `pageRegressesSupersededSteer` reports, without the
+ *  entries that have drained since the page was read.
+ *
+ *  A page that shows the steer `requeued` was read after the requeue and before
+ *  the drain, so its queue still lists the steer's entry. The tab has seen the
+ *  drain pop that entry: the server retires the row only when the entry drained
+ *  alone with exactly the row's text, and the requeue put it at the queue head.
+ *  So the first entry with that text is dropped for each such row. A page that
+ *  shows the steer `written` was read before the requeue, so its queue holds no
+ *  entry for it, and nothing is dropped. Every other entry stays: the page may
+ *  list a send whose `queue_push` this tab never received, even one with the
+ *  same text, and the caller merges the rest with the queued rows it holds. */
+export function queueAfterSupersededDrain<Q extends { content: string; queueId?: string }>(
+  existing: ChatMessage[],
+  page: ChatMessage[],
+  queue: Q[] | undefined,
+): Q[] {
+  if (!queue?.length) return []
+  const steerKey = (m: ChatMessage): string | undefined => {
+    const meta = m.meta as { mid?: unknown; steer?: unknown } | undefined
+    if (m.role !== 'user' || !meta?.steer || typeof meta.mid !== 'string' || !meta.mid) return undefined
+    return JSON.stringify([meta.mid, m.ts ?? null])
+  }
+  const unretired = new Set<string>()
+  for (const m of page) {
+    const key = steerKey(m)
+    if (key && (m.meta as { steerState?: unknown }).steerState === 'requeued') unretired.add(key)
+  }
+  // The drained entry, by identity where this tab saw the drain: the live
+  // rebuild of a requeued card names the card's `queue_id` on the row it lands
+  // on (`meta.landedFromSteer`, set by `removeQueuedMessage`). By text where it
+  // did not, for example after a refresh replaced that rebuild with the stored
+  // row. Identity first, so a reordered send with the same text keeps its card.
+  const drainedIds = new Set<string>()
+  const drained = new Map<string, number>()
+  existing.forEach((m, i) => {
+    const key = steerKey(m)
+    if (!key || !unretired.has(key) || (m.meta as { steerState?: unknown }).steerState !== 'superseded') return
+    const landed = existing.slice(i + 1).find(r => r.role === 'user' && !(r.meta as { steer?: unknown } | undefined)?.steer
+      && r.content === m.content && typeof (r.meta as { landedFromSteer?: unknown } | undefined)?.landedFromSteer === 'string')
+    const landedId = (landed?.meta as { landedFromSteer?: string } | undefined)?.landedFromSteer
+    if (landedId && queue.some(q => q.queueId === landedId)) drainedIds.add(landedId)
+    else drained.set(m.content, (drained.get(m.content) ?? 0) + 1)
+  })
+  if (!drained.size && !drainedIds.size) return queue
+  return queue.filter(q => {
+    if (q.queueId && drainedIds.has(q.queueId)) return false
+    const left = drained.get(q.content) ?? 0
+    if (!left) return true
+    drained.set(q.content, left - 1)
+    return false
+  })
+}
+
 export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatMessage[]): ChatMessage[] {
   // LIVE statuses a card row may hold — the backend's `_CHANGE_LIVE` +
   // `_GUIDE_LIVE` (`chat_cards.py`). A merged row in this set is "earlier" and
@@ -263,10 +350,11 @@ export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatM
   // which is not a live status; `cancelled`/`expired`; `undone`) have no edge
   // back to a live status, so they anchor safely.
   const CARD_ANCHOR = new Set(['applied', 'partial', 'cancelled', 'expired', 'undone'])
-  // A steer row advances `written` -> `consumed`/`requeued` and never back
-  // (`steer_queue.py`: the only two transitions; a requeued steer runs later as
-  // its own NEW row, not a rewrite of this one), so both are safe anchors.
-  const STEER_SETTLED = new Set(['consumed', 'requeued', 'retracted'])
+  // A steer row advances `written` -> `consumed`/`requeued`/`retracted` and never
+  // back (`steer_queue.py`; a requeued steer runs later as its own NEW row, not a
+  // rewrite of this one), so all three are safe anchors. `requeued` then moves to
+  // `superseded` once that row lands (`queue_drain.py`), and nothing moves it back.
+  const STEER_SETTLED = new Set(['consumed', 'requeued', 'retracted', 'superseded'])
 
   // The `(role, mid, ts)` upsert key for a covered row, or undefined if the row
   // is not one this pass guards. Steer rows ride the `user` role, so they are
@@ -311,13 +399,15 @@ export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatM
   // the lifecycle, not merely "not an anchor": a card whose status is unknown
   // to us (neither live nor anchor), or a retryable `failed`, is left exactly
   // as the page sent it rather than overwritten from a prior anchored row.
-  const isEarlier = (m: ChatMessage): boolean => {
+  const isEarlier = (prior: ChatMessage, m: ChatMessage): boolean => {
     if (m.role === 'card') {
       const status = (m.meta as { card?: { status?: unknown } } | undefined)?.card?.status
       return typeof status === 'string' && CARD_LIVE.has(status)
     }
     const steerState = (m.meta as { steerState?: unknown } | undefined)?.steerState
-    return steerState === 'written'
+    // `requeued` is earlier only than `superseded`, the one state that follows it.
+    const priorState = (prior.meta as { steerState?: unknown } | undefined)?.steerState
+    return steerState === 'written' || (steerState === 'requeued' && priorState === 'superseded')
   }
 
   // A card copy's revision; 0 before the row's first patch.
@@ -327,7 +417,7 @@ export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatM
   }
   const priorWins = (prior: ChatMessage, m: ChatMessage): boolean => {
     const newer = cardRev(prior) - cardRev(m)
-    return newer ? newer > 0 : isSettled(prior) && isEarlier(m)
+    return newer ? newer > 0 : isSettled(prior) && isEarlier(prior, m)
   }
 
   const priorByKey = new Map<string, ChatMessage>()

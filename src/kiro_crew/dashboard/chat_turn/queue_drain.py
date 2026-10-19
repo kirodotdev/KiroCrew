@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.dashboard.chat_delivery import (
     BACKGROUND_START_TASKS,
     START_BACKGROUND_META_KEY,
+    STEER_STATE_REQUEUED,
+    STEER_STATE_SUPERSEDED,
 )
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
 from kiro_crew.dashboard.chat_delivery import (
@@ -38,6 +40,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.chat_utils_injected_rows import (
     AUTOMATION_STEER_META,
+    REQUEUED_STEER_ROW_MID_META,
     WORKFLOW_FOLLOWUP_KIND,
 )
 from kiro_crew.dashboard.chat_utils_slots import dashboard_slot_key
@@ -54,6 +57,7 @@ from kiro_crew.dashboard.slot_queue_repository import (
 )
 from kiro_crew.dashboard.state import CRON_NOTIFY_RE, SUBAGENT_COMPLETION_PREFIXES
 from kiro_crew.history import HUMAN_TURN_META_KEY
+from kiro_crew.shared_crew.contracts import MESSAGE_AUTHOR_META_KEY
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -549,6 +553,82 @@ def _record_queued_crew_steers(state: DashboardState, consumed: list[dict]) -> N
             logger.warning("crew steer: a queued steer was not recorded", exc_info=True)
 
 
+#: Meta the persisting tail stamps only on a steer row. The drain keeps its
+#: decision receipt, quote, and server-stamped author when it supersedes that
+#: row. Without the author, hiding the old row also hides the sender's byline.
+#: The queue_pop frame and the row that stays drawn both read this tuple.
+_SUPERSEDED_STEER_CARRIED_KEYS = (
+    "decisions_strip",
+    "quote",
+    MESSAGE_AUTHOR_META_KEY,
+)
+
+
+def _requeued_steer_row(slot: _ChatSlot, consumed: list[dict], next_msg: str) -> dict | None:
+    """Return the requeued steer row a drained entry supersedes, or None.
+
+    ``_requeue_unconsumed_steers`` names the row on the entry
+    (``REQUEUED_STEER_ROW_MID_META``) when the steer was already persisted. It is
+    superseded only when it still says exactly what this turn runs: the entry
+    drains alone, the row is a user steer row in the ``requeued`` state, and its
+    text equals ``next_msg``. Anything else returns None and both rows stay
+    visible, which is how every edited or merged send already renders.
+    """
+    if len(consumed) != 1:
+        return None
+    meta = consumed[0].get("meta")
+    if not isinstance(meta, dict):
+        return None
+    mid = meta.get(REQUEUED_STEER_ROW_MID_META)
+    if not (isinstance(mid, str) and mid):
+        return None
+    for row in slot.messages:
+        row_meta = row.get("meta")
+        if not isinstance(row_meta, dict) or row_meta.get("mid") != mid:
+            continue
+        if (
+            row.get("role") == "user"
+            and row_meta.get("steer") is True
+            and row_meta.get("steerState") == STEER_STATE_REQUEUED
+            and row.get("content") == next_msg
+        ):
+            return row
+        return None
+    return None
+
+
+def _retire_superseded_steer_row(
+    state: DashboardState, slot: _ChatSlot, row: dict, successor: dict | None
+) -> None:
+    """Mark a requeued steer row ``superseded`` once its own turn's row has landed.
+
+    The drained turn wrote a fresh row carrying the same text, so the transcript
+    keeps both rows for the model and for history while the client stops drawing
+    the old one. Best-effort like ``_mark_steer_row_state``: a missed patch leaves
+    the pre-fix rendering (the text twice), never a lost message.
+
+    ``supersededBy`` names the successor's ``mid``, so a pin, quote or share link
+    saved against the old row lands on the row that is drawn in its place.
+    """
+    meta = dict(row.get("meta") or {})
+    mid = meta.get("mid")
+    ts = str(row.get("ts") or "")
+    if not (isinstance(mid, str) and mid):
+        return
+    meta["steerState"] = STEER_STATE_SUPERSEDED
+    successor_mid = ((successor or {}).get("meta") or {}).get("mid")
+    if isinstance(successor_mid, str) and successor_mid and successor_mid != mid:
+        meta["supersededBy"] = successor_mid
+    if slot.update_message(ts, meta=meta, mid=mid) is None:
+        return
+    try:
+        state.broadcast_ws(
+            "chat_message_update", {"slot": slot.key, "ts": ts, "mid": mid, "meta": meta}
+        )
+    except Exception:
+        logger.warning("superseded steer broadcast failed for slot %s", slot.key, exc_info=True)
+
+
 async def _start_next_queued_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -993,7 +1073,19 @@ async def _start_next_queued_turn(
         None,
     )
     is_automation_steer = automation_nudge is not None
-    if not (
+    # A steer the RPC accepted already has its transcript row; the turn that was
+    # meant to take it ended first, so the requeue marked that row `requeued` and
+    # named it on the entry. This turn still writes its own row below, AFTER the
+    # stop card, so turn grouping and the interrupted/stopped tail walks see the
+    # same shape as any other queued send. The old row is retired once that row
+    # lands, so the text shows once. Only when the entry drains ALONE and the old
+    # row still holds exactly the text this turn runs: an edited card, a merge
+    # with later sends, or a redaction that changed the text keep both rows,
+    # because then the old row holds different text from what runs. And only when
+    # this drain writes a `user` row: typed text that opens with a cron or
+    # sub-agent prefix drains as an event row, and hiding the old row would leave
+    # no copy drawn as the person's own words.
+    _drains_as_user = not (
         is_cron
         or is_subagent
         or is_recovery
@@ -1001,7 +1093,11 @@ async def _start_next_queued_turn(
         or is_automation_notice
         or is_automation_steer
         or is_workflow_followup
-    ):
+    )
+    superseded_steer_row = (
+        _requeued_steer_row(slot, consumed, next_msg) if _drains_as_user else None
+    )
+    if _drains_as_user:
         # A user message after the last completion takes over from the armed
         # synthesis and ends its batch, so its count starts over. Only the
         # caller that read the fire gate as `clear` with the floor held says so
@@ -1081,6 +1177,20 @@ async def _start_next_queued_turn(
             )
             if _pop_relay_record is not None:
                 _pop_meta["relay"] = _pop_relay_record
+        if superseded_steer_row is not None:
+            # The superseded row is the only client row with the steer's
+            # receipt, quote, and server-stamped author. The rebuilt row must
+            # carry them before the drain hides the old row.
+            _old_pop_meta = superseded_steer_row.get("meta") or {}
+            for _carried in _SUPERSEDED_STEER_CARRIED_KEYS:
+                if _carried not in _old_pop_meta or _carried in _pop_meta:
+                    continue
+                _carried_value = _old_pop_meta[_carried]
+                if _carried == MESSAGE_AUTHOR_META_KEY:
+                    if isinstance(_carried_value, dict):
+                        _pop_meta[_carried] = dict(_carried_value)
+                else:
+                    _pop_meta[_carried] = _carried_value
         if _pop_meta:
             _pop["meta"] = _pop_meta
         state.broadcast_ws("queue_pop", _pop)
@@ -1259,6 +1369,8 @@ async def _start_next_queued_turn(
     # Read off the consumed entries (``_batch_recovery_echo_owed``); the merged
     # row's union says nothing about each entry, so it does not ride along.
     _drained_meta.pop(MIRROR_ECHO_OWED_META_KEY, None)
+    # Queue plumbing: read above to pick the row, never part of a row's meta.
+    _drained_meta.pop(REQUEUED_STEER_ROW_MID_META, None)
     # Queue plumbing like the steer mark above, read the way the channel origin is:
     # ANY consumed entry a channel hand-off stamped keeps the merged text content,
     # so a batch cannot smuggle a channel's "/clear" into a command by sitting
@@ -1277,6 +1389,22 @@ async def _start_next_queued_turn(
         _drained_meta.update(
             quote_meta({"quote": _drained_meta.pop("quote")}, user_origin=deliver_as_typed)
         )
+    if superseded_steer_row is not None:
+        # The old row is about to be hidden. It is the only row that holds the
+        # steer's decision receipt, quote, and server-stamped author. The
+        # requeued entry deliberately carries none of them. Move the values
+        # onto the row that stays drawn. The quote is already in its stored
+        # form for this text.
+        _old_meta = superseded_steer_row.get("meta") or {}
+        for _carried in _SUPERSEDED_STEER_CARRIED_KEYS:
+            if _carried not in _old_meta or _carried in _drained_meta:
+                continue
+            _carried_value = _old_meta[_carried]
+            if _carried == MESSAGE_AUTHOR_META_KEY:
+                if isinstance(_carried_value, dict):
+                    _drained_meta[_carried] = dict(_carried_value)
+            else:
+                _drained_meta[_carried] = _carried_value
     if _drained_ids:
         _drained_meta.pop("steer_delivery_id", None)
         _drained_meta["steer_delivery_ids"] = _drained_ids
@@ -1361,6 +1489,8 @@ async def _start_next_queued_turn(
                 row_cls,
                 meta=_drained_meta or None,
             )
+    if superseded_steer_row is not None and superseded_steer_row is not current_row:
+        _retire_superseded_steer_row(state, slot, superseded_steer_row, current_row)
 
     # Per-turn consumption cell for a drained sub-agent completion (see
     # _arm_queued_delivery_settlement): owned by THIS turn, so a successor turn
