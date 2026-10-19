@@ -3019,7 +3019,7 @@ file outside the install directory would open cleanly, report `S_ISREG`, sit und
 cap, and have its bytes served with a 200 — laundering, through an unsandboxed
 gateway, a read the app's own sandboxed code can be refused. Every other
 descriptor-validated read in the tree applies the same gate (`memory_files.py`,
-`memory_stores.py`, the `spec_builder` repository, `onboarding_scan.py`,
+`memory_stores.py`, the `spec_builder` duplicate transaction, `onboarding_scan.py`,
 `pinned_fs.copy_file_pinned`), so this route
 was the outlier rather than a new rule.
 
@@ -3528,15 +3528,21 @@ records which module owns which part, so a change lands in its owner.
 | `orchestration/duplicate.py` | The duplicate's staged publication transaction |
 | `runtime.py` | The worker session binding: slot scoping, turn relay, turn and slot stop, and the transcript projection |
 | `decisions.py` | The protected decision ledger and its outbox rows |
-| `repository.py`, `parsers.py` | The index, the documents, settings, and state-file projections |
+| `repository.py`, `parsers.py` | The index, settings, deletion tombstones and slot identity, the safe filesystem, and the document reads |
+| `repository_duplicate.py` | The duplicate's staged copy, its publication without replacement, and recovery of an abandoned one |
+| `repository_sentinel.py` | The STOP sentinel and the handoff gate that arms it |
+| `repository_discovery.py` | Spec discovery, each spec's phase and documents, and new spec directories |
+| `repository_git.py` | The audited git spawn and the worktree helpers |
 
 Imports only point down this order: `routes`, `handlers`, the `orchestration`
-owners, `runtime`, `decisions`, `repository`, `parsers`. There is no cycle, and no
-owner imports the facade. `handlers.py` re-exports each route entry point straight
+owners, `runtime`, `decisions`, the `repository_*` owners, `repository`, `parsers`.
+There is no cycle, and no owner imports the facade. A `repository_*` owner imports
+only `repository` and `parsers`, never another owner. `handlers.py` re-exports each route entry point straight
 from its owner, one hop, so `routes.py` keeps a single import surface.
 
 Two placements are constraints rather than style. Only the modules listed in
 `NON_EGRESS_REDACTION_MODULES` (`handlers.py`, `runtime.py`, `repository.py`,
+`repository_discovery.py`, `repository_git.py`, `repository_sentinel.py`,
 `parsers.py`) call the redactor, so a redacting projection stays in one of them. The
 persisted-transcript read stays in `_serialize_messages` in `runtime.py`, the
 plumbing site the transcript-derivation seam allowlists.

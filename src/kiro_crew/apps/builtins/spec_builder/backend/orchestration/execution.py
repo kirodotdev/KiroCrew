@@ -24,10 +24,10 @@ from ..repository import (
     _aload_index,
     _audit,
     _pin_legacy_slot_identity,
-    _prepare_handoff,
     _slot_key,
     _touch_spec,
 )
+from ..repository_sentinel import _prepare_handoff
 from ..runtime import _dispatch_turn, _ensure_worker_slot, _halt_active_turn, _teardown_worker_slot
 from .dispatch_claims import (
     _bind_execution_claim_to_turn,

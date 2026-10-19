@@ -43,6 +43,10 @@ _BACKEND_DIR = Path(backend_package.__file__).resolve().parent
 _LAYERS: dict[str, int] = {
     "parsers": 0,
     "repository": 1,
+    "repository_discovery": 1,
+    "repository_duplicate": 1,
+    "repository_git": 1,
+    "repository_sentinel": 1,
     "decisions": 2,
     "runtime": 3,
     "orchestration": 4,

@@ -29,8 +29,8 @@ from ..repository import (
     _slot_key,
     _touch_spec,
     _unindexed_observed_slot_keys,
-    _write_stop_sentinel_for_spec,
 )
+from ..repository_sentinel import _write_stop_sentinel_for_spec
 from ..runtime import _UNPINNED, _halt_active_turn, _teardown_worker_slot
 
 try:

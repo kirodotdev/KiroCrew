@@ -2854,6 +2854,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/spec_builder/backend/handlers.py",
         "apps/builtins/spec_builder/backend/parsers.py",
         "apps/builtins/spec_builder/backend/repository.py",
+        "apps/builtins/spec_builder/backend/repository_discovery.py",
+        "apps/builtins/spec_builder/backend/repository_git.py",
+        "apps/builtins/spec_builder/backend/repository_sentinel.py",
         "apps/builtins/spec_builder/backend/runtime.py",
         "apps/builtins/workflows/server.py",
         # Bundled dev-skill scripts: print CI/review findings to a developer

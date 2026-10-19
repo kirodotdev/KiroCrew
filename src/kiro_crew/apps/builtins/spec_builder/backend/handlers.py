@@ -62,20 +62,22 @@ from .repository import (
     _MAX_MODEL_LEN,
     _aload_index,
     _audit,
-    _derive_phase,
-    _load_index_with_discovery,
     _load_settings,
-    _prepare_spec_dir,
     _read_recent_projects,
-    _read_spec_files,
     _read_spec_text,
-    _repo_info,
     _safe_dir,
     _safe_dir_optional,
     _save_settings,
     _scan_subdirs,
     _slot_key,
 )
+from .repository_discovery import (
+    _derive_phase,
+    _load_index_with_discovery,
+    _prepare_spec_dir,
+    _read_spec_files,
+)
+from .repository_git import _repo_info
 from .runtime import _dispatch_turn, _ensure_worker_slot, _serialize_messages
 
 logger = logging.getLogger("kirocrew.app.spec-builder")

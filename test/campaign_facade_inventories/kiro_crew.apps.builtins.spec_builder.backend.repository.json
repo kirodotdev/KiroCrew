@@ -1,0 +1,31 @@
+{
+ "base_public_names": [
+  "APP_NAME",
+  "RENAME_NOREPLACE_AVAILABLE",
+  "atomic_write",
+  "config_dir",
+  "create_subprocess_limited",
+  "fd_real_path",
+  "is_sensitive_path",
+  "logger",
+  "rename_noreplace",
+  "safe_read_file_bytes_nolink",
+  "sandboxed_spawn_argv",
+  "sel",
+  "shielded_prepare_off_loop"
+ ],
+ "note": "Frozen at the split into the repository_duplicate, repository_sentinel, repository_discovery and repository_git owners; repository.py keeps the state, the index and the safe filesystem, and the in-app importers name each moved function's owner.",
+ "rebound": {
+  "RENAME_NOREPLACE_AVAILABLE": "kiro_crew.platform_compat",
+  "atomic_write": "kiro_crew.atomic_write",
+  "config_dir": "kiro_crew.config.paths",
+  "create_subprocess_limited": "kiro_crew.sandbox",
+  "fd_real_path": "kiro_crew.pinned_fs",
+  "is_sensitive_path": "kiro_crew.apps.builtins.spec_builder.backend.parsers",
+  "rename_noreplace": "kiro_crew.platform_compat",
+  "safe_read_file_bytes_nolink": "kiro_crew.hooks",
+  "sandboxed_spawn_argv": "kiro_crew.sandbox",
+  "sel": "kiro_crew.sel",
+  "shielded_prepare_off_loop": "kiro_crew.sandbox"
+ }
+}

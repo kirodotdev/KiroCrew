@@ -28,16 +28,18 @@ from ..repository import (
     _aload_index,
     _aload_index_snapshot,
     _audit,
-    _create_worktree,
     _forget_deleted,
     _forget_observed_slot_identity,
     _mutate_index,
     _new_slot_key,
-    _prepare_spec_dir,
+    _safe_dir,
+)
+from ..repository_discovery import _prepare_spec_dir
+from ..repository_git import (
+    _create_worktree,
     _remove_worktree,
     _repo_info,
     _rollback_worktree_if_ours,
-    _safe_dir,
 )
 from ..runtime import _dispatch_turn, _ensure_worker_slot
 from .dispatch_claims import (
