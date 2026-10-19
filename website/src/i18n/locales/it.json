@@ -16118,6 +16118,7 @@
       "filter_hooks": "Filtra gli hook…",
       "hook_name": "Nome dell'hook",
       "hooks": "Hook",
+      "matcher_lane_pill_gloss": "colonna dell'etichetta di stato",
       "hooks_run_shell_commands_on_chat_events_agentspa": "Gli hook eseguono comandi shell sugli eventi della chat: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Gli hook di strumento supportano pattern per filtrare per nome dello strumento. Una riga contrassegnata non ancora attivato è supportata dall'agente ma qui ancora nulla la attiva; una contrassegnata non si attiva mai non è supportata affatto. Test esegue subito entrambe.",
       "last_run": "Ultima esecuzione",
       "loading": "Caricamento…",
