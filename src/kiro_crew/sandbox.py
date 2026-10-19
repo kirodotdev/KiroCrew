@@ -501,6 +501,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         RLIMIT_PROFILE_NONE,
         RLIMIT_PROFILE_SESSION_HOST,
         RLIMIT_PROFILE_TOOL,
+        RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST,
         _is_transient_interpreter_enoent,
         _needs_path_search,
         _pass_fds_including,
