@@ -3944,12 +3944,13 @@ pickle names the path callers import.
 The placements are constraints rather than style. `CORE_APP_ROUTE_SEGMENTS` stays in
 `manifest.py` because `website/src/test/fileMenuContributions.test.tsx` reads its
 literal there. `JobSDK._execute` stays beside `_write_terminal` in `job_sdk.py` because
-`test_job_sdk.py` reads the text between them there; its two one-site counts (the
-interruption fields' assignments, the message table's spellings) read the facade joined
-with its owners, so a second site in any of them fails. `test_setup_hooks_contract.py`
-excludes `manifest_sections.py`, where every `setup` hook is declared and serialized,
-from its runtime scan; `test_agent_spec_hardened_reads.py` keys the hardened agent-spec
-read under `manifest_containment.py`; and `NON_EGRESS_REDACTION_MODULES` names
+`test_job_sdk_returns.py` reads the text between them there; its one-site count of the
+message table's spellings and `test_job_sdk_invariants.py`'s of the interruption fields'
+assignments read the facade joined with its owners, so a second site in any of them
+fails. `test_setup_hooks_contract.py` excludes `manifest_sections.py`, where every
+`setup` hook is declared and serialized, from its runtime scan;
+`test_agent_spec_hardened_reads.py` keys the hardened agent-spec read under
+`manifest_containment.py`; and `NON_EGRESS_REDACTION_MODULES` names
 `apps/job_sdk_records.py`, whose `_redact` is the ingest scrub.
 
 Writers: `apps/manifest.py`, `apps/manifest_names.py`, `apps/manifest_containment.py`,

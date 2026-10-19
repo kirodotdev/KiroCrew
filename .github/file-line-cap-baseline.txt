@@ -57,10 +57,7 @@
 3175 test/test_dashboard_approval.py
 2718 test/test_dashboard_server_composition_contract.py
 2478 test/test_dashboard_updates_coverage.py
-4437 test/test_github_pull_request_monitor.py
 3102 test/test_handlers_memory_coverage.py
-4353 test/test_hooks.py
-4427 test/test_job_sdk.py
 2631 test/test_llm_pool.py
 2449 test/test_mcp_gatewayd_coverage.py
 2096 test/test_monitor_directive_apply.py
