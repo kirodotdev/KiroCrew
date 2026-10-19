@@ -10,6 +10,7 @@
  1 app_backend_helpers.py
  2 chat_test_helpers.py
  2 cron_reaper_helpers.py
+ 1 dashboard_approval_helpers.py
  1 e2e/scenarios/conftest.py
  4 e2e/test_gateway_boot_matrix.py
  2 e2e/test_memory_ui_evidence.py
@@ -125,7 +126,8 @@
  2 test_cron_undispatched_one_shot.py
  1 test_cron_wake_budget.py
  7 test_cross_surface_stop_gate.py
- 4 test_dashboard_approval.py
+ 1 test_dashboard_approval_denials.py
+ 2 test_dashboard_approval_modes.py
  1 test_dashboard_cron_run_guard.py
  1 test_dashboard_execution_retention.py
  2 test_dashboard_files_coverage.py

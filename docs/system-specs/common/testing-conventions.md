@@ -4668,7 +4668,7 @@ More shapes this class hides, all Windows-only and all green on every Linux run:
   run then fails as whichever later assertion happens to touch it first — a park that
   never happened reported as `assert [] == ['provider:acp']` three lines on.
 - **A silent bounded wait reports a THROUGHPUT shortfall as an ordering defect.**
-  `test_subagent_scale.TestDurableQueueScale::test_queue_survives_manager_loss_and_drains_fifo`
+  `test_subagent_scale_queue.TestDurableQueueScale::test_queue_survives_manager_loss_and_drains_fifo`
   drained 199 recovered queue rows under `while store.count(DONE) < 199 and
   time.monotonic() < deadline`, then asserted `started == ids[1:]`. On the Windows
   shard the deadline expired mid-drain, the loop exited silently, and the run failed

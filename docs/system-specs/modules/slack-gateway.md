@@ -1586,7 +1586,7 @@ stall cron, heartbeat, task-runner, or AutoNudge turns.
 - When `is_background`, both the Slack `wait_for(pending.future, ...)` and
   `DashboardState.request_approval(..., is_background=True)` use
   `DashboardState._BACKGROUND_APPROVAL_TIMEOUT_SECS` and then **deny** on expiry —
-  letting the turn proceed/fail rather than hang. `test/test_dashboard_approval.py::TestBackgroundApprovalDenyFast` pins the bounded background window and the unchanged interactive window.
+  letting the turn proceed/fail rather than hang. `test/test_dashboard_approval_denials.py::TestBackgroundApprovalDenyFast` pins the bounded background window and the unchanged interactive window.
 - The Slack and dashboard windows reference `DashboardState._BACKGROUND_APPROVAL_TIMEOUT_SECS`
   / `DashboardState._APPROVAL_TIMEOUT` as the single source of truth.
 
