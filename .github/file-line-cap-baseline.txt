@@ -110,6 +110,4 @@
 2125 website/src/pages/AppDetailPage.tsx
 2117 website/src/pages/chat/SidePanel.tsx
 2026 website/src/pages/connections/ConnectionsPage.tsx
-2722 website/src/pages/settings/SecurityPanel.test.tsx
-2014 website/src/pages/settings/decisionsCard.test.tsx
 2004 website/src/test/InstancesViewport.test.tsx
