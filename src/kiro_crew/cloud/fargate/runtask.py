@@ -333,6 +333,21 @@ def _refuse_closed_environment(environment: Mapping[str, str], delivered: Collec
         )
 
 
+def network_configuration(placement: Placement) -> dict[str, Any]:
+    """The ``networkConfiguration`` value of a ``RunTask`` request for *placement*.
+
+    Shared with the Session Environments Fargate provider
+    (``fargate_session/tasks.py``), so both lanes place a task the same way.
+    """
+    return {
+        "awsvpcConfiguration": {
+            "subnets": list(placement.subnets),
+            "securityGroups": list(placement.security_groups),
+            "assignPublicIp": "ENABLED" if placement.assign_public_ip else "DISABLED",
+        }
+    }
+
+
 def _refuse_empty_placement(placement: Placement) -> None:
     """Every field of a placement that has no meaningful empty value.
 
@@ -509,13 +524,7 @@ def run_task_request(
         # grants ``ecs:ExecuteCommand`` to nobody and carries an explicit Deny on
         # the interactive session documents.
         "enableExecuteCommand": True,
-        "networkConfiguration": {
-            "awsvpcConfiguration": {
-                "subnets": list(placement.subnets),
-                "securityGroups": list(placement.security_groups),
-                "assignPublicIp": "ENABLED" if placement.assign_public_ip else "DISABLED",
-            }
-        },
+        "networkConfiguration": network_configuration(placement),
         "overrides": override,
         "tags": [
             {"key": MANAGED_TAG_KEY, "value": MANAGED_TAG_VALUE},

@@ -1,15 +1,17 @@
-"""The sprite and boxd branches of archive, reopen, shutdown and the sweep.
+"""The sprite, boxd and Fargate branches of archive, reopen, shutdown and the sweep.
 
 ``coder/retention.py`` owns the per-session lifecycle lock and generation and
 the Coder steps, and calls these under that same lock: each VM provider gets
 its own archive, reopen, shutdown and sweep, and one provider's failure never
-stops another's.
+stops another's. A Fargate task is stopped at archive, kept alive by the
+heartbeat, and its owed stops are retried by the sweep.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -86,6 +88,106 @@ async def reopen_vms(persistent: list[Any], key: str) -> Optional[str]:
                 or f"its {provider.label} machine's deletion could not be cancelled; " "try again"
             )
     return failure
+
+
+async def _fargate_environments() -> Optional[Any]:
+    """The live Fargate environments, or None while the developer flag is off (no
+    Fargate registry read or AWS call then runs). Constructing them makes no AWS call."""
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.fargate_session.launch import FargateSessionEnvironments
+    from kiro_crew.session_environment import session_environments_enabled
+
+    if not session_environments_enabled():
+        return None
+    return FargateSessionEnvironments(await _section(), await asyncio.to_thread(data_home))
+
+
+async def _fargate_task_recorded(fargate: Any, session_key: str) -> bool:
+    """Whether ``session_key`` has a recorded Fargate task; False when unreadable.
+
+    The Fargate registry fails closed, but that must not stall a Coder archive:
+    a task it cannot list gets no keep-alive either, so its bootstrap's idle exit
+    still stops it.
+    """
+    if fargate is None:
+        return False
+    try:
+        return bool(await fargate.has_task(session_key))
+    except Exception:  # noqa: BLE001 -- one provider's failure never blocks another's
+        logger.warning("Archived session: could not read its Fargate task", exc_info=True)
+        return False
+
+
+async def _archive_fargate(fargate: Any, session_key: str) -> None:
+    """Stop an archived session's Fargate task now. The caller holds its lifecycle lock.
+
+    A stopped task is gone with its files, so there is no retention window to
+    honour; keeping it running would only bill for nothing. Never raises.
+    """
+    try:
+        await fargate.archive_session(session_key)
+    except Exception:  # noqa: BLE001 -- the bootstrap's idle exit still stops the task
+        logger.warning("Archived session task: could not stop it", exc_info=True)
+
+
+async def close_fargate_forwards() -> None:
+    """End this gateway's own Fargate SSM forward children; never touches a task.
+
+    Runs on every shutdown, whatever ``stop_on_shutdown`` says: the switch is
+    about the tasks, and these are the gateway's processes, which would
+    otherwise outlive it holding their loopback ports. A gateway that never
+    loaded the Fargate launcher opened no forward, so shutdown does not load it.
+    """
+    launch = sys.modules.get("kiro_crew.fargate_session.launch")
+    if launch is None:
+        return
+    await launch.close_forwards()
+
+
+async def count_fargate_for_shutdown(counts: dict[str, int]) -> None:
+    """Count every live Fargate task in ``counts["skipped"]`` and end its forwards.
+
+    The task IS the workspace, so shutdown leaves it running (its row and secret
+    survive for reconnect). Raises when the registry cannot be read (it fails
+    closed); the forwards are ended either way.
+    """
+    try:
+        environments = await _fargate_environments()
+        if environments is None:
+            return
+        live_tasks = len(await asyncio.to_thread(environments.registry.all))
+        # Read before adding: "+=" would load the count before the await and
+        # lose a concurrent provider's increment.
+        counts["skipped"] += live_tasks
+    finally:
+        # Its SSM forwards are this gateway's own processes, though: end
+        # them whether or not the registry could be counted.
+        await close_fargate_forwards()
+
+
+async def keep_alive_once() -> int:
+    """Touch every live Fargate task once; a failure is logged, never raised."""
+    try:
+        fargate = await _fargate_environments()
+        if fargate is None:
+            return 0
+        return int(await fargate.keep_alive())
+    except Exception:  # noqa: BLE001 -- the heartbeat outlives any one pass
+        logger.warning("Retention sweep: Fargate keep-alive failed", exc_info=True)
+        return 0
+
+
+async def retry_fargate_stops() -> int:
+    """Retry the Fargate stops still owed; how many tasks stopped. Never raises."""
+    try:
+        fargate = await _fargate_environments()
+        if fargate is None:
+            return 0
+        stopped: int = await fargate.retry_stops()
+        return stopped
+    except Exception:  # noqa: BLE001 -- one provider's failure never blocks another's
+        logger.warning("Retention sweep: Fargate session tasks failed", exc_info=True)
+        return 0
 
 
 async def hibernate_boxd_for_shutdown(counts: dict[str, int]) -> None:
