@@ -1,23 +1,28 @@
-"""Which agent an app-owned dashboard slot runs as: whether the app's binding applies, its start
-directories, and retiring and recovering the app agent's session."""
+"""Which agent an app-owned dashboard slot runs as: whether the app's binding applies, whether
+the turn's backend may run the app's own agent, its start directories, and retiring and
+recovering the app agent's session."""
 
 from __future__ import annotations
 
 import asyncio
 import functools
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         DashboardState,
         KiroCrewConfig,
         ResolvedBindings,
+        Routing,
+        SessionCapabilities,
         _ChatSlot,
         _MemoryUnavailable,
         effective_session_key,
         logger,
         resolve_agent_bindings,
         resolve_session_agent_bindings,
+        routing_for,
+        select_provider_backend,
         subprocess_executor,
     )
 
@@ -141,3 +146,40 @@ async def _recover_app_agent_binding(
             "memory_unavailable: agent changed during recovery; retry the turn"
         )
     return bindings
+
+
+def _app_agent_host_allowed(provider: Any) -> bool:
+    """Whether *provider*'s backend launches its agent from the agent spec.
+
+    An app's own agent runs only where the spec is what the harness mounts
+    (``Routing.AGENT_SPEC``); any other backend would run the app-authored
+    prompt without the app's spec. A provider that carries no real
+    :class:`SessionCapabilities` -- a wrapper, a test double, a future adapter --
+    names no backend, so it is refused rather than read as the default id.
+    """
+    caps = getattr(provider, "capabilities", None)
+    if not isinstance(caps, SessionCapabilities):
+        return False
+    return routing_for(caps.backend) is Routing.AGENT_SPEC
+
+
+async def _app_agent_turn_host_allowed(
+    state: "DashboardState", session_key: str, cfg: "KiroCrewConfig | None"
+) -> bool:
+    """Whether the turn about to be claimed for *session_key* would run on an allowed backend.
+
+    A live provider registered under the key is the one the claim reuses, so its
+    own identity answers. Otherwise the claim allocates through the same
+    member-aware selector this reads. The claimed provider is checked again after
+    the claim; this read only spares a refused turn its cold start.
+    """
+    sessions = state.sessions
+    provider = sessions.get_provider(session_key)
+    if provider is not None and await sessions.is_provider_alive(session_key) is True:
+        return _app_agent_host_allowed(provider)
+    if cfg is None:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    backend = select_provider_backend(
+        session_key, cfg.agent.member_acp_backend, cfg.agent.acp_backend
+    )
+    return routing_for(backend) is Routing.AGENT_SPEC

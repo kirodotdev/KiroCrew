@@ -402,7 +402,7 @@ def test_no_stderr_slice_precedes_redaction_in_converted_modules(module_path: Pa
 
 
 def _hook_fire_block() -> str:
-    """The hook-result loop in chat_runner's ``_fire`` closure, by its anchors."""
+    """The hook-result loop in ``_fire`` (chat_turn.turn_spec_hooks), by its anchors."""
     import kiro_crew.dashboard.chat_runner as chat_runner
 
     text = "\n".join(
@@ -419,7 +419,7 @@ def _hook_fire_block() -> str:
 
 
 def test_chat_runner_hook_excerpts_anchor_by_exit_semantics() -> None:
-    """``_fire`` is a closure over the runner state, so its anchors are pinned by text.
+    """``_fire`` reads the turn's state, so its anchors are pinned by text.
 
     Authored text (stdout, the exit-2 deny reason) keeps the head; the crashed-
     hook paths (fail-closed detail and the non-gating warning) keep the tail.

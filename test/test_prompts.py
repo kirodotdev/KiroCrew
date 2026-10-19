@@ -1274,6 +1274,7 @@ class TestPromptExpansionStaysOffTheEventLoop:
             for module_tree in trees
             for fn in ast.walk(module_tree)
             if isinstance(fn, ast.AsyncFunctionDef)
+            or (isinstance(fn, ast.FunctionDef) and fn.args.args and fn.args.args[0].arg == "turn")
             for node in ast.walk(fn)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)

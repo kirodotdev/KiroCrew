@@ -1,5 +1,6 @@
 """The dashboard's local slash commands: /workflow, /agent and /goal, the backend a slash
-command would run on, and the answer to a slash command no channel can take."""
+command would run on, the refusal of a slash command the dashboard does not offer, and the
+answer to a slash command no channel can take."""
 
 from __future__ import annotations
 
@@ -310,4 +311,25 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
         metadata={"slot": slot.key},
     )
     _append_command_reply(slot, body)
+    state.push_slots_update()
+
+
+def _refuse_blocked_slash(turn) -> None:
+    first_word = turn.first_word
+    slot = turn.slot
+    state = turn.state
+    sel().log_tool_invocation(
+        session_key="",
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name=first_word,
+        tool_kind="slash_command",
+        outcome="blocked",
+        metadata={"slot": slot.key},
+    )
+    slot.append(
+        "assistant",
+        f"⚠️ `{first_word}` is not available in the dashboard.",
+        "msg msg-a",
+    )
     state.push_slots_update()

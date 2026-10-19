@@ -563,10 +563,12 @@ class TestTheBoundaryScanRunsBeforeTheReset:
 
     @staticmethod
     def _bare_text_resets(source: str) -> list[int]:
-        """Lines in ``_run_chat`` that empty ``assistant_text`` and keep its raw copy.
+        """Lines in the turn's code that empty ``assistant_text`` and keep its raw copy.
 
-        A bare ``assistant_text = ""`` is allowed in two places only: the
-        initialiser (the first binding in the function) and the statement
+        The turn's code is ``_run_chat`` and every function that takes its turn as
+        the first argument: the owner functions cut from its one-module body. A bare
+        ``assistant_text = ""`` is allowed in two places only: the
+        initialiser (the first binding in ``_run_chat``) and the statement
         directly after a ``_flush_segment(...)`` call, whose
         ``_redact_segment`` consumes and clears the raw copy. Every other
         reset goes through ``_cleared_segment_text``, so the raw copy never
@@ -575,11 +577,13 @@ class TestTheBoundaryScanRunsBeforeTheReset:
         """
         import ast
 
-        run_chat = next(
+        units = [
             n
             for n in ast.walk(ast.parse(source))
-            if isinstance(n, ast.AsyncFunctionDef) and n.name == "_run_chat"
-        )
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and (n.name == "_run_chat" or (n.args.args and n.args.args[0].arg == "turn"))
+        ]
+        opening = next(n for n in units if n.name == "_run_chat")
 
         def is_the_reply_text(target: ast.expr) -> bool:
             # The reply text is a local of `_run_chat`, or the turn object's attribute.
@@ -604,19 +608,23 @@ class TestTheBoundaryScanRunsBeforeTheReset:
                 and stmt.value.func.id == "_flush_segment"
             )
 
-        resets: list[tuple[int, bool]] = []
-        for node in ast.walk(run_chat):
+        resets: set[tuple[int, bool]] = set()
+        for node in (node for unit in units for node in ast.walk(unit)):
             for field in ("body", "orelse", "finalbody"):
                 stmts = getattr(node, field, None)
                 if not isinstance(stmts, list):
                     continue
                 for i, stmt in enumerate(stmts):
                     if isinstance(stmt, ast.stmt) and is_bare_reset(stmt):
-                        resets.append((stmt.lineno, i > 0 and is_flush(stmts[i - 1])))
-        resets.sort()
-        assert resets, "_run_chat has no assistant_text initialiser"
-        initialiser = resets[0][0]
-        return [line for line, after_flush in resets if line != initialiser and not after_flush]
+                        resets.add((stmt.lineno, i > 0 and is_flush(stmts[i - 1])))
+        opened = sorted(
+            line for line, _ in resets if opening.lineno <= line <= (opening.end_lineno or 0)
+        )
+        assert opened, "_run_chat has no assistant_text initialiser"
+        initialiser = opened[0]
+        return sorted(
+            line for line, after_flush in resets if line != initialiser and not after_flush
+        )
 
     def test_every_mid_segment_text_reset_clears_the_raw_copy(self):
         """No path in ``_run_chat`` empties the streamed text and leaves the raw

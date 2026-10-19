@@ -143,7 +143,7 @@ families — a different model routinely accepts what another's filter declined
   refusal envelope names, resolving to disabled when it names none; a concrete
   id is used directly. The dashboard PATCH schema applies the same grammar and
   validator as `agent.fallback_model`.
-- `chat_runner._refusal_fallback_retry` (nested in `_run_chat`) gates the
+- `chat_turn.model_fallback._refusal_fallback_retry` (called with the turn) gates the
   retry: interactive prompts only (no nested depth, and only a turn whose
   ledger actor is `user` — a cron, autonudge, or sub-agent wake keeps the
   terminal refusal, since nobody attends its announced swap), not while a

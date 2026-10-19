@@ -184,7 +184,7 @@ def queue_entry_is_user_origin(item: dict[str, Any] | None) -> bool:
     ``_directive_channel_origin``, and that author is not the dashboard's
     reader. So the entry must carry the user stamp and not the channel one.
     It must also carry no producer ``kind``: a recovery requeue
-    (``chat_runner._queue_recovery``) inherits the turn's user stamp, yet its
+    (``chat_turn.turn_ledgers._queue_recovery``) inherits the turn's user stamp, yet its
     text is host-built from tool titles and command input, so it is not what
     the human typed.
     An entry without the user stamp (a peer, an app's own message, or one restored from disk,

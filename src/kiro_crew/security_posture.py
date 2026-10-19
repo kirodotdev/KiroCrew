@@ -2291,23 +2291,26 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/session_control_parts/target_authorization.py",
         "dashboard/session_control_parts/model_switch.py",
         "dashboard/session_control_parts/session_create.py",
-        # The owners composed into dashboard/chat_runner.py: the redactor calls of the
-        # runner's helpers that moved into them (deny rows, file-change snapshots, the MCP
-        # sign-in banner, native cards, tool rows, spec-hook notices, the stats footer,
-        # the cross-surface legs, prompt and skill mentions, the segment flush, the
-        # eager-spawn error detail, the queued-turn drain), unchanged. Their output
-        # reaches the surfaces it reached from the runner: the call sites moved, the
-        # set of egress paths did not.
+        # The owners composed into dashboard/chat_runner.py: the redactor calls of the runner's
+        # helpers and _run_chat's closures moved into them (deny rows, the eager-spawn error
+        # detail, file-change snapshots, the MCP sign-in banner, the fallback hop's model id,
+        # native cards, prompt and skill mentions, the queued-turn drain, cross-surface legs, the
+        # segment flush, tool rows, the terminal directive's tool-call ids, the partial reply and
+        # stream flushes, spec-hook notices, the stats footer), unchanged. Their output reaches the
+        # surfaces it reached from the runner; the set of egress paths did not change.
         "dashboard/chat_turn/deny_chokepoints.py",
         "dashboard/chat_turn/eager_spawn.py",
         "dashboard/chat_turn/file_changes.py",
         "dashboard/chat_turn/mcp_session.py",
+        "dashboard/chat_turn/model_fallback.py",
         "dashboard/chat_turn/native_cards.py",
         "dashboard/chat_turn/prompt_assembly.py",
         "dashboard/chat_turn/queue_drain.py",
         "dashboard/chat_turn/recipient.py",
         "dashboard/chat_turn/segment_flush.py",
         "dashboard/chat_turn/tool_rows.py",
+        "dashboard/chat_turn/turn_ledgers.py",
+        "dashboard/chat_turn/turn_reply_seams.py",
         "dashboard/chat_turn/turn_spec_hooks.py",
         "dashboard/chat_turn/turn_stats.py",
         "dashboard/chat_nav.py",

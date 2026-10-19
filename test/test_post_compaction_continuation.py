@@ -520,7 +520,7 @@ def test_a_notice_only_turn_is_still_flushed() -> None:
     src = _runner_source()
     match = re.search(
         r"\n\s*if (?:turn\.)?assistant_text and not _answer_text:\n"
-        r"\s*_flush_text_stream\(\)\n"
+        r"\s*_flush_text_stream\(turn\)\n"
         r"\s*_flush_segment\(state, slot, (?:turn\.)?assistant_text, broadcast=False\)\n",
         src,
     )

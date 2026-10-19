@@ -9,11 +9,15 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
+        _REFUSAL_FALLBACK_RESUME_MSG,
         _SYNTHETIC_RECOVERY_MSGS,
+        SYNTHETIC_RECOVERY_KIND,
+        TRANSIENT_RETRY_KIND,
         TURN_FALLBACK_ATTR,
         FallbackState,
         KiroCrewConfig,
         RefusalInfo,
+        ReplayFamily,
         _ChatSlot,
         advance_fallback_candidate,
         advertised_model_ids,
@@ -24,15 +28,26 @@ if TYPE_CHECKING:
         logger,
         model_is_unusable,
         model_registry,
+        payload_for_replay,
         pick_epoch_host,
         probe_fallback_restore,
         provider_active_model,
         provider_advertised_ids,
         provider_raw_model,
+        redact_credentials,
+        redact_exfiltration_urls,
+        replays_of,
         resolve_pin_spelling,
         resolve_substitute_set_model,
         slot_switch_session_lock,
     )
+    from kiro_crew.dashboard.chat_turn.recovery import (
+        _session_stop_generation_for,
+        _should_suppress_requeue,
+    )
+    from kiro_crew.dashboard.chat_turn.steer_queue import _has_user_queued_followup
+    from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
+    from kiro_crew.dashboard.chat_turn.turn_ledgers import _queue_recovery
 
 
 def _app_allocation_kwargs(slot: "_ChatSlot") -> dict[str, str]:
@@ -905,3 +920,197 @@ def _pinned_model_verdict(client: Any, model: str, provider: str) -> bool | None
     if verdict and resolve_pin_spelling(model, advertised):
         verdict = False
     return verdict
+
+
+def _record_refused_cycle(turn) -> None:
+    """Mark this slot's last turn as a refused cycle of the loop that fired it.
+
+    Only a loop's own delivered cycle counts (``_directive_self_wake``
+    with the fired loop's id), so a refusal on a person's turn never stops
+    a loop sharing the slot. The fire guard reads the pair before the next
+    cycle and stops that loop with ``model_refused``: the refusal card is
+    terminal for an unattended cycle, and the next one would send the same
+    prompt to the same model.
+    """
+    _directive_loop_gen = turn._directive_loop_gen
+    _directive_loop_id = turn._directive_loop_id
+    _directive_self_wake = turn._directive_self_wake
+    slot = turn.slot
+    if not (_directive_self_wake and _directive_loop_id):
+        return
+    slot._last_turn_model_refused_loop_id = _directive_loop_id
+    slot._last_turn_model_refused_loop_gen = _directive_loop_gen
+
+
+async def _refusal_fallback_retry(turn) -> bool:
+    """One single-message retry on the configured refusal fallback.
+
+    ``True`` means the retry is queued (live session swapped, replay
+    at queue index 0, retry notice appended) — the caller skips the
+    terminal refusal card. ``False`` falls through to the card
+    exactly as before the feature existed: disabled config, nested
+    turn, Stop pressed, the one-per-user-message allowance already
+    spent (this refusal IS the fallback's), or a swap that could not
+    land. A refusal is deterministic FOR ONE MODEL — the whole point
+    of the retry is that a different model family routinely accepts
+    what another's filter declined.
+
+    The replay takes one of two shapes. A turn refused before it
+    dispatched any tool replays the user's message verbatim. A turn
+    refused AFTER dispatching tools is instead continued: the fallback
+    model is handed the same continuation a person gets from Continue
+    (``_REFUSAL_FALLBACK_RESUME_MSG``) and carries on from the completed
+    work, because replaying the message would run those tool calls a
+    second time — a doubled read is waste, a doubled write is damage.
+    """
+    _attachment_meta = turn._attachment_meta
+    _attachments = turn._attachments
+    _crew_log_actor = turn._crew_log_actor
+    _is_synthetic = turn._is_synthetic
+    _prompt_depth = turn._prompt_depth
+    session_key = turn.session_key
+    slot = turn.slot
+    state = turn.state
+    if (
+        _prompt_depth != 0
+        or _crew_log_actor != "user"
+        or slot._refusal_fallback_attempted
+        or _should_suppress_requeue(slot)
+        or _stop_pressed(turn)
+        or _has_user_queued_followup(slot)
+    ):
+        # _stop_pressed: a Stop that pressed AND resolved back to idle
+        # earlier in this turn is invisible to the state check above
+        # but not to the monotonic counters — the user abandoned the
+        # turn, so replaying it would run a stopped request.
+        # _crew_log_actor: the retry is for ATTENDED turns. An unattended
+        # producer (cron, autonudge, sub-agent) keeps the terminal
+        # refusal behavior — nobody is watching the announced swap, and
+        # an unattended replay doubles whatever the wake was about.
+        # The replay turn itself carries the original turn's actor, so
+        # a user turn's replay is still recognized here.
+        # _has_user_queued_followup: a queued USER follow-up is the
+        # user's NEXT intent — often a correction of the very message
+        # that was refused. The
+        # replay inserts at queue index 0, so it would run BEFORE that
+        # correction and can dispatch side effects the correction
+        # exists to prevent. Surface the refusal instead; the queued
+        # message drains normally.
+        return False
+    _cand = _resolve_refusal_fallback_target(turn._turn_refusal)
+    if not _cand:
+        return False
+    _primary = await _refusal_fallback_swap(slot, turn.client, _cand, session_key=session_key)
+    if _primary is None:
+        return False
+    if _should_suppress_requeue(slot) or _stop_pressed(turn) or _has_user_queued_followup(slot):
+        # A stop or a queued follow-up landed while set_model was in
+        # flight: the user's intent changed under the swap. Unwind it
+        # (witnessed, same helper the next-turn probe uses) and
+        # surface the refusal — never requeue ahead of a correction.
+        # _stop_pressed covers a Stop that COMPLETED (back to idle)
+        # during the await: the state check alone misses it, and the
+        # enqueue snapshots below would bake the moved counter in, so
+        # the drain purge could never catch it either.
+        await _restore_refusal_fallback(slot, turn.client)
+        return False
+    slot._refusal_fallback_attempted = True
+    if turn._turn_tool_calls > 0:
+        # The turn already dispatched tools before the filter declined
+        # it. Replaying the user's message would run those side
+        # effects a second time, so the retry is the continuation a
+        # person gets from Continue: the session — now on the fallback
+        # model — is asked to carry on from the completed work. The
+        # nudge goes to the SAME harness session the refused turn ran
+        # on (the retention every Continue relies on), and it tells the
+        # model to stop rather than start over when the completed work
+        # is not in view, so a session that did not keep the partial
+        # turn fails safe instead of re-running writes. What Kiro Crew
+        # itself guarantees is narrower: once a tool ran, the message
+        # is never re-sent.
+        # Runner text, so the payload says CONTINUATION regardless of
+        # what the refused message was — a linked thread must not
+        # mirror this nudge as user speech. No attachments ride along:
+        # the original turn already delivered them into the session.
+        _replay_body = _REFUSAL_FALLBACK_RESUME_MSG
+        _replay_extra = None
+        _replay_payload = payload_for_replay(True)
+    else:
+        _replay_body = turn.message
+        _replay_payload = payload_for_replay(_is_synthetic)
+        # The replay is the SAME turn again, so the original's attachment
+        # lists ride the queue entry (the drain re-extracts them exactly as
+        # it did for the user's row) — a refused message with files retries
+        # with its files, not a text-only shadow of itself. The typed
+        # mapping is preferred: it keeps ``dirs`` entries under ``dirs``,
+        # so a folder attachment replays as a folder instead of being
+        # retyped as a file. The flat fallback covers callers that supplied
+        # only the untyped list, which by construction holds files.
+        if _attachment_meta:
+            _replay_extra = {key: list(paths) for key, paths in _attachment_meta.items()}
+        elif _attachments:
+            _replay_extra = {"files": list(_attachments)}
+        else:
+            _replay_extra = None
+    _replay_qid = _queue_recovery(
+        turn,
+        0,
+        _replay_body,
+        kind=SYNTHETIC_RECOVERY_KIND,
+        payload=_replay_payload,
+        extra_meta=_replay_extra,
+    )
+    # Stop-generation snapshots (slot + session) at ENQUEUE: the drain
+    # purges the replay when either counter moved (a Stop landed while
+    # it waited) or user input queued behind it (superseded) — the
+    # index-0 replay must never outrun the user's later intent. Its
+    # binding is the one the swap just recorded.
+    replays_of(slot).arm(
+        ReplayFamily.CONTENT_FILTER,
+        entry_id=_replay_qid,
+        session_key=getattr(slot, "_refusal_fallback_session_key", ""),
+        stop_gen=getattr(slot, "_stop_generation", 0),
+        session_stop_gen=_session_stop_generation_for(
+            getattr(state, "sessions", None), session_key
+        ),
+    )
+    _cat = (turn._turn_refusal.category or "").lower() if turn._turn_refusal else ""
+    # Model ids reach this surface from config (LLM-reachable via the
+    # MCP config-write path) or from the provider's refusal envelope,
+    # so they pass the same redaction as error text before display or
+    # logging, and are length-bounded — a credential-shaped value must
+    # not persist raw in the transcript or the logs.
+    _safe_primary, _ = redact_exfiltration_urls(str(_primary))
+    _safe_primary, _ = redact_credentials(_safe_primary)
+    _safe_primary = _safe_primary[:120]
+    _safe_cand, _ = redact_exfiltration_urls(str(_cand))
+    _safe_cand, _ = redact_credentials(_safe_cand)
+    _safe_cand = _safe_cand[:120]
+    if turn._turn_tool_calls > 0:
+        _n_tools = f"{turn._turn_tool_calls} tool call{'s' if turn._turn_tool_calls != 1 else ''}"
+        _retry_notice = (
+            f"⟳ Response declined by the model's content filter on '{_safe_primary}' "
+            f"after {_n_tools} — continuing on '{_safe_cand}' in the same session…"
+        )
+    else:
+        _retry_notice = (
+            f"⟳ Response declined by the model's content filter on '{_safe_primary}' — "
+            f"retrying once on '{_safe_cand}'…"
+        )
+    slot.append(
+        "error",
+        _retry_notice,
+        "msg msg-err",
+        meta={"kind": TRANSIENT_RETRY_KIND},
+    )
+    logger.warning(
+        "Model refusal for slot %s (category=%s) — %s on "
+        "refusal fallback %r (primary=%r, tool_calls=%d)",
+        slot.key,
+        _cat or "-",
+        "continuing once" if turn._turn_tool_calls > 0 else "retrying once",
+        _safe_cand,
+        _safe_primary,
+        turn._turn_tool_calls,
+    )
+    return True

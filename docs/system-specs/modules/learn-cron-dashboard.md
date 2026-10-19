@@ -2097,7 +2097,7 @@ names:
 
 | Owner | Responsibility |
 |---|---|
-| `turn_context` | memory-mode fold into the execution context, pending context drain and detach, folder steering gate, the unavailable-agent message, the DM member binding check and the session memory assignment |
+| `turn_context` | memory-mode fold into the execution context, pending context drain and detach, folder steering gate, the unavailable-agent message, the DM member binding check, the session memory assignment and the skills context restored after a compaction (`_restore_skills_context_after_compaction`) |
 | `prompt_assembly` | cold-start replay history, egress scrub of the dashboard prefix, checklist resync, prompt and skill mentions (`_resolve_prompt_mention`, `_expand_prompt_mention`, `_expand_dollar_skills`) and the prompt chip |
 | `model_fallback` | session model default and settle, served-model sync, fallback chain, swap and restore probe, refusal fallback hop, the canonical-model backfill and the pinned-model verdict |
 | `tool_approval` | PreToolUse block reasons, spec-hook notices, credential hints, trust and auto-approve policy, name-grant refusals |
@@ -2107,32 +2107,31 @@ names:
 | `recipient` | the recipient principal ladder, admission refusal audit, channel target and the cross-surface fence, and the deliveries themselves: the linked-Slack leg and the cross-surface reply and user-message legs |
 | `steer_queue` | steer settlement and requeue, queue entry actors, the drain's admission sweep |
 | `recovery` | empty-turn config, terminal error metadata, retry delays and stop gates, the drain and consume seams of the recovery-replay ledger, auth and busy requeues, the refusal card text and the compact-after-turn notice. The ledger itself is the plain module `dashboard/recovery_replays.py` (`slot.replays`: the records, the drained-alone claim, the sweep, the revocation rule and each family's policy). A new replay family is a `ReplayFamily` member and a `POLICIES` row there (the row's position is the drain's re-check order; its `consume_phase` puts the consume-seam check before or after the turn-start allowance refresh), plus the arm site that queues it |
-| `acp_recovery` | the post-token transient re-prompt and the poisoned-session canary's settings; a new canary setting goes here too |
+| `acp_recovery` | the post-token transient re-prompt, the poisoned-session canary's settings and the thinking-binding discard-and-replay gate (`_binding_rebuild_allowed`); a new canary setting goes here too |
 | `turn_marker` | the in-flight turn marker's write, retire and clear |
 | `directives` | not-applied directive wording and the unclaimed-directive backstop |
 | `tool_rows` | what a turn's tool rows persist and broadcast: row meta, the WS payload, the refinement rewrite, the tool-call identity key and the rows-only save |
 | `deny_chokepoints` | answering a permission request with a rejection: redacted deny rows, the security-event audit before the wire (`_reject_attributed`), the bounded in-band steer of the reason |
-| `turn_spec_hooks` | the session agent spec's hooks and the agent notices: the welcome row, the run-nowhere and withheld-hooks notices |
+| `turn_spec_hooks` | the session agent spec's hooks and the agent notices: the turn's dispatch of every hook event (`_fire`), the welcome row, the run-nowhere and withheld-hooks notices |
 | `crew_log_attribution` | what a session's crew log records about it: the predecessor store, the served model, lineage, the seeded tree, the inherited parent, the workspace and the memory/app/channel class |
 | `native_cards` | kiro-cli native sub-agent Activity cards (`_native_subagent_sync`) and the native AskUserQuestion card (`_post_native_question_card`) |
 | `account_identity` | the turn's reaction to the signed-in kiro-cli account changing: retiring the sessions an identity change invalidates (`_retire_sessions_on_identity_change`) and the signed-out latch |
 | `decisions_hooks` | the decisions hooks (`decisions.md`): the stale-decision drop, the strip hand-off, the tool-card risk annotation, and the Jev model routing family (`_route_model_for_turn` and its gates) |
 | `segment_flush` | finalizing an assistant text segment (`_flush_segment`): its redaction with the records, row meta, the variant stash, the `[OPTIONS:]` footer audit and the widget registration, and a local slash command's reply persisted through the same redaction (`_append_command_reply`) |
 | `session_reset` | the deferred session reset: the consume before the next turn allocates and the retry armed while it cannot run yet |
-| `slash_commands` | the dashboard's local slash commands: `/workflow`, `/agent` and `/goal` (`_handle_workflow_command`, `_handle_agent_command`, `_handle_goal_command`), the backend a slash command would run on and the answer to one no channel can take |
-| `eager_spawn` | starting a slot's session before its first message: the eager spawn (`schedule_eager_spawn`, `_eager_spawn`) and the resume prefetch (`_spawn_admitted_prefetch`, `_prefetch_ttl`), their admission, backoff, caps and TTL, the binding snapshot a handshake is checked against (`_slot_binding`), and the prefetch's `get_or_create` allocation |
-| `app_agent_binding` | an app agent's binding to a slot: whether it applies, its start directories, the session it retires and its recovery |
+| `slash_commands` | the dashboard's local slash commands: `/workflow`, `/agent` and `/goal` (`_handle_workflow_command`, `_handle_agent_command`, `_handle_goal_command`), the backend a slash command would run on, the refusal of one the dashboard does not offer (`_refuse_blocked_slash`) and the answer to one no channel can take |
+| `eager_spawn` | starting a slot's session before its first message: the eager spawn (`schedule_eager_spawn`, `_eager_spawn`) and the resume prefetch (`_spawn_admitted_prefetch`, `_prefetch_ttl`), their admission, backoff, caps and TTL, the binding snapshot a handshake is checked against (`_slot_binding`), the prefetch's `get_or_create` allocation, and the shutdown's cancel of every pending start (`stop_eager_spawns`) |
+| `app_agent_binding` | an app agent's binding to a slot: whether it applies, whether the turn's backend may run the app's own agent (`_app_agent_host_allowed`, `_app_agent_turn_host_allowed`), its start directories, the session it retires and its recovery |
 | `queue_drain` | starting the slot's next queued turn (`_start_next_queued_turn`): the parked-for-memory drain, the queued-delivery settlement and the drained sub-agent notices |
 | `queue_cycle` | the end of a turn and of a queue cycle: `_end_turn_tail`, `_finish_queue_cycle`, the pending synthesis and its re-check, the hand-off, the `chat_done` send, and the turn's exit record (`_TurnExit`, `_TurnOutcome`) |
-| `turn_locals` | the per-turn state `_ChatTurn` that `_run_chat`, its closures and its phases share |
+| `turn_entry` | a turn's entry state: the Stop signal it reads live (`_stop_pressed`), the session's Stop count and the directive provenance a channel steer can narrow |
+| `turn_admission` | whether a turn may run on the session it is bound to: the current binding and its requirement, the owner check and the dispatch lock's release |
+| `turn_reply_seams` | what a turn writes as its reply: the partial reply a dying turn persists (`_persist_partial_reply`), the abnormal end's usage row, the text and thinking stream flushes, the steer's segment cut and the error rows the stream watchdogs post |
+| `turn_ledgers` | what a turn records about itself: its consumption reports, the recovery it queues (`_queue_recovery`) and the completion it owes, the terminal directive and the coding-activity cadence |
+| `turn_locals` | the per-turn state `_ChatTurn` that `_run_chat`, the owner functions it calls with the turn and its phases share |
 | `chat_runner.py` | the off-loop prompt expansion `_expand_prompt_mention_off_loop`: `test_prompts.py` reads its `asyncio.to_thread` call in the runner |
 | `chat_runner.py` | the crew-log closers and the turn's `latch_crew_log_previous` call, which guards read in the runner (the eager spawn's latch is in `eager_spawn`); a new crew-log record helper goes in `crew_log_attribution` |
 | `chat_runner.py` | the poisoned-conversation canary: `test_start_priority.py` reads its `run_bg_oneliner` call, with the turn's `start_priority`, in `_run_chat` |
-
-Three helpers that sit beside the eager spawn and the app agent binding are still
-defined in `chat_runner.py`: `stop_eager_spawns` (#21552) and the app-agent host
-gates `_app_agent_host_allowed` and `_app_agent_turn_host_allowed` (#21673). They
-move to `eager_spawn` and `app_agent_binding` in the next step of this split (PR6).
 
 `chat_turn.compose` composes the package's modules (`chat_turn.owner_modules()`):
 it binds on `chat_runner` every name an owner binds that the runner lacks, so
@@ -2154,18 +2153,27 @@ in the runner or in an owner: the runner is exempt from F401 (`setup.cfg`) becau
 pyflakes reads only its own text.
 
 `_run_chat` keeps its state on one `turn_locals._ChatTurn` per call, built as its
-first statement (`turn`). A value one of its closures writes (`assistant_text`, which
-the steer cut writes from the steer handler's task, the consumption reports, the
-usage-row latch) is spelled `turn.<name>` at every site, so every reader and writer
-shares one cell; a value a closure reads after the turn rebinds it (`message`,
-`client`, the crew-log ids, the per-turn stats) is copied onto the turn right after
-each store (`x = ...` then `turn.x = x`, nothing between) and read off it inside
-the closure. A nested function stays a closure cell: on the turn it would hold a
-closure that holds the turn, and every ended turn would wait for a collection
-instead of being freed when its last reference goes. No closure declares a
-`nonlocal`. Reading an attribute the turn has not set raises `UnboundLocalError`, as
-reading the unbound local did; a closure's read of a cell nothing had bound raised
-`NameError`, of which `UnboundLocalError` is a subclass.
+first statement (`turn`). Its helpers are owner functions that take the turn as
+their first argument (`_flush_text_stream(turn)`, `_queue_recovery(turn, ...)`);
+where the runner hands one on as a callback (the steer cut it publishes on the
+slot, the recovery seams it passes to an owner), it passes
+`functools.partial(<function>, turn)`, and an off-loop call passes the turn to
+`asyncio.to_thread`. Nothing stores such a callable on the turn itself, so an ended
+turn is freed when its last reference goes, with no collection. A value an owner
+function writes (`assistant_text`, which the steer cut writes from the steer
+handler's task, the consumption reports, the usage-row latch) is spelled
+`turn.<name>` at every site, so every reader and writer shares one cell; a value
+`_run_chat` rebinds (`message`, `client`, the crew-log ids, the per-turn stats) is
+copied onto the turn right after each store (`x = ...` then `turn.x = x`, nothing
+between). Inside a function that takes the turn, a value `_run_chat` binds once may
+be aliased at entry (`x = turn.x`); a rebound value, or one an owner writes, is read
+off the turn at its use, or aliased only where nothing in between can rebind it
+(`_turn_emitted` in `acp_recovery`). The one
+nested function left is `_claim_session`, the turn's `get_or_create` call over its
+allocation arguments, which never outlives the claim. Reading an attribute the turn
+has not set raises `UnboundLocalError`, as reading the unbound local did; a closure's
+read of a cell nothing had bound raised `NameError`, of which `UnboundLocalError` is
+a subclass.
 `test/test_chat_runner_turn_plumbing.py` pins these rules;
 `test/test_chat_runner_turn_shared_state.py` pins that a turn object is freed without
 the collector, and what a whole turn does is pinned through `test/turn_harness.py`
@@ -2184,8 +2192,8 @@ plumbing, the EVENT_COMPLETE usage-row persist and the turn metric's emit, the
 runtime-death attribution, the memory-store seam's `build_message` calls, the theme
 persona gate, the L1 retry-budget resets, `_CONTEXT_FRAME_CONTRACT`, and every
 `_run_chat` arm a test reads from `_run_chat`'s own source. The final-message sink
-names `chat_runner.py`: the runner runs that pass on an interrupted reply, and
-`_flush_segment` runs on the runner's globals. The deny chokepoints live in
+names `chat_runner.py`: the pass on an interrupted reply (`_persist_partial_reply`, in
+`turn_reply_seams`) and `_flush_segment` both run on the runner's globals. The deny chokepoints live in
 `deny_chokepoints`, the rows-only tool save in `tool_rows`, the decisions hooks and
 the Jev routing family in `decisions_hooks`, the cross-surface legs in `recipient`,
 the account-identity gate in `account_identity`, and the redactor calls of the
@@ -2204,8 +2212,9 @@ own imports, or by an owner, through `compose`. A new owner module is a file in
 `chat_turn/` and a row in the contract test's `_OWNER_MODULES`; `compose` finds it and
 binds its names. A name a new owner defines needs a by-name import in `chat_runner.py`
 only when a production module imports it from the runner or the runner's own code
-reads it, because mypy does not see what `compose` binds. An owner with a coroutine
-also joins `test_no_config_dir_in_async._ASYNC_CHECKED_FILES`. `stall_attribution` reads an
+reads it, because mypy does not see what `compose` binds. An owner with a coroutine,
+or with a function that takes the turn first, also joins
+`test_no_config_dir_in_async._ASYNC_CHECKED_FILES`. `stall_attribution` reads an
 owner frame as the dashboard chat surface, as it reads the runner's. A phase cut
 from a block that never awaited stays await-free, so a queue drain's or consume
 gate's check-then-mutate still runs without a suspension point; the contract test
@@ -2696,7 +2705,8 @@ and the finalized reply jumps BELOW the bubble when the `chat_done` refresh
 rebuilds from server history).
 
 **Backend — segment cut at the steer boundary.** `_run_chat` publishes a sync
-closure on the slot (`slot._steer_segment_cut`, same lifecycle as
+callable on the slot (`slot._steer_segment_cut`: `turn_reply_seams._steer_segment_cut`
+bound to the turn with `functools.partial`; same lifecycle as
 `slot._acp_client`: set at turn start, cleared in the turn's `finally`). The
 steer handler calls it right BEFORE `slot.append("user", …, meta={"steer": True, …})`
 (the meta also carries the client's `sendId` when the POST supplied one — see
@@ -2767,7 +2777,7 @@ display-redacted. The single decision is `chat_delivery.queued_text_for_display`
 with a queue entry's origin read by `queue_entry_is_user_origin`: the
 `_directive_user_origin` stamp without `_directive_channel_origin` (a linked
 Slack channel's message carries both) and without a producer `kind`, so a
-recovery requeue (`chat_runner._queue_recovery`), whose text is host-built even
+recovery requeue (`chat_turn.turn_ledgers._queue_recovery`), whose text is host-built even
 though it inherits the turn's user stamp, stays redacted. The drain follows that same rule, not an
 exception to it: `_start_next_queued_turn` delivers the owner's own queued entry
 as typed into both the next turn's input and its row, and its `queue_pop` frame

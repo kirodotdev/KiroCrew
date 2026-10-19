@@ -595,7 +595,7 @@ builds the answers to `_kiro/hooks/list`, `_kiro/hooks/sessionStart` and
 `hooks: {enabled: true}`, so the agent asks none of them.
 
 The flag stays off because the surface would duplicate a stronger one. Kiro Crew's
-own turn loop (`dashboard/chat_runner.py` `_fire`) already fires all five events
+own turn loop (`dashboard/chat_turn/turn_spec_hooks.py` `_fire`) already fires all five events
 this surface can serve for a KAS session, and its PreToolUse can block a tool on
 exit 2; `executeHook` output only reaches the agent as a context note. Announcing
 would run each hook twice and add a weaker block path. The two request triggers with

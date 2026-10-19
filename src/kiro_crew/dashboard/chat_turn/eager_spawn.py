@@ -1,6 +1,6 @@
 """Starting a dashboard slot's session before its first message: the eager spawn and the resume
-prefetch, their admission, backoff and TTL, and the slot-binding snapshot a handshake is checked
-against."""
+prefetch, their admission, backoff and TTL, the slot-binding snapshot a handshake is checked
+against, and the shutdown's cancel of every pending start."""
 
 from __future__ import annotations
 
@@ -1065,3 +1065,24 @@ async def _prefetch_ttl(state: "DashboardState", slot: "_ChatSlot", session_key:
         raise
     except Exception:
         logger.warning("Prefetch TTL failed for slot %s", slot.key, exc_info=True)
+
+
+def stop_eager_spawns(state: "DashboardState") -> "list[asyncio.Task[None]]":
+    """Cancel every slot's pending speculative start, for a gateway shutdown.
+
+    A start still in its debounce would otherwise wake during the shutdown and
+    spawn an agent process the shutdown does not own: nothing is registered
+    yet, so ``close_all`` cannot reach it. Returns the cancelled tasks so the
+    caller can await them; one cancelled mid-spawn finishes killing its
+    process before it ends.
+    """
+    slots = getattr(state, "_slots", None)
+    if not isinstance(slots, dict):
+        return []
+    stopped: list[asyncio.Task[None]] = []
+    for slot in list(slots.values()):
+        task = getattr(slot, "_eager_spawn_task", None)
+        if isinstance(task, asyncio.Task) and not task.done():
+            task.cancel()
+            stopped.append(task)
+    return stopped

@@ -1,6 +1,7 @@
 """The context a dashboard turn's input carries: the execution context's memory-mode
 fold, the pending context drain, the folder-steering gate and the appended-context split,
-the unavailable-agent message, the DM member binding check and the memory assignment."""
+the unavailable-agent message, the DM member binding check, the memory assignment and the
+skills context restored after a compaction."""
 
 from __future__ import annotations
 
@@ -234,4 +235,17 @@ def _require_session_memory_assignment(session_key: str, memory_store: str | Non
         raise UnknownMemoryStore(
             "This conversation retains its member memory assignment. "
             "Restore that member binding or open a new conversation."
+        )
+
+
+def _restore_skills_context_after_compaction(turn) -> None:
+    """Re-inject the session-start skills context on the next turn."""
+    session_key = turn.session_key
+    state = turn.state
+    try:
+        state.sessions.mark_needs_reinjection(session_key)
+    except Exception:
+        logger.warning(
+            "post-compaction skills context reinjection could not be armed",
+            exc_info=True,
         )

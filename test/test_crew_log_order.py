@@ -438,7 +438,7 @@ def test_a_segment_cut_by_a_steer_is_recorded_as_interrupted():
     assert "interrupted=interrupted" in flush_src, "the flush does not pass it to the crew log"
 
     # The steer cut is the caller that must set it. Read from the source of the
-    # enclosing runner because the callback is a closure built per turn.
+    # runner and its owners because the callback is the cut bound to each turn.
     runner_src = "\n".join(
         turn_file.read_text(encoding="utf-8")
         for turn_file in [

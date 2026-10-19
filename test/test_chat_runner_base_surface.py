@@ -692,6 +692,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "async function",
             "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", session_key: 'str') -> 'None'",
         ),
+        (
+            "stop_eager_spawns",
+            "function",
+            "(state: \"'DashboardState'\") -> \"'list[asyncio.Task[None]]'\"",
+        ),
     ),
     "prompt_assembly": (
         ("_strip_yaml_frontmatter", "function", "(content: 'str') -> 'str'"),
@@ -817,6 +822,12 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "_recover_app_agent_binding",
             "async function",
             "(cfg: \"'KiroCrewConfig'\", slot: \"'_ChatSlot'\", *, project: 'str | None') -> 'ResolvedBindings'",
+        ),
+        ("_app_agent_host_allowed", "function", "(provider: 'Any') -> 'bool'"),
+        (
+            "_app_agent_turn_host_allowed",
+            "async function",
+            "(state: \"'DashboardState'\", session_key: 'str', cfg: \"'KiroCrewConfig | None'\") -> 'bool'",
         ),
     ),
     "queue_cycle": (

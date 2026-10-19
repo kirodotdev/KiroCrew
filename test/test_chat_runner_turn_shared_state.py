@@ -24,6 +24,7 @@ turn does. These pin, through real turns driven by ``turn_harness.run_turn``:
 from __future__ import annotations
 
 import asyncio
+import functools
 import gc
 import inspect
 import json
@@ -339,8 +340,13 @@ def _reaches(root: Any, target: Any, stops: list[Any]) -> bool:
 
 
 def _closed_over(fn: Any) -> Iterator[Any]:
-    """The values *fn*'s closure cells hold, skipping a cell nothing has bound yet."""
-    for cell in fn.__closure__ or ():
+    """The values *fn* holds: a partial's bound arguments, then its function's closure
+    cells, skipping a cell nothing has bound yet."""
+    if isinstance(fn, functools.partial):
+        yield from fn.args
+        yield from fn.keywords.values()
+        fn = fn.func
+    for cell in getattr(fn, "__closure__", None) or ():
         try:
             yield cell.cell_contents
         except ValueError:

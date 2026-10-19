@@ -1,5 +1,6 @@
 """Recovery from an AcpError a dashboard turn raised: the post-token CONTINUE re-prompt,
-the poisoned-conversation verdict and its canary's settings.
+the poisoned-conversation verdict and its canary's settings, and whether a thinking-binding
+mismatch may discard the conversation and replay once.
 
 The turn's except arm keeps the classification (which arm applies), every redaction
 of error text and every retry-budget reset a repository guard counts in
@@ -26,9 +27,13 @@ if TYPE_CHECKING:
         _has_user_queued_followup,
         _recovery_delay,
         _should_suppress_requeue,
+        effective_session_key,
         logger,
+        subagents_attached_async,
         transient_retry_delay,
     )
+    from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
+    from kiro_crew.dashboard.chat_turn.turn_ledgers import _replay_owes_delivery
 
 
 async def _recover_posttoken_transient(
@@ -178,3 +183,49 @@ _POISON_CANARY_PROMPT = "Reply with the single word OK."
 
 
 _POISON_CANARY_TIMEOUT_SECS = 30.0
+
+
+async def _binding_rebuild_allowed(turn) -> bool:
+    """Whether a thinking-binding mismatch may discard and replay once.
+
+    Only an outer turn with no model activity yet: a reply, thought or
+    tool call that already landed could repeat a side effect. The
+    one-shot is shared with the image-history and poisoned-conversation
+    recoveries, so a failed fresh conversation cannot loop. Attached
+    sub-agents still use the native conversation, so a discard waits for
+    them. The probe yields, so every user-intent signal is read again
+    after it; the ledger re-checks them at the drain and consume seams.
+    A sub-agent completion still owed to the parent skips the intent
+    vetoes, as in the image-history arm: it is requeued as the
+    completion it is, so no Stop or newer message can drop it.
+    """
+    _escalation = turn._escalation
+    _prompt_depth = turn._prompt_depth
+    _turn_emitted = turn._turn_emitted
+    _turn_thought = turn._turn_thought
+    session_key = turn.session_key
+    slot = turn.slot
+    state = turn.state
+
+    def _intent_unchanged() -> bool:
+        if _replay_owes_delivery(turn):
+            return True
+        return (
+            not _should_suppress_requeue(slot)
+            and not _stop_pressed(turn)
+            and not _has_user_queued_followup(slot)
+            and not getattr(slot, "_pending_steers", None)
+        )
+
+    if (
+        _prompt_depth != 0
+        or _turn_emitted
+        or _turn_thought
+        or turn._turn_tool_calls
+        or _escalation.one_shot_spent
+        or not _intent_unchanged()
+    ):
+        return False
+    if await subagents_attached_async(state, slot, session_key, "thinking_binding_recovery"):
+        return False
+    return _intent_unchanged() and effective_session_key(slot) == session_key

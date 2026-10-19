@@ -2407,7 +2407,7 @@ message to the dashboard slot instead (`_handle_resumed_busy` →
   `channel_recipient` parameter writes that one key beside the containment
   stamp, which nothing passed there can reach — and, for a steer, through the
   admission dict the requeue copies. A turn that dies and is requeued verbatim by the
-  runner's recovery (`chat_runner._queue_recovery`) keeps both drop-notice addresses
+  runner's recovery (`chat_turn.turn_ledgers._queue_recovery`) keeps both drop-notice addresses
   (this one and the dashboard sender stamp), read only off the row the drain handed
   that turn, never off a transcript row found by scanning, and only when the requeued text equals
   that row's text (runner context prepended to the turn makes it someone else's words).

@@ -510,7 +510,7 @@ _MANUAL_CONTINUE_MSG = (
 )
 # Injected INSTEAD of the user's message when a content-filter refusal landed
 # after the turn had already dispatched tool calls and agent.refusal_fallback_model
-# names a different model (chat_runner._refusal_fallback_retry). Replaying the
+# names a different model (chat_turn.model_fallback._refusal_fallback_retry). Replaying the
 # message would run those tool calls a second time, so the session -- moved to
 # the fallback model -- is asked to carry on from the completed work, which is
 # what a person gets by pressing Continue. The nudge goes to the SAME harness
