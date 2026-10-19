@@ -6399,7 +6399,7 @@ class TestSetupChannelGating:
 class TestSpawnCliAuth:
     """``kirocrew spawn`` attaches X-Internal-Secret on every gateway call.
 
-    The CLI helpers in ``cli_commands.py`` attach the per-session IPC secret
+    The CLI helpers in ``cli_commands_gateway_api.py`` attach the per-session IPC secret
     on every ``/api/spawn`` call. Without it the call gets a 403, which
     reads ``"gateway not running"`` when ``dashboard.url`` is
     a non-loopback host (token_auth_middleware then requires either

@@ -114,7 +114,7 @@ EXEMPT = {
     ),
     # The CLI's own explicit `kirocrew learn add`, which carries its own check
     # (a refusal message rather than a silent skip) — see cli_commands.
-    "cli_commands.py::_learn": "carries its own refusal",
+    "cli_commands_learn.py::_learn": "carries its own refusal",
     # The app's nightly sweep gates its only caller, routes._index_ledger_safely,
     # before constructing the vector store. This function stays policy-free so
     # its isolated projection tests can inject a fake store directly.

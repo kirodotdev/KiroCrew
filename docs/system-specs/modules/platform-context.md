@@ -954,7 +954,7 @@ Wired sites:
   payload only when non-None.
 - `config/loader.py` `build_provider_factory(cfg)` — the
   LLM-provider factory build sites (`cli_chat`, `cli_server`,
-  `session.reload_provider_factory`, `slack/gateway`, `cli`, `cli_commands`) route
+  `session.reload_provider_factory`, `slack/gateway`, `cli`, `cli_commands_eval`) route
   through `current_context().providers.create_factory(cfg)` instead of
   `cfg.create_provider_factory()` directly. The Default returns exactly
   `cfg.create_provider_factory()` (identity), so the public edition is unchanged;

@@ -1547,7 +1547,7 @@ Two rules keep the two halves paired:
   explicitly and passes it, where the choice is reviewable. Each TCP-loopback caller
   names the IPv4 loopback LITERAL (`127.0.0.1`) as its `dial_host` -- `cli_server`
   (`_CLI_LOOPBACK`), `mcp_core` (derived from the base it dials), `mcp_shared`,
-  `mcp_cron`, `cron_script`, `cron_trigger`, `computer_use/screencast`, `cli_commands`
+  `mcp_cron`, `cron_script`, `cron_trigger`, `computer_use/screencast`, `cli_commands_gateway_api`
   and the Sage review driver -- and dials that same literal in its URL, NOT the
   ambiguous `localhost`. A literal reaches ONE family, so a gateway that bound only v4,
   or a wildcard/container bind (`0.0.0.0`) that publishes a single v4-family entry,

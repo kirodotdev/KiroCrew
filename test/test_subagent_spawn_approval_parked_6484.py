@@ -307,7 +307,7 @@ class TestParkedRunIsVisibleOnBothReadPaths:
         """The blocking CLI must tell the user, and only once per run."""
         from pathlib import Path
 
-        import kiro_crew.cli_commands as cli
+        import kiro_crew.cli_commands_gateway_api as cli
 
         src = Path(cli.__file__).read_text(encoding="utf-8")
         assert 'status.get("awaiting_approval")' in src, (

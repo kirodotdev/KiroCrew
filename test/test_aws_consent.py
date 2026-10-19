@@ -1011,7 +1011,10 @@ class TestThereIsNoCliGrantSurface:
 
         import kiro_crew.cli_commands as cc
 
-        source = _pathlib.Path(cc.__file__).read_text(encoding="utf-8")
+        # cli_commands.py and every module split out of it.
+        family = [_pathlib.Path(cc.__file__)]
+        family += [family[0].with_name(f"{name.rsplit('.', 1)[1]}.py") for name in cc._OWNERS]
+        source = "\n".join(path.read_text(encoding="utf-8") for path in family)
         for dead in ("_aws_consent", "_consent_target", "_print_consent_status"):
             assert dead not in source, dead
 

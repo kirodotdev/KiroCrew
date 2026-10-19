@@ -32,7 +32,7 @@ class AppGatewayError(RuntimeError):
     """A running gateway refused or could not complete an app lifecycle request."""
 
     def __init__(self, message: str) -> None:
-        # This exception is rendered by cli_commands on ONE prefixed line, so the
+        # This exception is rendered by cli_commands_app on ONE prefixed line, so the
         # terminal boundary is here even when the message came from an HTTP error
         # or response payload, and a line break in it must not start a new line.
         super().__init__(safe_terminal_line(message))

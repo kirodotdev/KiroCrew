@@ -69,7 +69,7 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         # Channel file migration: moves rows between stems, derives nothing.
         ("kiro_crew/channel_transcript_migration.py", "read_messages"),
         # SEL audit log `recent`, not a transcript.
-        ("kiro_crew/cli_commands.py", "recent"),
+        ("kiro_crew/cli_commands_security.py", "recent"),
         # The live session's OWN rows into its OWN prompt / compaction.
         ("kiro_crew/context.py", "read_messages"),
         ("kiro_crew/context.py", "read_messages_chained"),

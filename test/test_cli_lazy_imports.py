@@ -58,9 +58,19 @@ _CLI_PARSER_PYS = tuple(
 #: Each entry names a measured cost: cli_commands/cli_server are the two
 #: deferred dispatch-table modules (~1.1 s combined), slack.gateway is
 #: cli_server's heaviest edge, dashboard.state → vector_memory → numpy is the
-#: ~56 MB RSS chain.
+#: ~56 MB RSS chain. The cli_commands_* modules are cli_commands' owners, which load
+#: with it; one of them loading here is the same cost.
 _BANNED_AFTER_CLI_IMPORT = (
     "kiro_crew.cli_commands",
+    "kiro_crew.cli_commands_workspace",
+    "kiro_crew.cli_commands_memory",
+    "kiro_crew.cli_commands_gateway_api",
+    "kiro_crew.cli_commands_app",
+    "kiro_crew.cli_commands_agent",
+    "kiro_crew.cli_commands_cron",
+    "kiro_crew.cli_commands_security",
+    "kiro_crew.cli_commands_eval",
+    "kiro_crew.cli_commands_learn",
     "kiro_crew.cli_server",
     "kiro_crew.slack.gateway",
     "kiro_crew.dashboard.state",

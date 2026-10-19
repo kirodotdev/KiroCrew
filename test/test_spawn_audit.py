@@ -579,7 +579,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``SessionAgentRunner._approve`` coroutine from a synchronous test. No child
         # process is created — the test's provider is a local stub with no argv at all.
         # Same classification as the ``asyncio.run`` sites above
-        # (cli_commands.py::_cleanup_app_crons_from_scheduler, cli_doctor.py::_doctor).
+        # (cli_commands_app.py::_cleanup_app_crons_from_scheduler, cli_doctor.py::_doctor).
         "apps/builtins/auto_improvement/tests/test_dogfood_learnings_tool_gate.py"
         "::test_approval_is_logged_then_granted",
         "apps/builtins/auto_improvement/tests/test_dogfood_learnings_tool_gate.py"
@@ -847,7 +847,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # can be exercised without a running loop. No child process is created and
         # nothing is agent-influenced — the payloads are literals in the test file.
         # Same classification as the other ``asyncio.run`` sites in this list
-        # (cli_doctor.py::_doctor, cli_commands.py::_cleanup_app_crons_from_scheduler).
+        # (cli_doctor.py::_doctor, cli_commands_app.py::_cleanup_app_crons_from_scheduler).
         "apps/builtins/issue_radar/tests/test_pr_actions.py::_await",
         # Same construct, same classification, for the assignee-route tests: an
         # ``asyncio.run`` that drives one in-process aiohttp handler coroutine to
@@ -1197,14 +1197,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # the operator-typed app name. Same classification as the other
         # ``asyncio.run`` sites below (cli_doctor.py::_doctor, workflows
         # server.py::handle_run).
-        "cli_commands.py::_cleanup_app_crons_from_scheduler",
+        "cli_commands_app.py::_cleanup_app_crons_from_scheduler",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``) driving the async
         # ``register_app_crons_with_service`` coroutine from the loop-less CLI
         # enable path — the exact enable-direction mirror of
         # ``_cleanup_app_crons_from_scheduler`` above. No child process is
         # created; the sole input is the operator-typed app name.
-        "cli_commands.py::_register_app_crons_to_scheduler",
+        "cli_commands_app.py::_register_app_crons_to_scheduler",
         "cli_doctor.py::_doctor",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``) driving the async Discord

@@ -2614,7 +2614,8 @@ class TestMemoryTuningPlumbing:
     _PLUMBED_SITES = (
         "slack/gateway_runtime/service_boot.py",
         "cli_server.py",
-        "cli_commands.py",
+        "cli_commands_learn.py",
+        "cli_commands_memory.py",
         "dashboard/handlers/memory_services.py",
         "apps/builtins/ops_mission_control/backend/dispatch.py",
         "apps/builtins/ops_mission_control/backend/routes.py",

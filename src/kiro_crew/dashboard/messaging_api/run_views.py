@@ -232,7 +232,7 @@ async def api_spawn_status(request: web.Request) -> web.Response:
             data["result_meta"] = view_meta
         # Same predicate, same present-only-while-true convention as
         # api_spawn_list. This endpoint is the one a blocking `kirocrew spawn
-        # run` polls every 2s (cli_commands.py), so leaving it out would keep the
+        # run` polls every 2s (cli_commands_gateway_api.py), so leaving it out would keep the
         # CLI silent: the caller would sit on "waiting for result..." while the
         # answer ("a prompt is waiting for you") was only discoverable from a
         # separate `spawn list` or a log grep.

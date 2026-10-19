@@ -1035,7 +1035,7 @@ _EXEMPT_READ_DECIDE_WRITE: dict[tuple[str, str], str] = {
         "renders as ungrouped and self-heals), so the outcome this reports does not "
         "depend on the cron read at all."
     ),
-    ("src/kiro_crew/cli_commands.py", "_cron_dispatch"): (
+    ("src/kiro_crew/cli_commands_cron.py", "_cron_dispatch"): (
         "A verb dispatcher: the read and the writes are ALTERNATIVE branches of one "
         "request, never a read that decides a write. Its own dispatch-boundary "
         "wrapper already translates the refusal for every verb, including ones "

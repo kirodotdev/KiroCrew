@@ -371,7 +371,7 @@ class TestAuthoringPathsGainNothing:
         """The default is the operator contract: ``crons/`` only.
 
         This is the exact call shape ``cron_add`` (``mcp_cron.py:2445``), the CLI
-        (``cli_commands.py:1699``) and both vault-grant sites make.
+        (``cli_commands_cron._cron_add``) and both vault-grant sites make.
         """
         (_bundle(home) / "job.py").write_text("def run(ctx):\n    return 'ok'\n")
         monkeypatch.chdir(tmp_path)

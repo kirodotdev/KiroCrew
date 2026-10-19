@@ -117,7 +117,7 @@ _SOURCES = (
     _SRC / "mcp_mate.py",
     _SRC / "mcp_computer.py",
     _SRC / "mcp_cron.py",
-    _SRC / "cli_commands.py",
+    _SRC / "cli_commands_gateway_api.py",
     _SRC / "cli_server.py",
     _SRC / "cli_server_peer.py",
     _SRC / "cli_server_requests.py",
@@ -894,7 +894,8 @@ class TestMcpCallSiteAuthCoverage:
         # belongs to its caller, so the caller's site carries "?". Other modules
         # also reach /api/artifacts directly, which the bare check above accepts.
         assert any(
-            s.startswith("cli_commands.py:") and s.endswith(":?") for s in found["/api/artifacts"]
+            s.startswith("cli_commands_gateway_api.py:") and s.endswith(":?")
+            for s in found["/api/artifacts"]
         ), "the literal passed to cli_commands' _request wrapper is no longer extracted"
 
     def test_keyword_passed_paths_are_visited(self):

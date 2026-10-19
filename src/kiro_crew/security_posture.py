@@ -2571,7 +2571,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "instances/token_mint.py",
         "instances/ssm_token_mint.py",
         "publish_sync.py",
-        "cli_commands.py",
+        "cli_commands_agent.py",
+        "cli_commands_cron.py",
+        "cli_commands_eval.py",
+        "cli_commands_learn.py",
         # Slack sub-surfaces whose posted output is covered by the two Slack rows.
         "slack/events.py",
         # Inbound attachment ingestion: redacts text extracted FROM a user's
@@ -2771,7 +2774,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "env.py",
         # Operator's own terminal during `kirocrew setup`: redacts npm's and
         # electron-builder's stderr (a registry URL can carry a token) before
-        # the bounded tail is printed. Same classification as cli_commands.py.
+        # the bounded tail is printed. Same classification as the cli_commands_* rows above.
         "cli_setup.py",
         # Issue Radar's route layer: its AI routes redact the model's own output
         # (summaries, label reasons, recommendation text) before caching or

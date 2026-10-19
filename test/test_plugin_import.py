@@ -2131,7 +2131,7 @@ class TestInstallDoesNotActivateADisabledApp:
         import ast
         from pathlib import Path as _Path
 
-        import kiro_crew.cli_commands as cli
+        import kiro_crew.cli_commands_app as cli
 
         tree = ast.parse(_Path(cli.__file__).read_text(encoding="utf-8"))
         target = next(
@@ -2153,7 +2153,7 @@ class TestInstallDoesNotActivateADisabledApp:
         import ast
         from pathlib import Path as _Path
 
-        import kiro_crew.cli_commands as cli
+        import kiro_crew.cli_commands_app as cli
 
         tree = ast.parse(_Path(cli.__file__).read_text(encoding="utf-8"))
         target = next(

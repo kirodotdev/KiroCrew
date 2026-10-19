@@ -42,6 +42,43 @@ owner imports `kiro_crew.cli` or another owner, the owners log as `kiro_crew.cli
 and the facade declares no exclusion. `test/test_cli_split_facade.py` pins the
 contract.
 
+### `cli_commands.py` and its owners
+
+`main()` takes the handlers of `cron`, `spawn`, `learn`, `artifact`, `memory`, `app`,
+`eval`, `security`, `policy`, `tailnet`, `telemetry`, `secrets`, `pod`, `agent` and
+`workspace`, and the `mcp-<app>` server of a built-in app, from
+`kiro_crew/cli_commands.py`, through a function-local import (see
+[Import Weight Contract](#import-weight-contract)). That module keeps the `tailnet`,
+`telemetry`, `secrets` and `pod` handlers and the config-shape guards `tailnet` runs
+first. Each of the others lives in a `cli_commands_<command>.py` module beside it, and
+new work for one of those commands goes to its module:
+
+| Module | Owns |
+|---|---|
+| `cli_commands_workspace.py` | `workspace`, and `_locked_config_write`, the locked `config.json` write that `workspace` and `agent delete` share |
+| `cli_commands_memory.py` | `memory`, and `_finding_store_suffix`, the named-store label `security audit` prints too |
+| `cli_commands_gateway_api.py` | `spawn` and `artifact`, which call the running gateway's internal API with the local secret |
+| `cli_commands_app.py` | `app` |
+| `cli_commands_agent.py` | `agent` |
+| `cli_commands_cron.py` | `cron` |
+| `cli_commands_security.py` | `security` and `policy` |
+| `cli_commands_eval.py` | `eval` |
+| `cli_commands_learn.py` | `learn` |
+
+`kiro_crew.cli_commands` is a mirror facade (`kiro_crew._facade_mirror`) over those
+nine owners, lowest layer first in the order of the table. It keeps its whole import
+block, so every name it held before the split still resolves as
+`kiro_crew.cli_commands.<name>` and is the same object, and a patch through it reaches
+every owner that binds the name. An owner never imports the facade, and imports
+another owner only from a row above its own: `agent` takes the locked write from
+`workspace`, and `security` takes `_finding_store_suffix` from `memory`. The moved
+handlers log as `kiro_crew.cli_commands`, `_CliConflict` keeps that module name, and
+the facade declares no exclusion. `test/test_cli_commands_split_facade.py` pins the
+contract and freezes the facade's import block, so a new import goes in the owner that
+reads it. A new command's handler goes in a new `cli_commands_<command>.py` owner, added
+to the facade's `_OWNERS`, to `OWNERS` in that test and to `_BANNED_AFTER_CLI_IMPORT` in
+`test/test_cli_lazy_imports.py`.
+
 `kiro_crew/cli_server.py` holds the server-lifecycle commands `main()` dispatches to. It
 keeps `file-delivery approve`, `status`, `gateway`, `run`, `service`, `sandbox` and `logs`;
 the gateway peer proof, the owner requests (`token`, `logout`, `update approve`), `stop`,
@@ -1610,7 +1647,7 @@ API fallback reports its no-target diagnostic, and the badge poke prints its
 fallback line. This fails closed and ends at the next gateway restart.
 
 **Out of scope.** The same value is also the gateway's `X-Internal-Secret`.
-Other senders of it do not yet use this proof: `cli_commands.py` spawn,
+Other senders of it do not yet use this proof: `cli_commands_gateway_api.py` spawn,
 spawn-run and spawn poll, `_artifact`, the no-socket arm of
 `_file_delivery_approve`, `pod/runtime_client.py`'s Windows mint and
 `app_lifecycle_client.py`. Those are tracked as follow-ups.
