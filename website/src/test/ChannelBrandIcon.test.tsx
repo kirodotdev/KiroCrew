@@ -11,6 +11,9 @@ describe('ChannelBrandIcon', () => {
     'webex',
     'wecom',
     'weixin',
+    'imessage',
+    'signal',
+    'whatsapp',
   ])('renders the %s brand asset', channel => {
     const { container } = render(<ChannelBrandIcon channel={channel} size={12} />)
     const image = container.querySelector('img')

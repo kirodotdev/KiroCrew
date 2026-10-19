@@ -246,4 +246,4 @@ def test_dashboard_turn_trigger(fields, expected):
 
 
 def test_origin_values_bound():
-    assert len(ORIGIN_VALUES) == 17
+    assert len(ORIGIN_VALUES) == 18

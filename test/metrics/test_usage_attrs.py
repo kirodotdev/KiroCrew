@@ -82,6 +82,7 @@ def test_origin_values_are_pinned():
         "teams",
         "weixin",
         "imessage",
+        "signal",
         "feishu",
         "unified",
         "dashboard",
@@ -91,8 +92,8 @@ def test_origin_values_are_pinned():
         "internal",
         "other",
     )
-    assert len(ua.ORIGIN_VALUES) == 17
-    assert tuple(CHANNEL_SESSION_NAMESPACES) == ua.ORIGIN_VALUES[:11]
+    assert len(ua.ORIGIN_VALUES) == 18
+    assert tuple(CHANNEL_SESSION_NAMESPACES) == ua.ORIGIN_VALUES[:12]
 
 
 def test_every_session_source_label_has_an_origin_and_a_kind():

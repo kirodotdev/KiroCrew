@@ -1,0 +1,42 @@
+{
+  "_provenance": {
+    "source": "vendor_doc",
+    "reference": "signal-cli 0.14.x src/main/java/org/asamk/signal/json/JsonDataMessage.java (attachments[], included only when non-empty) and JsonAttachment.java (contentType, filename, id, size, width, height, caption, uploadTimestamp, isVoiceNote). The id is the stored file's name under <data-dir>/attachments (lib/.../storage/AttachmentStore.java: sanitized remote id + extension from the filename or the content type), which is what getAttachment takes. Values are synthetic; only the FIELD NAMES and nesting are the claim.",
+    "captured_at": "2026-10-16",
+    "note": "Transcribed from signal-cli source, NOT captured from a live account. A voice note carries no filename and isVoiceNote=true; Signal records voice as audio/aac. message may be null for an attachment-only message."
+  },
+  "jsonrpc": "2.0",
+  "method": "receive",
+  "params": {
+    "envelope": {
+      "source": "+447700900002",
+      "sourceNumber": "+447700900002",
+      "sourceUuid": "bbbbbbbb-2222-4222-8222-222222222222",
+      "sourceName": "Owner",
+      "sourceDevice": 1,
+      "timestamp": 1700000000300,
+      "serverReceivedTimestamp": 1700000000305,
+      "serverDeliveredTimestamp": 1700000000309,
+      "dataMessage": {
+        "timestamp": 1700000000300,
+        "message": "what is in this picture?",
+        "expiresInSeconds": 0,
+        "viewOnce": false,
+        "attachments": [
+          {
+            "contentType": "image/png",
+            "filename": "chart.png",
+            "id": "Xq3vT0aZ9bQ1.png",
+            "size": 67,
+            "width": 1,
+            "height": 1,
+            "caption": null,
+            "uploadTimestamp": 1700000000290,
+            "isVoiceNote": false
+          }
+        ]
+      }
+    },
+    "account": "+447700900001"
+  }
+}

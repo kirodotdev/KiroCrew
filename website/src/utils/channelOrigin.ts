@@ -30,6 +30,7 @@ const CHANNEL_BRAND: Record<string, string> = {
   teams: 'Teams',
   weixin: 'Weixin',
   imessage: 'iMessage',
+  signal: 'Signal',
   feishu: 'Feishu',
 }
 

@@ -2488,7 +2488,7 @@ Shared attributes (`metrics/usage_attrs.py`):
 | Attribute | Values | Source |
 |---|---|---|
 | `trigger_source` | `user`, `cron`, `heartbeat`, `monitor`, `subagent`, `workflow`, `webhook`, `app`, `agent`, `system`, `other` | stated by the code that starts the work; the dashboard maps its turn actor, and `user` needs a person's send that is not a restored queue row. A caller that states nothing records `other`, never `user` |
-| `origin` | the 11 channel namespaces, `dashboard`, `cli`, `webhook`, `api`, `internal`, `other` | a rollup of `telemetry_channel_of`; a webhook names itself |
+| `origin` | the 12 channel namespaces, `dashboard`, `cli`, `webhook`, `api`, `internal`, `other` | a rollup of `telemetry_channel_of`; a webhook names itself |
 | `session_kind` | `chat`, `channel`, `cron`, `subagent`, `workflow_step`, `task_runner`, `heartbeat`, `background`, `other` | a rollup of `session_source` |
 
 | Metric | Type | Attributes | Recorded at |

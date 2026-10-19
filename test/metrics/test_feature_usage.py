@@ -53,7 +53,7 @@ def test_value_lists_are_pinned():
     assert fu.LESSON_RECEIPT_KINDS == ("lessons", "turn_lessons")
     assert fu.APP_TASK_OUTCOME_VALUES == ("ok", "error", "other")
     assert fu.CHANNEL_VALUES == tuple(CHANNEL_SESSION_NAMESPACES) + ("other",)
-    assert len(fu.CHANNEL_VALUES) == 12
+    assert len(fu.CHANNEL_VALUES) == 13
     assert fu.UI_CONTROL_VALUES == (
         "option_chip",
         "question_card_answer",
