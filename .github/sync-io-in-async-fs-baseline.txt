@@ -44,7 +44,6 @@
 3 src/kiro_crew/dashboard/handlers/artifacts_parts/item_lifecycle.py
 6 src/kiro_crew/dashboard/handlers/core.py
 3 src/kiro_crew/dashboard/handlers/diagnostics.py
-1 src/kiro_crew/dashboard/handlers/knowledge.py
 1 src/kiro_crew/dashboard/handlers/mcp.py
 1 src/kiro_crew/dashboard/handlers/memory_admin.py
 1 src/kiro_crew/dashboard/handlers/prompts_skill_catalog.py

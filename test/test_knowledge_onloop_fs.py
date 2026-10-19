@@ -16,6 +16,10 @@ pool. This file mirrors ``test_dashboard_files_onloop_fs.py``:
 2. proof, per endpoint, of the thread each request-path call ACTUALLY ran on;
 3. the refusal when the probe pool is full: a coded 503 for a request, and a
    transient 'pending' (never 'error') for the background ingest.
+
+``search_for_context`` reads the gateway's own ``config.json``. That is not a request
+path, so it runs with ``asyncio.to_thread`` rather than on the probe pool, and its test
+only proves the loop's own thread never touches the file.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
+import json
 import threading
 from pathlib import Path
 from typing import Any
@@ -81,12 +86,10 @@ _BLOCKING_HELPERS = frozenset(
 )
 
 #: ``(coroutine, call)`` pairs that stay on the loop, each with its reason. The
-#: test below fails if an entry stops matching, so this cannot go stale.
-_ALLOWED: dict[tuple[str, str], str] = {
-    ("search_for_context", "exists"): (
-        "the gateway's own config.json under data_home(), not a request path"
-    ),
-}
+#: test below fails if an entry stops matching, so this cannot go stale. Empty:
+#: ``search_for_context``'s config read runs in ``_read_knowledge_config`` on a
+#: worker thread (``TestSearchForContext``).
+_ALLOWED: dict[tuple[str, str], str] = {}
 
 
 def _scan_own_body(node: ast.AsyncFunctionDef) -> list[tuple[str, int, str]]:
@@ -236,6 +239,7 @@ def _make_app(store) -> web.Application:
     r.add_post("/api/knowledge/sources", kh.add_source)
     r.add_post("/api/knowledge/sources/{id}/files/retry", kh.retry_file)
     r.add_post("/api/knowledge/sources/{id}/files/skip", kh.skip_file)
+    r.add_get("/api/knowledge/search-for-context", kh.search_for_context)
     return app
 
 
@@ -253,6 +257,10 @@ def _sync_status(store, source_id: str) -> str:
 
 async def _busy(*_a: object, **_kw: object):
     raise kh._PathProbeBusy()
+
+
+async def _no_results(*_a: object, **_kw: object) -> list:
+    return []
 
 
 class TestAddSource:
@@ -363,3 +371,30 @@ class TestIngestTask:
         await kh._ingest_local_file_task(pipeline, store, str(doc), sid)
         pipeline.ingest_file.assert_not_awaited()
         assert await asyncio.to_thread(_sync_status, store, sid) == "pending"
+
+
+class TestSearchForContext:
+    @pytest.mark.asyncio
+    async def test_config_read_runs_off_the_loop(self, store, tmp_path, spy, monkeypatch):
+        """The gateway's own ``config.json`` is stat'ed and read on a worker thread.
+
+        It is not a request path, so the lane is ``asyncio.to_thread`` rather than the
+        probe pool; what matters is that the loop's own thread never waits on it.
+        """
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "config.json").write_text(
+            json.dumps({"knowledge": {"fetch_max_tokens": 7}}), encoding="utf-8"
+        )
+        monkeypatch.setattr(kh, "data_home", lambda: home)
+        monkeypatch.setattr(kh, "run_in_embed_pool", _no_results)
+        spy.watch(home)
+        loop_thread = threading.current_thread().name
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.get("/api/knowledge/search-for-context", params={"q": "z"})
+            assert resp.status == 200, await resp.text()
+            # The budget came from the file, so the read really happened.
+            assert (await resp.json())["max_tokens"] == 7
+        assert "exists" in {m for m, _ in spy.seen}, spy.seen
+        on_loop = [(m, t) for m, t in spy.seen if t == loop_thread]
+        assert not on_loop, f"config.json touched on the loop's thread: {on_loop}"

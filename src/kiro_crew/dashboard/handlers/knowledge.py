@@ -55,6 +55,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         KNOWLEDGE_FETCH_MAX_TOKENS,
         KNOWLEDGE_FETCH_TOP_N,
         _build_context_card,
+        _read_knowledge_config,
         add_agent_document_route,
         search_for_context,
     )

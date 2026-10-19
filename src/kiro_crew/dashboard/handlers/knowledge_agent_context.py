@@ -8,6 +8,7 @@ and patch; this module never imports it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from aiohttp import web
@@ -67,6 +68,27 @@ def _build_context_card(result: dict, content: str, tokens: int) -> dict:
     }
 
 
+def _read_knowledge_config() -> dict:
+    """The ``knowledge`` block of the gateway's ``config.json``, or ``{}``.
+
+    Blocking: it stats and reads the gateway's own file under ``data_home()``, and on a
+    home whose mount stopped answering that takes as long as the kernel does. So
+    ``search_for_context`` runs it with ``asyncio.to_thread``. The path is never the
+    request's choice, so the default executor is the lane, not the bounded probe pool
+    request-chosen paths use. A missing, unreadable, malformed or wrong-typed file or
+    block reads as ``{}``.
+    """
+    cfg_path = data_home() / "config.json"
+    try:
+        cfg = json.loads(read_config_text(cfg_path)) if cfg_path.exists() else {}
+    except Exception:
+        cfg = {}
+    if not isinstance(cfg, dict):
+        return {}
+    knowledge_cfg = cfg.get("knowledge")
+    return knowledge_cfg if isinstance(knowledge_cfg, dict) else {}
+
+
 async def search_for_context(request: web.Request) -> web.Response:
     """GET /api/knowledge/search-for-context?q=...&limit=N
 
@@ -78,16 +100,7 @@ async def search_for_context(request: web.Request) -> web.Response:
     if not q:
         return web.json_response({"error": "q parameter required"}, status=400)
 
-    cfg_path = data_home() / "config.json"
-    try:
-        cfg = json.loads(read_config_text(cfg_path)) if cfg_path.exists() else {}
-    except Exception:
-        cfg = {}
-    if not isinstance(cfg, dict):
-        cfg = {}
-    knowledge_cfg = cfg.get("knowledge")
-    if not isinstance(knowledge_cfg, dict):
-        knowledge_cfg = {}
+    knowledge_cfg = await asyncio.to_thread(_read_knowledge_config)
     # A hand-edited config.json can carry a wrong-typed fetch_top_n/
     # fetch_max_tokens; coerce them the way the validated loader degrades a
     # mistyped field, so a non-numeric value falls back to the default instead
