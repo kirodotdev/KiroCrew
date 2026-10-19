@@ -196,7 +196,7 @@ delivered it); a reply refusal with nothing in the log but a
 
 ## Related docs
 
-- [Channel capabilities](channel-capabilities.md): the ten-channel matrix — streaming, buttons, uploads, reply length, approval timeout
+- [Channel capabilities](channel-capabilities.md): the eleven-channel matrix — streaming, buttons, uploads, reply length, approval timeout
 - [Slack Integration](slack-integration.md)
 - [Telegram Integration](telegram-integration.md)
 - [WeCom Integration](wecom-integration.md)

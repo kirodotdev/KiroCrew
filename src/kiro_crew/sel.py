@@ -1120,6 +1120,7 @@ def _infer_source(session_key: str) -> str:
         "webex",
         "teams",
         "imessage",
+        "signal",
         "slack",
     ):
         if lowered_key.startswith((f"{namespace}:", f"{namespace}_")):
@@ -1146,6 +1147,7 @@ _AUDIT_SOURCES: tuple[str, ...] = (
     "webex",
     "teams",
     "imessage",
+    "signal",
     "slack",
 )
 

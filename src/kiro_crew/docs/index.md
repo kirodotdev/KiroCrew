@@ -110,7 +110,7 @@ Besides the dashboard and CLI, Kiro Crew ships channel integrations for
 [Telegram](telegram-integration.md), [Teams](teams-integration.md),
 [Webex](webex-integration.md), [WeCom](wecom-integration.md),
 [Weixin](weixin-integration.md), [iMessage](imessage-integration.md),
-[WhatsApp](whatsapp-integration.md), and
+[Signal](signal-integration.md), [WhatsApp](whatsapp-integration.md), and
 [Feishu](feishu-integration.md). They
 all share one channel-neutral core, so a capability a channel lacks degrades
 gracefully rather than failing the turn.

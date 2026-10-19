@@ -163,6 +163,7 @@ describe('ServicesTab channel rows', () => {
       ['wecom', 'WeCom'],
       ['weixin', 'WeChat'],
       ['imessage', 'iMessage'],
+      ['signal', 'Signal'],
       ['whatsapp', 'WhatsApp'],
       ['feishu', 'Feishu'],
     ] as const
