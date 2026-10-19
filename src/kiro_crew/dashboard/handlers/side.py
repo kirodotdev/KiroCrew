@@ -632,8 +632,8 @@ async def _run_side_turn(
             # project-scope agent resolved above to be loadable at all:
             # kiro-cli resolves --agent against $PWD/.kiro/agents, so creating
             # the side session without this cwd has set_mode reject the very
-            # name resolve_agent_bindings just returned. Mirrors
-            # chat_runner._run_chat, which passes the same cwd for the same
+            # name resolve_agent_bindings just returned. Mirrors the dashboard
+            # turn's _turn_admit, which passes the same cwd for the same
             # reason. The derived spec itself lives in the user-level registry,
             # which kiro-cli searches after the project scope.
             cwd=project,

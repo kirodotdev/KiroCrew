@@ -149,9 +149,9 @@ def read_effective_agent(source: object) -> str:
     """Return the agent id that actually served the turn, or ``""``.
 
     The slot's ``agent`` is an alias that ``resolve_agent_bindings()`` maps to a
-    concrete kiro agent before dispatch (``chat_runner.py:2392`` resolves it and
-    :2408 passes the result into ``get_or_create``), so a slot set to ``default``
-    can be served by ``kirocrew``. Recording the alias would attribute the turn
+    concrete kiro agent before dispatch (``dashboard/chat_turn/turn_admission.py``'s
+    ``_turn_admit`` resolves it and passes the result into ``get_or_create``), so a slot
+    set to ``default`` can be served by ``kirocrew``. Recording the alias would attribute the turn
     to an agent that never ran. ``AcpClient`` stores what it was constructed with
     on ``_agent`` (``acp/client_class.py``, ``__init__``), which is that resolved value — the
     same "what actually ran" precedence used for the model. Never raises.

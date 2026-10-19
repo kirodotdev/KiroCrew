@@ -223,11 +223,11 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 | `model/selected` | the fallback swap in `_run_chat`, after the pick lock is released | model id, source, turn |
 | `compaction/applied` | `_settle_compact_cooldown` when the after-reading is confirmed; `_compaction_gate_decision` when a deferred verdict settles | `pct_before`, `pct_after`, freed |
 | `session/closed` | `SessionLifecycle.reset` and `SessionLifecycle.destroy`; `chat_api.slot_lifecycle._close_slot` for a deliberate tab close, awaited to commit (`awaiting_commit`) before the conductor is woken | the gateway's own teardown reason (`reset`, `destroyed`, `destroyed_sid_retained`, or `removed` for the tab close) |
-| `message/received` | `_run_chat`, before the dispatch gates | turn, role, redacted text, surface, attachment ids |
+| `message/received` | `_turn_dispatch_gates` (`chat_turn/turn_dispatch_gates.py`), before the dispatch gates; `_turn_admit` (`chat_turn/turn_admission.py`) for a refused `@prompt` expansion | turn, role, redacted text, surface, attachment ids |
 | `message/sent` | `_flush_segment`, beside the assistant `slot.append`; `_persist_partial_reply` on a recovery path | turn, step, redacted text or cited `chunks`, `interrupted` |
 | `message/chunk` | the overflow split ONLY | turn, step, one slice of an already-redacted body |
-| `request/configured` | `_run_chat`, on change only | turn, model, provider, `context_window` |
-| `context/composed` | `_run_chat`, from `slot_ctx_blocks` | turn, per-block `sources`, chars, estimated tokens, `phase` (`session_start` or `per_turn`) when known, and `omitted` (the budget cuts `context_omissions.collect` gathered around the build) when anything was cut |
+| `request/configured` | `_turn_dispatch_gates` (`chat_turn/turn_dispatch_gates.py`), on change only | turn, model, provider, `context_window` |
+| `context/composed` | `_turn_dispatch_gates` (`chat_turn/turn_dispatch_gates.py`), from `slot_ctx_blocks` | turn, per-block `sources`, chars, estimated tokens, `phase` (`session_start` or `per_turn`) when known, and `omitted` (the budget cuts `context_omissions.collect` gathered around the build) when anything was cut |
 | `step/started` | the stream opening, and each tool-group-to-text transition | turn, step |
 | `step/completed` | the next transition, and `EVENT_COMPLETE` | turn, step, ms |
 | `message/queued` | `chat_delivery.queue_for_next_turn` | source, bytes, queue id -- no turn |

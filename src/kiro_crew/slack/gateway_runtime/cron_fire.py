@@ -535,7 +535,7 @@ def _resolve_cron_agent(
     "Agent mode 'in-3d' is not available … its ~/.kiro/agents/
     in-3d.json is likely missing". The dashboard chat path already
     collapses the alias the right way — see
-    ``chat_runner._allocation_kwargs``, which passes
+    ``_turn_admit``'s ``_allocation_kwargs``, which passes
     ``agent=<kiro_agent>`` alongside ``crew_agent=<alias>`` so
     ``prepare_runtime`` still resolves the member identity from the
     alias. The cron path was the one turn-running surface that

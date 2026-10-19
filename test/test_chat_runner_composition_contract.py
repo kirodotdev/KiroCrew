@@ -81,6 +81,7 @@ _OWNER_MODULES = frozenset(
         "tool_rows",
         "turn_admission",
         "turn_context",
+        "turn_dispatch_gates",
         "turn_entry",
         "turn_ledgers",
         "turn_locals",
@@ -1258,17 +1259,28 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/recipient.py",
         "dashboard/chat_turn/segment_flush.py",
         "dashboard/chat_turn/tool_rows.py",
+        "dashboard/chat_turn/turn_admission.py",
         "dashboard/chat_turn/turn_ledgers.py",
         "dashboard/chat_turn/turn_reply_seams.py",
         "dashboard/chat_turn/turn_spec_hooks.py",
         "dashboard/chat_turn/turn_stats.py",
     ),
-    r"StreamRedactor": (_RUNNER_HOME, "dashboard/chat_turn/turn_locals.py"),
+    r"StreamRedactor": (
+        _RUNNER_HOME,
+        "dashboard/chat_turn/turn_entry.py",
+        "dashboard/chat_turn/turn_locals.py",
+    ),
     r"\.reject_tool\(": ("dashboard/chat_turn/deny_chokepoints.py",),
     r"_reject_attributed\(": (_RUNNER_HOME, "dashboard/chat_turn/deny_chokepoints.py"),
     r"\.approve_tool\(": (_RUNNER_HOME,),
-    r"begin_turn\(": (_RUNNER_HOME,),
-    r"get_or_create\(": (_RUNNER_HOME, "dashboard/chat_turn/eager_spawn.py"),
+    r"begin_turn\(": (
+        "dashboard/chat_turn/turn_dispatch_gates.py",
+        "dashboard/chat_turn/turn_entry.py",
+    ),
+    r"get_or_create\(": (
+        "dashboard/chat_turn/eager_spawn.py",
+        "dashboard/chat_turn/turn_admission.py",
+    ),
     r"persist_token_record": (
         _RUNNER_HOME,
         "dashboard/chat_turn/turn_reply_seams.py",
@@ -1280,8 +1292,25 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
     r"clear_shared_deaths": (_RUNNER_HOME,),
     r"_acp_pipe_death_retries": (_RUNNER_HOME, "dashboard/chat_turn/recovery.py"),
     r"except AcpProcessDied": (_RUNNER_HOME,),
+    # The dashboard turn is EXEMPT from the turn ceiling (test_turn_ceiling.py lists its
+    # begin_turn homes): no part of the turn composes the ceiling.
+    r"turn_ceiling\.gate\(": (),
+    # test_session_control_set_model.py orders the model pick before these two anchors in
+    # _turn_admit; each lives only in its homes, so the turn's own copy stays there.
+    r"await _consume_pending_reset\(state, slot\)": (
+        "dashboard/chat_turn/eager_spawn.py",
+        "dashboard/chat_turn/session_reset.py",
+        "dashboard/chat_turn/turn_admission.py",
+    ),
+    r"_requested_model = slot\.model": (
+        "dashboard/chat_turn/eager_spawn.py",
+        "dashboard/chat_turn/turn_admission.py",
+    ),
+    # test/metrics/test_context_trace.py orders the composition emit after the dispatch
+    # gates by line; the emit lives only beside those gates, in _turn_dispatch_gates.
+    r"on_context_composed\(": ("dashboard/chat_turn/turn_dispatch_gates.py",),
     r"\.recent\(": ("dashboard/chat_turn/decisions_hooks.py",),
-    r"warm_project_agent_names\(": (_RUNNER_HOME,),
+    r"warm_project_agent_names\(": ("dashboard/chat_turn/turn_admission.py",),
     # The tool-gate consultation: the sync call, or the awaitable form a coroutine uses.
     r"\.on_tool_call\(|run_in_tool_gate_pool\(\s*[\w.]+\.on_tool_call,": (_RUNNER_HOME,),
     r"spawn_guarded_turn\(": (
@@ -1311,22 +1340,29 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/queue_drain.py",
         "dashboard/chat_turn/session_reset.py",
     ),
-    r"is_claude_code\(": (_RUNNER_HOME, "dashboard/chat_turn/model_fallback.py"),
+    r"is_claude_code\(": (
+        "dashboard/chat_turn/model_fallback.py",
+        "dashboard/chat_turn/slash_commands.py",
+    ),
     r"capabilities_of\(": (
         _RUNNER_HOME,
         "dashboard/chat_turn/model_fallback.py",
         "dashboard/chat_turn/slash_commands.py",
+        "dashboard/chat_turn/turn_admission.py",
         "dashboard/chat_turn/turn_spec_hooks.py",
     ),
-    r"classify_stop_reason\(": (_RUNNER_HOME,),
+    r"classify_stop_reason\(": (_RUNNER_HOME, "dashboard/chat_turn/turn_dispatch_gates.py"),
     r"notify_turn_complete\(": ("dashboard/chat_turn/queue_cycle.py",),
     r"on_tool_completed\(": (_RUNNER_HOME,),
-    r"latch_crew_log_previous\(": (_RUNNER_HOME, "dashboard/chat_turn/eager_spawn.py"),
+    r"latch_crew_log_previous\(": (
+        "dashboard/chat_turn/eager_spawn.py",
+        "dashboard/chat_turn/turn_admission.py",
+    ),
     r"capabilities\.theme_persona": (_RUNNER_HOME,),
     r"(?m)^_CONTEXT_FRAME_CONTRACT\b": (_RUNNER_HOME,),
     r"slot\._infra_retries = 0": (_RUNNER_HOME,),
     r"slot\._transient_5xx_retries = 0": (_RUNNER_HOME,),
-    r"\bmemory_store=": (_RUNNER_HOME,),
+    r"\bmemory_store=": (_RUNNER_HOME, "dashboard/chat_turn/turn_admission.py"),
     r"compaction_settled=_compaction_completed,": (_RUNNER_HOME,),
     r"await _post_native_question_card\(": (_RUNNER_HOME,),
     r"\brun_bg_oneliner\(": (_RUNNER_HOME,),

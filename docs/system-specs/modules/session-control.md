@@ -371,9 +371,10 @@ window and replaces it with a narrower one: the steer RPC suspends on
   second read, so a retarget landing between validation and record would be
   recorded as the admitted audience without having been judged, and the publisher
   would find live and recorded equal and publish the private read into the new
-  room. Written only INSIDE a dashboard-runner turn -- under the identity
-  `_run_chat` publishes on the slot at turn start (`_active_turn_session_key`)
-  and retires in the same teardown that empties this record -- because that
+  room. Written only INSIDE a dashboard-runner turn -- under the identity the
+  turn's admission phase (`_turn_admit`, in `dashboard/chat_turn/turn_admission.py`)
+  publishes on the slot at turn start (`_active_turn_session_key`) and `_run_chat`'s
+  `finally` retires in the same teardown that empties this record -- because that
   teardown is the only thing that clears it: a channel-born session's own turns
   run in the messaging driver, which sets no such marker and runs no such
   teardown, so an owner-DM conductor calling these tools from its channel turn

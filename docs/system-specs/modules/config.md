@@ -1956,8 +1956,8 @@ recurring gateway stall the loop-stall watchdog blames on chat.
 Async callers therefore **warm the cache before resolving**:
 `agent_discovery.warm_project_agent_names()` runs the scan on
 `executors.discovery_executor()` (the pool `/api/agents/installed` uses), after which
-the on-loop read is a hit. `chat_runner._run_chat` and the side-turn handler both do
-this.
+the on-loop read is a hit. The turn's admission phase (`_turn_admit`, in
+`dashboard/chat_turn/turn_admission.py`) and the side-turn handler both do this.
 
 `subagent._validate_agent` cannot warm — `spawn()` is synchronous and already on the
 loop — so it reads the project scope from `cached_project_agent_names()` only. A
@@ -1993,7 +1993,7 @@ publication. The execution record also persists a unique publication revision to
 distinguish repeated selections during compare-and-set; neither revision grants
 memory access.
 
-#### App-slot cold-snapshot self-heal & fail-loud (`dashboard/chat_runner._run_chat`)
+#### App-slot cold-snapshot self-heal & fail-loud (`dashboard/chat_turn/turn_admission._turn_admit`)
 The one-turn cold fallback above is acceptable for an ordinary session (the next
 turn self-heals), but it is **not** acceptable for an **app-owned** slot
 (`slot._app` truthy — an App-Kit slot bound to an app's own kiro agent, e.g.
@@ -2003,7 +2003,7 @@ turn self-heals), but it is **not** acceptable for an **app-owned** slot
 `requested_resolved=False`. The result is silent: the slot still advertises the
 requested name while the generic default agent answers **with none of the app's
 MCP tools and no error**, leaving the app unusable until a gateway restart happens
-to re-warm the snapshot. `_run_chat` therefore guards the resolve, strictly behind
+to re-warm the snapshot. `_turn_admit` therefore guards the resolve, strictly behind
 `slot._app and not bindings.requested_resolved` (zero extra work / I/O on the
 common hot path — no `_app`, or already resolved):
 

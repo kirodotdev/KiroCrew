@@ -159,8 +159,8 @@ _CLOSERS: Final[dict[str, re.Pattern[str]]] = {
         ("channel_context", r"\[END SLACK THREAD CONTEXT\]"),
         ("conversation_replay", r"\[END CONVERSATION HISTORY\]"),
         # Two spellings reach this opener: `context_assembly/turn_message.py` emits
-        # `[End of hook context]` and `chat_runner.py` emits `[End hook
-        # context]`. Both are real emit sites, so one alternation covers them
+        # `[End of hook context]` and `dashboard/chat_turn/turn_dispatch_gates.py` emits
+        # `[End hook context]`. Both are real emit sites, so one alternation covers them
         # rather than picking whichever the assembly happened to use last.
         ("hook_context", r"\[End (?:of )?hook context\]"),
         ("history_prefix", r"\[End of history\]"),

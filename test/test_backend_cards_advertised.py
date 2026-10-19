@@ -37,7 +37,7 @@ SET_GATE_ALLOWLIST: Dict[Tuple[str, str], int] = {
     ("acp/session_provider.py", "ACP_BACKENDS_COMPACT"): 2,
     ("agent_sdk/capabilities.py", "ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION"): 2,
     ("agent_sdk/capabilities.py", "ACP_BACKENDS_KIRO_SLASH_COMMANDS"): 1,
-    ("dashboard/chat_runner.py", "ACP_BACKENDS_COMPACT"): 1,
+    ("dashboard/chat_turn/slash_commands.py", "ACP_BACKENDS_COMPACT"): 1,
     ("providers/acp.py", "ACP_BACKENDS_COMPACT"): 2,
     ("providers/acp.py", "ACP_BACKENDS_KIRO_SLASH_COMMANDS"): 1,
     ("providers/acp_model_effort.py", "ACP_BACKENDS_KIRO_SLASH_COMMANDS"): 2,

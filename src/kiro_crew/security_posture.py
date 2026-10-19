@@ -2297,12 +2297,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/session_control_parts/model_switch.py",
         "dashboard/session_control_parts/session_create.py",
         # The owners composed into dashboard/chat_runner.py: the redactor calls of the runner's
-        # helpers and _run_chat's closures moved into them (deny rows, the eager-spawn error
-        # detail, file-change snapshots, the MCP sign-in banner, the fallback hop's model id,
-        # native cards, prompt and skill mentions, the queued-turn drain, cross-surface legs, the
-        # segment flush, tool rows, the terminal directive's tool-call ids, the partial reply and
-        # stream flushes, spec-hook notices, the stats footer), unchanged. Their output reaches the
-        # surfaces it reached from the runner; the set of egress paths did not change.
+        # helpers, _run_chat's closures and its prologue phases, unchanged (deny rows, the
+        # eager-spawn error detail, file-change snapshots, the MCP sign-in banner, the fallback
+        # hop's model id, native cards, prompt and skill mentions, the queued-turn drain, the
+        # admission logs, the stream redactors, cross-surface legs, the segment flush, tool rows,
+        # the terminal directive's tool-call ids, the partial reply and stream flushes, spec-hook
+        # notices, the stats footer). Their output reaches the surfaces it reached from the runner.
         "dashboard/chat_turn/deny_chokepoints.py",
         "dashboard/chat_turn/eager_spawn.py",
         "dashboard/chat_turn/file_changes.py",
@@ -2314,6 +2314,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_turn/recipient.py",
         "dashboard/chat_turn/segment_flush.py",
         "dashboard/chat_turn/tool_rows.py",
+        "dashboard/chat_turn/turn_admission.py",
+        "dashboard/chat_turn/turn_entry.py",
         "dashboard/chat_turn/turn_ledgers.py",
         "dashboard/chat_turn/turn_reply_seams.py",
         "dashboard/chat_turn/turn_spec_hooks.py",

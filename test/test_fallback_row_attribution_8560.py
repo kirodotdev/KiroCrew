@@ -232,11 +232,11 @@ class TestFallbackServedTurnAttribution:
         """GPT review finding on 3f55ca11f: the sticky candidate can OUTLIVE the
         swap it records.
 
-        It deliberately survives a landed turn (`chat_runner.py:10941-10944` --
+        It deliberately survives a landed turn (`_run_chat`'s usage row --
         the session stays on the fallback until the start-of-turn restore probe
         succeeds), that probe is skipped for a synthetic recovery message
-        (`:7317-7320`), and a reset resumes the session by re-sending
-        `slot.model` as a set_model override (`:1156-1159`). So a recovery turn
+        (`_turn_dispatch_gates`), and a reset resumes the session by re-sending
+        `slot.model` as a set_model override (`model_fallback`). So a recovery turn
         can run on the PRIMARY with `_active_fallback_model` still set. The row
         must name what the live provider is serving, not the stale candidate.
         """

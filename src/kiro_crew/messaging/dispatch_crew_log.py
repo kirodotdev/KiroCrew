@@ -129,7 +129,7 @@ def open_turn_crew_log(
     """Open the channel session's crew log ahead of its turn, as the dashboard runner does.
 
     ``crew_log_emit.on_session_opened`` is what CREATES a session's crew log, keyed
-    by its ACP session id; ``chat_runner._run_chat`` calls it on every dashboard turn
+    by its ACP session id; the dashboard turn's ``_turn_admit`` calls it on every turn
     once the handle exists, and a warm reuse is silent. A channel conversation is
     not a dashboard turn, and without this call it opens no log at all.
     That is a hole the work ledger falls into: the ledger is a projection of the

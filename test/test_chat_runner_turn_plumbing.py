@@ -17,6 +17,9 @@ What is pinned, over ``_run_chat`` and every owner function whose first paramete
   by its copy onto the turn, unless the store is itself that read (``x = turn.x``);
 * a name a closure writes is never bare, so it is never aliased either;
 * no closure of the turn declares a ``nonlocal``;
+* after a function awaits a phase (a ``_turn_*`` coroutine), a name the phase may have
+  changed on the turn is read bare only after its reload (``x = turn.x``), on every path to
+  the read, an exception's included;
 * reading a value the turn never set raises ``UnboundLocalError``.
 
 Each source rule has a self-test on synthetic source, so a rule that stopped seeing anything
@@ -475,3 +478,295 @@ def test_the_config_dir_guard_reads_a_function_that_takes_the_turn(
         guard.TestNoConfigDirInAsync().test_update_layout_channel_helpers_never_maintain()
     assert "planted.py:2 in async _cut()" in str(caught.value)
     assert "_not_cut" not in str(caught.value)
+
+
+# ── a phase's writes reach the reads after it ─────────────────────────────────
+
+#: The paths a statement list leaves by other than falling through, each the set of stale names
+#: on it (absent: no such path).
+_Leaving = dict[str, frozenset[str]]
+
+
+def _join(a: frozenset[str] | None, b: frozenset[str] | None) -> frozenset[str] | None:
+    return b if a is None else a if b is None else a | b
+
+
+def _leave(leaving: _Leaving, kind: str, stale: frozenset[str] | None) -> None:
+    if stale is not None:
+        leaving[kind] = leaving.get(kind, frozenset()) | stale
+
+
+def _bare_reads(nodes: list[ast.AST]) -> Iterator[ast.Name]:
+    """The bare reads in *nodes*, not those of a nested function, lambda or class."""
+    stack = list(nodes)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            yield node
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def phase_writes(functions: list[tuple[str, ast.AST]]) -> dict[str, frozenset[str]]:
+    """What each phase (an async ``_turn_*`` owner function) may leave changed on the turn: its
+    own ``turn.x`` stores, copies included, and those of every phase it awaits."""
+    phases = {
+        name: fn
+        for name, fn in functions
+        if isinstance(fn, ast.AsyncFunctionDef) and name.startswith("_turn_")
+    }
+    own = {
+        name: frozenset(
+            node.attr
+            for block in _own_blocks(fn)
+            for stmt in block
+            for node in _header_nodes(stmt)
+            if _turn_attr(node) and isinstance(node.ctx, ast.Store)
+        )
+        for name, fn in phases.items()
+    }
+    calls = {
+        name: {
+            node.func.id
+            for block in _own_blocks(fn)
+            for stmt in block
+            for node in _header_nodes(stmt)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in phases
+        }
+        for name, fn in phases.items()
+    }
+    writes = dict(own)
+    changed = True
+    while changed:
+        changed = False
+        for name, callees in calls.items():
+            grown = writes[name].union(*(writes[c] for c in callees))
+            if grown != writes[name]:
+                writes[name], changed = grown, True
+    return writes
+
+
+class StaleReads:
+    """Bare reads in one function that can see a value an awaited phase replaced on the turn.
+
+    A may-analysis over the function's own statements. ``[_flow =] await <phase>(turn, ...)``
+    makes every name the phase writes on the turn stale; a bare store of the name (the reload
+    ``x = turn.x``, or any other binding) makes it fresh. Both arms of an ``if`` join, a loop
+    runs to its fixpoint, a ``try``'s handlers and ``finally`` start from every state its body
+    passed through (an exception out of a phase leaves before the reload after it), and a
+    ``break``, ``continue`` or ``return`` passes through each enclosing ``finally``. A
+    ``match`` or ``except*``, which the turn's code does not use, fails the rule until it is
+    modelled.
+    """
+
+    def __init__(self, writes: dict[str, frozenset[str]]) -> None:
+        self.writes = writes
+        self.found: set[tuple[int, str]] = set()
+        self.calls: list[str] = []
+
+    def run(self, fn: ast.AsyncFunctionDef | ast.FunctionDef) -> list[str]:
+        self.block(fn.body, frozenset(), {})
+        return [f"{line}:{name}" for line, name in sorted(self.found)]
+
+    def _phase(self, stmt: ast.stmt) -> str | None:
+        value = stmt.value if isinstance(stmt, (ast.Assign, ast.Expr)) else None
+        if (
+            isinstance(value, ast.Await)
+            and isinstance(value.value, ast.Call)
+            and isinstance(value.value.func, ast.Name)
+            and value.value.func.id in self.writes
+        ):
+            return value.value.func.id
+        return None
+
+    def _read(self, nodes: list[ast.AST], stale: frozenset[str]) -> None:
+        self.found |= {(n.lineno, n.id) for n in _bare_reads(nodes) if n.id in stale}
+
+    def block(
+        self, stmts: list[ast.stmt], stale: frozenset[str], leaving: _Leaving
+    ) -> frozenset[str] | None:
+        """Run *stmts*; the stale names where they fall through, or None if no path does."""
+        current: frozenset[str] | None = stale
+        for stmt in stmts:
+            if current is None:
+                return None
+            _leave(leaving, "raise", current)
+            current = self.stmt(stmt, current, leaving)
+            _leave(leaving, "raise", current)
+        return current
+
+    def stmt(
+        self, stmt: ast.stmt, stale: frozenset[str], leaving: _Leaving
+    ) -> frozenset[str] | None:
+        phase = self._phase(stmt)
+        if phase is not None:
+            self.calls.append(phase)
+            return (stale | self.writes[phase]) - set(_stored(stmt))
+        header = _header_nodes(stmt)
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return stale - {stmt.name}
+        if isinstance(stmt, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
+            self._read(header, stale)
+            _leave(leaving, type(stmt).__name__.lower(), stale)
+            return None
+        if isinstance(stmt, ast.If):
+            self._read([stmt.test], stale)
+            stale -= set(_stored(stmt))
+            orelse = self.block(stmt.orelse, stale, leaving) if stmt.orelse else stale
+            return _join(self.block(stmt.body, stale, leaving), orelse)
+        if isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+            return self._loop(stmt, stale, leaving)
+        if isinstance(stmt, (ast.With, ast.AsyncWith)):
+            self._read(header, stale)
+            bound: set[str] = set()
+            for item in stmt.items:
+                if item.optional_vars is not None:
+                    bound |= {n.id for n in ast.walk(item.optional_vars) if isinstance(n, ast.Name)}
+            return self.block(stmt.body, stale - bound - set(_stored(stmt)), leaving)
+        if isinstance(stmt, ast.Try):
+            return self._try(stmt, stale, leaving)
+        if isinstance(stmt, ast.Match) or type(stmt).__name__ == "TryStar":
+            raise AssertionError(
+                f"line {stmt.lineno}: the reload rule does not model this; extend it"
+            )
+        if isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
+            self._read([ast.Name(id=stmt.target.id, ctx=ast.Load(), lineno=stmt.lineno)], stale)
+        if isinstance(stmt, ast.AnnAssign) and stmt.value is None:
+            return stale  # a bare declaration binds nothing
+        self._read(header, stale)
+        return stale - set(_stored(stmt))
+
+    def _loop(
+        self, stmt: ast.For | ast.AsyncFor | ast.While, stale: frozenset[str], leaving: _Leaving
+    ) -> frozenset[str] | None:
+        is_for = isinstance(stmt, (ast.For, ast.AsyncFor))
+        if is_for:
+            self._read([stmt.iter], stale)
+        target = (
+            {n.id for n in ast.walk(stmt.target) if isinstance(n, ast.Name)} if is_for else set()
+        )
+        entry = stale
+        while True:
+            if not is_for:
+                self._read([stmt.test], entry)
+            inner: _Leaving = {}
+            body = self.block(stmt.body, entry - target - set(_stored(stmt)), inner)
+            grown = entry | (body or frozenset()) | inner.get("continue", frozenset())
+            if grown == entry:
+                break
+            entry = grown
+        for kind in ("raise", "return"):
+            _leave(leaving, kind, inner.get(kind))
+        endless = not is_for and isinstance(stmt.test, ast.Constant) and bool(stmt.test.value)
+        done = None if endless else entry - set(_stored(stmt))
+        if done is not None and stmt.orelse:
+            done = self.block(stmt.orelse, done, leaving)
+        return _join(done, inner.get("break"))
+
+    def _try(
+        self, stmt: ast.Try, stale: frozenset[str], leaving: _Leaving
+    ) -> frozenset[str] | None:
+        inner: _Leaving = {}
+        body = self.block(stmt.body, stale, inner)
+        raised = stale | inner.get("raise", frozenset())
+        after: _Leaving = {}
+        out: frozenset[str] | None = None
+        for handler in stmt.handlers:
+            if handler.type is not None:
+                self._read([handler.type], raised)
+            caught = raised - {handler.name} if handler.name else raised
+            out = _join(out, self.block(handler.body, caught, after))
+        if body is not None:
+            out = _join(out, self.block(stmt.orelse, body, after) if stmt.orelse else body)
+        exits: _Leaving = {"raise": raised}  # a handler that does not match lets it through
+        for kind, names in inner.items():
+            if kind != "raise":  # the body's raises are in ``raised``
+                _leave(exits, kind, names)
+        for kind, names in after.items():
+            _leave(exits, kind, names)
+        if not stmt.finalbody:
+            for kind, names in exits.items():
+                _leave(leaving, kind, names)
+            return out
+        # The finally runs on every way out; each way leaves the same way after it.
+        through = frozenset().union(*exits.values())
+        left = self.block(stmt.finalbody, through, leaving)
+        for kind in exits:
+            _leave(leaving, kind, left)
+        return self.block(stmt.finalbody, out, leaving) if out is not None else None
+
+
+def test_no_read_after_a_phase_sees_a_value_the_phase_replaced() -> None:
+    """``_run_chat`` holds a phase's inputs as plain locals; after it awaits a phase, a name the
+    phase may have changed on the turn is read only after its reload (``x = turn.x``), on every
+    path, an exception's included. The copy rule above is the other half: a store reaches the
+    turn at once. Every function that takes the turn is checked, so a phase awaiting a phase is
+    held to the same rule."""
+    functions = list(_functions())
+    writes = phase_writes(functions)
+    assert "_turn_open" in writes, "the turn's opening phase moved; this check went stale"
+    found, calls = [], []
+    for name, fn in functions:
+        rule = StaleReads(writes)
+        found += [f"{name}:{loc}" for loc in rule.run(fn)]
+        calls += rule.calls
+    assert set(writes) <= set(calls), sorted(set(writes) - set(calls))
+    assert found == []
+
+
+_PHASE = "async def _turn_p(turn):\n    turn.x = 1\n"
+
+
+@pytest.mark.parametrize(
+    ("body", "found"),
+    [
+        ("    await _turn_p(turn)\n    use(x)\n", ["3:x"]),
+        ("    await _turn_p(turn)\n    x = turn.x\n    use(x)\n", []),
+        ("    await _turn_p(turn)\n    use(turn.x)\n", []),
+        ("    _flow = await _turn_p(turn)\n    if a:\n        x = turn.x\n    use(x)\n", ["5:x"]),
+        ("    if a:\n        await _turn_p(turn)\n    use(x)\n", ["4:x"]),
+        ("    for i in y:\n        use(x)\n        await _turn_p(turn)\n", ["3:x"]),
+        ("    for i in y:\n        use(x)\n        await _turn_p(turn)\n        x = turn.x\n", []),
+        ("    while True:\n        await _turn_p(turn)\n        break\n    use(x)\n", ["5:x"]),
+        (
+            "    try:\n        await _turn_p(turn)\n        x = turn.x\n"
+            "    except E:\n        use(x)\n",
+            ["6:x"],
+        ),
+        (
+            "    try:\n        await _turn_p(turn)\n        x = turn.x\n"
+            "    except E:\n        x = turn.x\n        use(x)\n",
+            [],
+        ),
+        (
+            "    try:\n        await _turn_p(turn)\n        x = turn.x\n"
+            "    finally:\n        use(x)\n",
+            ["6:x"],
+        ),
+        (
+            "    for i in y:\n        try:\n            await _turn_p(turn)\n            continue\n"
+            "        finally:\n            pass\n    use(x)\n",
+            ["8:x"],
+        ),
+        (
+            "    for i in y:\n        try:\n            await _turn_p(turn)\n            continue\n"
+            "        finally:\n            x = turn.x\n    use(x)\n",
+            [],
+        ),
+        ("    def later():\n        use(x)\n    await _turn_p(turn)\n", []),
+        ("    await _turn_p(turn)\n    x: int\n    use(x)\n", ["4:x"]),
+        ("    await _turn_p(turn)\n    x += 1\n", ["3:x"]),
+        ("    await _turn_q(turn)\n    use(x)\n", ["3:x"]),
+    ],
+)
+def test_the_reload_rule_sees_every_path(body: str, found: list[str]) -> None:
+    source = _PHASE + "async def _turn_q(turn):\n    await _turn_p(turn)\n"
+    source += "async def _run_chat(turn):\n" + body
+    functions = [(fn.name, fn) for fn in ast.parse(source).body]
+    writes = phase_writes(functions)
+    assert writes["_turn_q"] == {"x"}
+    rule = StaleReads(writes)
+    offset = source.count("\n") - body.count("\n") - 1
+    assert [f"{int(loc.split(':')[0]) - offset}:x" for loc in rule.run(functions[-1][1])] == found

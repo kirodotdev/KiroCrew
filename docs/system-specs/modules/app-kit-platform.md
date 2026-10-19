@@ -901,7 +901,7 @@ complete). The callers act on it as follows:
 A session a palette command opens for its app's own agent (`app_agent_owner`) runs
 only on a backend whose routing is `Routing.AGENT_SPEC` (KAS and Kiro), the hosts that
 launch the agent from its spec. Any other backend would run the app-authored prompt
-without the app's spec, so `dashboard/chat_runner.py` refuses the turn before the
+without the app's spec, so `dashboard/chat_turn/turn_admission.py` (`_turn_admit`) refuses the turn before the
 claim (the selected backend) and again after it (the claimed provider's
 capabilities), with `apps.manager.app_agent_backend_refusal` as the message and the
 `app_agent_refused` row kind. The bare-name check `app_command_agent_refusal` runs

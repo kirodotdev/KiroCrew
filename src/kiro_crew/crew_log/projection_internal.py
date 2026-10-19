@@ -266,8 +266,8 @@ def _class_render(state: dict[str, Any]) -> dict[str, Any]:
 #
 # WHAT A ROW IS ANCHORED ON, and why it is NOT the turn boundary. ``turn/started`` is
 # the obvious anchor and it is the wrong one here, because of the order this product's
-# writer actually uses: ``on_message_received`` runs BEFORE the dispatch gates
-# (``chat_runner`` line ~11809) and ``on_turn_started`` runs after them (~11949), with
+# writer actually uses: ``on_message_received`` runs BEFORE the dispatch gates and
+# ``on_turn_started`` runs after them (both in ``_turn_dispatch_gates``), with
 # five refusal gates in between. So a REFUSED turn carries its prompt and its
 # ``turn/refused`` and never gets a boundary entry at all. A fold anchored on the
 # boundary would drop every refused turn's row outright -- and worse, that turn's

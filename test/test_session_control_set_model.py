@@ -457,8 +457,9 @@ def test_the_turn_start_commit_cannot_suspend():
 
 
 def test_the_turn_applies_the_pick_before_it_acquires_a_session():
-    """Source-order pin: the pick is applied in ``_run_chat`` before the pending
-    reset is consumed and before get_or_create reads ``slot.model``."""
+    """Source-order pin: the pick is applied in the turn's admission phase
+    (``_turn_admit``, which ``_run_chat`` awaits) before the pending reset is
+    consumed and before get_or_create reads ``slot.model``."""
     import kiro_crew.dashboard.chat_runner as runner
 
     source = "\n".join(
@@ -469,7 +470,7 @@ def test_the_turn_applies_the_pick_before_it_acquires_a_session():
         ]
         if turn_file.name != "__init__.py"
     )
-    body = source[source.index("async def _run_chat(") :]
+    body = source[source.index("async def _turn_admit(") :]
     apply_at = body.index("apply_pending_model_pick(state, slot)")
     assert apply_at < body.index("await _consume_pending_reset(state, slot)")
     assert apply_at < body.index("_requested_model = slot.model")

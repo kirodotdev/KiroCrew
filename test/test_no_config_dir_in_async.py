@@ -61,6 +61,7 @@ _ASYNC_CHECKED_FILES = [
     "dashboard/chat_turn/tool_rows.py",
     "dashboard/chat_turn/turn_admission.py",
     "dashboard/chat_turn/turn_context.py",
+    "dashboard/chat_turn/turn_dispatch_gates.py",
     "dashboard/chat_turn/turn_entry.py",
     "dashboard/chat_turn/turn_ledgers.py",
     "dashboard/chat_turn/turn_marker.py",
