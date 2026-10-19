@@ -238,6 +238,8 @@ telling those two apart is the entire reason the third level exists.
 The one genuinely graded fact is Stage 4's routing, rendered from `Routing`'s own five
 mechanisms — and it, like the security notes, is never hidden behind a disclosure.
 
+**Some lines are gated on an advertised field, not membership alone.** The runtime refuses claude's steer without `_meta.steering.supported`, KAS's `/compact` without `_kiro/session/compact` in its extension methods, and an effort or model picker with no advertised option. `ADVERTISED_FIELD_BY_LINE` in `backend_cards.py` names those lines and their fields. `test_backend_cards_advertised.py` counts the runtime sites that gate one of them on a deciding `ACP_BACKENDS_*` set, against a shrink-only allowlist: if your harness gates such a line, read the advertised field rather than adding a set test.
+
 ## Stage 3 — the spawn path
 
 This is the irreducible new code, and on the harnesses measured so far it is the
