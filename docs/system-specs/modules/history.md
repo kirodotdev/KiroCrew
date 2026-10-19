@@ -86,8 +86,25 @@ use:
 - `history_cache.py` owns the bounded cache containers and the invalidation /
   guarded-publish coordinator. Cache objects and generation state remain on
   the facade owner.
-- `history_search.py` owns query parsing plus the list/search/snippet catalog
-  projection.
+- `history_search.py` owns the list/search/snippet catalog projection
+  (`SessionCatalogProjection`) with the scan, ranking and indexing constants
+  it reads, and is a mirrored facade (`kiro_crew._facade_mirror`) over two
+  sibling owners, lowest layer first: `history_search_query.py` (what a query
+  means: `parse_search_query`, `SearchNeedle` and its caps and weights,
+  `count_needle`, the forge-reference spellings, the source-provider spelling
+  slot, `snippet_needles` and `needles_match_text`) and
+  `history_search_memo.py` (what every search over one directory shares: the
+  byte budgets of the log's fold and snippet caches, the content-addressed
+  count and snippet memos and their byte ceilings, the single-flight table and
+  the memo-gated counter). The facade binds every name its owners define
+  except `_search_ref_resolver`, the one global an owner rebinds at run time,
+  which it serves, so a patch of `kiro_crew.history_search.<name>` reaches
+  every owner that reads it. The query owner logs under the
+  `kiro_crew.history_search` logger; the classes that moved name their owner
+  as `__module__` (nothing reads it). New parsing work goes to
+  `history_search_query.py` and new shared search state to
+  `history_search_memo.py`; `test/test_history_search_bindings.py` pins the
+  owners, the served slot, the logger and the patch reach.
 - `history_projection.py` owns locked metadata updates and permanent deletion
   (`SessionMetadataProjection`) and is a mirrored facade
   (`kiro_crew._facade_mirror`) over two sibling owners, lowest layer first:

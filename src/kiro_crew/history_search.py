@@ -1,31 +1,34 @@
-"""Pure transcript-search parsing and the composed session catalog projection.
+"""The composed session catalog projection, and the facade of the transcript-search family.
 
-The query helpers in this module have no storage side effects.  The projection
+Query parsing and the shared search memos live in owner modules.  The projection
 is deliberately composed with a ConversationLog facade instead of inheriting
 from it: calls back through the facade preserve the narrow monkeypatch seams
 used by the history race and cost tests while keeping one owner for each cache,
 lock, and path.
+
+What a query means lives in :mod:`kiro_crew.history_search_query`, pure parsing with
+no storage side effects, and what every search over one directory shares in
+:mod:`kiro_crew.history_search_memo`. Every name they define stays importable from
+here; the family block at the end of this file says what new work goes where.
 """
 
 from __future__ import annotations
 
 import heapq
+import importlib as _importlib
 import itertools
 import json
-import logging
 import math
 import os
-import re
-import threading
+import sys as _sys
 import time as _time
-from collections import OrderedDict
-from collections.abc import Callable, Container, Iterable, Iterator, Sequence
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import Container, Iterable, Iterator
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
 
-from kiro_crew._sqlite_compat import is_cjk_char, script_runs
+from kiro_crew import _facade_mirror
+from kiro_crew._sqlite_compat import is_cjk_char, script_runs  # noqa: F401 - facade re-exports
 from kiro_crew.history_cache import _GroupRecencyMemo
 from kiro_crew.history_index import (
     INDEX_FILENAME,
@@ -33,6 +36,72 @@ from kiro_crew.history_index import (
     IndexRow,
     SessionSearchIndex,
     fold_texts,
+)
+from kiro_crew.history_search_memo import (  # noqa: F401 - facade re-exports
+    _DIGEST_HEX_CHARS,
+    _MEMO_ENTRY_OVERHEAD,
+    _SEARCH_COUNT_MEMO_BYTES,
+    _SEARCH_FOLD_BUDGET_BYTES,
+    _SEARCH_SNIPPET_BUDGET_BYTES,
+    _SEARCH_SNIPPET_MEMO_BYTES,
+    _SHARED_MEMO_DIRS,
+    _ContentCounts,
+    _Flight,
+    _flights,
+    _flights_lock,
+    _LiveDigests,
+    _memo_entry_cost,
+    _memo_group,
+    _MemoGate,
+    _MemoPair,
+    _memos_for,
+    _MemoValue,
+    _needle_memo_key,
+    _new_memo,
+    _phrase_memo_key,
+    _pinned,
+    _shared_memos,
+    _shared_memos_lock,
+)
+from kiro_crew.history_search_query import (  # noqa: F401 - facade re-exports
+    _CJK_CHAR_WEIGHT,
+    _FORGE_CHAIN_ONLY_WORDS,
+    _FORGE_LEAD_PUNCT,
+    _FORGE_MR_WORDS,
+    _FORGE_REF_WEIGHT,
+    _FORGE_REF_WORDS,
+    _FORGE_REQUEST_WORDS,
+    _FORGE_SIGIL_RE,
+    _FORGE_TRAIL_PUNCT,
+    _FORGE_TYPE_WORDS,
+    _FORGE_URL_RE,
+    _FORGE_URL_REPO_RE,
+    _FORGE_WORD_NUM_RE,
+    _MAX_SEARCH_REF_SPELLINGS,
+    _SEARCH_MAX_FORGE_REFS,
+    _SEARCH_MAX_SCORING_EXTRAS,
+    _SHORT_NEEDLE_MAX_CHARS,
+    SEARCH_MAX_TOKENS,
+    SearchNeedle,
+    _forge_lead_in,
+    _forge_spellings,
+    _forge_type_suffix,
+    _ForgeRef,
+    _is_cjk_char,
+    _is_short_term,
+    _lead_names_a_type,
+    _lead_names_merge_request,
+    _parse_forge_ref,
+    _provider_search_ref,
+    _saturates,
+    _script_runs,
+    count_needle,
+    logger,
+    needles_match_text,
+    parse_search_query,
+    register_search_ref_resolver,
+    reset_search_ref_resolver_for_tests,
+    snippet_needles,
 )
 from kiro_crew.jsonl_util import bounded_records
 
@@ -44,8 +113,6 @@ _UNREADABLE = object()
 
 
 SEARCH_MIN_CHARS = 2  # shortest query string that triggers backend search
-SEARCH_MAX_TOKENS = 12  # distinct REQUIRED needles per query — see parse_search_query
-_SEARCH_MAX_SCORING_EXTRAS = 12  # distinct scoring-only needles (CJK bigrams) per query
 _TITLE_BOOST = 10  # field-boost multiplier for title matches in search_sessions
 _PHRASE_BOOST = 4  # extra weight per exact whole-query hit in a multi-word search
 _SEARCH_SCAN_WINDOW = 500  # cap files scanned per search to bound I/O
@@ -68,1065 +135,6 @@ _INDEX_QUIET_WINDOW_SECS = 120.0
 # unfixed.
 _RECENCY_MAX_BOOST = 1.5
 _RECENCY_HALF_WEIGHT_DAYS = 30.0
-# Weight of a single CJK character needle that came from a longer run. Individual
-# han/kana/hangul characters are extremely common (a function character like "的"
-# can appear hundreds of times in one transcript), so counting them at full weight
-# would let character noise drown out the bigram adjacency signal that actually
-# ranks CJK results. They still gate the AND match at full strength — the weight
-# only dampens their contribution to the relevance score.
-_CJK_CHAR_WEIGHT = 0.25
-# A short ASCII needle (one or two casefolded characters) has its CONTENT
-# contribution saturated — ``log1p`` of its length-normalized hit count, in
-# place of the raw count divided by the length norm. Such a needle is a
-# substring match, and agent transcripts are dense in exactly the text it
-# matches incidentally — ISO timestamps, account ids, commit hashes, instance
-# types — so a long session can rack up thousands of hits on ``5`` without
-# once being about "case 5". Raw frequency there is noise, not relevance, and
-# it outgrows the ``_TITLE_BOOST`` field boost: a title containing the whole
-# query scores ~60 while a 500 KB transcript scores 100-300 on stray digits
-# alone. LENGTH is the whole test, digits included: incidental substring
-# frequency falls by roughly 10x per extra character (``5`` matches thousands
-# of times in a 500 KB transcript, ``55`` hundreds, ``555`` tens, ``4411`` a
-# handful), so a run of three or more characters is specific enough that its
-# frequency measures relevance and its raw hits already sit far below one
-# title hit — saturating ``4411`` would cap the very term that tells a
-# specific query ("timeout 50051") apart from its ordinary co-term, letting
-# the co-term's linear frequency drive body-only ranking instead.
-# Saturation, not a smaller multiplier, because
-# the noise density varies by orders of magnitude between transcripts and no
-# constant is right for all of them; saturating the NORMALIZED count (hit
-# density) rather than the raw one keeps body-only matches ordered as before
-# — a long substantive discussion still beats one stray mention in a short
-# session — without dividing by the length norm twice. 10,000 incidental hits
-# in a 45 KB transcript come to about 7 points, so no digit density can outrank
-# one title hit. The needle keeps FULL strength for the AND gate (presence still
-# qualifies a session) and full weight in the title (short and intentional, so
-# one hit there is real evidence). CJK needles are exempt: a bigram is two
-# characters by construction and is the module's intended adjacency signal, and
-# lone characters already carry _CJK_CHAR_WEIGHT. Longer words keep raw
-# frequency, so no existing query without a short token is re-ranked.
-_SHORT_NEEDLE_MAX_CHARS = 2
-# Weight of one forge-reference spelling hit contributed for RANKING a bare
-# number query ("4411"). Such a query keeps its plain substring needle, so
-# recall is untouched — the spellings only move the session that actually
-# references pull request 4411 above one that happens to contain those digits
-# inside a run id. Sized like _PHRASE_BOOST: strong enough that a single real
-# reference outranks incidental digit noise, not so strong that a session
-# repeating the digits many times can never win.
-_FORGE_REF_WEIGHT = 4.0
-# Forge expansions per query. Each one costs one substring scan of every scanned
-# session PER SPELLING it carries — up to eight for a reference the query named,
-# and up to thirteen for a bare number's ranking needle, which carries both
-# families. Three expansions therefore top out around 39 substring scans per
-# field over the scan window, each a single C-level ``str.count`` against
-# already-folded, memoized text — which is why the cap stays at three rather
-# than shrinking as the spelling sets grew: a query naming three references
-# ("compare #1 #2 #3") is legitimate, and the scans it costs are not the
-# expensive part of a search. A fourth forge-shaped token degrades to a plain
-# needle.
-_SEARCH_MAX_FORGE_REFS = 3
-# ALTERNATIVE spellings ONE resolver answer may contribute for a single token.
-# The collector returns the FIRST plugin to recognize the token, for every token
-# shape, so exactly one provider's answer ever arrives here — this bounds that
-# one answer, not a fan-in across providers. The unit of cost is the same as
-# above: one ``str.count`` per spelling per scanned session per field, so an
-# unbounded contribution would let a plugin multiply every search by a number
-# nothing in core chose. Sized to the sibling per-plugin ceiling
-# (_MAX_PLUGIN_PATH_MARKERS, also 8), which bounds the same kind of thing: what
-# one plugin may hand core for one lookup. Lives here rather than beside the
-# collector because the cost it bounds is this module's.
-_MAX_SEARCH_REF_SPELLINGS = 8
-
-
-def _is_cjk_char(ch: str) -> bool:
-    """True for characters that written Chinese/Japanese/Korean does not space-separate.
-
-    Whitespace tokenization silently degrades for these scripts — a whole CJK
-    clause arrives as ONE "token" — so :func:`parse_search_query` segments runs
-    of them instead. The ranges cover the Han ideograph blocks (unified,
-    extension A, the astral extensions, compatibility) and the kana blocks:
-    Chinese and Japanese are written without spaces, which is the named defect.
-    Deliberately NOT Hangul — modern Korean IS space-separated, so its words
-    already arrive as ordinary whitespace tokens and the substring rule serves
-    them; segmenting them would change Korean ranking to fix a failure nobody
-    has reported. Likewise not full-width forms, punctuation, or symbols.
-
-    The ranges themselves live in :mod:`kiro_crew._sqlite_compat`, which the
-    knowledge FTS dialect also segments by, so the set has ONE owner: two
-    hand-maintained copies of it drifted apart silently, and this module and that
-    one must agree on what "a spaceless script" means or the same query segments
-    differently in session search and knowledge search.
-    """
-    return is_cjk_char(ch)
-
-
-class SearchNeedle(NamedTuple):
-    """One substring a session search scans for.
-
-    ``required=True`` needles form the AND gate — a session missing one (in
-    both title and content) is disqualified. ``required=False`` needles only
-    contribute to the relevance score. ``weight`` scales each occurrence's
-    contribution to that score.
-
-    ``alts`` are ALTERNATIVE SPELLINGS of the same reference: the needle is
-    satisfied by ``text`` or by any alt, and occurrences of every spelling
-    count toward the score. That is a bounded OR *inside* one needle, not an OR
-    over the query — it exists because one forge reference has several written
-    forms (``#4411`` and ``…/pull/4411`` name the same pull request), and a
-    transcript may carry any of them.
-
-    ``digit_bounded`` rejects a match that sits inside a LONGER number, on
-    either side — so ``4411`` matches ``PR 4411.`` but not ``#44110`` and not
-    the run id ``1544110293``. Only meaningful for a spelling made of digits or
-    ending in one.
-
-    ``adjacency`` marks a needle as ADJACENCY EVIDENCE (a CJK bigram) — the only
-    kind the adjacency floor in :meth:`ConversationLog.search_sessions` counts.
-    Scoring-only needles that are not adjacency evidence (the forge spellings
-    added for ranking a bare number) therefore cannot arm that floor, which
-    would otherwise turn a ranking hint into a hidden gate.
-
-    ``saturate_body`` saturates the needle's CONTENT hit count (``log1p``)
-    before weighting — title hits and the AND gate ignore it. Set only for the
-    short ASCII terms :func:`parse_search_query` marks (see
-    :data:`_SHORT_NEEDLE_MAX_CHARS`), whose raw body frequency is
-    incidental-text noise rather than relevance.
-    """
-
-    text: str
-    weight: float
-    required: bool
-    alts: tuple[str, ...] = ()
-    digit_bounded: bool = False
-    adjacency: bool = False
-    saturate_body: bool = False
-
-
-def _is_short_term(term: str) -> bool:
-    """True for an ASCII term whose body frequency is noise, not relevance.
-
-    One or two casefolded characters (``5``, ``s3``, ``pr``): each is a
-    substring that incidental transcript text — timestamps, ids, hashes —
-    contains far more often than prose about the thing does. Length is the
-    whole test, digits included: incidental substring frequency falls by
-    roughly 10x per extra character, so a run of three or more (``555``,
-    ``4411``) is specific enough that its frequency measures relevance, and
-    saturating it would cap the very term that tells a specific query
-    ("timeout 50051") apart from its ordinary co-term. ASCII only: a
-    two-character Hangul word (``한글``) is a whole word, not noise, and
-    Hangul is not a CJK run here (modern Korean is space-separated, see
-    :func:`_is_cjk_char`), so it arrives on this path. Callers apply it to
-    non-CJK runs only.
-    """
-    return term.isascii() and len(term) <= _SHORT_NEEDLE_MAX_CHARS
-
-
-def _saturates(spellings: Iterable[str]) -> bool:
-    """``count_needle`` sums every spelling, so one short spelling makes the
-    whole needle's body count incidental-noise dominated.
-
-    A needle whose shortest spelling is three or more characters
-    (hash-prefixed ``4411``, ``pull/4411``, ``4411``) keeps raw frequency.
-    """
-    return any(_is_short_term(spelling) for spelling in spellings)
-
-
-def count_needle(needle: SearchNeedle, folded_text: str) -> int:
-    """Occurrences of any of *needle*'s spellings in *folded_text*.
-
-    The single counter every matcher and ranker shares, so the alternation and
-    the digit boundary cannot be honored by one caller and dropped by another.
-    *folded_text* must already be casefolded (needle spellings are).
-
-    An ordinary needle (no alts, unbounded) costs exactly one :meth:`str.count`,
-    the same as before spellings existed — the scan cost that
-    :func:`parse_search_query`'s needle caps are sized against. A needle with
-    alts costs one scan per spelling, which is why forge expansions carry their
-    own cap.
-    """
-    if not folded_text:
-        return 0
-    total = 0
-    for text in (needle.text, *needle.alts):
-        if not text:
-            continue
-        if not needle.digit_bounded:
-            total += folded_text.count(text)
-            continue
-        # Non-overlapping scan, matching str.count, skipping a hit that sits
-        # inside a longer number (``4411`` in ``1544110293``, ``#4411`` in
-        # ``#44110``). The LEFT guard applies only to a spelling that starts with
-        # a digit: for a delimited spelling the character before it says nothing
-        # about the number's length, and demanding a non-digit there would refuse
-        # ``#4411`` inside ``owner/repo2#4411`` — a repository whose name ends in
-        # a digit, matched against the very reference the query named.
-        left_bounded = text[0].isdigit()
-        start = 0
-        while True:
-            found = folded_text.find(text, start)
-            if found < 0:
-                break
-            end = found + len(text)
-            before_ok = not left_bounded or found == 0 or not folded_text[found - 1].isdigit()
-            after_ok = end >= len(folded_text) or not folded_text[end].isdigit()
-            if before_ok and after_ok:
-                total += 1
-            start = end
-    return total
-
-
-# One owner for splitting text into same-script runs. The name stays because
-# `history.py` re-exports it as part of its facade; only the duplicated body is
-# gone. The shared version returns a list instead of yielding, which the single
-# caller below (a plain `for`) cannot tell apart, and it tolerates an empty
-# string where this copy raised IndexError on `token[0]`.
-_script_runs = script_runs
-
-
-# Words that only NAME a reference type in front of its number ("PR 4411",
-# "merge request !12"). They are dropped from the gate when they introduce a
-# number, because they are not part of the reference: requiring the literal
-# "pr" would disqualify the very transcripts this expansion exists to find —
-# one that names the pull request only by URL never contains those letters.
-_FORGE_MR_WORDS = frozenset({"mr", "merge-request", "merge_request", "mergerequest"})
-# "merge" and "request" name no type on their own: "merge 1234" and "requests 12"
-# are ordinary prose, and treating either as a reference would drop the word from
-# the gate and pull in every session mentioning that number. They qualify only
-# TOGETHER ("merge request 12"), which does name GitLab's type.
-_FORGE_REQUEST_WORDS = frozenset({"request", "requests"})
-_FORGE_CHAIN_ONLY_WORDS = _FORGE_REQUEST_WORDS | frozenset({"merge"})
-# Words that DO name a type by themselves, so one of them in the lead-in run is
-# what makes a following number a reference.
-_FORGE_TYPE_WORDS = (
-    frozenset({"pr", "prs", "pull", "pulls", "pull-request", "pull_request", "pullrequest"})
-    | frozenset({"issue", "issues"})
-    | _FORGE_MR_WORDS
-)
-# The full lead-in vocabulary: type words plus the chain-only members, which must
-# be droppable and visible to the family test even though neither names a type.
-_FORGE_REF_WORDS = _FORGE_TYPE_WORDS | _FORGE_CHAIN_ONLY_WORDS
-
-
-def _lead_names_merge_request(lead: tuple[str, ...]) -> bool:
-    """True when the words introducing a number name a GitLab merge request.
-
-    Either an unambiguous word ("MR 12", "merge_request 12") or the two-word
-    form "merge request 12".
-    """
-    if any(word in _FORGE_MR_WORDS for word in lead):
-        return True
-    return "merge" in lead and any(word in _FORGE_REQUEST_WORDS for word in lead)
-
-
-def _lead_names_a_type(lead: tuple[str, ...]) -> bool:
-    """True when the lead-in run actually names a forge type.
-
-    A run of chain-only words does not: "requests 12" is prose about requests,
-    not a reference to item 12, and reading it as one would drop "requests" from
-    the gate and admit every session mentioning ``#12``.
-    """
-    return any(word in _FORGE_TYPE_WORDS for word in lead) or _lead_names_merge_request(lead)
-
-
-# Punctuation a reference collects from surrounding prose ("(#4411)," / "PR
-# #4411."). Stripped before the shapes below are tried, and only from the edges,
-# so the token's own delimiters survive. '!' is NOT in the leading set: it is
-# GitLab's merge-request sigil, not decoration.
-_FORGE_LEAD_PUNCT = "([{<\"'“‘"
-_FORGE_TRAIL_PUNCT = ")]}>,.;:?\"'”’"
-# A path-shaped reference, with or without a scheme/host: ``pull/4411``,
-# ``https://github.com/o/r/pull/4411/files``, ``…/-/merge_requests/12``.
-_FORGE_URL_RE = re.compile(
-    r"^(?:\S*/)?(?P<kind>pull|pulls|merge_requests|merge-requests|issues)"
-    r"/(?P<number>\d{1,9})(?:/\S*)?$"
-)
-# The owner/repo slug inside such a URL, used only for ranking.
-_FORGE_URL_REPO_RE = re.compile(
-    r"^(?:https?://)?[^/\s]+\.[^/\s]+"
-    r"/(?P<repo>[a-z0-9._-]+(?:/[a-z0-9._-]+)+?)"
-    r"(?:/-)?/(?:pull|pulls|merge_requests|merge-requests|issues)/\d"
-)
-# A sigil reference: ``#4411``, ``!12``, ``owner/repo#4411``, ``pr#4411``.
-_FORGE_SIGIL_RE = re.compile(
-    r"^(?:(?P<repo>[a-z0-9._-]+(?:/[a-z0-9._-]+)+)|(?P<word>pr|mr|pull|issue))?"
-    r"(?P<sigil>[#!])(?P<number>\d{1,9})$"
-)
-# A glued word+number reference: ``pr4411``, ``pr-4411``, ``mr-12``.
-_FORGE_WORD_NUM_RE = re.compile(r"^(?P<word>pr|mr|pull|issue)-?(?P<number>\d{1,9})$")
-
-
-class _ForgeRef(NamedTuple):
-    """A forge item (pull request / merge request / issue) named by a query.
-
-    ``bare`` records that the QUERY spelled the number with no sigil ("PR 4411",
-    "issue 42", "pr4411"). That decides whether plain digits are one of the
-    item's spellings — see :func:`_forge_spellings`.
-
-    """
-
-    number: str
-    merge_request: bool
-    repo: str | None
-    bare: bool = False
-
-
-def _forge_spellings(ref: _ForgeRef) -> tuple[str, tuple[str, ...]]:
-    """Return ``(canonical, alts)`` — how *ref* can be written in a transcript.
-
-    The families are kept apart because the sigils are not interchangeable:
-    GitHub draws pull requests and issues from ONE number sequence (``#4411``,
-    ``/pull/4411`` and ``/issues/4411`` are the same item), while GitLab numbers
-    merge requests separately from issues, which is why it spells them ``!12``
-    and ``#12``. For a SIGIL query that separation is a guarantee — ``!12`` never
-    matches ``#12``, a different object. A sigil-free query ("merge request 12")
-    also carries the bare digits, which a ``#12`` mention satisfies, so there the
-    separation governs ranking rather than exclusion.
-
-    Path spellings carry no leading slash so they match both ``/pull/4411`` in a
-    URL and a bare ``pull/4411`` written on its own.
-
-    The prose spellings ("pr 4411", "pull request 4411", "pr4411") are included
-    because a transcript often names the item in words rather than with a sigil,
-    and a query that typed the sigil should still find it. They match as plain
-    substrings, so a glued form can hit inside a longer word (``expr4411``
-    satisfies ``pr4411``). That is deliberate: this module matches every other
-    needle as a substring — ``cont`` hits ``contention`` — and adding word
-    boundaries for some spellings and not others would make the rule harder to
-    predict than the false positive it avoids, which ranks last anyway on a
-    single hit. The digit boundary still bounds the numeric side.
-
-    A bare digit spelling is a substring of its own sigil and glued spellings, so
-    one mention of ``#4411`` counts twice inside a bare reference's needle. That
-    only lifts the relevance score of a session that really does reference the
-    item, and never gates.
-
-    Plain digits are a spelling only for a ``bare`` reference, and that
-    asymmetry is deliberate. A query that typed no sigil ("issue 42") is looking
-    for the number as written, so the digits belong; a query that typed one
-    ("#4411", a PR URL) was explicit, and admitting bare digits there would make
-    ``!12`` match every session that mentions a standalone 12 — ordinary prose
-    (a count, a date, a version).
-
-    Recall relative to the plain substring gate this replaces does not rest on
-    the list being exhaustive by inspection — three shapes slipped past that
-    reasoning — but on a property test that drives every shape the parser
-    accepts against a transcript quoting it verbatim. Concretely: a sigil shape
-    contains its own canonical spelling (``owner/repo2#4411`` contains
-    ``#4411``), a path or URL shape contains a path spelling, and a glued or
-    two-token shape contains the bare digits. The one session the expansion can
-    still drop is one whose only claim to the old match was the digits sitting
-    INSIDE a longer number ("4411" within run id 1544110293) — and excluding that
-    is the point of the digit boundary, since such a session never referenced
-    the item.
-    """
-    number = ref.number
-    bare = (number,) if ref.bare else ()
-    if ref.merge_request:
-        return (
-            f"!{number}",
-            (
-                f"merge_requests/{number}",
-                f"merge-requests/{number}",
-                f"mr {number}",
-                f"merge request {number}",
-                f"mr{number}",
-                *bare,
-            ),
-        )
-    return (
-        f"#{number}",
-        (
-            f"pull/{number}",
-            f"pulls/{number}",
-            f"issues/{number}",
-            f"pr {number}",
-            f"pull request {number}",
-            f"pr{number}",
-            *bare,
-        ),
-    )
-
-
-def _forge_lead_in(parts: list[str], index: int) -> tuple[str, ...]:
-    """The contiguous run of reference-vocabulary words before ``parts[index]``.
-
-    Raw material for :func:`_forge_type_suffix`, which decides how much of the
-    run is actually part of the reference.
-    """
-    back = index - 1
-    while back >= 0 and parts[back] in _FORGE_REF_WORDS:
-        back -= 1
-    return tuple(parts[back + 1 : index])
-
-
-def _forge_type_suffix(lead: tuple[str, ...]) -> tuple[str, ...]:
-    """The part of *lead* that names the reference's type — its SHORTEST naming suffix.
-
-    Only the words adjacent to the number belong to the reference; anything
-    before them is the user's own search term. "merge issue 42" is a query about
-    ``merge`` AND issue 42, so the reference is ``issue 42`` and ``merge`` stays
-    in the gate — taking the whole run would drop it and return every session
-    mentioning #42.
-
-    SHORTEST, not longest: a longer suffix can still contain a type word without
-    that word being the head of the phrase ("merge issue" would qualify on
-    ``issue`` alone and swallow ``merge``). The shortest naming suffix is the
-    complete type phrase and no more — which still admits the two-word forms,
-    since neither "request" nor "merge" names a type by itself and only
-    ("merge", "request") together qualify.
-
-    Returns ``()`` when no suffix names a type, i.e. the number is not a
-    reference at all.
-
-    Two known limitations, accepted rather than special-cased. A chain-only word
-    wedged BETWEEN the type word and the number ("issue merge 42") is swallowed,
-    because the shortest naming suffix is ``("issue", "merge")``; the mirror case
-    ("merge issue 42") is handled. And because the gate is keyed by term text, a
-    query repeating a suffix word as its own search term ("pull the pull request
-    12") loses that term when the suffix is dropped. Both need a query nobody
-    writes, both only widen the result set, and closing them means keying the
-    gate by token position rather than by text — a redesign of the needle map,
-    not a fix here.
-    """
-    for size in range(1, len(lead) + 1):
-        suffix = lead[len(lead) - size :]
-        if _lead_names_a_type(suffix):
-            return suffix
-    return ()
-
-
-def _parse_forge_ref(token: str, lead: tuple[str, ...]) -> _ForgeRef | None:
-    """Parse *token* as a forge reference, or return ``None``.
-
-    *token* is one casefolded whitespace-separated term; *lead* is the run of
-    type-naming words before it (:func:`_forge_lead_in`), which is what makes
-    the two-token form ("PR 4411", "merge request 12") a reference rather than a
-    bare number, and which names the family when the token itself does not. A
-    bare number with no such lead-in is NOT a reference — treating every number
-    in a query as one would rewrite ordinary numeric content search (ports,
-    error codes, dates).
-    """
-    token = token.lstrip(_FORGE_LEAD_PUNCT).rstrip(_FORGE_TRAIL_PUNCT)
-    if not token:
-        return None
-    url = _FORGE_URL_RE.match(token)
-    if url:
-        repo_match = _FORGE_URL_REPO_RE.match(token)
-        return _ForgeRef(
-            url.group("number"),
-            url.group("kind").startswith("merge"),
-            repo_match.group("repo") if repo_match else None,
-        )
-    sigil = _FORGE_SIGIL_RE.match(token)
-    if sigil:
-        # The TYPED sigil decides the family, not the word before it: "#" names
-        # the shared pull/issue sequence and "!" names GitLab's merge requests,
-        # so letting a word override the sigil produced a reference ("mr#12")
-        # none of whose spellings was the string the user typed.
-        return _ForgeRef(
-            sigil.group("number"),
-            sigil.group("sigil") == "!",
-            sigil.group("repo"),
-        )
-    glued = _FORGE_WORD_NUM_RE.match(token)
-    if glued:
-        return _ForgeRef(
-            glued.group("number"),
-            glued.group("word") in _FORGE_MR_WORDS,
-            None,
-            bare=True,
-        )
-    if token.isdigit() and len(token) <= 9:
-        suffix = _forge_type_suffix(lead)
-        if suffix:
-            return _ForgeRef(token, _lead_names_merge_request(suffix), None, bare=True)
-    return None
-
-
-#: The resolver that recognizes a query token as some REGISTERED source
-#: provider's item and answers with that item's spellings. The built-in forge
-#: shapes above are tried first, so it can only ever claim a token no built-in
-#: recognized.
-#:
-#: ONE slot, not a list: the only production registrant is
-#: ``register_source_provider``, and the per-plugin fan-out already lives inside
-#: the collector it publishes. A list would have bought ordered consultation
-#: nothing in-tree can exercise.
-#:
-#: Deliberately a plain module-level callable: this module imports nothing but
-#: the standard library, and the provider registry it serves lives in
-#: ``kiro_crew.dashboard.source_providers.plugins``, which imports this module.
-#: Reaching UP to ask it would invert that dependency and put a dashboard
-#: import on every search, including the CLI and the Discord title-only gate,
-#: neither of which runs a web server. The dashboard therefore PUSHES its
-#: collector down here at registration time instead.
-_search_ref_resolver: Callable[[str], tuple[str, Sequence[str]] | None] | None = None
-
-logger = logging.getLogger(__name__)
-
-
-def register_search_ref_resolver(
-    resolve: Callable[[str], tuple[str, Sequence[str]] | None],
-) -> None:
-    """Install the token -> ``(canonical, alts)`` resolver. Idempotent.
-
-    Called at provider registration time, from the side that owns the provider
-    registry. Re-registration is the expected case, not an error — the registry
-    publishes the same collector on every provider registration — and the slot
-    simply holds the latest.
-
-    A resolver must be PURE and allocation-cheap: it is consulted for every term
-    of every query, and both :func:`snippet_needles` and
-    :meth:`ConversationLog.search_sessions` re-parse, so a search costs at least
-    two passes over the tokens. Any I/O, config read or lock in a resolver
-    becomes per-keystroke latency in the dashboard's search box. Nothing enforces
-    that beyond this contract.
-    """
-    global _search_ref_resolver
-    _search_ref_resolver = resolve
-
-
-def reset_search_ref_resolver_for_tests() -> None:
-    """Drop the resolver. Test-only: the slot is module state."""
-    global _search_ref_resolver
-    _search_ref_resolver = None
-
-
-def _provider_search_ref(token: str) -> tuple[str, tuple[str, ...]] | None:
-    """Ask the registered resolver to recognize *token*.
-
-    Returns ``(canonical, alts)`` NORMALIZED — casefolded, de-duplicated, empties
-    dropped, alts capped at :data:`_MAX_SEARCH_REF_SPELLINGS` — or ``None``.
-
-    This is the ONLY normalizer. The dashboard collector hands the first answer
-    through without judging it, so casefolding, the shape checks, the cap and the
-    dedup all happen once, here, where the cost they bound is paid. It matters
-    because the failure is SILENT — :func:`parse_search_query` casefolds its input
-    and :func:`count_needle` requires already-folded needles, so a spelling that
-    arrives with a capital letter produces a needle that matches nothing, with no
-    error and no log; it just returns zero results.
-
-    Every way a resolver can fail is contained, because a plugin defect must not
-    make the search box stop working: raising when CALLED, returning a malformed
-    answer, and raising while its ``alts`` are READ — the hook promises a
-    ``Sequence``, which cannot do that, but a resolver ignoring the contract can,
-    so the read sits inside a ``try`` and the answer is dropped whole. Every case
-    logs — a traceback where an exception was raised, the offending value where a
-    shape was merely wrong. None of them is silent: silence is the defect above.
-    """
-    resolve = _search_ref_resolver
-    if resolve is None:
-        return None
-    try:
-        found = resolve(token)
-    except Exception:
-        logger.debug("search ref resolver %r failed on %r", resolve, token, exc_info=True)
-        return None
-    if found is None:
-        return None
-    try:
-        canonical, alts = found
-    except Exception:
-        # `Exception`, not just TypeError/ValueError: the ANSWER may itself be lazy,
-        # so unpacking it runs plugin code that can raise anything at all.
-        logger.debug("search ref resolver %r returned a malformed answer", resolve, exc_info=True)
-        return None
-    if not isinstance(canonical, str) or not canonical.strip():
-        logger.debug("search ref resolver %r returned an invalid canonical %r", resolve, canonical)
-        return None
-    if isinstance(alts, str) or not isinstance(alts, Iterable):
-        logger.debug("search ref resolver %r returned invalid alts %r", resolve, alts)
-        return None
-    folded = canonical.casefold()
-    try:
-        # islice, not tuple(alts): a resolver ignoring the `Sequence` contract can
-        # hand back an endless iterable, and materializing it would hang the parse.
-        candidates = tuple(itertools.islice(alts, _MAX_SEARCH_REF_SPELLINGS))
-    except Exception:
-        # A `Sequence` cannot raise here; a resolver ignoring the contract can,
-        # and its answer is dropped whole rather than read half-way.
-        logger.debug(
-            "search ref resolver %r raised while its alts were read", resolve, exc_info=True
-        )
-        return None
-    spellings: dict[str, None] = {}
-    for alt in candidates:
-        if isinstance(alt, str) and alt.strip():
-            spellings[alt.casefold()] = None
-        else:
-            logger.debug("search ref resolver %r returned an invalid alt %r", resolve, alt)
-    spellings.pop(folded, None)
-    # Containment: at least one spelling must actually carry the token the user
-    # typed, or the answer describes some other item and would gate (or rank) a
-    # query on text it never named.
-    typed = token.casefold()
-    if typed not in folded and not any(typed in spelling for spelling in spellings):
-        logger.debug("search ref resolver %r answered %r without the typed token", resolve, folded)
-        return None
-    return (folded, tuple(spellings))
-
-
-def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
-    """Return ``(needles, phrase, adjacency_floor)`` for a search *query*, casefolded.
-
-    ``phrase`` is the whole normalized query. ``needles`` are derived from the
-    DISTINCT whitespace-separated terms in first-seen order; every caller that
-    matches (:meth:`ConversationLog.search_sessions`) or locates
-    (:func:`snippet_needles` for the snippet builders) query text derives from
-    this one parse so the halves of a query cannot drift apart.
-
-    Non-CJK terms become one required, weight-1.0 needle each — the classic
-    substring-AND behavior (``"cont"`` hits ``"contention"``). A term of one or
-    two characters additionally carries
-    ``saturate_body=True``: it still gates and title-scores at full strength,
-    but its content frequency is saturated (``log1p``) because such a
-    substring matches incidental transcript text (timestamps, ids, hashes)
-    far more often than it marks relevance; a run of three or more
-    characters, digits included (``4411``), keeps raw frequency (see
-    :data:`_SHORT_NEEDLE_MAX_CHARS`). A run of CJK
-    characters cannot keep that rule: CJK text is written without spaces, so
-    requiring the run verbatim demands the user's exact sentence and a
-    multi-word query like ``"修复内存泄漏"`` would only ever match transcripts
-    containing that literal string. Each CJK run therefore expands to:
-
-    * its individual characters as REQUIRED needles at :data:`_CJK_CHAR_WEIGHT`
-      — maximal recall, since a document discussing all the query's words
-      contains all of its characters regardless of word order; and
-    * its overlapping character bigrams as ADJACENCY needles at weight 1.0 —
-      the standard dictionary-free CJK adjacency signal. They are not
-      individually required, but when a query carries any, a session must hit
-      AT LEAST ONE to qualify (see :meth:`ConversationLog.search_sessions`):
-      individual han/kana characters are so common that a pure character
-      scatter is noise, so the adjacency floor keeps the character gate's
-      recall (words apart still match — each word IS a bigram hit) without
-      letting scatter-only sessions fill the result page. Each occurrence also
-      scores, so documents keeping more of the query adjacent rank higher.
-      A single-character run stays one required, weight-1.0 needle: it IS the
-      whole term.
-
-    Precision moves from the gate into the ranking, which is the module's
-    existing philosophy for the substring-prefix looseness on ASCII terms.
-
-    A term that names a FORGE ITEM — a pull request, merge request or issue —
-    becomes ONE required needle carrying every spelling of that item instead of
-    the literal term (see :func:`_parse_forge_ref`). ``#4411``, ``pr 4411``,
-    ``pull/4411``, a full PR URL and ``owner/repo#4411`` therefore all find the
-    same sessions, whichever form each transcript happens to use, and the
-    spellings are digit-bounded so ``#4411`` never matches ``#44110``. A naming
-    word that introduces a number ("PR 4411") is dropped from the gate: it is
-    not part of the reference, and requiring the letters "pr" would disqualify a
-    transcript that names the pull request only by URL. When the query spelled
-    the number with no sigil, plain digits stay one of the spellings, so the
-    expansion keeps the recall of the literal AND it replaces — the one session
-    it can drop is a session whose digits merely sat inside a longer number,
-    which is what the digit boundary is for. Only a run of words that actually
-    NAMES a type makes a following number a reference: "requests 12" and
-    "merge 1234" stay literal terms, since dropping such a word from the gate
-    would trade a real term for every session mentioning that number. A BARE
-    number with no naming word at all is not a reference either: it keeps its
-    plain substring needle, so numeric content search is unchanged, and gains
-    the spellings as scoring-only needles, so the session that actually
-    references pull request 4411 outranks one that merely contains those digits
-    inside a run id.
-
-    Bounds (both exist because **every needle costs one full scan** of a
-    session's text): required needles cap at :data:`SEARCH_MAX_TOKENS` and
-    scoring extras at :data:`_SEARCH_MAX_SCORING_EXTRAS`. Deduplication is free
-    correctness — a repeated term cannot change an AND match. Truncation in
-    EITHER set makes the query only LOOSER — fewer required terms, and a
-    truncated adjacency set additionally WAIVES the adjacency floor (the third
-    tuple element comes back ``False``), because enforcing "at least one bigram
-    hit" against a partial bigram set would EXCLUDE a session that matches only
-    a dropped bigram — turning a cost cap into a hidden gate for exactly the
-    long spaceless queries this parse exists to serve. Looser can admit extra
-    results but never hide a session that would have matched — the safe
-    direction when the alternative is a keystroke-driven search stalling for
-    seconds.
-
-    A whitespace-only query yields ``([], "", False)``; callers treat that as
-    "matches nothing" rather than "matches everything".
-    """
-    parts = query.casefold().split()
-    if not parts:
-        return ([], "", False)
-    phrase = " ".join(parts)
-    required: dict[str, SearchNeedle] = {}
-    extras: dict[str, SearchNeedle] = {}
-    ranking: dict[str, SearchNeedle] = {}
-    forge_budget = _SEARCH_MAX_FORGE_REFS
-    # One ledger keyed by the item's canonical spelling, so a slot is charged per
-    # ITEM rather than per needle. "#4411 4411" names one pull request twice — as
-    # a required reference and as a bare number's ranking hint — and charging
-    # both spent a phantom slot that could push a later distinct reference past
-    # the cap. Keyed rather than counted so the order the two forms appear in
-    # cannot change the outcome.
-    charged: set[str] = set()
-    for index, part in enumerate(parts):
-        lead = _forge_lead_in(parts, index)
-        ref = _parse_forge_ref(part, lead)
-        if ref is None and not part.isdigit():
-            # Built-ins always win: only a token no forge shape recognized is
-            # offered to a registered provider. The extra `isdigit` guard is what
-            # keeps a provider from turning a BARE NUMBER into a gate — the same
-            # rule _parse_forge_ref applies to itself, and for the same reason.
-            # Gating "987654321" on a provider spelling would demand that
-            # spelling of every result, silently narrowing ordinary numeric
-            # content search. So a bare number is never offered to a provider at
-            # all, and the built-in ranking hint below carries built-in
-            # spellings only.
-            #
-            # A provider contributes SPELLINGS ONLY, never lead-in vocabulary:
-            # _forge_type_suffix's words are popped from the gate, and the common
-            # English words a provider would want ("review", "cr") are far more
-            # frequent in transcripts than "pr"/"mr", so admitting them would
-            # trade a real search term for every session mentioning that number.
-            # A prefixed token carries its own type and needs no lead-in.
-            provider_ref = _provider_search_ref(part)
-            if provider_ref is not None:
-                canonical, alts = provider_ref
-                if canonical in required:
-                    # Already gated by an earlier spelling of the same item; the
-                    # needle carries the whole set, so there is nothing to merge.
-                    continue
-                if canonical in charged or forge_budget:
-                    if canonical not in charged:
-                        charged.add(canonical)
-                        forge_budget -= 1
-                    required.setdefault(
-                        canonical,
-                        SearchNeedle(
-                            canonical,
-                            1.0,
-                            True,
-                            alts,
-                            True,
-                            saturate_body=_saturates((canonical, *alts)),
-                        ),
-                    )
-                    # Continue like the built-in path does: the literal token must
-                    # not ALSO survive into the gate through _script_runs, or a
-                    # provider query would carry two required needles.
-                    continue
-                # Budget exhausted and this item has no slot — fall through and
-                # degrade to a plain literal needle, exactly as an over-budget
-                # forge token does.
-        if ref is not None:
-            canonical, alts = _forge_spellings(ref)
-            if canonical in required:
-                # The item is already gated, but this occurrence still carries
-                # information: its own naming words must leave the gate, and a
-                # sigil-free spelling contributes the bare digits the first
-                # occurrence may not have had. Skipping outright let
-                # "#42 issue 42" keep `issue` required AND lose the bare-digit
-                # spelling — narrowing a query that named the item twice, which
-                # the loosen-only contract forbids.
-                for word in _forge_type_suffix(lead):
-                    required.pop(word, None)
-                if ref.bare:
-                    seen = required[canonical]
-                    if ref.number not in seen.alts:
-                        alts = (*seen.alts, ref.number)
-                        required[canonical] = seen._replace(
-                            alts=alts,
-                            saturate_body=_saturates((seen.text, *alts)),
-                        )
-                continue
-            if canonical not in charged and not forge_budget:
-                ref = None
-        if ref is not None:
-            if canonical not in charged:
-                charged.add(canonical)
-                forge_budget -= 1
-            # The words that NAME the reference's type are not part of the search
-            # text, and requiring them would disqualify a transcript that names
-            # the item only by URL — one that never spells the letters "pr". Only
-            # that naming suffix is dropped: in "merge issue 42" the reference is
-            # "issue 42" and `merge` is the user's own term, so popping the whole
-            # run would return every session mentioning #42.
-            for word in _forge_type_suffix(lead):
-                required.pop(word, None)
-            required.setdefault(
-                canonical,
-                SearchNeedle(
-                    canonical,
-                    1.0,
-                    True,
-                    alts,
-                    True,
-                    saturate_body=_saturates((canonical, *alts)),
-                ),
-            )
-            if ref.repo:
-                # Ranking only: the repo slug appears in a URL mention but not in
-                # a prose "#4411" one, so requiring it would hide real hits. It
-                # breaks the tie between the same number in two repos.
-                ranking.setdefault(ref.repo, SearchNeedle(ref.repo, 1.0, False))
-            continue
-        if part.isdigit() and len(part) <= 9:
-            gh_text, gh_alts = _forge_spellings(_ForgeRef(part, False, None))
-            # Charged against the shared ledger, so a number already gated as a
-            # reference does not spend a second slot on a hint the dedup below
-            # will discard anyway. This branch deliberately does NOT `continue` —
-            # the plain digit needle added below is what keeps numeric content
-            # search working, and it belongs in the gate whether or not the hint
-            # fits in the budget.
-            if gh_text not in charged and forge_budget:
-                charged.add(gh_text)
-                forge_budget -= 1
-                mr_text, mr_alts = _forge_spellings(_ForgeRef(part, True, None))
-                # Every sigil spelling of the number, both families: these only
-                # score, so a wrong-family hit costs a little rank rather than
-                # admitting a wrong object into the results.
-                spellings = tuple(
-                    dict.fromkeys(s for s in (gh_text, *gh_alts, mr_text, *mr_alts) if s != part)
-                )
-                ranking[gh_text] = SearchNeedle(
-                    spellings[0],
-                    _FORGE_REF_WEIGHT,
-                    False,
-                    spellings[1:],
-                    True,
-                    saturate_body=_saturates(spellings),
-                )
-        for run, is_cjk in _script_runs(part):
-            if not is_cjk:
-                # Short ASCII terms gate and title-score at full strength but
-                # count their body hits saturated — see _SHORT_NEEDLE_MAX_CHARS
-                # for why raw frequency there is noise.
-                needle = SearchNeedle(run, 1.0, True, saturate_body=_is_short_term(run))
-                required.setdefault(run, needle)
-                continue
-            if len(run) == 1:
-                required.setdefault(run, SearchNeedle(run, 1.0, True))
-                continue
-            for ch in run:
-                required.setdefault(ch, SearchNeedle(ch, _CJK_CHAR_WEIGHT, True))
-            for i in range(len(run) - 1):
-                bigram = run[i : i + 2]
-                extras.setdefault(bigram, SearchNeedle(bigram, 1.0, False, adjacency=True))
-    # A spelling that is already REQUIRED must not also score as a ranking hint:
-    # a query naming the same item twice — the bare number and then its GitHub
-    # sigil form — would count its hits twice over. The by-key sweep catches the
-    # SAME-FAMILY repeat, where the hint's own key is the required spelling.
-    for text in [t for t in ranking if t in required]:
-        del ranking[text]
-    # A CROSS-FAMILY repeat ("4411 !4411") slips past that sweep: the sigil
-    # gates the GitLab spelling while the bare number's hint stays keyed on the
-    # GitHub form, so the required spelling survives inside the hint's ALTS and
-    # one mention would be scored by the required needle AND the hint. Required
-    # needles carry alts of their own (count_needle scores every spelling), so
-    # the purge covers those too, not only the keys. A hint whose every
-    # spelling is already required contributes nothing and is dropped whole —
-    # built-in spellings alone cannot get there (the hint's canonical form is
-    # only ever a required KEY, which the by-key sweep already handled), but a
-    # provider's alts can blanket the rest. A hint that keeps any spelling
-    # still ranks on what survives.
-    required_spellings = {s for n in required.values() for s in (n.text, *n.alts)}
-    for key, needle in list(ranking.items()):
-        spellings = tuple(s for s in (needle.text, *needle.alts) if s not in required_spellings)
-        if not spellings:
-            del ranking[key]
-        elif spellings != (needle.text, *needle.alts):
-            ranking[key] = needle._replace(text=spellings[0], alts=spellings[1:])
-    needles = list(required.values())[:SEARCH_MAX_TOKENS]
-    needles.extend(list(extras.values())[:_SEARCH_MAX_SCORING_EXTRAS])
-    needles.extend(ranking.values())
-    adjacency_floor = 0 < len(extras) <= _SEARCH_MAX_SCORING_EXTRAS
-    return (needles, phrase, adjacency_floor)
-
-
-def snippet_needles(query: str) -> list[str]:
-    """Return *query*'s needles ordered for snippet centering, phrase first.
-
-    The snippet builders try needles in order and center the excerpt on the
-    first hit, so ordering is a display-quality decision: the exact phrase is
-    the most meaningful anchor, then full-weight needles (whole terms and CJK
-    bigrams) in first-seen order — preserving the pre-CJK behavior for ASCII
-    queries, where a predictable first-typed-term fallback is part of the
-    contract — and down-weighted lone CJK characters last, the anchor of last
-    resort. Returns ``[]`` for a whitespace-only query.
-
-    A forge-reference needle contributes every spelling it carries, right after
-    its canonical form: the transcript that matched may name the item any of
-    those ways, and centering the snippet on the mention is the whole point.
-    """
-    needles, phrase, _ = parse_search_query(query)
-    if not needles:
-        return []
-    # Stable sort on weight only: within a weight class the parse's insertion
-    # order (required terms first-seen, then bigrams) is the display order.
-    ordered = sorted(needles, key=lambda n: -n.weight)
-    out: list[str] = []
-    for text in (phrase, *(t for n in ordered for t in (n.text, *n.alts))):
-        if text not in out:
-            out.append(text)
-    return out
-
-
-def needles_match_text(
-    needles: list[SearchNeedle], folded_text: str, adjacency_floor: bool = True
-) -> bool:
-    """True when *folded_text* satisfies the query gate that *needles* encode.
-
-    The single-string form of :meth:`ConversationLog.search_sessions`' match
-    rule, for callers that filter one text field (e.g. Discord session
-    resume's title-only fallback) and must not grow a second spelling of
-    tokenization: every REQUIRED needle must appear as a substring, and when
-    the query carries adjacency (bigram) needles at least one must hit — the
-    same adjacency floor that keeps character scatter out of content search.
-    Pass :func:`parse_search_query`'s ``adjacency_floor`` element: it is
-    ``False`` when the bigram set was truncated, which WAIVES the floor here
-    exactly as in ``search_sessions`` (a partial bigram set cannot prove
-    "no adjacency anywhere"). *folded_text* must already be casefolded
-    (needle texts are).
-
-    Satisfaction is per NEEDLE, not per literal: a needle carrying alternative
-    spellings (a forge reference) is satisfied by any one of them, via the
-    shared :func:`count_needle`.
-    """
-    if not needles:
-        return False
-    adjacency_hit = False
-    has_adjacency = False
-    for needle in needles:
-        if needle.required:
-            if not count_needle(needle, folded_text):
-                return False
-        elif needle.adjacency:
-            has_adjacency = True
-            if count_needle(needle, folded_text):
-                adjacency_hit = True
-    return adjacency_hit or not has_adjacency or not adjacency_floor
-
-
-# Hard ceilings on the memory the two search memos may hold, in real retained
-# bytes as reported by ``str.__sizeof__`` — NOT in characters.
-#
-# ``len()`` is the wrong unit and dangerously so: CPython stores a ``str`` in the
-# narrowest width its contents allow, so one character is 1 byte for latin-1, 2
-# for the BMP, and 4 for astral planes. A ceiling of 160 MB counted in characters
-# retains 168 MB of ASCII, 336 MB of CJK, or 671 MB of emoji — and CJK is the
-# ordinary case for a non-English corpus, not a pathological one. The sizers
-# therefore call ``__sizeof__`` per string, and the snippet memo also charges for
-# its list container.
-#
-# Why bytes and not an entry count: a session is read up to
-# ``history._SESSION_MAX_BYTES`` (10 MB), so ``_SEARCH_SCAN_WINDOW`` entries is
-# anywhere from a few MB to ~5 GB depending on the corpus. An entry count therefore
-# bounds nothing that matters; it only *looked* safe because real sessions are
-# small (a 171 MB / 230-session corpus folds to ~8 MB).
-#
-# The two are separate rather than one shared pool so a corpus that blows the
-# snippet budget cannot starve the fold, which is the one that keeps matching
-# off the critical path. Their sum is the ceiling to reason about.
-_SEARCH_FOLD_BUDGET_BYTES = 96 * 1024 * 1024
-_SEARCH_SNIPPET_BUDGET_BYTES = 64 * 1024 * 1024
-
-#: Byte ceilings for the content-addressed memos below, charged per entry by
-#: :func:`_memo_entry_cost`. ``0`` turns a memo off. Read when a
-#: :class:`SessionCatalogProjection` is built.
-_SEARCH_COUNT_MEMO_BYTES = 8 * 1024 * 1024
-_SEARCH_SNIPPET_MEMO_BYTES = 2 * 1024 * 1024
-
-#: Fixed per-entry overhead charged on top of the key and value strings: the
-#: value tuple, the int, and the dict slot. Set so a full memo's charge is at
-#: least what tracemalloc measures it holding.
-_MEMO_ENTRY_OVERHEAD = 130
-
-#: Hex characters of a memo key that name the session's content digest.
-_DIGEST_HEX_CHARS = 32
-
-#: A memo value: the memoized result and the bytes its entry is charged.
-_MemoValue = tuple[object, int]
-
-
-def _memo_entry_cost(key: str, value: object) -> int:
-    extra = value.__sizeof__() if isinstance(value, str) else 0
-    return _MEMO_ENTRY_OVERHEAD + key.__sizeof__() + extra
-
-
-def _memo_group(key: str) -> str:
-    """The query term a memo key names: everything after the content digest."""
-    return key[_DIGEST_HEX_CHARS:]
-
-
-def _new_memo(max_bytes: int, label: str) -> "_GroupRecencyMemo[_MemoValue] | None":
-    """A content-addressed memo that admits by recency, or ``None`` when off.
-
-    Its eviction unit is a query term across every session (see
-    :class:`_GroupRecencyMemo`): a search walks its window in the same order
-    every query, so evicting single entries by LRU would make a query evict the
-    entry it reads next.
-    """
-    if max_bytes <= 0:
-        return None
-    return _GroupRecencyMemo(max_bytes, lambda v: v[1], _memo_group, label)
-
-
-#: Transcript directories whose memos stay alive with no projection holding
-#: them, most recently used last. A memo is keyed by content digest, so every
-#: ``ConversationLog`` over one directory can share one: a log built per call,
-#: as a tool call does, then finds the answers earlier calls computed.
-_SHARED_MEMO_DIRS = 4
-_MemoPair = tuple["_GroupRecencyMemo[_MemoValue] | None", "_GroupRecencyMemo[_MemoValue] | None"]
-_shared_memos: "OrderedDict[tuple[str, int, int], _MemoPair]" = OrderedDict()
-_shared_memos_lock = threading.Lock()
-
-
-def _memos_for(directory: str) -> _MemoPair:
-    """The count and snippet memos every projection over *directory* shares.
-
-    The ceilings are part of the key so a changed ceiling takes effect for the
-    next projection built, as it did when each projection built its own.
-    """
-    slot = (directory, _SEARCH_COUNT_MEMO_BYTES, _SEARCH_SNIPPET_MEMO_BYTES)
-    with _shared_memos_lock:
-        memos = _shared_memos.get(slot)
-        if memos is None:
-            memos = (
-                _new_memo(_SEARCH_COUNT_MEMO_BYTES, "count"),
-                _new_memo(_SEARCH_SNIPPET_MEMO_BYTES, "snippet"),
-            )
-            _shared_memos[slot] = memos
-            while len(_shared_memos) > _SHARED_MEMO_DIRS:
-                _shared_memos.popitem(last=False)
-        else:
-            _shared_memos.move_to_end(slot)
-        return memos
-
-
-def _pinned(
-    memo: "_GroupRecencyMemo[_MemoValue] | None", groups: Iterable[str]
-) -> AbstractContextManager[None]:
-    """``memo.pinned(groups)``, or a no-op for a memo that is switched off."""
-    return nullcontext() if memo is None else memo.pinned(groups)
-
-
-class _Flight:
-    """One unrestricted search in progress, for callers asking the same thing."""
-
-    __slots__ = ("epoch", "done", "result")
-
-    def __init__(self, epoch: int) -> None:
-        self.epoch = epoch
-        self.done = threading.Event()
-        self.result: list[dict] | None = None
-
-
-_flights: dict[tuple[str, str, int], _Flight] = {}
-_flights_lock = threading.Lock()
-
-
-class _LiveDigests:
-    """Memo keys whose content digest is in *digests*, for ``retain``."""
-
-    __slots__ = ("_digests",)
-
-    def __init__(self, digests: set[str]) -> None:
-        self._digests = digests
-
-    def __contains__(self, key: object) -> bool:
-        return isinstance(key, str) and key[:_DIGEST_HEX_CHARS] in self._digests
 
 
 def _facade_search_scan_window() -> int:
@@ -1160,113 +168,6 @@ def _jsonl_stem(name: str) -> str:
     the name, so only a name longer than the six-character suffix loses it.
     """
     return name[:-6] if len(name) > 6 else name
-
-
-class _ContentCounts:
-    """Needle counts over one session's folded content, memoized by content digest.
-
-    For a session the index vouches for, every answer the query may need is
-    looked up under the row's digest first. When all are memoized the session
-    is scored without reading its document. Otherwise the document is read at
-    once, and only if the row still carries that digest, before any memoized
-    answer is used, so memoized and computed answers describe one version of
-    the session and a computed answer is filed only under the digest of the
-    text it came from. Every other session folds through ``_folded_for``,
-    exactly as the scan path did, and memoizes nothing.
-    """
-
-    __slots__ = ("_digest", "_memo", "_hits", "_loaded", "doc_chars", "_folded")
-
-    def __init__(
-        self,
-        projection: "SessionCatalogProjection",
-        key: str,
-        rowids: "dict[str, IndexRow]",
-        gate: "_MemoGate",
-        title_folded: str,
-    ) -> None:
-        memo = projection._count_memo
-        row = rowids.get(key)
-        self._memo: "_GroupRecencyMemo[_MemoValue] | None" = None
-        self._hits: dict[str, int] = {}
-        self._digest = ""
-        self._folded = ""
-        self._loaded = True
-        if row is not None and memo is not None:
-            hits: dict[str, int] = {}
-            for memo_key in gate.memo_keys:
-                hit = memo.get(row.digest + memo_key)
-                if hit is not None:
-                    hits[memo_key] = hit[0]  # type: ignore[assignment]
-            if gate.answered_by(hits, title_folded):
-                self._hits = hits
-                self._loaded = False
-                self.doc_chars = row.doc_chars
-                return
-            doc = projection.search_index.document(row.rowid, key, row.digest)
-            if doc is not None:
-                self._memo = memo
-                self._hits = hits
-                self._digest = row.digest
-                self.doc_chars, self._folded = doc
-                return
-        self.doc_chars, self._folded = projection._folded_for(key, rowids)
-
-    def count(self, needle: SearchNeedle, needle_key: str) -> int:
-        """Occurrences of *needle*; *needle_key* is :func:`_needle_memo_key` of it."""
-        hit = self._hits.get(needle_key)
-        if hit is not None:
-            return hit
-        if not self._loaded:
-            raise RuntimeError("the memo gate let scoring reach an unanswered needle")
-        value = count_needle(needle, self._folded)
-        self._remember(needle_key, value)
-        return value
-
-    def count_phrase(self, phrase: str, phrase_key: str) -> int:
-        """Occurrences of *phrase*; *phrase_key* is :func:`_phrase_memo_key` of it."""
-        hit = self._hits.get(phrase_key)
-        if hit is not None:
-            return hit
-        if not self._loaded:
-            raise RuntimeError("the memo gate let scoring reach an unanswered phrase")
-        value = self._folded.count(phrase) if self._folded else 0
-        self._remember(phrase_key, value)
-        return value
-
-    def _remember(self, memo_key: str, value: int) -> None:
-        if self._memo is not None:
-            mkey = self._digest + memo_key
-            self._memo[mkey] = (value, _memo_entry_cost(mkey, value))
-
-
-class _MemoGate:
-    """The complete set of count-memo keys one query may need.
-
-    The document may be skipped only when every answer is already held.
-    Session disqualification belongs to the scoring loop, not this gate.
-    """
-
-    __slots__ = ("needle_keys", "phrase_key", "memo_keys", "multi")
-
-    def __init__(self, needles: Sequence[SearchNeedle], phrase: str, multi: bool) -> None:
-        self.multi = multi
-        self.needle_keys = [_needle_memo_key(n) for n in needles]
-        self.phrase_key = _phrase_memo_key(phrase)
-        keys = [*self.needle_keys, self.phrase_key] if multi else self.needle_keys
-        self.memo_keys = list(dict.fromkeys(keys))
-
-    def answered_by(self, hits: dict[str, int], _title_folded: str) -> bool:
-        return all(key in hits for key in self.memo_keys)
-
-
-def _needle_memo_key(needle: SearchNeedle) -> str:
-    """The part of a count-memo key after the digest: what ``count_needle`` reads."""
-    return repr(("needle", needle.text, needle.alts, needle.digit_bounded))
-
-
-def _phrase_memo_key(phrase: str) -> str:
-    return repr(("phrase", phrase))
 
 
 class SessionCatalogProjection:
@@ -2455,3 +1356,42 @@ class SessionCatalogProjection:
         except OSError:
             return ""
         return ""
+
+
+# --------------------------------------------------------------------------- #
+# This module is the facade of the transcript-search family. Every name it defined,
+# or bound from the rest of kiro_crew, before the owners existed is still reachable
+# here -- bound, or, for the one global an owner rebinds at run time
+# (``_SERVED_ONLY``), served from that owner --
+# and a write through it (``monkeypatch.setattr``, ``mock.patch``) reaches every
+# owner that binds the same object (:mod:`kiro_crew._facade_mirror`).
+# ``SessionCatalogProjection`` stays here. Owners never import this module at run
+# time. New work goes to the owner of its responsibility:
+#
+#   ``history_search_query`` -- query parsing: needles, forge references, provider
+#                               spellings, the one-string match rule
+#   ``history_search_memo``  -- the shared count and snippet memos, their byte
+#                               ceilings, the single-flight table, memo-gated counts
+#
+# ``test/test_history_search_bindings.py`` pins the binding and the reach.
+# --------------------------------------------------------------------------- #
+#: Owner modules, lowest layer first: the first holder of a name answers its reads.
+_OWNERS = ("kiro_crew.history_search_query", "kiro_crew.history_search_memo")
+for _owner in _OWNERS:
+    _importlib.import_module(_owner)
+#: Globals an owner rebinds at run time: the facade serves them and never binds them.
+_SERVED_ONLY = frozenset({"_search_ref_resolver"})
+#: Name the facade serves but does not bind -> the owner that answers a read of it.
+_EXPORTS: dict[str, str] = {}
+_EXPORTS.update(
+    _facade_mirror.install(
+        _sys.modules[__name__],
+        _OWNERS,
+        excluded=(),
+        surface=frozenset(globals()) | _SERVED_ONLY,
+    ).served
+)
+_sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
+
+if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.history_search_query import _search_ref_resolver  # noqa: F401
