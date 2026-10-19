@@ -606,11 +606,62 @@ class TestMcpTool:
                 "inherited": ["model"],
             },
         )
+        from kiro_crew.mcp_dashboard_session_runs import _PROFILE_COPY_NOTE
+
         assert body["reasoning_effort"] == "low"
         assert "model" not in body
         assert "on model `claude-opus-4.6`" in out
         assert "reasoning effort `low`" in out
-        assert "inherited from your crewmate profile: model" in out
+        assert f"({_PROFILE_COPY_NOTE}: model)" in out
+
+    def test_a_profile_model_reads_as_copied_at_creation(self, tmp_path, monkeypatch):
+        """The real create of a crewmate with a model pin, rendered by the real tool frame.
+
+        The child holds the pin on its own slot from birth, so a later profile edit
+        never reaches it: the reply must say it was copied, never that it inherits.
+        """
+        from kiro_crew.mcp_dashboard_session_runs import _PROFILE_COPY_NOTE
+
+        state, caller = _crewmate_caller(tmp_path, monkeypatch, model="claude-sonnet-4.6")
+        created = _create(state, caller)
+        assert created["inherited"] == ["model"]
+        assert state.get_slot(created["target"]).model == "claude-sonnet-4.6"
+
+        out, _ = self._call({"title": "w", "agent": "kirocrew-worker"}, created)
+
+        assert f"on model `claude-sonnet-4.6` ({_PROFILE_COPY_NOTE}: model)" in out
+        assert "inherit" not in out.lower()
+
+    def test_a_profile_effort_reads_as_copied_at_creation(self, tmp_path, monkeypatch):
+        """The same for a crewmate that pins only its reasoning effort."""
+        from kiro_crew.mcp_dashboard_session_runs import _PROFILE_COPY_NOTE
+
+        state, caller = _crewmate_caller(tmp_path, monkeypatch, reasoning_effort="high")
+        created = _create(state, caller)
+        assert created["inherited"] == ["reasoning_effort"]
+        assert state.get_slot(created["target"]).reasoning_effort == "high"
+
+        out, _ = self._call({"title": "w", "agent": "kirocrew-worker"}, created)
+
+        assert f"at reasoning effort `high` ({_PROFILE_COPY_NOTE}: reasoning_effort)" in out
+        assert "inherit" not in out.lower()
+
+    def test_a_crewmate_with_no_pin_gets_no_copy_note(self, tmp_path, monkeypatch):
+        """Nothing pinned: nothing is copied and the reply text stays as it was.
+
+        The child follows the default, so the reply goes straight from the title to
+        the empty-session line, with no model clause and no copy note.
+        """
+        from kiro_crew.mcp_dashboard_session_runs import _PROFILE_COPY_NOTE
+
+        state, caller = _crewmate_caller(tmp_path, monkeypatch)
+        created = _create(state, caller)
+        assert "inherited" not in created
+
+        out, _ = self._call({"title": "w", "agent": "kirocrew-worker"}, created)
+
+        assert f"Opened `{created['target']}` ({created['title']}). It is empty" in out
+        assert _PROFILE_COPY_NOTE not in out
 
     def test_an_omitted_effort_is_not_sent(self):
         out, body = self._call(

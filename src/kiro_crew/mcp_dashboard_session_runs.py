@@ -176,6 +176,13 @@ def _render_session_summary(resp: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+#: How the ``session_create`` reply names the fields the caller's crewmate profile
+#: supplied. They are copied into the child's own slot when it is created, as a
+#: per-session pick, so a later profile edit does not reach a child already open;
+#: the note says "copied" so the reply does not read as a live link to the profile.
+_PROFILE_COPY_NOTE = "copied from your crewmate profile at creation"
+
+
 def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
     payload: dict[str, Any] = {"title": args.get("title", ""), "agent": args.get("agent", "")}
     if args.get("model"):
@@ -231,7 +238,7 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
     # learns the child runs on its profile's pick rather than the default.
     inherited = resp.get("inherited") or []
     if inherited:
-        on_model += f" (inherited from your crewmate profile: {', '.join(inherited)})"
+        on_model += f" ({_PROFILE_COPY_NOTE}: {', '.join(inherited)})"
     if resp.get("inherited_model_dropped"):
         on_model += (
             " (your crewmate profile's worker model is not usable here, so the "

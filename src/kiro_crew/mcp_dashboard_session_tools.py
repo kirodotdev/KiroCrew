@@ -103,9 +103,10 @@ def _session_tools() -> tuple[Tool, ...]:
                         "description": (
                             "Model the new session starts on, pinned exactly as if the "
                             "person had picked it in the session's model dropdown: an id "
-                            "from that same list, or 'auto'. Omit to inherit: when YOU are "
-                            "a crewmate, the child takes your profile's worker model (or "
-                            "your own model when none is set); otherwise it uses the "
+                            "from that same list, or 'auto'. If omitted: when YOU are a "
+                            "crewmate, the child gets a copy of your profile's worker model "
+                            "(or your own model when none is set), made at creation, so a "
+                            "later profile change does not reach it; otherwise it uses the "
                             "agent's or the global default. A well-formed id the account "
                             "cannot serve is accepted here but withheld at the session's "
                             "first turn: the turn succeeds on the account's default model, "
@@ -118,9 +119,10 @@ def _session_tools() -> tuple[Tool, ...]:
                         "description": (
                             "Reasoning effort the new session starts at, one of the five "
                             "standard levels: 'low', 'medium', 'high', 'xhigh', 'max'. "
-                            "Omit to inherit the same way as `model`: a crewmate's child "
-                            "takes the profile's worker effort (or the crewmate's own); "
-                            "anyone else's child keeps the model's default."
+                            "If omitted, it is filled the same way as `model`: a crewmate's "
+                            "child gets a copy of the profile's worker effort (or the "
+                            "crewmate's own), made at creation; anyone else's child keeps "
+                            "the model's default."
                         ),
                     },
                 },
