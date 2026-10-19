@@ -3786,12 +3786,15 @@ def test_import_never_reads_the_whole_body_into_memory():
             for part in ("", "_intake", "_install")
         )
     )
+    guarded = {"_read_bundle_body", "_stream_request_to_file", "_install_arrived_bundle"}
     targets = {
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef)
-        and node.name in {"_read_bundle_body", "_stream_request_to_file", "_install_arrived_bundle"}
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in guarded
     }
+    # Every guarded handler must be found, or the loop below inspects nothing and
+    # the guard passes whatever the arrival path does.
+    assert {fn.name for fn in targets} == guarded, sorted(guarded - {fn.name for fn in targets})
     banned = {"read", "post", "json"}
     offenders = []
     for fn in targets:
