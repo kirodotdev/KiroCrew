@@ -346,19 +346,48 @@ async def test_outer_buffered_frame_restored_before_poison_from_nested_drain():
     assert q["sA"].get_nowait() is None
 
 
+async def _next_turn_credits(rt, reader, handle) -> float:
+    """Run one real ``prompt()`` turn that reports no credits of its own and
+    return the credits its ``EVENT_COMPLETE`` bills."""
+    from kiro_crew.acp.types import EVENT_COMPLETE
+
+    events: list = []
+
+    async def drive():
+        async for ev in handle.prompt("next", timeout=3.0):
+            events.append(ev)
+
+    driver = asyncio.ensure_future(drive())
+    req_id = (await _await_routed(rt, "sA"))["sA"]
+    _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
+    await await_until(driver, what="the driver finishing its turn")
+    complete = [e for e in events if e.kind == EVENT_COMPLETE]
+    assert len(complete) == 1
+    return complete[0].usage.credits
+
+
 @pytest.mark.asyncio
-async def test_drain_passes_metering_frames_through_for_next_turn_billing():
-    """A late meteringUsage frame must NOT be consumed by the grace drain —
-    on the between-turns auto-compact path the credits would land in a stats
-    window nothing reads and be wiped by the next prompt's re-init. The frame
-    is re-queued untouched so the next turn's dispatch loop bills it."""
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "metering_after_completed",
+        "metering_before_completed",
+        "metering_with_pct_after_completed",
+        "manual_compact_cached_result",
+    ],
+)
+async def test_between_turn_compaction_credits_are_billed_once_by_the_next_turn(shape):
+    """Credits kiro reports while a compaction is waited on BETWEEN turns land
+    on the next turn's bill, once. The stats window open at that point is wiped
+    by the next prompt's re-init, and a frame handed back to the queue is
+    discarded by the pre-turn drain, so neither path may hold them."""
     from kiro_crew.acp.types import (
         METHOD_COMPACTION_STATUS,
         AcpPromptStats,
         JsonRpcMessage,
     )
 
-    rt, _reader, _ = _make_runtime()
+    rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
     handle = AcpSessionHandle("sA", q["sA"], rt)
     handle.last_prompt_stats = AcpPromptStats(
@@ -367,33 +396,48 @@ async def test_drain_passes_metering_frames_through_for_next_turn_billing():
         context_window_tokens=1_000_000,
         context_tokens_from_usage=True,
     )
-    metering = JsonRpcMessage(
+    metering_params: dict = {
+        "sessionId": "sA",
+        "meteringUsage": [{"unit": "credit", "value": 0.5}],
+    }
+    if shape == "metering_with_pct_after_completed":
+        metering_params["contextUsagePercentage"] = 5.0
+    metering = JsonRpcMessage(method="_kiro.dev/metadata", params=metering_params)
+    completed = JsonRpcMessage(
+        method=METHOD_COMPACTION_STATUS,
+        params={"sessionId": "sA", "status": {"type": "completed"}, "summary": "ok"},
+    )
+    pct = JsonRpcMessage(
         method="_kiro.dev/metadata",
-        params={"sessionId": "sA", "meteringUsage": [{"unit": "credit", "amount": 0.5}]},
+        params={"sessionId": "sA", "contextUsagePercentage": 5.0},
     )
-    q["sA"].put_nowait(
-        JsonRpcMessage(
-            method=METHOD_COMPACTION_STATUS,
-            params={"sessionId": "sA", "status": {"type": "completed"}, "summary": "ok"},
-        )
-    )
-    q["sA"].put_nowait(metering)
-    q["sA"].put_nowait(
-        JsonRpcMessage(
-            method="_kiro.dev/metadata",
-            params={"sessionId": "sA", "contextUsagePercentage": 5.0},
-        )
-    )
+    if shape == "manual_compact_cached_result":
+        # compact() captured the completed status inside its own turn.
+        handle.last_prompt_stats.reset_after_compaction()
+        handle._compact_result = {"type": "completed", "summary": "ok"}
+        frames = [metering, pct]
+    elif shape == "metering_before_completed":
+        frames = [metering, completed, pct]
+    elif shape == "metering_with_pct_after_completed":
+        frames = [completed, metering]
+    else:
+        frames = [completed, metering, pct]
+    for frame in frames:
+        q["sA"].put_nowait(frame)
 
     result = await handle.wait_for_compaction(timeout=3.0)
 
     assert result["type"] == "completed"
-    stats = handle.last_prompt_stats
-    # The pct frame WAS applied...
-    assert stats.context_pct == 5.0
-    # ...but the metering frame was neither billed to the dead window nor lost:
-    assert stats.credits == 0.0
-    assert q["sA"].get_nowait() is metering
+    assert handle.last_prompt_stats.context_pct == 5.0
+    # Nothing is left in the queue for the pre-turn drain to throw away.
+    assert q["sA"].empty()
+    task = await _start_reader(rt)
+    try:
+        assert await _next_turn_credits(rt, reader, handle) == pytest.approx(0.5)
+        # Billed exactly once: the turn after that owes nothing.
+        assert await _next_turn_credits(rt, reader, handle) == 0.0
+    finally:
+        await _stop_reader(task)
 
 
 @pytest.mark.asyncio

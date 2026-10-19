@@ -7,12 +7,12 @@ Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` 
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_codex_compaction_pending``, ``_compact_result``,
-``_compaction_failed_at``, ``last_compaction_transient``.
+Instance fields written: ``_between_turn_credits``, ``_codex_compaction_pending``,
+``_compact_result``, ``_compaction_failed_at``, ``last_compaction_transient``.
 
 Instance fields read: ``_cancelled``, ``_compaction_terminal_seen``,
 ``_kas_compact_turn``, ``_last_stop_reason``, ``_model``, ``_queue``,
-``_resolved_model_id``, ``_runtime``, ``last_prompt_stats``.
+``_resolved_model_id``, ``_runtime``, ``_turn_done``, ``last_prompt_stats``.
 """
 
 from __future__ import annotations
@@ -344,20 +344,12 @@ async def _drain_post_compaction_metadata(
                 poisoned = True
                 return True
             if msg.method == "_kiro.dev/metadata":
-                mparams = msg.params or {}
-                if mparams.get("meteringUsage"):
-                    # Late compaction credits. This drain runs BETWEEN
-                    # turns on the auto-compact path — credits tracked
-                    # here land in a stats window nothing reads and the
-                    # next prompt's re-init wipes them. Re-queuing the
-                    # frame untouched does not bill it either: on that path
-                    # the next turn's pre-turn drain in ``_run_turn``
-                    # discards it with the other leftover frames, so these
-                    # credits go uncounted.
-                    frames.append(msg)
-                    continue
+                # Late compaction credits are tracked here like any other
+                # metadata: ``_track_metadata`` holds credits read between
+                # turns for the next turn's bill, so none is lost to the
+                # next prompt's stats re-init or to its pre-turn drain.
                 self._track_metadata(msg)
-                if mparams.get("contextUsagePercentage") is not None:
+                if (msg.params or {}).get("contextUsagePercentage") is not None:
                     return False
                 continue
             frames.append(msg)
@@ -391,6 +383,11 @@ def _track_metadata(self: AcpSessionHandle, msg: JsonRpcMessage) -> None:
     for the acp provider), streamed as meteringUsage entries with unit="credit".
     Accumulated across the turn; reset per turn by the AcpPromptStats re-init in
     prompt().
+
+    Credits read while no turn is running (a compaction waited on between
+    turns) are held in ``_between_turn_credits`` instead: the stats window
+    open then is replaced by the next turn's re-init before anything bills
+    it, so ``_run_turn`` adds the held amount to that next turn, once.
     """
     params = msg.params or {}
     pct, credits = parse_metadata(params)
@@ -405,7 +402,11 @@ def _track_metadata(self: AcpSessionHandle, msg: JsonRpcMessage) -> None:
         self.last_prompt_stats.context_pct = pct_f
         self.last_prompt_stats.note_pct_reported()
         self._backfill_context_window(pct_f)
-    self.last_prompt_stats.credits += credits
+    turn_done = getattr(self, "_turn_done", None)
+    if credits and turn_done is not None and turn_done.is_set():
+        self._between_turn_credits = getattr(self, "_between_turn_credits", 0.0) + credits
+    else:
+        self.last_prompt_stats.credits += credits
     # Gated on membership, exactly as the AcpClient path gates the same read.
     # The shared runtime carries hosts outside ACP_BACKENDS_STRUCTURED_REFUSAL,
     # so an unconditional read here hands a parser written for one vocabulary
