@@ -6367,6 +6367,8 @@
       "comment_one": "{{count}} comentário",
       "comment_other": "{{count}} comentários",
       "couldn_t_load_this_artifact_it_may_have_been_del": "Não foi possível carregar este artefato. Ele pode ter sido excluído ou a requisição de rede falhou.",
+      "couldn_t_send_your_comments_are_still_pending": "Não foi possível enviar — seus comentários continuam pendentes.",
+      "couldn_t_send_your_comments_are_still_pending_reason": "Não foi possível enviar — seus comentários continuam pendentes. ({{error}})",
       "exit_full_screen": "Sair da tela cheia",
       "exit_full_screen_esc": "Sair da tela cheia (Esc)",
       "full_screen": "Tela cheia",
@@ -6836,7 +6838,6 @@
       "agent": "Agente",
       "ai_agent": "Agente de IA",
       "anchor_text_no_longer_found_in_content": "O texto de âncora não foi mais encontrado no conteúdo",
-      "ask_agent_to_address": "Pedir ao agente para resolver",
       "cancel": "Cancelar",
       "collapse_comments": "Recolher comentários",
       "comment": "Comentário",
@@ -6850,7 +6851,6 @@
       "failed_to_sync_to_provider": "Falha ao sincronizar com o provedor",
       "hide": "Ocultar",
       "no_comments_yet_select_text_in_the_content_to_an": "Ainda não há comentários. Selecione um texto no conteúdo para ancorar um comentário ou use “Adicionar comentário” abaixo.",
-      "open_a_chat_asking_the_agent_to_address_these_co": "Abrir um chat pedindo ao agente para resolver estes comentários (o agente os lê diretamente)",
       "pending_sync_to_provider": "Sincronização com o provedor pendente",
       "refresh_comments": "Atualizar comentários",
       "remote_comment_sync_unavailable": "Sincronização remota de comentários indisponível:",
@@ -6868,7 +6868,9 @@
       "to_send": "A enviar",
       "to_send_hint": "Ainda não enviado. Enviar manda este comentário para o chat.",
       "show": "Mostrar",
-      "unknown": "Desconhecido"
+      "unknown": "Desconhecido",
+      "draft_a_prompt_in_chat": "Rascunhar um prompt no chat",
+      "draft_a_prompt_in_chat_hint": "Abre o chat com um prompt sobre estes comentários na caixa. Nada é enviado até você mesmo enviar."
     },
     "computerUseLiveView": {
       "close": "Fechar",
@@ -11154,7 +11156,6 @@
       "back_to_live": "Voltar para a versão atual",
       "versions_failed_to_load": "Falha ao carregar as versões",
       "comments_failed_to_load": "Falha ao carregar os comentários",
-      "couldn_t_send_your_comments_are_still_pending": "Não foi possível enviar — seus comentários continuam pendentes.",
       "comment_action_failed": "Falha na ação do comentário",
       "activity_failed_to_load": "Falha ao carregar a atividade",
       "sync_status_unavailable": "Status de sincronização indisponível",

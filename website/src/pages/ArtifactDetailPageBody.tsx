@@ -470,9 +470,12 @@ export function ArtifactDetailPageBody({
             onAskAgent={commentCount > 0 ? () => { void openCompanionChat({ address: true }) } : undefined}
             submitBar={pendingComments.length > 0 && boundSlot ? (
               <SubmitBar
+                // A new artifact gets a fresh bar: a refusal notice and a
+                // handed-back instruction belong to the artifact they were for.
+                key={slug}
                 count={pendingComments.length}
                 submitting={submittingComments}
-                onSubmit={p => { void submitCommentsToChat(p) }}
+                onSubmit={submitCommentsToChat}
                 connected={connected}
                 stacked
               />

@@ -2045,7 +2045,7 @@ identical by construction. A `noUrlSync` prop gates ChatPage's one URL-write
 effect: the host route `/artifacts/:slug` owns the URL, and an in-place
 `navigate` would swap the host route out from under the panel.
 
-**Composer staging** — "Ask agent to address" routes into the bound session and
+**Composer staging** — "Draft a prompt in chat" routes into the bound session and
 *stages* (never auto-sends) its message through the existing `writePrefill`
 sessionStorage channel ChatPage already consumes on slot activation (the
 slot-change restore in `website/src/pages/chat/page/composerDrafts.ts`).

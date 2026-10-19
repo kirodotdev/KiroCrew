@@ -7,7 +7,7 @@ import DetailPanel from './DetailPanel'
 import Clickable from './Clickable'
 import SelectionToolbar, { type SelectionAction } from './SelectionToolbar'
 import { isTouchDevice } from '../utils/isTouchDevice'
-import { SubmitBar } from './ArtifactSubmitBar'
+import { SubmitBar, type SubmitVerdict } from './ArtifactSubmitBar'
 import ErrorNotice from './ErrorNotice'
 import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage } from './ArtifactBody'
 import { useFileArtifactComments } from './FileArtifactComments'
@@ -197,11 +197,12 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
   // which under jsdom teardown throws "window is not defined" (the timer
   // outlives the test environment under --coverage timing).
   const submitResetTimer = useRef<ReturnType<typeof setTimeout>>()
-  const submitToChat = useCallback((extraPrompt?: string) => {
+  const submitToChat = useCallback((extraPrompt?: string): Promise<SubmitVerdict> => {
     // Bail while offline: the chat send path silently refuses messages in
     // that state, so firing the fake "submitting" spinner would just mislead.
     // The Submit button is disabled offline too — this is the backstop.
-    if (!connected || !onSubmitComments || pendingComments.length === 0) return
+    // Nothing sent: `false`, so the bar hands the typed instruction back.
+    if (!connected || !onSubmitComments || pendingComments.length === 0) return Promise.resolve(false)
     setSubmitting(true)
     const batch = pendingComments
     // The send itself fires synchronously; only the MARKING waits for the
@@ -217,12 +218,15 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
     } catch {
       verdict = false
     }
-    Promise.resolve(verdict)
+    // The verdict goes back to the bar so a refusal hands the instruction
+    // back; the chat host has already reported the failure itself.
+    return Promise.resolve(verdict)
       .then(delivered => {
-        if (delivered === false) return
+        if (delivered === false) return false
         markSent(batch)
+        return true
       })
-      .catch(() => { /* undelivered — keep the batch pending */ })
+      .catch(() => false /* undelivered — keep the batch pending */)
       .finally(() => {
         // Brief guard against double-fire, released after the verdict settles.
         clearTimeout(submitResetTimer.current)
@@ -402,7 +406,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
           <div className="mt-3 pr-2 shrink-0">{fa.sidebar}</div>
         )}
         {showSubmitBar && (
-          <SubmitBar count={pendingComments.length} submitting={submitting} onSubmit={submitToChat} connected={connected} bleed />
+          <SubmitBar key={slug} count={pendingComments.length} submitting={submitting} onSubmit={submitToChat} connected={connected} hostReportsRefusal bleed />
         )}
       </div>
       {/* Listens on the preview itself, not the scroll box around it, so the
@@ -474,7 +478,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
         {faFull.popovers}
         {showSubmitBar && (
           <div className="shrink-0 px-16 pb-3">
-            <SubmitBar count={pendingComments.length} submitting={submitting} onSubmit={submitToChat} connected={connected} />
+            <SubmitBar key={slug} count={pendingComments.length} submitting={submitting} onSubmit={submitToChat} connected={connected} hostReportsRefusal />
           </div>
         )}
         <Clickable className="shrink-0 flex items-center px-16 h-6 text-[11px] text-muted font-mono truncate cursor-pointer hover:text-text transition-colors" title={i18nT('components.artifactPanel.click_to_copy_slug')} onClick={() => copyToClipboard(slug)}>{i18nT('components.artifactPanel.artifacts')}{slug}</Clickable>

@@ -6155,6 +6155,8 @@
       "click_to_copy_slug": "クリックしてスラッグをコピー",
       "comment_other": "{{count}} コメント",
       "couldn_t_load_this_artifact_it_may_have_been_del": "このアーティファクトを読み込めません。削除されたか、ネットワークリクエストが失敗している可能性があります。",
+      "couldn_t_send_your_comments_are_still_pending": "送信できませんでした。コメントはまだ保留中です。",
+      "couldn_t_send_your_comments_are_still_pending_reason": "送信できませんでした。コメントはまだ保留中です。 ({{error}})",
       "exit_full_screen": "フルスクリーン終了",
       "exit_full_screen_esc": "フルスクリーン終了 (Esc)",
       "full_screen": "フルスクリーン",
@@ -6608,7 +6610,6 @@
       "agent": "エージェント",
       "ai_agent": "AIエージェント",
       "anchor_text_no_longer_found_in_content": "アンカーテキストがコンテンツ内に見つかりません",
-      "ask_agent_to_address": "エージェントに対応を依頼",
       "cancel": "キャンセル",
       "collapse_comments": "コメントを折りたたむ",
       "comment": "コメント",
@@ -6622,7 +6623,6 @@
       "failed_to_sync_to_provider": "プロバイダーへの同期に失敗しました",
       "hide": "非表示",
       "no_comments_yet_select_text_in_the_content_to_an": "まだコメントがありません。コンテンツ内のテキストを選択してコメントをアンカーするか、下の「コメント追加」を使用してください。",
-      "open_a_chat_asking_the_agent_to_address_these_co": "エージェントがこれらのコメントに対応するよう依頼するチャットを開く (エージェントは直接読み取ります)",
       "pending_sync_to_provider": "プロバイダーへの同期を保留中",
       "refresh_comments": "コメントを更新",
       "remote_comment_sync_unavailable": "リモートコメント同期は利用できません:",
@@ -6640,7 +6640,9 @@
       "to_send": "送信予定",
       "to_send_hint": "まだ送信されていません。送信するとこのコメントがチャットに送られます。",
       "show": "表示",
-      "unknown": "不明"
+      "unknown": "不明",
+      "draft_a_prompt_in_chat": "チャットでプロンプトを下書き",
+      "draft_a_prompt_in_chat_hint": "これらのコメントに関するプロンプトを入力欄に入れてチャットを開きます。自分で送信するまで何も送信されません。"
     },
     "computerUseLiveView": {
       "close": "閉じる",
@@ -10842,7 +10844,6 @@
       "back_to_live": "ライブに戻る",
       "versions_failed_to_load": "バージョンの読み込みに失敗しました",
       "comments_failed_to_load": "コメントの読み込みに失敗しました",
-      "couldn_t_send_your_comments_are_still_pending": "送信できませんでした。コメントはまだ保留中です。",
       "comment_action_failed": "コメント操作に失敗しました",
       "activity_failed_to_load": "アクティビティの読み込みに失敗しました",
       "sync_status_unavailable": "同期状態を取得できません",

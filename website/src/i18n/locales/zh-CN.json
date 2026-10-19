@@ -6155,6 +6155,8 @@
       "click_to_copy_slug": "点击复制 slug",
       "comment_other": "{{count}} 条评论",
       "couldn_t_load_this_artifact_it_may_have_been_del": "无法加载此产物。它可能已被删除，或网络请求失败。",
+      "couldn_t_send_your_comments_are_still_pending": "没能发送——你的评论仍在等待发送。",
+      "couldn_t_send_your_comments_are_still_pending_reason": "没能发送——你的评论仍在等待发送。 ({{error}})",
       "exit_full_screen": "退出全屏",
       "exit_full_screen_esc": "退出全屏 (Esc)",
       "full_screen": "全屏",
@@ -6608,7 +6610,6 @@
       "agent": "代理",
       "ai_agent": "AI 代理",
       "anchor_text_no_longer_found_in_content": "内容中已找不到锚点文本",
-      "ask_agent_to_address": "交给代理处理",
       "cancel": "取消",
       "collapse_comments": "折叠评论",
       "comment": "评论",
@@ -6622,7 +6623,6 @@
       "failed_to_sync_to_provider": "同步到平台失败",
       "hide": "隐藏",
       "no_comments_yet_select_text_in_the_content_to_an": "暂无评论。在内容中选中文本以锚定评论，或使用下方的“添加评论”。",
-      "open_a_chat_asking_the_agent_to_address_these_co": "打开聊天让代理处理这些评论（代理会直接读取）",
       "pending_sync_to_provider": "等待同步到平台",
       "refresh_comments": "刷新评论",
       "remote_comment_sync_unavailable": "远程评论同步不可用：",
@@ -6640,7 +6640,9 @@
       "to_send": "待发送",
       "to_send_hint": "尚未发送。点击提交会将此评论发送到聊天。",
       "show": "展开",
-      "unknown": "未知"
+      "unknown": "未知",
+      "draft_a_prompt_in_chat": "在聊天中起草提示",
+      "draft_a_prompt_in_chat_hint": "打开聊天，并在输入框中放入一条关于这些评论的提示。你自己发送之前，不会发送任何内容。"
     },
     "computerUseLiveView": {
       "close": "关闭",
@@ -10842,7 +10844,6 @@
       "back_to_live": "返回实时版本",
       "versions_failed_to_load": "版本加载失败",
       "comments_failed_to_load": "评论加载失败",
-      "couldn_t_send_your_comments_are_still_pending": "没能发送——你的评论仍在等待发送。",
       "comment_action_failed": "评论操作失败",
       "activity_failed_to_load": "活动记录加载失败",
       "sync_status_unavailable": "同步状态不可用",

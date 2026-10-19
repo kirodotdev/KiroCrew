@@ -6261,6 +6261,8 @@
       "comment_one": "{{count}} टिप्पणी",
       "comment_other": "{{count}} टिप्पणियाँ",
       "couldn_t_load_this_artifact_it_may_have_been_del": "यह आर्टिफ़ैक्ट लोड नहीं हो सका। इसे हटाया जा चुका हो सकता है, या नेटवर्क अनुरोध विफल हुआ।",
+      "couldn_t_send_your_comments_are_still_pending": "भेजा नहीं जा सका — तुम्हारी टिप्पणियाँ अभी भी लंबित हैं।",
+      "couldn_t_send_your_comments_are_still_pending_reason": "भेजा नहीं जा सका — तुम्हारी टिप्पणियाँ अभी भी लंबित हैं। ({{error}})",
       "exit_full_screen": "फ़ुल स्क्रीन से बाहर आएँ",
       "exit_full_screen_esc": "फ़ुल स्क्रीन से बाहर आएँ (Esc)",
       "full_screen": "फ़ुल स्क्रीन",
@@ -6722,7 +6724,6 @@
       "agent": "एजेंट",
       "ai_agent": "AI एजेंट",
       "anchor_text_no_longer_found_in_content": "एंकर टेक्स्ट अब कंटेंट में नहीं मिला",
-      "ask_agent_to_address": "एजेंट से समाधान करने को कहें",
       "cancel": "रद्द करें",
       "collapse_comments": "टिप्पणियाँ संक्षिप्त करें",
       "comment": "टिप्पणी",
@@ -6736,7 +6737,6 @@
       "failed_to_sync_to_provider": "प्रोवाइडर से सिंक नहीं हो सका",
       "hide": "छिपाएँ",
       "no_comments_yet_select_text_in_the_content_to_an": "अभी कोई टिप्पणी नहीं है। टिप्पणी को एंकर करने के लिए सामग्री में टेक्स्ट चुनें, या नीचे दिए गए “टिप्पणी जोड़ें” का उपयोग करें।",
-      "open_a_chat_asking_the_agent_to_address_these_co": "एजेंट से इन टिप्पणियों का समाधान करने के लिए कहते हुए चैट खोलें (एजेंट उन्हें सीधे पढ़ता है)",
       "pending_sync_to_provider": "प्रोवाइडर से सिंक लंबित",
       "refresh_comments": "टिप्पणियाँ रीफ़्रेश करें",
       "remote_comment_sync_unavailable": "रिमोट टिप्पणी सिंक अनुपलब्ध:",
@@ -6754,7 +6754,9 @@
       "to_send": "भेजना बाकी",
       "to_send_hint": "अभी नहीं भेजा गया। सबमिट करने पर यह कमेंट चैट में भेजा जाएगा।",
       "show": "दिखाएँ",
-      "unknown": "अज्ञात"
+      "unknown": "अज्ञात",
+      "draft_a_prompt_in_chat": "चैट में प्रॉम्प्ट का मसौदा बनाओ",
+      "draft_a_prompt_in_chat_hint": "चैट खोलता है और इन टिप्पणियों के बारे में एक प्रॉम्प्ट बॉक्स में रखता है। जब तक तुम खुद नहीं भेजते, कुछ नहीं भेजा जाता।"
     },
     "computerUseLiveView": {
       "close": "बंद करो",
@@ -10998,7 +11000,6 @@
       "back_to_live": "लाइव पर वापस जाएँ",
       "versions_failed_to_load": "संस्करण लोड करने में विफल",
       "comments_failed_to_load": "टिप्पणियाँ लोड करने में विफल",
-      "couldn_t_send_your_comments_are_still_pending": "भेजा नहीं जा सका — तुम्हारी टिप्पणियाँ अभी भी लंबित हैं।",
       "comment_action_failed": "टिप्पणी कार्रवाई विफल",
       "activity_failed_to_load": "गतिविधि लोड करने में विफल",
       "sync_status_unavailable": "सिंक स्थिति उपलब्ध नहीं",

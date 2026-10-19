@@ -6367,6 +6367,8 @@
       "comment_one": "{{count}} commentaire",
       "comment_other": "{{count}} commentaires",
       "couldn_t_load_this_artifact_it_may_have_been_del": "Impossible de charger cet artefact. Il a peut-être été supprimé, ou la requête réseau a échoué.",
+      "couldn_t_send_your_comments_are_still_pending": "Envoi impossible : tes commentaires sont toujours en attente.",
+      "couldn_t_send_your_comments_are_still_pending_reason": "Envoi impossible : tes commentaires sont toujours en attente. ({{error}})",
       "exit_full_screen": "Quitter le plein écran",
       "exit_full_screen_esc": "Quitter le plein écran (Esc)",
       "full_screen": "Plein écran",
@@ -6836,7 +6838,6 @@
       "agent": "Agent",
       "ai_agent": "Agent IA",
       "anchor_text_no_longer_found_in_content": "Texte d’ancrage introuvable dans le contenu",
-      "ask_agent_to_address": "Demander à l'agent de traiter",
       "cancel": "Annuler",
       "collapse_comments": "Réduire les commentaires",
       "comment": "Commentaire",
@@ -6850,7 +6851,6 @@
       "failed_to_sync_to_provider": "Échec de la synchronisation avec le fournisseur",
       "hide": "Masquer",
       "no_comments_yet_select_text_in_the_content_to_an": "Aucun commentaire pour l'instant. Sélectionnez du texte dans le contenu pour y ancrer un commentaire, ou utilisez « Ajouter un commentaire » ci-dessous.",
-      "open_a_chat_asking_the_agent_to_address_these_co": "Ouvrir une conversation demandant à l'agent de traiter ces commentaires (l'agent les lit directement)",
       "pending_sync_to_provider": "Synchronisation avec le fournisseur en attente",
       "refresh_comments": "Actualiser les commentaires",
       "remote_comment_sync_unavailable": "Synchronisation des commentaires distants indisponible :",
@@ -6868,7 +6868,9 @@
       "to_send": "À envoyer",
       "to_send_hint": "Pas encore envoyé. Envoyer transmet ce commentaire au chat.",
       "show": "Afficher",
-      "unknown": "Inconnu"
+      "unknown": "Inconnu",
+      "draft_a_prompt_in_chat": "Rédiger un prompt dans le chat",
+      "draft_a_prompt_in_chat_hint": "Ouvre le chat avec un prompt sur ces commentaires dans la zone de saisie. Rien n'est envoyé tant que tu ne l'envoies pas toi-même."
     },
     "computerUseLiveView": {
       "close": "Fermer",
@@ -11154,7 +11156,6 @@
       "back_to_live": "Retour à la version en direct",
       "versions_failed_to_load": "Échec du chargement des versions",
       "comments_failed_to_load": "Échec du chargement des commentaires",
-      "couldn_t_send_your_comments_are_still_pending": "Envoi impossible : vos commentaires sont toujours en attente.",
       "comment_action_failed": "Échec de l'action sur le commentaire",
       "activity_failed_to_load": "Échec du chargement de l'activité",
       "sync_status_unavailable": "État de synchronisation indisponible",

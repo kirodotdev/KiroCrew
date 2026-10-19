@@ -895,7 +895,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
       .mockResolvedValue({ key: 'slot-new', title: 'Artifact: CR Queue' })
     vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true })
     await mount(mkArtifact())
-    fireEvent.click(await screen.findByText('Ask agent to address'))
+    fireEvent.click(await screen.findByText('Draft a prompt in chat'))
     await waitFor(() => expect(vi.mocked(api).createChatSlot).toHaveBeenCalledTimes(1))
     // The prompt is STAGED, never auto-sent — the embedded composer picks it up.
     await waitFor(() =>

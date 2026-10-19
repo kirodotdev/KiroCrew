@@ -254,7 +254,7 @@ export function useAppShell() {
 
   // Main-dashboard role for the artifact popout nav-intent handshake: perform
   // navigation intents forwarded from popout windows (activity-timeline
-  // session links, "Ask agent to address", …). Popout and embed windows never
+  // session links, "Draft a prompt in chat", …). Popout and embed windows never
   // register — only handler-registered windows answer nav-requests, which is
   // what keeps a second popout from claiming another popout's navigation.
   // A forwarded intent replaces the page on screen HERE, so that page's leave

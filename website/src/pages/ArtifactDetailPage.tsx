@@ -224,7 +224,6 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   }, [artifact, commentCount])
   const companionRead = useArtifactDetailPageCompanion({
     durableComments, setPanel, sidebarUserToggledRef, buildCompanionContext, popout, stateRead, documentRead,
-    commentsRead,
   })
   const {
     sendNav, slotsLoaded, boundSlot, sessionOpBusyRef, injectedVersionRef, injectContextMut,
@@ -234,7 +233,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
    *  new one. With `address`, stage (never auto-send) the address-comments
    *  message via the writePrefill sessionStorage channel — the embedded ChatPage
    *  consumes it when the slot activates. (The panels are mutually exclusive, so
-   *  an "Ask agent to address" click always mounts the chat panel fresh — the
+   *  a "Draft a prompt in chat" click always mounts the chat panel fresh — the
    *  prefill is always picked up.) */
   const openCompanionChat = useCallback(async (opts?: { address?: boolean }) => {
     if (!artifact) return

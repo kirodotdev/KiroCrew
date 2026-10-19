@@ -827,6 +827,28 @@ describe('ArtifactPanel', () => {
       expect(screen.getByText('1 comment to send to this chat')).toBeInTheDocument()
     })
 
+    it('hands back the typed instruction on a refused send, leaving the notice to the chat host', async () => {
+      // Before #12320 the typed instruction was cleared with no way back. The
+      // chat host reports its own send failure, so the bar adds no second
+      // notice that could disagree with it.
+      const onSubmitComments = vi.fn().mockResolvedValue(false)
+      stubComments = [mkComment()]
+      renderPanel({ onSubmitComments })
+      await screen.findByText(NAME)
+      fireEvent.click(screen.getByRole('button', { name: 'Add overall instruction' }))
+      fireEvent.change(await screen.findByLabelText('Overall instruction'), { target: { value: 'keep it short' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+      await act(async () => {})
+      expect(screen.getByLabelText('Overall instruction')).toHaveValue('keep it short')
+      expect(screen.queryByRole('alert')).toBeNull()
+
+      // A delivered retry carries the instruction.
+      onSubmitComments.mockResolvedValue(undefined)
+      await act(async () => { vi.advanceTimersByTime(SUBMIT_GUARD_MS) })
+      fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+      expect(onSubmitComments.mock.calls[1][0]).toContain('keep it short')
+    })
+
     it('threads an extra instruction through the message and clears it after submit', async () => {
       const onSubmitComments = vi.fn()
       const instruction = 'apply all of these in one pass'

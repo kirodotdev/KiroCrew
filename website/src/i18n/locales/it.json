@@ -6367,6 +6367,8 @@
       "comment_one": "{{count}} commento",
       "comment_other": "{{count}} commenti",
       "couldn_t_load_this_artifact_it_may_have_been_del": "Non è stato possibile caricare questo artefatto. Potrebbe essere stato eliminato oppure la richiesta di rete è fallita.",
+      "couldn_t_send_your_comments_are_still_pending": "Invio non riuscito: i tuoi commenti sono ancora in attesa.",
+      "couldn_t_send_your_comments_are_still_pending_reason": "Invio non riuscito: i tuoi commenti sono ancora in attesa. ({{error}})",
       "exit_full_screen": "Esci dalla modalità a schermo intero",
       "exit_full_screen_esc": "Esci dalla modalità a schermo intero (Esc)",
       "full_screen": "Schermo intero",
@@ -6836,7 +6838,6 @@
       "agent": "Agente",
       "ai_agent": "Agente IA",
       "anchor_text_no_longer_found_in_content": "Testo di ancoraggio non più presente nel contenuto",
-      "ask_agent_to_address": "Chiedi all'agente di occuparsene",
       "cancel": "Annulla",
       "collapse_comments": "Comprimi i commenti",
       "comment": "Commento",
@@ -6850,7 +6851,6 @@
       "failed_to_sync_to_provider": "Sincronizzazione con il provider non riuscita",
       "hide": "Nascondi",
       "no_comments_yet_select_text_in_the_content_to_an": "Ancora nessun commento. Seleziona del testo nel contenuto per ancorare un commento, oppure usa \"Aggiungi commento\" qui sotto.",
-      "open_a_chat_asking_the_agent_to_address_these_co": "Apri una chat chiedendo all'agente di occuparsi di questi commenti (l'agente li legge direttamente)",
       "pending_sync_to_provider": "Sincronizzazione con il provider in attesa",
       "refresh_comments": "Aggiorna i commenti",
       "remote_comment_sync_unavailable": "Sincronizzazione dei commenti remoti non disponibile:",
@@ -6868,7 +6868,9 @@
       "to_send": "Da inviare",
       "to_send_hint": "Non ancora inviato. Invia manda questo commento alla chat.",
       "show": "Mostra",
-      "unknown": "Sconosciuto"
+      "unknown": "Sconosciuto",
+      "draft_a_prompt_in_chat": "Prepara un prompt nella chat",
+      "draft_a_prompt_in_chat_hint": "Apre la chat con un prompt su questi commenti nella casella. Non viene inviato nulla finché non lo invii tu."
     },
     "computerUseLiveView": {
       "close": "Chiudi",
@@ -11154,7 +11156,6 @@
       "back_to_live": "Torna alla versione live",
       "versions_failed_to_load": "Caricamento delle versioni non riuscito",
       "comments_failed_to_load": "Caricamento dei commenti non riuscito",
-      "couldn_t_send_your_comments_are_still_pending": "Invio non riuscito: i tuoi commenti sono ancora in attesa.",
       "comment_action_failed": "Azione sul commento non riuscita",
       "activity_failed_to_load": "Caricamento dell'attività non riuscito",
       "sync_status_unavailable": "Stato di sincronizzazione non disponibile",

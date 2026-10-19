@@ -6155,6 +6155,8 @@
       "click_to_copy_slug": "클릭하여 슬러그 복사",
       "comment_other": "댓글 {{count}}개",
       "couldn_t_load_this_artifact_it_may_have_been_del": "이 아티팩트를 불러오지 못했습니다. 삭제되었거나 네트워크 요청이 실패했을 수 있습니다.",
+      "couldn_t_send_your_comments_are_still_pending": "보내지 못했습니다. 댓글은 아직 대기 중입니다.",
+      "couldn_t_send_your_comments_are_still_pending_reason": "보내지 못했습니다. 댓글은 아직 대기 중입니다. ({{error}})",
       "exit_full_screen": "전체 화면 종료",
       "exit_full_screen_esc": "전체 화면 종료 (Esc)",
       "full_screen": "전체 화면",
@@ -6608,7 +6610,6 @@
       "agent": "에이전트",
       "ai_agent": "AI 에이전트",
       "anchor_text_no_longer_found_in_content": "앵커 텍스트를 콘텐츠에서 더 이상 찾을 수 없습니다",
-      "ask_agent_to_address": "에이전트에게 처리 요청",
       "cancel": "취소",
       "collapse_comments": "댓글 접기",
       "comment": "댓글",
@@ -6622,7 +6623,6 @@
       "failed_to_sync_to_provider": "공급자로 동기화하지 못했습니다",
       "hide": "숨기기",
       "no_comments_yet_select_text_in_the_content_to_an": "아직 댓글이 없습니다. 콘텐츠에서 텍스트를 선택해 댓글을 고정하거나 아래의 ‘댓글 추가’를 사용하세요.",
-      "open_a_chat_asking_the_agent_to_address_these_co": "이 댓글을 처리하도록 에이전트에게 요청하는 채팅을 엽니다 (에이전트가 직접 읽습니다)",
       "pending_sync_to_provider": "공급자로 동기화 대기 중",
       "refresh_comments": "댓글 새로 고침",
       "remote_comment_sync_unavailable": "원격 댓글 동기화를 사용할 수 없습니다:",
@@ -6640,7 +6640,9 @@
       "to_send": "보낼 예정",
       "to_send_hint": "아직 보내지 않았습니다. 제출하면 이 댓글이 채팅으로 전송됩니다.",
       "show": "표시",
-      "unknown": "알 수 없음"
+      "unknown": "알 수 없음",
+      "draft_a_prompt_in_chat": "채팅에서 프롬프트 초안 작성",
+      "draft_a_prompt_in_chat_hint": "이 댓글에 대한 프롬프트를 입력란에 넣은 채 채팅을 엽니다. 직접 보내기 전에는 아무것도 전송되지 않습니다."
     },
     "computerUseLiveView": {
       "close": "닫기",
@@ -10842,7 +10844,6 @@
       "back_to_live": "라이브로 돌아가기",
       "versions_failed_to_load": "버전을 불러오지 못했습니다",
       "comments_failed_to_load": "댓글을 불러오지 못했습니다",
-      "couldn_t_send_your_comments_are_still_pending": "보내지 못했습니다. 댓글은 아직 대기 중입니다.",
       "comment_action_failed": "댓글 작업 실패",
       "activity_failed_to_load": "활동을 불러오지 못했습니다",
       "sync_status_unavailable": "동기화 상태를 확인할 수 없습니다",

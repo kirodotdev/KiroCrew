@@ -6261,6 +6261,8 @@
       "comment_one": "{{count}}টি মন্তব্য",
       "comment_other": "{{count}}টি মন্তব্য",
       "couldn_t_load_this_artifact_it_may_have_been_del": "এই আর্টিফ্যাক্ট লোড করা যায়নি। এটি মুছে ফেলা হয়ে থাকতে পারে, বা নেটওয়ার্ক অনুরোধ ব্যর্থ হয়েছে।",
+      "couldn_t_send_your_comments_are_still_pending": "পাঠানো যায়নি — তোমার মন্তব্যগুলি এখনও অপেক্ষমাণ।",
+      "couldn_t_send_your_comments_are_still_pending_reason": "পাঠানো যায়নি — তোমার মন্তব্যগুলি এখনও অপেক্ষমাণ। ({{error}})",
       "exit_full_screen": "ফুল স্ক্রিন বন্ধ করুন",
       "exit_full_screen_esc": "ফুল স্ক্রিন বন্ধ করুন (Esc)",
       "full_screen": "ফুল স্ক্রিন",
@@ -6722,7 +6724,6 @@
       "agent": "এজেন্ট",
       "ai_agent": "AI এজেন্ট",
       "anchor_text_no_longer_found_in_content": "অ্যাঙ্কর টেক্সট আর কনটেন্টে পাওয়া যাচ্ছে না",
-      "ask_agent_to_address": "এজেন্টকে সমাধান করতে বলুন",
       "cancel": "বাতিল",
       "collapse_comments": "মন্তব্য সংকুচিত করুন",
       "comment": "মন্তব্য",
@@ -6736,7 +6737,6 @@
       "failed_to_sync_to_provider": "প্রোভাইডারে সিঙ্ক করা যায়নি",
       "hide": "লুকাও",
       "no_comments_yet_select_text_in_the_content_to_an": "এখনও কোনো মন্তব্য নেই। মন্তব্য সংযুক্ত করতে কনটেন্টে টেক্সট নির্বাচন করুন, অথবা নিচের “মন্তব্য যোগ করুন” ব্যবহার করুন।",
-      "open_a_chat_asking_the_agent_to_address_these_co": "এই মন্তব্যগুলো সমাধান করতে এজেন্টকে অনুরোধ করে একটি চ্যাট খুলুন (এজেন্ট সেগুলো সরাসরি পড়ে)",
       "pending_sync_to_provider": "প্রোভাইডারে সিঙ্ক হওয়ার অপেক্ষায়",
       "refresh_comments": "মন্তব্য রিফ্রেশ করুন",
       "remote_comment_sync_unavailable": "রিমোট মন্তব্য সিঙ্ক অনুপলব্ধ:",
@@ -6754,7 +6754,9 @@
       "to_send": "পাঠানো বাকি",
       "to_send_hint": "এখনও পাঠানো হয়নি। জমা দিলে এই মন্তব্যটি চ্যাটে পাঠানো হবে।",
       "show": "দেখাও",
-      "unknown": "অজানা"
+      "unknown": "অজানা",
+      "draft_a_prompt_in_chat": "চ্যাটে একটি প্রম্পটের খসড়া করো",
+      "draft_a_prompt_in_chat_hint": "চ্যাট খোলে এবং এই মন্তব্যগুলো নিয়ে একটি প্রম্পট বক্সে রাখে। তুমি নিজে না পাঠানো পর্যন্ত কিছুই পাঠানো হয় না।"
     },
     "computerUseLiveView": {
       "close": "বন্ধ করো",
@@ -10998,7 +11000,6 @@
       "back_to_live": "লাইভে ফিরে যান",
       "versions_failed_to_load": "সংস্করণ লোড করা যায়নি",
       "comments_failed_to_load": "মন্তব্য লোড করা যায়নি",
-      "couldn_t_send_your_comments_are_still_pending": "পাঠানো যায়নি — তোমার মন্তব্যগুলি এখনও অপেক্ষমাণ।",
       "comment_action_failed": "মন্তব্যের কাজ ব্যর্থ",
       "activity_failed_to_load": "কার্যকলাপ লোড করা যায়নি",
       "sync_status_unavailable": "সিঙ্ক অবস্থা অনুপলব্ধ",

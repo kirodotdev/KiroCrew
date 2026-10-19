@@ -339,7 +339,8 @@ export interface CommentsSidebarProps {
   onMarkReview: (id: string) => void
   onDelete: (id: string) => void
   onRefresh: () => void
-  /** Optional "ask agent to address comments" — secondary, opens a chat. */
+  /** Optional "Draft a prompt in chat" — secondary: opens a chat with a
+   *  prompt about the comments drafted in its box, and sends nothing. */
   onAskAgent?: () => void
   /** Optional batch-submit bar for the footer, so a host with a chat to send to
    *  can offer "send every pending comment as one message" from the sidebar
@@ -702,13 +703,16 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
             className="w-full inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer bg-transparent transition-colors"
           ><Plus size={13} /> {i18nT('components.commentsSidebar.add_comment')}</button>
         )}
+        {/* Named for what it does (puts a prompt in the chat box for the user
+            to send) and styled as a quiet link, so it does not read as a
+            second Submit next to the batch bar. */}
         {onAskAgent && (
           <button
             type="button"
             onClick={onAskAgent}
-            className="w-full inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded-md text-[12px] font-medium border border-accent/40 text-accent hover:bg-accent-subtle cursor-pointer bg-transparent transition-colors"
-            title={i18nT('components.commentsSidebar.open_a_chat_asking_the_agent_to_address_these_co')}
-          ><Sparkles size={13} /> {i18nT('components.commentsSidebar.ask_agent_to_address')}</button>
+            className="w-full inline-flex items-center justify-center gap-1 px-2 py-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer transition-colors"
+            title={i18nT('components.commentsSidebar.draft_a_prompt_in_chat_hint')}
+          ><Sparkles size={12} /> {i18nT('components.commentsSidebar.draft_a_prompt_in_chat')}</button>
         )}
       </div>
     </aside>

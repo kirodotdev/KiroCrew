@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { SubmitBar } from '../components/ArtifactSubmitBar'
@@ -26,6 +26,29 @@ describe('SubmitBar layout', () => {
     expect(label().className).toMatch(/\btruncate\b/)
     const row = label().parentElement?.parentElement
     expect(row?.contains(submit())).toBe(true)
+  })
+
+  it('both hosts key the bar by slug, so a refusal does not follow the user to another artifact', async () => {
+    // The bar holds the refusal notice and the handed-back instruction; the page
+    // notice it replaced was cleared on a slug change (#12320).
+    for (const file of ['pages/ArtifactDetailPageBody.tsx', 'components/ArtifactPanel.tsx']) {
+      const body = await readFile(join(__dirname, '..', file), 'utf8')
+      const bars = body.split('<SubmitBar').slice(1).map(s => s.slice(0, s.indexOf('/>')))
+      expect(bars.length).toBeGreaterThan(0)
+      for (const bar of bars) expect(bar).toMatch(/\bkey=\{slug\}/)
+    }
+  })
+
+  it('a host answering false gets the instruction back; a delivered send clears it', async () => {
+    const onSubmit = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(undefined)
+    render(<SubmitBar count={1} submitting={false} onSubmit={onSubmit} hostReportsRefusal />)
+    fireEvent.click(screen.getByRole('button', { name: 'Add overall instruction' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Overall instruction' }), { target: { value: 'be brief' } })
+    fireEvent.click(submit())
+    expect(await screen.findByRole('textbox', { name: 'Overall instruction' })).toHaveValue('be brief')
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(submit())
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Overall instruction' })).toBeNull())
   })
 
   it('the 340px sidebar host asks for the stacked layout', async () => {

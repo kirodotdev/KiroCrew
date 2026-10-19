@@ -6261,6 +6261,8 @@
       "comment_one": "{{count}} Kommentar",
       "comment_other": "{{count}} Kommentare",
       "couldn_t_load_this_artifact_it_may_have_been_del": "Dieses Artefakt konnte nicht geladen werden. Es wurde möglicherweise gelöscht oder die Netzwerkanfrage ist fehlgeschlagen.",
+      "couldn_t_send_your_comments_are_still_pending": "Senden nicht möglich – deine Kommentare sind weiterhin ausstehend.",
+      "couldn_t_send_your_comments_are_still_pending_reason": "Senden nicht möglich – deine Kommentare sind weiterhin ausstehend. ({{error}})",
       "exit_full_screen": "Vollbild beenden",
       "exit_full_screen_esc": "Vollbild beenden (Esc)",
       "full_screen": "Vollbild",
@@ -6722,7 +6724,6 @@
       "agent": "Agent",
       "ai_agent": "KI-Agent",
       "anchor_text_no_longer_found_in_content": "Ankertext im Inhalt nicht mehr gefunden",
-      "ask_agent_to_address": "Agenten um Behandlung bitten",
       "cancel": "Abbrechen",
       "collapse_comments": "Kommentare einklappen",
       "comment": "Kommentar",
@@ -6736,7 +6737,6 @@
       "failed_to_sync_to_provider": "Synchronisierung mit dem Anbieter fehlgeschlagen",
       "hide": "Ausblenden",
       "no_comments_yet_select_text_in_the_content_to_an": "Noch keine Kommentare. Markieren Sie Text im Inhalt, um einen Kommentar zu verankern, oder verwenden Sie unten „Kommentar hinzufügen“.",
-      "open_a_chat_asking_the_agent_to_address_these_co": "Einen Chat öffnen und den Agenten bitten, diese Kommentare zu behandeln (der Agent liest sie direkt)",
       "pending_sync_to_provider": "Synchronisierung mit dem Anbieter ausstehend",
       "refresh_comments": "Kommentare aktualisieren",
       "remote_comment_sync_unavailable": "Remote-Kommentarsynchronisierung nicht verfügbar:",
@@ -6754,7 +6754,9 @@
       "to_send": "Zu senden",
       "to_send_hint": "Noch nicht gesendet. „Absenden“ schickt diesen Kommentar an den Chat.",
       "show": "Anzeigen",
-      "unknown": "Unbekannt"
+      "unknown": "Unbekannt",
+      "draft_a_prompt_in_chat": "Prompt im Chat entwerfen",
+      "draft_a_prompt_in_chat_hint": "Öffnet den Chat mit einem Prompt zu diesen Kommentaren im Eingabefeld. Gesendet wird erst, wenn du selbst sendest."
     },
     "computerUseLiveView": {
       "close": "Schließen",
@@ -10998,7 +11000,6 @@
       "back_to_live": "Zurück zur Live-Version",
       "versions_failed_to_load": "Versionen konnten nicht geladen werden",
       "comments_failed_to_load": "Kommentare konnten nicht geladen werden",
-      "couldn_t_send_your_comments_are_still_pending": "Senden nicht möglich – deine Kommentare sind weiterhin ausstehend.",
       "comment_action_failed": "Kommentaraktion fehlgeschlagen",
       "activity_failed_to_load": "Aktivität konnte nicht geladen werden",
       "sync_status_unavailable": "Synchronisierungsstatus nicht verfügbar",

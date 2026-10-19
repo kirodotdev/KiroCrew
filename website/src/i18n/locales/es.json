@@ -6367,6 +6367,8 @@
       "comment_one": "{{count}} comentario",
       "comment_other": "{{count}} comentarios",
       "couldn_t_load_this_artifact_it_may_have_been_del": "No se pudo cargar este artefacto. Puede que se haya eliminado o que la solicitud de red haya fallado.",
+      "couldn_t_send_your_comments_are_still_pending": "No se pudo enviar: tus comentarios siguen pendientes.",
+      "couldn_t_send_your_comments_are_still_pending_reason": "No se pudo enviar: tus comentarios siguen pendientes. ({{error}})",
       "exit_full_screen": "Salir de pantalla completa",
       "exit_full_screen_esc": "Salir de pantalla completa (Esc)",
       "full_screen": "Pantalla completa",
@@ -6836,7 +6838,6 @@
       "agent": "Agente",
       "ai_agent": "Agente de IA",
       "anchor_text_no_longer_found_in_content": "El texto de ancla ya no se encuentra en el contenido",
-      "ask_agent_to_address": "Pedir al agente que los atienda",
       "cancel": "Cancelar",
       "collapse_comments": "Contraer los comentarios",
       "comment": "Comentario",
@@ -6850,7 +6851,6 @@
       "failed_to_sync_to_provider": "No se pudo sincronizar con el proveedor",
       "hide": "Ocultar",
       "no_comments_yet_select_text_in_the_content_to_an": "Aún no hay comentarios. Selecciona texto en el contenido para anclar un comentario o usa “Añadir comentario” más abajo.",
-      "open_a_chat_asking_the_agent_to_address_these_co": "Abre un chat pidiendo al agente que atienda estos comentarios (el agente los lee directamente)",
       "pending_sync_to_provider": "Pendiente de sincronizar con el proveedor",
       "refresh_comments": "Actualizar los comentarios",
       "remote_comment_sync_unavailable": "Sincronización remota de comentarios no disponible:",
@@ -6868,7 +6868,9 @@
       "to_send": "Por enviar",
       "to_send_hint": "Aún no se ha enviado. Enviar manda este comentario al chat.",
       "show": "Mostrar",
-      "unknown": "Desconocido"
+      "unknown": "Desconocido",
+      "draft_a_prompt_in_chat": "Redactar un prompt en el chat",
+      "draft_a_prompt_in_chat_hint": "Abre el chat con un prompt sobre estos comentarios en el cuadro. No se envía nada hasta que lo envíes tú."
     },
     "computerUseLiveView": {
       "close": "Cerrar",
@@ -11154,7 +11156,6 @@
       "back_to_live": "Volver a la versión actual",
       "versions_failed_to_load": "No se pudieron cargar las versiones",
       "comments_failed_to_load": "No se pudieron cargar los comentarios",
-      "couldn_t_send_your_comments_are_still_pending": "No se pudo enviar: tus comentarios siguen pendientes.",
       "comment_action_failed": "La acción sobre el comentario falló",
       "activity_failed_to_load": "No se pudo cargar la actividad",
       "sync_status_unavailable": "Estado de sincronización no disponible",

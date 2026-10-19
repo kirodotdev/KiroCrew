@@ -6473,6 +6473,8 @@
       "comment_one": "{{count}} комментарий",
       "comment_other": "{{count}} комментария",
       "couldn_t_load_this_artifact_it_may_have_been_del": "Не удалось загрузить этот артефакт. Возможно, он был удалён или сетевой запрос не выполнен.",
+      "couldn_t_send_your_comments_are_still_pending": "Не удалось отправить — твои комментарии всё ещё ожидают отправки.",
+      "couldn_t_send_your_comments_are_still_pending_reason": "Не удалось отправить — твои комментарии всё ещё ожидают отправки. ({{error}})",
       "exit_full_screen": "Выйти из полноэкранного режима",
       "exit_full_screen_esc": "Выйти из полноэкранного режима (Esc)",
       "full_screen": "Полный экран",
@@ -6950,7 +6952,6 @@
       "agent": "Агент",
       "ai_agent": "ИИ-агент",
       "anchor_text_no_longer_found_in_content": "Привязанный текст больше не найден в содержимом",
-      "ask_agent_to_address": "Попросить агента исправить",
       "cancel": "Отмена",
       "collapse_comments": "Свернуть комментарии",
       "comment": "Комментарий",
@@ -6964,7 +6965,6 @@
       "failed_to_sync_to_provider": "Не удалось синхронизировать с провайдером",
       "hide": "Скрыть",
       "no_comments_yet_select_text_in_the_content_to_an": "Комментариев пока нет. Выделите текст в содержимом, чтобы привязать комментарий, или воспользуйтесь кнопкой «Добавить комментарий» ниже.",
-      "open_a_chat_asking_the_agent_to_address_these_co": "Открыть чат с просьбой к агенту обработать эти комментарии (агент прочитает их напрямую)",
       "pending_sync_to_provider": "Ожидает синхронизации с провайдером",
       "refresh_comments": "Обновить комментарии",
       "remote_comment_sync_unavailable": "Синхронизация удалённых комментариев недоступна:",
@@ -6982,7 +6982,9 @@
       "to_send": "К отправке",
       "to_send_hint": "Ещё не отправлен. Кнопка «Отправить» отправит этот комментарий в чат.",
       "show": "Показать",
-      "unknown": "Неизвестно"
+      "unknown": "Неизвестно",
+      "draft_a_prompt_in_chat": "Подготовить запрос в чате",
+      "draft_a_prompt_in_chat_hint": "Открывает чат с запросом об этих комментариях в поле ввода. Ничего не отправляется, пока ты его не отправишь."
     },
     "computerUseLiveView": {
       "close": "Закрыть",
@@ -11310,7 +11312,6 @@
       "back_to_live": "Вернуться к текущей версии",
       "versions_failed_to_load": "Не удалось загрузить версии",
       "comments_failed_to_load": "Не удалось загрузить комментарии",
-      "couldn_t_send_your_comments_are_still_pending": "Не удалось отправить — ваши комментарии всё ещё ожидают отправки.",
       "comment_action_failed": "Действие с комментарием не выполнено",
       "activity_failed_to_load": "Не удалось загрузить активность",
       "sync_status_unavailable": "Статус синхронизации недоступен",
