@@ -242,6 +242,78 @@ class TestCommandProviderRollsBack:
 
         _assert_restored(case)
 
+    @pytest.mark.asyncio
+    async def test_a_cancel_while_the_child_is_starting_lets_the_apply_command_restore(
+        self, monkeypatch, tmp_path, reap_groups
+    ):
+        from asyncio import base_subprocess
+
+        from kiro_crew.platform.update_provider import CommandProvider
+
+        case = _case(tmp_path)
+        released = asyncio.Event()
+        connect_pipes = base_subprocess.BaseSubprocessTransport._connect_pipes
+
+        async def _held_connect_pipes(transport, waiter):
+            await released.wait()
+            await connect_pipes(transport, waiter)
+
+        monkeypatch.setattr(
+            base_subprocess.BaseSubprocessTransport, "_connect_pipes", _held_connect_pipes
+        )
+        provider = CommandProvider(
+            check_command="true", apply_command=_installer_command(tmp_path, case)
+        )
+        task = asyncio.create_task(provider.apply())
+        try:
+            await _wait_for_file(case / "phase")
+            task.cancel()
+            await asyncio.sleep(0)
+        finally:
+            released.set()
+            await _cancel_and_settle(task)
+
+        _assert_restored(case)
+
+    @pytest.mark.asyncio
+    async def test_a_start_that_never_finishes_does_not_hold_the_cancel(
+        self, monkeypatch, tmp_path, reap_groups
+    ):
+        from asyncio import base_subprocess
+
+        from kiro_crew.platform import update_provider
+        from kiro_crew.platform.update_provider import CommandProvider
+
+        case = _case(tmp_path)
+        released = asyncio.Event()
+        held: list[asyncio.Task] = []
+        connect_pipes = base_subprocess.BaseSubprocessTransport._connect_pipes
+
+        async def _held_connect_pipes(transport, waiter):
+            held.append(asyncio.current_task())
+            await released.wait()
+            await connect_pipes(transport, waiter)
+
+        monkeypatch.setattr(
+            base_subprocess.BaseSubprocessTransport, "_connect_pipes", _held_connect_pipes
+        )
+        monkeypatch.setattr(update_provider, "UPDATE_INSTALLER_TERM_GRACE_SECS", 0.5)
+        provider = CommandProvider(
+            check_command="true", apply_command=_installer_command(tmp_path, case)
+        )
+        task = asyncio.create_task(provider.apply())
+        try:
+            await _wait_for_file(case / "phase")
+            task.cancel()
+            done, _ = await asyncio.wait({task}, timeout=10)
+            assert task in done
+            assert task.cancelled()
+        finally:
+            released.set()
+            await _cancel_and_settle(task)
+            if held:
+                await asyncio.wait(held, timeout=10)
+
 
 class TestTerminateAndReap:
     @staticmethod
