@@ -916,11 +916,20 @@ SEED_CONTEXT_SOURCE = "slack-code-channel"
 
 
 def _seed_framing(origin_channel: str, context: str) -> str:
+    from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
+        CONDUCTOR_GUIDANCE,
+        _switch_refusal,
+    )
+
     lines = [
         "[Slack code channel]",
         f"This session is a Slack code channel opened from a thread in <#{origin_channel}>. "
         "Your replies are posted to this code channel.",
     ]
+    # Only while hand-off is on: with the switch off (its default) the guidance
+    # would steer the conductor into a call that is refused.
+    if not _switch_refusal():
+        lines.append(CONDUCTOR_GUIDANCE)
     if context:
         lines.extend(
             [

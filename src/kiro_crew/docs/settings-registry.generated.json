@@ -319,6 +319,14 @@
       "route": "/settings/channels/whatsapp?highlight=channels.how-the-agent-joins-in-whatsapp"
     },
     {
+      "id": "channels.let-the-conductor-hand-off-work-slack",
+      "label": "Let the conductor hand off work (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.code_channel_dispatch",
+      "description": "The conductor is the agent that runs each code channel. With this on, it can start worker sessions for the channel's task when you message it, and track them on its work ledger.",
+      "configKey": "slack.code_channel_dispatch"
+    },
+    {
       "id": "channels.messages-database-path-imessage",
       "label": "Messages database path (iMessage)",
       "tab": "channels",

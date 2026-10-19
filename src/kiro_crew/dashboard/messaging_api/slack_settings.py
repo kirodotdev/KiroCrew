@@ -281,7 +281,7 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
             body, slack_cfg, state=request.app.get("state"), request=request
         )
     except CodeSettingsError as exc:
-        return _deny(str(exc))
+        return _deny(str(exc), status=exc.status)
     staged.update(code_staged)
     applied.extend(code_applied)
 
@@ -380,6 +380,92 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
             "verify_warning": verify_warning,
         }
     )
+
+
+async def save_code_channel_dispatch(
+    state: "DashboardState | None", *, value: bool, caller: str, source: str
+) -> str:
+    """Write ``slack.code_channel_dispatch`` the way the Settings card's save does.
+
+    The same path, piece for piece: serialized on ``_get_config_lock()``, run to
+    completion, validated by :func:`validate_code_settings` (so a value
+    ``config.local.json`` overrides, or an overlay that cannot be read, is refused
+    exactly as the card's PUT refuses it), merged into ``config.json`` by
+    ``_LockedSectionWrite`` under ``live.hold()``, SEL-logged as
+    ``slack.config.update`` and hot-applied before it returns. Used by the code
+    channel's "Turn on hand-off" button; there is no other store.
+
+    Returns ``""`` on success (including a value already saved), else the refusal.
+    """
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
+
+    async with _get_config_lock():
+        return await run_to_completion(
+            _save_code_channel_dispatch_locked(state, value=value, caller=caller, source=source)
+        )
+
+
+async def _save_code_channel_dispatch_locked(
+    state: "DashboardState | None", *, value: bool, caller: str, source: str
+) -> str:
+    """Body of :func:`save_code_channel_dispatch`; caller holds ``_get_config_lock()``."""
+    from kiro_crew.config.loader import ConfigReadError, config_path  # noqa: F811
+    from kiro_crew.dashboard.slack_code_settings import (
+        DISPATCH_KEY,
+        CodeSettingsError,
+        reset_status_cache,
+        validate_code_settings,
+    )
+
+    def _deny(msg: str) -> str:
+        _sel().log_api_access(
+            caller=caller,
+            operation="slack.config.update",
+            outcome="denied",
+            source=source,
+            resources=DISPATCH_KEY,
+            error=msg,
+        )
+        return msg
+
+    path = config_path()
+
+    def _read() -> dict:
+        data = json.loads(read_config_text(path)) if path.exists() else {}
+        if not isinstance(data, dict):
+            raise ValueError("config.json is not a JSON object")
+        return data
+
+    try:
+        data = await asyncio.to_thread(_read)
+    except Exception:
+        return _deny("config.json is corrupt")
+    raw_slack = data.get("slack")
+    slack_cfg: dict = raw_slack if isinstance(raw_slack, dict) else {}
+    try:
+        staged, applied = await validate_code_settings(
+            {DISPATCH_KEY: value}, slack_cfg, state=state, request=None
+        )
+    except CodeSettingsError as exc:
+        return _deny(str(exc))
+    if staged:
+        cfg_write = _LockedSectionWrite(path, "slack", staged)
+        with live.hold():
+            try:
+                await cfg_write.commit()
+            except ConfigReadError:
+                return _deny("config.json is corrupt")
+    _sel().log_api_access(
+        caller=caller,
+        operation="slack.config.update",
+        outcome="ok",
+        source=source,
+        resources=",".join(applied) or f"{DISPATCH_KEY} (unchanged)",
+    )
+    if applied:
+        reset_status_cache()
+    await _hot_apply_after_write()
+    return ""
 
 
 async def api_slack_manifest_status(request: web.Request) -> web.Response:

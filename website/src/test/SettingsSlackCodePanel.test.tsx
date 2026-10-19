@@ -216,6 +216,53 @@ describe('Code channels card', () => {
     expect(preview).not.toHaveTextContent('created on first use')
     expect(preview).not.toHaveTextContent('kirocrew-conductor')
   })
+
+  it('turning Code channels on leaves dispatch off and says the conductor cannot hand off work', async () => {
+    const { save } = seed()
+    await hydrated()
+    expect(screen.queryByTestId('slack-code-dispatch')).toBeNull()
+    fireEvent.click(screen.getByRole('switch', { name: 'Code channels' }))
+    const sub = await screen.findByTestId('slack-code-dispatch')
+    expect(within(sub).getByRole('switch', { name: 'Let the conductor hand off work' })).not.toBeChecked()
+    expect(screen.getByTestId('slack-code-dispatch-off')).toHaveTextContent("a conductor in a code channel can't hand off work")
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ code_channels: true })
+    expect(save.mock.calls[0][0]).not.toHaveProperty('code_channel_dispatch')
+  })
+
+  it('saves the dispatch sub-toggle on its own and drops the off note', async () => {
+    const { save } = seed({ code_channels: true })
+    await hydrated()
+    const toggle = await screen.findByRole('switch', { name: 'Let the conductor hand off work' })
+    fireEvent.click(toggle)
+    expect(toggle).toBeChecked()
+    expect(screen.queryByTestId('slack-code-dispatch-off')).toBeNull()
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ code_channel_dispatch: true })
+    expect(save.mock.calls[0][0]).not.toHaveProperty('code_channels')
+  })
+
+  it('reads a saved opt-in back as on', async () => {
+    seed({ code_channels: true, code_channel_dispatch: true })
+    await hydrated()
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Let the conductor hand off work' })).toBeChecked())
+    expect(screen.queryByTestId('slack-code-dispatch-off')).toBeNull()
+  })
+
+  it('disables the sub-toggle and says why when config.local.json sets it', async () => {
+    seed({ code_channels: true, code_channel_dispatch: true, code_channel_dispatch_overlay: true })
+    await hydrated()
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Let the conductor hand off work' })).toHaveAttribute('aria-disabled', 'true'))
+    expect(screen.getByTestId('slack-code-dispatch-overlay')).toHaveTextContent('config.local.json')
+  })
+  it('shows only the overlay note when config.local.json pins dispatch off', async () => {
+    seed({ code_channels: true, code_channel_dispatch: false, code_channel_dispatch_overlay: true })
+    await hydrated()
+    await waitFor(() => expect(screen.getByTestId('slack-code-dispatch-overlay')).toBeInTheDocument())
+    expect(screen.queryByTestId('slack-code-dispatch-off')).toBeNull()
+  })
   it('with nothing configured, files into an auto-created Code channels folder run by the conductor', async () => {
     seed({ code_channels: true }, status(), [])
     await hydrated()

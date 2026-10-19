@@ -83,6 +83,33 @@ def blocks_request_remote_media(blocks: Any) -> bool:
     return False
 
 
+#: Action ids only the gateway's own code-channel messages carry (the wrap-up's
+#: Archive button, the hand-off notice's Turn-on button). An agent may not post or
+#: edit in a button that wears one: its handler would act on the owner's click as
+#: consent to a message the agent wrote.
+RESERVED_ACTION_PREFIX = "kc_code_channel_"
+#: Error code for that refusal, shared by both agent block paths.
+BLOCKS_RESERVED_ACTION_ERROR = "blocks_reserved_action"
+
+
+def blocks_use_reserved_action(blocks: Any) -> bool:
+    """Whether a Block Kit tree carries an action id reserved for the gateway."""
+    pending: list[Any] = [blocks]
+    while pending:
+        obj = pending.pop()
+        if isinstance(obj, dict):
+            for key in ("action_id", "block_id"):
+                value = obj.get(key)
+                if isinstance(value, str) and value.strip().lower().startswith(
+                    RESERVED_ACTION_PREFIX
+                ):
+                    return True
+            pending.extend(obj.values())
+        elif isinstance(obj, list):
+            pending.extend(obj)
+    return False
+
+
 def _refuse_remote_media(blocks: Any) -> None:
     """Fail closed on a Block Kit tree that would trigger a server-side fetch."""
     if blocks and blocks_request_remote_media(blocks):

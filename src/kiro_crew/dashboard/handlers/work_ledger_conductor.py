@@ -24,7 +24,12 @@ from kiro_crew.constants import env_file_display
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.dashboard import session_control
-from kiro_crew.dashboard.handlers.work_ledger_caller import _caller_key, _own_ledger
+from kiro_crew.dashboard.handlers.work_ledger_caller import (
+    _caller_key,
+    _code_channel_caller,
+    _own_ledger,
+)
+from kiro_crew.dashboard.handlers.work_ledger_read import _published_payload
 from kiro_crew.dashboard.handlers.work_ledger_recording import (
     _WIDEST_COUNTER,
     _WIDEST_EVENT_TEXT,
@@ -118,6 +123,8 @@ async def _record_conductor_write(
     *,
     operation: str,
     before_write: Callable[[], Awaitable[web.Response | None]] | None = None,
+    code_channel: bool = False,
+    caller_sk: str = "",
 ) -> web.Response:
     """Probe, commit and record one conductor-owned write on *key*'s board.
 
@@ -127,6 +134,11 @@ async def _record_conductor_write(
     the write in the audit trail. *before_write*, when given, runs under the
     board lock before the snapshot; a response from it stops the write and is
     returned as is.
+
+    *code_channel* is :func:`_code_channel_caller` of the record route's request
+    and *caller_sk* its ``X-Session-Key``: the goal/create bootstrap and the
+    published-fields reply read them. The hand-back keeps the defaults, since its
+    reply is only a status and never reaches a channel.
     """
     # Refused BEFORE the ledger is even bootstrapped: the widest entry this action
     # can produce,
@@ -203,6 +215,10 @@ async def _record_conductor_write(
             "the action's crew-log record does not fit one log line; shorten it",
         )
 
+    # The goal/create bootstrap asks whether the caller is a code channel's worker
+    # from the code-channel store's loaded snapshot; load it off the loop first.
+    await session_control.load_code_channel_lineage()
+
     async def _under_board() -> web.Response:
         # Re-checked under the lock, for the same reason the report route does.
         dirty = await _refuse_if_dirty(key, key, operation)
@@ -230,7 +246,11 @@ async def _record_conductor_write(
             )
         )
         if action in ("goal", "create"):
-            bootstrapped = await _bootstrap(key)
+            bootstrapped = await _bootstrap(
+                key,
+                code_channel=code_channel,
+                code_channel_worker=_is_code_channel_worker(state, caller_sk),
+            )
             if isinstance(bootstrapped, web.Response):
                 return bootstrapped
         else:
@@ -367,6 +387,15 @@ async def _record_conductor_write(
         conductor = result.get("conductor")
         if conductor is not None:
             payload["conductor"] = conductor.to_dict()
+        if code_channel:
+            # The reply is the conductor's next words in its code channel: the same
+            # published fields a read returns, never the stored item whole.
+            published = _published_payload(conductor or header, [(item, False)] if item else [])
+            payload.pop("item", None)
+            payload["conductor"] = published["conductor"]
+            if published["items"]:
+                payload["item"] = published["items"][0]
+            payload["published_fields_only"] = True
         return web.json_response(payload)
 
     # Shielding alone detaches this transaction when the handler is cancelled.
@@ -428,7 +457,14 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
             return refusal
 
     return await _record_conductor_write(
-        state, key, unit, action, cleaned, operation="work_ledger_record"
+        state,
+        key,
+        unit,
+        action,
+        cleaned,
+        operation="work_ledger_record",
+        code_channel=_code_channel_caller(request),
+        caller_sk=request.headers.get("X-Session-Key", ""),
     )
 
 
@@ -628,7 +664,22 @@ def _refuse_unowned_worker(
     return None
 
 
-async def _bootstrap(key: str) -> None | web.Response:
+def _is_code_channel_worker(state: DashboardState, sk: str) -> str:
+    """The code-channel session that created *sk*, ``""`` when none.
+
+    ``session_control.code_channel_root`` -- read from persisted facts, so it holds
+    whether or not the worker is bound yet and whether or not its conductor is
+    still open. ``session_control.LINEAGE_UNAVAILABLE`` when the code-channel
+    store could not be read, which no session can be shown not to be.
+    """
+    slot_key = session_control.caller_slot_key(state, sk)
+    slot = state.get_slot(slot_key) if slot_key else None
+    return session_control.code_channel_root(state, slot) if slot is not None else ""
+
+
+async def _bootstrap(
+    key: str, *, code_channel: bool = False, code_channel_worker: str = ""
+) -> None | web.Response:
     """Open this session's ledger if it has none, deriving depth from its parent.
 
     A session that is ITSELF bound to an item is a second-level conductor, so its
@@ -637,8 +688,43 @@ async def _bootstrap(key: str) -> None | web.Response:
     is how a grandchild is stopped from conducting — the refusal surfaces as
     ``depth_exceeded`` (409) at the moment the child tries to open a ledger,
     rather than later when it tries to create an item.
+
+    A Slack code channel's conductor (*code_channel*, admitted through the
+    dispatch exemption) opens its ledger at the LAST conducting level,
+    ``MAX_DEPTH - 1``: its workers may work but never conduct, and because the
+    depth is written into the ledger it holds across restarts and whatever
+    happens to the channel's session later. ``ensure_conductor`` never rewrites
+    an existing depth, and such a slot could not have opened a ledger before the
+    exemption existed.
+
+    A session a code channel's session created (*code_channel_worker*) may not
+    conduct at all, bound or not: it is refused ``depth_exceeded`` here, at the
+    first goal or create, rather than relying on a binding it may not have yet.
     """
-    depth = 0
+    if code_channel_worker == session_control.LINEAGE_UNAVAILABLE:
+        _audit(
+            key,
+            "work_ledger_record",
+            "denied",
+            resources="bootstrap",
+            error="code_channel_lineage_unavailable",
+        )
+        return _refuse_409(
+            work_ledger.CODE_DEPTH_EXCEEDED,
+            "The Slack code-channel store (slack-code-channels.json) could not be read, "
+            "so this session cannot be shown not to be a code-channel worker. Repair "
+            "the file and restart the gateway.",
+        )
+    if code_channel_worker:
+        _audit(
+            key, "work_ledger_record", "denied", resources="bootstrap", error="code_channel_worker"
+        )
+        return _refuse_409(
+            work_ledger.CODE_DEPTH_EXCEEDED,
+            "This session was dispatched from a Slack code channel, and code-channel "
+            "dispatch is one level deep: it may work and report, never conduct.",
+        )
+    depth = work_ledger.MAX_DEPTH - 1 if code_channel else 0
     parent_item: str | None = None
     binding = await asyncio.to_thread(work_ledger.read_binding, key)
     if binding is not None:

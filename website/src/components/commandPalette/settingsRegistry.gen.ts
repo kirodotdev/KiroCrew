@@ -585,6 +585,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.let-the-conductor-hand-off-work-slack",
+    "label": "Let the conductor hand off work (Slack)",
+    "labelKey": "pages.settings.slackPanel.slackCode.code_channel_dispatch",
+    "labelSuffix": "Slack",
+    "description": "The conductor is the agent that runs each code channel. With this on, it can start worker sessions for the channel's task when you message it, and track them on its work ledger.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.code_channel_dispatch"
+  },
+  {
     "id": "channels.messages-database-path-imessage",
     "label": "Messages database path (iMessage)",
     "labelKey": "pages.settings.iMessagePanel.db_path",

@@ -268,7 +268,22 @@ def _caller_is_ownership_fenced(state: "DashboardState", caller_key: str) -> boo
         return False
     if _channel_link_of(slot):
         return True
-    return bool(getattr(slot, "_created_by", ""))
+    if is_code_channel_slot(state, slot):
+        # A Slack code channel's own session: dashboard-born, so no channel link,
+        # and made by the code-channel runtime, so no ``_created_by`` -- by key it
+        # would read as a person's own tab. It is not one: its words come from the
+        # channel, and what it reads is published there. The code-channel dispatch
+        # exemption admits it as a conductor ONLY on this fence, so it reaches the
+        # workers it created and never the person's own sessions. Read on identity
+        # alone (not on the exemption's live verdict), so the fence holds even
+        # while the exemption is withheld.
+        return True
+    if getattr(slot, "_created_by", ""):
+        return True
+    # A code channel's worker whose transcript ``created_by`` was edited away is
+    # still fenced: its lineage is also recorded in the write-protected code-channel
+    # store at birth (``code_channel_root``), which only answers from memory here.
+    return bool(code_channel_root(state, slot))
 
 
 def _delegation_lineage_fenced(state: "DashboardState", caller_key: str) -> bool:
@@ -310,6 +325,10 @@ def _delegation_lineage_fenced(state: "DashboardState", caller_key: str) -> bool
             # fail closed rather than treat an unreadable ancestor as unfenced.
             return key != caller_key
         if _channel_link_of(slot):
+            return True
+        if is_code_channel_slot(state, slot):
+            # A code channel's session is not the owner's own tab: its words come
+            # from the channel. A chain rooted there may not mint private workers.
             return True
         parent = getattr(slot, "_created_by", "")
         if not parent:
@@ -646,6 +665,12 @@ async def prewarm_enabled_check() -> None:
     Best-effort: a failure is the gate's business, and the gate fails closed on
     its own.
     """
+    # The code-channel store too: the ownership fence and the worker depth check
+    # read its loaded snapshot synchronously (``code_channel_root``), and a store the
+    # Slack runtime never loaded (Slack not connected after a restart) would leave a
+    # worker whose transcript lineage was edited away unrecognised. Loaded first, so
+    # the config warm below stays the LAST await before the gate.
+    await load_code_channel_lineage()
     try:
         await asyncio.to_thread(session_control_enabled)
     except Exception:  # pragma: no cover - the gate re-reads and decides
@@ -779,3 +804,218 @@ def _sel_off_loop(write: "Callable[[], None]", what: str) -> None:
             logger.warning("%s failed off-loop: %r", what, exc)
 
     loop.run_in_executor(None, write).add_done_callback(_report)
+
+
+# ── Code-channel identity ──────────────────────────────────────────────────
+# Whether a slot IS a Slack code channel's own session, read server-side: the
+# code-channel store (``slack-code-channels.json``, write-protected on disk and
+# held in memory once loaded) must hold a binding naming the slot's key, the
+# binding's anchor must resolve to the SAME slot object through the live
+# Slack-link index, and the slot's own Slack link must name the binding's
+# channel. A title, key prefix or agent name is never read. It lives in this,
+# the identity layer, because the creator fence below reads it; the dispatch
+# exemption (``code_channel_exemption``) builds on it.
+
+_SLACK = "slack"
+
+
+def _bare_channel(value: Any) -> str:
+    """A Slack channel id with any ``slack:`` namespace removed."""
+    text = str(value or "")
+    return text.split(":", 1)[1] if text.startswith(f"{_SLACK}:") else text
+
+
+def code_channel_binding_of(state: "DashboardState | Any", slot: Any) -> Any | None:
+    """The code-channel binding whose session IS *slot*, or ``None``.
+
+    Synchronous with no disk access (callable inside a no-suspension window): the
+    store's in-memory snapshot (``None`` before it is loaded, which reads as "not a
+    code channel"), cross-checked against the live Slack-link index and the slot's
+    own link. A forged or stale row naming some slot fails unless that slot is ALSO
+    linked to the channel's own anchor.
+    """
+    key = str(getattr(slot, "key", "") or "")
+    if state is None or slot is None or not key:
+        return None
+    try:
+        from kiro_crew.slack.code_channels.store import store
+
+        bindings = store().loaded_bindings()
+    except Exception:
+        logger.debug("code-channel store unreadable", exc_info=True)
+        return None
+    if not bindings:
+        return None
+    for binding in bindings:
+        if binding.session_key != key or not binding.anchor_ts:
+            continue
+        try:
+            linked = state.get_linked_slot(binding.anchor_ts)
+        except Exception:
+            logger.debug("Slack link lookup failed", exc_info=True)
+            return None
+        if linked is not slot:
+            continue
+        if _bare_channel(getattr(slot, "_slack_channel", "")) != binding.channel_id:
+            continue
+        return binding
+    return None
+
+
+def is_code_channel_slot(state: "DashboardState | Any", slot: Any) -> bool:
+    """Whether *slot* is a code channel's own session (identity only; fails as "no")."""
+    try:
+        return code_channel_binding_of(state, slot) is not None
+    except Exception:  # pragma: no cover - the reader fails closed itself
+        logger.debug("code-channel identity check failed", exc_info=True)
+        return False
+
+
+def _slots_sharing_identity(state: "DashboardState | Any", slot: Any) -> list[Any]:
+    """*slot* and every other live slot a caller key resolving to it could name.
+
+    ``caller_slot_key`` returns the FIRST slot whose history key, slot key or
+    transcript stem matches; two slots that answer to the same key are therefore
+    indistinguishable to a caller, and a fence decided on one must hold for both.
+    """
+    out = [slot]
+    try:
+        names = {str(getattr(slot, "key", "") or "")}
+        history = slot_history_key(slot)
+        names |= {history, transcript_stem(history)}
+    except Exception:
+        return out
+    names.discard("")
+    for other in list(getattr(state, "_slots", {}).values()):
+        if other is slot:
+            continue
+        try:
+            other_history = slot_history_key(other)
+            other_names = {other.key, other_history, transcript_stem(other_history)}
+        except Exception:
+            continue
+        if names & other_names:
+            out.append(other)
+    return out
+
+
+async def load_code_channel_lineage() -> None:
+    """Load the code-channel store OFF the event loop, before a gate reads it.
+
+    :func:`code_channel_root` runs inside synchronous gates on the loop and reads
+    only the loaded snapshot, refusing when there is none; :func:`prewarm_enabled_check`
+    -- which every session-control verb awaits right before its synchronous gates --
+    and the work-ledger write route await this first, so the one cold read never
+    blocks the loop and no verb judges a fence on an unloaded store. A store
+    the Slack runtime already loaded makes this a no-op. Never raises: a failed
+    read is remembered by the store and the gate refuses on it.
+    """
+    try:
+        from kiro_crew.slack.code_channels.store import store
+
+        current = store()
+        if current.loaded_bindings() is None:  # loaded once; afterwards no thread hop
+            await asyncio.to_thread(current.load)
+    except Exception:  # pragma: no cover - the store swallows its own read errors
+        logger.debug("code-channel store load failed", exc_info=True)
+    # The dispatch switch's config-path reading, for the same reason: the gate that
+    # reads it is synchronous and must not stat files on the loop. Skipped (no
+    # thread hop) while code channels are off: the switch refuses before it looks.
+    from kiro_crew.dashboard.session_control_parts import code_channel_exemption as _cce
+    from kiro_crew.slack.code_channels.binding import code_channels_on
+
+    try:
+        on = code_channels_on(_cce._live_config())
+    except Exception:  # pragma: no cover - an unreadable config: the switch is off anyway
+        on = False
+    if on:
+        await _cce.refresh_config_path_check()
+
+
+#: What :func:`code_channel_root` answers when the code-channel store's file could
+#: not be read: no session can be shown NOT to be a code-channel worker, so every
+#: gate reading the answer as truthy fences and refuses. Not a slot key (slot keys
+#: never contain ``<``), so it can never name a real session.
+LINEAGE_UNAVAILABLE = "<code-channel-lineage-unavailable>"
+
+#: The refusal a caller sees while :data:`LINEAGE_UNAVAILABLE` holds.
+LINEAGE_UNAVAILABLE_MESSAGE = (
+    "the Slack code-channel store (slack-code-channels.json) could not be read, so "
+    "this session cannot be shown not to be a code-channel worker; repair the file "
+    "and restart the gateway"
+)
+
+
+def _code_channel_store_unreadable() -> bool:
+    """Whether the loaded code-channel store's file could not be read. No disk access."""
+    try:
+        from kiro_crew.slack.code_channels.store import store
+
+        return bool(store().unreadable)
+    except Exception:  # pragma: no cover - fail closed on an import failure
+        return True
+
+
+def code_channel_root(state: "DashboardState | Any", slot: Any) -> str:
+    """The key of the code-channel session *slot* was created under, ``""`` if none.
+
+    A session a code channel's session created -- at any depth -- is a WORKER, which
+    the dispatch exemption keeps one level deep: it may not create sessions or
+    conduct. Decided from PERSISTED facts first, so it holds after the conductor's
+    tab is closed and the gateway restarts: the worker record ``create_session``
+    writes into the code-channel store at birth (server-owned, so editing the
+    worker's own transcript cannot erase it), then the slot's own ``_created_by`` (written
+    at birth, rehydrated on restart) checked against every session key a code
+    channel runs in or ever ran in (the store's ``session_keys``, never evicted;
+    a store that is not loaded or could not be read refuses -- callers load it
+    off the loop first with :func:`load_code_channel_lineage`). The live
+    ``_created_by`` chain is then climbed for a deeper ancestor, bounded so a
+    corrupted cycle cannot spin.
+    """
+    parent = str(getattr(slot, "_created_by", "") or "")
+    try:
+        from kiro_crew.slack.code_channels.store import store
+
+        # First the record ``create_session`` wrote into the code-channel store at
+        # the worker's birth: server-owned, so it holds even if the worker's own
+        # transcript ``created_by`` was edited away before a restart. Checked for
+        # EVERY live slot sharing this slot's identity, not only the one resolved:
+        # a transcript's editable linkage can make a worker present another
+        # session's key, and resolution takes the first match.
+        for same in _slots_sharing_identity(state, slot):
+            recorded_conductor = store().worker_conductor(str(getattr(same, "key", "") or ""))
+            if recorded_conductor:
+                return recorded_conductor
+        if not parent:
+            return ""
+        recorded = store().session_keys()
+    except Exception:
+        # An unreadable store cannot vouch that this session is NOT a code-channel
+        # worker, and the slot's own ``_created_by`` cannot either: a worker can
+        # edit it away in its transcript before a restart. So a store whose file
+        # could not be read fences EVERY session the gate judges, whatever its
+        # ``created_by`` says, until a person repairs the file and restarts
+        # (:data:`LINEAGE_UNAVAILABLE`). A store merely not loaded yet -- a caller
+        # that skipped :func:`load_code_channel_lineage` -- keeps the transcript
+        # answer.
+        logger.debug("code-channel store unreadable", exc_info=True)
+        if _code_channel_store_unreadable():
+            return LINEAGE_UNAVAILABLE
+        return parent
+    seen: set[str] = set()
+    for _ in range(64):
+        if not parent or parent in seen:
+            return ""
+        if parent in recorded:
+            return parent
+        seen.add(parent)
+        try:
+            creator = state.get_slot(parent)
+        except Exception:
+            return ""
+        if creator is None:
+            return ""
+        if is_code_channel_slot(state, creator):
+            return parent
+        parent = str(getattr(creator, "_created_by", "") or "")
+    return ""

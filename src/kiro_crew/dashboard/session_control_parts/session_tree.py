@@ -127,6 +127,11 @@ async def fork_session(
     clean_title = _clean_new_session_title(
         title, cap=_MAX_FORK_TITLE_CHARS, not_done="session not forked"
     )
+    # The creator gate reads the code-channel store's loaded snapshot; load it
+    # off the loop first (see `create_session`).
+    # Loads the code-channel lineage, then warms the config cache as the LAST await
+    # before the synchronous gates (see `prewarm_enabled_check`).
+    await prewarm_enabled_check()
     caller_key = caller_slot_key(state, caller_session_key)
     if not caller_key:
         raise SessionControlError(
@@ -151,7 +156,7 @@ async def fork_session(
     # A fork manufactures a session the caller owns, so the caller must be an
     # eligible creator before anything else is read -- see the note on
     # `_refuse_ineligible_creator` for why this set mirrors `authorize_target`'s.
-    _refuse_ineligible_creator(state, caller_slot)
+    _refuse_ineligible_creator(state, caller_slot, operation="fork")
 
     if at_message_index is not None and (
         isinstance(at_message_index, bool) or at_message_index < 0
@@ -210,7 +215,7 @@ async def fork_session(
     live_caller = state.get_slot(caller_key)
     if live_caller is None or live_caller is not caller_slot:
         raise SessionControlError("caller session is not open", code="caller_not_open", status=404)
-    _refuse_ineligible_creator(state, live_caller)
+    _refuse_ineligible_creator(state, live_caller, operation="fork")
     if state.get_slot(source_slot.key) is not source_slot:
         raise SessionControlError(
             "the source session closed while the fork was being prepared",
@@ -292,7 +297,7 @@ async def fork_session(
             raise SessionControlError(
                 "caller session is not open", code="caller_not_open", status=404
             )
-        _refuse_ineligible_creator(state, live)
+        _refuse_ineligible_creator(state, live, operation="fork")
         if state.get_slot(source_slot.key) is not source_slot:
             raise SessionControlError(
                 "the source session closed while the fork was being prepared",

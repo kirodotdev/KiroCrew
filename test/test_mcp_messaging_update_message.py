@@ -358,6 +358,35 @@ class TestUpdateMessageEndpoint:
         slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_reserved_code_channel_button_is_refused_on_edit(self) -> None:
+        """An agent may not edit a gateway code-channel button onto a message (or
+        keep one on the hand-off notice while rewriting its text)."""
+        slack = _slack()
+        async with TestClient(TestServer(_make_app(_mock_state(slack)))) as client:
+            resp = await client.post(
+                "/api/update-message",
+                json={
+                    "channel": _CHANNEL,
+                    "ts": _TS,
+                    "blocks": [
+                        {
+                            "type": "actions",
+                            "elements": [
+                                {
+                                    "type": "button",
+                                    "action_id": "kc_code_channel_enable_handoff",
+                                    "text": {"type": "plain_text", "text": "Acknowledge"},
+                                }
+                            ],
+                        }
+                    ],
+                },
+            )
+            assert resp.status == 400
+            assert (await resp.json()).get("code") == "blocks_reserved_action"
+        slack.update_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_markup_split_credential_in_blocks_is_redacted(self) -> None:
         """The literal scan sees fragments; the display-form floor normalizes first.
 

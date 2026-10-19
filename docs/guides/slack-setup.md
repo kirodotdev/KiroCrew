@@ -384,6 +384,29 @@ With nothing set, code channels go into a **Code channels** sidebar folder, crea
 time one is needed and set to run `kirocrew-conductor`. To use another folder, pick it, or
 choose **New folder…** in the folder list to create one there.
 
+A conductor only plans and hands off work, so in a code channel it needs **Let the conductor
+hand off work** (`slack.code_channel_dispatch`), the sub-toggle under **Code channels**. It is
+off by default and turning Code channels on does not turn it on; while it is off, the card says
+that a conductor in a code channel can't hand off work. When on, the channel's conductor can
+create worker sessions and follow them on its work ledger, only on your own messages, only for
+workers it created, one level deep, filed beside the conductor in its folder and nested under it in the sidebar. Channels shared outside the
+workspace (Slack Connect) never qualify. It applies on the next call, with no restart. If `config.local.json` sets
+`slack.code_channel_dispatch`, that file wins: the toggle is disabled and says so, and you change
+it there.
+
+When the conductor tries to hand off work while this is off, it tells you where the toggle is
+(**Settings → Channels → Slack → Code channels → Let the conductor hand off work**), and the
+channel gets one short notice with a **Turn on hand-off for code channels** button. Only you,
+the owner, can press it; anyone else is told so privately. It asks you to confirm, then saves
+the same setting the toggle saves (it turns hand-off on for every code channel) and the notice
+changes to "Hand-off is on. Ask again or say retry." Nothing is retried for you: ask the
+conductor again. The notice is posted once per channel while hand-off stays off.
+
+While its workers run, the conductor can tell you each one's state (working, idle, queued,
+waiting on an approval, closed or lost) and how long since it last did anything, with a link
+to the worker's chat in the dashboard. It never reads a worker's transcript into the channel,
+and the link carries no sign-in: opening it still asks you to sign in to the dashboard.
+
 ### Choosing each code channel's agent
 
 A new code channel starts on the default agent: the **Agent** set here, else the default

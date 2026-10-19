@@ -33,6 +33,9 @@ import { SLACK_CODE_SWITCHES } from './slackCodeSwitches'
 export interface SlackCodeDraft {
   /** Every registered switch, as the draft has it. */
   switches: Record<SlackCodeSwitchKey, boolean>
+  /** `slack.code_channel_dispatch`, the sub-toggle under Code channels. Not a
+   *  registered switch: it carries no manifest scope. */
+  dispatch: boolean
   folder: string
   agent: string
   /** INHERIT_MODEL ('auto') = keep the agent's own model. */
@@ -64,6 +67,7 @@ export function slackCodeDraftFrom(c: SlackConfigData): SlackCodeDraft {
   const d = c.code_channel_defaults
   return {
     switches: Object.fromEntries(SLACK_CODE_SWITCHES.map(k => [k, !!c[k]])) as Record<SlackCodeSwitchKey, boolean>,
+    dispatch: c.code_channel_dispatch === true,
     folder: d?.folder ?? '',
     agent: d?.agent ?? '',
     model: d?.model ?? INHERIT_MODEL,
@@ -81,6 +85,7 @@ export function slackCodePayload(d: SlackCodeDraft, saved: SlackCodeDraft): Part
   for (const k of SLACK_CODE_SWITCHES) {
     if (d.switches[k] !== saved.switches[k]) out[k] = d.switches[k]
   }
+  if (d.dispatch !== saved.dispatch) out.code_channel_dispatch = d.dispatch
   const wire = (x: SlackCodeDraft) => ({
     folder: x.folder || null,
     agent: x.agent || null,
@@ -350,6 +355,31 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
                 <span className="text-[12px] text-muted">{i18nT('pages.settings.slackPanel.slackCode.stage_note')}</span>
               </div>
               {data.code_channels && <CapabilityLine capability={data.code_channels_capability} />}
+              {/* ── Sub-toggle: its own opt-in, never turned on by Code channels. ── */}
+              {draft.switches.code_channels && (
+                <div className="mt-3 ml-6 border-l border-border pl-4" data-testid="slack-code-dispatch">
+                  <SettingsToggle
+                    label={i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch')}
+                    description={i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_desc')}
+                    checked={draft.dispatch}
+                    onChange={v => onChange({ dispatch: v })}
+                    disabled={readOnly || data.code_channel_dispatch_overlay === true}
+                    configKey="slack.code_channel_dispatch"
+                  />
+                  {data.code_channel_dispatch_overlay === true && (
+                    <div className="flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2 mt-1" data-testid="slack-code-dispatch-overlay">
+                      <Info size={12} className="text-muted flex-none mt-0.5" />
+                      <span className="text-[12px] text-muted">{i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_overlay')}</span>
+                    </div>
+                  )}
+                  {!draft.dispatch && data.code_channel_dispatch_overlay !== true && (
+                    <div className="flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2 mt-1" data-testid="slack-code-dispatch-off">
+                      <Info size={12} className="text-muted flex-none mt-0.5" />
+                      <span className="text-[12px] text-muted">{i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_off')}</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 

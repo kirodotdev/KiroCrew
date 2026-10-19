@@ -226,6 +226,18 @@ async def dispatch(payload: dict) -> None:
     if await dispatch_card_click(_orch, payload, action_id):
         return
 
+    # ── Slack Code channel: the hand-off notice's Turn-on button ──
+    # Owner-only, SEL-audited; writes slack.code_channel_dispatch through the
+    # Settings card's audited save. Falls through when code channels are off.
+    from kiro_crew.slack.code_channels.handoff import HANDOFF_ACTION_ID, handle_handoff_click
+
+    if action_id == HANDOFF_ACTION_ID:
+        if not await channel_inbound_permitted("slack"):
+            logger.info("slack code channel hand-off dropped: denied by channels governance policy")
+            return
+        if await handle_handoff_click(_orch, payload):
+            return
+
     # ── OPTIONS Send / legacy choice buttons ──
     # Both RESOLVE an [OPTIONS:] choice: they edit/post the selection to the
     # channel AND re-dispatch it as a fresh turn. So a ``channels`` policy that

@@ -495,6 +495,16 @@ def tailnet_effective_allowed_logins(
 _OBSERVED_DEGRADED_SECTIONS: set[str] = set()
 
 
+def observed_degraded_sections() -> frozenset[str]:
+    """Every degradation this process has observed, read-only (see above).
+
+    For a gate whose config snapshot can come from a path that does not carry
+    ``degraded_sections`` along (a live reload that copies fields onto a cached
+    config): the sticky record is the one answer every path agrees on.
+    """
+    return frozenset(_OBSERVED_DEGRADED_SECTIONS)
+
+
 def reset_degraded_observations() -> None:
     """Forget every degradation this process has observed.
 
