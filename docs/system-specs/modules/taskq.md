@@ -313,7 +313,7 @@ which reads the row's state before it writes: raw, it left `taskq_mark`'s
 best-effort hand-off (`_post_store_write`, which catches the typed error only) and
 reached the spawn gate and the run loop, where the pre-queue `store.transition`
 had swallowed the identical condition. Pinned in
-`test_subagent_dependency_mark.py` and `test_taskq_runner_adapter.py`
+`test_subagent_dependency_mark.py` and `test_taskq_runner_adapter_durability.py`
 (`_requeue_unstarted`'s read-back).
 
 **Off the event loop.** `BEGIN IMMEDIATE` waits up to the busy timeout for
@@ -949,7 +949,7 @@ rests on, and a caller may execute only once it has COMMITTED:
   leave different rows: that one, and a requeue that COMMITTED where only the
   read-back failed, leaving `queued`. So the `None` names no state, and neither
   does its warning — both refusals are unstarted and claimable again, which is all
-  it may claim (`test_taskq_runner_adapter.py`, one case per refusal).
+  it may claim (`test_taskq_runner_adapter_durability.py`, one case per refusal).
   **What that `None` costs, and why it is a cost and not a leak.** The requeued
   `queued` container row has no dispatcher (`fetch_dispatchable_fair` is only ever
   called with `KIND_SUBAGENT`) and the boot reconciler is ACTIVE-only, so it
@@ -1374,7 +1374,7 @@ re-dispatch for retry-safe work, at most `model.RECOVERY_MAX_ATTEMPTS` (3)
 gateway lives per row: each life that resumes the row records an
 `adopted_resume` event, and a row earlier lives resumed that many times ends
 `failed` (`adopted: lost_owner_limit`) instead of being resumed again
-(`test_taskq_runner_adapter.py::test_crash_during_a_deferred_terminal_write_reconciles_the_row`,
+(`test_taskq_runner_adapter_durability.py::test_crash_during_a_deferred_terminal_write_reconciles_the_row`,
 `::test_a_run_that_takes_its_gateway_down_is_adopted_a_bounded_number_of_times`).
 The pending write is therefore NOT persisted as its own event: the row's own
 state plus the lease already say everything reconcile needs, and a second
@@ -1569,7 +1569,7 @@ Persistent executions retain write-before-ack and lease-fenced settlement.
 | `Admitted` | the claimed row's handle: `running` / `progress` / `renew` / `settle` (`done` / `fail` / `cancel`, once; releases the slot; a committed `done` of a lane-metered row calls `RunnerLane.note_done()`, which counts `settled_ok` — the completions the adaptive controller reads, exposed in `stats()` — so a fail, cancel or recovery never counts), `recovering(reason, delay_secs)` (`running → recovering`, `next_run_at`, slot released) + `reclaim()` (a fresh claim = new generation; late writes are `stale_result`) |
 | waits | `yield_dependency(handle, signal)`: coordinator `report` when one is attached (the scope's ONE schedule), else `WaitRecord.dependency` with `retry_at`; slot released, session resident; `tick()` / `signal(scope)` / the coordinator's `on_wake` resume it through capacity, and a `retry_wait`-parked row is re-claimed. Returns False when the wait ended terminal. `waiting_input(handle, tool_call_id)` ↔ `answer_input(task_id, text)` / `cancel_wait(task_id, generation=)`: the cancel is `only_from=PARKED` and, with a generation, fenced on it — False when the row is no longer the parked one the caller read, and then no wake is sent either |
 | `decide_recovery(handle, unit, reason)` | the ladder's L3 verdict for one stalled turn (`None` without a ladder); `recovered(unit)` clears it |
-| `adopt_orphaned_rows(store, kinds=, resume=)` | the recovery adapter for the kinds the boot reconciler stamps `awaiting_adapter`: `admitted → queued`; an unleased ACTIVE run row that `is_safe_retry` (`params.safe_retry`, or class `none` / `idempotent_key`) → `recovering` + `resume(rec)` (each gateway life that resumes a row first appends an `adopted_resume` event naming its incarnation, which `TaskStore.lost_owner_recoveries` counts once per earlier life beside the reconciler's; a row that already spent `model.RECOVERY_MAX_ATTEMPTS` (3) goes `failed` instead, with `adopted: lost_owner_limit`, the count and a readable `error`, counted in `AdoptReport.lost_owner_limit`, which `TaskRunner.adopt_task_rows` turns into a "Run not auto-resumed" notice for the paused run); not safe → `unknown_side_effect` (never re-run blind); step rows (`parent_id` set) → `failed` when safe (the run's resume re-runs them from its checkpoint) else `unknown_side_effect`; rows this incarnation still leases are skipped. It ALSO settles the `queued` rows of its kinds that a previous incarnation accepted and never claimed → `cancelled` ("never started"), counted in `AdoptReport.cancelled`: nothing ran under such a row, so `unknown_side_effect` would be a lie, and a resume is a new row anyway. The owner test is `params.accepted_by` (the accepting `TaskStore.incarnation`), NOT the lease — a queued row has never been claimed and so has no lease, and a row this incarnation just accepted, or RE-accepted (`accept` re-stamps it), is waiting for a lane slot inside a live `admit`. The cancel itself is `only_from=queued` under the generation the scan read, because the re-stamp and the `admit` that follows it are two writes and a sweep beside a live gateway can run between them. `retry_wait` / `recovering` are left alone (persisted answer, attempt count, and `recovering` is ACTIVE so the reconciler already sees it). The `queued` scan PAGES until each kind is drained (`_ADOPT_SCAN_PAGE` is a page size, never a total): `queued` is the one claimable state no other sweep reaches, so a row this sweep stops short of stays accepted with no dispatcher and no reconciler, and one restart behind a large backlog would strand it permanently. Pinned by `test_taskq_runner_adapter.py::test_adopt_pages_past_its_scan_size_so_no_queued_row_is_stranded`, the only test in the suite a capped scan reds |
+| `adopt_orphaned_rows(store, kinds=, resume=)` | the recovery adapter for the kinds the boot reconciler stamps `awaiting_adapter`: `admitted → queued`; an unleased ACTIVE run row that `is_safe_retry` (`params.safe_retry`, or class `none` / `idempotent_key`) → `recovering` + `resume(rec)` (each gateway life that resumes a row first appends an `adopted_resume` event naming its incarnation, which `TaskStore.lost_owner_recoveries` counts once per earlier life beside the reconciler's; a row that already spent `model.RECOVERY_MAX_ATTEMPTS` (3) goes `failed` instead, with `adopted: lost_owner_limit`, the count and a readable `error`, counted in `AdoptReport.lost_owner_limit`, which `TaskRunner.adopt_task_rows` turns into a "Run not auto-resumed" notice for the paused run); not safe → `unknown_side_effect` (never re-run blind); step rows (`parent_id` set) → `failed` when safe (the run's resume re-runs them from its checkpoint) else `unknown_side_effect`; rows this incarnation still leases are skipped. It ALSO settles the `queued` rows of its kinds that a previous incarnation accepted and never claimed → `cancelled` ("never started"), counted in `AdoptReport.cancelled`: nothing ran under such a row, so `unknown_side_effect` would be a lie, and a resume is a new row anyway. The owner test is `params.accepted_by` (the accepting `TaskStore.incarnation`), NOT the lease — a queued row has never been claimed and so has no lease, and a row this incarnation just accepted, or RE-accepted (`accept` re-stamps it), is waiting for a lane slot inside a live `admit`. The cancel itself is `only_from=queued` under the generation the scan read, because the re-stamp and the `admit` that follows it are two writes and a sweep beside a live gateway can run between them. `retry_wait` / `recovering` are left alone (persisted answer, attempt count, and `recovering` is ACTIVE so the reconciler already sees it). The `queued` scan PAGES until each kind is drained (`_ADOPT_SCAN_PAGE` is a page size, never a total): `queued` is the one claimable state no other sweep reaches, so a row this sweep stops short of stays accepted with no dispatcher and no reconciler, and one restart behind a large backlog would strand it permanently. Pinned by `test_taskq_runner_adapter_durability.py::test_adopt_pages_past_its_scan_size_so_no_queued_row_is_stranded`, the only test in the suite a capped scan reds |
 | `runner_admission_for(manager, cfg=, ladder=, coordinator=)` | the gateway's one-call factory over a `SubagentManager`: store getter `manager._taskq`, lane ceiling `manager.max_concurrent`, mode `agent.adaptive_concurrency_mode` (live), defer interval `agent.admit_wait_secs`. The store getter is LIVE and catches up on its own; `coordinator` is a plain field, which is why the late `attach_coordinator` below exists |
 
 The boot reconciler deliberately keeps these kinds OUT of its adapter set: it
@@ -1704,9 +1704,9 @@ restart between them (closed by the adopter's `queued` sweep). Pinned per path �
 after the claim, a row another owner claimed, no-store, dependency-wait cancel;
 a `starting` write a REAL locked database refuses — transient and for the whole
 outage, plus `claim_only`'s — where the assertion is that the step body never
-ran; adopt over accept-only + admit-only rows, twice, and the three rows it must
-NOT touch: this incarnation's live `queued` row, a `retry_wait` row holding an
-answer, any `subagent` row), `test_workflows_agent_pool.py` and
+ran), `test_taskq_runner_adapter_durability.py` (adopt over accept-only + admit-only
+rows, twice, and the three rows it must NOT touch: this incarnation's live `queued`
+row, a `retry_wait` row holding an answer, any `subagent` row), `test_workflows_agent_pool.py` and
 `test_taskrunner_taskq.py` (the same cancel and restart cases end to end through
 `admitted_agent_fn` and `_execute_single_task`).
 

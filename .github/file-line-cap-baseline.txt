@@ -32,12 +32,9 @@
 3181 src/kiro_crew/security_posture.py
 2594 src/kiro_crew/subagent_persistence.py
 2641 test/conftest.py
-2475 test/test_chat_mirror.py
 3125 test/test_cron_script.py
-2478 test/test_dashboard_updates_coverage.py
 3102 test/test_handlers_memory_coverage.py
 2631 test/test_llm_pool.py
-2449 test/test_mcp_gatewayd_coverage.py
 2096 test/test_monitor_directive_apply.py
 12647 test/test_security.py
 9530 test/test_session.py
@@ -46,4 +43,3 @@
 2629 test/test_slack_handler_coverage.py
 2641 test/test_spawn_audit.py
 3093 test/test_subagent.py
-2460 test/test_taskq_runner_adapter.py

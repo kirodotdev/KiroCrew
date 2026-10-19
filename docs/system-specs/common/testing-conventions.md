@@ -3212,7 +3212,7 @@ went red, or the fix lands in the wrong file and the leak stays.
   repeat would time `re`'s compile cache rather than the translator, and the cheaper of
   two readings would let a stall that reproduces intermittently pass.
 - **A helper that counts WARNINGs over unfiltered `caplog.records` asserts on every thread
-  in the worker.** `test_taskq_runner_adapter.py`'s `_one_warning` demanded exactly one
+  in the worker.** `test_taskq_runner_adapter_durability.py`'s `_one_warning` demanded exactly one
   record while the test had scoped `at_level` to `kiro_crew.taskq.adapters.runner`; the
   second record was `kiro_crew.sandbox`'s mount-source sweep, finishing on the shared
   `mc-maint` executor seconds after the `SessionManager` test that armed it had torn down
