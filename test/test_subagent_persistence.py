@@ -64,8 +64,8 @@ class TestCreateAgentFolder:
         assert state["id"] == "abc123"
         assert state["task"] == "do stuff"
         assert state["agent"] == "kirocrew"
-        # Nothing rewrites this file when the run ends, so it carries no run
-        # status that would read as running afterwards (the tombstone does).
+        # No ending writes a run status back to this file, so it carries none
+        # that would read as running afterwards (the tombstone records it).
         assert "status" not in state
         assert state["max_turns"] == 100
         assert "started" in state
