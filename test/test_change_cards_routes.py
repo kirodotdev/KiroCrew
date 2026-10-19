@@ -120,6 +120,39 @@ def test_propose_lands_in_the_callers_slot_and_only_an_agent_may_propose(world, 
     assert agent_pending == 403
 
 
+def test_a_repeated_proposal_tells_the_model_a_card_is_already_waiting(
+    world, tmp_path, monkeypatch
+):
+    """The route answers a repeat with 409 duplicate_card and writes no second row, and
+    the propose_change tool turns that answer into one line naming the waiting card,
+    so the model says the card is already there instead of failing the turn."""
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        first = await _propose_setting(c)
+        again = await c.post(
+            "/api/cards/agent/propose",
+            json={
+                "kind": "setting.change",
+                "params": {"path": "chat.verbosity", "value": "ultra-brief"},
+            },
+            headers=AGENT,
+        )
+        return first, again.status, await again.json()
+
+    first, status, body = _run(world, store, go)
+    assert status == 409 and body["code"] == "duplicate_card"
+    assert first["id"] in body["error"]
+    assert [c["id"] for c in store.pending(SLOT)] == [first["id"]]
+    monkeypatch.setattr(mcp_guide, "_strict_session_key", lambda: (SK, ""))
+    monkeypatch.setattr(mcp_guide, "_post", lambda *a, **k: dict(body))
+    out = mcp_guide._call_tool_inner(
+        "propose_change",
+        {"kind": "setting.change", "params": {"path": "chat.verbosity", "value": "ultra-brief"}},
+    )
+    assert out.startswith(f"Error: the same change is already on card {first['id']}")
+
+
 def test_an_internal_or_app_caller_can_never_apply_a_card(world, tmp_path):
     store = CardStore(tmp_path / "c.json")
 
