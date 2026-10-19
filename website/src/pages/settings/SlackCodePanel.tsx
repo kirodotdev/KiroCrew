@@ -131,6 +131,31 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
                 <Badge variant="aim" className="text-[11px] font-sans px-1.5 py-0 flex-none">{i18nT('pages.settings.slackPanel.slackCode.stage_tag')}</Badge>
               </div>
               {data.code_channels && <CapabilityLine capability={data.code_channels_capability} updatePending={updatePending} />}
+              {/* ── Sub-toggle: its own opt-in, never turned on by Code channels. ── */}
+              {draft.switches.code_channels && (
+                <div className="mt-3 ml-6 border-l border-border pl-4" data-testid="slack-code-dispatch">
+                  <SettingsToggle
+                    label={i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch')}
+                    description={i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_desc')}
+                    checked={draft.dispatch}
+                    onChange={v => onChange({ dispatch: v })}
+                    disabled={readOnly || data.code_channel_dispatch_overlay === true}
+                    configKey="slack.code_channel_dispatch"
+                  />
+                  {data.code_channel_dispatch_overlay === true && (
+                    <div className="flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2 mt-1" data-testid="slack-code-dispatch-overlay">
+                      <Info size={12} className="text-muted flex-none mt-0.5" />
+                      <span className="text-[12px] text-muted">{i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_overlay')}</span>
+                    </div>
+                  )}
+                  {!draft.dispatch && data.code_channel_dispatch_overlay !== true && (
+                    <div className="flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2 mt-1" data-testid="slack-code-dispatch-off">
+                      <Info size={12} className="text-muted flex-none mt-0.5" />
+                      <span className="text-[12px] text-muted">{i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_off')}</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 

@@ -11,6 +11,9 @@ import { SLACK_CODE_SWITCHES } from './slackCodeSwitches'
 export interface SlackCodeDraft {
   /** Every registered switch, as the draft has it. */
   switches: Record<SlackCodeSwitchKey, boolean>
+  /** `slack.code_channel_dispatch`, the sub-toggle under Code channels. Not a
+   *  registered switch: it carries no manifest scope. */
+  dispatch: boolean
   folder: string
   agent: string
   /** INHERIT_MODEL ('auto') = keep the agent's own model. */
@@ -39,6 +42,7 @@ export function slackCodeDraftFrom(c: SlackConfigData): SlackCodeDraft {
     : ''
   return {
     switches: Object.fromEntries(SLACK_CODE_SWITCHES.map(k => [k, !!c[k]])) as Record<SlackCodeSwitchKey, boolean>,
+    dispatch: c.code_channel_dispatch === true,
     folder: resolvedId || (d?.folder ?? ''),
     agent: d?.agent ?? '',
     model: d?.model ?? INHERIT_MODEL,
@@ -56,6 +60,7 @@ export function slackCodePayload(d: SlackCodeDraft, saved: SlackCodeDraft): Part
   for (const k of SLACK_CODE_SWITCHES) {
     if (d.switches[k] !== saved.switches[k]) out[k] = d.switches[k]
   }
+  if (d.dispatch !== saved.dispatch) out.code_channel_dispatch = d.dispatch
   const wire = (x: SlackCodeDraft) => ({
     folder: x.folder || null,
     agent: x.agent || null,
