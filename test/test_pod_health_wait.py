@@ -30,7 +30,7 @@ from kiro_crew.testing.clock import ManualClock
 def _isolate_pod_host_state(tmp_path_factory, monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep pod HOST state (unit file, pods_dir mutex) out of the real home.
 
-    Same isolation as test_pod.py's fixture of the same name: ``unit.unit_path``
+    Same home pin as ``pod_helpers.py``'s fixture of the same name: ``unit.unit_path``
     and ``PodConfig.pods_dir`` resolve through ``Path.home()``, not
     ``KIROCREW_HOME``, so a test reaching ``_up`` would otherwise write the
     developer's real per-user service state.

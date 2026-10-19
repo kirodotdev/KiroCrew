@@ -100,7 +100,6 @@
 2096 test/test_monitor_directive_apply.py
 5822 test/test_onboarding_import.py
 2725 test/test_plugin_import.py
-8519 test/test_pod.py
 3193 test/test_sandbox_absent_ceiling_seal.py
 12647 test/test_security.py
 5509 test/test_sel.py
