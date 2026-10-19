@@ -32,6 +32,8 @@ from kiro_crew.agent_sdk.spec_hooks import (
 from kiro_crew.dashboard.chat_utils import (
     SPEC_HOOKS_NOTICE_KIND,
     RecoveryPayload,
+    RecoveryProvenance,
+    has_recovery_provenance,
     is_synthetic_recovery_item,
     mint_options_token,
     remember_slack_options,
@@ -997,12 +999,19 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
             if not _nudge_cap
             else max(0, _nudge_cap - slot._hook_continuation_depth - _pending)
         )
-        # queue_insert(0, …) prepends, so insert in reverse to keep several
-        # hooks' instructions in firing order.
+        # A provider-budget recovery may already be queued at the head. It
+        # finishes the interrupted answer before Stop-hook instructions.
+        _hook_insert_index = 0
+        for _index, _item in enumerate(slot._queue):
+            if has_recovery_provenance(_item, RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT):
+                _hook_insert_index = _index + 1
+                break
+        # queue_insert at one fixed position prepends, so insert in reverse to
+        # keep several hooks' instructions in firing order.
         for _reason in reversed(_hook_reasons[:_room]):
             _queue_recovery(
                 turn,
-                0,
+                _hook_insert_index,
                 f"{HOOK_CONTINUATION_RECOVERY_PREFIX}\n{_reason}",
                 kind=SYNTHETIC_RECOVERY_KIND,
             )

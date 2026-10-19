@@ -180,13 +180,13 @@ RESOLVER_DEPTH = 1
 #: Modules known to satisfy the condition. The gate must find every one, or its
 #: report on the rest of the tree is UNKNOWN rather than clean.
 CONTROL_MODULES = (
-    "acp/prompt_blocks.py",
     "apps/builtins/auto_improvement/backend/clone_setup.py",
     "apps/builtins/aws_control/backend/backup_parts/conversations.py",
     "apps/builtins/issue_radar/backend/crew_store_unit_order.py",
     "apps/plugin_import.py",
     "dashboard/handlers/themes.py",
     "image_artifacts.py",
+    "image_path_screen.py",
     "member_essential_context.py",
     "memory_files.py",
     "messaging/outbound_files.py",

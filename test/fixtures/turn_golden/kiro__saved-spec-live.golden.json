@@ -397,7 +397,7 @@
   "transcript": {
     "dashboard_chat-golden-1.jsonl": [
       "{\"_type\": \"metadata\", \"created_at\": \"<created_at>\", \"last_consolidated\": 0, \"memory_mode\": \"persistent\", \"model\": \"\", \"autocompact_pct\": null, \"tab_id\": \"<tab_id:1>\"}",
-      "{\"role\": \"tool\", \"content\": \"\\ud83d\\udd27 Running: @probe/probe_codeword\", \"ts\": \"<ts>\", \"source_thread\": \"dashboard\", \"source_user\": \"dashboard\", \"meta\": {\"tool_call_id\": \"toolu_bdrk_01UH1EFFgmZ9kJD2zNmRFuXv\", \"purpose\": \"User asked for the codeword.\", \"input\": \"{\\n  \\\"__tool_use_purpose\\\": \\\"User asked for the codeword.\\\"\\n}\", \"kind\": \"unknown\", \"tool_name\": \"probe_codeword\", \"mcp_server\": \"probe\", \"mid\": \"<mid:1>\", \"done\": true, \"output\": \"tangerine-42\"}}",
+      "{\"role\": \"tool\", \"content\": \"\\ud83d\\udd27 Running: @probe/probe_codeword\", \"ts\": \"<ts>\", \"source_thread\": \"dashboard\", \"source_user\": \"dashboard\", \"meta\": {\"tool_call_id\": \"toolu_bdrk_01UH1EFFgmZ9kJD2zNmRFuXv\", \"purpose\": \"User asked for the codeword.\", \"input\": \"{\\n  \\\"__tool_use_purpose\\\": \\\"User asked for the codeword.\\\"\\n}\", \"kind\": \"unknown\", \"tool_name\": \"probe_codeword\", \"mcp_server\": \"probe\", \"mid\": \"<mid:1>\", \"done\": true, \"output\": \"tangerine-42\", \"outputTruncated\": false}}",
       "{\"role\": \"assistant\", \"content\": \"tangerine-42\", \"ts\": \"<ts>\", \"source_thread\": \"dashboard\", \"source_user\": \"dashboard\", \"meta\": {\"mid\": \"<mid:2>\"}}"
     ]
   }

@@ -13,6 +13,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_sdk.drivers.acp_vocab import EngineFallbackWalk
+from kiro_crew.dashboard.chat_utils import RecoveryProvenance, has_recovery_provenance
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
 from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT, row_mid
 from kiro_crew.llm_helpers import _NO_PRIOR_STATS
@@ -205,6 +206,28 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # reclassified or mirrored as authenticated-human speech.
     _incoming_message = message
     turn._incoming_message = _incoming_message
+    # What the provider-budget capacity gate may read as a request: the turn's
+    # own payload unless it is runner- or app-authored (a recovery's own
+    # continuation text is not), plus each consumed steer that this session's
+    # human typed (at the steer-consumed echo). A payload another session or a
+    # scheduled job injected is read like typed text: an injected capacity phrase
+    # keeps a banner visible, the pre-suppression behaviour, and loses nothing. The
+    # user-origin flag is not the gate because a queue entry restored across a
+    # restart carries no such flag, and a human request replayed from it would
+    # lose its answer.
+    _user_authority_text = "" if _synthetic_payload else _incoming_message
+    turn._user_authority_text = _user_authority_text
+    # What the model read as input this turn, whoever wrote it: the prompt as sent
+    # (an ``@prompt`` body, an app's or a peer's payload, the runner's prepends) and
+    # every steer the turn consumed, a peer's included. The banner echo check looks
+    # for the banner's count in it; the capacity gate never reads it, so a peer or a
+    # prompt file that names tokens does not keep a banner by its topic.
+    _turn_input_texts: list[str] = []
+    turn._turn_input_texts = _turn_input_texts
+    # Set once either record above hit its bound (``retain_turn_evidence`` /
+    # ``extend_user_authority``): a text was left out, so the echo evidence is
+    # not whole and the banner stays visible.
+    turn._turn_evidence_overflowed = False
 
     # An admitted turn does not cancel a return summary: a patrol turn is not
     # the person, and a typed turn already cancelled it through its user row.
@@ -276,6 +299,32 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
         ):
             _current_replay_message = None
             turn._current_replay_message = _current_replay_message
+
+    # One recovery owner may act only on turns carrying host-minted provenance.
+    # Queue drain copies the queue entry's tag onto the persisted current row.
+    # The continuation text is deliberately shared with the ordinary post-token
+    # transient retry, so text equality cannot confer provider-banner stripping
+    # or provider-specific queue policy.
+    _provider_budget_recovery_owned = bool(
+        _synthetic_payload
+        and _current_replay_message is not None
+        and has_recovery_provenance(
+            _current_replay_message, RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT
+        )
+    )
+    turn._provider_budget_recovery_owned = _provider_budget_recovery_owned
+    _transient_recovery_owned = bool(
+        _synthetic_payload
+        and _current_replay_message is not None
+        and has_recovery_provenance(_current_replay_message, RecoveryProvenance.TRANSIENT_RETRY)
+    )
+    turn._transient_recovery_owned = _transient_recovery_owned
+    _current_recovery_provenance: RecoveryProvenance | None = (
+        RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT
+        if _provider_budget_recovery_owned
+        else RecoveryProvenance.TRANSIENT_RETRY if _transient_recovery_owned else None
+    )
+    turn._current_recovery_provenance = _current_recovery_provenance
 
     session_key = effective_session_key(slot)
     turn.session_key = session_key
@@ -512,6 +561,13 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # agent switch) is load-bearing for the promise-only guard in _turn_ending_chain.
     _turn_flushed_visible_text = False
     turn._turn_flushed_visible_text = _turn_flushed_visible_text
+    # True once a tool result this turn delivered was not whole (cut, image, or
+    # omitted field: the parser's ``tool_output_truncated``). The banner echo
+    # check reads this turn's tool rows for the banner phrase; a row that is not
+    # whole cannot prove the phrase absent, so the ordinary-tail strip stands
+    # down for the rest of the turn.
+    _turn_tool_output_truncated = False
+    turn._turn_tool_output_truncated = _turn_tool_output_truncated
     # ── Content-free turn-end diagnostics (empty-response verdict) ──
     # Booleans only, by contract. _turn_settle_answer's empty-response branch reaches its
     # verdict from these, and a WARNING names the cause it derived; every field
@@ -889,6 +945,13 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # be recorded as a success or reset the retry budgets.
     _noticed_leak = False
     turn._noticed_leak = _noticed_leak
+    # Set when a provider leaked its private weighted-token budget reminder as
+    # answer text (``_classify_turn_banner`` in the settle phase).
+    # ``_recovering_provider_artifact`` is the banner-only subcase: no answer was
+    # given, so like _recovering_promise it must not record success, consolidate,
+    # or reset the retry budgets.
+    turn._provider_budget_banner = False
+    turn._recovering_provider_artifact = False
     # Set when a REAL mid-turn compaction terminal cleared `assistant_text`
     # while it held a leaked tool call. The turn-end gates read that
     # accumulator, so the fact has to be captured at the boundary or it is lost

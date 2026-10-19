@@ -30,16 +30,12 @@ import base64
 import hashlib
 import json
 import logging
-import os
 import re
 from pathlib import Path
 
 from kiro_crew.hooks import (
-    is_unc_shape,
     safe_read_file_bytes,
     safe_read_file_bytes_nolink,
-    screen_windows_linked_ancestors,
-    unc_probe_allowed,
 )
 
 # The path grammar and the history scrubber live in the LEAF module
@@ -48,6 +44,16 @@ from kiro_crew.hooks import (
 # agent-sdk-boundary gate forbids application code from importing
 # kiro_crew.acp. The pattern names are re-exported because this module and
 # its tests are where they have always been read from.
+# The image-path scan and the screen run before any probe live in the LEAF
+# module kiro_crew.image_path_screen, so the dashboard's banner echo check reads
+# exactly the files this builder may inline without importing the ACP layer.
+from kiro_crew.image_path_screen import (  # noqa: F401 -- IMAGE_MEDIA_TYPES re-exported
+    IMAGE_MEDIA_TYPES,
+    _image_path_candidates,
+    _inside,
+    _screened_image_file,
+    _user_spans,
+)
 from kiro_crew.image_refs import (  # noqa: F401 -- re-exported, see comment
     _MASKED,
     _PATH_RE,
@@ -69,22 +75,8 @@ from kiro_crew.imaging import (  # noqa: F401 -- constants re-exported, see comm
     downscale_image_block,
 )
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
-from kiro_crew.platform_compat import is_link_or_junction
-from kiro_crew.prompt_segments import SOURCE_USER, segments_of
 
 logger = logging.getLogger(__name__)
-
-#: Raster formats kiro-cli accepts as inline vision input. SVG is deliberately
-#: absent: it is scriptable XML rather than a raster image, and a vision model
-#: gains nothing from it.
-IMAGE_MEDIA_TYPES: dict[str, str] = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".bmp": "image/bmp",
-}
 
 #: Raw bytes per image, checked BEFORE base64. Encoding inflates by 4/3 and the
 #: whole request is serialized as a single newline-delimited JSON frame, so an
@@ -208,82 +200,17 @@ def build_prompt_blocks(
         prompt_b64_bytes = 0
         past_block_cap = 0
         # Literal text (code, indented code, escaped ``\![x](...)``) is ABOUT a
-        # path, not an attachment: scan the view with it masked, the same view
-        # strip_image_refs reads, so the text stays as written and no block is
-        # attached. Offsets index straight into *message*. A fence the user
-        # left open stays unmasked: a channel's own attachment lines follow
-        # the user's text, and a dangling opener must not swallow them. Each
-        # user segment is judged on its own (mask_user_literal_text), so injected
-        # text ending inside an open fence cannot pair with the user's next
-        # fence line.
-        try:
-            scan = mask_user_literal_text(message)
-        except Exception:  # pragma: no cover - defensive: a scan must never break a turn
-            logger.debug("acp prompt: literal-span mask failed", exc_info=True)
-            scan = message
-        for match in _PATH_RE.finditer(scan):
-            if _MASKED in match.group(1):
-                # Only reachable through a Windows UNC host segment, whose
-                # negated class admits the sentinel: a span touching literal
-                # text is not a reference.
-                continue
-            group = match.group(1)
-            raw = group.strip()
-            start = match.start(1) + (len(group) - len(group.lstrip()))
-            end = start + len(raw)
-            if not _inside(user_spans, start, end):
-                continue
+        # path, not an attachment: the scan skips it and every span outside the
+        # user's own segments (_image_path_candidates).
+        for start, end, raw in _image_path_candidates(message, user_spans):
             candidates.append((start, end, raw))
             if raw in seen:
                 continue
             seen.add(raw)
-            # UNC-shaped candidates name a HOST on Windows: gate them before
-            # any filesystem call, or is_file() below opens an SMB connection
-            # to attacker-controlled text. POSIX has no such semantics (a
-            # doubled leading slash is an ordinary local path), and _PATH_RE
-            # is platform-gated anyway. See kiro_crew.hooks.unc_probe_allowed.
-            if os.name == "nt" and is_unc_shape(raw) and not unc_probe_allowed(raw):
+            screened_file = _screened_image_file(raw)
+            if screened_file is None:
                 continue
-            path = Path(raw)
-            suffix = path.suffix.lower()
-            suffix_mime = IMAGE_MEDIA_TYPES.get(suffix)
-            if suffix_mime is None:
-                # Unreachable for regex-produced candidates today (_PATH_RE's
-                # suffix group and IMAGE_MEDIA_TYPES share one key set), kept
-                # as the lexical backstop should the two ever drift.
-                continue
-            # A linked ANCESTOR defeats the lexical UNC screen above: the
-            # candidate is not itself UNC-shaped -- only the link's target is
-            # -- and is_file()/stat() below resolve every ancestor, so the
-            # probe itself would traverse the link and open the SMB
-            # connection. The shared screen rewrites a local linked prefix to
-            # its vetted target and refuses UNC, device, drive-relative and
-            # `..`-climbing targets; every probe below runs on the REWRITTEN
-            # path. Windows-only for the same reason as the UNC gate: on
-            # POSIX stat-ing through a symlink is harmless.
-            if os.name == "nt":
-                screened = screen_windows_linked_ancestors(path)
-                if screened is None:
-                    continue
-                path = screened
-            # The LEAF gets the junction-aware check the walk deliberately
-            # excludes: is_file() below FOLLOWS a final-component link, so a
-            # leaf symlink/junction targeting a UNC share is the same probe.
-            # lstat-based, so the link itself is never followed.
-            if os.name == "nt" and is_link_or_junction(path):
-                continue
-            # A long run of prose ending in an image suffix is not a path: a
-            # component over 255 characters (past every common name limit) raises
-            # ENAMETOOLONG (pathlib on 3.12 does not swallow it), and one raise
-            # here fails the whole turn. Skip it, and treat any probe error as
-            # "not a file" so the text still goes out.
-            if any(len(part) > 255 for part in path.parts):
-                continue
-            try:
-                if not path.is_file():
-                    continue
-            except OSError:
-                continue
+            path, suffix_mime = screened_file
             if not agent_accepts_image:
                 # Never inlined. A bounded sniff decides whether the note is
                 # true, so the whole file is never read just to refuse it.
@@ -403,21 +330,6 @@ def build_prompt_blocks(
         text = _rewrite_text(message, [], {}, {})
 
     return [{"type": "text", "text": str(text)}, *images]
-
-
-def _user_spans(message: str) -> list[tuple[int, int]]:
-    """``(start, end)`` of every user segment of *message*, in order."""
-    spans: list[tuple[int, int]] = []
-    pos = 0
-    for source, segment in segments_of(message):
-        if source == SOURCE_USER:
-            spans.append((pos, pos + len(segment)))
-        pos += len(segment)
-    return spans
-
-
-def _inside(spans: list[tuple[int, int]], start: int, end: int) -> bool:
-    return any(s <= start and end <= e for s, e in spans)
 
 
 def _sniffs_as_raster(path: Path) -> bool:

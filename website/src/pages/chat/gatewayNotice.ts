@@ -60,6 +60,7 @@ const NOTICE_FAMILIES = {
   empty_turn_continuing: { role: 'notice', card: 'notice', tone: 'info' },
   empty_turn_continuing_after_work: { role: 'notice', card: 'notice', tone: 'info' },
   compaction_continuing: { role: 'notice', card: 'notice', tone: 'info' },
+  provider_budget_artifact_give_up: { role: 'notice', card: 'notice', tone: 'info' },
   model_access_fallback: { role: 'notice', card: 'notice', tone: 'warn' },
   model_unavailable: { role: 'notice', card: 'notice', tone: 'info' },
   model_throttled_fallback: { role: 'notice', card: 'notice', tone: 'warn' },
@@ -131,6 +132,7 @@ const COPY_KEY = {
   empty_turn_continuing: 'pages.chat.gatewayNotice.empty_turn_continuing',
   empty_turn_continuing_after_work: 'pages.chat.gatewayNotice.empty_turn_continuing_after_work',
   compaction_continuing: 'pages.chat.gatewayNotice.compaction_continuing',
+  provider_budget_artifact_give_up: 'pages.chat.gatewayNotice.provider_budget_artifact_give_up',
   model_access_fallback: 'pages.chat.gatewayNotice.model_access_fallback',
   model_unavailable: 'pages.chat.gatewayNotice.model_unavailable',
   model_throttled_fallback: 'pages.chat.gatewayNotice.model_throttled_fallback',
@@ -265,6 +267,10 @@ const LEGACY: readonly Legacy[] = [
   {
     re: /^ℹ\uFE0F? The context was compacted mid-turn and the response stopped there — continuing automatically\.$/u,
     token: 'compaction_continuing',
+  },
+  {
+    re: /^ℹ\uFE0F? The model returned an internal status instead of an answer, and the automatic continuation is unavailable or already spent\. Send your request again to get the answer\.$/u,
+    token: 'provider_budget_artifact_give_up',
   },
   {
     re: /^⚠\uFE0F? Your account cannot use model '(?<rejected>[^']*)' — running on '(?<model>[^']*)' instead\.$/u,

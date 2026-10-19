@@ -13175,6 +13175,7 @@
         "model_access_fallback": "Ton compte ne peut pas utiliser le modèle {{rejected}} — {{model}} est utilisé à la place.",
         "model_unavailable": "{{model}} n’est pas proposé pour le moment — cette session utilise auto à la place. Choisis un autre modèle dans la zone de saisie, ou laisse tel quel : ton choix de modèle est conservé et sera utilisé automatiquement dès qu’il sera de nouveau proposé.",
         "compaction_continuing": "Le contexte a été compacté en plein tour et la réponse s’est arrêtée là — poursuite automatique.",
+        "provider_budget_artifact_give_up": "Le modèle a renvoyé un statut interne au lieu d’une réponse, et la reprise automatique est indisponible ou déjà utilisée. Envoie à nouveau ta demande pour obtenir la réponse.",
         "model_throttled_fallback": "{{primary}} est limité — {{fallback}} est utilisé jusqu’à ce que {{primary}} soit rétabli.",
         "refusal_fallback_same_model": "La nouvelle tentative automatique a été ignorée parce que le modèle de repli (`agent.refusal_fallback_model`) est le même que ton modèle actuel — retenter sur le même modèle se heurte au même filtre. Choisis un autre modèle pour le repli afin que la nouvelle tentative soit automatique.",
         "session_reconnecting": "L’agent a perdu la session de ce chat — reconnexion…",

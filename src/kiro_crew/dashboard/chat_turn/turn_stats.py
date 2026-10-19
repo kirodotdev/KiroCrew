@@ -1044,6 +1044,7 @@ async def _turn_context_usage(turn: _ChatTurn) -> None:
         and not _retrying_empty
         and not _recovering_promise
         and not _recovering_compaction
+        and not turn._recovering_provider_artifact
         and not _noticed_leak
         and not _recovering_infra
     ):

@@ -27,7 +27,6 @@ DECLARED_SITES = frozenset(
     {
         ("acp/harness/pi.py", "_pi_gate_artifact_dir"),
         ("acp/harness/strands_project_pin.py", "_collect"),
-        ("acp/prompt_blocks.py", "build_prompt_blocks"),
         ("acp/skill_projection_parts/alias_reclaim.py", "_migrate_legacy_side_files"),
         ("acp/skill_projection_parts/alias_reclaim.py", "_sweep_orphan_alias_locks"),
         ("acp/skill_projection_parts/alias_reclaim.py", "_sweep_orphan_sidecars_in"),
@@ -141,6 +140,7 @@ DECLARED_SITES = frozenset(
         ("history_threads.py", "_write_thread_sidecar"),
         ("hooks.py", "_screen_windows_links"),
         ("image_artifacts.py", "_local_file"),
+        ("image_path_screen.py", "_screened_image_file"),
         ("kiro_prerequisite_identity_store.py", "_ensure_auth_staging_parent"),
         ("ledger_wake.py", "_write_rate"),
         ("mcp_gateway/backend_tmp.py", "_discard_owner_marker"),

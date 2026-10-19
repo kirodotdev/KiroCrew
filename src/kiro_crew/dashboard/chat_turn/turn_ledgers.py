@@ -8,7 +8,11 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_delivery import attachment_meta
-from kiro_crew.dashboard.chat_utils import RecoveryPayload
+from kiro_crew.dashboard.chat_utils import (
+    RECOVERY_PROVENANCE_META_KEY,
+    RecoveryPayload,
+    RecoveryProvenance,
+)
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.dashboard.slot_queue_repository import stamp_source_channels
 from kiro_crew.wakatime.heartbeats import CADENCE_MIN_INTERVAL_SECS
@@ -73,6 +77,7 @@ def _queue_recovery(
     kind: str,
     payload: str = "",
     extra_meta: dict | None = None,
+    provenance: RecoveryProvenance | None = None,
 ) -> str:
     """Queue a retry without losing a producer's consumption settlement.
 
@@ -155,6 +160,12 @@ def _queue_recovery(
         # The same holds for a BACKGROUND start a bulk Resume asked for: nobody
         # waits on its retry either, so the retry starts BACKGROUND too.
         _recovery_meta[START_BACKGROUND_META_KEY] = True
+    # Host-minted recovery ownership (see RecoveryProvenance). Callers that
+    # requeue within the current recovery episode pass its recognized owner; a
+    # producer that starts a new episode omits it, and an intentional ownership
+    # change names its tag.
+    if provenance is not None:
+        _recovery_meta[RECOVERY_PROVENANCE_META_KEY] = provenance.value
     if payload == RecoveryPayload.ORIGINAL and isinstance(_current_replay_message, dict):
         # ORIGINAL replays must preserve the triggering row's attachment
         # lists. The provider prompt already carries the full markers, but
@@ -274,6 +285,7 @@ def _requeue_owed_completion(turn) -> None:
             if _current_message is not None and isinstance(_current_message.get("meta"), dict)
             else None
         ),
+        provenance=turn._current_recovery_provenance,
     )
 
 
