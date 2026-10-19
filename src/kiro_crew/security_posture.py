@@ -1025,6 +1025,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # the registered "Slack code-channel posts" sink, so they add no egress path
         # of their own.
         "slack/code_channels/tools.py",
+        # The work board's block renderer: the agent-authored text it lays out was
+        # already redacted in slack/code_channels/board/model.py, the registered
+        # "Slack code-channel work board" sink, and the forge- or git-derived branch
+        # names and PR URLs it adds get the same redactor on that same message, so
+        # it adds no egress path of its own.
+        "slack/code_channels/board/render.py",
         # The owners composed into slack/gateway.py, in the same class as that
         # facade: they redact the install-repair, update and boot logs, the
         # AutoNudge notices, the nudge and heartbeat turns' posted replies, the
