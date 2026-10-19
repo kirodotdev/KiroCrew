@@ -137,6 +137,12 @@ design_tweak/
 The dashboard page is compiled into the host bundle rather than shipped here:
 `website/src/apps/design-tweak/` (`DesignTweakPage.tsx`, `api.ts`, `types.ts`),
 registered in `website/src/apps/builtinRegistry.ts`.
+`DesignTweakPage.tsx` is the route's import path and renders the rail and the
+preview; the page's state and effects (the polled lists, request sealing and
+delivery, the preview frame and its overlay bridge, the dev-server controls)
+live in `useDesignTweakPageState.ts`, its one state hook. New state and effects
+go in the hook and new markup in the page; `DesignTweakPage.owners.test.tsx`
+pins that the page's state and effect hooks register only through it.
 
 Request/queue state lives in the app's data dir,
 `~/.kiro/crew/apps/design-tweak/data/` — see `skills/visual-edit/SKILL.md` for

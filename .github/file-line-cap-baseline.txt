@@ -80,7 +80,6 @@
 3177 test/test_subagent_scale.py
 2460 test/test_taskq_runner_adapter.py
 5831 test/test_vector_memory.py
-2145 website/src/apps/design-tweak/DesignTweakPage.tsx
 2125 website/src/pages/AppDetailPage.tsx
 2026 website/src/pages/connections/ConnectionsPage.tsx
 2004 website/src/test/InstancesViewport.test.tsx

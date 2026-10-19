@@ -3,6 +3,8 @@ import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
+import { pageFamilyFiles } from './pageFamily'
+
 /**
  * Design Tweak is a self-contained surface: the app never decides to move the
  * user to the chat tab. Error recovery and fallbacks resolve inside the panel.
@@ -14,10 +16,11 @@ import { describe, expect, it } from 'vitest'
  * clicks; that is the user moving themselves.
  */
 describe('design-tweak stays in the app', () => {
-  const src = readFileSync(
-    join(process.cwd(), 'src/apps/design-tweak/DesignTweakPage.tsx'),
-    'utf-8',
-  )
+  // The page is a split page: the facade plus the owners beside it.
+  const dir = join(process.cwd(), 'src/apps/design-tweak')
+  const src = pageFamilyFiles('DesignTweakPage', dir)
+    .map((f) => readFileSync(join(dir, f), 'utf-8'))
+    .join('\n')
 
   it('navigates exactly once, and only from the explicit open-in-chat control', () => {
     const calls = src.match(/navigate\(/g) ?? []
