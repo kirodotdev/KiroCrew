@@ -104,6 +104,8 @@ legacy metadata do not override a canonical execution.
 | `slack/transport_dispatch.py` | `handle_message_transport()` — full new-path dispatch wiring the three layers together |
 | `telegram/transport_dispatch.py` + `telegram/dispatch/` | `TelegramDispatcher` and the owners it is composed from — see [Telegram's dispatcher composition](#telegrams-dispatcher-composition) |
 | `discord/transport_dispatch.py` + `discord/transport_dispatch_*.py` | `DiscordDispatcher` and the owners it is composed from — see [Discord's dispatcher composition](#discords-dispatcher-composition) |
+| `discord/renderer.py` + `discord/renderer_*.py` | `DiscordRenderer`, `DiscordApprovalDecider` and the owners the renderer is composed from — see [Discord's renderer and client composition](#discords-renderer-and-client-composition) |
+| `discord/client.py` + `discord/client_*.py` | `DiscordClient` (Gateway WebSocket and REST v10 over aiohttp) and the owners it is composed from — see [Discord's renderer and client composition](#discords-renderer-and-client-composition) |
 | `telegram/renderer.py` + `telegram/renderer_*.py` | `TelegramRenderer`, `TelegramApprovalDecider` and the owners the renderer is composed from — see [Telegram's renderer and client composition](#telegrams-renderer-and-client-composition) |
 | `telegram/client.py` + `telegram/client_*.py` | `TelegramClient` (Bot API over aiohttp, long polling) and the owners it is composed from — see [Telegram's renderer and client composition](#telegrams-renderer-and-client-composition) |
 | `tool_call_title.py` + `tool_call_title_shell_*.py` | The tool-call titles a channel renderer shows (`derive_tool_call_title`), the Python mirror of `website/src/utils/toolCallTitle.ts` and `shellCommandParse.ts`, pinned to both by `test/fixtures/tool_call_titles.json`. `tool_call_title.py` keeps the tool-call types, the native and MCP classifiers, the English templates and the derivation, and is the import path for every name; the shell rules live in `tool_call_title_shell_parse.py` (the tokenizer, operands and the read-only grammars) and `tool_call_title_shell_classify.py` (the per-tool tables and classifiers, the whole-script pass), and a new shell rule goes to the one that holds the grammar or tool it touches |
@@ -736,7 +738,7 @@ Its contract:
 
 Discord owns no fence grammar of its own: `discord/renderer.py::_rotate_on_length` consumes the streaming contract through `split_markdown_safe_with_tier` (seal every chunk but the last, retain the last as the live buffer), its platform-cap fallback goes through `bounded_for_delivery`, and `discord/session_resume.py::_replay_preview` takes the FIRST chunk, split with `_default_redactor`, as a bounded preview of a replayed transcript message, which is sealed and therefore closes any block the shortening opened. Both async call sites await `asyncio.to_thread(...)`: the splitter terminates on pathological delimiter input, but its CPU work must not pause Discord heartbeats or unrelated turns on the event-loop thread. `test/test_messaging_split.py` pins each contract item above and `test/test_discord.py::TestRotationSplitting` pins the integration.
 
-**A caller owes the bounded-overlimit case an answer.** The whole-line placement above can hand back a chunk over `limit` by its fence scaffolding, so a channel whose transport truncates silently must bound it again against the platform's own cap. Discord does: `_limit()` is its declared 1900 minus 100 (1800), 200 characters below the 2000-char hard cap, which absorbs ordinary scaffolding, and `renderer._fit_platform_cap` slices anything still over the cap at the single seal chokepoint. Blind fixed-width slicing is the right last resort there — it keeps every authored character at the price of a boundary Markdown may render badly, where `client.send_message`'s own truncation would drop the tail including the synthetic closer and give the user no signal. Session replay has a different tradeoff because it is only a preview: `_replay_preview` passes at most twice the delivery limit of redacted text to the prefix-stable splitter, uses the full redacted length to retain the truncation marker, and emits that marker alone when one pathological fence cannot fit with its closer. The canonical transcript remains untouched.
+**A caller owes the bounded-overlimit case an answer.** The whole-line placement above can hand back a chunk over `limit` by its fence scaffolding, so a channel whose transport truncates silently must bound it again against the platform's own cap. Discord does: `_limit()` is its declared 1900 minus 100 (1800), 200 characters below the 2000-char hard cap, which absorbs ordinary scaffolding, and `renderer_text._fit_platform_cap` slices anything still over the cap at the single seal chokepoint. Blind fixed-width slicing is the right last resort there — it keeps every authored character at the price of a boundary Markdown may render badly, where `client.send_message`'s own truncation would drop the tail including the synthetic closer and give the user no signal. Session replay has a different tradeoff because it is only a preview: `_replay_preview` passes at most twice the delivery limit of redacted text to the prefix-stable splitter, uses the full redacted length to retain the truncation marker, and emits that marker alone when one pathological fence cannot fit with its closer. The canonical transcript remains untouched.
 
 `iter_fence_spans(text) -> Iterator[tuple[int, int]]` is the same machine viewed over a whole message instead of one chunk's line fragments: it yields the character spans that lie inside a fenced block, opener line through closer line, with an unclosed fence running to the end. Both it and `split_markdown_safe` drive the module's single `_advance` state machine, so the open/close rule — which run length closes which fence character — exists once. A consumer that needs "is this offset inside code?" uses it rather than re-deriving the rule; the fence regexes stay private.
 
@@ -909,7 +911,7 @@ entirely when the
 caller could not read a usage figure: absent means unknown, which is not 0% and
 must not render as a reassuring green.
 
-Discord is the first channel on the shared ladder: `discord/renderer.py` owns
+Discord is the first channel on the shared ladder: `discord/renderer_status.py` owns
 `DISCORD_PHASE_EMOJIS` (unicode rather than shortcodes, one code point each,
 because the reaction route carries the emoji as a percent-encoded path segment),
 `DISCORD_STALL_EMOJIS`, and a
@@ -3552,7 +3554,7 @@ runtime enforces owner-only access.
 ## Discord channel
 
 **Transport (`kiro_crew/discord/`).** A concrete `MessagingTransport` over a
-pure-aiohttp Discord Gateway WebSocket client (`client.py`): identify with
+pure-aiohttp Discord Gateway WebSocket client (`client_gateway.py`): identify with
 `DIRECT_MESSAGES` for DM-only installs; when `allowed_thread_ids` is non-empty,
 also request `GUILD_MESSAGES` and privileged `MESSAGE_CONTENT`. Heartbeat uses
 the server interval with jitter,
@@ -3864,6 +3866,59 @@ facade only under `TYPE_CHECKING`, and the facade imports every owner when it lo
 names the owners read, and these placement rules; `test/test_facade_mirror_guards.py`
 holds the facade to the mirror's contract (every name the tests patch through it reaches
 every owner binding it, and no owner imports it at run time).
+
+### Discord's renderer and client composition
+
+`DiscordRenderer` and `DiscordClient` are each one class composed from owners, the same
+way `DiscordDispatcher` is. `discord/renderer.py` and `discord/client.py` stay the only
+import path and patch surface: each binds the names its own code reads and
+`kiro_crew._facade_mirror` serves the rest from the owners and carries a patch of any of
+its names (`_APPROVAL_TIMEOUT_S`, `PhaseReactionLadder`, `time`, `asyncio`,
+`channel_outbound_permitted`, `sel`, ...) to every owner that reads it, so moved code runs
+byte for byte as it did in one module. New work of an owner's kind goes to that owner:
+
+| Owner | Holds |
+|---|---|
+| `renderer_text.py` | the text transforms applied to model output: the `[OPTIONS:]` and steering-marker strips, the delivered form a cut is graded through, the buried-image-reference check, subtext, the steer-chip neutralizer and the platform-cap slicer |
+| `renderer_components.py` | Discord message components: the button styles and layout limits, `build_option_components` and `build_model_components` (the dispatcher's model picker and spawn-approval prompt build from here too) |
+| `renderer_approval.py` | `DiscordApprovalDecider` and `_APPROVAL_TIMEOUT_S`: the wait an Approve or Deny press ends |
+| `renderer_status.py` | the typing indicator, the phase ladder's emoji vocabulary and `_MessageReactionSink`, the reasoning gate, the tool footer and the turn footer |
+| `renderer_live.py` | chunk intake: steer-marker detection (each complete marker is handed to `on_steer_consumed`), the steer chip, table conversion for delivery, the canonical `[OPTIONS:]` take and the segment text |
+| `client_rest.py` | the REST request ladder (`_api_request`): bucket pre-emption, the GLOBAL hold, the 429 and 5xx back-offs, the invalid-request breaker, the route key, `DiscordApiResult` and the shared session |
+| `client_recheck.py` | the mid-send destination re-check after every ladder wait (`_destination_still_permitted`, `_wait_then_revalidate`), `SendPermission` and `_guarded_destination` |
+| `client_gateway.py` | the Gateway WebSocket: the connection loop, hello, identify or resume, the op-1 heartbeat, and dispatch normalization into `DiscordInbound` and `DiscordInteraction` |
+
+`renderer.py` keeps the renderer's state and construction, the display-form redaction
+pass (`_redact_all`, `_redact_transformed`) and outbound image extraction (the "Discord
+transformed image text" sink names this file), the throttled live frame (`_stream_live`),
+the seam grade (`_seam_safe`), `_seal_current` and the reasoning note
+(`_flush_thinking`), because repository guards read them in that file: the security
+posture's sink row, `test_split_credential_boundary.py`'s delivery walk and its
+rotation-and-tally part, and the agent-sdk boundary baseline (the `LLMProvider`
+annotation of `__init__` and `bind_context_source`). Rotation, the seam record, the
+other sealing paths, the approval prompt and finalization stay beside them because they
+share that state and send through those sinks; the rotation-and-tally part's universal
+pins (one seam-record writer, every standalone send answers the seam question) read the
+facade and its owners as one module. `client.py` keeps the client's state and lifecycle,
+the REST verbs, the bodies they send (the JSON message payload and the multipart upload
+form, whose description redaction is the "Discord attachment description" sink) with
+the `api_json` / `api_files` entry points, the attachment download, the DM pairing cache
+and the thread check.
+
+An owner's function whose first parameter is `self` (annotated with the class under
+`TYPE_CHECKING`) is bound as the class attribute of the same name, so instance and
+class patches, `inspect.getsource` and every `self.<name>(...)` call reach it as they
+reach a method defined in the class body. Such a function's `__qualname__` is its bare
+name and its `__module__` the owner's, as in the dispatcher; `DiscordApprovalDecider`,
+`_MessageReactionSink`, `DiscordApiResult`, `SendPermission`, `DiscordInbound` and
+`DiscordInteraction` moved whole and their `__module__` names their owner. Nothing keys
+behaviour on either. A bound function needs nothing only a class body gives (`super()`,
+`__class__`, a mangled `__name`), and an owner never imports its facade except under
+`TYPE_CHECKING`. Owners log under their facade's logger name (`kiro_crew.discord.renderer`
+or `kiro_crew.discord.client`), which the facade itself binds by that literal name.
+`test/test_renderer_discord_composition_contract.py` and
+`test/test_client_discord_composition_contract.py` pin the owner sets, the bindings,
+the placement rules and the logger names.
 
 ### Resume-binding expectations (`messaging/resume_expectation.py`)
 

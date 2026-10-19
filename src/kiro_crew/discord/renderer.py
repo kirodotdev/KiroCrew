@@ -42,24 +42,41 @@ denying by default on timeout; the interaction handler resolves it via
 ``resolve_global``.
 
 Dependency direction is ``discord -> messaging`` (allowed).
+
+``DiscordRenderer`` is composed from owners: the text transforms applied to model output
+(``renderer_text``), button rows (``renderer_components``), ``DiscordApprovalDecider``
+(``renderer_approval``), typing, reactions and the footers (``renderer_status``) and
+chunk intake (``renderer_live``). An owner function whose first parameter is ``self`` is
+bound as the class attribute of the same name. This module keeps the renderer's state
+and construction, the display-form redaction pass, the throttled live frame, rotation,
+the seam grade, outbound images, every sealing path, the reasoning note, the approval
+prompt and finalization, and stays the only import path and patch surface:
+:mod:`kiro_crew._facade_mirror` carries a patch of one of its names to every owner that
+reads it. Which owner takes new work is recorded in
+``docs/system-specs/modules/messaging.md`` (Discord's renderer and client composition).
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib as _importlib
 import logging
 import os
 import re
+import sys as _sys
 import time
 import urllib.parse
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import _facade_mirror
 from kiro_crew.constants import (
     DENY_CAUSE_APPROVAL_TIMEOUT,
     split_trailing_protocol_suffix,
     strip_control_comments,
 )
+from kiro_crew.discord import renderer_live as _renderer_live
+from kiro_crew.discord import renderer_status as _renderer_status
 from kiro_crew.discord.client import (
     DISCORD_MAX_FILE_BYTES,
     DISCORD_MAX_FILES_PER_MESSAGE,
@@ -67,6 +84,20 @@ from kiro_crew.discord.client import (
     DISCORD_MAX_TOTAL_UPLOAD_BYTES,
     EDIT_GONE,
     EDIT_OK,
+)
+from kiro_crew.discord.renderer_approval import DiscordApprovalDecider
+from kiro_crew.discord.renderer_components import (
+    _STYLE_DANGER,
+    _STYLE_SUCCESS,
+    build_option_components,
+)
+from kiro_crew.discord.renderer_text import (
+    _as_subtext,
+    _delivered_form,
+    _extract_options,
+    _fit_platform_cap,
+    _neutralize_md,
+    _strip_steering,
 )
 from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S
 from kiro_crew.messaging.display_safety import (
@@ -117,7 +148,7 @@ if TYPE_CHECKING:
     from kiro_crew.discord.client import DiscordClient
     from kiro_crew.providers.base import LLMProvider
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("kiro_crew.discord.renderer")
 
 #: Sent in place of a length-rotation part that could not be delivered, so the
 #: parts on either side of the gap do not read as one continuous answer.
@@ -143,498 +174,15 @@ def _redact_transformed(text: str) -> str:
     return _DISCORD_MENTION_AT_RE.sub("@\u200b", text)
 
 
-# Discord's typing indicator lasts ~10s per trigger; refresh just under that
-# for the duration of a turn.
-_TYPING_REFRESH_S = 8.0
-
 # Min seconds between live streaming edits to one message. Discord rate-limits
 # message edits (~5/5s per channel), so we coalesce chunks and edit in place at
 # most this often. The final edit always lands regardless of throttle.
 _EDIT_THROTTLE_S = 1.2
 
-# Interactive approval wait; deny-by-default when it elapses with no press.
-# Owned by messaging.approval so every channel's window is the same one.
-_APPROVAL_TIMEOUT_S = APPROVAL_TIMEOUT_S
-
-#: Phase → reaction for the shared status ladder. Unicode only: Discord's
-#: reaction route takes the emoji itself as a path segment, so a Slack-style
-#: shortcode would be added literally and rejected. The meanings mirror the
-#: Slack ladder so someone reading both channels reads one story, and each mark
-#: is a single code point, which keeps percent-encoding out of the picture.
-DISCORD_PHASE_EMOJIS: dict[str, str | None] = {
-    "queued": "👀",
-    "thinking": "🤔",
-    "coding": "💻",
-    "browsing": "🌐",
-    "tool": "🔧",
-    "done": "🦞",
-    "error": "😱",
-}
-#: Additive marks for a turn that has gone quiet (soft first, then hard).
-DISCORD_STALL_EMOJIS = StallEmojis(soft="🥱", hard="😨")
-
 #: Max reasoning surfaced when ``discord.show_thinking`` is on. Subtext is grey
 #: and unscannable in bulk, so the note is a preview: the full reasoning stays in
 #: the dashboard Activity panel.
 _THINKING_PREVIEW_CHARS = 600
-
-# Button style constants (Discord component styles).
-_STYLE_PRIMARY = 1
-_STYLE_SECONDARY = 2
-_STYLE_SUCCESS = 3
-_STYLE_DANGER = 4
-
-# Discord component layout limits: an action row holds at most 5 buttons, and a
-# legacy (non-Components-V2) message holds at most 5 action rows.
-_BUTTONS_PER_ROW = 5
-_MAX_ACTION_ROWS = 5
-#: Platform hard-limit backstop for any button set. A caller's own cap decides
-#: how many choices to offer; this only guarantees the payload Discord accepts.
-_MAX_BUTTONS = _BUTTONS_PER_ROW * _MAX_ACTION_ROWS
-#: Component-spec ceiling on a button label.
-_BUTTON_LABEL_CHARS = 80
-
-# kiro-cli's inline "[STEERING steer-<id>: …]" steer-ack marker (see the
-# Telegram renderer for the full rationale — Discord likewise has no parser).
-#
-# The frame is recognised by its GRAMMAR, and that is where the summary is
-# allowed to contain newlines: ``messaging.driver._STEER_MARKER_RE`` reads the
-# same frame with ``re.DOTALL``, ``constants._STEERING_TAIL_PREFIX_RE`` closes
-# that grammar's prefix with ``re.DOTALL`` too, and the dashboard's own parser
-# (``website/src/app-sdk/protocol/steering.ts``) spells the summary
-# ``[\s\S]*?``. kiro-cli's rephrase is free to wrap, so a class that stopped at
-# the first line end left a real marker unrecognised. ``]`` is the terminator
-# this grammar actually has.
-#
-# Requiring ``steer-<id>`` rather than a bare ``[STEERING`` is the ruling
-# ``messaging.driver`` already applies: opening with the sentinel is not being a
-# marker, so prose that merely mentions it stays visible now that the class no
-# longer stops at a line end. The id class matches driver's, and is the SAME in
-# both patterns, because the summary is matched at the offset the marker pattern
-# chose -- a narrower id class there would silently drop the summary.
-_STEER_MARKER_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+(?:\s*:[^\]]*)?\]", re.IGNORECASE)
-_STEER_SUMMARY_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+\s*:\s*([^\]]*)\]", re.IGNORECASE)
-
-
-def _extract_options(text: str) -> tuple[str, list[str]]:
-    """Split text into ``(body, options)``, holding back a streamed partial.
-
-    ``hide_partial=True`` because this renderer STREAMS: a still-arriving
-    ``[OPTIONS…`` fragment really may be a marker mid-flight, and the next frame
-    re-renders from the full buffer, so hiding it costs nothing permanent.
-    """
-    return split_options_trailer(text, hide_partial=True)
-
-
-def _strip_steering(text: str) -> str:
-    """Remove kiro-cli's inline ``[STEERING …]`` steer-ack marker from output,
-    including an UNCLOSED trailing fragment still streaming in (see the
-    Telegram renderer for the show-then-vanish rationale)."""
-    cleaned = _STEER_MARKER_RE.sub("", text)
-    cleaned = re.sub(r"\[STEERING\b[^\]\r\n]*$", "", cleaned)  # unclosed, streaming
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-    return cleaned
-
-
-def _delivered_form(source: str) -> str:
-    """*source* as the reader will actually see it, for grading a cut.
-
-    ``safe_split_offset`` grades both sides of a candidate boundary through this,
-    and its contract names surrounding whitespace as one of the things a renderer
-    removes on the way out. Trimming matters more than it looks: a cut placed just
-    after a trailing space leaves each raw half safe while the delivered halves sit
-    flush together, and Discord shows the reader the trimmed form. Modelling MORE
-    trimming than a path happens to perform only makes the grade stricter, which is
-    the safe direction; modelling less is what lets a boundary through.
-    """
-    return _strip_steering(source).strip()
-
-
-def _transform_buries_refs(canonical: str, presented: str) -> bool:
-    """True when a presentation transform hides a local ref extraction needs.
-
-    Upload extraction reads the DELIVERED text, so a transform that fences an
-    in-cell image leaves no extractable span and the raw filesystem path would
-    ship as literal content.
-
-    Compares COUNTS rather than emptiness because loss is per-ref: a message
-    carrying a prose image beside a grid-form table keeps the prose span while
-    losing the in-cell one, which would upload the first picture and expose the
-    second one's path. Any drop is a loss.
-    """
-    return len(protected_ref_spans(presented)) < len(protected_ref_spans(canonical))
-
-
-def _as_subtext(text: str) -> str:
-    """Render *text* as Discord subtext.
-
-    The ``-# `` marker applies to ONE line, so a multi-line note needs it on
-    each; a blank line would end the block, so blank lines are dropped rather
-    than emitted as a bare marker.
-    """
-    lines = (line.strip() for line in text.splitlines())
-    return "\n".join(f"-# {line}" for line in lines if line)
-
-
-def _own_reaction_route(channel_id: str, message_id: str, emoji: str) -> str:
-    """REST route for the bot's OWN reaction on a message.
-
-    ``PUT`` adds it and ``DELETE`` removes it, so one route carries both halves
-    of the status ladder's swap. The emoji is percent-encoded with nothing safe:
-    it is a path segment here, not a query value.
-    """
-    encoded = urllib.parse.quote(emoji, safe="")
-    return f"/channels/{channel_id}/messages/{message_id}/reactions/{encoded}/@me"
-
-
-class _MessageReactionSink:
-    """The status ladder's emoji sink for one Discord message.
-
-    Routes through the client's public request ladder so both verbs share its
-    rate-limit accounting and retry budget. Reaction edits are rate-limited per
-    channel, which is what the ladder's debounce exists to respect; a rejected
-    edit reports itself and is dropped, since a reaction is never the turn.
-    """
-
-    def __init__(self, client: "DiscordClient", channel_id: str, message_id: str) -> None:
-        self._client = client
-        self._channel_id = channel_id
-        self._message_id = message_id
-
-    async def _edit(self, method: str, emoji: str) -> None:
-        route = _own_reaction_route(self._channel_id, self._message_id, emoji)
-        result = await self._client.api_json(method, route, None)
-        if not result:
-            logger.debug("discord: reaction %s %s failed (%s)", method, emoji, result.detail)
-
-    async def add(self, emoji: str) -> None:
-        await self._edit("PUT", emoji)
-
-    async def remove(self, emoji: str) -> None:
-        await self._edit("DELETE", emoji)
-
-
-def _neutralize_md(raw: str) -> str:
-    """Collapse whitespace, cap length, and strip Markdown control chars from a
-    steer's text so the chip renders literally (inside a blockquote) and can't
-    perturb surrounding formatting."""
-    t = " ".join((raw or "").split())[:120]
-    return re.sub(r"[*_`\[\]()]", "", t)
-
-
-def build_option_components(options: list[str], origin_tag: str = "") -> list[dict] | None:
-    """Build Discord button action rows from ``[OPTIONS:]`` labels.
-
-    ``custom_id`` is ``opt:<i>:<origin_tag>`` (``opt:<i>`` when no tag is given --
-    the pre-provenance legacy shape) -- Discord caps it at 100 chars, which the
-    12-hex tag fits comfortably, and the label is recovered from the button text
-    at interaction time. Labels cap at 80 chars per the component spec. The
-    ``max_buttons`` cap is applied UPSTREAM via ``apply_options_cap`` (overflow
-    degrades to numbered text); the slice below is the platform hard-limit
-    backstop only.
-    """
-    if not options:
-        return None
-    suffix = f":{origin_tag}" if origin_tag else ""
-    rows: list[dict] = []
-    row: list[dict] = []
-    for i, opt in enumerate(options[:_MAX_BUTTONS]):
-        row.append(
-            {
-                "type": 2,  # button
-                "style": _STYLE_SECONDARY,
-                "label": opt[:_BUTTON_LABEL_CHARS],
-                "custom_id": f"opt:{i}{suffix}",
-            }
-        )
-        if len(row) == _BUTTONS_PER_ROW:
-            rows.append({"type": 1, "components": row})  # action row
-            row = []
-    if row:
-        rows.append({"type": 1, "components": row})
-    return rows
-
-
-def build_model_components(choices: Sequence[tuple[str, str]], current: str) -> list[dict] | None:
-    """Build the ``!model`` button rows from ``(model_id, label)`` choices.
-
-    ``custom_id`` is the INDEX only (``m:<i>``), never the model id: Discord caps
-    a custom_id at 100 characters and replays old component ids indefinitely, so
-    an id embedded here would both risk the cap and outlive the advertised set it
-    came from. The dispatcher's picker registry resolves the index back against
-    the exact list it posted, and refuses once that list has expired.
-
-    The current pick is marked with a bullet and rendered in the primary style,
-    so the active model is readable without pressing anything.
-    """
-    if not choices:
-        return None
-    rows: list[dict] = []
-    row: list[dict] = []
-    for i, (model_id, label) in enumerate(choices[:_MAX_BUTTONS]):
-        picked = model_id == current
-        row.append(
-            {
-                "type": 2,  # button
-                "style": _STYLE_PRIMARY if picked else _STYLE_SECONDARY,
-                "label": (f"• {label}" if picked else label)[:_BUTTON_LABEL_CHARS],
-                "custom_id": f"m:{i}",
-            }
-        )
-        if len(row) == _BUTTONS_PER_ROW:
-            rows.append({"type": 1, "components": row})  # action row
-            row = []
-    if row:
-        rows.append({"type": 1, "components": row})
-    return rows
-
-
-def _fit_platform_cap(text: str, limit: int = DISCORD_MAX_TEXT) -> list[str]:
-    """Slice *text* into payloads Discord's message API will accept whole.
-
-    ``split_markdown_safe`` budgets every chunk against :meth:`_limit`, with one
-    documented exception: a logical line that admits no cut clean on both sides
-    is placed WHOLE rather than cut into a fence delimiter its source never
-    contained, and the chunk carries its fence scaffolding — the reopener line
-    plus the newline and synthetic closer — on top of the limit. The 100
-    characters :meth:`_limit` holds back absorb ordinary scaffolding, but an
-    opener line long enough (a several-hundred-backtick run, a huge info string)
-    still pushes such a chunk past Discord's hard cap. ``client.send_message``
-    truncates to that cap, which drops the tail INCLUDING the synthetic closer,
-    so the user reads an unterminated code block missing content and gets no
-    signal that anything was lost.
-
-    Blind fixed-width slicing is the right last resort in exactly that regime:
-    it keeps every authored character at the price of a boundary Markdown may
-    render badly, where truncation keeps neither. Nothing here re-derives fence
-    grammar — the splitter owns that, and this only bounds what reaches the API.
-    """
-    return chunk_text(text, limit) or [text]
-
-
-class DiscordApprovalDecider:
-    """Awaits a button approval for a tool-permission request.
-
-    Process-global Future registry keyed by ``session_key:request_id`` so
-    concurrent turns (and users) never resolve each other's prompts. Denies by
-    default when the wait elapses.
-
-    Nonce guard: ACP request IDs are reusable (a provider or gateway restart
-    resets the sequence), so a stale Approve button whose ``custom_id`` carries
-    an old request ID could otherwise resolve a NEW pending request for an
-    unrelated tool. Each rendered prompt therefore embeds an unpredictable
-    per-prompt nonce (``register_nonce``), and ``resolve_global`` only resolves
-    when the pressed button's nonce matches the one registered for that key —
-    a press from any earlier prompt (or earlier process) fails closed.
-
-    The decision window opens when the nonce is armed, not when the wait starts:
-    ``register_nonce`` reserves the future and ``__call__`` adopts it. So a press
-    lands inside the window from the moment the prompt is built, including across
-    the suspension points between posting it and awaiting the decision.
-
-    It closes at the decision, at the wait's timeout, or at a ``retire`` /
-    ``refuse_undelivered`` for a prompt that never went out -- NOT when the prompt
-    stops being visible. Nothing here strips a timed-out prompt's buttons, so they
-    stay clickable in the channel indefinitely; a press on them finds no nonce and
-    is told the approval expired, which by then it has.
-    """
-
-    _REGISTRY: dict[str, "asyncio.Future[bool]"] = {}
-    #: key -> the per-prompt nonce embedded in that prompt's buttons.
-    _NONCES: dict[str, str] = {}
-    #: Keys whose wait runs OUTSIDE the turn that armed them, so the arming turn's
-    #: end must not close their window. A spawn approval is the case: the gate
-    #: awaits it in its own task and the agent is told to end its turn, so the
-    #: per-turn sweep would otherwise drop a prompt the user is still looking at.
-    _DETACHED: set[str] = set()
-
-    def __init__(self, *, session_key: str) -> None:
-        self._session_key = session_key
-        #: Why the LAST call denied -- see ``messaging.driver.ApprovalDecider``.
-        self.last_deny_cause = ""
-
-    @staticmethod
-    def key(session_key: str, request_id: str | int) -> str:
-        return f"{session_key}:{request_id}"
-
-    @classmethod
-    def register_nonce(cls, key: str, *, detached: bool = False) -> str:
-        """Mint the per-prompt nonce for *key* and OPEN its decision window.
-
-        Called by whatever is about to post the prompt, so it runs on the event
-        loop the wait will run on.
-
-        Reserving the future here, rather than in ``__call__``, is what keeps a
-        press inside the window while the prompt is being posted. ``TurnDriver``
-        dispatches ``PROMPT_CHOICE`` to the renderer and only then awaits the
-        decider, and the renderer suspends in between -- a thread hop for the
-        display-safety scan, then the send. A press landing in that gap found the
-        nonce armed but no future, so ``resolve_global`` judged it a stale button
-        and failed closed: the user was told the approval had expired, and the
-        request denied itself when the window elapsed.
-
-        Never replaces a LIVE future. A second arm for one key, or an arm that
-        follows the wait, keeps the object the waiter is blocked on; replacing it
-        would leave that waiter on a future nobody resolves. A DONE future IS
-        replaced, and that is the isolation bound: a decision left unawaited must
-        not be adoptable by the next request to reuse this key.
-
-        ``detached`` says the wait will run outside the turn arming this, so
-        :meth:`discard_session` must leave it alone. Pass it whenever the prompt
-        outlives its own turn -- the window then closes at the decision, at the
-        wait's timeout, or at a ``retire``, and nowhere else.
-        """
-        nonce = new_approval_nonce()
-        cls._NONCES[key] = nonce
-        if detached:
-            cls._DETACHED.add(key)
-        reserved = cls._REGISTRY.get(key)
-        if reserved is None or reserved.done():
-            cls._REGISTRY[key] = asyncio.get_running_loop().create_future()
-        return nonce
-
-    @classmethod
-    def retire(cls, key: str) -> None:
-        """Close a decision window whose prompt never went out (idempotent).
-
-        ``__call__`` retires the nonce and the reservation together with the wait
-        it ran, but a caller that arms and then fails to post has no wait to run
-        that ``finally``. Without this, both would outlive a prompt nobody ever
-        saw, and the nonce is what authorizes a press.
-
-        For a caller with somewhere else to fall through to, so no wait of its own
-        runs on this key. A caller whose driver WILL await the decider wants
-        :meth:`refuse_undelivered` instead: dropping the reservation there only
-        means the wait opens a fresh window and spends the whole timeout on a
-        prompt nobody can see.
-        """
-        cls._NONCES.pop(key, None)
-        cls._REGISTRY.pop(key, None)
-        cls._DETACHED.discard(key)
-
-    @classmethod
-    def refuse_undelivered(cls, key: str) -> None:
-        """Record a denial for a prompt that never reached the channel.
-
-        The prompt is unanswerable, so the only safe verdict is a refusal -- and
-        recording it on the reservation the driver is about to adopt is what makes
-        that refusal immediate. The alternative, dropping the reservation, reaches
-        the same verdict only after the wait has spent the full decision window on
-        a prompt nobody can see, and reports that elapsed wait as an expiry.
-
-        Leaves the maps alone: the adopting ``__call__`` clears both when it
-        consumes the decision, which keeps one owner for that cleanup. A key with
-        no live reservation is left untouched, so this cannot overwrite a decision
-        the user actually made.
-        """
-        reserved = cls._REGISTRY.get(key)
-        if reserved is not None and not reserved.done():
-            reserved.set_result(False)
-
-    @classmethod
-    def discard_session(cls, session_key: str) -> None:
-        """Drop *session_key*'s unawaited reservations at the end of its turn.
-
-        ``__call__`` clears its own entry in a ``finally``, and the failed-post
-        paths above clear theirs, so this covers the one case neither can: the
-        prompt went out and the turn then ended before the driver reached the
-        decider -- a cancellation, or a failure between the two. No wait ever ran,
-        so nothing else closes that window, and the nonce left behind is what
-        authorizes a press.
-
-        Drops only PENDING reservations. A resolved one holds a decision that was
-        already delivered, and the prefix carries its own ``:`` so one session key
-        cannot match another that merely starts the same way.
-
-        A reservation marked detached by :meth:`register_nonce` is left alone: its
-        wait runs in another task and survives this turn, so closing it here would
-        strand a prompt the user can still see, and answer their press with an
-        expiry the window had not actually reached.
-        """
-        prefix = f"{session_key}:"
-        for k in [
-            k
-            for k, fut in cls._REGISTRY.items()
-            if k.startswith(prefix) and not fut.done() and k not in cls._DETACHED
-        ]:
-            cls._REGISTRY.pop(k, None)
-            cls._NONCES.pop(k, None)
-
-    async def __call__(self, event: Any) -> bool:
-        self.last_deny_cause = ""
-        k = self.key(self._session_key, getattr(event, "request_id", ""))
-        # Adopt the reservation opened when this prompt's nonce was armed. The
-        # press may ALREADY have landed, in the gap between the prompt going out
-        # and this wait starting, in which case the reservation holds the user's
-        # decision and there is nothing left to await. Minting a fresh future
-        # here would discard that decision and deny when the window elapsed.
-        reserved = DiscordApprovalDecider._REGISTRY.get(k)
-        if reserved is not None and reserved.done():
-            if reserved.cancelled() or reserved.exception() is not None:
-                # A torn-down reservation, not a decision. Open a fresh window
-                # rather than read it as consent or as a refusal.
-                reserved = None
-            else:
-                try:
-                    return bool(reserved.result())
-                finally:
-                    DiscordApprovalDecider._REGISTRY.pop(k, None)
-                    DiscordApprovalDecider._NONCES.pop(k, None)
-                    # Every exit that drops this key drops its detached mark with
-                    # it. A mark outliving its key exempts that key from the
-                    # turn-end sweep for the life of the process, so the next
-                    # request reusing it is swept by nothing.
-                    DiscordApprovalDecider._DETACHED.discard(k)
-        fut: "asyncio.Future[bool]" = (
-            reserved if reserved is not None else asyncio.get_running_loop().create_future()
-        )
-        DiscordApprovalDecider._REGISTRY[k] = fut
-        try:
-            answer = bool(await asyncio.wait_for(fut, _APPROVAL_TIMEOUT_S))
-            # A button was pressed: a loop paused for approval in this session resumes.
-            from kiro_crew.autonudge import release_approval_hold_for
-
-            release_approval_hold_for(self._session_key, why="an approval was answered")
-            return answer
-        except asyncio.TimeoutError:
-            # Recorded for the driver, which steers the cause into the turn
-            # before it rejects, so the model hears "expired" not "denied".
-            self.last_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT
-            # Nobody pressed a button for the whole window, so a monitoring loop
-            # bound to this session cannot act either -- record it so the loop
-            # stops on its next wake instead of spending the rest of its cycle
-            # cap being denied. Inert for a session with no loop
-            # (``notify_approval_stalled`` resolves by binding key), and
-            # best-effort: a monitoring convenience must never change how this
-            # turn's denial is reported.
-            try:
-                from kiro_crew.autonudge import get_instance as _autonudge_get
-
-                _autonudge = _autonudge_get()
-                if _autonudge is not None:
-                    _autonudge.notify_approval_stalled(self._session_key)
-            except Exception:
-                logger.debug("autonudge.notify_approval_stalled failed", exc_info=True)
-            return False  # deny-by-default on timeout
-        finally:
-            DiscordApprovalDecider._REGISTRY.pop(k, None)
-            # Retire the prompt's nonce with the decision window: a press on
-            # the (now stale) buttons can never resolve a future request.
-            DiscordApprovalDecider._NONCES.pop(k, None)
-            DiscordApprovalDecider._DETACHED.discard(k)
-
-    @classmethod
-    def resolve_global(cls, key: str, approved: bool, *, nonce: str = "") -> bool:
-        """Resolve a pending approval by key. Returns True iff one was waiting
-        AND the button's nonce matches the registered per-prompt nonce."""
-        expected = cls._NONCES.get(key)
-        if not expected or not nonce or not nonce_eq(expected, nonce):
-            return False  # stale/foreign button — fail closed
-        fut = cls._REGISTRY.get(key)
-        if fut is not None and not fut.done():
-            fut.set_result(bool(approved))
-            return True
-        return False
 
 
 class DiscordRenderer(Renderer):
@@ -753,184 +301,6 @@ class DiscordRenderer(Renderer):
         # User's own mid-turn steer texts (in order), recorded via note_steer.
         self._steer_texts: list[str] = []
 
-    # -- lifecycle ----------------------------------------------------------
-    async def on_turn_start(self) -> None:
-        # Typing indicator plus the "queued" reaction — no placeholder bubble.
-        # Idempotent (dispatch + driver both call this).
-        if self._typing_task is not None or self._closed:
-            return
-        self._ensure_ladder()  # set_phase("queued")
-        self._typing_task = asyncio.create_task(self._typing_loop())
-
-    # -- status ladder ------------------------------------------------------
-    def _ensure_ladder(self) -> PhaseReactionLadder | None:
-        """Lazily arm the shared phase ladder at ``queued``.
-
-        Returns ``None`` when reactions are off for this channel, when the
-        transport cannot react, or when there is no message to react on: the
-        ladder marks the USER's message, and there is nothing to decorate
-        without one.
-        """
-        if self._ladder is not None:
-            return self._ladder
-        if not self._reactions_enabled or not self._react_message_id:
-            return None
-        if not self.capabilities.reactions or self._closed:
-            # A late event after teardown must not arm a fresh ladder, whose
-            # timers would then outlive the turn.
-            return None
-        self._ladder = PhaseReactionLadder(
-            _MessageReactionSink(self._client, self._channel_id, self._react_message_id),
-            emojis=DISCORD_PHASE_EMOJIS,
-            stall=DISCORD_STALL_EMOJIS,
-        )
-        self._ladder.set_phase(PHASE_QUEUED)
-        return self._ladder
-
-    def _set_phase(self, phase: str) -> None:
-        ladder = self._ensure_ladder()
-        if ladder is not None:
-            ladder.set_phase(phase)
-            self._note_progress()
-
-    def _note_progress(self) -> None:
-        """Tell the ladder the turn is moving, un-pausing it after an approval."""
-        ladder = self._ladder
-        if ladder is None:
-            return
-        if self._ladder_paused:
-            self._ladder_paused = False
-            ladder.resume_stall_watchdog()
-        else:
-            ladder.on_progress()
-
-    async def _typing_loop(self) -> None:
-        """Keep the 'typing…' indicator alive (~10s per trigger) for the
-        duration of the turn. Cancelled by ``_stop_typing``."""
-        try:
-            while not self._closed:
-                try:
-                    await self._client.send_typing(self._channel_id)
-                except Exception:
-                    logger.debug("Discord: typing refresh failed", exc_info=True)
-                await asyncio.sleep(_TYPING_REFRESH_S)
-        except asyncio.CancelledError:
-            pass
-
-    def _stop_typing(self) -> None:
-        self._closed = True
-        task, self._typing_task = self._typing_task, None
-        if task is not None and not task.done():
-            task.cancel()
-
-    async def on_text_chunk(self, text: str) -> None:
-        self._set_phase(PHASE_THINKING)
-        # Land any accumulated reasoning first so it reads above the answer
-        # (no-op when show_thinking is off or nothing accumulated).
-        await self._flush_thinking()
-        self._buf.append(text)
-        self._delivery_text = None
-        self._tool = ""  # text resumed -> drop the transient tool footer
-        # 1) Rotate to a fresh message at each COMPLETE [STEERING …] marker.
-        await self._rotate_at_markers()
-        # 1b) Materialize the pending chip once real post-steer text exists.
-        self._materialize_chip()
-        # 1c) Convert finished tables before anything measures the segment.
-        await self._convert_tables(final=False)
-        # A valid trailing table may still receive rows. Splitting or displaying
-        # it now would either freeze a partial card or expose raw pipes; keep the
-        # segment buffered until prose terminates the run or the turn finishes.
-        if not self._table_pending:
-            # 2) Rotate when a segment would exceed one Discord message.
-            await self._rotate_on_length()
-            # 3) Live-stream the current segment (throttled in-place edit).
-            await self._stream_live()
-
-    def _render_tables_for_delivery(self, raw: str, *, final: bool) -> str:
-        """Adapt tables without handing a generated fence to message rotation."""
-        converted = self.render_tables_for_target(raw, final=final)
-        if converted != raw and len(converted) > self._limit():
-            # Generated grids can require a longer fence when a cell contains
-            # backticks. Prefer cards because they remain independently readable
-            # across ordinary text chunks; an unrepresentable card run reports
-            # its retained grid so a fitting safe raw table can stay whole.
-            forced, generated_grid = self.render_tables_for_target_with_metadata(
-                raw,
-                policy=TABLE_POLICY_CARDS,
-                final=final,
-            )
-            if generated_grid and len(forced) > self._limit():
-                safe_raw = self.safe_raw_table_fallback(
-                    raw,
-                    policy=TABLE_POLICY_CARDS,
-                    final=final,
-                )
-                if safe_raw is not None and len(safe_raw) <= self._limit():
-                    return safe_raw
-            return forced
-        return converted
-
-    async def _convert_tables(self, *, final: bool) -> None:
-        """Refresh outbound table presentation while preserving canonical text.
-
-        Protocol recognition always reads ``_buf``. The rendered snapshot is
-        used only for streaming, sizing, and delivery, so card text that happens
-        to resemble a control marker remains visible content. A transformed
-        segment that already exceeds Discord's cap stays buffered until a
-        terminal seal, when its presentation can be split without needing to
-        map display offsets back onto still-growing Markdown source.
-
-        A card is abandoned when it would bury a local image ref on a transport
-        that can upload one: a delivered picture outranks table presentation,
-        and shipping the raw path as text would both lose the upload and expose
-        a local path. Such a segment degrades to raw pipes with a working image.
-        """
-        raw = _strip_steering("".join(self._buf))
-        converted = self._render_tables_for_delivery(raw, final=final)
-        self._delivery_text = converted if converted != raw else None
-        if (
-            self._delivery_text is not None
-            and self._uploads_enabled()
-            and self._segment_uploads_safe
-            and await asyncio.to_thread(_transform_buries_refs, raw, converted)
-        ):
-            self._delivery_text = None
-        if final:
-            self._table_pending = False
-            return
-
-        final_render = self._render_tables_for_delivery(raw, final=True)
-        trailing_table = converted != final_render
-        transformed_over_limit = self._delivery_text is not None and len(converted) > self._limit()
-        self._table_pending = trailing_table or transformed_over_limit
-
-    def _take_canonical_options(self) -> list[str]:
-        """Remove an authored OPTIONS trailer before presentation transforms.
-
-        Table cards can join separate cells into text that resembles protocol.
-        Extracting once from the canonical buffer ensures only an actual model
-        directive becomes controls; generated display text remains content.
-        """
-        body, options = _extract_options(strip_control_comments("".join(self._buf)))
-        # Trailing control-tag lines are protocol too, and a message that
-        # carries both puts one of them last -- so strip on both sides of the
-        # trailer. Complete tags only: the seal is the end of the stream, and a
-        # partial tail there is the assistant's own prose.
-        body = strip_control_comments(body)
-        self._buf = [body]
-        self._delivery_text = None
-        return options
-
-    def _materialize_chip(self) -> None:
-        """Prepend the pending steer chip to the segment — but only when the
-        segment carries real text (an end-of-stream marker never posts a
-        chip-only ack bubble)."""
-        if self._pending_chip and self._segment_text().strip():
-            body = "".join(self._buf).lstrip("\n")
-            self._buf = [f"{self._pending_chip}\n\n{body}"]
-            self._delivery_text = None
-            self._pending_chip = ""
-
     async def on_steer_consumed(self, summary: str = "") -> None:
         """Seal the pre-steer segment at the driver's structured boundary."""
         self._materialize_chip()
@@ -966,22 +336,6 @@ class DiscordRenderer(Renderer):
         self._delivery_text = None
         if sealed:
             self._open_new_message()
-
-    async def _rotate_at_markers(self) -> None:
-        """Defence for callers that bypass TurnDriver and pass raw markers."""
-        while True:
-            self._materialize_chip()
-            raw = "".join(self._buf)
-            marker = _STEER_MARKER_RE.search(raw)
-            if marker is None:
-                return
-            self._buf = [raw[: marker.start()]]
-            self._delivery_text = None
-            summary_match = _STEER_SUMMARY_RE.match(raw, marker.start())
-            summary = _neutralize_md(summary_match.group(1)) if summary_match else ""
-            await self.on_steer_consumed(summary)
-            self._buf = [raw[marker.end() :]]
-            self._delivery_text = None
 
     async def _rotate_on_length(self) -> None:
         """Rotate overlong output while retaining local refs for semantic seals."""
@@ -1211,26 +565,6 @@ class DiscordRenderer(Renderer):
             # part's seam is graded against it, and it lands below a held note.
             self._record_sent(LOST_PART_NOTICE)
             self._pending_note_tail = ""
-
-    def _open_new_message(self) -> None:
-        """Next render creates a fresh message instead of editing the old one."""
-        self._stream_mid = None
-        self._shown = ""
-        # The next fresh send opens a new bubble whose predecessor is whatever the
-        # reader last saw (``_sent_tail``); capture it there, not here, so this
-        # stays empty until the bubble actually exists.
-        self._bubble_above = ""
-
-    def _segment_text(self) -> str:
-        """Current outbound text, with protocol removed only from canonical source.
-
-        Presentation snapshots are derived only after canonical protocol
-        handling and must be returned verbatim: parsing them again could
-        reinterpret table cards as control markers.
-        """
-        if self._delivery_text is not None:
-            return self._delivery_text
-        return _strip_steering("".join(self._buf))
 
     async def _stream_live(self, *, force: bool = False) -> None:
         """Throttled in-place edit of the current segment. Sends the message on
@@ -1714,17 +1048,6 @@ class DiscordRenderer(Renderer):
             logger.warning("discord: markup fallback after a failed upload failed", exc_info=True)
             return False
 
-    async def on_thinking(self, text: str) -> None:
-        # The ladder moves on reasoning regardless: the reaction reports what the
-        # agent is doing, which is independent of whether the words are shown.
-        self._set_phase(PHASE_THINKING)
-        if not self._show_thinking:
-            # Reasoning stays private unless the operator opts in (parity with
-            # Telegram), so it is not even accumulated.
-            return None
-        self._thinking += text or ""
-        return None
-
     async def _flush_thinking(self, *, from_on_done: bool = False) -> None:
         """Post the accumulated reasoning once, as its own subtext message.
 
@@ -1822,17 +1145,6 @@ class DiscordRenderer(Renderer):
             # ``_pending_note_tail``.
             self._pending_note_tail = note
 
-    async def on_tool_call(
-        self, tool_call_id: str, title: str, tool_kind: str = "", tool_purpose: str = ""
-    ) -> None:
-        # Surface mid-turn tool activity as a transient "🔧 {tool}…" footer on
-        # the live bubble (force=True so it shows immediately). We deliberately
-        # do NOT seal a message here — see the Telegram renderer's rationale.
-        self._last_tool = title or tool_kind or "tool"
-        self._tool = self._last_tool
-        self._set_phase(phase_for_tool_title(self._last_tool, tool_kind))
-        await self._stream_live(force=True)
-
     async def on_prompt_choice(
         self,
         options: list[dict[str, Any]],
@@ -1920,14 +1232,6 @@ class DiscordRenderer(Renderer):
             await self._client.send_message(self._channel_id, "🗜️ Compacting context…")
         except Exception:
             logger.debug("Discord: compaction notice send failed", exc_info=True)
-
-    def note_steer(self, text: str) -> None:
-        """Record the user's own mid-turn steer text (their typed words, NOT
-        the redacted backend echo); rendered as an inline "↪️ steered" chip.
-        Capped to avoid unbounded growth on a pathological steer burst."""
-        t = (text or "").strip()
-        if t and len(self._steer_texts) < 50:
-            self._steer_texts.append(t)
 
     async def on_done(self, stop_reason: str = "") -> None:
         if self._finalized:
@@ -2053,33 +1357,6 @@ class DiscordRenderer(Renderer):
         await self._seal_current(components=components)
         await self._maybe_send_redaction_notice()
 
-    def _context_pct(self) -> float | None:
-        """This session's context-window usage, or ``None`` when unknown.
-
-        Unknown is not 0: an unbound or failing provider must not render as a
-        reassuring "plenty of room" chip.
-        """
-        provider = self._context_source
-        if provider is None:
-            return None
-        try:
-            return float(provider.context_usage_pct())
-        except Exception:
-            logger.debug("discord: context usage unavailable", exc_info=True)
-            return None
-
-    def _with_turn_footer(self, text: str) -> str:
-        """Append the one-line turn footer as Discord subtext.
-
-        Dropped rather than truncated when the segment leaves no room: a clipped
-        answer costs the user more than a missing timing line. ``_limit()``
-        already holds back headroom below the platform cap for exactly this.
-        """
-        footer = f"-# {format_turn_status(max(0.0, self._now() - self._t0), self._context_pct())}"
-        if len(text) + len(footer) + 2 > DISCORD_MAX_TEXT:
-            return text
-        return f"{text}\n\n{footer}"
-
     def bind_context_source(self, provider: "LLMProvider | None") -> None:
         """Authorize the session provider the turn footer reads usage from.
 
@@ -2093,14 +1370,6 @@ class DiscordRenderer(Renderer):
         # so a chunk can never overflow and get cut mid-word by the API.
         cap = self.capabilities.max_message_chars or 1900
         return max(500, cap - 100)
-
-    def _chip_for_seal(self, i: int) -> str | None:
-        """The steer chip (a "> quote" blockquote of the USER's own words) that
-        heads the segment opened by the i-th rotation."""
-        if 0 <= i < len(self._steer_texts):
-            t = _neutralize_md(self._steer_texts[i])
-            return f"> ↪️ {t}" if t else None
-        return None
 
     async def close(self) -> None:
         """Idempotent teardown: stop the typing indicator, finalize the turn if
@@ -2116,3 +1385,95 @@ class DiscordRenderer(Renderer):
         ladder, self._ladder = self._ladder, None
         if ladder is not None:
             await ladder.close()
+
+    # Bound from renderer_status: typing, reactions, footers.
+    on_turn_start = _renderer_status.on_turn_start
+    _ensure_ladder = _renderer_status._ensure_ladder
+    _set_phase = _renderer_status._set_phase
+    _note_progress = _renderer_status._note_progress
+    _typing_loop = _renderer_status._typing_loop
+    _stop_typing = _renderer_status._stop_typing
+    on_thinking = _renderer_status.on_thinking
+    on_tool_call = _renderer_status.on_tool_call
+    _context_pct = _renderer_status._context_pct
+    _with_turn_footer = _renderer_status._with_turn_footer
+
+    # Bound from renderer_live: chunk intake.
+    on_text_chunk = _renderer_live.on_text_chunk
+    _render_tables_for_delivery = _renderer_live._render_tables_for_delivery
+    _convert_tables = _renderer_live._convert_tables
+    _take_canonical_options = _renderer_live._take_canonical_options
+    _materialize_chip = _renderer_live._materialize_chip
+    _rotate_at_markers = _renderer_live._rotate_at_markers
+    _open_new_message = _renderer_live._open_new_message
+    _segment_text = _renderer_live._segment_text
+    note_steer = _renderer_live.note_steer
+    _chip_for_seal = _renderer_live._chip_for_seal
+
+
+#: BASE imports this module binds for its importers and for the patches the mirror
+#: routes through it, though its own code does not read them.
+_BOUND_FOR_IMPORTERS = (
+    APPROVAL_TIMEOUT_S,
+    DENY_CAUSE_APPROVAL_TIMEOUT,
+    PHASE_QUEUED,
+    PHASE_THINKING,
+    Sequence,
+    StallEmojis,
+    TABLE_POLICY_CARDS,
+    chunk_text,
+    format_turn_status,
+    new_approval_nonce,
+    nonce_eq,
+    phase_for_tool_title,
+    split_options_trailer,
+    urllib,
+)
+#: Owner modules, lowest layer first: the first holder of a name answers its reads.
+_OWNERS = (
+    "kiro_crew.discord.renderer_text",
+    "kiro_crew.discord.renderer_components",
+    "kiro_crew.discord.renderer_approval",
+    "kiro_crew.discord.renderer_status",
+    "kiro_crew.discord.renderer_live",
+)
+for _owner in _OWNERS:
+    _importlib.import_module(_owner)
+#: Name this module serves but does not bind -> the owner that answers a read of it.
+_EXPORTS: dict[str, str] = {}
+#: The unsplit module's names: everything the family binds except the methods the class
+#: binds from its owners, which were never module names.
+_SURFACE = frozenset().union(globals(), *(vars(_sys.modules[o]) for o in _OWNERS)) - {
+    n for n, m in vars(DiscordRenderer).items() if getattr(m, "__module__", "") in _OWNERS
+}
+_EXPORTS.update(
+    _facade_mirror.install(_sys.modules[__name__], _OWNERS, excluded=(), surface=_SURFACE).served
+)
+_sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
+#: What a star import binds: every public name of the unsplit module's namespace.
+__all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
+if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.discord.renderer_approval import (  # noqa: F401
+        _APPROVAL_TIMEOUT_S,
+    )
+    from kiro_crew.discord.renderer_components import (  # noqa: F401
+        _BUTTON_LABEL_CHARS,
+        _BUTTONS_PER_ROW,
+        _MAX_ACTION_ROWS,
+        _MAX_BUTTONS,
+        _STYLE_PRIMARY,
+        _STYLE_SECONDARY,
+        build_model_components,
+    )
+    from kiro_crew.discord.renderer_status import (  # noqa: F401
+        _TYPING_REFRESH_S,
+        DISCORD_PHASE_EMOJIS,
+        DISCORD_STALL_EMOJIS,
+        _MessageReactionSink,
+        _own_reaction_route,
+    )
+    from kiro_crew.discord.renderer_text import (  # noqa: F401
+        _STEER_MARKER_RE,
+        _STEER_SUMMARY_RE,
+        _transform_buries_refs,
+    )
