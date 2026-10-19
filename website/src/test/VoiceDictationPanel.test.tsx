@@ -35,6 +35,14 @@ describe('VoiceDictationPanel', () => {
     expect(screen.getByText('Esc to cancel, click the mic to finish')).toBeTruthy()
   })
 
+  // With submit-on-release on, stopping sends in either transport, so the hint
+  // names the send and the way to keep a draft instead of the Enter shortcut.
+  it.each([true, false])('names the send and Shift-click under submit-on-release (streaming=%s)', streaming => {
+    render(<VoiceDictationPanel sampleRef={sampleRef} value="" streaming={streaming} submitOnRelease />)
+    expect(screen.getByText('Esc to cancel, Shift-click keeps a draft, click the mic to send')).toBeTruthy()
+    expect(screen.queryByText('Esc to cancel, Enter to send')).toBeNull()
+  })
+
   it('promises Enter-to-send only in streaming mode (live transcript in composer)', () => {
     render(<VoiceDictationPanel sampleRef={sampleRef} value="" streaming />)
     expect(screen.getByText('Esc to cancel, Enter to send')).toBeTruthy()

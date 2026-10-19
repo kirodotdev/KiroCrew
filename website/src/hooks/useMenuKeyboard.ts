@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useDocumentImeLatch, type ImeLatch } from './useImeGuard'
 import { deepActiveElement, isEditableElement } from '../utils/editableTarget'
+import { useLocalCrewHidden } from '../components/overlayRoot'
 
 /**
  * Shared keyboard contract for `role="menu"` surfaces (WAI-ARIA menu pattern):
@@ -155,8 +156,11 @@ export function useMenuKeyboard(opts: {
 }): void {
   const { enabled, containerRef, focusFirstOnOpen = true } = opts
   const imeLatch = useDocumentImeLatch(enabled)
+  // Behind a remote Crew the menu is hidden with its Crew (components/overlayRoot)
+  // and its keys belong to the Crew in front.
+  const crewHidden = useLocalCrewHidden()
   useEffect(() => {
-    if (!enabled) return
+    if (!enabled || crewHidden) return
     const items = () => menuItemsOf(containerRef.current)
     if (focusFirstOnOpen) items()[0]?.focus()
     const onKey = (e: KeyboardEvent) => {
@@ -171,5 +175,5 @@ export function useMenuKeyboard(opts: {
     // `imeLatch` is identity-stable (useDocumentImeLatch); `containerRef` is a
     // stable ref object. Only open/close (and the static focusFirstOnOpen)
     // should re-run this effect.
-  }, [enabled, focusFirstOnOpen, containerRef, imeLatch])
+  }, [enabled, crewHidden, focusFirstOnOpen, containerRef, imeLatch])
 }

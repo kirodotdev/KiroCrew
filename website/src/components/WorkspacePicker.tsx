@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, RefObject } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { FolderOpen, ChevronRight, ChevronLeft } from 'lucide-react'
 import { api } from '../api/client'
 import ErrorNotice from './ErrorNotice'
@@ -191,7 +191,7 @@ export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreat
   const shownListingFailed = !!requestError
     && (!failedBrowsePath || !browsePath || failedBrowsePath === browsePath)
 
-  return createPortal(
+  return <OverlayPortal>
         <div ref={dropRef} className="fixed z-[9999] bg-card border border-border rounded-lg shadow-lg w-[400px] max-h-[460px] flex flex-col overflow-hidden animate-slide-up" style={(() => { const r = btnRef.current!.getBoundingClientRect(); const maxH = window.innerHeight - r.bottom - 8; return { top: r.bottom + 4, left: Math.max(8, r.right - 400), maxHeight: Math.max(200, maxH) } })()}>
           {selectedDir ? (
             <div className="p-3 flex flex-col gap-2">
@@ -263,7 +263,6 @@ export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreat
               </div>
             </>
           )}
-        </div>,
-        document.body
-      )
+        </div>
+      </OverlayPortal>
 }

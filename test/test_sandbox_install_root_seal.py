@@ -353,7 +353,17 @@ _SANDBOX_WRAPPERS = frozenset(
 #: The modules on the update path that write the install tree.
 _UPDATER_MODULES = (
     "dashboard/handlers/updates.py",
+    "dashboard/handlers/updates_apply.py",
+    "dashboard/handlers/updates_channel.py",
+    "dashboard/handlers/updates_check.py",
+    "dashboard/handlers/updates_step_up.py",
+    "dashboard/handlers/updates_streams.py",
+    "dashboard/handlers/updates_verdict.py",
     "platform/wheel_engine.py",
+    "platform/wheel_engine_contract.py",
+    "platform/wheel_engine_layout.py",
+    "platform/wheel_engine_build_child.py",
+    "platform/wheel_engine_transfer.py",
     "platform/update_provider.py",
     "platform/update_layout.py",
     "platform/wheel_apply.py",

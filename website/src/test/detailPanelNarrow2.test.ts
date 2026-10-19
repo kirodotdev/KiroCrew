@@ -57,6 +57,10 @@ describe('DetailPanel at phone widths', () => {
       'components/useMarkdownPanelFind.ts',
       'components/GitPanel.tsx', 'pages/chat/FolderPanel.tsx',
       'pages/chat/SidePanel.tsx', 'pages/aidlc/TaskDetailPanel.tsx',
+      'pages/chat/SidePanelAddMenu.tsx',
+      'pages/chat/SidePanelTabBodies.tsx',
+      'pages/chat/SidePanelTabChip.tsx',
+      'pages/chat/useSidePanelSize.ts',
     ]
     for (const f of files) {
       const s = await read(f)

@@ -105,7 +105,7 @@ describe('broken-image fallback chip', () => {
     // This chip shows its alt and copies the PATH, which is in the tooltip, not
     // on the page — "select the text to copy it manually" would have the reader
     // copy the alt. The notice names the object that failed to copy instead.
-    expect(notices[0]).toHaveTextContent(/^Couldn’t copy the image path$/)
+    expect(notices[0]).toHaveTextContent(/^Couldn’t copy the image path 01-accounts\.png\.$/)
     expect(notices[0]).not.toHaveTextContent(/select the text/i)
     expect(getByRole('tooltip').contains(notices[0])).toBe(true)
     // Nothing beside the chip: the sentence around it is byte-for-byte what

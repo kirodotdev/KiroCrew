@@ -319,7 +319,11 @@ function SessionChip({ sessionKey, sessionTitle, label, safeProps, onOpen, child
   onOpen: (key: string) => void
   children: React.ReactNode
 }) {
-  const { copied, press, failureBubble } = useTitleCuedCopy(sessionKey, i18nT('components.markdownRenderer.the_copy_failed_ctrl_cmd_click_copies_the_full_session_id_for_label', { label }))
+  // The notice names what failed, never the gesture. When the label already IS
+  // the key, "the full session ID for <key>" says the key twice (#14294).
+  const { copied, press, failureBubble } = useTitleCuedCopy(sessionKey, label === sessionKey
+    ? i18nT('components.markdownRenderer.couldnt_copy_the_session_id_label', { label })
+    : i18nT('components.markdownRenderer.couldnt_copy_the_full_session_id_for_label', { label }))
   const act = (e: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
     e.preventDefault()
     e.stopPropagation()
@@ -386,7 +390,7 @@ function FolderChip({ folderId, folderPath, label, safeProps, onReveal, children
   onReveal: (folderId: string) => void
   children: React.ReactNode
 }) {
-  const { copied, press, failureBubble } = useTitleCuedCopy(folderPath, i18nT('components.markdownRenderer.the_copy_failed_ctrl_cmd_click_copies_the_folder_path_label', { label }))
+  const { copied, press, failureBubble } = useTitleCuedCopy(folderPath, i18nT('components.markdownRenderer.couldnt_copy_the_folder_path_label', { label }))
   const act = (e: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
     e.preventDefault()
     e.stopPropagation()
@@ -488,7 +492,7 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
   // The confirmed path chip's Ctrl/Cmd+click copy — the same gated write every
   // other copy affordance in the renderer uses, and the same failure surface (the
   // bubble). Declared before the early returns below (rules of hooks).
-  const pathCopy = useTitleCuedCopy(raw, i18nT('components.markdownRenderer.the_copy_failed_ctrl_cmd_click_copies_the_path_label', { label: basenameOf(raw.replace(/[\\/]+$/, '')) || raw }))
+  const pathCopy = useTitleCuedCopy(raw, i18nT('components.markdownRenderer.couldnt_copy_the_path_label', { label: basenameOf(raw.replace(/[\\/]+$/, '')) || raw }))
 
   // `data-path*` / `data-session-key` / `data-chip-action` describe a chip THIS
   // component rendered, so only it may set them. rehypeSanitize allowlists every

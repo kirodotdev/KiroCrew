@@ -218,7 +218,7 @@ class SlotProjection:
         is_turn_interrupted: Callable[[list[dict]], bool],
         is_system_notice: Callable[[str, dict], bool],
         latest_transcript_ts: Callable[..., str | None],
-        strip_markdown_preview: Callable[[str], str],
+        last_message_preview: Callable[[str], str],
         resolve_effective_agent: Callable[[str, str | None], str],
         budget_source_links: Callable[[list[dict]], list[dict]],
         project_source_links: Callable[[list[dict], bool], list[dict]],
@@ -286,10 +286,10 @@ class SlotProjection:
                                     stripped[:240] + "…" if len(stripped) > 240 else stripped
                                 )
                     if not last_msg:
-                        # Strip before redaction so markdown cannot split a
-                        # credential signature and then rejoin it on the wire.
-                        redacted = redact(strip_markdown_preview(text))
-                        last_msg = redacted[:80] + "…" if len(redacted) > 80 else redacted
+                        # Stripped, redacted and cut by the caller, which strips
+                        # before redacting so markdown cannot split a credential
+                        # signature and then rejoin it on the wire.
+                        last_msg = last_message_preview(text)
             if found_conv and last_msg and last_activity_ts:
                 break
 

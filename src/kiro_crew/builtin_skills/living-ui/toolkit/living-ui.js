@@ -1,6 +1,6 @@
 // Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.
 //
-// Living UI toolkit: small motion helpers for live figures, with no colours,
+// Living UI toolkit: small helpers for live figures, with no colours,
 // fonts or shapes of their own. Each helper sits between a "living-ui:begin
 // <name>" line and a "living-ui:end <name>" line and stands on its own, so a
 // figure copies only the blocks it uses into its inline <script>. The
@@ -146,6 +146,133 @@ LivingUI.burst = (age, rise = 0.08, fall = 0.13) => {
   return age > rise && level < 1e-3 ? 0 : level;
 };
 // living-ui:end burst
+
+// living-ui:begin tour
+// Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.
+var LivingUI = LivingUI || {};
+// The idle tour of an explainer (rule L). Each frame it calls at(t), and at
+// sets the same targets an input would. t is the tour's own time in ms since
+// the current loop began, from 0 up to period, and it stands still whenever
+// the tour does not drive. The tour starts once the stage has been in view
+// for `start` ms and rests after `loops` loops, with at(period) as its last
+// call, so the figure lands on the loop's end. Pointer, keyboard focus and
+// key input inside the stage pause it at once, and it resumes `resume` ms
+// after the last one; takeOver() pauses it the same way, for a control
+// outside the stage. pause() holds it until play(), and play() after a rest
+// starts the loops over. It never calls at offscreen, in a hidden tab, under
+// reduced motion or without a period above 0, and active is true only while
+// it drives. It never moves keyboard focus and writes nothing to the page.
+LivingUI.tour = (stage, at, { start = 1400, resume = 3600, period, loops = 3 } = {}) => {
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)');
+  const end = loops * period;
+  // delay is how long the tour waits before it drives: `resume` after an input
+  // until it drives again, even across a spell offscreen, and `start` otherwise.
+  let frame = 0, timer = 0, last = -1, time = 0, delay = start, inView = false, held = false;
+  const ready = () => inView && !held && !reduce.matches && !document.hidden && time < end;
+  const stop = () => {
+    cancelAnimationFrame(frame);
+    clearTimeout(timer);
+    frame = timer = 0;
+  };
+  // The first frame after a wait counts no time, and a gap counts 1/30 s at most.
+  const step = (now) => {
+    time += last < 0 ? 0 : Math.min(now - last, 100 / 3);
+    last = now;
+    frame = time < end ? requestAnimationFrame(step) : 0;
+    at(frame ? time % period : period);
+  };
+  const drive = () => {
+    stop();
+    if (!ready()) return;
+    delay = start;
+    last = -1;
+    frame = requestAnimationFrame(step);
+  };
+  // Stops at once, then drives after `delay` ms unless something stops it first.
+  const wait = () => {
+    stop();
+    if (ready()) timer = setTimeout(drive, delay);
+  };
+  const takeOver = () => {
+    delay = resume;
+    wait();
+  };
+  for (const type of ['pointerdown', 'pointermove', 'focusin', 'keydown']) {
+    stage.addEventListener(type, takeOver);
+  }
+  // In view means in the viewport itself, with no margin, so the reader sees
+  // the still figure first. Only the newest entry says where the stage is now.
+  new IntersectionObserver((entries) => {
+    inView = entries[entries.length - 1].isIntersecting;
+    wait();
+  }).observe(stage);
+  reduce.addEventListener('change', wait);
+  document.addEventListener('visibilitychange', wait);
+  return {
+    get active() { return frame > 0; },
+    play() {
+      held = false;
+      if (time >= end) time = 0;
+      if (!frame) drive();
+    },
+    pause() {
+      held = true;
+      stop();
+    },
+    takeOver,
+  };
+};
+// living-ui:end tour
+
+// living-ui:begin readout
+// Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.
+var LivingUI = LivingUI || {};
+// The figure's words, kept apart, each written only when its text differs
+// from the last one it wrote. say(text) sets the visible readout el. Call it
+// from the loop with where the parts are now. describe(text) sets
+// aria-valuetext on target, the stage with role="slider". Call it when the
+// state changes and never from the loop, since a screen reader speaks every
+// new value text of a slider that has keyboard focus. phase(text) puts a
+// phase word in live, a visually hidden element with aria-live="polite",
+// once 700 ms pass with no newer phase, so a drag is spoken once it rests.
+// With no target, describe does nothing; with no live, phase does nothing.
+LivingUI.readout = (el, { target, live } = {}) => {
+  let said, described, spoken, timer = 0;
+  return {
+    say(text) {
+      if (text !== said) el.textContent = said = text;
+    },
+    describe(text) {
+      if (target && text !== described) target.setAttribute('aria-valuetext', described = text);
+    },
+    phase(text) {
+      clearTimeout(timer);
+      if (!live) return;
+      timer = setTimeout(() => {
+        if (text !== spoken) live.textContent = spoken = text;
+      }, 700);
+    },
+  };
+};
+// living-ui:end readout
+
+// living-ui:begin focusOne
+// Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.
+var LivingUI = LivingUI || {};
+// Lights one element of a figure (rule F). chosen gets data-lui-on, every
+// other element inside root loses it, and root gets data-lui-focus, so
+// LivingUI.css lights chosen and dims the other data-lui-dim elements.
+// chosen = null takes both away, so nothing is lit or dimmed. Calling it
+// again with the same element changes nothing, and it never moves keyboard
+// focus.
+LivingUI.focusOne = (root, chosen) => {
+  for (const el of root.querySelectorAll('[data-lui-on]')) {
+    if (el !== chosen) el.removeAttribute('data-lui-on');
+  }
+  if (chosen) chosen.toggleAttribute('data-lui-on', true);
+  root.toggleAttribute('data-lui-focus', !!chosen);
+};
+// living-ui:end focusOne
 
 // living-ui:begin css
 // Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.

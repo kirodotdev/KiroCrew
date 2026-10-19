@@ -23,7 +23,7 @@ _SECRET_RE = re.compile(
     # hmac_sig)`), so the three-segment alternative above never matched it and a
     # bare token in prose printed verbatim. It needs its OWN alternative.
     #
-    # Byte-identical to the one in `security/redaction.py`, which carries the full
+    # Byte-identical to the one in `security/redaction_patterns.py`, which carries the full
     # derivation of both bounds and is the single source for it; this script is
     # documented as stdlib-only and portable, so it cannot import it, and
     # `test/test_redaction_mirror_parity.py` fails if this copy drifts. Locally the

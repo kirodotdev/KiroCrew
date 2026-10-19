@@ -25,6 +25,7 @@ from subagent_persistence_helpers import (  # noqa: F401 -- the fixture is reque
 from kiro_crew.subagent_persistence import (
     _CLEANUP_IDENTITY_LOCK,
     _LIVE_CLEANUP_IDENTITIES,
+    classify_persisted_ending,
     create_agent_folder,
     delete_agent_folder,
     list_orphans,
@@ -63,7 +64,9 @@ class TestCreateAgentFolder:
         assert state["id"] == "abc123"
         assert state["task"] == "do stuff"
         assert state["agent"] == "kirocrew"
-        assert state["status"] == "running"
+        # No ending writes a run status back to this file, so it carries none
+        # that would read as running afterwards (the tombstone records it).
+        assert "status" not in state
         assert state["max_turns"] == 100
         assert "started" in state
 
@@ -72,6 +75,15 @@ class TestCreateAgentFolder:
         path = create_agent_folder("abc123", task="t2")
         state = json.loads((path / "state.json").read_text(encoding="utf-8"))
         assert state["task"] == "t2"
+
+    def test_a_stopped_run_does_not_read_as_running(self, agent_root):
+        """The folder a user stop leaves: the tombstone records the stop and the
+        run record says nothing that contradicts it."""
+        path = create_agent_folder("stop0001", task="t", parent_session="dashboard:default")
+        write_tombstone("stop0001", cause="user_stop", recovery_action="none", outcome="stopped")
+        state = json.loads((path / "state.json").read_text(encoding="utf-8"))
+        assert state.get("status") != "running"
+        assert classify_persisted_ending(path) == ("stopped", "", True)
 
 
 class TestCanonicalRunAgent:

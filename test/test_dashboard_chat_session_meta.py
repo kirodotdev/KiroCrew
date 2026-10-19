@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+
+
+async def _seed_metadata(log, key: str, fields: dict) -> None:
+    """Seed a session's metadata the way an async gateway caller must.
+
+    ``update_metadata`` ends in ``atomic_write.replace_with_retry``, which makes a
+    single rename attempt on the event-loop thread by design, so a Windows
+    sharing violation on the transcript the test just appended to fails the
+    setup outright. Offloading it, as ``history_offload`` tells async callers
+    to, runs the write on a worker that keeps the bounded retry.
+    """
+    await asyncio.to_thread(log.update_metadata, key, fields)
+
 
 # ── Session rename tests ──
 
@@ -109,7 +123,8 @@ class TestSessionRename:
         # The id must exist in the vocabulary — resume prunes unknown ids
         # (crash-atomic delete can leave dangling ids on disk).
         state._tags.append({"id": "tag-abc", "name": "ABC", "color": "#6b7280", "order": 0})
-        log.update_metadata(
+        await _seed_metadata(
+            log,
             "dashboard:s1",
             {"tags": ["tag-abc"], "auto_tagged": True, "project": "/x/repos/MyRepo"},
         )
@@ -135,7 +150,7 @@ class TestSessionRename:
         state._tags_authoritative = False  # load_tags() hit a parse/I/O error
         log = state.conversation_log
         log.append("dashboard:s1", "user", "hello")
-        log.update_metadata("dashboard:s1", {"tags": ["tag-abc"], "auto_tagged": True})
+        await _seed_metadata(log, "dashboard:s1", {"tags": ["tag-abc"], "auto_tagged": True})
 
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/s1/resume", json={"key": "dashboard:s1"})
@@ -158,7 +173,7 @@ class TestSessionRename:
         state._tags_authoritative = True  # tags.json parsed OK as []
         log = state.conversation_log
         log.append("dashboard:s1", "user", "hello")
-        log.update_metadata("dashboard:s1", {"tags": ["tag-abc"], "auto_tagged": True})
+        await _seed_metadata(log, "dashboard:s1", {"tags": ["tag-abc"], "auto_tagged": True})
 
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/s1/resume", json={"key": "dashboard:s1"})

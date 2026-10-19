@@ -11,6 +11,7 @@ import {
   type RefObject,
 } from 'react'
 import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { motion, useReducedMotion } from 'framer-motion'
 import { ArrowRight } from 'lucide-react'
 import { KiroGhost } from './KiroGhost'
@@ -203,7 +204,7 @@ export function OnboardingShellHost({ children }: { children: ReactNode }) {
     <OnboardingShellContext.Provider value={api}>
       {children}
       {active
-        && createPortal(
+        && <OverlayPortal>
           <div
             ref={dialogRef}
             role="dialog"
@@ -215,9 +216,8 @@ export function OnboardingShellHost({ children }: { children: ReactNode }) {
               <ShellAside copy={active} />
               <section ref={setSectionSlot} className={SECTION_CLASS} />
             </div>
-          </div>,
-          document.body,
-        )}
+          </div>
+        </OverlayPortal>}
     </OnboardingShellContext.Provider>
   )
 }
@@ -362,7 +362,7 @@ export default function OnboardingChapterShell({
   }
 
   // Standalone mode: render the full chrome ourselves.
-  return createPortal(
+  return <OverlayPortal>
     <div
       ref={dialogRef}
       role="dialog"
@@ -374,9 +374,8 @@ export default function OnboardingChapterShell({
         <ShellAside copy={{ ariaLabel, panelHeadline, panelBody, panelFootnote }} />
         <section className={SECTION_CLASS}>{sectionInner}</section>
       </div>
-    </div>,
-    document.body,
-  )
+    </div>
+  </OverlayPortal>
 }
 
 export { OnboardingShellContext }

@@ -63,6 +63,8 @@ BACKEND_PKG = ROOT / "src" / "kiro_crew" / "security"
 # The module that owns the exfil URL classifier today. Named separately so a
 # guard can point at the enforcing site while the sweep stays package-wide.
 BACKEND_EXFIL = BACKEND_PKG / "exfil.py"
+# The owner beside it that declares the URL rule tables the classifier applies.
+BACKEND_EXFIL_RULES = BACKEND_PKG / "exfil_url_rules.py"
 PREPARE_PR = (
     ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "kirocrew-prepare-pr" / "scripts" / "_review_contract.py"
 )
@@ -171,7 +173,7 @@ class TestBase64BlobMirror:
     SPELLING = r"[A-Za-z0-9+/]{40,}={0,2}|[A-Za-z0-9+/]{39}=|[A-Za-z0-9+/]{38}=="
 
     def test_backend_carries_the_spelling(self) -> None:
-        assert f'r"{self.SPELLING}"' in BACKEND_EXFIL.read_text(encoding="utf-8")
+        assert f'r"{self.SPELLING}"' in BACKEND_EXFIL_RULES.read_text(encoding="utf-8")
 
     def test_frontend_carries_the_spelling(self) -> None:
         text = FRONTEND.read_text(encoding="utf-8")

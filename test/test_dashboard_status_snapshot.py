@@ -340,7 +340,7 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
 
         # Scoped to the dashboard package on purpose: `DashboardState.status_snapshot`
         # and its sole permitted caller (`status_counts.cached_status_snapshot`) both
-        # live here, while `tunnel/manager.py` and `platform/interfaces.py` define and
+        # live here, while `tunnel/manager.py` and `platform/interfaces_runtime.py` define and
         # call an UNRELATED `status_snapshot()` on a provider that a whole-tree
         # name match would flag.
         dashboard = pathlib.Path(inspect_module_root()) / "dashboard"

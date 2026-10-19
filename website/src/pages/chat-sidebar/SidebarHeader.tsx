@@ -120,7 +120,7 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
           {/* Split create-button: main segment = one-click New chat; caret
            *  opens a menu grouping New folder + New chat in folder (flat
            *  folder flyout). Replaces the old standalone New-folder + New-chat
-           *  header buttons. Menu is portaled to <body> so the right-side
+           *  header buttons. Menu is portaled to the body-level overlay root so the right-side
            *  folder flyout escapes the sidebar's overflow clip. */}
           <div className="relative flex items-center rounded-md bg-accent text-accent-fg overflow-hidden [@media(pointer:coarse)]:overflow-visible shrink-0" data-create-menu>
             <button

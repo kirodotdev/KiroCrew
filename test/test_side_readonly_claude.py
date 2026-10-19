@@ -12,10 +12,15 @@ verdict.
 from __future__ import annotations
 
 import dataclasses
+import json
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from kiro_crew.acp import _dispatch
+from kiro_crew.acp.client_claude_session import _CLAUDE_SIDE_READ_ONLY_ASK_RULES
+from kiro_crew.acp.harness_tool_names import CLAUDE_READ_ONLY_BUILTINS
 from kiro_crew.acp.types import JsonRpcMessage
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 from kiro_crew.providers.acp import AcpProvider
@@ -167,3 +172,148 @@ async def test_a_normal_turn_gate_decides_as_without_the_stamp(tool, kind, polic
     stamped = await _gate(_claude_event(tool, kind, side_read_only=False), policy)
     bare = await _gate(_claude_event(None, kind, side_read_only=False), policy)
     assert (stamped.approved, stamped.rejected) == (bare.approved, bare.rejected)
+
+
+# --- In-cwd reads reach the gate (live capture, claude-agent-acp 0.93.0) ---
+
+_CAPTURES = Path(__file__).parent / "fixtures" / "claude_side_read_ask"
+
+
+def _capture(name: str) -> tuple[dict, list[dict]]:
+    """A probe capture: its header and its agent-to-client frames."""
+    head, *frames = (
+        json.loads(line) for line in (_CAPTURES / f"{name}.jsonl").read_text().splitlines()
+    )
+    return head["_meta"], frames
+
+
+def _calls(frames: list[dict]) -> dict[str, dict]:
+    """Per tool call id: its path, final status and whether it asked."""
+    calls: dict[str, dict] = {}
+    for frame in frames:
+        if frame.get("method") == "session/request_permission":
+            calls[frame["params"]["toolCall"]["toolCallId"]]["asked"] = True
+            continue
+        update = frame["params"]["update"]
+        call = calls.setdefault(update["toolCallId"], {"asked": False, "path": "", "status": ""})
+        raw = update.get("rawInput") or {}
+        call["path"] = raw.get("file_path") or raw.get("path") or call["path"]
+        call["status"] = update.get("status") or call["status"]
+    return calls
+
+
+def test_every_claude_read_builtin_carries_a_side_ask_rule():
+    assert set(CLAUDE_READ_ONLY_BUILTINS) <= set(_CLAUDE_SIDE_READ_ONLY_ASK_RULES)
+
+
+def test_the_capture_was_recorded_under_the_shipped_ask_rules():
+    meta, _ = _capture("with-read-ask")
+    assert meta["ask"] == list(_CLAUDE_SIDE_READ_ONLY_ASK_RULES)
+
+
+def test_without_the_read_ask_rules_in_cwd_reads_never_ask():
+    """Why the rules exist: ``default`` mode runs in-cwd reads natively."""
+    meta, frames = _capture("without-read-ask")
+    assert "Read" not in meta["ask"]
+    in_cwd = [c for c in _calls(frames).values() if c["path"].startswith("/work")]
+    assert len(in_cwd) == 4
+    assert all(c["status"] == "completed" and not c["asked"] for c in in_cwd)
+
+
+def test_with_the_read_ask_rules_every_read_asks_and_a_denied_path_is_refused_first():
+    _, frames = _capture("with-read-ask")
+    calls = list(_calls(frames).values())
+    denied = [c for c in calls if c["path"].startswith("/denied")]
+    assert [(c["asked"], c["status"]) for c in denied] == [(False, "failed")]
+    rest = [c for c in calls if c not in denied]
+    assert len(rest) == 5 and all(c["asked"] for c in rest)
+
+
+@pytest.mark.asyncio
+async def test_each_captured_side_read_gets_a_read_only_decision_and_an_sel_row():
+    _, frames = _capture("with-read-ask")
+    names: dict = {}
+    events = []
+    for frame in frames:
+        if frame.get("method") != "session/request_permission":
+            _dispatch.parse_session_update(frame["params"]["update"], harness_tool_name_cache=names)
+            continue
+        msg = JsonRpcMessage(id=frame["id"], method=frame["method"], params=frame["params"])
+        event, _ = _dispatch.build_permission_event(
+            msg, harness_tool_name_cache=names, harness_backend="claude", side_read_only=True
+        )
+        events.append(event)
+    assert len(events) == 5
+    for event in events:
+        assert event.harness_builtin_tool in ("fs_read", "grep", "glob")
+        with patch("kiro_crew.sel.sel") as sel:
+            provider = await _gate(event, ToolApprovalPolicy.READ_ONLY)
+        rows = [c.kwargs for c in sel.return_value.log_tool_invocation.call_args_list]
+        assert provider.approved == [event.request_id] and provider.rejected == []
+        assert [(r["request_id"], r["outcome"]) for r in rows] == [
+            (event.request_id, "auto_approved")
+        ]
+
+
+@pytest.mark.parametrize("tool", ["Grep", "Glob"])
+def test_only_a_side_session_reads_a_claude_search_as_read(tool):
+    assert _claude_event(tool, "search", side_read_only=True).tool_kind == "read"
+    assert _claude_event(tool, "search", side_read_only=False).tool_kind == "search"
+
+
+@pytest.mark.parametrize("tool", ["Read", "WebFetch", "Bash", "Write", None])
+def test_no_other_claude_call_has_its_search_kind_changed(tool):
+    assert _claude_event(tool, "search", side_read_only=True).tool_kind == "search"
+
+
+def _captured_search_event(tool: str, path: str):
+    """The captured Grep or Glob request, re-aimed at *path*."""
+    _, frames = _capture("with-read-ask")
+    names: dict = {}
+    raw: dict = {}
+    for frame in frames:
+        frame = json.loads(json.dumps(frame))
+        if frame.get("method") != "session/request_permission":
+            update = frame["params"]["update"]
+            if (
+                update.get("rawInput")
+                and update.get("_meta", {}).get("claudeCode", {}).get("toolName") == tool
+            ):
+                update["rawInput"]["path"] = path
+            _dispatch.parse_session_update(
+                update, harness_tool_name_cache=names, raw_params_cache=raw
+            )
+            continue
+        call = frame["params"]["toolCall"]
+        if call["name"] != tool:
+            continue
+        call["rawInput"]["path"] = path
+        msg = JsonRpcMessage(id=frame["id"], method=frame["method"], params=frame["params"])
+        event, _ = _dispatch.build_permission_event(
+            msg,
+            harness_tool_name_cache=names,
+            raw_params_cache=raw,
+            harness_backend="claude",
+            side_read_only=True,
+        )
+        return event
+    raise AssertionError(f"no {tool} request in the capture")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["Grep", "Glob"])
+@pytest.mark.parametrize("leaf", [".aws", ".ssh", ".aws/credentials"])
+async def test_a_read_folded_search_on_a_credential_path_is_still_refused(tool, leaf):
+    """The gate's own sensitive-path deny binds a folded Grep/Glob too, so the
+    fold adds nothing where claude's deny rules might not reach."""
+    from kiro_crew.security import sandbox_credential_targets
+
+    path = str(Path.home() / leaf)
+    assert any(Path(path).is_relative_to(t) for t in sandbox_credential_targets())
+    event = _captured_search_event(tool, path)
+    assert event.tool_kind == "read"
+    with patch("kiro_crew.sel.sel") as sel:
+        provider = await _gate(event, ToolApprovalPolicy.READ_ONLY)
+    assert provider.approved == [] and provider.rejected == [event.request_id]
+    (row,) = [c.kwargs for c in sel.return_value.log_tool_invocation.call_args_list]
+    assert row["metadata"]["mechanism"] == "always_deny_hook"

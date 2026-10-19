@@ -506,6 +506,18 @@ class SttConfig:
             "you pressing anything. Needs streaming; off by default.",
         ),
     )
+    submit_on_release: bool = field(
+        default=False,
+        metadata=_meta(
+            "Send when I stop recording",
+            "Send the message once the transcript is ready when you deliberately "
+            "stop dictating: letting go of hold-to-talk, releasing the push-to-talk "
+            "key, or pressing the mic or the key again. Press Shift as you finish, or "
+            "slide sideways on the phone's hold bar, to keep a draft instead. "
+            "Cancelling, losing focus and the recording time limit never send. Works "
+            "with streaming and batch transcription; off by default.",
+        ),
+    )
     dictation_panel: bool = field(
         default=True,
         metadata=_meta(

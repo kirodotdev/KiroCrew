@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
 import { store as appStore } from '../store'
 import { Provider } from 'react-redux'
@@ -121,6 +121,18 @@ async function send(text: string, click = false) {
 async function settle(body: object = { ok: true }, status = 200) {
   await act(async () => { settleSend(response(body, status)) })
 }
+
+describe('crewmate composer placeholder', () => {
+  it('names the crewmate without the sigil hint, while a plain chat keeps it', async () => {
+    renderCrewmate({ running: false })
+    const box = await ready()
+    expect(box).toHaveAttribute('placeholder', 'Message Radar…')
+    cleanup()
+    renderCrewmate({ running: false, ordinary: true })
+    const plain = await ready()
+    expect(plain).toHaveAttribute('placeholder', expect.stringMatching(/^Message Test… \(\/command · @file · \$skill/))
+  })
+})
 
 describe('crewmate responsive Send', () => {
   it.each([

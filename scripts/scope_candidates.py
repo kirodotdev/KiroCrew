@@ -23,6 +23,12 @@ This script is the two seams around that decision.
     job died uploads nothing, and folding the survivors would publish a clean
     verdict for a platform that never reported.
 
+``harvest``
+    Takes the rows ``verdict --out-rows`` wrote and appends the new ones to a
+    golden-paths corpus file, so a maintainer can commit a confirmed boundary row
+    instead of re-deriving it from a fresh model call on every run. It writes a
+    file only; the row gates nothing until that edit is reviewed and merged.
+
 ``conclude``
     Takes the fold result, the model's ``Scope-Verdict`` header, whether the
     review marked THIS head, and the two platform-gap signals, and folds them into
@@ -39,7 +45,8 @@ untestable in a heredoc.
 Exit codes, ``validate``: ``0`` a corpus was written, ``2`` the file cannot be
 trusted, ``3`` valid but nothing left to adjudicate. Exit codes, ``verdict``: ``0``
 no confirmed regression, ``1`` at least one, ``2`` the question could not be
-settled. Both fail CLOSED -- a check that could not run never exits 0, because
+settled. Exit codes, ``harvest``: ``0`` rows were appended, ``2`` the rows file
+or corpus cannot be trusted, ``3`` every row is already in the corpus. All fail CLOSED -- a check that could not run never exits 0, because
 "could not run" and "found nothing" are the same badge to a reader and must not be
 the same exit code.
 
@@ -580,6 +587,115 @@ def verdict(
         out_rows.write_text(json.dumps({"golden_paths": rows}, indent=2), encoding="utf-8")
 
     return 1 if confirmed else 0
+
+
+#: The prefix of every placeholder the redactors write: ``[REDACTED-ARN]`` and
+#: its kin for a credential shape, bare ``[REDACTED]`` for a secret value. A row
+#: carrying one names a placeholder, not the refused operation, and a
+#: placeholder classifies as allowed -- a corpus row that gates nothing.
+_REDACTED_MARK = "[REDACTED"
+
+
+def harvest(rows_path: Path, corpus_path: Path, surface: str) -> int:
+    """Append ``verdict --out-rows`` rows to a golden-paths corpus file.
+
+    The promotion rule, and why each part holds:
+
+    *Only script-confirmed regressions qualify.* The rows file is what
+    ``verdict --out-rows`` writes, and it holds only rows the real classifier saw
+    the base allow and the head refuse. A clean candidate is never in it: "still
+    allowed" proves nothing about whether the row is a golden path.
+
+    *A person approves every promotion.* This writes a file and nothing else. The
+    row reaches the gate only as a reviewed edit to the committed corpus, in a
+    pull request, where ``test_deny_diff``'s pinned test refuses a row the
+    shipped classifier does not allow.
+
+    *A promoted row cannot weaken either lane.* Rows are only appended, never
+    rewritten or dropped, and the denial differential settles each row on its
+    own, so a new row can add a regression and never remove one. A harvested
+    row that ``validate`` later drops as already covered is a shell row the
+    denial differential now classifies on every run, so the question moves from
+    a model re-roll to the deterministic gate rather than going away.
+
+    *De-duplication is the same triple ``validate`` uses.* A row the corpus
+    already holds is skipped, so running this twice adds the rows once. "All
+    rows already present" is exit 3, like ``validate``'s "nothing new".
+
+    ``surface`` fills the field the ledger's import requires and the rows file
+    does not carry. The corpus file is rewritten in place.
+    """
+    deny_diff = _load_deny_diff()
+    surface = surface.strip()
+    if not surface:
+        raise CandidateError("--surface must name the surface the rows belong to")
+
+    rows = _rows_of(_read_json(rows_path, "rows file"), f"rows file {rows_path}")
+    if not rows:
+        raise CandidateError(f"rows file {rows_path} holds no rows")
+    for position, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise CandidateError(f"rows file row {position} is not an object")
+        if row.get("kind") != "shell":
+            raise CandidateError(
+                f"rows file row {position} has kind {row.get('kind')!r}; only a "
+                "confirmed 'shell' regression is harvested"
+            )
+        command = row.get("command_or_flow")
+        if isinstance(command, str) and len(command) > MAX_COMMAND_CHARS:
+            raise CandidateError(
+                f"rows file row {position} has a {len(command)}-char command, "
+                f"cap is {MAX_COMMAND_CHARS}"
+            )
+        if isinstance(command, str) and _REDACTED_MARK in command:
+            raise CandidateError(
+                f"rows file row {position} carries a redaction placeholder, so it "
+                "names no operation a corpus row could gate"
+            )
+        reason = row.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise CandidateError(
+                f"rows file row {position} has no reason; the corpus records why "
+                "each operation is legitimate"
+            )
+    try:
+        deny_diff.load_corpus(rows_path)
+    except Exception as exc:  # DenyDiffError, by any other import path
+        raise CandidateError(f"{rows_path} is not a valid corpus: {exc}") from exc
+
+    payload = _read_json(corpus_path, "corpus")
+    if not isinstance(payload, dict) or not isinstance(payload.get("golden_paths"), list):
+        raise CandidateError(f"corpus {corpus_path} must be an object with a 'golden_paths' list")
+    existing = payload["golden_paths"]
+    known = {_key(row) for row in existing if isinstance(row, dict)}
+
+    added = 0
+    already = 0
+    for row in rows:
+        key = _key(row)
+        if key in known:
+            already += 1
+            continue
+        known.add(key)
+        existing.append(
+            {
+                "kind": "shell",
+                "surface": surface,
+                "command_or_flow": row["command_or_flow"],
+                "platform": row.get("platform", "any"),
+                "reason": row["reason"].strip(),
+            }
+        )
+        added += 1
+
+    print(json.dumps({"harvested": added, "already_in_corpus": already}, indent=2))
+    if not added:
+        print("Every row is already in the corpus -- nothing to harvest.", file=sys.stderr)
+        return 3
+    corpus_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -1142,6 +1258,13 @@ def main(argv: list[str] | None = None) -> int:
         help="write the confirmed rows as a paste-ready golden_paths corpus",
     )
 
+    h = sub.add_parser("harvest", help="append confirmed rows to a golden-paths corpus file")
+    h.add_argument("--rows", required=True, type=Path, help="the rows file verdict --out-rows wrote")
+    h.add_argument(
+        "--corpus", required=True, type=Path, help="the golden-paths corpus to extend, in place"
+    )
+    h.add_argument("--surface", required=True, help="the surface field for every harvested row")
+
     c = sub.add_parser("conclude", help="map the fold + model signals to ONE lane conclusion")
     c.add_argument(
         "--fold",
@@ -1218,6 +1341,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if parsed.command == "validate":
             return validate(parsed.candidates, parsed.corpus, parsed.out)
+        if parsed.command == "harvest":
+            return harvest(parsed.rows, parsed.corpus, parsed.surface)
         if parsed.command == "conclude":
             return _cmd_conclude(parsed)
         if parsed.command == "monotonic":

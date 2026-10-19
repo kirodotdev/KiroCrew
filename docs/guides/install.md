@@ -563,17 +563,21 @@ app" interstitial.
 
 ## First run
 
-After a source, one-line, wheel or Docker install, install Kiro CLI from
+After any install, the desktop app included, install Kiro CLI from
 <https://kiro.dev/cli/> and sign in for the default agent:
 
 ```bash
 kiro-cli login
 ```
 
-The desktop app bundles its own kiro-cli by default (`BUNDLE_KIRO_CLI=1` at
-build time). That copy is not on your shell `PATH`, so the **Set up Kiro** page
-serves the login command with the bundled binary's absolute path; run that
-command instead of a bare `kiro-cli login`.
+The desktop app does not carry its own kiro-cli: it detects the one you
+installed, and the **Set up Kiro** page shows the install and sign-in commands
+until it finds one. (A build made with `BUNDLE_KIRO_CLI=1` stages a copy inside
+the app; that copy is not on your shell `PATH`, so the page then serves the
+login command with the bundled binary's absolute path.) If you updated from a
+version that included kiro-cli and never installed your own, install it from
+<https://kiro.dev/cli/>; your sign-in carries over, since both copies read the
+same account store.
 
 The built-in KAS engine is an alternative that needs no Kiro CLI. It is in
 shadow testing: the switch is off by default on every platform and nothing turns
@@ -785,7 +789,9 @@ On Linux this writes `/etc/systemd/system/kirocrew.service` (sudo is prompted
 for the unit file and the `systemctl` calls; the gateway itself runs as your own
 user, never under sudo). When you are already root — a minimal container or
 `root` login — no `sudo` binary is required. On macOS it writes a launchd plist
-and needs no sudo.
+and needs no sudo. That plist is a per-user LaunchAgent, so on a Mac the gateway
+starts when you log in, not at boot; see
+[The gateway does not start after a reboot until someone logs in](macos-troubleshooting.md#the-gateway-does-not-start-after-a-reboot-until-someone-logs-in).
 
 The gateway runs untrusted agent tools, so it must run as a **non-root** user:
 the installer sets `User=` to the account behind `sudo` (`$SUDO_USER`, else

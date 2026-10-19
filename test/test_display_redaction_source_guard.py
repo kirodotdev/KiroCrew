@@ -29,12 +29,14 @@ one call that reads the operator file sits under that flag's guard.
 from __future__ import annotations
 
 import ast
+import importlib
 import inspect
 from collections import deque
 
 import pytest
 
 import kiro_crew.dashboard.chat_utils as chat_utils
+from kiro_crew import _facade_mirror
 from kiro_crew.security import exfil, redaction
 
 # The two battery entry points, as the display cache composes them.
@@ -123,7 +125,10 @@ MUTATOR_METHODS = frozenset(
 
 
 def _module_tree(module: object) -> ast.Module:
-    return ast.parse(inspect.getsource(module))
+    # A mirror facade and the owners it serves from are read as one module.
+    index = vars(module)[_facade_mirror.INDEX_ATTRIBUTE]
+    family = (module, *(importlib.import_module(owner) for owner in index.owners))
+    return ast.parse("\n".join(inspect.getsource(member) for member in family))
 
 
 def _function_defs(tree: ast.Module) -> dict[str, ast.FunctionDef]:

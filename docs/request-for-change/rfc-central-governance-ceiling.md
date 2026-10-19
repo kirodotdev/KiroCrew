@@ -81,7 +81,7 @@ authoritative description is
    `KIROCREW_POLICY_URL` or the `distribution.source` a lower tier declares,
    served from a last-known-good cache when the endpoint is unreachable
    (`resolve_distribution` / `PolicyDistribution` in
-   [`../../src/kiro_crew/platform/policy_distribution.py`](../../src/kiro_crew/platform/policy_distribution.py)).
+   [`../../src/kiro_crew/platform/policy_distribution_source.py`](../../src/kiro_crew/platform/policy_distribution_source.py)).
 2. `KIROCREW_SECURITY_POLICY` — an explicit local file, the local operator
    channel; it tightens the central document and cannot loosen it.
 3. the companion-bundled resource (`bundled_loader`), supplied only by the

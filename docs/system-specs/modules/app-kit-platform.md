@@ -24,6 +24,30 @@ The slot key remains the header's hover title for debugging; `frameless` embeds
 have no title strip. `ChatEmbed.title.test.tsx` covers the delayed first read,
 fresh and resumed untitled pages, later title arrival and a slot change.
 
+An installed app may declare top-level `config.json` object ownership with
+`config_keys`. Config validation unions those declarations with the core
+compatibility fallback before warning. A manifest on disk without
+`installed.json` owns nothing, so stale or merely downloaded apps cannot silence
+unknown-key warnings. Non-gateway CLI commands and slim MCP startup prime
+installed app and admissible companion declarations before their first config
+load and before an event loop starts. This priming reads the admission policy
+without side effects: it seeds no policy file and writes no SEL record.
+
+Gateway startup keeps registry scans off its socket-readiness path. Dashboard
+startup runs `register_builtin_apps` in an executor to publish app declarations,
+and companion admission publishes plugin declarations. A config load that runs
+before that executor refresh can still log one unrecognized-key warning for an
+installed app's key. Loads after the refresh do not warn.
+
+Successful install, update, uninstall, and migrated-builtin cleanup operations
+atomically refresh the published in-memory registry. A self-managed registry
+install pre-registers the app without a registry scan; its declarations take
+effect at the next startup prime or lifecycle refresh. Config validation only
+reads this registry. It performs no app-directory, manifest, or
+distribution-metadata I/O, including after config cache invalidation. Discovery
+or registry failures degrade to the core fallback and never make validation
+raise.
+
 ## Scoped frontend HTTP transport
 
 `useAppApi()` exposes `raw(path, RequestInit)`, `request(path, RequestInit)` and
@@ -101,7 +125,13 @@ unconfirmed one, a host `onSend` that rejects), its staged files come back with
 it, ahead of any staged since, so a retry needs no new upload; the files ride
 the parked receipt too, so an embed remounted for the slot gets them. Proof
 that an unconfirmed send was delivered unstages the handed-back files still in
-the composer, as it takes the text back, so they are not sent twice. A
+the composer, as it takes the text back, so they are not sent twice. That
+proof is the send's own `sendId`. A host `onSend` send carries none, so its
+only proof is its text arriving as a user row after the send's anchor row;
+text cannot say which send landed, so that proof never touches the composer:
+the warning becomes a calm line saying the message is in the conversation and
+its text is still in the composer, or simply goes away when there is no kept
+text left to explain (a chip send, or text the user has cleared or edited). A
 slot switch or unmount aborts in-flight
 uploads and drops their late results.
 
@@ -894,7 +924,7 @@ A manifest is portable data validated on whichever host installs the app, so all
 three must reach the same verdict everywhere. Both lexical checks are therefore
 written **flavour-explicitly** rather than via the running host's `os.path`
 (matching the `PurePosixPath|PureWindowsPath` idiom in
-`dashboard/handlers/knowledge.py`), and neither is deferred to `resolve()`:
+`dashboard/handlers/knowledge_sources.py`), and neither is deferred to `resolve()`:
 
 - **`is_absolute()` is flavour-bound.** It and `os.path.isabs` answer for the
   RUNNING host, and `os.path` **is** `ntpath` on Windows, so pairing the two in an
@@ -1538,7 +1568,7 @@ feeds the confirm dialog, and it is **additive**: a client that skips it and
 POSTs straight to uninstall gets the same safe default (clean removable, keep
 everything else). The route is registered by `register_app_routes` and
 exercised by the dashboard client; `TestUninstallPreview` in
-`test/test_apps_routes_coverage.py` drives it over the router with an HTTP
+`test/test_apps_routes_coverage_update_uninstall.py` drives it over the router with an HTTP
 test client, so removing the registration fails that test rather than
 degrading silently. The frontend still treats the fetch as best-effort: on
 failure the dialog renders without the dependency panel.
@@ -1775,7 +1805,7 @@ Four paths read the set and all four narrow: the gate, the `slots` payload
 filter, the subagent-batch payload filter, and the LOG fan-out. The log path is
 the odd one — `subscribe_logs` grants once and the ring handler then writes
 straight to `_ws_log_subscribers` without passing the chokepoint, so the re-check
-lives at the send (`handlers/updates._safe_ws_send`), which also drops the
+lives at the send (`handlers/updates_streams._safe_ws_send`), which also drops the
 subscription. That check must stay on the event loop: the handler's `emit()` runs
 on arbitrary threads, where a cold cache miss would fall back to a synchronous
 manifest read.
@@ -2843,7 +2873,7 @@ Writers: `apps/registry_pipeline/sources.py` (`_effective_registries`,
 `_pinned_registries`, `_registry_trust_tier`, `_is_owner_designated_repo`,
 `_sel_credential_decision`), `apps/registry_pipeline/indexes.py`
 (`_owner_tier_confirmed`), `apps/registry_pipeline/subprocess_env.py`
-(`anonymous_git_env`), `platform/interfaces.py`
+(`anonymous_git_env`), `platform/interfaces_structural.py`
 (`AppsLoader.default_registries`), `config/loader.py`
 (`ExternalRegistryConfig.trust`), `apps/routes.py` (`handle_registries`).
 

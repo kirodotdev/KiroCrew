@@ -769,7 +769,7 @@ class TestRestartEndpoint:
             req.app["state"]._background_tasks = set()
             with (
                 patch.object(updates, "_restart_gateway", _no_restart),
-                patch.multiple(updates, **patches),
+                patch.multiple(updates, create=False, **patches),
             ):
                 resp = await updates.api_gateway_restart(req)
             return resp, req.app["state"]

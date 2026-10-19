@@ -412,7 +412,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # gateway's own update coordinator (auto_update or a policy floor, against
         # the check's own verdict) — the agent's own bash path is closed by the
         # self-update denied rule.
-        "platform/wheel_engine.py::_spawn_build_child",
+        "platform/wheel_engine_build_child.py::_spawn_build_child",
         # The userns probe child: ONE fixed argv, `sys.executable -I -S -c <shim>`,
         # no shell, no cwd, stdin/stdout are the two handshake pipes. Nothing is
         # agent-influenced -- the shim is a module-level string constant and takes
@@ -891,7 +891,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apps/builtins/md_notebook/server.py::_gh_token_sync",
         # Fixed argv `osascript -e <constant AppleScript>` for the macOS folder
         # picker; the script is a module constant with nothing substituted in.
-        "apps/builtins/md_notebook/server.py::_pick_folder_sync",
+        "apps/builtins/md_notebook/server_host.py::_pick_folder_sync",
         # Fixed argv `<file manager> <dir>` to reveal a vault's `.trash` in
         # Finder / the desktop file manager. No shell. The binary is an absolute
         # module constant (`/usr/bin/open`, `/usr/bin/xdg-open`) resolved from a
@@ -901,7 +901,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # derives the directory from the vault descriptor via
         # `vault_mutation_path`, which rejects `..`, absolute values and any
         # symlink escaping the vault, so the argv cannot be pointed elsewhere.
-        "apps/builtins/md_notebook/server.py::_reveal_folder_sync",
+        "apps/builtins/md_notebook/server_host.py::_reveal_folder_sync",
         # Issue Radar GitLab access — the glab counterpart of _gh_run, and benign
         # for the same reasons, with ONE extra agent-reachable input that gh does
         # not have: the HOST.
@@ -1134,7 +1134,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # (npm/npx/node) plus the ``playwright install <engine>`` subcommand,
         # ``browser_cli`` spawns the Playwright CLI toolchain on fixed argv that
         # the AGENT never contributes to, which is what makes them benign here:
-        #   * ``install.py::_run`` runs the three install steps
+        #   * ``install_runner.py::_run`` runs the three install steps
         #     (``npm install -g @playwright/cli@latest``,
         #     ``playwright-cli install-browser``, ``playwright-cli install
         #     --skills agents --global``). Every token is a constant in our code
@@ -1160,7 +1160,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # The agent's OWN browser commands are not spawned by us at all -- it
         # runs them as ordinary shell tool calls through the standard approval
         # path.
-        "browser_cli/install.py::_run",
+        "browser_cli/install_runner.py::_run",
         # The KAS engine installer (`kirocrew kas install`, operator terminal, outside
         # the sandbox). `_open_tar` runs the host's `zstd -d -c` on an archive whose
         # name the manifest validated as a bare object name and whose bytes were
@@ -1213,12 +1213,12 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``/oauth2/applications/@me`` with a bot token read from the operator's
         # own credential store, and every failure is folded into its result. Same
         # classification as ``cli_doctor.py::_doctor`` above.
-        "cli_doctor.py::_discord_intent_grants",
-        "cli_doctor.py::_doctor_mcp_tools",
+        "cli_doctor_parts/host_probes.py::_discord_intent_grants",
+        "cli_doctor_parts/mcp_sections.py::_doctor_mcp_tools",
         # ``node -v`` with a fixed argv and a 5 s timeout, read-only, to judge the
         # installed Node against ``MIN_NODE_VERSION``. Split out of ``_doctor``
         # unchanged; same classification as ``cli.py::_node_ok``.
-        "cli_doctor.py::_report_node",
+        "cli_doctor_parts/host_probes.py::_report_node",
         # The AST heuristic matches ``asyncio.run`` (attr ``run`` on base
         # ``asyncio``) driving one async capability-manager read from the
         # loop-less doctor path so the Credentials section can report whether this
@@ -1232,7 +1232,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # nothing at all (``available()`` is False, so the await is never issued).
         # Note this section IS reachable from a tool call, so the waiver rests on
         # those three legs rather than on who invokes doctor.
-        "cli_doctor.py::_credential_vendor_line",
+        "cli_doctor_parts/host_probes.py::_credential_vendor_line",
         # ``aws configure list-profiles`` / ``aws configure get credential_process``
         # for the Credentials section. Fixed argv — the subcommand is a literal and
         # NOTHING is interpolated, so no component is agent-influenced; the binary
@@ -1248,8 +1248,8 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # deny-remediation text itself names, and the profile set it returns is the
         # same information an allowed command already gives the agent — a
         # credential VALUE is never requested or printed.
-        "cli_doctor.py::_aws_profile_names",
-        "cli_doctor.py::_aws_auto_refreshes",
+        "cli_doctor_parts/host_probes.py::_aws_profile_names",
+        "cli_doctor_parts/host_probes.py::_aws_auto_refreshes",
         # Read-only diagnostic for the Source Checkout section: ``git -C <repo>
         # rev-parse/rev-list`` with a hardcoded argv whose only variable is the
         # install's own source directory (derived from the package's module
@@ -1261,7 +1261,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # spawn at all. Operator-invoked doctor, 10s-capped, queries only — no
         # fetch, no mutation. Same classification as the other fixed-argv
         # doctor probes (``_detect_userspace_oom_killer``, ``_detect_linger``).
-        "cli_doctor.py::_git_line",
+        "cli_doctor_parts/host_probes.py::_git_line",
         # Read-only system-metrics probe for the Memory section on macOS, where
         # the ``platform_compat`` shim has no ctypes-only per-pid RSS path:
         # ``ps -o rss= -p <pid>`` with a hardcoded argv whose only variable is
@@ -1270,7 +1270,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # a miss means no spawn at all. Operator-invoked doctor, 2s-capped, no
         # shell. Same classification as the ``ps``-based probe in
         # ``acp/runtime_process_tree.py::_get_rss_mb``.
-        "cli_doctor.py::_gateway_rss_bytes",
+        "cli_doctor_parts/host_probes.py::_gateway_rss_bytes",
         # ``<kiro-cli> acp --help`` readiness probe for the KAS backend: fixed
         # argv (subcommand and flag are module constants), 15s-capped, no shell,
         # no agent-influenced arguments, and no credential involved — it reads
@@ -1291,11 +1291,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # owns, and reading that file is what the credential floor exists to forbid --
         # a probe there would be the one reader the floor cannot fence. Those rows
         # print their declared remedy unprobed instead (``_doctor_agent_auth``).
-        "cli_doctor.py::_kiro_cli_signed_in",
+        "cli_doctor_parts/host_probes.py::_kiro_cli_signed_in",
         # ``systemctl is-active <unit>`` probes for the memory-pressure
         # preparedness check: argv is hardcoded (systemd-oomd/earlyoom unit
         # names), no agent influence, 5s-capped, read-only query.
-        "cli_doctor.py::_detect_userspace_oom_killer",
+        "cli_doctor_parts/host_probes.py::_detect_userspace_oom_killer",
         "cli_server.py::_logs_cmd",
         "cli_server_restart.py::_spawn_detached_gateway",
         "cli_server_update.py::_update",
@@ -1420,7 +1420,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "dashboard/file_api/editor.py::_diff_redacted_bodies",
         "dashboard/file_api/desktop.py::api_screenshot",
         "dashboard/file_api/desktop.py::api_upload",
-        "dashboard/handlers/knowledge.py::_run_folder_dialog",
+        "dashboard/handlers/knowledge_sources.py::_run_folder_dialog",
         # Terminal live-cwd probe on hosts without /proc (macOS/BSD): fixed
         # `lsof -a -p <pid> -d cwd -Fn` list-argv (no shell=True) where <pid>
         # is the gateway's own PTY child pid (an int from asyncio.subprocess),
@@ -1428,15 +1428,15 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # sandboxing would break lsof's access to host process state.
         "dashboard/handlers/terminal.py::_proc_cwd",
         "dashboard/handlers/terminal.py::api_terminal_ws",
-        "dashboard/handlers/updates.py::_apply",
+        "dashboard/handlers/updates_apply.py::_apply",
         # The update check's git side: fixed `git fetch` / `rev-parse` / `show` /
         # `diff` list-argv (no shell=True) run in KIROCREW_PROJECT_DIR, an operator
         # environment value, never agent input. Read-only version comparison —
         # nothing here writes to the tree.
-        "dashboard/handlers/updates.py::_check_git_checkout",
+        "dashboard/handlers/updates_check.py::_check_git_checkout",
         # (_venv_pip_install removed — it now delegates the install to
         # dep_sync.sync_or_reinstall and spawns nothing itself.)
-        "dashboard/handlers/updates.py::api_update_apply",
+        "dashboard/handlers/updates_apply.py::api_update_apply",
         "dashboard/handlers_system.py::_collect_system_metrics",
         # Split out of _collect_system_metrics above so the whole-machine process
         # walk can be cached on its own (much longer) TTL instead of the live

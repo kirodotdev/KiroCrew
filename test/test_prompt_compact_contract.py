@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew.context_assembly.sections import computer_use_block
+from kiro_crew.context_assembly.sections import browser_section, computer_use_block
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "src" / "kiro_crew" / "config"
@@ -22,8 +22,10 @@ CONFIG = ROOT / "src" / "kiro_crew" / "config"
 # to fit; their tests, not a size limit, check the retained text contracts.
 # Measured on the prompt with its Computer Use slot filled by the full section,
 # so the section's bytes still count against the budget after moving into
-# `context_assembly/sections.py`. The `{{MAX_SUBAGENTS}}` and `{{WIDGET_BLOCK}}`
-# slots are still counted as their raw tokens.
+# `context_assembly/sections.py`, and with its Browser section kept and its
+# markers gone, as a session with browsing set up gets it. The
+# `{{MAX_SUBAGENTS}}` and `{{WIDGET_BLOCK}}` slots are still counted as their
+# raw tokens.
 PROMPT_BYTE_CEILINGS = {"prompt.md": 40_950}
 _COMPUTER_USE_TOKEN = "{{COMPUTER_USE_BLOCK}}"
 
@@ -32,9 +34,10 @@ def _read(name: str = "prompt.md") -> str:
     return (CONFIG / name).read_text(encoding="utf-8")
 
 
-def _resolved(name: str = "prompt.md", *, mounted: bool = True) -> str:
-    """The prompt with its Computer Use slot filled as a session gets it."""
-    return _read(name).replace(_COMPUTER_USE_TOKEN, computer_use_block(mounted))
+def _resolved(name: str = "prompt.md", *, mounted: bool = True, browsing: bool = True) -> str:
+    """The prompt with its Computer Use slot and Browser section resolved as a session gets them."""
+    text = _read(name).replace(_COMPUTER_USE_TOKEN, computer_use_block(mounted))
+    return browser_section(text, browsing)
 
 
 def _section(text: str, heading: str) -> str:
@@ -55,6 +58,7 @@ def test_each_selected_prompt_stays_under_its_byte_ceiling(name: str) -> None:
     size = len(_resolved(name, mounted=True).encode("utf-8"))
     assert size <= PROMPT_BYTE_CEILINGS[name], (name, size, PROMPT_BYTE_CEILINGS[name])
     assert len(_resolved(name, mounted=False).encode("utf-8")) < size
+    assert len(_resolved(name, browsing=False).encode("utf-8")) < size
 
 
 @pytest.mark.parametrize("name", PROMPT_BYTE_CEILINGS)
@@ -62,6 +66,8 @@ def test_template_slots_remain_complete_and_unique(name: str) -> None:
     text = _read(name)
     assert re.findall(r"\{\{([A-Z_]+)\}\}", text) == [
         "MAX_SUBAGENTS",
+        "BROWSER_BEGIN",
+        "BROWSER_END",
         "COMPUTER_USE_BLOCK",
         "WIDGET_BLOCK",
     ]

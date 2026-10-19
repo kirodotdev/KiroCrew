@@ -109,7 +109,7 @@ describe('CommandBarOverlay owners', () => {
       'const onKeyDown = useCallback(',
       'if (!open) return null',
       'commandBarOverlaySlotRenderer(',
-      'return createPortal(',
+      'return <OverlayPortal>',
     ]
     const at = ORDER.map(anchor => {
       const first = src.indexOf(anchor)

@@ -228,9 +228,10 @@ async def _cancel_parent_children(
         handler.cancel_for_teardown(
             agent_ids,
             parent_session_key=key,
-            # Carried only so the teardown's single audit line can name WHICH verb
-            # ended the conversation. Six verbs reach this one helper, and "a parent
-            # end cancelled these runs" is not answerable from outside without it.
+            # Names WHICH verb ended the conversation: the teardown's audit lines carry
+            # it, and so does the stop origin of a live run this teardown is first to
+            # stop. Several verbs reach this one helper, and "a parent end cancelled
+            # these runs" is not answerable from outside without it.
             verb=verb,
         )
     )

@@ -879,7 +879,7 @@ class TestCarrierFailures:
         resp = await hi.api_instances_chat_slots(_request(state))
 
         assert resp.status == 503
-        assert (await _body(resp))["code"] == "instances_unavailable"
+        assert (await _body(resp))["code"] == "instances_manager_unavailable"
 
 
 @pytest.mark.asyncio

@@ -700,6 +700,257 @@ describe('AssistantMessage', () => {
     })
   })
 
+  describe('fork with history entry', () => {
+    const menuProps = { content: 'x'.repeat(80), isStreaming: false, slotRunning: false }
+    const stable = { forkIndex: 7, forkMessageId: 'row-42' }
+
+    it('forks with history, naming the direction itself', () => {
+      const onFork = vi.fn()
+      render(<AssistantMessage {...menuProps} {...stable} onFork={onFork} forkDirectionChoice />)
+      openOverflow()
+      fireEvent.click(screen.getByTestId('fork-with-history'))
+      expect(onFork).toHaveBeenCalledTimes(1)
+      expect(onFork).toHaveBeenCalledWith(7, 'row-42', 'head')
+    })
+
+    it('leaves the plain entry on its two-argument call when the choice is offered', () => {
+      const onFork = vi.fn()
+      render(<AssistantMessage {...menuProps} {...stable} onFork={onFork} forkDirectionChoice />)
+      openOverflow()
+      fireEvent.click(screen.getByTestId('fork-from-here'))
+      expect(onFork).toHaveBeenCalledTimes(1)
+      expect(onFork).toHaveBeenCalledWith(7, 'row-42')
+    })
+
+    it('labels each entry by what the new chat holds and lists the history entry second', () => {
+      render(<AssistantMessage {...menuProps} {...stable} onFork={vi.fn()} forkDirectionChoice />)
+      openOverflow()
+      expect(screen.getByTestId('fork-with-history')).toHaveTextContent('Fork with earlier messages')
+      expect(screen.getByTestId('fork-from-here')).toHaveTextContent('Fork with later messages only')
+      const order = screen.getAllByRole('menuitem').map(i => i.getAttribute('data-testid')).filter(id => id?.startsWith('fork-'))
+      expect(order).toEqual(['fork-from-here', 'fork-with-history'])
+    })
+
+    it('draws both entries with the fork icon', () => {
+      render(<AssistantMessage {...menuProps} {...stable} onFork={vi.fn()} forkDirectionChoice />)
+      openOverflow()
+      for (const id of ['fork-from-here', 'fork-with-history']) {
+        expect(screen.getByTestId(id).querySelector('svg.lucide-git-fork')).toBeInTheDocument()
+      }
+    })
+
+    it('holds the later-messages entry on the newest message, where the server would refuse an empty tail', () => {
+      const onFork = vi.fn()
+      render(<AssistantMessage {...menuProps} {...stable} onFork={onFork} forkDirectionChoice forkHasLaterMessages={() => false} />)
+      openOverflow()
+      expect(screen.getByTestId('fork-from-here')).toHaveAttribute('aria-disabled', 'true')
+      expect(screen.getByTestId('fork-from-here').firstElementChild).toHaveClass('opacity-50')
+      // The reason replaces the hint and stays the entry's accessible description.
+      expect(screen.getByTestId('fork-hint')).toHaveTextContent('No messages after this one yet.')
+      expect(screen.getByTestId('fork-from-here')).toHaveAttribute('aria-describedby', screen.getByTestId('fork-hint').id)
+      fireEvent.click(screen.getByTestId('fork-from-here'))
+      expect(onFork).not.toHaveBeenCalled()
+      // A fork with history of the newest message still has something to copy.
+      expect(screen.getByTestId('fork-with-history')).not.toHaveAttribute('aria-disabled')
+      fireEvent.click(screen.getByTestId('fork-with-history'))
+      expect(onFork).toHaveBeenCalledWith(7, 'row-42', 'head')
+    })
+
+    it('reads whether a later message exists each time the menu opens, so an older reply re-enables after a new message', () => {
+      const onFork = vi.fn()
+      let later = false
+      const forkHasLaterMessages = vi.fn(() => later)
+      render(<AssistantMessage {...menuProps} {...stable} onFork={onFork} forkDirectionChoice forkHasLaterMessages={forkHasLaterMessages} />)
+      openOverflow()
+      expect(screen.getByTestId('fork-from-here')).toHaveAttribute('aria-disabled', 'true')
+      expect(forkHasLaterMessages).toHaveBeenCalledWith(7)
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+      later = true
+      openOverflow()
+      expect(screen.getByTestId('fork-from-here')).not.toHaveAttribute('aria-disabled')
+      expect(screen.getByTestId('fork-hint')).toHaveTextContent('Leaves out this message. Only the ones after it go to a new chat.')
+      fireEvent.click(screen.getByTestId('fork-from-here'))
+      expect(onFork).toHaveBeenCalledWith(7, 'row-42')
+    })
+
+    it('keeps a held entry inert while its menu stays open, even after a later message arrives', () => {
+      const onFork = vi.fn()
+      let later = false
+      render(<AssistantMessage {...menuProps} {...stable} onFork={onFork} forkDirectionChoice forkHasLaterMessages={() => later} />)
+      openOverflow()
+      expect(screen.getByTestId('fork-from-here')).toHaveAttribute('aria-disabled', 'true')
+      later = true
+      fireEvent.click(screen.getByTestId('fork-from-here'))
+      expect(onFork).not.toHaveBeenCalled()
+    })
+
+    it('re-checks for a later message on select, so a menu opened before the check changed cannot send an empty tail', () => {
+      const onFork = vi.fn()
+      let later = true
+      render(<AssistantMessage {...menuProps} {...stable} onFork={onFork} forkDirectionChoice forkHasLaterMessages={() => later} />)
+      openOverflow()
+      expect(screen.getByTestId('fork-from-here')).not.toHaveAttribute('aria-disabled')
+      later = false
+      fireEvent.click(screen.getByTestId('fork-from-here'))
+      expect(onFork).not.toHaveBeenCalled()
+    })
+
+    it('keeps the lone plain entry on the newest message, where it forks with history', () => {
+      const onFork = vi.fn()
+      render(<AssistantMessage {...menuProps} {...stable} onFork={onFork} forkHasLaterMessages={() => false} />)
+      openOverflow()
+      expect(screen.getByTestId('fork-from-here')).not.toHaveAttribute('aria-disabled')
+      fireEvent.click(screen.getByTestId('fork-from-here'))
+      expect(onFork).toHaveBeenCalledWith(7, 'row-42')
+    })
+
+    it('leaves the menu as it was while the host does not offer the choice', () => {
+      render(<AssistantMessage {...menuProps} {...stable} onFork={vi.fn()} />)
+      openOverflow()
+      // The plain entry forks with history here, so its label says no more than it did.
+      expect(screen.getByTestId('fork-from-here')).toHaveTextContent('Fork conversation from here')
+      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-git-fork')).toBeInTheDocument()
+      expect(screen.queryByTestId('fork-with-history')).toBeNull()
+    })
+
+    it('offers no direction before the fork point can be resolved, where the plain entry only pages earlier history', () => {
+      render(<AssistantMessage {...menuProps} onFork={vi.fn()} onLoadEarlier={vi.fn()} forkDirectionChoice />)
+      openOverflow()
+      expect(screen.getByTestId('fork-from-here')).toHaveAttribute('aria-disabled', 'true')
+      // Its reason line asks for earlier history, so the label does not claim to leave it out yet.
+      expect(screen.getByTestId('fork-from-here')).toHaveTextContent('Fork conversation from here')
+      expect(screen.queryByTestId('fork-with-history')).toBeNull()
+    })
+
+    it('adds no menu for a row that keeps its fork as the row button', () => {
+      render(<AssistantMessage {...menuProps} forkIndex={4} onFork={vi.fn()} forkDirectionChoice />)
+      expect(screen.queryByTitle('More actions')).toBeNull()
+      expect(screen.queryByTestId('fork-with-history')).toBeNull()
+    })
+
+    it('adds no fork entry to the menu such a row opens for Share', () => {
+      render(<AssistantMessage {...menuProps} forkIndex={4} onFork={vi.fn()} forkDirectionChoice shareEnabled />)
+      openOverflow()
+      expect(screen.getByTestId('share-message')).toBeInTheDocument()
+      expect(screen.queryByTestId('fork-with-history')).toBeNull()
+    })
+
+    it('holds both fork entries while a fork is in flight, so a second click cannot start another', async () => {
+      let resolveFork!: () => void
+      const onFork = vi.fn(() => new Promise<void>(res => { resolveFork = res }))
+      render(<AssistantMessage {...menuProps} {...stable} onFork={onFork} forkDirectionChoice />)
+      openOverflow()
+      expect(screen.getByTestId('fork-with-history-label')).not.toHaveClass('opacity-50')
+      fireEvent.click(screen.getByTestId('fork-with-history'))
+      expect(onFork).toHaveBeenCalledTimes(1)
+      openOverflow()
+      expect(screen.getByTestId('fork-with-history').querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
+      // The spinner takes the icon's place, so the label keeps its column beside its neighbours.
+      expect(screen.getByTestId('fork-with-history').querySelector('svg.lucide-git-fork')).toBeNull()
+      expect(screen.getByTestId('fork-with-history-label').querySelectorAll('svg')).toHaveLength(1)
+      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
+      expect(screen.getByTestId('fork-with-history')).toHaveAttribute('aria-disabled', 'true')
+      // Held reads as held: dimmed, not only aria-disabled (a held item is not Radix-disabled, so it is not dimmed for free).
+      expect(screen.getByTestId('fork-with-history-label')).toHaveClass('opacity-50')
+      expect(screen.getByTestId('fork-with-history-hint')).toHaveClass('opacity-50')
+      expect(screen.getByTestId('fork-from-here')).toHaveAttribute('aria-disabled', 'true')
+      // The other entry is held too, so it reads as held as well: dimmed, with no spinner of its own.
+      expect(screen.getByTestId('fork-from-here').firstElementChild).toHaveClass('opacity-50')
+      expect(screen.getByTestId('fork-hint')).toHaveClass('opacity-50')
+      expect(screen.getByTestId('fork-with-history-label')).toHaveTextContent('Forking…')
+      expect(screen.getByTestId('fork-hint')).toHaveTextContent('Another fork is starting.')
+      expect(screen.getByTestId('fork-from-here')).toHaveTextContent('Fork with later messages only')
+      fireEvent.click(screen.getByTestId('fork-with-history'))
+      fireEvent.click(screen.getByTestId('fork-from-here'))
+      expect(onFork).toHaveBeenCalledTimes(1)
+      // The held item keeps the menu open, like the plain entry, so it is the same menu to read again.
+      await act(async () => { resolveFork(); await Promise.resolve() })
+      expect(screen.getByTestId('fork-with-history')).not.toHaveAttribute('aria-disabled')
+      expect(screen.getByTestId('fork-with-history-label')).not.toHaveClass('opacity-50')
+      expect(screen.getByTestId('fork-with-history-hint')).not.toHaveClass('opacity-50')
+      expect(screen.getByTestId('fork-from-here')).not.toHaveAttribute('aria-disabled')
+      expect(screen.getByTestId('fork-from-here').firstElementChild).not.toHaveClass('opacity-50')
+      expect(screen.getByTestId('fork-hint')).not.toHaveClass('opacity-50')
+    })
+
+    it('holds the entry while a fork started from the plain entry is in flight', async () => {
+      let resolveFork!: () => void
+      const onFork = vi.fn(() => new Promise<void>(res => { resolveFork = res }))
+      render(<AssistantMessage {...menuProps} {...stable} onFork={onFork} forkDirectionChoice />)
+      openOverflow()
+      fireEvent.click(screen.getByTestId('fork-from-here'))
+      expect(onFork).toHaveBeenCalledTimes(1)
+      openOverflow()
+      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
+      // The spinner takes the icon's place here too, so both entries' labels stay in one column.
+      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-git-fork')).toBeNull()
+      expect(screen.getByTestId('fork-with-history').querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
+      expect(screen.getByTestId('fork-with-history')).toHaveAttribute('aria-disabled', 'true')
+      expect(screen.getByTestId('fork-from-here')).toHaveTextContent('Forking…')
+      expect(screen.getByTestId('fork-with-history-hint')).toHaveTextContent('Another fork is starting.')
+      expect(screen.getByTestId('fork-with-history-label')).toHaveTextContent('Fork with earlier messages')
+      fireEvent.click(screen.getByTestId('fork-with-history'))
+      expect(onFork).toHaveBeenCalledTimes(1)
+      await act(async () => { resolveFork(); await Promise.resolve() })
+      expect(screen.getByTestId('fork-with-history')).not.toHaveAttribute('aria-disabled')
+      expect(screen.getByTestId('fork-from-here')).toHaveTextContent('Fork with later messages only')
+      expect(screen.getByTestId('fork-with-history-hint')).toHaveTextContent('Starts a new chat with this message and the ones before it.')
+    })
+
+    it('says under each entry what the new chat holds and that this chat is left as it was', () => {
+      render(<AssistantMessage {...menuProps} {...stable} onFork={vi.fn()} forkDirectionChoice />)
+      openOverflow()
+      expect(screen.getByTestId('fork-with-history-hint')).toHaveTextContent('Starts a new chat with this message and the ones before it. This chat is not changed.')
+      expect(screen.getByTestId('fork-hint')).toHaveTextContent('Leaves out this message. Only the ones after it go to a new chat. This chat is not changed.')
+      // Each line sits inside its own entry and is that entry's accessible description.
+      for (const [item, hint] of [['fork-with-history', 'fork-with-history-hint'], ['fork-from-here', 'fork-hint']]) {
+        expect(screen.getByTestId(item)).toContainElement(screen.getByTestId(hint))
+        expect(screen.getByTestId(item)).toHaveAttribute('aria-describedby', screen.getByTestId(hint).id)
+      }
+    })
+
+    it('adds no description line while the host does not offer the choice', () => {
+      render(<AssistantMessage {...menuProps} {...stable} onFork={vi.fn()} />)
+      openOverflow()
+      expect(screen.queryByTestId('fork-hint')).toBeNull()
+      expect(screen.queryByTestId('fork-with-history-hint')).toBeNull()
+      expect(screen.getByTestId('fork-from-here')).not.toHaveAttribute('aria-describedby')
+    })
+
+    it('adds no description line before the fork point resolves, where the reason line already explains the entry', () => {
+      render(<AssistantMessage {...menuProps} onFork={vi.fn()} onLoadEarlier={vi.fn()} forkDirectionChoice />)
+      openOverflow()
+      expect(screen.queryByTestId('fork-hint')).toBeNull()
+      expect(screen.getByTestId('fork-unavailable-reason')).toBeInTheDocument()
+      expect(screen.getByTestId('fork-from-here')).toHaveAttribute('aria-describedby', screen.getByTestId('fork-unavailable-reason').id)
+    })
+
+    it('keeps the menu inside a 320 or 390 px viewport and lets both description lines wrap', () => {
+      render(<AssistantMessage {...menuProps} {...stable} onFork={vi.fn()} forkDirectionChoice />)
+      openOverflow()
+      // jsdom has no layout, so the cap is pinned by its class; scripts/capture-18611-fork-menu.mjs
+      // measures the menu and both lines in Chromium at 390 and 320 px. The viewport term is what
+      // keeps a 320 px screen inside itself, the 20rem term keeps the lines a readable measure.
+      expect(screen.getByRole('menu')).toHaveClass('max-w-[min(20rem,calc(100vw_-_1rem))]')
+      // A line that can wrap sits under no ancestor that forces one row.
+      for (const id of ['fork-hint', 'fork-with-history-hint']) {
+        expect(screen.getByTestId(id).closest('.whitespace-nowrap, .truncate')).toBeNull()
+      }
+    })
+
+    it('still swaps the plain entry\'s icon for the spinner when it is the only fork entry', async () => {
+      let resolveFork!: () => void
+      const onFork = vi.fn(() => new Promise<void>(res => { resolveFork = res }))
+      render(<AssistantMessage {...menuProps} {...stable} onFork={onFork} />)
+      openOverflow()
+      fireEvent.click(screen.getByTestId('fork-from-here'))
+      openOverflow()
+      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
+      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-git-fork')).toBeNull()
+      await act(async () => { resolveFork(); await Promise.resolve() })
+    })
+  })
+
 })
 
 describe('action footer on touch devices', () => {

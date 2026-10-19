@@ -1034,6 +1034,20 @@ async def _handle_restart(
     from kiro_crew.dashboard.chat_persistence import wait_for_unwinding_turns
 
     await wait_for_unwinding_turns(orch.dashboard_state)
+    # The skill-usage ledgers hold up to one debounce window (60 s) of hits in
+    # memory, and os._exit() below would drop them. Bounded and off-loop, for
+    # the same reason as the SEL flush that follows.
+    try:
+        from kiro_crew import skill_usage
+
+        await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), skill_usage.flush_all_for_shutdown
+            ),
+            timeout=skill_usage.SHUTDOWN_FLUSH_SECS,
+        )
+    except Exception:
+        logger.debug("Skill-usage flush before restart failed", exc_info=True)
     # Flush the SEL audit queue: logging is async (background writer thread +
     # atexit flush) and os._exit() runs neither atexit handlers nor finalizers,
     # so the approved-restart audit event above would be lost. flush() is a

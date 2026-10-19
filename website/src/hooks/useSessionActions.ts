@@ -10,7 +10,7 @@ import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
-import { sessionIsBusyForClose } from '../lib/closeBusyGate'
+import { closeConfirmPrompt } from '../lib/closeConfirmPrompt'
 import { i18nT } from '../i18n/t'
 import { forkFailureNoticeOffsite } from '../utils/forkFailure'
 import type { ForkFailureNotice } from '../utils/forkFailure'
@@ -440,11 +440,12 @@ export function useSessionActions(mode?: string): SessionActions {
   const reload = useCallback((slotKey: string) => { reloadMutate(slotKey) }, [reloadMutate])
 
   // The sidebar row ✕ and every session menu close land here. A busy session
-  // always asks, on the same rule as Cmd+W (`sessionIsBusyForClose`); an idle
-  // one keeps the user's `confirmCloseSession` setting.
+  // always asks, on the same rule as Cmd+W (`closeBusyReasons`); an idle one
+  // keeps the user's `confirmCloseSession` setting. The prompt names which of
+  // the two made it ask (`closeConfirmPrompt`).
   const close = useCallback((slotKey: string) => {
-    const mustConfirm = loadChatConfig().confirmCloseSession || sessionIsBusyForClose(store.getState(), slotKey)
-    if (!mustConfirm || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
+    const prompt = closeConfirmPrompt(store.getState(), slotKey, { settingOn: loadChatConfig().confirmCloseSession })
+    if (prompt === null || confirm(prompt)) dispatch(deleteSlot(slotKey))
   }, [dispatch])
 
   return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }

@@ -130,9 +130,10 @@ interface Props {
  * agent's `resources`. Each edit saves immediately (same interaction model as
  * the model picker on this page) — there is no separate Save button to forget.
  *
- * The popup must stay a Radix Popover, not a portal to `document.body`: it
- * renders inside a modal dialog, whose pointer-events cut and FocusScope leave
- * anything outside its layer stack unclickable and unfocusable.
+ * The popup must stay a Radix Popover, not a hand-rolled portal: in the crew
+ * editor it renders inside a modal dialog, whose pointer-events cut and
+ * FocusScope leave anything outside its layer stack unclickable and
+ * unfocusable. It also renders on the Custom agents page, outside any dialog.
  */
 // From its code point, not a literal: the i18n gate reads a bare string here as user copy.
 const ELLIPSIS = String.fromCharCode(0x2026)
@@ -458,7 +459,8 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
         ))}
         {/* `modal`: the host crew editor is a modal dialog, and only a modal popover
             takes over its scroll lock — without that the host cancels wheel events
-            over the list. */}
+            over the list. Outside a dialog (the Custom agents page) the shared
+            Popover keeps it non-modal (components/overlayRoot). */}
         <Popover open={open} onOpenChange={setOpen} modal>
           <PopoverTrigger asChild>
             <Btn

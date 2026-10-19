@@ -58,7 +58,8 @@
  3 test_approval_decide_owner_bound.py
  1 test_apps_backend_coverage_dispatch.py
  2 test_apps_registry_coverage_characterization.py
- 2 test_apps_routes_coverage.py
+ 1 test_apps_routes_coverage.py
+ 1 test_apps_routes_coverage_enable_disable.py
  1 test_artifacts_refactor_store_contract.py
  5 test_auto_research_campaign_contract.py
  3 test_auto_research_handlers_coverage.py
@@ -89,7 +90,7 @@
  1 test_chat_slot_switch_atomicity_alias_and_bulk.py
  1 test_chat_title.py
  1 test_ci_pytest_progress.py
- 1 test_cli.py
+ 1 test_cli_chat_permission.py
  1 test_cli_manifest_signature.py
  2 test_cloud_connect.py
  2 test_cloud_ssm.py
@@ -149,7 +150,7 @@
  2 test_discord_sessions_binding_state.py
  2 test_e2e_ci_scheduling.py
  1 test_e2e_smoke.py
- 5 test_embedding_rebuild_generation.py
+ 3 test_embedding_rebuild_generation.py
  1 test_embedding_rebuild_process.py
  1 test_embeddings.py
  1 test_embeddings_threads.py
@@ -209,7 +210,7 @@
  3 test_mcp_apps_render.py
  1 test_mcp_caller.py
  1 test_mcp_cron_security_wiring.py
- 1 test_mcp_discovery.py
+ 1 test_mcp_discovery_probe_stdio.py
  3 test_mcp_gateway_bluegreen.py
  1 test_mcp_gateway_daemon_control.py
  1 test_mcp_gateway_exclusive_backend.py
@@ -293,7 +294,9 @@
  1 test_session_start_queued_behind.py
  1 test_session_storage_api.py
  1 test_session_terminated_reap.py
- 5 test_session_transfer.py
+ 2 test_session_transfer.py
+ 2 test_session_transfer_import_body.py
+ 1 test_session_transfer_outbound.py
  1 test_session_tree_push.py
  3 test_session_usage.py
  1 test_session_usage_refresh_routes.py

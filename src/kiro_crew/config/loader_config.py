@@ -1241,9 +1241,7 @@ class KiroCrewConfig:
         the kiro-cli backend. The factory accepts an optional ``session_key`` to
         create a per-session subdirectory under ``workspace_root()``.
         """
-        from kiro_crew.agent_sdk.acp_provider_class import acp_provider_class
-
-        AcpProvider = acp_provider_class()
+        from kiro_crew.agent_sdk.drivers.acp import build_acp_provider
         from kiro_crew.session_work_dir import is_disposable_session_key
 
         model = self.agent.model
@@ -1306,7 +1304,7 @@ class KiroCrewConfig:
             # start with the user's full tool set under READ_ONLY.
             side_read_only: bool = False,
             **_kwargs: object,
-        ) -> AcpProvider:  # type: ignore[valid-type]  # the class bound above
+        ):  # return type inferred from build_acp_provider (SDK boundary: config may not name AcpProvider)
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
             # Canonical crew identity for the session (keys per-agent watchdog
             # windows on the handle) — one shared resolution rule, see
@@ -1430,7 +1428,7 @@ class KiroCrewConfig:
                         session_key or "?",
                         m,
                     )
-            return AcpProvider(
+            return build_acp_provider(
                 work_dir=wdir,
                 model=m,
                 agent=agent,

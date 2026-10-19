@@ -244,10 +244,49 @@ def test_check_body_missing_area_is_twenty_even_when_prose_is_short(capsys) -> N
 
 
 def test_check_body_without_what_changed_still_runs_accounting(capsys) -> None:
+    # check_body alone does not gate a missing section; the template check does
+    # (test_end_to_end_body_missing_what_changed_exits_twenty_two).
     rc = ds.check_body("## Problem\n\nnames src/kiro_crew/x\n", "M\tsrc/kiro_crew/x/y.py\n", 400)
     out = capsys.readouterr().out
     assert rc == 0
     assert "length check skipped" in out
+
+
+def _table_body(rows: int) -> str:
+    table = "| file | Before | After |\n|---|:--:|---|\n"
+    table += "".join("| x/y.py | 🟥 r{0} | 🟩 r{0} |\n".format(i) for i in range(rows))
+    # A fenced table is code, not a table row the reader scans.
+    fence = "```\n" + "| fenced | row |\n" * 20 + "```\n"
+    return (
+        "## What changed\n\nx/y.py sends once.\n\n" + table + "\n" + fence + "\n## Tests\n\n| a |\n"
+    )
+
+
+def test_table_rows_exclude_headers_separators_fences_and_other_sections() -> None:
+    assert ds.what_changed_table_rows(_table_body(3)) == 3
+    assert ds.what_changed_table_rows(BODY) == 1
+    assert ds.what_changed_table_rows("## Problem\n\n| a |\n") is None
+
+
+def test_check_body_nine_table_rows_is_twenty_one(capsys) -> None:
+    assert ds.TABLE_ROW_LIMIT == 8
+    rc = ds.check_body(_table_body(9), "M\tsrc/kiro_crew/x/y.py\n")
+    out = capsys.readouterr().out
+    assert rc == 21
+    assert "TOO MANY ROWS: What changed has 9 table rows (limit 8)" in out
+
+
+def test_check_body_eight_table_rows_is_zero(capsys) -> None:
+    rc = ds.check_body(_table_body(8), "M\tsrc/kiro_crew/x/y.py\n")
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "TOO MANY ROWS" not in out
+
+
+def test_row_limit_matches_the_body_picture_ceiling() -> None:
+    picture = _flat(SKILL.parent / "references" / "body-picture.md")
+    words = {8: "eight"}
+    assert "or {} rows, is the ceiling".format(words[ds.TABLE_ROW_LIMIT]) in picture
 
 
 # --------------------------------------------------------------- end to end
@@ -478,6 +517,17 @@ def test_end_to_end_body_missing_a_template_section_exits_twenty_two(templated_r
     assert rc == 22
     assert "TEMPLATE: 1 required description section is missing" in out
     assert "- `## Not a goal`" in out
+
+
+@needs_bash
+def test_end_to_end_body_missing_what_changed_exits_twenty_two(templated_repo: Path) -> None:
+    """A body with no What changed never passes --check-body: the template check stops it."""
+    body = TEMPLATE_BODY.replace("## What changed\n\n", "## Notes\n\n")
+    _body(templated_repo).write_text(body)
+    rc, out = _run(templated_repo, "--check-body")
+    assert rc == 22
+    assert "length check skipped" in out
+    assert "- `## What changed`" in out
 
 
 @needs_bash

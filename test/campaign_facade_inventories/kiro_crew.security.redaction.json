@@ -1,0 +1,27 @@
+{
+ "base_public_names": [
+  "AWS_KEY_ID",
+  "CREDENTIAL_REDACTION_TAGS",
+  "CredentialMatch",
+  "JWT_MULTI_SEGMENT",
+  "REDACTED_CREDENTIAL_TAG",
+  "bare_secret_pass_enabled",
+  "credential_pass_bypassed",
+  "get_credential_patterns",
+  "mask_baseline_symbol_tables",
+  "pem_scan",
+  "redact_credentials",
+  "redact_credentials_with_records",
+  "redact_local_paths",
+  "redact_path_segments"
+ ],
+ "note": "S16: redaction.py became a mirror facade over redaction_patterns (the credential alternation and its pre-filter) and redaction_entropy (the bare-secret shape gates, the base64 decode and the document-link grammar). The batch redactor, its pass plan and records, the redaction tags, the binary masker and the path passes stay defined in the facade; every other public name it bound before the split is served from its owner or still bound by its own import.",
+ "rebound": {
+  "AWS_KEY_ID": "kiro_crew.credential_patterns",
+  "JWT_MULTI_SEGMENT": "kiro_crew.credential_patterns",
+  "bare_secret_pass_enabled": "kiro_crew.security.redaction_switch",
+  "credential_pass_bypassed": "kiro_crew.security.redaction_switch",
+  "get_credential_patterns": "kiro_crew.security.redaction_patterns",
+  "pem_scan": "kiro_crew.security"
+ }
+}

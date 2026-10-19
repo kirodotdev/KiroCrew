@@ -117,6 +117,7 @@ _SOURCES = (
     _SRC / "mcp_mate.py",
     _SRC / "mcp_computer.py",
     _SRC / "mcp_cron.py",
+    *sorted(_SRC.glob("mcp_cron_*.py")),
     _SRC / "cli_commands_gateway_api.py",
     _SRC / "cli_server.py",
     _SRC / "cli_server_peer.py",

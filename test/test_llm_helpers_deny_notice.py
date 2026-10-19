@@ -644,6 +644,8 @@ class TestEveryHostDenyInLlmHelpersSteersFirst:
     """
 
     MODULE = pathlib.Path(__file__).resolve().parents[1] / "src/kiro_crew/llm_helpers.py"
+    #: The facade and every owner module it is composed from, read as one text.
+    MODULES = (MODULE, *sorted(MODULE.with_name("llm_helpers_parts").glob("*.py")))
     REJECT = re.compile(r"^\s*await \w+\.reject_tool\(")
     STEER = re.compile(r"^\s*await _steer_host_deny\(")
     #: The audit spellings: ``_resolve_permission``'s single raising funnel, and
@@ -666,8 +668,11 @@ class TestEveryHostDenyInLlmHelpersSteersFirst:
     #: refuse when they did.
     USER_REJECTIONS = ("interactive_rejected",)
 
+    def _text(self) -> str:
+        return "\n".join(path.read_text(encoding="utf-8") for path in self.MODULES)
+
     def _lines(self) -> list[str]:
-        return self.MODULE.read_text(encoding="utf-8").splitlines()
+        return self._text().splitlines()
 
     def _reject_sites(self) -> list[int]:
         return [i for i, line in enumerate(self._lines()) if self.REJECT.match(line)]
@@ -686,7 +691,7 @@ class TestEveryHostDenyInLlmHelpersSteersFirst:
         # walker's regex misses cannot drop a site out of the coverage assertion.
         import inspect
 
-        src = self.MODULE.read_text(encoding="utf-8")
+        src = self._text()
         # The one non-awaited spelling is the cancellation fallback INSIDE the
         # steer helper -- it answers the wire for a site whose own reject the
         # cancellation skipped, so it is not a deny site of its own. Pin it to

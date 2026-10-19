@@ -8,7 +8,7 @@ import QuoteCard from '../pages/chat/QuoteCard'
 import CopyBranchButton from './CopyBranchButton'
 import ProjectAwsProfileStatus from './ProjectAwsProfile'
 import RejectDropdown from './RejectDropdown'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
 import { useAppStore, useAppDispatch } from '../store'
@@ -326,6 +326,7 @@ function ChatInput({
     voiceDeviceLabel = '',
     voiceDeviceId = '',
     voiceDictationPanel = false,
+    voiceSubmitOnRelease = false,
     voiceStreaming = false,
     voiceSampleRef,
     voicePartial = '',
@@ -695,7 +696,7 @@ function ChatInput({
     setHoldTarget, touchPtt, voiceHoldMode, micIsModeSwitch, voiceSettling, textareaParked, toggleVoiceMode, micLabel, holdBarLabel,
     voiceModePlaceholder,
   } = useHoldToTalk({
-    onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload,
+    onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease,
     voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, optimizing, placeholder, showDictation,
   })
   // The name in the status row is the way there: one click switches to the
@@ -1188,15 +1189,14 @@ function ChatInput({
         )}
         {/* Where a release would land: portalled so a transformed ancestor
             cannot offset its viewport coordinates. */}
-        {treeDrop.state === 'accept' && treeDrop.caret && createPortal(
+        {treeDrop.state === 'accept' && treeDrop.caret && <OverlayPortal>
           <div
             aria-hidden="true"
             data-testid="composer-tree-drop-caret"
             className="pointer-events-none fixed z-50 w-0.5 rounded-full bg-accent"
             style={{ left: treeDrop.caret.left - 1, top: treeDrop.caret.top, height: treeDrop.caret.height }}
-          />,
-          document.body,
-        )}
+          />
+        </OverlayPortal>}
         {/* A folder whose path cannot be written as a folder reference: say why
             instead of leaving only the no-drop cursor. */}
         {treeDrop.state === 'refuse' && (
@@ -1238,7 +1238,7 @@ function ChatInput({
         </div>
 
         <VoiceCaptureStatus
-          voiceHoldMode={voiceHoldMode} touchPtt={touchPtt} showDictation={showDictation} value={value} voicePartial={voicePartial}
+          voiceHoldMode={voiceHoldMode} touchPtt={touchPtt} draftZone={voiceSubmitOnRelease} showDictation={showDictation} value={value} voicePartial={voicePartial}
           voiceDeviceLabel={voiceDeviceLabel} voiceDeviceId={voiceDeviceId} onSelectVoiceDevice={onSelectVoiceDevice} voiceDeviceSwitchIsLive={voiceDeviceSwitchIsLive}
           voiceStreaming={voiceStreaming} voiceDownload={voiceDownload} voiceRecording={voiceRecording} voiceLevel={voiceLevel} voiceError={voiceError} voiceKeptRecording={voiceKeptRecording}
           onClearVoiceError={onClearVoiceError} voiceDrainCancellable={voiceDrainCancellable} cancelVoiceDrain={cancelVoiceDrain} onVoiceToggle={onVoiceToggle}

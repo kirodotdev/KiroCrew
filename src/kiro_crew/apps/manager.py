@@ -134,6 +134,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _approved_grants_after_manifest_change,
         _approved_grants_path,
         _approved_grants_row,
+        _config_keys_refresh_lock,
         _credential_free_source_metadata,
         _declared_grant_entries,
         _effective_approved_grants,
@@ -143,6 +144,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _pending_session_approval_after_manifest_change,
         _read_approved_grants,
         _read_installed,
+        _scan_installed_app_config_keys,
         _SwapState,
         _tree_swap,
         _tree_swap_guard,
@@ -163,6 +165,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         approved_manifest_permissions,
         apps_dir,
         get_app_manifest,
+        refresh_app_config_keys,
         staged_app_grants,
     )
     from kiro_crew.apps.manager_tree import (  # noqa: F401

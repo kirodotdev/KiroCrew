@@ -1013,6 +1013,9 @@ class AcpSessionProvider(LLMProvider):
         # session this runtime served BEFORE the handoff; leaking them lets
         # check_context_usage() compact the new, empty session.
         self._handle.last_prompt_stats.reset_context_state()
+        # Credits held between turns belong to the session served before the
+        # claim; the claiming session's first turn must not bill them.
+        self._handle._between_turn_credits = 0.0
         # Claim-push: re-target this session's MCP stub connections under the
         # shared runtime's PID to the claiming session (see AcpClient.rekey for
         # the rationale). Fire-and-forget; no-ops without a gateway socket.

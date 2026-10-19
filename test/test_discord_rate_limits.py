@@ -1,6 +1,6 @@
 """Discord REST rate-limit accounting and failure classification.
 
-Covers what ``discord/client.py``'s request ladder does with the accounting
+Covers what ``discord/client_rest.py``'s request ladder does with the accounting
 Discord hands back on every response: bucket pre-emption, a global hold that
 stops every route, the invalid-request breaker that keeps the app clear of
 Discord's 10,000-per-10-minutes IP block, and the permanent/transient split a

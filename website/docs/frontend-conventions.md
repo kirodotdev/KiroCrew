@@ -455,7 +455,8 @@ portal, so what decides coverage is where a component sits in JSX:
 <Modal open={open} onClose={close} title="…">
   …
   <SimpleSelect … />   {/* COVERED: a React descendant. Its popup portals to    */}
-</Modal>                {/* document.body at z-[9999], and is still covered,     */}
+</Modal>                {/* the body-level overlay root at z-[9999], and is      */}
+                        {/* still covered,                                        */}
                         {/* because coverage is about the React tree.            */}
 {pickerOpen && (
   <ProjectPicker … />   {/* NOT COVERED: a React SIBLING. It paints above the    */}
@@ -463,13 +464,14 @@ portal, so what decides coverage is where a component sits in JSX:
                         {/* on its dispatch path, so it needs its OWN boundary.  */}
 ```
 
-Both of those overlays portal to `document.body` and both paint above the dialog
+Both of those overlays portal to the body-level overlay root (see *Floating
+layers and Crew switches* below) and both paint above the dialog
 at the same `z-[9999]`. Only one of them is inside the boundary. **Sharing a
 stacking context is a paint-order fact and implies nothing about event
 routing** — conflating the two is what kept #6833 open, so do not reason about
 coverage from a z-index.
 
-A dialog rendered inside the App root rather than portalled to `document.body`
+A dialog rendered inside the App root rather than portalled to the body level
 shares the shell's stacking context, so it uses the `z-[65]` band: above the chat
 chrome (at most `z-[63]`) and below the `z-[100]` shell takeover layer, which a tie
 would otherwise cover by document order. `src/components/AppRootDialogZIndex.test.tsx`
@@ -490,7 +492,7 @@ const isolateKeys = (e: React.KeyboardEvent) => {
   if (e.key === 'Escape') { ime.claimKey(e); return }
   e.stopPropagation()
 }
-return createPortal(<div onKeyDown={isolateKeys} …>…</div>, document.body)
+return <OverlayPortal><div onKeyDown={isolateKeys} …>…</div></OverlayPortal>
 ```
 
 Three properties of that guard are load-bearing:
@@ -666,6 +668,26 @@ it. An owner receives its dependencies (`dispatch`, `queryClient`, the socket
 connection and peer owners) as arguments and never imports the facade; outside
 `src/hooks/websocket/` only the facade imports an owner, and owners import each
 other only along the edges `src/test/useWebSocket.ownership.test.ts` lists.
+
+`src/types/index.ts` is the one import path for the shared types it serves, most
+of them the shapes of REST and `/api/ws` payloads. That file declares nothing. It
+re-exports each owner below with an explicit `export type { … } from` list
+(`isolatedModules` is on, so a plain `export { … }` of a type does not compile).
+A new type for one of these areas goes to its owner and gets a line in that
+owner's list; `src/types/index.owners.test.tsx` fails until it has one. No owner
+imports the facade. An owner that needs another owner's type imports it with
+`import type` from that owner and imports nothing else, and nothing outside the
+family imports an owner. A module beside them in `src/types/` that is not named
+`index.<area>.ts` is not an owner and keeps its own import path.
+
+| Owner (`src/types/`) | Holds |
+|---|---|
+| `index.gateway.ts` | the status push (`StatusData`), the update check, host metrics, session storage and its inventory, and each connected crew's version, capabilities, approval state and remote update |
+| `index.jobs.ts` | scheduled jobs (`CronJob`), task-runner projects and their steps, dynamic-workflow runs |
+| `index.capabilities.ts` | lessons and memory stores, skills and their budget, steering files, skill and MCP discovery, configured MCP servers and their scopes |
+| `index.chat.ts` | the chat slot row (`ChatSlot`) with its turn identity and the `chat_done` payload, its todo list, MCP report and channel links; sidebar folders, tags and board lanes; transcript messages and the slot detail read; subagent and tool activity; content blocks; notifications and their channels; approvals; history session rows |
+| `index.sources.ts` | pull requests, issues, the source provider id, an app repository's contributors |
+| `index.artifacts.ts` | artifacts and their publication, publishing providers, forks, remote listings, session docs, folders, events, comments, web-app metadata |
 
 Redux Toolkit (`src/store/index.ts`) holds the cross-page shell state in **four**
 slices:
@@ -1000,3 +1022,29 @@ icons from a downstream edition instead of editing the seed maps.
 The Crew editor's Capabilities pane and its draft, preview and save contract are
 specified in [crew mode](../../docs/system-specs/modules/crew-mode.md) (*Crew
 capability drafts*).
+
+## Floating layers and Crew switches
+
+Switching to a remote Crew hides the local dashboard without unmounting it, so
+a floating layer must not portal straight to `document.body` (lint refuses
+`createPortal(…, document.body)` and Radix imports outside `components/ui/`).
+`src/components/overlayRoot.tsx` is the reference; in short:
+
+- Portal through `<OverlayPortal>` or `useOverlayRoot()`. Inside the local pane
+  that resolves to a body-level container hidden with the pane; anywhere else it
+  is `document.body`.
+- A switch counts as a click outside for layers that hold no input: the shared
+  Radix menus, context menus and selects close (`useCloseWhenCrewHidden`). A new
+  shared Radix wrapper passes `container={useOverlayRoot()}` inside
+  `MountAfterCommit`, then either closes the same way or, if it can hold input,
+  stays mounted and refuses dismissal while hidden (`standDownWhileHidden`, as
+  popovers do). A popover is modal only inside a Radix dialog.
+- Every other layer stays mounted and hidden, and hiding stops painting, not
+  listening. Required: every document- or window-level key handler of a layer
+  rendered under `<OverlayPortal>` that commits, discards or claims a key reads
+  `useLocalCrewHidden()` and stands down while it is true (as `Modal`,
+  `useDialogFocusTrap`, `useListKeyboardNav` and `useMenuKeyboard` do).
+  `src/test/overlayKeyGuard.inventory.test.ts` lists every such listener and
+  fails on a new one until it is guarded or exempted with a reason.
+- A Radix dialog and what it opens stay on `document.body` across a switch
+  (`GlobalOverlayScope`), as does the notification banner.

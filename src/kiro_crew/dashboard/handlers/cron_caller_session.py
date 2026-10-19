@@ -127,11 +127,6 @@ async def _recognize_session(
     # Private proof/store authorization and restricted-mode gates stay separate.
     sessions = getattr(state, "sessions", None)
     subagents = getattr(state, "subagents", None)
-    # ``wf-scope:`` is absent on purpose, although ``resolve_session_memory_mode``
-    # lists it: that prefix names a workflow run's memory anchor (``WorkflowScope.anchor``),
-    # and no session is created under it, so there is no live owner to find. Such a key
-    # is recognised only the way any key outside this tuple is: a slot, a restricted
-    # key, a channel namespace, or a persisted transcript.
     in_live_session = (
         sk.startswith(("subagent:", "wf:", "wf-pool:", "wf-unpooled:", "wf-worker:", "wf-author:"))
         and sessions is not None

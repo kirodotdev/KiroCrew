@@ -66,10 +66,19 @@ _CLAUDE_PINNED_MODE = "default"
 #: nothing ``default`` would not.
 _CLAUDE_GATE_ESCAPING_MODES = frozenset({"bypassPermissions", "auto"})
 
-#: The ``permissions.ask`` rules a claude Side Chat session carries inline. They
-#: send every web call to the host gate even where the user's own allow rule would
-#: pre-approve it, so an operator's deny on ``web_fetch`` / ``web_search`` binds.
-_CLAUDE_SIDE_READ_ONLY_ASK_RULES: tuple[str, ...] = ("WebFetch", "WebSearch")
+#: The ``permissions.ask`` rules a claude Side Chat session carries inline: one per
+#: read built-in it keeps. They send every call to the host gate even where an
+#: allow would pre-approve it, so each gets a READ_ONLY decision and an SEL row.
+#: Without the file-read rules, ``default`` mode runs Read, Grep and Glob inside
+#: the session's cwd with no ``session/request_permission`` at all (captured on
+#: claude-agent-acp 0.93.0, ``test/fixtures/claude_side_read_ask``).
+_CLAUDE_SIDE_READ_ONLY_ASK_RULES: tuple[str, ...] = (
+    "Read",
+    "Grep",
+    "Glob",
+    "WebFetch",
+    "WebSearch",
+)
 
 #: gitignore's pattern characters. A rule written from a real path escapes them, as
 #: Claude Code does for a path the user approves, so a directory named ``[x]`` is
@@ -94,10 +103,11 @@ def _claude_root_pattern(path: str, *, windows: bool = os.name == "nt") -> str:
 def _claude_side_read_deny_rules() -> tuple[str, ...]:
     """The ``permissions.deny`` rules that fence the host's sensitive paths on a side session.
 
-    A claude Side Chat session keeps the user's settings, so a read ``allow`` rule
-    or an ``additionalDirectories`` entry there lets Read, Grep and Glob run
-    natively, with no ``session/request_permission`` for the READ_ONLY gate to
-    judge. Claude Code checks deny rules before allow rules from every scope,
+    A claude Side Chat session keeps the user's settings, and Read, Grep and
+    Glob reach the READ_ONLY gate only through the ``ask`` rules it carries
+    (:data:`_CLAUDE_SIDE_READ_ONLY_ASK_RULES`). These deny rules refuse a
+    sensitive path inside claude itself, before any ask, so that fence does
+    not rest on the gate. Claude Code checks deny rules before ask and allow rules from every scope,
     applies Read rules to Grep and Glob (best effort, by its own account), and
     denies a symlink whose target a rule matches, so these rules hold whatever
     the inherited settings say.
@@ -421,7 +431,7 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
 
     A Side Chat session (``side_read_only``) also gets the read-only shape:
     ``tools`` limited to the read built-ins, ``strictMcpConfig``, bypass off,
-    and inline settings that add the web ``ask`` rules, deny the host's
+    and inline settings that add an ``ask`` rule per read built-in, deny the host's
     sensitive paths to the read tools (:func:`_claude_side_read_deny_rules`)
     and turn settings hooks off. Its setting sources are not narrowed further,
     because the user's settings carry the provider routing and model ids the

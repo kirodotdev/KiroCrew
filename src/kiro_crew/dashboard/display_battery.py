@@ -11,8 +11,9 @@ What is NOT in the list, and why that is safe:
 
 * the exempt-host sources (``platform/*``, companion policy, per-workspace
   allowed hosts): their OUTPUT, the host set, is part of every verdict tag;
-* ``kiro_crew.sel`` and ``security.denied_rules``: imported by ``exfil`` for the
-  SEL audit and the bash audit, which the battery never calls;
+* ``kiro_crew.sel`` and ``security.denied_rules``: imported by ``exfil``'s owners
+  ``exfil_oauth`` for the SEL audit and ``exfil_bash`` for the bash audit, which
+  the battery never calls; ``exfil_bash`` itself, for the same reason;
 * everything else in the package: the battery does not execute it.
 
 ``test_display_battery_rules_version.py`` traces the battery and fails when it
@@ -46,6 +47,10 @@ RULE_SOURCES: tuple[str, ...] = (
     "credential_patterns.py",
     "slack_manifest.py",
     "slack-manifest.yaml",
+    "security/redaction_patterns.py",
+    "security/redaction_entropy.py",
+    "security/exfil_url_rules.py",
+    "security/exfil_oauth.py",
 )
 
 _PKG_ROOT = Path(__file__).resolve().parent.parent

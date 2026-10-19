@@ -12,6 +12,7 @@ from kiro_crew import context
 from kiro_crew import embeddings as emb
 from kiro_crew.config import loader
 from kiro_crew.dashboard.handlers import memory
+from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout, finished
 from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
 
@@ -408,7 +409,8 @@ async def test_store_opened_after_final_snapshot_requires_current_vectors(
 
     def pause(target):
         entered.set()
-        assert release.wait(5)
+        # Lost-run bound only: the test sets ``release`` in its ``finally``.
+        assert release.wait(default_timeout()), "the test never released the paused reconcile"
         return align(target)
 
     monkeypatch.setattr(memory, "reconcile_store_embedding_space", pause)
@@ -421,10 +423,20 @@ async def test_store_opened_after_final_snapshot_requires_current_vectors(
         )
     )
     try:
-        assert await asyncio.to_thread(entered.wait, 5)
+        # The apply digests the model and fsyncs config.json before it reaches
+        # the reconcile, which takes seconds on a loaded Windows runner. Wait on
+        # the pause itself, or on the apply ending without reaching it, under
+        # the lost-run bound; never on a fixed number of seconds.
+        await async_wait_until(
+            lambda: entered.is_set() or task.done(),
+            describe=lambda: "the apply has not reached the reconcile yet",
+        )
+        if not entered.is_set():
+            task.result()
+            pytest.fail("the apply finished without reconciling any store")
         generation = emb.embedding_rebuild_generation()
         assert generation
-        late = await asyncio.wait_for(context.ContextBuilder.ensure_store(name), 5)
+        late = await finished(context.ContextBuilder.ensure_store(name), "opening the late store")
         if name == "member-late":
             # Read-time V2 preparation must not acknowledge a rebuild or mutate
             # old vectors; they remain unusable until explicit maintenance.
@@ -436,7 +448,7 @@ async def test_store_opened_after_final_snapshot_requires_current_vectors(
             assert await asyncio.to_thread(vector_blobs, late) == [None, None]
     finally:
         release.set()
-        await asyncio.wait_for(task, 10)
+        await await_until(task, what="the embedding model apply")
     if name == "member-late":
         assert await asyncio.to_thread(late._try_embed, "pending rebuild") is None
         await asyncio.to_thread(emb.align_store_embedding_space, late)

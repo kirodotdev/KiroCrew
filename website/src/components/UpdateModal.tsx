@@ -183,13 +183,13 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
   return (
     // The dismissible "update ready" dialog is ordinary chrome, not the
     // full-screen takeover above: it renders inside the App shell's
-    // `relative z-[1]` root (NOT portaled to document.body like Modal), so it
+    // `relative z-[1]` root (NOT portaled to the body-level overlay root like Modal), so it
     // sits at z-[65] — above every chat-page layer it must cover (sessions
     // flyout z-[59], its drawer morph z-[60], the focus-peek rail toggle
     // z-[61], the focus-mode rail inline z 62 and its drag strips z 63) and
     // below the shell's z-[70] toast/menu band and its own z-[100] installing
     // takeover. Modal.tsx's z-[100] is NOT the reference here: Modal portals to
-    // document.body, a separate stacking context, while a z-[100] in THIS
+    // the body-level overlay root, a separate stacking context, while a z-[100] in THIS
     // context would tie the DOM-earlier takeover and win on document order,
     // painting a dismissible dialog over the surface meant to hide everything.
     <div

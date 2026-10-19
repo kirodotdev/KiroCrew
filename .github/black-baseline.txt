@@ -147,7 +147,6 @@ src/kiro_crew/dashboard/file_index.py
 src/kiro_crew/dashboard/handlers/ask_question.py
 src/kiro_crew/dashboard/handlers/files.py
 src/kiro_crew/dashboard/handlers/kiro_usage_api.py
-src/kiro_crew/dashboard/handlers/knowledge.py
 src/kiro_crew/dashboard/handlers/notifications_push.py
 src/kiro_crew/dashboard/handlers/sso_login.py
 src/kiro_crew/dashboard/handlers/steering.py
@@ -230,7 +229,6 @@ src/kiro_crew/metrics/provider.py
 src/kiro_crew/metrics/recorder.py
 src/kiro_crew/notifications/resource_pressure.py
 src/kiro_crew/perf_sampler.py
-src/kiro_crew/platform/admission.py
 src/kiro_crew/platform/update_layout.py
 src/kiro_crew/pod/launchd.py
 src/kiro_crew/publish_governance.py
@@ -288,7 +286,6 @@ test/test_app_dev_mode.py
 test/test_app_e2e.py
 test/test_app_execution.py
 test/test_app_manager.py
-test/test_app_manifest.py
 test/test_app_mcp_scoping.py
 test/test_app_permissions.py
 test/test_app_proxy_auth.py
@@ -665,7 +662,6 @@ test/test_perf_sampler.py
 test/test_persist_off_loop.py
 test/test_persistence_probe.py
 test/test_personal_shopper_no_purchase_capability.py
-test/test_platform_admission.py
 test/test_playwright_e2e.py
 test/test_pod_e2e_video_guard.py
 test/test_port_reclaim.py

@@ -363,7 +363,7 @@ def _committed_generation_id(pointer_raw: bytes) -> str:
 def _digest_for_stem(index_raw: bytes, stem: str) -> str | None:
     """The blob digest the committed index maps *stem* to, ``None`` when it names no stem.
 
-    Mirrors the index shape ``sidecar.backup._commit_transcript_index`` writes (a flat
+    Mirrors the index shape ``sidecar.backup_commit._commit_transcript_index`` writes (a flat
     ``stem -> digest`` object). Raises :class:`TranscriptUnavailable` when the index does not
     parse or maps the stem to a value that is not a blob digest -- the fail-closed direction,
     since a bad digest cannot name a blob and guessing past it serves the wrong conversation.

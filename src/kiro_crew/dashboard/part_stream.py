@@ -2,7 +2,7 @@
 
 Three handlers write an uploaded part to a temp file: composer uploads
 (``handlers/files.py``), state import (``handlers/portability.py``) and knowledge
-ingest (``handlers/knowledge.py``). They share this one implementation because
+ingest (``handlers/knowledge_ingest.py``). They share this one implementation because
 every way of getting it wrong is a variation on the same thing: a coroutine
 owning a file it can be cancelled away from.
 

@@ -1360,7 +1360,7 @@ def _after_restart(home: Path, slot: str, mapped: str) -> str:
     A real subprocess, because that is the only thing this can be: an in-memory
     record answers correctly for as long as the interpreter that wrote it lives, so
     a test that stays inside one process passes whether or not the answer is
-    durable. Modelled on the boot probe in ``test_crew_log_emit``: fixed argv, no
+    durable. Modelled on the boot probe in ``test_crew_log_emit_redaction_and_flag``: fixed argv, no
     shell, an absolutised interpreter so a relative PATH entry cannot break the
     child, and the repo's own ``src`` on the path.
     """

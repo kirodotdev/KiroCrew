@@ -88,8 +88,24 @@ use:
   the facade owner.
 - `history_search.py` owns query parsing plus the list/search/snippet catalog
   projection.
-- `history_projection.py` owns bounded transcript reads, tab-chain/index
-  projection, metadata reads and updates, permanent deletion, and previews.
+- `history_projection.py` owns locked metadata updates and permanent deletion
+  (`SessionMetadataProjection`) and is a mirrored facade
+  (`kiro_crew._facade_mirror`) over two sibling owners, lowest layer first:
+  `history_projection_contract.py` (the metadata-line states,
+  `DISPLAY_ONLY_ROLES`, the chained page and revision types, the bounded
+  readers' tuning and chunked line splitter, `drop_persisted_tail_prefix`, and
+  the `kiro_crew.history` logger the projections share) and
+  `history_projection_reads.py` (`TranscriptReadProjection`: bounded transcript
+  reads, tab-chain/index projection, metadata reads, and previews). The facade
+  binds every name it imported and serves the moved ones, so a patch of
+  `kiro_crew.history_projection.<name>` reaches every owner that reads it.
+  `TranscriptRevisionChanged` keeps `kiro_crew.history_projection` as its
+  `__module__`, because its name reaches tracebacks; `TranscriptPage` and
+  `TranscriptReadProjection` name their owner (nothing reads it). New read work
+  goes to `history_projection_reads.py`, which is close to the line cap, so a
+  new read family gets an owner of its own; a name both projections need goes
+  to `history_projection_contract.py`. `test/test_history_projection_facade.py`
+  pins the owners, the exception's module, the logger and the patch reach.
 - `history_rewrite.py` owns locked compaction rewrites and size-based rotation.
 - `history_consolidation.py` defines `HistoryConsolidator` (construction,
   `reconfigure`, retry accounting, off-loop counting and every scheduling entry
@@ -1116,6 +1132,10 @@ no longer destroy older turns.
   `dashboard.tail_fork_enabled`; if the gate is off, a `direction="tail"`
   request falls back to a normal head-fork instead of erroring. The source
   slot's history file is untouched, so the head stays archived in the parent.
+  While the gate is on, the dashboard's message menu lists "Fork with earlier messages"
+  beside the plain entry: the plain entry sends `direction="tail"` and this one
+  sends `direction="head"`. With the gate off the plain entry already forks with
+  history, so the menu lists no second entry.
 - **Fork inherits `memory_mode`, and never loosens it**: an incognito or
   temporary session forks like a persistent one, and the child is born with the
   parent's mode -- passed to `get_or_create_slot` at creation so the child's
@@ -1340,7 +1360,7 @@ no longer destroy older turns.
   cleanup probes), the abort latches — every later save of new activity is
   skipped, which is why the skip logs at WARNING with the slot key.
 - **Turn persistence is offloaded through ONE choke point**
-  (`save_conversation_turn_off_loop`, `llm_helpers.py`): `save_conversation_turn`
+  (`save_conversation_turn_off_loop`, `llm_helpers_parts/turn_results.py`): `save_conversation_turn`
   makes TWO `append` calls, so an on-loop caller pays ~24 ms of loop time per turn
   AND takes `_locked`'s single non-blocking acquire — dropping the durable copy
   exactly when another writer is active. Every async caller (the Slack handler,

@@ -1,6 +1,7 @@
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
 import PrivacyChapter from './PrivacyChapter'
+import { LocalOverlayRoot } from './overlayRoot'
 import { api } from '../api/client'
 
 vi.mock('../api/client', async importOriginal => {
@@ -60,6 +61,20 @@ describe('PrivacyChapter', () => {
     expect(screen.queryByRole('button', { name: /skip/i })).not.toBeInTheDocument()
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(onContinue).not.toHaveBeenCalled()
+  })
+
+  it('traps Tab while showing, and leaves it to the Crew in front while hidden', () => {
+    const shown = renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    // From outside the dialog the trap claims Tab and wraps into it.
+    expect(fireEvent.keyDown(document, { key: 'Tab' })).toBe(false)
+    shown.unmount()
+
+    renderWithProviders(
+      <LocalOverlayRoot hidden><PrivacyChapter open onContinue={vi.fn()} /></LocalOverlayRoot>,
+    )
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    expect(fireEvent.keyDown(document, { key: 'Tab' })).toBe(true)
   })
 
   it('Continue is always enabled and hands off without requiring a choice', () => {

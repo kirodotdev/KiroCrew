@@ -1,0 +1,42 @@
+{
+ "base_public_names": [
+  "AREAS",
+  "AUTO_INDEX_PATH",
+  "AutoTierUnavailable",
+  "DEFAULT_LOCALE",
+  "INDEX_PATH",
+  "IndexUnavailable",
+  "MAX_INDEX_BYTES",
+  "MAX_RESPONSE_BYTES",
+  "MAX_RESULTS",
+  "QUERY_MAX_CHARS",
+  "SCHEMA_VERSION",
+  "SHELL_SURFACE",
+  "area_ids",
+  "area_members",
+  "authoritative_find",
+  "browse_ui",
+  "find_ui",
+  "load_index",
+  "logger",
+  "normalize",
+  "planned_find",
+  "setting_labels"
+ ],
+ "note": "S34: ui_index.py became a mirror facade over ui_index_match (the shared constants, the question vocabulary and the matcher), ui_index_load (reading, validating, merging and caching the packaged index) and ui_index_records (one location's answer record). It keeps find_ui, browse_ui and its areas, the guide bindings and setting_labels; these are the public names it bound before the split.",
+ "rebound": {
+  "AUTO_INDEX_PATH": "kiro_crew.ui_index_match",
+  "AutoTierUnavailable": "kiro_crew.ui_index_load",
+  "DEFAULT_LOCALE": "kiro_crew.ui_index_match",
+  "INDEX_PATH": "kiro_crew.ui_index_match",
+  "IndexUnavailable": "kiro_crew.ui_index_load",
+  "MAX_INDEX_BYTES": "kiro_crew.ui_index_match",
+  "MAX_RESPONSE_BYTES": "kiro_crew.ui_index_match",
+  "MAX_RESULTS": "kiro_crew.ui_index_match",
+  "QUERY_MAX_CHARS": "kiro_crew.ui_index_match",
+  "SCHEMA_VERSION": "kiro_crew.ui_index_match",
+  "SHELL_SURFACE": "kiro_crew.ui_index_match",
+  "load_index": "kiro_crew.ui_index_load",
+  "normalize": "kiro_crew.ui_index_match"
+ }
+}

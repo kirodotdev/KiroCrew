@@ -29,9 +29,14 @@ export function useForkSession({
   activeSlot, dispatch, showActionError,
 }: ForkSessionOptions) {
   const { data: forkCfg } = useQuery<{ tail_fork_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
-  const handleFork = useCallback(async (visibleIndex: number, messageId?: string) => {
+  // While Tail-only Fork is on the plain entry forks the tail, so the menu also offers a fork with
+  // history; with it off the plain entry already forks with history. A primitive, so it can sit in
+  // the transcript renderer's dependency list.
+  const forkDirectionChoice = forkCfg?.tail_fork_enabled === true
+  const handleFork = useCallback(async (visibleIndex: number, messageId?: string, explicitDirection?: 'head') => {
     if (!activeSlot) return
     let direction: 'head' | 'tail' = 'head' // hoisted so the catch advises the same way
+    let control: string | undefined
     try {
       // Fork WITHOUT a prompt: an unsent composer draft must never be
       // auto-submitted into the freshly forked session. The
@@ -45,20 +50,24 @@ export function useForkSession({
       // — which would downgrade an intended tail-fork to a head-fork whenever
       // the query has errored or settled with no data, not just while loading.
       const resolvedCfg = forkCfg ?? await api.dashboardConfig()
-      direction = resolvedCfg?.tail_fork_enabled ? 'tail' : 'head'
+      // A direction named by a menu entry wins; a plain fork follows the setting.
+      direction = explicitDirection ?? (resolvedCfg?.tail_fork_enabled ? 'tail' : 'head')
+      if (resolvedCfg?.tail_fork_enabled === true) {
+        control = i18nT(direction === 'head' ? 'pages.chat.assistantMessage.fork_earlier_messages' : 'pages.chat.assistantMessage.fork_later_messages_only')
+      }
       const result = await dispatch(forkSlot({ slot: activeSlot, atIndex: visibleIndex, messageId, direction })).unwrap()
       if (result.ok) {
         await dispatch(switchSlot(result.key))
       } else {
-        showTranscriptForkFailure(showActionError, result.code, result.error, direction)
+        showTranscriptForkFailure(showActionError, result.code, result.error, direction, control)
       }
     } catch (e) {
       // A refusal is a non-2xx, so the thunk REJECTS: its code rides the rejection payload.
-      showTranscriptForkFailure(showActionError, (e as { code?: string } | null)?.code, errMessage(e), direction)
+      showTranscriptForkFailure(showActionError, (e as { code?: string } | null)?.code, errMessage(e), direction, control)
     }
   }, [activeSlot, dispatch, forkCfg, showActionError])
   return {
-    handleFork,
+    handleFork, forkDirectionChoice,
   }
 }
 

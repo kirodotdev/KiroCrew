@@ -502,8 +502,12 @@ caller's own store exactly as an unshadowed template child does (see "A created
 worker receives one execution identity"). On an install with no shadowing member
 the template kind resolves exactly what the bare name resolves — the resolver
 skips only the alias lookup — so the goal conductor's charter and the
-goal-conductor skill always pass it when they dispatch `kirocrew-worker`, and no
-conductor meets the refusal first. There is no `member` kind on this route: a bare
+goal-conductor skill always pass it when they dispatch `kirocrew-worker`. The
+route does not rely on the caller remembering: a bare `agent: "kirocrew-worker"`
+with no kind is read as `agent_kind: "template"` (`_STOCK_WORKER_AGENT` in
+`session_create.py`), so a model that drops the kind still gets the template on
+its own store instead of the refusal. That default covers the stock worker's
+name only; every other crew member named bare still resolves name-first. There is no `member` kind on this route: a bare
 name already selects the member, so the value would only restate that
 resolution. The kind is selection input, never authority, and every gate on this
 route still applies. A stated kind requires `agent` (`agent_kind_requires_agent`,

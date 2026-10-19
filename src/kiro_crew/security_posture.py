@@ -113,7 +113,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "The settings diagnosis",
-        "dashboard/change_cards.py",
+        "dashboard/change_cards_settings.py",
         "Current and default values of every setting `diagnose_settings` reports, "
         "on their way to an agent's model context. A credential-like key is "
         "reduced to whether it is set, and every remaining string passes the "
@@ -389,7 +389,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Central policy fetch failures",
-        "platform/policy_distribution.py",
+        "platform/policy_distribution_boot.py",
         "The failure text of a central governance-policy fetch, which reaches TWO "
         "surfaces: `kirocrew policy fetch` on stdout and a `logger` line (durable, "
         "and served to the dashboard by `GET /api/logs`). The bytes are not ours -- a "
@@ -674,7 +674,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "md-notebook error middleware",
-        "apps/builtins/md_notebook/server.py",
+        "apps/builtins/md_notebook/server_http.py",
         "Every md-notebook API error body. Handlers drive git and filesystem work "
         "over caller-supplied vault URLs, ids and note paths, so an unmodeled "
         "exception carries absolute paths and git stderr; `_safe_error` scrubs "
@@ -1589,7 +1589,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Tag definitions (HTTP + auto-tag)",
-        "dashboard/chat_tags.py",
+        "dashboard/chat_tags_vocabulary.py",
         "Tag names supplied by both the POST /api/chat/tags HTTP handler and the "
         "background auto-tag task are LLM-authored or project-derived and persist "
         "to tags.json, the dashboard sidebar, and Slack notifications. Both paths "
@@ -1820,6 +1820,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # args or url, and REFUSES the guide when it would. Nothing it returns is
         # redacted text.
         "guide_catalog.py",
+        # Gate-side the same way: a change card's reason and parameters are refused
+        # when the redactor WOULD change them, and nothing it returns is redacted.
+        "dashboard/change_cards_records.py",
         # Inbound / gate-side: redacts what comes IN or what a gate logs, not what
         # goes out to a human.
         "context.py",
@@ -1865,6 +1868,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # (platform/wheel_apply.py); redacting at capture is what keeps a
         # credential from being split by the cut and surviving in halves.
         "platform/wheel_engine.py",
+        "platform/wheel_engine_build_child.py",
         # Same shape: redacts the unparseable LLM decomposition response before
         # writing the diagnostic ERROR line to the gateway log. Defensive log
         # hygiene so a response echoing a credential or exfiltration URL cannot
@@ -1984,6 +1988,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # posture row.
         "apps/builtins/aws_control/backend/routes_parts/common.py",
         "apps/builtins/aws_control/backend/routes_parts/drive.py",
+        # Beside the registered browser_cli/install.py sink: install_runner.py defines its redactor;
+        # the launcher and seams owners apply it to refusal and seam text. No new egress path.
+        "browser_cli/install_launcher.py",
+        "browser_cli/install_runner.py",
+        "browser_cli/install_seams.py",
         # The shared recursive redactor helper itself — a pure scrubber, not an
         # egress boundary; the modules that CALL it (mochi routes/hooks) are the
         # registered sinks.
@@ -2000,7 +2009,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # human only through the delivering surfaces (the cron/heartbeat alert
         # paths composed into slack/gateway.py and the sub-agent completion path
         # in subagent_parts/run_output.py), which are the registered sinks.
-        "llm_helpers.py",
+        "llm_helpers_parts/model_fallback.py",
+        "llm_helpers_parts/tool_approval.py",
         # Shared in-band deny-notice builder: redacts the provider-authored tool
         # title ONCE, centrally, before the notice is steered back into the
         # model's own turn (not to a person). It owns no egress — the steer goes
@@ -2071,8 +2081,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # chunks go to the module that asked for them, which is the registered
         # sink (slack/format.py, messaging/renderer.py and the channel renderers).
         "messaging/split.py",
-        # ``autonudge.py``'s ``_load`` credential-scrubs a persisted ``banner`` in
-        # memory and attempts to persist the masked value back, so a banner
+        # ``autonudge_service/store_loader.py``'s ``_load`` credential-scrubs a persisted
+        # ``banner`` in memory and attempts to persist the masked value back, so a banner
         # written to the store out-of-band (a hand-edited file, or a direct
         # ``AutoNudgeService.add`` that skips the authorizer) is masked on the next
         # load rather than served raw — best-effort, since a failed re-persist
@@ -2081,7 +2091,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # ``dashboard/handlers/autonudge.py`` serializer and the gateway broadcast;
         # this is at-rest sanitisation at the trust boundary where the store is
         # read, not an egress pass.
-        "autonudge.py",
+        "autonudge_service/store_loader.py",
         "autonudge_authz.py",
         # Applies no redactor at all: the pipeline conductor's fleet probe BUILDS a
         # command fragment for a `BANNED` line out of what can hold no secret -- a
@@ -2389,7 +2399,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Pre-redacts follow-up items before handing to the WS egress in
         # state_parts/slots_push.py; its own return string is re-redacted by
         # chat_runner before broadcast. Not itself an egress boundary.
-        "dashboard/session_directive_apply.py",
+        "dashboard/session_directive_apply_slot.py",
+        # The same consumer's other owners scrub a monitor notice row before
+        # `append_and_surface` records it, and a stop reason before the loop keeps it.
+        "dashboard/session_directive_apply_outcome.py",
+        "dashboard/session_directive_apply_monitor.py",
         "dashboard/cron_inject.py",
         "dashboard/ws.py",
         # The gateway bootstrap's owner DM and workflow-result turn (owners that
@@ -2435,7 +2449,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/hooks.py",
         "dashboard/handlers/hooks_scripts.py",
         "dashboard/handlers/hooks_webhooks.py",
-        "dashboard/handlers/knowledge.py",
+        "dashboard/handlers/knowledge_agent_context.py",
+        "dashboard/handlers/knowledge_bundles.py",
+        "dashboard/handlers/knowledge_ingest.py",
+        "dashboard/handlers/knowledge_sources.py",
+        "dashboard/handlers/knowledge_sync.py",
         "dashboard/handlers/memory.py",
         "dashboard/handlers/memory_embeddings.py",
         "dashboard/handlers/memory_graph.py",
@@ -2445,7 +2463,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/taskrunner.py",
         "dashboard/handlers/terminal.py",
         "dashboard/handlers/themes.py",
-        "dashboard/handlers/updates.py",
+        "dashboard/handlers/updates_apply.py",
         "dashboard/handlers/webapp_preview.py",
         "dashboard/handlers_project.py",
         # The spawn and Slack workspace owners composed into ``dashboard/handlers/messaging.py``:
@@ -2480,6 +2498,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # crosses, not this module.
         "mcp_debug.py",
         "mcp_cron.py",
+        "mcp_cron_list_render.py",
+        "mcp_cron_vet.py",
         # Same class as mcp_core.py: the kirocrew-dashboard stdio server's owner
         # modules -- its reference resolvers and its tool bodies -- redact tool
         # RESULTS and agent-authored names before they are persisted or returned,
@@ -2923,6 +2943,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # the keystone and audits the change. The output it produces is that
         # boolean, never agent-authored text, so it is not an egress boundary.
         "dashboard/handlers/credential_redaction.py",
+        # Normalizer, not an egress: `normalize_spawn_label` redacts a spawn's
+        # display label BEFORE cutting it to one bounded line, so the cut cannot
+        # leave a key fragment that the egress redactors would miss.
+        # The label leaves the process only through sinks registered above (the
+        # sub-agent frames and snapshots, which redact it again).
+        "spawn_label.py",
     }
 )
 
@@ -3281,7 +3307,7 @@ _CONTROLS: tuple[PostureControl, ...] = (
             "off. The count is the SHIPPED catalogue -- the set actually enforced is "
             "this minus any rule disabled below, so it can be smaller."
         ),
-        source="src/kiro_crew/security/denied_rules.py",
+        source="src/kiro_crew/security/denied_rules_catalog.py",
         items_fn=_denied_command_items,
     ),
     PostureControl(
@@ -3333,7 +3359,7 @@ _CONTROLS: tuple[PostureControl, ...] = (
             "Credential classes the redaction scanner recognizes, in plaintext and "
             "base64-encoded form."
         ),
-        source="src/kiro_crew/security/redaction.py",
+        source="src/kiro_crew/security/redaction_patterns.py",
         items_fn=_credential_family_items,
     ),
     PostureControl(

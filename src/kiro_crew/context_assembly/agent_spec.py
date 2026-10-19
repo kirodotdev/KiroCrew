@@ -3,8 +3,9 @@
 The ``[AGENT SYSTEM PROMPT]`` contract: which file a session's contract comes from
 (:func:`_resolve_agent_prompt`, :func:`_load_agent_prompt`, :func:`_read_prompt_file`),
 the bot name and the template tokens it carries (:func:`_resolve_prompt_templates`),
-and the per-session readings those tokens resolve to -- the delegation cap and the
-Computer Use gate, each read once per session (:func:`_session_reading`). Beside it,
+and the per-session readings those tokens resolve to -- the delegation cap, the
+Computer Use gate and the browse gate, each read once per session
+(:func:`_session_reading`). Beside it,
 the other reads of an agent's spec: its ``includeCrewContext`` flag
 (:func:`_read_include_crew_context`) and the Claude Code steering load
 (:func:`_load_steering_resources`) with its admission gate
@@ -16,9 +17,9 @@ there. Template code reads ``ContextBuilder`` attributes through the class, and 
 methods read builder state through ``self``, so a class or instance patch applies.
 
 Builder state read and written: ``_bot_name``; ``_cap_figures`` and
-``_cap_figures_lock``; ``_computer_use_gates`` and ``_computer_use_gates_lock``; the
-class constants ``_CAP_FIGURE_SESSIONS``, ``_MAX_SUBAGENTS_TOKEN`` and
-``_COMPUTER_USE_TOKEN``.
+``_cap_figures_lock``; ``_computer_use_gates`` and ``_computer_use_gates_lock``;
+``_browser_gates`` and ``_browser_gates_lock``; the class constants
+``_CAP_FIGURE_SESSIONS``, ``_MAX_SUBAGENTS_TOKEN`` and ``_COMPUTER_USE_TOKEN``.
 
 New agent-spec reads and prompt templates belong here.
 """
@@ -384,8 +385,33 @@ def _session_computer_use_gate(self, session_key: str, *, refresh: bool) -> bool
     )
 
 
+def _live_browser_gate() -> bool:
+    """Whether browsing is set up on this host now, as the ``browser`` tool reads it.
+
+    ``browser_cli.install.available`` is the predicate the tool's own call-time
+    check wraps: while it is False the tool refuses every op. Unlike that check
+    this fails OPEN. An unreadable state keeps the whole section, because a
+    section kept by mistake costs tokens while one dropped by mistake leaves a
+    working browser without its approval and loopback rules.
+    """
+    try:
+        # Function-local: an owner takes no Kiro Crew import at module scope, so
+        # loading the context does not load the browser install plane.
+        from kiro_crew.browser_cli import install
+
+        return bool(install.available())
+    except Exception:
+        logger.debug("browse gate unreadable; prompt keeps the Browser section", exc_info=True)
+        return True
+
+
 def _resolve_prompt_templates(
-    prompt: str, session_key: str, cap_figure: str = "", *, computer_use: bool | None = None
+    prompt: str,
+    session_key: str,
+    cap_figure: str = "",
+    *,
+    computer_use: bool | None = None,
+    browser: bool | None = None,
 ) -> str:
     """Resolve conditional template blocks in prompt text.
 
@@ -397,7 +423,9 @@ def _resolve_prompt_templates(
     ``{{COMPUTER_USE_BLOCK}}`` is the full Computer Use section only when the
     agent spec mounts ``kirocrew-computer`` (``computer_use`` when the caller
     holds that session's reading, otherwise a live one), and a short pointer
-    to the setting when it does not.
+    to the setting when it does not. The section marked by ``{{BROWSER_BEGIN}}``
+    and ``{{BROWSER_END}}`` stays while browsing is set up on this host
+    (``browser``, or a live reading), and becomes a short pointer while it is not.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
@@ -414,6 +442,10 @@ def _resolve_prompt_templates(
         prompt = prompt.replace(
             ctx.ContextBuilder._COMPUTER_USE_TOKEN, _sections.computer_use_block(mounted)
         )
+
+    if _sections.BROWSER_BEGIN in prompt or _sections.BROWSER_END in prompt:
+        available = _live_browser_gate() if browser is None else browser
+        prompt = _sections.browser_section(prompt, available)
 
     cfg = ctx.KiroCrewConfig.load()
 
@@ -543,7 +575,20 @@ def _resolve_agent_prompt(
         if self._COMPUTER_USE_TOKEN in agent_prompt
         else None
     )
+    # The ``browser`` tool is mounted whatever this reads and re-checks at each
+    # call, so a session start is the only reading the section needs.
+    browser = (
+        self._session_reading(
+            self._browser_gates,
+            self._browser_gates_lock,
+            session_key or "",
+            _live_browser_gate,
+            refresh=session_start,
+        )
+        if _sections.BROWSER_BEGIN in agent_prompt
+        else None
+    )
     agent_prompt = self._resolve_prompt_templates(
-        agent_prompt, session_key or "", cap_figure, computer_use=computer_use
+        agent_prompt, session_key or "", cap_figure, computer_use=computer_use, browser=browser
     )
     return self._substitute_bot_name(agent_prompt)

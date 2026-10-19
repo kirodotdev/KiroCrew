@@ -61,7 +61,7 @@ import { EMBED_HIDDEN_COMMANDS, useEmbedPickers } from './useEmbedPickers'
 import { sendFailureCopy, deliveryUnconfirmedCopy } from '../chat-core/transport/receiptCopy'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { drainEmbedRecovery, stashEmbedRecovery, subscribeEmbedRecovery, type PendingEmbedRecovery } from './embedSendRecovery'
-import { retireSendTail, type SendTail } from './embedSendTails'
+import { retireSendTail, sendTailProof, hostProofBaseline, calmLineHolds, isOwnUserRow, rowKey, type HostSendProof, type SendTail } from './embedSendTails'
 import { embedReadPath, isEmbedCursor, mergeEmbedRead, type EmbedCursor } from './embedIncrementalRead'
 import type { ChatMessage } from '../types'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
@@ -166,20 +166,6 @@ const EMBED_CAPABILITIES: ComposerCapabilities = { voice: false }
  *  independently, so one late send's proof can never be masked by another's
  *  recovery landing after it. */
 
-/** Whether a polled user row is THIS send's own, by identity. A plain row
- *  carries `meta.sendId`; a row the drain merged from several queued sends
- *  (`merge_queued_messages`) names every send it stands for in `meta.sendIds`,
- *  and membership there is the same proof. Anything else -- no id, another
- *  id, an older backend that drops `meta` -- is not. */
-function isOwnUserRow(m: ChatMessage, sendId: string): boolean {
-  if (m.role !== 'user') return false
-  const meta = m.meta
-  if (!meta) return false
-  if (meta.sendId === sendId) return true
-  const many = meta.sendIds
-  return Array.isArray(many) && many.includes(sendId)
-}
-
 /** Minimal shape of the chat-slot payload consumed by this embed. */
 interface ChatSlotData {
   messages?: ChatMessage[]
@@ -233,9 +219,6 @@ interface PendingSend {
   before: ReadonlySet<string>
 }
 
-/** Identity of a polled user row, for the host-`onSend` fallback below. */
-const userRowKey = (m: ChatMessage) => (m.meta?.mid as string | undefined) ?? m.ts ?? m.content
-
 /** Whether the poll shows THIS optimistic send. The default path stamps
  *  `sendId` on the wire, so identity is the proof. A host `onSend` posts on
  *  its own endpoint and no `sendId` comes back, so its fallback is a user row
@@ -246,7 +229,7 @@ function isPendingAcked(
   queue: unknown,
 ): boolean {
   if (messages.some(m => isOwnUserRow(m, p.sendId)) || queueHasEntry(queue, p.queueId)) return true
-  return p.viaHost && messages.some(m => m.role === 'user' && m.content === p.text && !p.before.has(userRowKey(m)))
+  return p.viaHost && messages.some(m => m.role === 'user' && m.content === p.text && !p.before.has(rowKey(m)))
 }
 
 /** Rows per page of the bounded poll — the slot-detail handler's own default,
@@ -561,9 +544,16 @@ function ChatEmbed({
   const { closePickers, openPickersForText } = pickers
   // A menu open on one session's text must not stay open over the next one's.
   useEffect(() => { closePickers() }, [slotKey, closePickers])
+  // A settled tail with nothing to explain stays in `sendTails` (its restore
+  // is part of the chain) but is not shown; a calm line shows only while its
+  // kept text is still in the composer, checked on every render.
+  const shownTails = useMemo(
+    () => sendTails.filter(t => !t.hidden && !(t.settled && !calmLineHolds(t, draft))),
+    [sendTails, draft],
+  )
   const shownMessages = useMemo<ChatMessage[]>(
-    () => sendTails.length === 0 ? messages : [...messages, ...sendTails.map(t => ({ role: t.role, content: t.content, cls: '' }))],
-    [messages, sendTails],
+    () => shownTails.length === 0 ? messages : [...messages, ...shownTails.map(t => ({ role: t.role, content: t.content, cls: '' }))],
+    [messages, shownTails],
   )
   /** Latest rendered draft, for the async send path to read at settle time
    *  instead of a value closed over at render. */
@@ -581,8 +571,12 @@ function ChatEmbed({
   // directly on a dispatched send's row, carried through the queue entry onto the drained
   // row when the slot was busy (#8853) -- so a same-text resend or injection
   // can never be mistaken for it, and there is no text-matching fallback to
-  // false-retire on. Only that proof retires the notice and takes back the
-  // text it handed back -- and only if the composer still holds exactly what
+  // false-retire on. The one exception is a host `onSend` send, which never
+  // puts a `sendId` on the wire: its text arriving as a user row after the
+  // anchor row (`HostSendProof`, #21686) turns its warning into a calm line
+  // and touches nothing else,
+  // because text cannot say which send landed. Only the id proof also takes
+  // back the text it handed back -- and only if the composer still holds exactly what
   // the restore produced; anything typed or edited since stays. Transcript
   // growth from anything else (a prior turn still streaming, a cron or
   // sub-agent injecting text into the slot, a same-text row under another id,
@@ -596,13 +590,31 @@ function ChatEmbed({
   // second's recovery having landed after it, and taking the first's text back
   // rebuilds the composer around the second's (`retireSendTail`).
   useEffect(() => {
-    const proven = sendTails.filter(t =>
-      t.role === 'notice'
-      && messages.some(m => isOwnUserRow(m, t.sendId)))
-    if (proven.length === 0) return
+    // Server rows only: a pending optimistic row is this embed's own copy,
+    // not proof. A host `onSend` send carries no `sendId` to the server, so
+    // its proof is its text (`hostProof`, #21686) -- and text cannot say
+    // which send landed, so that proof never touches the composer: the
+    // warning becomes a calm line saying the message is in the conversation
+    // and its text is kept, so the user sees why the text is still there.
+    const proofs = sendTails
+      .filter(t => t.role === 'notice' && !t.settled)
+      .map(t => ({ t, by: sendTailProof(t, listMessages, slotKey) }))
+      .filter(p => p.by != null)
+    if (proofs.length === 0) return
     let tails = sendTails
     let draft = draftRef.current
-    for (const t of proven) {
+    for (const { t, by } of proofs) {
+      if (by === 'text') {
+        // Settled, not removed: its restore stays in the chain a later
+        // id-proven retirement replays, so this send's text is never lost.
+        // A chip send kept no text, so it has nothing to explain. Whether
+        // the calm line still holds is read at render (`shownTails`).
+        const calm = i18nT('appSdk.chatEmbed.delivery_seen_text_kept') as string
+        tails = tails.map(x => (x.sendId === t.sendId
+          ? { ...x, settled: true, ...(x.restore ? { content: calm } : { hidden: true }) }
+          : x))
+        continue
+      }
       const r = retireSendTail(tails, t.sendId, draft, mergeRecoveredDraft)
       tails = r.tails
       if (r.draft != null) draft = r.draft
@@ -615,7 +627,7 @@ function ChatEmbed({
       draftRef.current = draft
       setDraft(draft)
     }
-  }, [messages, sendTails, setDraft, removeFile])
+  }, [listMessages, slotKey, sendTails, setDraft, removeFile])
 
   // startAtBottom follow is owned by the virtualizer behind ChatMessageList.
   // Non-startAtBottom embeds keep the message-arrival smooth scroll: it fires
@@ -629,7 +641,7 @@ function ChatEmbed({
   // send looks sent again.
   const tail = messages[messages.length - 1]
   const msgHash = `${(tail?.meta?.mid as string | undefined) ?? tail?.ts ?? ''}:${tail?.content?.length ?? 0}`
-    + ':' + sendTails.map(t => t.role + t.content.length).join(',')
+    + ':' + shownTails.map(t => t.role + t.content.length).join(',')
   useEffect(() => {
     if (startAtBottom) return
     if (msgHash === lastHashRef.current) return
@@ -747,7 +759,7 @@ function ChatEmbed({
     // `msg` is the trimmed wire text; `draftText` is what the composer held,
     // whitespace and all -- a recovery must give back what the user typed, not
     // what the wire carried.
-    mutationFn: async ({ msg, meta, files, draftText, override, sendId, slot }: { msg: string; meta?: ChatEmbedSendMeta; files: string[]; draftText: string; override: boolean; sendId: string; slot: string }) => {
+    mutationFn: async ({ msg, meta, files, draftText, override, sendId, slot, hostProof }: { msg: string; meta?: ChatEmbedSendMeta; files: string[]; draftText: string; override: boolean; sendId: string; slot: string; hostProof?: HostSendProof }) => {
       // Where the outcome goes: onto this embed if it is still mounted and still
       // showing the slot the send belonged to; otherwise parked by that slot for
       // the next embed that shows it. Only a composer submit has text to hand
@@ -777,7 +789,9 @@ function ChatEmbed({
         try {
           await (meta ? onSend(msg, meta) : onSend(msg))
         } catch {
-          unconfirmed()
+          // A rejection proves nothing either way, so the notice carries the
+          // only proof a host send can have: its text arriving as a new row.
+          deliver({ role: 'notice', content: deliveryUnconfirmedCopy(!override), sendId, hostProof })
         }
         return
       }
@@ -844,6 +858,10 @@ function ChatEmbed({
     // No `sendId` on the optimistic row's meta: it would read as this send's
     // own server row and falsely prove an unconfirmed notice delivered.
     const ts = new Date().toISOString()
+    const before = new Set(serverMessages.filter(m => m.role === 'user').map(rowKey))
+    // A host send's text proof needs a loaded page to anchor on; with none,
+    // the send gets no text proof and an unconfirmed notice keeps its text.
+    const hostBaseline = onSend ? hostProofBaseline(shown) : null
     setPending(list => [...list, {
       slot: slotKey,
       sendId,
@@ -851,10 +869,10 @@ function ChatEmbed({
       asQueued: running,
       viaHost: onSend != null,
       text: msg,
-      before: new Set(serverMessages.filter(m => m.role === 'user').map(userRowKey)),
+      before,
     }])
-    sendMutation.mutate({ msg, meta, files, draftText, override: override != null, sendId, slot: slotKey })
-  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, running, attachments, closePickers])
+    sendMutation.mutate({ msg, meta, files, draftText, override: override != null, sendId, slot: slotKey, ...(hostBaseline ? { hostProof: { text: msg, slot: slotKey, ...hostBaseline } } : {}) })
+  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, shown, running, attachments, closePickers])
 
   const pickerLabel = attachments.uploading
     ? i18nT('appSdk.chatEmbed.uploading_files')
@@ -1065,7 +1083,7 @@ function ChatEmbed({
           re-enabling. A polite live region carries the same text. */}
       {/* Announce the NEWEST outcome only: re-reading every live tail would
           replay the first failure each time a second one lands. */}
-      <div role="status" aria-live="polite" className="sr-only">{sendTails.length ? sendTails[sendTails.length - 1].content : ''}</div>
+      <div role="status" aria-live="polite" className="sr-only">{shownTails.length ? shownTails[shownTails.length - 1].content : ''}</div>
 
       {startAtBottom && (
         <div className="relative">

@@ -22,14 +22,13 @@
 3 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/narrate.py
 1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/record_template.py
 3 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/verify_align.py
-3 src/kiro_crew/apps/builtins/md_notebook/server.py
+1 src/kiro_crew/apps/builtins/md_notebook/server.py
 1 src/kiro_crew/builtin_skills/browser-recording/scripts/record_browser.py
 2 src/kiro_crew/builtin_skills/ios-simulator-preview/scripts/sim_mirror.py
 1 src/kiro_crew/cli.py
 2 src/kiro_crew/cli_setup.py
 1 src/kiro_crew/cloud/aws.py
 1 src/kiro_crew/cron_script.py
-1 src/kiro_crew/dashboard/handlers/knowledge.py
 1 src/kiro_crew/dashboard/handlers/terminal.py
 1 src/kiro_crew/dashboard/handlers_system.py
 1 src/kiro_crew/deploy/engine.py

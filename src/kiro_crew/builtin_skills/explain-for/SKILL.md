@@ -140,6 +140,11 @@ before/after or one impact chart, never an architecture diagram. For an engineer
 or a graduate, the real mechanism, drawn precisely. For a parent, draw the
 analogy, not the system.
 
+Draw the analogy as a working object, not as labelled boxes. If a cache is a
+fridge, draw a fridge whose door opens onto full shelves, not a box marked
+"fridge" with an arrow to a box marked "cache". When that drawing is a widget
+that moves, load the `living-ui` skill for how it moves and where its words go.
+
 What is available, in ascending cost:
 
 | Tool | Reach for it when | What it buys |

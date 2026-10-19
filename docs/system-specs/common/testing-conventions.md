@@ -2107,8 +2107,9 @@ run, and each named a class the floor did not yet close.
   registry, and `pod_root` from `Path.home()/.kirocrew-pods`. A fixture that was simply
   `PodConfig.load()` therefore recorded `viability-*.refused` notes into the real pod plane.
   The floor now pins `KIROCREW_POD_ROOT` and `KIROCREW_POD_ENV_DIR` per test
-  (`TestThePodPlaneIsPinnedForEveryTestpath`); `test_pod.py` clears them deliberately
-  because its subject includes the home-derived defaults, with `HOME` redirected first.
+  (`TestThePodPlaneIsPinnedForEveryTestpath`); the modules that import `pod_helpers.py`'s
+  autouse `_isolate_pod_host_state` (`test_pod.py` among them) clear them deliberately because
+  the pod tests' subject includes the home-derived defaults, with `HOME` redirected first.
 - **A collection-time probe reads the operator's config.** `test_app_backend.py`'s
   `_sandbox_can_spawn()` runs at import, before any per-test pin, and called
   `wrap_argv()` — which loads `KiroCrewConfig` from the REAL `~/.kiro/crew/config.json`.
@@ -3245,7 +3246,7 @@ went red, or the fix lands in the wrong file and the leak stays.
   `monkeypatch.chdir(tmp_path)` in the fixture closes the process-cwd hazard; adding
   `cwd=` to the product would turn git's rc=128 for a missing clone into a Python
   `FileNotFoundError` before git runs, which every caller reads off `returncode`, so that
-  descriptor is deliberately left. One production change: `browser_cli/install.py`'s
+  descriptor is deliberately left. One production change: `browser_cli/install_launcher.py`'s
   staged node launcher now runs from the managed leaf its docstring already promised, and
   `test_browser_cli_install_gateway_command.py` pins the `cwd` it is handed.
 - **`fd_leak` at +3 per unclosed SQLite handle, and why refcounting never reclaims it.**

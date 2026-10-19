@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import os
+import threading
 import time
+import weakref
 
 import pytest
 
@@ -17,6 +20,18 @@ from kiro_crew.skill_usage import (
 
 def _ledger(tmp_path):
     return SkillUsageLedger(tmp_path / "skill-usage.json")
+
+
+def _join_flush_threads(timeout: float = 2.0) -> None:
+    """Wait out the background flush thread(s) ``record`` spawned, bounded.
+
+    ``flush()`` snapshots under the ledger lock before any IO, so an overlapping
+    write can only carry an older tally — a test that asserts persisted state
+    must first let the spawn write finish.
+    """
+    for thread in threading.enumerate():
+        if thread.name == "skill-usage-flush":
+            thread.join(timeout)
 
 
 class TestSkillUsageLedger:
@@ -171,3 +186,126 @@ class TestPersistenceWithoutPosixFchmod:
         assert led.flush() is True
         assert len(attempts) == 2
         assert _ledger(tmp_path).score("x")[0] == 1.0
+
+
+def _inside_window(led: SkillUsageLedger) -> SkillUsageLedger:
+    """Park the debounce far in the future, so ``record`` never spawns a write.
+
+    Unlike ``_quiet`` this does not depend on how much wall time passes between
+    two lines: every ``record`` lands inside the window however slow the runner.
+    """
+    led._last_flush = time.time() + 3600
+    return led
+
+
+class _ObservedLock:
+    """A lock that signals when a second caller starts waiting on it."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries = 0
+        self.second_waiting = threading.Event()
+
+    def __enter__(self) -> None:
+        self._entries += 1
+        if self._entries == 2:
+            self.second_waiting.set()
+        self._lock.acquire()
+
+    def __exit__(self, *_exc) -> None:
+        self._lock.release()
+
+
+class TestShutdownFlush:
+    """A hit ``record()`` accepted inside the debounce window must reach disk.
+
+    ``record`` only spawns the flush thread when ``_FLUSH_DEBOUNCE_SECS`` have
+    passed since the last write, and that thread is a daemon. The gateway exits
+    through ``os._exit``, so a restart or upgrade inside the window dropped every
+    hit it had just accepted. ``flush_all_for_shutdown`` is the shutdown write;
+    the debounce itself is unchanged.
+    """
+
+    def test_records_inside_window_still_do_not_write(self, tmp_path):
+        # The debounce is a deliberate write-rate limit; the shutdown flush must
+        # not turn record() into a write-per-hit path.
+        led = _inside_window(_ledger(tmp_path))
+        for i in range(50):
+            led.record(f"k{i}")
+        assert not (tmp_path / "skill-usage.json").exists()
+        assert led.dirty
+        led.flush()  # leave nothing dirty behind this test
+        assert not led.dirty
+
+    def test_flush_all_for_shutdown_writes_every_live_ledger(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(skill_usage, "_live_ledgers", weakref.WeakSet())
+        one = _inside_window(SkillUsageLedger(tmp_path / "one.json"))
+        two = _inside_window(SkillUsageLedger(tmp_path / "two.json"))
+        one.record("x")
+        two.record("y")
+        assert skill_usage.flush_all_for_shutdown() is True
+        assert SkillUsageLedger(tmp_path / "one.json").score("x")[0] == 1.0
+        assert SkillUsageLedger(tmp_path / "two.json").score("y")[0] == 1.0
+
+    def test_flush_all_for_shutdown_reports_a_failed_write(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(skill_usage, "_live_ledgers", weakref.WeakSet())
+        led = _inside_window(_ledger(tmp_path))
+        led.record("x")
+
+        def _disk_full(*_a, **_k):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(skill_usage, "atomic_write", _disk_full)
+        assert skill_usage.flush_all_for_shutdown() is False
+        assert led.dirty, "a failed write stays dirty so a later flush retries"
+
+    def test_flush_all_for_shutdown_with_no_ledger(self, monkeypatch):
+        monkeypatch.setattr(skill_usage, "_live_ledgers", weakref.WeakSet())
+        assert skill_usage.flush_all_for_shutdown() is True
+
+    def test_the_registry_does_not_pin_a_ledger(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(skill_usage, "_live_ledgers", weakref.WeakSet())
+        led = _ledger(tmp_path)
+        ref = weakref.ref(led)
+        del led
+        gc.collect()
+        assert ref() is None
+        assert len(skill_usage._live_ledgers) == 0
+
+    def test_an_older_inflight_write_cannot_land_after_the_shutdown_flush(
+        self, tmp_path, monkeypatch
+    ):
+        # A daemon flush took its snapshot ({a}) and is mid-write when the
+        # shutdown flush runs with {a, b}. Writes are serialized, so the shutdown
+        # flush waits and the newer tally is what stays on disk.
+        real_write = skill_usage.atomic_write
+        first_started = threading.Event()
+        release_first = threading.Event()
+        calls = []
+
+        def _slow_first(path, data, **kw):
+            calls.append(set(json.loads(data)["keys"]))
+            if len(calls) == 1:
+                first_started.set()
+                release_first.wait(5)
+            return real_write(path, data, **kw)
+
+        monkeypatch.setattr(skill_usage, "atomic_write", _slow_first)
+        led = _inside_window(_ledger(tmp_path))
+        lock = _ObservedLock()
+        led._write_lock = lock
+        led.record("a")
+        daemon = threading.Thread(target=led.flush)
+        daemon.start()
+        assert first_started.wait(5)
+        led.record("b")
+        shutdown = threading.Thread(target=led.flush)
+        shutdown.start()
+        assert lock.second_waiting.wait(5)
+        assert calls == [{"a"}], "the shutdown flush must not write past the in-flight one"
+        release_first.set()
+        daemon.join(5)
+        shutdown.join(5)
+        assert calls == [{"a"}, {"a", "b"}]
+        saved = json.loads((tmp_path / "skill-usage.json").read_text())
+        assert set(saved["keys"]) == {"a", "b"}

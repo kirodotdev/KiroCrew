@@ -51,7 +51,9 @@ const FIXTURE = {
   video: {
     id: 'startup-videos-1',
     feature: 'startup-videos',
-    title: 'Feature videos',
+    // A per-clip title, as the catalog ships one, so the frame shows it apart
+    // from the feature's own name in the dialog header.
+    title: 'Let one session watch a pull request',
     description:
       'A short clip introduces each new feature the first time you launch. Watch it '
       + 'once and it never comes back.',

@@ -670,7 +670,7 @@ _ALWAYS_REFUSED = frozenset({"apparmor_parser"})
 #: EMPTY, and it should stay that way. Every suite that exercises these paths
 #: today already stubs them — ``test_service.py`` and its sibling suites patch
 #: ``service.linux.subprocess.run`` / ``service.macos.subprocess.run``,
-#: ``test_pod.py`` and ``test_pod_launchd.py`` stub at the module boundary, and
+#: ``test_pod_launchd.py`` and the ``pod_helpers.py`` importers stub at the module boundary, and
 #: the ``dev_fleet`` make-live tests stub ``_run_cmd``. So this guard breaks no
 #: existing test, and an addition here means a test is about to restart a real
 #: service on whoever runs the suite. Same shape as ``_ALLOWED`` in

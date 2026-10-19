@@ -95,10 +95,9 @@ def _open_slot_transcript_keys(state: DashboardState) -> set[str]:
 #: questions, and none of the three agree.
 #:
 #: * ``handlers/_shared.py`` — colon-only, wf-family only, to dispatch a memory-mode
-#:   lookup. Includes ``wf-scope``.
+#:   lookup.
 #: * ``handlers/cron_caller_session.py`` — colon-only, wf-family plus ``subagent``, to answer
-#:   whether a session is live and shared. Omits ``wf-scope`` on purpose: that prefix names a
-#:   workflow run's memory anchor, and no session is created under it.
+#:   whether a session is live and shared.
 #: * this one — matches PERSISTED folded keys via ``_in_namespace``, adds ``secretary``
 #:   and ``channel``, and deliberately excludes ``cron``, ``side`` and ``taskrunner``
 #:   because each of those holds conversations a reader started.
@@ -109,8 +108,7 @@ def _open_slot_transcript_keys(state: DashboardState) -> set[str]:
 #: It is spelled literally rather than derived from
 #: ``messaging.link._TELEMETRY_LOCAL_PREFIXES`` because that registry exists to bound
 #: telemetry label cardinality, and ``wf-unpooled`` and ``wf-worker`` are live session
-#: keys absent from it, as is the ``wf-scope`` memory-anchor prefix — a derived filter
-#: cannot see them.
+#: keys absent from it — a derived filter cannot see them.
 #:
 #: Absent on purpose:
 #:
@@ -131,7 +129,7 @@ def _open_slot_transcript_keys(state: DashboardState) -> set[str]:
 _MACHINE_NAMESPACES: tuple[str, ...] = (
     # fmt: off
     "subagent", "secretary", "channel",
-    "wf", "wf-pool", "wf-unpooled", "wf-worker", "wf-author", "wf-scope"
+    "wf", "wf-pool", "wf-unpooled", "wf-worker", "wf-author"
     # fmt: on
 )
 

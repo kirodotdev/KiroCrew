@@ -307,6 +307,25 @@ def _patch_targets(text: str, candidates: TargetPaths) -> None:
         candidates.truncated = True
 
 
+def edit_target_strings(raw_params: Mapping | None) -> TargetPaths:
+    """Raw edit targets from params and patch headers, without path expansion.
+
+    Only bounded string/container work runs here; account and filesystem
+    resolution belong to the caller. The security gate runs the same params
+    walk on the event loop for every tool call.
+    """
+    candidates = target_paths(raw_params)
+    if candidates.truncated:
+        return candidates
+    if isinstance(raw_params, Mapping) and "patchText" in raw_params:
+        patch = raw_params["patchText"]
+        if isinstance(patch, str):
+            _patch_targets(patch, candidates)
+        else:
+            candidates.truncated = True
+    return candidates
+
+
 def edit_target_candidates(
     raw_params: Mapping | None, diff_path: str = "", *, tool_kind: str = ""
 ) -> TargetPaths:

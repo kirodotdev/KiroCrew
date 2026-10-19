@@ -274,6 +274,13 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     # skills dir — it must gate neither the event loop nor the dashboard
     # socket. Listings pick the synced skills up as soon as it completes.
     skills = SkillsLoader(install_builtins=False)
+    # The in-place restarts end in os.execv, which kills the usage ledger's
+    # daemon flush thread with up to 60 s of hits still in memory. The pre-exec
+    # seam runs this before both of them; _shutdown_and_exit flushes on its own.
+    from kiro_crew import skill_usage
+    from kiro_crew.pre_exec_stops import register_pre_exec_stop
+
+    register_pre_exec_stop("Skill-usage ledger", skill_usage.flush_all_before_exec)
 
     async def _sync_builtin_skills() -> None:
         try:

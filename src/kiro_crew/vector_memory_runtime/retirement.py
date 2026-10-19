@@ -244,7 +244,7 @@ def get_retired_episodic(store: VectorMemoryStore, limit: int = 50, offset: int 
         "WHERE e.is_deleted = 1 AND v.event_type = 'conflict_retire' "
         "  AND v.memory_type = 'episodic' AND v.source = 'semantic_update' "
         "GROUP BY e.id "
-        "ORDER BY retired_at DESC LIMIT ? OFFSET ?",
+        "ORDER BY retired_at DESC, e.id LIMIT ? OFFSET ?",
         (limit, offset),
     )
     return [dict(r) for r in rows]

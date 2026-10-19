@@ -36,10 +36,24 @@ from test_snapshot import _make_snapshot, _setup_fake_kirocrew, unpinnable_argv
 
 from conftest import requires_o_nofollow
 from kiro_crew import snapshot as snap
-from kiro_crew import snapshot_archive, snapshot_components, snapshot_merge, snapshot_restore
+from kiro_crew import (
+    snapshot_archive,
+    snapshot_build,
+    snapshot_components,
+    snapshot_merge,
+    snapshot_merge_driver,
+    snapshot_restore,
+)
 from kiro_crew.jsonl_util import OversizedRecord
 
-_OWNERS = (snapshot_components, snapshot_archive, snapshot_restore, snapshot_merge)
+_OWNERS = (
+    snapshot_components,
+    snapshot_archive,
+    snapshot_restore,
+    snapshot_merge,
+    snapshot_build,
+    snapshot_merge_driver,
+)
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _REPO_SRC = _REPO_ROOT / "src"
 
@@ -306,9 +320,11 @@ LATE_BOUND = frozenset(
         "_copytree_safe",
         "_do_replace_mutations",
         "_mc_dir",
+        "_merge_named_stores",
         "_notification_key",
         "_refuse_unsafe_destination_roots",
         "_report_skip",
+        "_restage_databases",
         "_restore_everything_from_rollback",
         "_staging_is_pinned",
         "datetime",
@@ -516,7 +532,7 @@ def _names_owners_read_directly() -> frozenset[str]:
     return frozenset(names - LATE_BOUND)
 
 
-#: The modules a snapshot test patches: the facade and the four owners, by name.
+#: The modules a snapshot test patches: the facade and the six owners, by name.
 _PATCHABLE: dict[str, ModuleType] = {_FACADE: snap, **{m.__name__: m for m in _OWNERS}}
 _STEMS = {name.rpartition(".")[2]: name for name in _PATCHABLE}
 
@@ -857,7 +873,7 @@ def test_no_patch_targets_a_module_whose_call_sites_do_not_read_it() -> None:
     ``_DYNAMIC_FACADE_PATCHES``, the one premise test in ``_PREMISE_PATCHES`` is exempt, and
     the raw scan must equal exactly those two lists.
     """
-    word = r"snapshot(?:_(?:archive|components|merge|restore))?\b"
+    word = r"snapshot(?:_(?:archive|build|components|merge|merge_driver|restore))?\b"
     mentions = re.compile(
         rf"kiro_crew\.{word}|\.{word}|\bimport\s+[^\n(]*\b{word}|\bimport\s*\([^)]*\b{word}"
     )

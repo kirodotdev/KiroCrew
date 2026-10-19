@@ -1,4 +1,4 @@
-import { safeSetItem } from '../utils/safeStorage'
+import { savePrefExplicitly } from '../lib/uiPrefs'
 import { Fragment, useEffect, useState, useMemo } from 'react'
 import { X, Keyboard } from 'lucide-react'
 import { DEFAULT_SHORTCUTS, formatShortcut, formatChordCaps, resolveShortcutDef, SHORTCUT_GROUPS, shortcutGroupLabel, shortcutLabel, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, IS_MAC, MAC_CTRL_DIGITS_KEY, type ShortcutDef } from '../hooks/useKeyboardShortcuts'
@@ -11,6 +11,7 @@ import { formatAcceleratorKeys } from '../lib/globalHotkey'
 import { isElectron } from '../lib/electron'
 import { useTerminalEnabled } from '../utils/terminalRegistry'
 import { Toggle, SearchInput, FilteredEmpty } from './ui'
+import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 /**
@@ -35,24 +36,29 @@ export function Kbd({ children }: { children: string }) {
  * binding), persisted to localStorage and broadcast via
  * SHORTCUTS_ENABLED_EVENT. Shared by the Alt+K modal and Settings → Shortcuts
  * so both surfaces stay in sync.
+ *
+ * A save the browser refuses (storage full) changes nothing: the switch keeps
+ * showing the stored value, which is what the shortcut hook reads, and
+ * `saveError` carries the message the surface renders through `ErrorNotice`.
  */
 export function useShortcutPrefs() {
   const [enabled, setEnabled] = useState(() => localStorage.getItem(SHORTCUTS_ENABLED_KEY) !== '0')
   const [macCtrl, setMacCtrl] = useState(() => localStorage.getItem(MAC_CTRL_DIGITS_KEY) !== '0')
+  const [saveError, setSaveError] = useState<string | null>(null)
 
-  const toggle = (v: boolean) => {
-    safeSetItem(SHORTCUTS_ENABLED_KEY, v ? '1' : '0')
-    setEnabled(v)
+  const save = (key: string, v: boolean, apply: (v: boolean) => void) => {
+    if (!savePrefExplicitly(key, v ? '1' : '0')) {
+      setSaveError(i18nT('components.shortcutsModal.save_refused'))
+      return
+    }
+    setSaveError(null)
+    apply(v)
     window.dispatchEvent(new Event(SHORTCUTS_ENABLED_EVENT))
   }
+  const toggle = (v: boolean) => save(SHORTCUTS_ENABLED_KEY, v, setEnabled)
+  const toggleMacCtrl = (v: boolean) => save(MAC_CTRL_DIGITS_KEY, v, setMacCtrl)
 
-  const toggleMacCtrl = (v: boolean) => {
-    safeSetItem(MAC_CTRL_DIGITS_KEY, v ? '1' : '0')
-    setMacCtrl(v)
-    window.dispatchEvent(new Event(SHORTCUTS_ENABLED_EVENT))
-  }
-
-  return { enabled, macCtrl, toggle, toggleMacCtrl }
+  return { enabled, macCtrl, toggle, toggleMacCtrl, saveError }
 }
 
 /**
@@ -321,7 +327,7 @@ function matchesQuery(text: string, query: string, queryWithoutPlus: string): bo
 }
 
 export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
-  const { enabled, macCtrl, toggle, toggleMacCtrl } = useShortcutPrefs()
+  const { enabled, macCtrl, toggle, toggleMacCtrl, saveError } = useShortcutPrefs()
   const { config: quickSearchConfig } = useQuickSearchShortcut()
   const { bindings: panelBindings } = usePanelToggleShortcuts()
   const terminalEnabled = useTerminalEnabled()
@@ -516,6 +522,9 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
               <span>{i18nT('components.shortcutsModal.use_ctrl_not_option_for_chat_1_9')}</span>
             </span>
           </div>
+        )}
+        {saveError && (
+          <ErrorNotice variant="inline" message={saveError} askAgent testId="shortcut-pref-save-error" className="mt-2" />
         )}
       </div>
     </div>

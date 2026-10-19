@@ -62,6 +62,9 @@ _MOUNT_SOURCE_MAX_AGE_SECONDS = 24 * 3600
 _PIN_SCAN_MAX_PASSES = 3
 _MOUNT_TABLE_CACHE_MAX_ENTRIES = 256
 _MOUNT_TABLE_CACHE_MAX_BYTES = 64 * 1024 * 1024
+#: Mount views one scan holds open (two descriptors each, see :class:`_MountViews`).
+#: Past it a further view is still read, every time, and never skipped.
+_MOUNT_VIEW_MAX_HELD = 64
 
 
 class _PinScanCoverage:
@@ -89,6 +92,107 @@ class _PinScanCoverage:
 
     def __init__(self) -> None:
         self.covered = True
+
+
+def _mount_view(task_path: str) -> tuple[int, ...] | None:
+    """What decides the bytes of ``<task_path>/mountinfo``, or None if unknown.
+
+    The kernel renders a task's mountinfo from its mount namespace and its root:
+    the root is where every mount point is printed from, and a mount outside a
+    chrooted root is left out. So two tasks with the same namespace and the same
+    root -- the same mount AND the same directory, since a bind shares its
+    source's inode -- are shown the same table. The namespace is the inode of
+    ``ns/mnt``; the root is ``platform_compat.mount_identity`` of ``root``.
+
+    Both links resolve only for a task that still has a namespace and a root and
+    whose ``ns/mnt`` this process may inspect (another user's task, or a
+    non-dumpable one, may not), which is when its mountinfo opens. Anything else
+    answers None and the caller reads the table, so every failure keeps the
+    outcome it had before views existed.
+    """
+    root = platform_compat.mount_identity(os.path.join(task_path, "root"))
+    if root is None:
+        return None
+    try:
+        ns = os.stat(os.path.join(task_path, "ns", "mnt"))
+    except OSError:
+        return None
+    return (ns.st_dev, ns.st_ino, *root)
+
+
+class _MountViews:
+    """The mount views one pin scan has read, so each is read once.
+
+    Nearly every task on a host shares a view with thousands of others (measured
+    15,141 tasks in 5 views), and the kernel renders the whole table on every
+    read, so reading per task spent seconds of kernel time per pass on
+    duplicates. A view's identity is a namespace inode and a mount id, and the
+    kernel hands both out again once their object is freed, so a view is
+    recorded only while descriptors on its namespace and its root mount are
+    held: neither can be freed, and so neither number re-used for a different
+    view, until :meth:`release`. A view is recorded only if the task still shows
+    it after its table was read, so a task that changed namespace or root during
+    the read records nothing.
+    """
+
+    __slots__ = ("_held",)
+
+    def __init__(self) -> None:
+        self._held: dict[tuple[int, ...], tuple[int, int]] = {}
+
+    def seen(self, view: tuple[int, ...] | None) -> bool:
+        return view is not None and view in self._held
+
+    def hold(self, task_path: str, view: tuple[int, ...] | None) -> tuple[int, int] | None:
+        """Descriptors pinning *view* as *task_path* shows it now, or None."""
+        if view is None or len(self._held) >= _MOUNT_VIEW_MAX_HELD:
+            return None
+        try:
+            ns_fd = os.open(os.path.join(task_path, "ns", "mnt"), os.O_RDONLY | os.O_CLOEXEC)
+        except OSError:
+            return None
+        try:
+            root_fd = os.open(
+                os.path.join(task_path, "root"),
+                getattr(os, "O_PATH", 0) | os.O_DIRECTORY | os.O_CLOEXEC,
+            )
+        except OSError:
+            os.close(ns_fd)
+            return None
+        fds = (ns_fd, root_fd)
+        try:
+            ns = os.fstat(ns_fd)
+            root = platform_compat.mount_identity("", dir_fd=root_fd)
+        except OSError:
+            root = None
+        if root is None or (ns.st_dev, ns.st_ino, *root) != view:
+            self.drop(fds)
+            return None
+        return fds
+
+    def settle(
+        self, task_path: str, view: tuple[int, ...] | None, fds: tuple[int, int] | None
+    ) -> None:
+        """Record *view* as read once its table was, if the task still shows it."""
+        if fds is None or view is None:
+            return
+        if _mount_view(task_path) == view:
+            self._held[view] = fds
+        else:
+            self.drop(fds)
+
+    @staticmethod
+    def drop(fds: tuple[int, int] | None) -> None:
+        for fd in fds or ():
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    def release(self) -> None:
+        held, self._held = self._held, {}
+        for fds in held.values():
+            self.drop(fds)
 
 
 def _task_uid(proc_root: str, name: str) -> int | None:
@@ -248,7 +352,27 @@ def _mount_pinned_source_names(
     unreadable root task — a filtered procfs included — lowers coverage along
     with ``complete``; another user's unreadable or departing task lowers only
     ``complete``.
+
+    A task whose mount view (:func:`_mount_view`) an earlier read this scan
+    already showed is not read again: its table is that one, so the read could
+    add no pin, and a view resolves only while the task is one whose read would
+    succeed, which is the outcome every branch below is keyed on. Every task
+    whose view is unknown is read exactly as before.
     """
+    views = _MountViews()
+    try:
+        return _scan_mount_pins(proc_root, matcher, coverage, views)
+    finally:
+        views.release()
+
+
+def _scan_mount_pins(
+    proc_root: str,
+    matcher: Callable[[str], bool] | None,
+    coverage: _PinScanCoverage | None,
+    views: _MountViews,
+) -> tuple[set[str], bool]:
+    """The walk :func:`_mount_pinned_source_names` describes, one read per view."""
     pinned: set[str] = set()
     complete = True
     seen: set[str] = set()
@@ -271,10 +395,9 @@ def _mount_pinned_source_names(
     # accounting requires are near-duplicates of a few dozen distinct tables:
     # measured 12.5k tasks, 1.3M mountinfo lines, 18 distinct tables on one
     # host. Identical bytes contribute identical pins, so a table is split
-    # into lines and matched once; a repeat costs the read alone (which
-    # releases the GIL) and no Python-level per-line work. The read itself is
-    # still issued for every task, so the OSError each caller keys its
-    # coverage accounting on is unaffected.
+    # into lines and matched once. Most repeats are not read at all
+    # (``views``); a table read through a task whose view is unknown is still
+    # matched only once here.
     # Cache only a bounded number and volume of distinct tables. Once either
     # limit is reached, tables already present still deduplicate while every
     # uncached table is parsed directly without being retained.
@@ -286,13 +409,28 @@ def _mount_pinned_source_names(
         """Add every matching bind SOURCE named in one mountinfo to ``pinned``.
 
         Propagates ``OSError`` exactly as ``open`` and a read would, so each
-        caller decides what an unreadable task means for coverage. A source
-        removed while still bound reads ``.../name//deleted``; the suffix is
-        stripped so the real name is what pins.
+        caller decides what an unreadable task means for coverage. Returns
+        without reading when the task's view was read already this scan, which
+        is a read that succeeded. A source removed while still bound reads
+        ``.../name//deleted``; the suffix is stripped so the real name is what
+        pins.
         """
+        task_path = os.path.dirname(mountinfo_path)
+        view = _mount_view(task_path)
+        if views.seen(view):
+            return
+        fds = views.hold(task_path, view)
+        try:
+            with open(mountinfo_path, "rb") as fh:
+                data = fh.read()
+        except BaseException:
+            views.drop(fds)
+            raise
+        _match(data)
+        views.settle(task_path, view, fds)
+
+    def _match(data: bytes) -> None:
         nonlocal cache_full, parsed_table_bytes
-        with open(mountinfo_path, "rb") as fh:
-            data = fh.read()
         if line_hint is not None and line_hint not in data:
             return
         if data in parsed_tables:

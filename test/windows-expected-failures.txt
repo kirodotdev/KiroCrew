@@ -97,8 +97,8 @@ test/test_installer_shim_and_cleanup.py::test_first_run_delivers_shim_and_purge
 test/test_installer_shim_and_cleanup.py::test_first_run_no_global_mcp
 test/test_installer_shim_and_cleanup.py::test_first_run_purge_is_one_time
 test/test_instances_run_marker.py::TestRunMarker::test_write_read_clear
-test/test_mcp_discovery.py::TestProbeServerStderrCapture::test_stderr_captured_when_child_exits_before_response
-test/test_mcp_discovery.py::TestProbeServerStderrCapture::test_successful_probe_does_not_mention_stderr
+test/test_mcp_discovery_probe_stdio.py::TestProbeServerStderrCapture::test_stderr_captured_when_child_exits_before_response
+test/test_mcp_discovery_probe_stdio.py::TestProbeServerStderrCapture::test_successful_probe_does_not_mention_stderr
 # Needs symlink-creation privilege: builds an in-vault FILE symlink
 # (Alias.md -> One.md); a junction is directory-only and cannot model it.
 test/test_memory_selfheal.py::TestFtsSelfHealGating::test_genuine_corruption_still_self_heals
@@ -107,11 +107,11 @@ test/test_pip_deps_consistency.py::test_all_unguarded_third_party_imports_are_de
 # prove the writer replaces it rather than writing through. atomic_write already
 # does the right thing on Windows; a junction is directory-only and can't model
 # a file symlink, so the fixture cannot be built without the privilege.
-test/test_pod.py::TestCliVerbs::test_install_writes_unit
 test/test_pod.py::TestEnvFileAndPin::test_pin_checkout
-test/test_pod.py::TestPodConfigWrite::test_config_and_home_are_owner_only
 test/test_pod.py::TestUnitRendering::test_env_block_pins_nondefaults
-test/test_pod.py::TestUpVerb::test_up_happy_path_json
+test/test_pod_cli.py::TestCliVerbs::test_install_writes_unit
+test/test_pod_cli.py::TestUpVerb::test_up_happy_path_json
+test/test_pod_env.py::TestPodConfigWrite::test_config_and_home_are_owner_only
 test/test_process_tree.py::TestDirectChildren::test_proc_children_parsed
 test/test_prompts.py::TestApiPrompts::test_detail_unreadable
 test/test_prompts.py::TestExpandPromptMention::test_unreadable_file

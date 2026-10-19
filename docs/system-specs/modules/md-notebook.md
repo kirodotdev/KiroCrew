@@ -17,6 +17,19 @@ session auth gates the proxy entrance as with all builtin apps.
 The app id is `md-notebook`; the display name is "Notes". `defaultEnabled` is false, so it
 appears in the Apps library ready to be switched on rather than enabling itself.
 
+**Where the backend's code lives.** `server.py` is the backend's entry point (`app.json`
+`entryPoint`; the gateway runs it as `__main__`, and `syncer.py` imports it) and a mirror
+facade (`kiro_crew._facade_mirror`): every name stays reachable as `server.<name>`, and a
+patch through it reaches the owner modules beside it. It keeps the per-process state -- the
+save, vault-write, vaults and settings locks, the note caches and change watches, the
+self-write marks and the gh token memo -- with every function that reaches it, every route
+and the app wiring. New work goes to the owner of its responsibility: `server_store.py` (the
+data home, the staged state writes, `vaults.json`, `settings.json`, the PAT),
+`server_http.py` (`ApiError`, request bodies, the proxy-auth and error middlewares),
+`server_paths.py` (vault and note path checks, note staging, listing and reads, the save
+guard) and `server_host.py` (gh discovery, the trusted spawn env, the file-manager reveal
+and the folder chooser).
+
 ## Responsibilities
 
 1. **Vaults** — clone a remote repo into `<home>/vaults/<id>/`, or attach an existing local
@@ -239,7 +252,7 @@ written and deleted the same day — and git can only restore what it already ha
   existence-checked, never resolved from the agent-writable front of `PATH`. A trusted binary
   is not sufficient on Linux, because **`xdg-open` is a shell script that dispatches to
   whichever helper it finds on `PATH`** (`gio`, `gvfs-open`, `exo-open`, …) — so every POSIX
-  spawn in `server.py` passes `_trusted_env()`, which replaces `PATH` with
+  spawn in `server.py` and `server_host.py` passes `_trusted_env()`, which replaces `PATH` with
   `git_ops.TRUSTED_PATH` and keeps the rest (the desktop session needs `DISPLAY` /
   `DBUS_SESSION_BUS_ADDRESS` / `XDG_*`). Otherwise a planted `~/.local/bin/gio` would run on a
   click the user has every reason to trust. The same pin covers `gh auth token` and the

@@ -42,6 +42,7 @@ from kiro_crew.apps.manager_records import (
     app_data_dir,
     app_dir,
     get_app_manifest,
+    refresh_app_config_keys,
 )
 from kiro_crew.apps.manager_tree import (
     InstalledTreeRefused,
@@ -431,6 +432,7 @@ def install_app(
         resources=f"name={name!r} version={manifest.version}",
     )
 
+    refresh_app_config_keys()
     logger.info("Installed app %s v%s from %s", name, manifest.version, source)
     return AppResult(
         ok=True,
@@ -701,6 +703,7 @@ def update_app(
 
     # Ensure data directory exists
     app_data_dir(name)
+    refresh_app_config_keys()
 
     logger.info(
         "Updated app %s: v%s -> v%s from %s",

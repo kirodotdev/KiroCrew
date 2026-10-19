@@ -674,8 +674,10 @@ class TestChatSlotReasoningEffortLiveProvider:
             provider.change_effort.assert_awaited_once_with("xhigh")
             # Live update succeeded → no session reset.
             state.sessions.reset.assert_not_called()
-            state.sessions.retire_effort_override.assert_called_once_with(
-                chat_handlers.effective_session_key(slot)
+            # The live level replaces the allocation's record, so a restart or
+            # reset successor starts on it (no workspace file carries it on KAS).
+            state.sessions.record_effort_override.assert_called_once_with(
+                chat_handlers.effective_session_key(slot), "xhigh"
             )
 
     @pytest.mark.asyncio
@@ -752,8 +754,9 @@ class TestChatSlotReasoningEffortLiveProvider:
             assert resp.status == 200
             provider.clear_effort.assert_awaited_once()
             state.sessions.reset.assert_not_called()
-            state.sessions.retire_effort_override.assert_called_once_with(
-                chat_handlers.effective_session_key(slot)
+            # Cleared live: the record is dropped, so a successor starts on the default.
+            state.sessions.record_effort_override.assert_called_once_with(
+                chat_handlers.effective_session_key(slot), ""
             )
 
     @pytest.mark.asyncio
@@ -778,7 +781,7 @@ class TestChatSlotReasoningEffortLiveProvider:
             assert resp.status == 200
             provider.clear_effort.assert_awaited_once()
             state.sessions.reset.assert_awaited_once()
-            state.sessions.retire_effort_override.assert_not_called()
+            state.sessions.record_effort_override.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_non_effort_capable_model_persists_without_live_or_reset(self):
@@ -818,7 +821,7 @@ class TestChatSlotReasoningEffortLiveProvider:
             )
             assert resp.status == 200
             state.sessions.reset.assert_awaited_once()
-            state.sessions.retire_effort_override.assert_not_called()
+            state.sessions.record_effort_override.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_active_turn_defers_live_push(self):
@@ -849,7 +852,7 @@ class TestChatSlotReasoningEffortLiveProvider:
             provider.change_effort.assert_not_awaited()
             provider.clear_effort.assert_not_awaited()
             state.sessions.reset.assert_not_called()
-            state.sessions.retire_effort_override.assert_not_called()
+            state.sessions.record_effort_override.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_active_turn_defers_clear_too(self):
@@ -876,7 +879,7 @@ class TestChatSlotReasoningEffortLiveProvider:
             provider.change_effort.assert_not_awaited()
             provider.clear_effort.assert_not_awaited()
             state.sessions.reset.assert_not_called()
-            state.sessions.retire_effort_override.assert_not_called()
+            state.sessions.record_effort_override.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_active_turn_pushes_live(self):

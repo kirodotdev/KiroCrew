@@ -22,7 +22,7 @@ interface Props {
 
 /**
  * Floating preview of a collapsed paste's first lines, rendered by the caller
- * through a portal to document.body and anchored to the token's viewport rect
+ * through a portal to the body-level overlay root and anchored to the token's viewport rect
  * (ancestors clip overflow, so an in-tree panel would be invisible).
  *
  * Shared by PastedChip (sent bubbles) and PasteHoverLayer (composer) so the two

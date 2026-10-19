@@ -796,6 +796,15 @@ class TestAcpSessionProviderRound4Parity:
         assert stats.context_tokens_from_usage is False
         assert stats.context_pct_unknown is False
 
+    def test_rekey_drops_credits_held_between_turns(self):
+        """Credits held for the next turn belong to the session served before
+        the claim, so the claiming session's first turn must not bill them."""
+        handle = _make_handle()
+        handle._between_turn_credits = 0.5
+        provider = AcpSessionProvider(handle, _make_runtime())
+        provider.rekey("dashboard:slot9", "chan-7")
+        assert handle._between_turn_credits == 0.0
+
     def test_agent_reads_from_runtime(self):
         """#5 -- session.py session-info introspection reads
         provider.client._agent; mirror AcpClient._agent via the runtime."""

@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from '../../components/overlayRoot'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -616,7 +616,7 @@ function PrerequisiteTip({ label, heading, text }: { label: string; heading: str
       >
         <AlertTriangle className="h-4 w-4" aria-hidden="true" />
       </button>
-      {open && createPortal(
+      {open && <OverlayPortal>{
         /* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the mouse listeners implement WCAG 1.4.13 "hoverable" (pointer may cross into the tooltip without it dismissing); keyboard users have their own complete path on the button (focus opens, Escape dismisses), so there is no keyboard operation to mirror here */
         <div
           ref={tipRef}
@@ -629,9 +629,8 @@ function PrerequisiteTip({ label, heading, text }: { label: string; heading: str
         >
           <span className="block font-medium text-text-strong">{heading}</span>
           <span className="mt-0.5 block">{text}</span>
-        </div>,
-        document.body,
-      )}
+        </div>
+      }</OverlayPortal>}
     </>
   )
 }

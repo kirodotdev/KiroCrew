@@ -1066,7 +1066,8 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/apps/builtins/auto_improvement/spine/crew_runner.py": [
         ("auto_improvement_assignment", "unknown")
     ],
-    "kiro_crew/cli_doctor.py": [("doctor", "cli"), ("doctor", "cli"), ("doctor", "cli")],
+    "kiro_crew/cli_doctor_parts/mcp_sections.py": [("doctor", "cli")],
+    "kiro_crew/cli_doctor_parts/model_section.py": [("doctor", "cli"), ("doctor", "cli")],
     "kiro_crew/config/loader_snapshots.py": [("load_config", "unknown")],
     "kiro_crew/connections/mint.py": [
         ("connections_mint", "dashboard"),
@@ -1209,7 +1210,7 @@ _EXPECTED_PROJECT_FILES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # unguarded ``_scan_project_agent_files``. Re-entering this reader would
     # decide a second time on the same scope, and a second verdict that
     # disagreed would record a denial for a tree the caller already read.
-    "kiro_crew/cli_doctor.py": [("doctor", "cli")],
+    "kiro_crew/cli_doctor_parts/model_section.py": [("doctor", "cli")],
     # The base-spec read and the shadow check are one surface's two questions
     # about the same checkout, so one label covers both.
     "kiro_crew/dashboard/side_readonly_spec.py": [

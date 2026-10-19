@@ -36,21 +36,25 @@ from kiro_crew.agent_sdk.backends import (
 # ``ToolApprovalPolicy.READ_ONLY``. A harness has its own pre-approval surface
 # that the host gate cannot see, so a call it pre-approves would run with no
 # READ_ONLY decision and no SEL row. A member starts its side session in a shape
-# where no such pre-approval can reach a write, and every remaining call asks the
-# host gate:
+# where no such pre-approval can reach a write, and every call it does not refuse
+# itself asks the host gate:
 #
 # * kiro-cli: the session is bound to a derived ``<agent>--readonly`` spec
 #   (``dashboard/side_readonly_spec``) whose emptied grants make every tool call
 #   raise a permission request.
 # * claude-agent-acp: its settings cannot be emptied from outside, so the session
 #   is started with only the read built-ins, no MCP server, settings hooks
-#   disabled, an ``ask`` rule on the web tools and ``deny`` rules on the host's
-#   sensitive paths, then pinned to ``default`` mode
+#   disabled, an ``ask`` rule on each read built-in and ``deny`` rules on the
+#   host's sensitive paths, then pinned to ``default`` mode
 #   (``AcpClient._claude_session_meta``, ``_pin_claude_starting_mode``). No write
-#   tool exists there for an allow rule to pre-approve, and no allow rule reaches
-#   a sensitive path. This membership rests on that construction alone: no side
-#   session capture is committed for claude, and claude's routing
-#   (``Routing.SEEDED_SETTINGS``) is declared but not enforced by this core.
+#   tool exists there for an allow rule to pre-approve. ``default`` mode runs
+#   Read, Grep and Glob inside the session's cwd without asking; the ``ask``
+#   rules override that, and a denied sensitive path is refused by claude
+#   before it asks. Captured on claude-agent-acp 0.93.0
+#   (``test/fixtures/claude_side_read_ask``): without the file-read rules four
+#   in-cwd reads ran with no permission request, and with them all five reads
+#   asked. claude's routing (``Routing.SEEDED_SETTINGS``) is declared but not
+#   enforced by this core.
 # * goose: its pre-approval store is ``permission.yaml`` in its config directory,
 #   which in ``approve`` mode runs a ``user.always_allow`` tool without asking.
 #   The side session is started with a goose home of its own under its scratch

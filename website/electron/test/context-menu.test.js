@@ -1,6 +1,6 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { buildMenuTemplate, localPathForLink } = require("../context-menu");
+const { buildMenuTemplate, localPathForLink, selectedWebURL } = require("../context-menu");
 
 const ORIGIN = "http://127.0.0.1:3210/";
 
@@ -450,5 +450,95 @@ describe("buildMenuTemplate image block", () => {
     const { params, webContents } = mockParams({ ...image, selectionText: "caption" });
     const t = buildMenuTemplate(params, "linux", webContents, mockDeps().deps);
     assert.deepEqual(t.map((i) => i.label || i.role || i.type), ["Copy Image", "separator", "copy"]);
+  });
+});
+
+describe("selectedWebURL", () => {
+  it("reads an http(s) URL out of the selection, trimming the drag's edges", () => {
+    assert.equal(selectedWebURL("https://github.com/o/r/issues/1"), "https://github.com/o/r/issues/1");
+    assert.equal(selectedWebURL("  http://example.com/build/42\n"), "http://example.com/build/42");
+    assert.equal(selectedWebURL("HTTPS://Example.com/a"), "https://example.com/a");
+  });
+
+  it("refuses a selection that is more than the URL", () => {
+    assert.equal(selectedWebURL("see https://example.com"), null);
+    assert.equal(selectedWebURL("https://example.com/a and more"), null);
+    assert.equal(selectedWebURL("https://example.com/a\nhttps://example.com/b"), null);
+  });
+
+  it("refuses non-web schemes and text that only looks like a URL", () => {
+    for (const text of [
+      "file:///etc/passwd",
+      "javascript:alert(1)",
+      "x-apple.systempreferences:com.apple.preference.security",
+      "mailto:a@example.com",
+      "example.com",
+      "https://",
+      "\u0001https://example.com",
+      "",
+    ]) {
+      assert.equal(selectedWebURL(text), null, JSON.stringify(text));
+    }
+    assert.equal(selectedWebURL(undefined), null);
+  });
+
+  it("refuses an over-long selection", () => {
+    assert.equal(selectedWebURL(`https://example.com/${"a".repeat(2100)}`), null);
+  });
+});
+
+describe("buildMenuTemplate Open Link for a selected URL", () => {
+  function openDeps() {
+    const opened = [];
+    return { opened, deps: { openExternal: (u) => { opened.push(u); return Promise.resolve(); }, log: () => {} } };
+  }
+
+  it("U1: a selected plain-text URL adds Open Link after Copy", () => {
+    const { params, webContents } = mockParams({ selectionText: "https://example.com/run/7 " });
+    const { opened, deps } = openDeps();
+    const t = buildMenuTemplate(params, "linux", webContents, deps);
+    assert.deepEqual(t.map((i) => i.label || i.role), ["copy", "Open Link"]);
+    t[1].click();
+    assert.deepEqual(opened, ["https://example.com/run/7"]);
+  });
+
+  it("U2: on darwin Look Up stays, after Open Link", () => {
+    const { params, webContents } = mockParams({ selectionText: "https://example.com" });
+    const t = buildMenuTemplate(params, "darwin", webContents, openDeps().deps);
+    assert.equal(t[0].role, "copy");
+    assert.equal(t[1].label, "Open Link");
+    assert.ok(t[2].label.startsWith("Look Up '"));
+  });
+
+  it("U3: a selection that is not a URL gets no Open Link", () => {
+    const { params, webContents } = mockParams({ selectionText: "hello world" });
+    const t = buildMenuTemplate(params, "linux", webContents, openDeps().deps);
+    assert.ok(!t.some((i) => i.label === "Open Link"));
+  });
+
+  it("U4: a URL selected on a link leaves the link block alone", () => {
+    const { params, webContents } = mockParams({
+      selectionText: "https://example.com/x",
+      linkURL: "https://example.com/x",
+    });
+    const t = buildMenuTemplate(params, "linux", webContents, mockDeps().deps);
+    assert.deepEqual(t.map((i) => i.label || i.role || i.type), ["Copy Link Address", "separator", "copy"]);
+  });
+
+  it("U5: a URL typed into an editable field gets no Open Link", () => {
+    const { params, webContents } = mockParams({ selectionText: "https://example.com", isEditable: true });
+    const t = buildMenuTemplate(params, "linux", webContents, openDeps().deps);
+    assert.ok(!t.some((i) => i.label === "Open Link"));
+  });
+
+  it("U6: a rejected or throwing hand-off never escapes the click", async () => {
+    const { params, webContents } = mockParams({ selectionText: "https://example.com" });
+    const logged = [];
+    const rejecting = { openExternal: () => Promise.reject(new Error("no handler")), log: (m) => logged.push(m) };
+    buildMenuTemplate(params, "linux", webContents, rejecting)[1].click();
+    const throwing = { openExternal: () => { throw new Error("boom"); }, log: (m) => logged.push(m) };
+    buildMenuTemplate(params, "linux", webContents, throwing)[1].click();
+    await Promise.resolve();
+    assert.equal(logged.length, 2);
   });
 });

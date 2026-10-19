@@ -1,0 +1,32 @@
+{
+ "base_public_names": [
+  "BUILTIN_DENIED_RULES",
+  "BUILTIN_DENY_PATTERNS",
+  "DENY_REASON_MATCH_PREFIX",
+  "DENY_REASON_PREFIX",
+  "DeniedCommandRule",
+  "RefusalDiagnostic",
+  "SUSPICIOUS_BASH_PATTERNS",
+  "annotate_refusal",
+  "builtin_denied_rules",
+  "compute_effective_denied",
+  "edition_denied_rules",
+  "enabled_rule_ids",
+  "floor_enforced_builtin_command_ids",
+  "is_safe_user_regex",
+  "logger",
+  "pinned_builtin_command_ids",
+  "pinned_builtin_command_ids_for_snapshot",
+  "refusal_diagnostic"
+ ],
+ "note": "S16: denied_rules.py became a mirror facade over denied_rules_catalog (the row type and the built-in rows) and denied_rules_tables (the lookups, floor rule id sets and flat pattern list keyed to the rows). The pin resolvers, the exception surface, the matcher, the refusal producer and the environment tier stay defined in the facade; every other public name it bound before the split is served from its owner or still bound by its own import.",
+ "rebound": {
+  "BUILTIN_DENIED_RULES": "kiro_crew.security.denied_rules_catalog",
+  "BUILTIN_DENY_PATTERNS": "kiro_crew.security.denied_rules_tables",
+  "DeniedCommandRule": "kiro_crew.security.denied_rules_catalog",
+  "RefusalDiagnostic": "kiro_crew.security.diagnostics",
+  "annotate_refusal": "kiro_crew.security.diagnostics",
+  "floor_enforced_builtin_command_ids": "kiro_crew.security.denied_rules_tables",
+  "refusal_diagnostic": "kiro_crew.security.diagnostics"
+ }
+}

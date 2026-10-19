@@ -1,9 +1,9 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { GitBranch, RefreshCw, RefreshCwOff } from 'lucide-react'
+import { ChevronRight, GitBranch, RefreshCw, RefreshCwOff } from 'lucide-react'
 import { api } from '../api/client'
-import DetailPanel from './DetailPanel'
 import ErrorNotice from './ErrorNotice'
+import { Btn } from './ui'
 import { errMessage } from '../utils/thunkError'
 import { findReport } from '../utils/errorReport'
 import {
@@ -55,28 +55,128 @@ function FilePath({ path }: { path: string }) {
   )
 }
 
+/** A repository folder as a heading: its name first in line for the width, the
+ *  parent path muted and cut from the LEFT, since the end of a path is what
+ *  tells two checkouts of one repository apart. The name itself still shrinks
+ *  and truncates when it alone is wider than the panel (a 320px panel and a
+ *  worktree named for its branch): a `shrink-0` name overflowed the heading
+ *  and ran under whatever followed it. The parent gives up width eight times
+ *  faster (`shrink-[8]`), so the name loses little until the parent is nearly
+ *  down to its ellipsis. The full path is the heading's `title`. */
+export function RepoPath({ path }: { path: string }) {
+  const trimmed = path.replace(/[\\/]+$/, '')
+  const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  const parent = cut >= 0 ? trimmed.slice(0, cut + 1) : ''
+  const name = cut >= 0 ? trimmed.slice(cut + 1) : trimmed
+  return (
+    <span className="flex min-w-0 font-mono text-[11px]">
+      {parent && (
+        // rtl + bdi: the ellipsis lands on the left while the path still reads LTR.
+        <span dir="rtl" className="truncate text-muted min-w-0 shrink-[8]">
+          <bdi>{parent}</bdi>
+        </span>
+      )}
+      <span className="text-text font-semibold min-w-0 truncate" data-testid="git-repo-name">
+        {name || path}
+      </span>
+    </span>
+  )
+}
+
+/** One repository rendered as a section of the Git tab's list. */
+export interface GitPanelSection {
+  /** The folder the heading names (the same path the routes are asked about). */
+  label: string
+  /** Optional tag after the path, e.g. "Project". */
+  badge?: string
+  /** Tooltip explaining the tag; a one-word tag does not explain itself. */
+  badgeTitle?: string
+  /** Open before the user toggles it. A section with uncommitted changes
+   *  opens on its own either way. */
+  defaultOpen?: boolean
+  /** Whether a collapsed heading DRAWS its "Show changes and history" hint.
+   *  Default true. `GitReposPanel` draws it on the first collapsed section
+   *  only: twenty-four identical hints made the list's quietest state its
+   *  loudest. `false` keeps the hint in the toggle's accessible name
+   *  (visually hidden), so a screen reader hears what every row opens. */
+  expandHintVisible?: boolean
+  /** Whether an OPEN section polls its status on the interval. Default true.
+   *  `GitReposPanel` grants it to the few most recently opened sections only
+   *  (`MAX_POLLING_SECTIONS`): repositories the agent edited open by
+   *  themselves, so without the cap every dirty repository would run its git
+   *  subprocesses every 5 s. An open section without it still fetched once and
+   *  refreshes on window focus and on its Refresh button. */
+  poll?: boolean
+}
+
+type GitStatus = Awaited<ReturnType<typeof api.projectGitStatus>>
+
+/** Whether a section's body is shown. Until the user toggles it
+ *  (`openOverride` null) the state is derived: open by default, or because its
+ *  status failed, or because it has uncommitted changes. Shared by the render
+ *  and the status query's poll
+ *  predicate, so the two can never disagree about which sections are open. */
+function deriveSectionOpen(
+  section: GitPanelSection,
+  openOverride: boolean | null,
+  status: GitStatus | undefined,
+  statusError: unknown,
+): boolean {
+  if (openOverride !== null) return openOverride
+  return !!section.defaultOpen || !!statusError || (status?.files?.length ?? 0) > 0
+}
+
 interface GitPanelProps {
   projectDir: string
   onFileOpen?: (path: string) => void
-  onClose: () => void
+  /** The heading that names this repository in `GitReposPanel`'s list and
+   *  collapses the section. */
+  section: GitPanelSection
+  /** Reports whether this section's body is shown, on mount and on every
+   *  change, keyed by `projectDir`. The list reads it to find its first
+   *  collapsed section; the open state itself stays here, since it is partly
+   *  derived from this section's own status query. */
+  onOpenChange?: (projectDir: string, open: boolean) => void
 }
 
-export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelProps) {
+export default function GitPanel({ projectDir, onFileOpen, section, onOpenChange }: GitPanelProps) {
   const prevBranch = useRef<string | undefined>(undefined)
+  // null = the user has not toggled this section, so its open state is derived.
+  const [openOverride, setOpenOverride] = useState<boolean | null>(null)
 
   const { data: status, refetch: refetchStatus, isLoading: statusLoading, error: statusError } = useQuery({
     queryKey: ['git-status', projectDir],
     queryFn: () => api.projectGitStatus(projectDir),
     enabled: !!projectDir,
-    refetchInterval: 5000,
+    // Polled on the interval only while the body is on screen. Each poll runs
+    // several git subprocesses, and the Git tab can list up to
+    // MAX_SLOT_GIT_REPOS sections, so collapsed sections must not keep paying
+    // for it: they fetch once (the header still shows branch and count) and
+    // again on window focus or the Refresh button. React Query re-evaluates
+    // this predicate after every fetch and on every render, so a section that
+    // opens starts polling and one that collapses stops. An open section the
+    // list has not granted polling (`section.poll`) is treated like a
+    // collapsed one here.
+    refetchInterval: query =>
+      section.poll !== false &&
+      deriveSectionOpen(section, openOverride, query.state.data, query.state.error)
+        ? 5000
+        : false,
     refetchOnWindowFocus: true,
     retry: 1,
   })
 
+  // A collapsed section does not fetch history nobody is looking at.
+  const sectionOpen = deriveSectionOpen(section, openOverride, status, statusError)
+
+  useEffect(() => {
+    onOpenChange?.(projectDir, sectionOpen)
+  }, [onOpenChange, projectDir, sectionOpen])
+
   const { data: log, refetch: refetchLog, error: logError } = useQuery({
     queryKey: ['git-log', projectDir],
     queryFn: () => api.projectGitLog(projectDir),
-    enabled: !!projectDir,
+    enabled: !!projectDir && sectionOpen,
     staleTime: 30_000,
     retry: 1,
   })
@@ -199,14 +299,14 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
   const refreshInert =
     statusFilterRefused && logFilterRefused && filterRefusedCause === 'declared'
 
-  return (
-    <DetailPanel
-      embedded
-      title={i18nT('components.gitPanel.title')}
-      onClose={onClose}
-      noPadding
-      customHeader={
-        <div className="flex items-center gap-2 h-[38px] px-3 shrink-0 border-b border-border">
+  // The second line of the heading: branch, ahead/behind, and the change
+  // count. Rendered INSIDE the toggle button below the path line, so the whole
+  // two-line block the eye reads as one heading is one control. The Refresh
+  // button is the one thing in the heading that is not the toggle, and a
+  // button cannot nest inside a button, so it sits beside the toggle instead
+  // (see the return below).
+  const statusRow = (
+        <div className="flex items-center gap-2 h-[30px] min-w-0">
           {statusError ? (
             <span className="text-[12px] text-muted truncate">
               {i18nT('components.gitPanel.branch_unavailable')}
@@ -233,9 +333,15 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
 
           <span className="flex-1" />
 
-          {/* Uncommitted / clean pill */}
+          {/* Uncommitted / clean pill. Only the count is coloured: "clean" is
+              the resting state of most rows in a long list, and in green it
+              was the loudest thing on the panel. The one row with changes is
+              what the eye should land on. */}
           {!noRepository && !statusError && (
-            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${hasNoChanges ? 'bg-ok/15 text-ok-text' : 'bg-warn/15 text-warn-text'}`}>
+            <span
+              className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${hasNoChanges ? 'bg-bg-hover text-muted' : 'bg-warn/15 text-warn-text'}`}
+              data-testid={hasNoChanges ? 'git-repo-clean-badge' : 'git-repo-changes-badge'}
+            >
               {statusLoading
                 ? '...'
                 : hasNoChanges
@@ -245,33 +351,44 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
                     : i18nT('components.gitPanel.uncommitted', { count: fileCount })}
             </span>
           )}
+        </div>
+  )
 
-          {/* Refresh. Inert under a filter-driver refusal: the copy right below
-              says retrying won't help, and a live button over that sentence
-              contradicts it. The refusal is a standing policy decision keyed on
-              repo config, so a re-fetch returns the same 503 every time. Kept
-              in place rather than hidden so the header does not reflow.
-              Dimming alone was NOT enough -- a reader still could not tell
-              whether pressing it did anything and said they would press it
-              anyway -- so the glyph itself changes to the slashed variant. The
-              shape carries the state without depending on a hover tooltip or
-              on noticing a contrast difference. Keyed on BOTH routes refusing,
-              never on the coalescing predicate: a half-recovered pair needs
-              this button as its escape.
+  // Refetch both of a section's reads — the Refresh icon's action, shared with
+  // the "Retry" button inside a status/log error notice so the two controls do
+  // the same thing (a reader takes the icon and the in-notice action for two
+  // different retries). Not offered under a filter-driver refusal, where the
+  // copy says a retry will not help and Refresh is deliberately inert.
+  const retrySection = () => { refetchStatus(); refetchLog() }
 
-              The inert treatment deviates from the repo's dominant `opacity-40`
-              disabled skin, at `opacity-60` and a heavier stroke, and that is
-              deliberate. Everywhere else a disabled glyph carries no
-              information -- the fade IS the message -- so 40% costs nothing.
-              Here the whole difference between the two refusal causes is one
-              thin diagonal at `size={13}`, and a reader shown three frames
-              called all three crossed-out. The slash is the first thing 40%
-              erases. Weaker than the live glyph either way, so the resting
-              convention below is untouched. */}
+  // Refresh. Inert under a filter-driver refusal: the copy right below
+  // says retrying won't help, and a live button over that sentence
+  // contradicts it. The refusal is a standing policy decision keyed on
+  // repo config, so a re-fetch returns the same 503 every time. Kept
+  // in place rather than hidden so the header does not reflow.
+  // Dimming alone was NOT enough -- a reader still could not tell
+  // whether pressing it did anything and said they would press it
+  // anyway -- so the glyph itself changes to the slashed variant. The
+  // shape carries the state without depending on a hover tooltip or
+  // on noticing a contrast difference. Keyed on BOTH routes refusing,
+  // never on the coalescing predicate: a half-recovered pair needs
+  // this button as its escape.
+  //
+  // The inert treatment deviates from the repo's dominant `opacity-40`
+  // disabled skin, at `opacity-60` and a heavier stroke, and that is
+  // deliberate. Everywhere else a disabled glyph carries no
+  // information -- the fade IS the message -- so 40% costs nothing.
+  // Here the whole difference between the two refusal causes is one
+  // thin diagonal at `size={13}`, and a reader shown three frames
+  // called all three crossed-out. The slash is the first thing 40%
+  // erases. Weaker than the live glyph either way, so the resting
+  // convention below is untouched.
+  const refreshButton = (
           <button
-            onClick={() => { refetchStatus(); refetchLog() }}
+            type="button"
+            onClick={retrySection}
             disabled={refreshInert}
-            className={`flex items-center justify-center w-[26px] h-[26px] rounded-md transition-colors bg-transparent border-none ${
+            className={`flex items-center justify-center w-[26px] h-[26px] mr-2 rounded-md shrink-0 self-center transition-colors bg-transparent border-none ${
               refreshInert
                 ? 'text-muted opacity-60 cursor-not-allowed'
                 : 'cursor-pointer text-muted hover:text-text hover:bg-bg-hover'
@@ -285,12 +402,12 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
           >
             {refreshInert ? <RefreshCwOff size={13} strokeWidth={2.5} /> : <RefreshCw size={13} />}
           </button>
-        </div>
-      }
-    >
-      <div className="overflow-y-auto flex-1 text-[12px]">
-        {(statusError || logError) && (
-          <div className="flex flex-col gap-2 p-3">
+  )
+
+  // Request failures stay visible below the header even when content is collapsed.
+  const requestErrors = (
+        (statusError || logError) && (
+          <div className="flex flex-col gap-2 p-3 text-[12px]">
             {/* The refusal is repo-level, so both routes refuse together: ONE
                 notice naming the cause, not two reporting a generic failure.
                 It goes through ErrorNotice like every other error value here
@@ -303,6 +420,7 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
                 message={filterRefusedCopy}
                 report={findReport(filterRefusedMessage)}
                 askAgent
+                actionPlacement="below"
                 testId="git-panel-filter-refused"
               />
             ) : (
@@ -340,6 +458,18 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
                     // the shared label nothing said which failure a hand-off
                     // was for, so both read as one affordance rendered twice.
                     askAgentLabel={i18nT('components.gitPanel.ask_agent_changes')}
+                    // The same action as the header's Refresh icon, in the
+                    // notice itself: the icon beside the header reads as a
+                    // separate control from a retry, so the notice carries its
+                    // own. An outage can clear on a re-fetch, so unlike the
+                    // filter-driver refusal (which has no notice action) this
+                    // one offers it.
+                    footer={
+                      <Btn type="button" onClick={retrySection} data-testid="git-panel-status-retry">
+                        {i18nT('components.gitPanel.repos_retry')}
+                      </Btn>
+                    }
+                    actionPlacement="below"
                     testId="git-panel-status-error"
                   />
                 )}
@@ -367,14 +497,25 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
                     report={findReport(logErrorMessage)}
                     askAgent
                     askAgentLabel={i18nT('components.gitPanel.ask_agent_history')}
+                    // The same Refresh action, in the notice (see the status
+                    // notice above): a log outage can clear on a re-fetch.
+                    footer={
+                      <Btn type="button" onClick={retrySection} data-testid="git-panel-log-retry">
+                        {i18nT('components.gitPanel.repos_retry')}
+                      </Btn>
+                    }
+                    actionPlacement="below"
                     testId="git-panel-log-error"
                   />
                 )}
               </>
             )}
           </div>
-        )}
+        )
+  )
 
+  const body = (
+      <div className="text-[12px]">
         {noRepository && (
           <div role="status" className="px-3 py-8 text-center text-muted text-[12px]">
             {i18nT('components.gitPanel.not_a_repository_help')}
@@ -465,6 +606,91 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
           </div>
         )}
       </div>
-    </DetailPanel>
+  )
+
+  return (
+    <section className="border-b border-border" data-testid="git-repo-section" data-path={projectDir}>
+      {/* The heading is two lines (path, then branch and count) that read as
+          one block, so the whole block is ONE toggle button: a click on the
+          branch or the change count of a collapsed section opens it, not just
+          a click on the path line. Refresh is the only other control in the
+          heading and a button cannot nest in a button, so it is a sibling in
+          the same flex row, outside the toggle's hover and hit area. */}
+      <div className="flex items-stretch">
+        <button
+          type="button"
+          className="flex-1 min-w-0 flex flex-col pl-3 pr-2 pt-2 bg-transparent border-none cursor-pointer text-left hover:bg-bg-hover transition-colors"
+          aria-expanded={sectionOpen}
+          // Native tooltip that never changes layout: a title draws over the
+          // page, so it cannot shift a row the way an inline reveal did. It
+          // names the action for the open heading too, where the chevron alone
+          // does not say that a click folds the section away.
+          title={sectionOpen
+            ? i18nT('components.gitPanel.section_collapse_hint')
+            : i18nT('components.gitPanel.section_expand_hint')}
+          onClick={() => setOpenOverride(!sectionOpen)}
+          data-testid="git-repo-toggle"
+        >
+          {/* `flex-wrap`: when the path and the hint do not both fit (a 320px
+              panel), the hint drops to its own line under the path instead of
+              forcing the path to shrink around it or overlapping it. The
+              chevron, path and badge are ONE wrap item, so a long path never
+              leaves its chevron alone on the line above; that item still
+              shrinks to the line (RepoPath truncates). */}
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
+            <span className="flex items-center gap-1.5 min-w-0 max-w-full" data-testid="git-repo-heading" title={section.label}>
+              <ChevronRight
+                size={12}
+                aria-hidden="true"
+                className={`text-muted shrink-0 transition-transform ${sectionOpen ? 'rotate-90' : ''}`}
+              />
+              <RepoPath path={section.label} />
+              {section.badge && (
+                <span
+                  className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-muted shrink-0"
+                  title={section.badgeTitle}
+                  data-testid="git-repo-badge"
+                >
+                  {section.badge}
+                </span>
+              )}
+            </span>
+            {/* Collapsed only: a chevron's direction alone reads as a guess, so
+                the closed header says in words that it opens. Not a commit
+                count: a collapsed section skips the log fetch. Right after the
+                path (not pushed to the far edge), so it reads as part of the
+                toggle rather than a stray caption. Not `shrink-0` and not
+                nowrap: the hint wraps under the path on a narrow panel (the row
+                is `flex-wrap`) instead of overlapping a long repository name.
+                Drawn visibly on ONE collapsed row of a list
+                (`expandHintVisible`), since the rows are alike and one hint
+                reads for all of them. The other rows keep the same words in the
+                toggle's accessible name (`sr-only`), so a linear screen-reader
+                pass still hears what each row opens; the hidden rows do NOT
+                reveal the hint on hover (a reveal that flipped `sr-only` off
+                moved every row below it), and every toggle instead carries the
+                hint -- expand or collapse -- in its native `title` tooltip,
+                which draws over the page and so shifts nothing. A touch user
+                still gets the first row's visible hint. */}
+            {!sectionOpen && (
+              <span
+                className={
+                  section.expandHintVisible === false
+                    ? 'text-muted text-[11px] min-w-0 sr-only'
+                    : 'text-muted text-[11px] min-w-0'
+                }
+                data-testid="git-repo-expand-hint"
+              >
+                {i18nT('components.gitPanel.section_expand_hint')}
+              </span>
+            )}
+          </div>
+          {statusRow}
+        </button>
+        {refreshButton}
+      </div>
+      {requestErrors}
+      {sectionOpen && body}
+    </section>
   )
 }

@@ -46,6 +46,8 @@ deleting something. If the request leaves *any* visual choice open
   migrating to a standard library component (Radix, shadcn, etc.), adopt
   the stock look and drop hand-rolled behavior the library covers natively.
 - Prefer proper icon libraries over emojis in UI surfaces.
+- For an animated figure inside product UI, such as a gauge or a diagram, see
+  also the `living-ui` skill.
 
 ## Phase 3 — Evidence capture
 

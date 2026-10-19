@@ -137,6 +137,9 @@ def slim_server(argv: list[str]) -> Callable[[], None] | None:
     ensure_data_home()
     if _stderr_is(config_dir() / "gateway.log"):
         return None  # detached: the full CLI owns that logging shape
+    from kiro_crew.config.validation import prime_extension_config_keys
+
+    prime_extension_config_keys()
     _setup_logging(config_dir())
 
     from kiro_crew.config import KiroCrewConfig

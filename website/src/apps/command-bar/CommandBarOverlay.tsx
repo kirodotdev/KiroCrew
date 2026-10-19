@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from '../../components/overlayRoot'
 import { Command, Loader2 } from 'lucide-react'
 
 import { useAppDispatch, useAppSelector, useAppStore } from '../../store'
@@ -600,7 +600,7 @@ export default function CommandBarOverlay({
     query, scope, artifactsQuery, scopedQuery, folderQuery, mateQuery, pendingRow,
   })
 
-  return createPortal(
+  return <OverlayPortal>
     <div
       className="fixed left-0 right-0 z-[9999] flex items-start justify-center bg-bg/60 backdrop-blur-xs animate-rise"
       style={{ top: vv.offsetTop, height: vv.height }}
@@ -1071,7 +1071,6 @@ export default function CommandBarOverlay({
           </div>
         )}
       </div>
-    </div>,
-    document.body,
-  )
+    </div>
+  </OverlayPortal>
 }

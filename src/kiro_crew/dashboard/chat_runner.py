@@ -127,7 +127,7 @@ from kiro_crew.constants import (
     STEER_NOTICE_BOUND_SECS,
     reflow_and_label_glued_option_marker,
 )
-from kiro_crew.context import prepare_store_vectors
+from kiro_crew.context import embed_startup_query, prepare_store_vectors
 from kiro_crew.context_blocks import (
     PHASE_PER_TURN,
     PHASE_SESSION_START,
@@ -138,6 +138,7 @@ from kiro_crew.context_blocks import (
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import chat_turn as _chat_turn
 from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard import git_repo_touches as _git_repo_touches
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     COMMANDS_OFF_META_KEY,
     STEER_STATE_CONSUMED,
@@ -441,9 +442,11 @@ from kiro_crew.dashboard.chat_turn.turn_context import (  # noqa: F401
     _detach_appended_context,
     _dm_member_binding_changed,
     _folder_steering_turn,
+    _message_rewritten_before_build,
     _read_and_tighten_turn_execution,
     _require_session_memory_assignment,
     _restore_skills_context_after_compaction,
+    _startup_query_prewarm_applies,
     drain_pending_context,
     unavailable_agent_message,
 )
@@ -1107,6 +1110,65 @@ def _turn_start_priority(
     gateway, app, crew) or a restored queue entry starts BACKGROUND.
     """
     return person_priority(user_origin and crew_log_actor == "user" and not provenance_restored)
+
+
+#: How long the first message's early embedding may wait for the shared embedder.
+#: It outlasts a cold session start plus the longest wait a build may join it for
+#: (``STARTUP_RECALL_TIMEOUT_MAX_SECS``). Past it a queued embed is dropped and the
+#: build embeds for itself; an embed already running finishes and is cached.
+_STARTUP_QUERY_PREWARM_SECS = 30.0
+
+
+async def _prewarm_startup_query(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    text: str,
+    *,
+    memory_store: str | None,
+    execution_context: Any,
+) -> None:
+    """Start embedding a turn's first message ahead of its session-start build.
+
+    Runs beside whatever the turn does next (``session/new`` on a cold start). The
+    build then reads the cached vector, or joins the running embed and waits for it
+    up to ``memory.startup_recall_timeout_secs``, ranking by keyword past it.
+    """
+    builder = state.context_builder
+    if not _startup_query_prewarm_applies(builder, slot, text, execution_context):
+        return
+    task = asyncio.create_task(
+        _embed_startup_query_off_loop(
+            builder, text, workspace=slot.workspace or None, memory_store=memory_store
+        )
+    )
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+    # One loop step: the task submits its embed to the recall pool before the caller
+    # submits the build, so the build usually finds that embed in flight and joins it
+    # within its own deadline. A pool too busy to start it first leaves the build to
+    # embed for itself, as it does without this.
+    await asyncio.sleep(0)
+
+
+async def _embed_startup_query_off_loop(
+    builder: Any, text: str, *, workspace: str | None, memory_store: str | None
+) -> None:
+    """Run ``embed_startup_query`` on the recall pool. A failure only costs the head start."""
+    from kiro_crew.embeddings import PRIORITY_INTERACTIVE, EmbeddingWork, embedding_work
+
+    # A deadline of its own also routes the job to the recall pool, so the embed
+    # never holds a worker a prompt build needs.
+    token = embedding_work.set(
+        EmbeddingWork(time.monotonic() + _STARTUP_QUERY_PREWARM_SECS, priority=PRIORITY_INTERACTIVE)
+    )
+    try:
+        await run_in_embed_pool(
+            embed_startup_query, builder, text, workspace=workspace, memory_store=memory_store
+        )
+    except Exception:  # noqa: BLE001 - the build embeds for itself when this does not
+        logger.debug("First-message embedding was not started early", exc_info=True)
+    finally:
+        embedding_work.reset(token)
 
 
 # One entry per gateway memory-preparation task that has parked at least one
@@ -3078,6 +3140,19 @@ async def _run_chat(
             _wait_if_busy = True
         else:
             _wait_if_busy = False
+        # Nothing is registered, so this turn starts the session itself and
+        # session/new is on its send path: the first message's embedding starts now
+        # and runs beside it. A resumable key restores its transcript instead and
+        # builds no session-start memory.
+        if (
+            not _wait_if_busy
+            and not is_slash
+            and not state.sessions.resumable_hint(session_key)
+            and not _message_rewritten_before_build(slot, message)
+        ):
+            await _prewarm_startup_query(
+                state, slot, message, memory_store=memory_store, execution_context=execution_context
+            )
         # The crew log this slot was last writing to, read BEFORE allocation
         # publishes the successor's id over it. A slot outlives its ACP session, so
         # when the session below cold-starts under a NEW id the crew log gains a new
@@ -4098,6 +4173,18 @@ async def _run_chat(
                         raise
                     # The builder keeps essentials and reports unavailable learned memory.
                     logger.info("Member learned memory unavailable for context preparation")
+            # Every session-start build starts its message's embedding here, just
+            # ahead of itself, so the build joins it and waits within its deadline. A
+            # pre-warmed session gets its only early embed here; after the cold-start
+            # embed above, the same text is a cache hit or joins that inference.
+            if _context_is_new and not _provider_has_history and not is_slash:
+                await _prewarm_startup_query(
+                    state,
+                    slot,
+                    message,
+                    memory_store=memory_store,
+                    execution_context=execution_context,
+                )
             # The budgets that cut a block record the cut as they write its notice;
             # the collection gathers them for the ``context/composed`` written below.
             # It opens around the build alone, so only THIS turn's composition lands in
@@ -5047,6 +5134,17 @@ async def _run_chat(
                     "tool_call",
                     _tool_payload,
                 )
+                # A proposed call is not an executed touch. Snapshot only raw
+                # strings here; the terminal result releases them to the walker.
+                _git_repo_touches.note_tool_call(
+                    slot,
+                    event.raw_tool_params,
+                    tool_call_id=event.tool_call_id or "",
+                    background_tasks=getattr(state, "_background_tasks", None),
+                    tool_kind=event.tool_kind or "",
+                    diff_path=event.diff_path or "",
+                    is_shell=bool(event.is_shell),
+                )
                 # AFTER the live ``tool_call`` broadcast above and BEFORE the
                 # row is appended: the pill the open tab draws is not delayed by
                 # the annotation, and the record reaches both doors -- the
@@ -5301,6 +5399,17 @@ async def _run_chat(
                             **_tool_identity_fields(event),
                         },
                     )
+                    # The refinement may supply the first path (Claude streams
+                    # empty input first). Retain it until successful completion.
+                    _git_repo_touches.note_tool_call(
+                        slot,
+                        event.raw_tool_params,
+                        tool_call_id=event.tool_call_id,
+                        background_tasks=getattr(state, "_background_tasks", None),
+                        tool_kind=event.tool_kind or "",
+                        diff_path=event.diff_path or "",
+                        is_shell=bool(event.is_shell),
+                    )
                     # Update the audit log so the SEL trail captures the
                     # refined title/kind, not just the "Terminal"/"grep" stub
                     # logged at the initial EVENT_TOOL_CALL.
@@ -5480,6 +5589,12 @@ async def _run_chat(
                             )
                             break
                 if _tool_terminal:
+                    _git_repo_touches.finish_tool_call(
+                        slot,
+                        event.tool_call_id or "",
+                        executed=event.tool_final and not event.refusal and _tcid_identifies,
+                        background_tasks=getattr(state, "_background_tasks", None),
+                    )
                     # The backend's own word, unmapped, with the refusal this
                     # process decided taking precedence -- a refused call never
                     # reached the tool, whatever the frame says.
@@ -12304,6 +12419,11 @@ async def _run_chat(
         if not (isinstance(exc, MemoryStartupUnavailable) and not _memory_preparation_admitted):
             await state.sessions.record_failure(session_key)
     finally:
+        # An interrupted or unexecuted proposal must not survive into a turn
+        # whose backend may reuse its call id. Executed walker work is separate.
+        slot._git_repo_touch_pending.clear()
+        slot._git_repo_touch_terminal.clear()
+        slot._git_repo_touch_overflow = False
         # First: hand back the session-switch lock if this turn exited between
         # its acquire and its post-registration release. Before anything that
         # can await, and before the refusal-fallback restore below takes the

@@ -1241,7 +1241,11 @@ class TestAutoUpdateToggleHoldsBothConfigLocks:
         """
         from kiro_crew.dashboard.handlers import updates
 
-        source = Path(inspect.getsourcefile(updates)).read_text(encoding="utf-8")
+        home = Path(inspect.getsourcefile(updates)).parent
+        source = "\n".join(
+            (home / f"{name.rpartition('.')[2]}.py").read_text(encoding="utf-8")
+            for name in (updates.__name__, *updates._OWNERS)
+        )
         offenders = []
         for node in ast.walk(ast.parse(source)):
             if not isinstance(node, ast.Call):

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { usePickerSource } from './dashboardPickerSource'
 import { pickerQueryKey, type SlashCommand } from '../chat-core/composer/pickerSource'
 import { i18nT } from '../i18n/t'
@@ -248,7 +248,7 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
     ? 'components.slashCommandMenu.loading_commands_ctrl_enter_held'
     : 'components.slashCommandMenu.loading_commands_enter_held'
 
-  return createPortal(
+  return <OverlayPortal>
     <div
       className="fixed z-[9999] bg-card border border-border rounded-lg shadow-lg overflow-y-auto py-1 animate-slide-up"
       role="listbox"
@@ -278,7 +278,6 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
           <span className="text-[12px] truncate">{commandDescription(cmd)}</span>
         </button>
       ))}
-    </div>,
-    document.body
-  )
+    </div>
+  </OverlayPortal>
 }

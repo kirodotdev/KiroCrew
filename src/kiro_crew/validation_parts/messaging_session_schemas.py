@@ -255,7 +255,7 @@ LOCAL_KNOWLEDGE_SEARCH_SCHEMA = ToolSchema(
         # ValidationError; every downstream use is a parameterized SQL bind.
         FieldSpec("source_id", str, required=False, max_len=64),
         # Organisational namespace label (items.namespace). Same 64-char cap the
-        # store enforces on ingest (handlers/knowledge.py). No pattern: an
+        # store enforces on ingest (handlers/knowledge_sources.py). No pattern: an
         # unknown namespace just yields no results, and the value is a
         # parameterized SQL bind. It is a relevance filter, not a boundary.
         FieldSpec("namespace", str, required=False, max_len=64),

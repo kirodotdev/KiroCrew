@@ -426,6 +426,7 @@
     "k_run_a_command": "Executar um comando",
     "open_command_bar": "Abrir o Command Bar",
     "focus_mode": "Modo de foco",
+    "focus_mode_on_announce": "Modo de foco ativado. Pressione {{chord}} para desativá-lo.",
     "focus_mode_title": "Modo de foco · Alt+Shift+M",
     "focus_mode_title_mac": "Modo de foco · ⌥⇧M",
     "connect_your_phone": "Conectar seu telefone",
@@ -438,10 +439,12 @@
     "metrics_card_cores_other": "{{count}} núcleos",
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "Chat",
-    "tab_title_session": "{{session}} — {{panel}}"
+    "tab_title_session": "{{session}} — {{panel}}",
+    "release_notes_not_published_yet": "As notas da versão {{release}} ainda não foram publicadas. Mostrando as notas da {{shown}} em seu lugar."
   },
   "appSdk": {
     "chatEmbed": {
+      "delivery_seen_text_kept": "Sua mensagem está na conversa acima. O texto continua na caixa de composição caso queira reutilizá-lo.",
       "agent_is_working": "O agente está trabalhando...",
       "app_not_allowed_to_send_named": "{{app}} não tem permissão para enviar mensagens de chat: o app não declara acesso ao chat em suas permissões.",
       "server_refused_with_status": "O servidor recusou (HTTP {{status}}) — tente novamente em instantes.",
@@ -6036,7 +6039,6 @@
       "no_matches": "Nenhum resultado",
       "set_default_agent": "Definir <agent/> como padrão para novas sessões",
       "group_templates_hint": "Um agente personalizado é uma configuração de agente reutilizável.",
-      "group_templates_hint_default_workspace": "Um agente personalizado é uma configuração de agente reutilizável. Escolher um usa seu espaço de trabalho padrão e a memória compartilhada; nenhum colega novo é criado.",
       "own_memory": "Memória própria",
       "shared_memory": "Memória compartilhada",
       "label_own_memory": "{{label}} · memória própria",
@@ -6498,6 +6500,10 @@
       "hold_to_talk": "Mantenha pressionado para falar",
       "release_to_cancel": "Solte para cancelar",
       "slide_up_to_cancel": "Deslize para cima para cancelar",
+      "release_to_send": "Solte para enviar",
+      "release_to_keep_draft": "Solte para manter como rascunho",
+      "slide_up_to_cancel_sideways_to_keep_draft": "Deslize para cima para cancelar ou para o lado para manter como rascunho",
+      "stop_and_send": "Parar e enviar (Shift+clique mantém um rascunho)",
       "switch_to_keyboard": "Mudar para o teclado",
       "switch_to_voice": "Mudar para voz",
       "drop_to_attach": "Solte para anexar",
@@ -6539,6 +6545,7 @@
       "let_the_agent_read_one_of_your_files": "Permite que o agente leia um dos seus arquivos",
       "message_input": "Entrada de mensagem",
       "message_placeholder": "Enviar mensagem para {{bot}}… (/command · @file · $skill)",
+      "message_placeholder_crewmate": "Enviar mensagem para {{bot}}…",
       "message_placeholder_terminal": "Enviar mensagem para {{bot}}… (/command · @file · $skill · ! comando de shell)",
       "model": "Modelo",
       "model_2": "Modelo: {{name}}",
@@ -7423,7 +7430,14 @@
       "chat_folder_retry": "Tentar novamente",
       "chat_folder_retrying": "Tentando novamente…",
       "chat_folder_none_yet": "Ainda não há pastas. Salve esta tarefa agora; crie uma pasta na barra lateral de conversa e reabra a tarefa para escolhê-la.",
-      "chat_folder_was_deleted": "A pasta em que esta tarefa arquivava foi excluída. Escolha outra ou salve para deixar as execuções sem arquivar."
+      "chat_folder_was_deleted": "A pasta em que esta tarefa arquivava foi excluída. Escolha outra ou salve para deixar as execuções sem arquivar.",
+      "runs_as": "Executa como",
+      "runs_as_custom_agent": "Agente personalizado",
+      "runs_as_crewmate": "Colega",
+      "runs_as_custom_agent_hint": "Roda em um chat próprio, com a memória compartilhada.",
+      "runs_as_crewmate_hint": "Roda no chat de {{name}}, com a memória e os arquivos de {{name}}. Também aparece na página de Colegas.",
+      "runs_as_fixed": "Uma tarefa não pode trocar entre agente personalizado e colega depois de criada.",
+      "runs_as_no_crewmates": "Ainda não há colegas. Adicione um na página de Colegas."
     },
     "jobLogsView": {
       "cancel": "Cancelar",
@@ -7825,12 +7839,13 @@
       "remote_media_sites": "Sites: <host/>",
       "remote_media_gateway_refused": "Mídia não carregada: o endereço passa pelo próprio servidor deste painel, então o site que ele alcançaria não pode ser mostrado.",
       "couldnt_copy_select_the_text_to_copy_it_manually": "Não foi possível copiar — selecione o texto para copiá-lo manualmente",
-      "the_copy_failed_ctrl_cmd_click_copies_the_full_session_id_for_label": "A cópia falhou. Ctrl/Cmd+clique copia o ID de sessão completo de {{label}}.",
+      "couldnt_copy_the_full_session_id_for_label": "Não foi possível copiar o ID de sessão completo de {{label}}.",
+      "couldnt_copy_the_session_id_label": "Não foi possível copiar o ID de sessão {{label}}.",
       "show_folder_chip_name": "Mostrar a pasta {{label}} na barra lateral",
       "click_to_show_this_folder_in_the_sidebar": "Clique para mostrar esta pasta na barra lateral",
-      "the_copy_failed_ctrl_cmd_click_copies_the_folder_path_label": "A cópia falhou. Ctrl/Cmd+clique copia o caminho da pasta {{label}}.",
-      "couldnt_copy_the_image_path": "Não foi possível copiar o caminho da imagem",
-      "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "A cópia falhou. Ctrl/Cmd+clique copia o caminho {{label}}.",
+      "couldnt_copy_the_folder_path_label": "Não foi possível copiar o caminho da pasta {{label}}.",
+      "couldnt_copy_the_image_path_label": "Não foi possível copiar o caminho da imagem {{label}}.",
+      "couldnt_copy_the_path_label": "Não foi possível copiar o caminho {{label}}.",
       "closed_session_open_failed": "Não foi possível abrir {{name}}.",
       "closed_session_try_again": "Tentar novamente",
       "unclosed_diff_warning": "A formatação quebrou aqui, então o restante da resposta pode aparecer dentro deste diff."
@@ -8723,7 +8738,8 @@
       "browser_reserved_hint": "Em uma aba do navegador, o navegador captura estes atalhos antes que a página os receba — as alternativas funcionam em qualquer lugar; o aplicativo desktop aceita ambos.",
       "desktop_app_only": "Somente aplicativo desktop",
       "panel_toggles": "Alternar painéis",
-      "unset": "Não definido"
+      "unset": "Não definido",
+      "save_refused": "Não foi salvo: o armazenamento do navegador está cheio. Libere espaço e tente novamente."
     },
     "sidePanelLayout": {
       "more_below": "Mais abaixo",
@@ -8889,7 +8905,6 @@
     },
     "startupVideoModal": {
       "close": "Fechar",
-      "feature_intro": "Introdução ao recurso",
       "got_it": "Entendi",
       "media_failed": "Não foi possível carregar o vídeo do recurso",
       "share": "Compartilhar",
@@ -9127,6 +9142,7 @@
     },
     "voiceDictationPanel": {
       "esc_to_cancel_click_mic_to_finish": "Esc para cancelar, clique no microfone para terminar",
+      "esc_to_cancel_click_mic_to_send": "Esc para cancelar, Shift+clique mantém um rascunho, clique no microfone para enviar",
       "esc_to_cancel_enter_to_send": "Esc para cancelar, Enter para enviar",
       "listening": "Ouvindo"
     },
@@ -9425,9 +9441,7 @@
       "loading": "carregando...",
       "not_a_repository": "Não é um repositório Git",
       "not_a_repository_help": "Esta pasta do projeto não é um repositório Git. Se o repositório estiver em uma subpasta, clique no nome da pasta abaixo da caixa de mensagem.",
-      "no_project": "Nenhuma pasta de projeto definida para esta sessão.",
       "refresh": "Atualizar",
-      "title": "Git",
       "uncommitted": "{{count}} sem commit",
       "branch_unavailable": "Branch indisponível",
       "status_failed": "Não foi possível ler o estado do repositório. O histórico de commits pode estar desatualizado.",
@@ -9445,7 +9459,22 @@
       "filter_refused_title_unreadable_changes": "Kiro não consegue mostrar as alterações neste momento",
       "filter_refused_title_unreadable_history": "Kiro não consegue mostrar o histórico neste momento",
       "ask_agent_changes": "Perguntar ao agente sobre as alterações",
-      "ask_agent_history": "Perguntar ao agente sobre o histórico"
+      "ask_agent_history": "Perguntar ao agente sobre o histórico",
+      "repos_empty": "Nenhum repositório Git para mostrar. Um repositório aparece aqui quando o agente edita arquivos ou executa comandos nele.",
+      "source_project": "Projeto",
+      "repos_failed": "Não foi possível listar os repositórios deste chat.",
+      "repos_refresh_failed": "Não foi possível atualizar os repositórios deste chat. A lista abaixo pode estar desatualizada.",
+      "repos_loading": "Carregando os repositórios deste chat…",
+      "repos_incomplete": "Alguns repositórios em que o agente trabalhou podem não aparecer na lista. Cada um aparece aqui quando o agente volta a trabalhar nele.",
+      "repos_omitted_one": "O agente trabalhou em {{formattedTotal}} repositórios; os {{formattedLimit}} mais recentes estão listados. O oculto reaparece quando o agente trabalhar nele de novo.",
+      "repos_omitted_many": "O agente trabalhou em {{formattedTotal}} repositórios; os {{formattedLimit}} mais recentes estão listados. Cada um oculto reaparece quando o agente trabalhar nele de novo.",
+      "repos_omitted_other": "O agente trabalhou em {{formattedTotal}} repositórios; os {{formattedLimit}} mais recentes estão listados. Cada um oculto reaparece quando o agente trabalhar nele de novo.",
+      "source_project_help": "O repositório em que este chat foi iniciado. Os outros são repositórios em que o agente trabalhou.",
+      "repos_caption": "Repositórios em que o agente editou arquivos ou executou comandos durante este chat.",
+      "repos_caption_project_first": "O repositório do projeto é listado primeiro.",
+      "section_collapse_hint": "Ocultar alterações e histórico",
+      "section_expand_hint": "Mostrar alterações e histórico",
+      "repos_retry": "Tentar novamente"
     },
     "workspaceTree": {
       "status_failed": "Não foi possível ler o estado do repositório.",
@@ -10379,7 +10408,6 @@
     },
     "useKeyboardShortcuts": {
       "chats_panel": "Painel de conversas",
-      "close_this_session": "Fechar esta sessão?",
       "cycle_agent": "Alternar entre agentes",
       "cycle_approval_mode": "Alternar entre modos de aprovação",
       "cycle_model": "Alternar entre modelos",
@@ -10478,7 +10506,19 @@
       "working": "Trabalhando"
     },
     "useSessionActions": {
-      "close_this_session": "Fechar esta sessão?",
+      "close_confirm": {
+        "title": "Fechar esta sessão?",
+        "reason_approval": "Uma chamada de ferramenta aguarda sua aprovação. Fechar a cancela.",
+        "reason_turn": "Ela ainda está escrevendo uma resposta. Fechar interrompe essa resposta.",
+        "reason_subagents": "Ela tem subagentes em execução ou aguardando para iniciar. Fechar interrompe todos eles.",
+        "reason_queue": "Ela tem mensagens aguardando envio. Elas não são enviadas; quando você reabrir a sessão, elas voltam para você enviar ou excluir.",
+        "reason_workflow": "Há um fluxo de trabalho em execução nela. Fechar interrompe o fluxo de trabalho.",
+        "reason_goal_loop": "Ela tem um loop de objetivo em execução. Fechar interrompe o loop.",
+        "reason_monitor": "Ela tem um monitor acompanhando mudanças. Fechar interrompe o monitor.",
+        "reason_work": "Ela ainda tem trabalho em andamento. Fechar interrompe esse trabalho.",
+        "reason_setting": "Nada está em execução nela. Você está vendo esta pergunta porque “{{setting}}” está ativado nas Configurações.",
+        "actions": "A conversa e o rascunho na caixa de mensagem são mantidos, e você pode reabrir a sessão depois."
+      },
       "reload_failed": "Falha ao recarregar a sessão. O agente pode estar no meio de um turno ou o gateway inacessível; tente novamente quando a sessão estiver ociosa.",
       "duplicate_unreachable": "Não foi possível duplicar esta sessão. Não foi possível acessar o {{productName}}. Verifique sua conexão e tente novamente.",
       "reload_failed_subagents": "Os subagentes ainda estão trabalhando nesta sessão. Tente novamente quando terminarem.",
@@ -11486,6 +11526,13 @@
         "needs_earlier_history_count_many": "Selecione para carregar o histórico anterior: restam {{count}} mensagens anteriores",
         "needs_earlier_history_count_other": "Selecione para carregar o histórico anterior: restam {{count}} mensagens anteriores",
         "share_message": "Compartilhar como imagem",
+        "fork_earlier_messages": "Bifurcar com as mensagens anteriores",
+        "fork_later_messages_only": "Bifurcar só com as mensagens posteriores",
+        "fork_earlier_messages_hint": "Inicia uma nova conversa com esta mensagem e as anteriores. Esta conversa não é alterada.",
+        "fork_later_messages_only_hint": "Deixa esta mensagem de fora. Só as posteriores vão para uma nova conversa. Esta conversa não é alterada.",
+        "fork_no_later_messages": "Ainda não há mensagens depois desta.",
+        "fork_in_progress": "Bifurcando…",
+        "fork_other_in_progress": "Outra bifurcação está começando.",
         "copy_failed": "Falha ao copiar",
         "quote_message": "Citar mensagem"
       },
@@ -12813,6 +12860,7 @@
       "older_sessions": "Sessões antigas",
       "older_sessions_2": "Sessões antigas",
       "open_source_link_in_side_panel": "Abrir {{url}} no painel lateral ({{modifier}} para abrir no navegador)",
+      "open_named_source_link_in_side_panel": "{{provider}} {{ref}}: abrir {{url}} no painel lateral ({{modifier}} para abrir no navegador)",
       "bulk_switch_keeps_conversation": "Escolha um modelo para todas as sessões. A conversa é mantida e continua no novo modelo.",
       "bulk_switch_stops_running_reply": "As sessões em execução também serão trocadas, e a resposta atual delas será interrompida.",
       "pinned": "Fixada",
@@ -17055,6 +17103,7 @@
         "configured_instances": "Crews remotas configuradas",
         "connect": "Conectar",
         "connect_failed": "Falha ao conectar a {{id}}: {{error}}",
+        "connect_needs_restart": "Falha ao conectar a {{id}}: primeiro é preciso reiniciar o gateway. Veja a nota abaixo.",
         "connected_switch_from_tab_strip": "Conectado a “{{name}}”. Alterne para ela na barra de abas do cabeçalho superior.",
         "connecting": "Conectando…",
         "connection_did_not_complete_try_diagnose_for_det": "A conexão não foi concluída. Use Diagnosticar para ver os detalhes.",
@@ -17701,6 +17750,8 @@
         "enabled": "Ativado",
         "endpointing": "Enviar automaticamente quando eu terminar de falar",
         "endpointing_desc": "Usa um modelo rápido para detectar quando você terminou uma solicitação completa e enviá-la automaticamente. Apenas provedores de streaming.",
+        "submit_on_release": "Enviar quando eu parar a gravação",
+        "submit_on_release_desc": "Parar envia a mensagem. Mantenha Shift pressionado, ou deslize para o lado no celular, para manter um rascunho.",
         "failed_to_save_stt_config": "Falha ao salvar a configuração de STT",
         "input_device_used_to_capture_your_voice": "Dispositivo de entrada usado para capturar sua voz",
         "language": "Idioma",
@@ -17829,7 +17880,8 @@
         "backend_encoder_only": "{{name}} — parcialmente acelerado, a etapa de texto na CPU",
         "backend_cpu_only": "Executa na CPU — sem GPU nesta build",
         "last_recognition_value": "{{duration}} para o texto final, {{rtf}}× a duração do áudio",
-        "decode_threads_value": "{{n}} threads de decodificação"
+        "decode_threads_value": "{{n}} threads de decodificação",
+        "ptt_save_refused": "Não foi salvo: o armazenamento do navegador está cheio. Libere espaço e tente novamente."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "acima. Diferente do Slack, o Bot Framework não tem\n              modo somente de saída.",

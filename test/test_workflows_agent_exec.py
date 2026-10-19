@@ -64,7 +64,7 @@ async def test_default_uses_fresh_ephemeral_session_and_releases() -> None:
     fn = build_agent_fn(sessions, run_id="wf_x")
 
     out = await fn("hello", {})
-    assert out.startswith("reply[wf:wf_x:")  # ran on a wf-scoped ephemeral key
+    assert out.startswith("reply[wf:wf_x:")  # ran on an ephemeral ``wf:`` key
     assert len(sessions.created) == 1
     # ephemeral session was released (torn down) after the call
     assert sessions.released == [sessions.created[0][0]]

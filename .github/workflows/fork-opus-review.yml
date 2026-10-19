@@ -559,12 +559,36 @@ jobs:
             Obtain the diff by reading this pre-fetched file:
             ${{ runner.temp }}/authentic.patch
 
+      # The outbound scrub is `scripts/scope_redact.py`, staged from the BASE
+      # commit. A redactor taken from the change under review could
+      # rewrite the scrub of its own published output. Every model step after
+      # this one is read-only, so nothing can rewrite the staged copy.
+      - name: Stage the base-owned redactor
+        id: redactor
+        if: always() && steps.pr.outputs.obsolete != 'true'
+        env:
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        run: |
+          set -uo pipefail
+          dir="${RUNNER_TEMP:-/tmp}/scope-redact"
+          # Remove before creating: a symlink at this path would redirect the write.
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          dest="$dir/scope_redact.py"
+          git show "$BASE_SHA:scripts/scope_redact.py" > "$dest" 2>/dev/null || true
+          if [ ! -s "$dest" ]; then
+            echo "::error::scripts/scope_redact.py is missing or empty on the base commit ($BASE_SHA). Refusing to publish text no base-owned scrubber could redact."
+            exit 1
+          fi
+          echo "redactor=$dest" >> "$GITHUB_OUTPUT"
+
       # Hand stage 1's candidates to stage 2 through a FILE rather than string
       # interpolation: model output must never be spliced into YAML or a shell
       # argument, and a file has no arg-length ceiling.
       - name: Capture discovery candidates
         if: (steps.discover.outcome == 'success') && steps.pr.outputs.obsolete != 'true'
         env:
+          REDACTOR: ${{ steps.redactor.outputs.redactor }}
           EXEC_FILE: ${{ steps.discover.outputs.execution_file }}
           HEAD: ${{ steps.pr.outputs.head_sha }}
           MAX_CANDIDATE_BYTES: "200000"
@@ -583,7 +607,14 @@ jobs:
             fi
             printf '%s\n' "$out" > .review-candidates.md
           fi
-          perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' .review-candidates.md
+          # No redactor, or a scrub that fails, is a refusal: the file is removed so
+          # no later `always()` step can publish it raw.
+          if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ] \
+            || ! python3 "$REDACTOR" --mode text .review-candidates.md; then
+            echo "::error::the base-owned redactor could not scrub .review-candidates.md. Refusing to publish it raw."
+            rm -f .review-candidates.md
+            exit 1
+          fi
           if ! grep -Fq "[OPUS-DISCOVERY] $HEAD" .review-candidates.md; then
             echo "::error::Discovery produced no [OPUS-DISCOVERY] marker for $HEAD, so its output cannot be trusted as a complete candidate list. Failing closed: validation against a truncated or empty list would emit a clean [OPUS-REVIEWED] verdict and pass the gate on a review that never happened."
             # PAYLOAD-FREE diagnostics for exactly this branch, printed AFTER the
@@ -758,6 +789,7 @@ jobs:
       - name: Capture and redact review output
         if: always() && steps.pr.outputs.obsolete != 'true'
         env:
+          REDACTOR: ${{ steps.redactor.outputs.redactor }}
           EXEC_FILE: ${{ steps.review.outputs.execution_file }}
         run: |
           : > claude-review-output.md
@@ -771,17 +803,19 @@ jobs:
           # Scrub credential shapes / AWS account ids / ARNs before anything
           # reads the file — the reviewer runs agentically with AWS creds in its
           # environment (mirrors the redaction in claude-review.yml).
-          perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' claude-review-output.md
-          # Then the ACTUAL inherited credential VALUES -- see the twin block in
-          # fork-gpt-review.yml. A bare 40-char AWS secret access key has no
-          # distinctive prefix, so it survives every shape rule above and is far
-          # short of the 200+ char base64 run the withhold filter looks for.
-          for cred in AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID; do
-            val="$(printenv "$cred" 2>/dev/null || true)"
-            # Length guard: `\Q\E` on an empty string matches at EVERY position.
-            [ "${#val}" -ge 16 ] || continue
-            CRED_VALUE="$val" perl -i -pe 's/\Q$ENV{CRED_VALUE}\E/[REDACTED-CREDENTIAL]/g' claude-review-output.md
-          done
+          # `--redact-env` also replaces the ACTUAL inherited credential VALUES. A bare
+          # AWS secret access key has no prefix and no `name=` beside it, so it survives
+          # every shape rule and is far short of the 200+ char run the withhold filter
+          # looks for. Matching the value cannot be evaded by how the model prints it,
+          # and the redactor reads it from the environment, never from a command line.
+          # No redactor, or a scrub that fails, is a refusal: the file is removed so
+          # no later `always()` step can publish it raw.
+          if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ] \
+            || ! python3 "$REDACTOR" --mode text --redact-env AWS_SECRET_ACCESS_KEY --redact-env AWS_SESSION_TOKEN --redact-env AWS_ACCESS_KEY_ID claude-review-output.md; then
+            echo "::error::the base-owned redactor could not scrub claude-review-output.md. Refusing to publish it raw."
+            rm -f claude-review-output.md
+            exit 1
+          fi
 
       # Turn-budget exhaustion is its own outcome (#13296). A stage stopped at
       # --max-turns writes a `result` message with subtype `error_max_turns`

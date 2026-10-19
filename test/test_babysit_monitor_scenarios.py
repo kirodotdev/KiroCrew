@@ -58,8 +58,10 @@ def test_babysit_keeps_finite_legacy_path_for_unobserved_review_evidence() -> No
 
     legacy_args = session_directive.decode(legacy, "monitor_start")
     assert legacy_args is not None
-    assert legacy_args["max_cycles"] == 24
+    assert legacy_args["max_cycles"] == 48
     assert legacy_args["max_runtime_secs"] == 14_400
+    # The runtime, not the cycle cap, ends the loop.
+    assert legacy_args["idle_secs"] * legacy_args["max_cycles"] >= legacy_args["max_runtime_secs"]
     assert legacy_args["gate"] is False
     assert "call the finite legacy path directly" in skill
 
@@ -98,7 +100,9 @@ def test_prepare_pr_recipe_covers_its_poll_budget_without_provider_gating() -> N
         created_ts=1.0,
     )
     assert loop.max_runtime_secs > 0
-    assert not runtime_budget_exceeded(loop, now=loop.created_ts + loop.idle_secs * loop.max_cycles)
+    # Every cycle spent means the runtime is spent too, so the cycle cap never
+    # ends the loop before the 24 hours the skill states.
+    assert runtime_budget_exceeded(loop, now=loop.created_ts + loop.idle_secs * loop.max_cycles)
     assert applied["gate"] is False
 
 

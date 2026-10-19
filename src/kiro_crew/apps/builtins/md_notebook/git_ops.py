@@ -441,7 +441,7 @@ def _git_bin() -> str:
 #: helpers resolve from trusted system directories rather than an agent-writable
 #: entry inherited from the gateway's PATH. Two callers need it: git (ssh for
 #: ssh:// remotes, credential helpers, git-remote-*) and the file-manager reveal
-#: in `server.py` (`xdg-open` is a shell script that searches PATH for `gio`,
+#: in `server_host.py` (`xdg-open` is a shell script that searches PATH for `gio`,
 #: `gvfs-open`, `exo-open`, ...). POSIX only — on Windows (test runners) git's
 #: helpers live beside the install, so the inherited PATH is kept there.
 TRUSTED_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"

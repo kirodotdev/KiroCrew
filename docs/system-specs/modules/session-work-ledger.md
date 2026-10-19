@@ -1,6 +1,27 @@
 # Session Work Ledger
 
-Owners: `kiro_crew.session_ledger`, `kiro_crew.mcp_tools.ledger`, and the dashboard ledger routes. The live record is a projection of the session's crew log (`crew-log-core.md`); its entries are removed with that log through the permanent-delete funnel. Cleanup for the two on-disk ledger stores that the sweep still reaches — the retired session ledger-store residue and the conductor work ledger in `kiro_crew.work_ledger` (a mirror facade over its `kiro_crew.work_ledger_*` owners) — is owned by `kiro_crew.ledger_sweep`; see [Cleanup](#cleanup).
+Owners: `kiro_crew.session_ledger` (a mirror facade over its `kiro_crew.session_ledger_layout` and `kiro_crew.session_ledger_control` owners; see [Module layout](#module-layout)), `kiro_crew.mcp_tools.ledger`, and the dashboard ledger routes. The live record is a projection of the session's crew log (`crew-log-core.md`); its entries are removed with that log through the permanent-delete funnel. Cleanup for the two on-disk ledger stores that the sweep still reaches — the retired session ledger-store residue and the conductor work ledger in `kiro_crew.work_ledger` (a mirror facade over its `kiro_crew.work_ledger_*` owners) — is owned by `kiro_crew.ledger_sweep`; see [Cleanup](#cleanup).
+
+## Module layout
+
+`session_ledger.py` keeps the record API: the fold and read (`read_state`,
+`crew_log_units`), the write (`record_update`, `record`), the upgrade carry, the
+legacy-store purge (`purge_matching`) and `render_snapshot`. It is a mirror facade
+(`kiro_crew._facade_mirror`) over two owners, lowest layer first, and new work goes to
+the module of its responsibility:
+
+| Owner | Holds |
+|---|---|
+| `session_ledger_layout.py` | the entry type and fold name, every record and control-file bound and file name (the snapshot's bounds stay beside `render_snapshot`), the two errors a write raises, the exact-key identity (`ledger_key`, `_store_name`), the store and control paths, `canonical_slot`, the bounded store lock and the empty record |
+| `session_ledger_control.py` | the per-slot control files: the exclusion transaction (`exclude_units`, `unexclude_units`, `LedgerExclusionError`), the legacy carry's claim and tombstone, the ledger, work and panel unit-order logs and the legacy-document reader |
+
+Every name an owner defines still resolves as `kiro_crew.session_ledger.<name>`, and a
+patch through the facade reaches every owner that binds the name. An owner imports only
+the owner listed before it, never the facade; the family logs as
+`kiro_crew.session_ledger`, and `LedgerUnavailable`, `LedgerEntryTooLarge` and
+`LedgerExclusionError` keep that module name. `test/test_session_ledger_facade.py` pins
+the owner set and its layering, the names the facade binds and serves, the patch reach
+and the logger and error names.
 
 ## 1. Purpose
 

@@ -34,6 +34,7 @@ import {
 } from '../../components/commandPalette/providers/recentsProvider'
 import { matesIcon } from './matesProvider'
 import { i18nT } from '../../i18n/t'
+import { isUntitledSession, sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 
 import { SETTING_ROW_PREFIX, type UsageMap } from './frecency'
 import { rankRootRows, type RankedRow, type RootRow } from './rootIndex'
@@ -142,7 +143,10 @@ export function useCommandBarOverlayRootRows({
       lifted.add(slot.key)
       rows.push({
         id: `attention:${slot.key}`,
-        title: slot.title || slot.key,
+        title: sessionDisplayTitle(slot),
+        // An untitled row no longer shows its key, so the key stays findable
+        // by typing it, as it was when the key was the title.
+        keywords: isUntitledSession(slot) ? [slot.key] : undefined,
         group: 'attention',
         kind: 'invoke',
         icon: <MessageSquare size={14} className="lucide-inline" />,
@@ -183,7 +187,8 @@ export function useCommandBarOverlayRootRows({
       const st = sessionStatus(slot, unreadSlots, slotStatusDetail[slot.key], simplifiedToolNames)
       rows.push({
         id: `recent:${slot.key}`,
-        title: slot.title || slot.key,
+        title: sessionDisplayTitle(slot),
+        keywords: isUntitledSession(slot) ? [slot.key] : undefined,
         group: 'recent',
         kind: 'invoke',
         icon: <MessageSquare size={14} className="lucide-inline" />,

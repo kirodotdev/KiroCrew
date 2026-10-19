@@ -1,6 +1,6 @@
 """Authorization is re-read across the Discord REST ladder's own waits.
 
-``discord/client.py``'s request ladder suspends itself in four places -- a
+``discord/client_rest.py``'s request ladder suspends itself in four places -- a
 pre-emptive bucket hold, a 429 back-off, a global hold, and the 5xx/connector
 back-off -- for up to tens of seconds. An operator who withdraws a destination
 during one of those waits expects the attempt that follows not to land, which
@@ -986,7 +986,11 @@ class TestTransportPredicate:
         """
         import ast as _ast
 
-        client_src = (_REPO_ROOT / "src/kiro_crew/discord/client.py").read_text(encoding="utf-8")
+        # The client is its facade and the owners it is composed from, read as one text.
+        client_src = "\n".join(
+            p.read_text(encoding="utf-8")
+            for p in sorted((_REPO_ROOT / "src/kiro_crew/discord").glob("client*.py"))
+        )
         tree = _ast.parse(client_src)
         holders: list[str] = []
         for node in _ast.walk(tree):

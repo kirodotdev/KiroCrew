@@ -4,7 +4,7 @@ These tests verify that specific call sites route blocking embedding work
 through the ``mc-embed`` bulkhead pool (``run_in_embed_pool``) rather than
 the shared default executor.
 
-The pattern mirrors ``TestWindowsTeardownOffLoop`` in ``test_mcp_discovery.py``:
+The pattern mirrors ``TestWindowsTeardownOffLoop`` in ``test_mcp_discovery_probe_stdio.py``:
 assert against the shipped source rather than simulating a platform-specific
 run, because the branches may be unreachable on CI's platform.
 """

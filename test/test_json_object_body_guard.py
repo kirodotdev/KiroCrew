@@ -247,15 +247,15 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/memory_edit.py::api_memory_records_refresh": ("512 * 1024", _BOUNDED_EXPLICIT),
     "handlers/memory_member.py::api_memory_seed": ("16384", _BOUNDED_EXPLICIT),
     # knowledge.py -- the 9 sites that moved off the deleted duplicate helper.
-    "handlers/knowledge.py::update_item": ("None", _UNBOUNDED_USER_CONTENT),
-    "handlers/knowledge.py::add_source": ("None", _UNBOUNDED_USER_CONTENT),
-    "handlers/knowledge.py::rename_source": ("None", _CONTROL_FIELDS_CAP_PENDING),
-    "handlers/knowledge.py::retry_file": ("None", _CONTROL_FIELDS_CAP_PENDING),
-    "handlers/knowledge.py::skip_file": ("None", _CONTROL_FIELDS_CAP_PENDING),
-    "handlers/knowledge.py::ingest_text": ("None", _UNBOUNDED_USER_CONTENT),
-    "handlers/knowledge.py::import_bundle": ("None", _UNBOUNDED_USER_CONTENT),
-    "handlers/knowledge.py::batch_embed_items": ("None", _CONTROL_FIELDS_CAP_PENDING),
-    "handlers/knowledge.py::add_agent_document_route": (
+    "handlers/knowledge_library.py::update_item": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/knowledge_sources.py::add_source": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/knowledge_sources.py::rename_source": ("None", _CONTROL_FIELDS_CAP_PENDING),
+    "handlers/knowledge_sources.py::retry_file": ("None", _CONTROL_FIELDS_CAP_PENDING),
+    "handlers/knowledge_sources.py::skip_file": ("None", _CONTROL_FIELDS_CAP_PENDING),
+    "handlers/knowledge_ingest.py::ingest_text": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/knowledge_bundles.py::import_bundle": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/knowledge_embeddings.py::batch_embed_items": ("None", _CONTROL_FIELDS_CAP_PENDING),
+    "handlers/knowledge_agent_context.py::add_agent_document_route": (
         "None",
         _UNBOUNDED_USER_CONTENT,
     ),
@@ -285,11 +285,11 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "None",
         _UNBOUNDED_USER_CONTENT,
     ),
-    # chat_tags.py: every payload is a tag/column identifier, a short name
-    # (already truncated at _NAME_MAX), or an id array -- all capped.
-    "chat_tags.py::api_chat_tag_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_tags.py::api_chat_tag_adopt": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_tags.py::api_chat_tag_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # chat_tags.py and chat_tags_vocabulary.py: every payload is a tag/column
+    # identifier, a short name (already truncated at _NAME_MAX), or an id array -- all capped.
+    "chat_tags_vocabulary.py::api_chat_tag_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_tags_vocabulary.py::api_chat_tag_adopt": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_tags_vocabulary.py::api_chat_tag_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_slot_tags": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_tag_column_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_tag_column_update": ("<default>", _BOUNDED_CONTROL_FIELDS),

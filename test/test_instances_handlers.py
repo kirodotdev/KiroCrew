@@ -1542,3 +1542,38 @@ class TestHandlers:
             )
         )
         assert r.status == 200 and _body(r)["name"] == "Renamed"
+
+
+# Every route that needs the tunnel manager, by handler name. When the feature is
+# enabled in a running gateway the guard passes but no manager exists
+# until a restart, so each must answer the same restart-hinting 503.
+_MANAGER_ROUTES = (
+    "api_instances_connect",
+    "api_instances_refresh_token",
+    "api_instances_embed_token",
+    "api_instances_restart",
+    "api_instances_update_remote",
+    "api_instances_send_session",
+    "api_instances_capabilities",
+    "api_instances_approval_state",
+    "api_instances_chat_slots",
+)
+
+
+@pytest.mark.parametrize("route", _MANAGER_ROUTES)
+def test_missing_manager_answers_one_restart_hint(route, tmp_path, monkeypatch):
+    from kiro_crew.dashboard import handlers_instances as handlers
+    from kiro_crew.instances.registry import InstancesRegistry
+
+    _enable(tmp_path, monkeypatch)
+    reg = InstancesRegistry(path=tmp_path / "instances.json")
+    reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+
+    resp = asyncio.run(
+        getattr(handlers, route)(_FakeReq(_State(reg, None), match={"id": "cd-1"}, body={}))
+    )
+
+    assert resp.status == 503
+    body = _body(resp)
+    assert body["code"] == "instances_manager_unavailable"
+    assert "kirocrew restart" in body["error"]

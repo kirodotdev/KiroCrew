@@ -1024,6 +1024,7 @@ custom-rules:
       - ".github/black-baseline.txt"
       - ".github/subprocess-encoding-baseline.txt"
       - ".github/sync-io-in-async-baseline.txt"
+      - ".github/sync-io-in-async-fs-baseline.txt"
       - ".github/agent-sdk-boundary-baseline.txt"
       - ".github/docs-lint-baseline.txt"
       - "website/src/i18n/untranslated-baseline.json"

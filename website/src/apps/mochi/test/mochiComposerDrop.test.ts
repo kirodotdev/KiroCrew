@@ -206,8 +206,8 @@ describe('composeMessage / attachmentsFrom', () => {
 describe('cropToFile', () => {
   // The screen-capture crop reaches the composer as base64 and has to become a
   // File before it can be uploaded. This is pinned because the failure was
-  // invisible from the panel's side: ChatPanel imports lucide's `File` ICON,
-  // which shadows the DOM constructor for that whole module, so building the
+  // invisible from the panel's side: a panel file that imports lucide's `File`
+  // ICON shadows the DOM constructor for that whole module, so building the
   // File there threw "not a constructor" inside an async handler -- the crop
   // silently never became an attachment. Constructing it in THIS module is the
   // fix, and this test is what keeps it here.

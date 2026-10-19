@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { EyeOff, Ghost, Loader2, Undo2, VenetianMask } from 'lucide-react'
 import { Glass } from './Glass'
 
@@ -102,7 +102,7 @@ export function MemoryModeChip({ memoryMode, onSwitchMode, switching = false, di
         {switching ? <Loader2 size={13} className="animate-spin" /> : !ephemeralActive ? <Ghost size={13} /> : <Undo2 size={13} />}
         <span>{label}</span>
       </Glass>
-      {open && !switching && !disabled && createPortal(
+      {open && !switching && !disabled && <OverlayPortal>
         <div
           ref={popRef}
           data-testid="memory-mode-popover"
@@ -127,9 +127,8 @@ export function MemoryModeChip({ memoryMode, onSwitchMode, switching = false, di
               <span className="text-[11px] text-muted leading-snug min-w-0">{t.desc}</span>
             </button>
           ))}
-        </div>,
-        document.body
-      )}
+        </div>
+      </OverlayPortal>}
     </>
   )
 }

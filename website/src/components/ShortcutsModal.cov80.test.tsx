@@ -41,6 +41,29 @@ describe('ShortcutsModal & subcomponents', () => {
     })
     expect(result.current.macCtrl).toBe(false)
     expect(dispatchSpy).toHaveBeenCalledTimes(2)
+    expect(result.current.saveError).toBeNull()
+  })
+
+  it('keeps the stored value and reports an error when storage refuses the save', () => {
+    const { result } = renderHook(() => useShortcutPrefs())
+    const realSet = Storage.prototype.setItem
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k, v) {
+      if (k === 'mc-keyboard-shortcuts') throw new DOMException('full', 'QuotaExceededError')
+      return realSet.call(this, k, v)
+    })
+    act(() => {
+      result.current.toggle(false)
+    })
+    spy.mockRestore()
+    expect(result.current.enabled).toBe(true)
+    expect(localStorage.getItem('mc-keyboard-shortcuts')).toBeNull()
+    expect(result.current.saveError).toMatch(/storage is full/)
+
+    act(() => {
+      result.current.toggle(false)
+    })
+    expect(result.current.enabled).toBe(false)
+    expect(result.current.saveError).toBeNull()
   })
 
   it('handles groupShortcuts with and without macCtrl', () => {

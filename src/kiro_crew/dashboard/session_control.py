@@ -180,6 +180,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         set_model_target,
     )
     from kiro_crew.dashboard.session_control_parts.session_create import (  # noqa: F401
+        _STOCK_WORKER_AGENT,
         _caller_member_workspace,
         _dispatching_crewmate,
         _inherited_pin_foreign_to_child,
@@ -328,6 +329,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
 if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew import model_registry  # noqa: F401
     from kiro_crew import model_scope  # noqa: F401
+    from kiro_crew.agent_files import WORKER_AGENT_FILENAME  # noqa: F401
     from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS  # noqa: F401
     from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP  # noqa: F401
     from kiro_crew.agent_sdk.capabilities import capabilities_for  # noqa: F401

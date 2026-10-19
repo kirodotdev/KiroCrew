@@ -37,7 +37,7 @@ _DECODED_RECONSTRUCTION = ("request.query_string", "request.path +")
 def test_no_builtin_rebuilds_the_signed_target_from_decoded_request() -> None:
     offenders: list[str] = []
     scanned = 0
-    for server in sorted(_BUILTINS_DIR.glob("**/server.py")):
+    for server in sorted(_BUILTINS_DIR.glob("**/server*.py")):
         text = server.read_text(encoding="utf-8")
         if not any(marker in text for marker in _HMAC_MARKERS):
             continue

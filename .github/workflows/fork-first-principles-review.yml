@@ -700,15 +700,46 @@ jobs:
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           echo "First-principles review verdict: $verdict"
 
+      # The outbound scrub is `scripts/scope_redact.py`, staged from the BASE
+      # commit. A redactor taken from the change under review could
+      # rewrite the scrub of its own published output. Every model step after
+      # this one is read-only, so nothing can rewrite the staged copy.
+      - name: Stage the base-owned redactor
+        id: redactor
+        if: always()
+        env:
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        run: |
+          set -uo pipefail
+          dir="${RUNNER_TEMP:-/tmp}/scope-redact"
+          # Remove before creating: a symlink at this path would redirect the write.
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          dest="$dir/scope_redact.py"
+          git show "$BASE_SHA:scripts/scope_redact.py" > "$dest" 2>/dev/null || true
+          if [ ! -s "$dest" ]; then
+            echo "::error::scripts/scope_redact.py is missing or empty on the base commit ($BASE_SHA). Refusing to publish text no base-owned scrubber could redact."
+            exit 1
+          fi
+          echo "redactor=$dest" >> "$GITHUB_OUTPUT"
+
       - name: Redact credential shapes
         id: redact
         if: always()
         env:
+          REDACTOR: ${{ steps.redactor.outputs.redactor }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         run: |
           f="$RUNNER_TEMP/first-principles-output.md"
           if [ -f "$f" ]; then
-            perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g; s/\bgh[pousr]_[A-Za-z0-9]{20,}\b/[REDACTED-GH-TOKEN]/g; s/\bgithub_pat_[A-Za-z0-9_]{20,}\b/[REDACTED-GH-TOKEN]/g' "$f"
+            # No redactor, or a scrub that fails, is a refusal: the file is removed so
+            # no later `always()` step can publish it raw.
+            if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ] \
+              || ! python3 "$REDACTOR" --mode text "$f"; then
+              echo "::error::the base-owned redactor could not scrub $f. Refusing to publish it raw."
+              rm -f "$f"
+              exit 1
+            fi
             # WITHHOLD GATE. This lane exists to read attacker-authored content, so
             # prompt injection is the expected operating condition and the prompt's
             # "never output secrets" rule is not a mechanism. The reviewer has

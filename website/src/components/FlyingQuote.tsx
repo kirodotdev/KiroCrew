@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { animate, motion, useMotionValue } from 'framer-motion'
 import { Glass } from './Glass'
 
@@ -169,7 +169,7 @@ export default function FlyingQuote({ from, targetRef, text, onComplete }: Flyin
 
   const truncated = text.length > 60 ? text.slice(0, 57) + '…' : text
 
-  return createPortal(
+  return <OverlayPortal>
     <motion.div
       style={{
         position: 'fixed',
@@ -194,7 +194,6 @@ export default function FlyingQuote({ from, targetRef, text, onComplete }: Flyin
           <span className="text-[12px] text-text font-mono leading-snug line-clamp-2">{truncated}</span>
         </div>
       </Glass>
-    </motion.div>,
-    document.body
-  )
+    </motion.div>
+  </OverlayPortal>
 }

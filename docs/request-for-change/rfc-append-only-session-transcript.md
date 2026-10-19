@@ -60,7 +60,7 @@ moved.
   orphan transcript and atomic-writes the result.
 - **Dead code advertises a capability nothing uses.** `history.py::rewrite_session`
   (implemented in `history_rewrite.py` with `_rewrite_session_locked`) and
-  `history.py::sliding_window` (implemented in `history_projection.py`) have no
+  `history.py::sliding_window` (implemented in `history_projection_reads.py`) have no
   production caller anywhere under `src/` — their call sites are tests
   (`test/test_ephemeral_sessions.py`, `test/test_archive_pagination.py`,
   `test/test_history.py` and other history suites), plus a docstring reference in

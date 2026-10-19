@@ -262,7 +262,7 @@ def _projected_row(*, turn_running: bool, task, admission_running: bool) -> dict
         is_turn_interrupted=lambda messages: False,
         is_system_notice=lambda role, meta: False,
         latest_transcript_ts=lambda *stamps: "",
-        strip_markdown_preview=lambda text: text,
+        last_message_preview=lambda text: text,
         resolve_effective_agent=lambda agent, project: agent,
         budget_source_links=lambda links: links,
         project_source_links=lambda links, include_check_status: links,

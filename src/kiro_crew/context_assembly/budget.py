@@ -80,9 +80,23 @@ _PER_MESSAGE_CAP = 8_000  # truncate individual messages on fallback path
 _EPISODIC_INJECT_CAP = 3_000
 
 
+def _startup_recall_timeout_secs() -> float:
+    """``memory.startup_recall_timeout_secs``, read at call time; 0 turns it off."""
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+
+    return ctx.KiroCrewConfig.load().memory.startup_recall_timeout_secs
+
+
 @contextmanager
-def _prompt_build_embedding_deadline(enabled: bool) -> Iterator[None]:
-    """Carry one bounded embedding budget through a fresh prompt build."""
+def _prompt_build_embedding_deadline(enabled: bool, *, query: str = "") -> Iterator[None]:
+    """Carry one bounded embedding budget through a fresh prompt build.
+
+    The budget is ``_PROMPT_BUILD_EMBED_TIMEOUT_SECS``, or the shorter
+    ``memory.startup_recall_timeout_secs`` when the embedding of *query* is already
+    running as the build starts (a dashboard turn starts it early). The build then
+    only joins that inference, and a joined wait ends on time; one that runs its own
+    inference keeps the long budget, since a running inference cannot be stopped.
+    """
     if not enabled:
         yield
         return
@@ -93,11 +107,15 @@ def _prompt_build_embedding_deadline(enabled: bool) -> Iterator[None]:
     from kiro_crew.embeddings import (
         PRIORITY_INTERACTIVE,
         EmbeddingWork,
+        embedding_in_flight,
         embedding_work,
     )
 
     inherited_work = embedding_work.get()
-    deadline = time.monotonic() + ctx._PROMPT_BUILD_EMBED_TIMEOUT_SECS
+    wait = ctx._PROMPT_BUILD_EMBED_TIMEOUT_SECS
+    if query and embedding_in_flight(query):
+        wait = _startup_recall_timeout_secs() or wait
+    deadline = time.monotonic() + wait
     if inherited_work is not None:
         deadline = min(deadline, inherited_work.deadline)
     work = EmbeddingWork(

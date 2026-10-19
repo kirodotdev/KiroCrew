@@ -29,16 +29,13 @@
  *  7. With the clipboard refusing, the title-cued chips — session, path,
  *     broken image — each open the SAME bubble-borne failure notice the copy
  *     chip uses, at the pressed chip, one bubble at a time, and nothing
- *     enters the sentence around them. Each names the object that failed to
- *     copy, and the two dual-action chips (session, path) lead with the
- *     failure and then name the gesture that asked for it — "The copy failed.
- *     Ctrl/Cmd+click copies the full session ID for <label>." / "The copy
- *     failed. Ctrl/Cmd+click copies the path <tail>." — so the notice
- *     reads as what failed, never as advice, and never teaches that a plain
- *     click copies; the broken-image chip copies on a plain click and names
- *     only its object ("Couldn’t copy the image path"). What they copy is not
- *     always the text shown, so the copy chip's "select the text" recovery is
- *     not offered.
+ *     enters the sentence around them. All share the copy chip's opener and
+ *     name only the object that failed, never a gesture (#14294): "Couldn’t
+ *     copy the session ID <key>." (the label IS the key, so no "full … for"),
+ *     "Couldn’t copy the path <tail>.", "Couldn’t copy the image path
+ *     <tail>.". The `Ctrl/Cmd+click to copy` tooltip stays the gesture's cue.
+ *     What they copy is not always the text shown, so the copy chip's
+ *     "select the text" recovery is not offered.
  *
  * Paths are probed through the same `/api/file-read` HEAD request production
  * issues; a route registered AFTER the harness's catch-all answers it with the
@@ -144,6 +141,13 @@ async function main() {
     const kind = KINDS[url.searchParams.get('path') ?? '']
     if (!kind) return route.fulfill({ status: 404, body: '' })
     return route.fulfill({ status: 200, headers: { 'X-Path-Kind': kind }, body: '' })
+  })
+  // The chips now ask in one batch (`usePathKind`'s `POST /api/file-kinds`);
+  // answer it from the same table, an unknown path left out (= missing).
+  await h.page.route('**/api/file-kinds**', route => {
+    const { paths = [] } = route.request().postDataJSON() ?? {}
+    const kinds = Object.fromEntries(paths.filter(p => KINDS[p]).map(p => [p, KINDS[p]]))
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ kinds }) })
   })
   await h.page.route('**/api/file-raw**', route => route.fulfill({ status: 404, body: '' }))
 
@@ -574,11 +578,11 @@ async function main() {
   const bubbleNotice = h.page.locator('[role="tooltip"] [data-testid="md-chip-copy-error"]')
   const thirdParaBefore = await thirdMsg().locator('p').evaluateAll(ps => ps.map(p => p.innerHTML))
   const refusals = [
-    { chip: sessionChip, name: 'session', modifiers: ['Control'], frame: 'session-copy-failed', notice: `The copy failed. Ctrl/Cmd+click copies the full session ID for ${OTHER_SLOT}.`, side: 'above' },
-    { chip: thirdFile, name: 'path', modifiers: ['Control'], frame: 'path-copy-failed', notice: `The copy failed. Ctrl/Cmd+click copies the path ${FILE.split('/').pop()}.`, side: 'above' },
+    { chip: sessionChip, name: 'session', modifiers: ['Control'], frame: 'session-copy-failed', notice: `Couldn’t copy the session ID ${OTHER_SLOT}.`, side: 'above' },
+    { chip: thirdFile, name: 'path', modifiers: ['Control'], frame: 'path-copy-failed', notice: `Couldn’t copy the path ${FILE.split('/').pop()}.`, side: 'above' },
     // The broken-image chip is the message's LAST line: below it the bubble
     // would sit on the timestamp and action row, so it opens above.
-    { chip: brokenChip, name: 'broken image', modifiers: [], frame: 'broken-image-copy-failed', notice: 'Couldn’t copy the image path', side: 'above' },
+    { chip: brokenChip, name: 'broken image', modifiers: [], frame: 'broken-image-copy-failed', notice: `Couldn’t copy the image path ${MISSING_IMG.split('/').pop()}.`, side: 'above' },
   ]
   for (const { chip, name, modifiers, frame, notice, side } of refusals) {
     await chip.click({ modifiers })

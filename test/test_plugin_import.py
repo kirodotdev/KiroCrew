@@ -411,6 +411,31 @@ class TestUnmappedKinds:
         manifest = json.loads((tmp_path / "out" / "app.json").read_text(encoding="utf-8"))
         assert "hooks" not in manifest
 
+    def test_equivalent_map_differs_from_the_agent_trigger_map_only_by_session_start(self):
+        """The two PascalCase->camelCase maps differ by one row on purpose.
+
+        A change to either map, or a merge of the two, must come with a decision on
+        whether plugin import pairs SessionStart with agentSpawn.
+        """
+        from kiro_crew.agent_materialization import kiro_hooks
+
+        agent_map = kiro_hooks._KAS_TRIGGER_TO_EVENT
+        import_map = plugin_import.AGENT_HOOK_EVENT_EQUIVALENT
+        assert {k: v for k, v in agent_map.items() if k in import_map} == import_map
+        assert set(agent_map) - set(import_map) == {"SessionStart"}
+        assert agent_map["SessionStart"] == "agentSpawn"
+
+    def test_session_start_is_reported_without_a_counterpart(self, tmp_path):
+        root = _package(
+            tmp_path,
+            hooks={"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "x"}]}]}},
+        )
+        report = convert_plugin_package(root, tmp_path / "out")
+
+        (hooks,) = [u for u in report.unmapped if u.kind == "hooks"]
+        assert "SessionStart" in hooks.detail
+        assert "agentSpawn" not in hooks.detail
+
     def test_conversion_runs_no_command_from_the_package(self, tmp_path):
         """A hook command is data to a converter. Nothing in the package executes."""
         sentinel = tmp_path / "executed"

@@ -17,6 +17,10 @@ from kiro_crew.effort import EFFORT_LEVELS
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
+#: Ceiling of ``memory.startup_recall_timeout_secs``. The dashboard's early embed
+#: keeps its own allowance above it, so a build never outwaits the embed it joined.
+STARTUP_RECALL_TIMEOUT_MAX_SECS = 10.0
+
 
 @dataclass
 class MemoryConfig:
@@ -295,6 +299,19 @@ class MemoryConfig:
             "budgeted background block. Off: only preferences and the activity index "
             "ship at session start and older material is read through memory_recall. "
             "Requires inject_memory.",
+        ),
+    )
+    startup_recall_timeout_secs: float = field(
+        default=1.0,
+        metadata=_meta(
+            "Session-Start Recall Wait (seconds)",
+            "How long a new dashboard chat's first message waits for its own "
+            "embedding, which the dashboard starts ahead of the session-start build, "
+            "beside session startup when the chat has to start its session. The "
+            "embedding ranks the memory activity and lessons the session starts with "
+            "by meaning; past the wait they are ranked by keyword. 0 turns the early "
+            "embedding off, and the build embeds the message itself, as on other "
+            "surfaces. Clamped to [0, 10].",
         ),
     )
     migrated: bool = field(

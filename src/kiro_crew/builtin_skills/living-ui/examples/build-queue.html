@@ -1,0 +1,250 @@
+<!-- A Living UI example widget: one value, one lit zone, words in the corners.
+     It uses theme variables only, so it follows light, dark and custom palettes.
+     The markup is already the settled picture (still first): if the script
+     fails, the reader still sees the right count, the lit zone and the words.
+     The loop, settle, readout and focusOne blocks are copied unchanged from
+     the living-ui skill. Check it with rule V. -->
+<style>
+  .lui-card {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px 16px;
+    padding: 14px 16px;
+    background: var(--card);
+    color: var(--card-fg);
+    border: 1px solid var(--border);
+  }
+  .lui-title { font-weight: 600; }
+  .lui-hint, .lui-caption { color: var(--muted); font-size: .85em; }
+  .lui-stage { grid-column: 1 / -1; cursor: pointer; touch-action: pan-y; }
+  .lui-stage svg { display: block; width: 100%; max-width: 560px; height: auto; margin: 0 auto; color: var(--muted); }
+  .lui-knob { fill: var(--card); stroke: var(--text); stroke-width: 2; }
+  .lui-readout { font-variant-numeric: tabular-nums; }
+  .lui-caption { margin: 8px 0 0; }
+  .lui-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  /* Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md. */
+  /* LivingUI.css, copied as a plain style so the lit zone shows without the script. */
+  [data-lui-focus] [data-lui-dim]:not([data-lui-on]) { opacity: .45 }
+  [data-lui-on] { color: var(--accent); stroke: var(--accent) }
+  [data-lui-stage]:focus-visible { outline: 1px solid var(--muted); outline-offset: 6px }
+  @media (prefers-reduced-motion: reduce) { [data-lui-stage] * { transition: none !important } }
+</style>
+
+<div class="lui-card">
+  <div class="lui-title">Build queue</div>
+  <div class="lui-hint">Drag, or press &larr; &rarr;</div>
+  <div class="lui-stage" data-lui-stage tabindex="0" role="slider"
+       aria-label="Jobs waiting in the build queue" aria-valuemin="0" aria-valuemax="30"
+       aria-valuenow="12" aria-valuetext="12 jobs, busy">
+    <svg viewBox="0 0 320 40" aria-hidden="true" data-lui-focus>
+      <rect data-lui-dim x="0" y="14" width="103" height="12" fill="currentColor"></rect>
+      <rect data-lui-dim data-lui-on x="107" y="14" width="96" height="12" fill="currentColor"></rect>
+      <rect data-lui-dim x="207" y="14" width="113" height="12" fill="currentColor"></rect>
+      <circle class="lui-knob" cx="130" cy="20" r="8"></circle>
+    </svg>
+  </div>
+  <div class="lui-readout" aria-hidden="true">12 jobs · busy</div>
+</div>
+<p class="lui-caption">Under 10 jobs the queue is quick, 10 to 19 is busy, and 20 or more is
+  backed up. The count settles on its new value and never overshoots.</p>
+<p class="lui-live" aria-live="polite"></p>
+
+<script>
+// Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.
+var LivingUI = LivingUI || {};
+// One requestAnimationFrame loop for a stage, the figure's root element.
+// tick(dt, calm) runs each frame and returns true while anything moves. dt is
+// in seconds, 1/60 on the first frame after a wake and never over 1/30, and
+// calm is true under prefers-reduced-motion, following its change event. The
+// loop sleeps when tick returns false or the stage is offscreen; kick() wakes
+// it after an input or a data change, and stop() ends it for good.
+LivingUI.loop = (stage, tick) => {
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)');
+  let frame = 0, last = -1, inView = false, ended = false;
+  const step = (now) => {
+    const dt = last < 0 ? 1 / 60 : Math.min((now - last) / 1000, 1 / 30);
+    last = now;
+    frame = 0;
+    const moving = tick(dt, reduce.matches);
+    if (moving && inView && !ended && !frame) frame = requestAnimationFrame(step);
+  };
+  const kick = () => {
+    if (frame || !inView || ended) return;
+    last = -1;
+    frame = requestAnimationFrame(step);
+  };
+  // One callback can carry several entries for the stage, oldest first, so
+  // only the newest one says whether the stage is in view now.
+  const view = new IntersectionObserver((entries) => {
+    inView = entries[entries.length - 1].isIntersecting;
+    if (inView) return kick();
+    cancelAnimationFrame(frame);
+    frame = 0;
+  }, { rootMargin: '120px 0px' });
+  view.observe(stage);
+  reduce.addEventListener('change', kick);
+  return {
+    kick,
+    stop() {
+      ended = true;
+      cancelAnimationFrame(frame);
+      view.disconnect();
+      reduce.removeEventListener('change', kick);
+    },
+    get calm() { return reduce.matches; },
+  };
+};
+// Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.
+var LivingUI = LivingUI || {};
+// A critically damped spring on s = { x, v }: it moves toward target and
+// never passes it, for a value where an overshoot would show something
+// false, such as a count or a cost. It covers about 90% of the way in
+// `seconds`, and each frame is solved exactly, so any dt is stable. It lands
+// exactly on target with v = 0 under calm or when `seconds` is not above 0,
+// when a step would reach or cross target, or once both the gap and the
+// speed are under 0.0005. Returns true while moving.
+LivingUI.settle = (s, target, dt, seconds = 0.4, calm = false) => {
+  const w = 4 / seconds;
+  const gap = s.x - target;
+  const push = (s.v + w * gap) * dt;
+  const fade = Math.exp(-w * dt);
+  s.x = target + (gap + push) * fade;
+  s.v = (s.v - w * push) * fade;
+  const crossed = (s.x - target) * gap <= 0;
+  const close = Math.abs(target - s.x) < 5e-4 && Math.abs(s.v) < 5e-4;
+  if (calm || !(seconds > 0) || crossed || close) {
+    s.x = target;
+    s.v = 0;
+    return false;
+  }
+  return true;
+};
+// Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.
+var LivingUI = LivingUI || {};
+// The figure's words, kept apart, each written only when its text differs
+// from the last one it wrote. say(text) sets the visible readout el. Call it
+// from the loop with where the parts are now. describe(text) sets
+// aria-valuetext on target, the stage with role="slider". Call it when the
+// state changes and never from the loop, since a screen reader speaks every
+// new value text of a slider that has keyboard focus. phase(text) puts a
+// phase word in live, a visually hidden element with aria-live="polite",
+// once 700 ms pass with no newer phase, so a drag is spoken once it rests.
+// With no target, describe does nothing; with no live, phase does nothing.
+LivingUI.readout = (el, { target, live } = {}) => {
+  let said, described, spoken, timer = 0;
+  return {
+    say(text) {
+      if (text !== said) el.textContent = said = text;
+    },
+    describe(text) {
+      if (target && text !== described) target.setAttribute('aria-valuetext', described = text);
+    },
+    phase(text) {
+      clearTimeout(timer);
+      if (!live) return;
+      timer = setTimeout(() => {
+        if (text !== spoken) live.textContent = spoken = text;
+      }, 700);
+    },
+  };
+};
+// Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.
+var LivingUI = LivingUI || {};
+// Lights one element of a figure (rule F). chosen gets data-lui-on, every
+// other element inside root loses it, and root gets data-lui-focus, so
+// LivingUI.css lights chosen and dims the other data-lui-dim elements.
+// chosen = null takes both away, so nothing is lit or dimmed. Calling it
+// again with the same element changes nothing, and it never moves keyboard
+// focus.
+LivingUI.focusOne = (root, chosen) => {
+  for (const el of root.querySelectorAll('[data-lui-on]')) {
+    if (el !== chosen) el.removeAttribute('data-lui-on');
+  }
+  if (chosen) chosen.toggleAttribute('data-lui-on', true);
+  root.toggleAttribute('data-lui-focus', !!chosen);
+};
+
+(() => {
+  // One model (rule T): where the count is going, and where it is now.
+  const MAX = 30;
+  const state = { target: 12, shown: { x: 12, v: 0 } };
+  const stage = document.querySelector('.lui-stage');
+  const svg = stage.querySelector('svg');
+  const zones = svg.querySelectorAll('rect');
+  const knob = svg.querySelector('.lui-knob');
+  // The visible readout, the stage's value text and the polite live region.
+  const words = LivingUI.readout(document.querySelector('.lui-readout'), {
+    target: stage,
+    live: document.querySelector('.lui-live'),
+  });
+
+  const zoneOf = (count) => (count < 10 ? 0 : count < 20 ? 1 : 2);
+  const phaseOf = (count) => ['quick', 'busy', 'backed up'][zoneOf(count)];
+  // The readout and the value text both say a count this way: "1 job", "2 jobs".
+  const jobs = (count) => `${count} ${count === 1 ? 'job' : 'jobs'}`;
+  // In viewBox units: 10 per job from 10, so the knob stays inside the track
+  // at 0 and at 30, and the zone gaps sit at 9.5 and 19.5 jobs.
+  const xOf = (count) => 10 + count * 10;
+
+  // Each frame reads one instant: the knob, the lit zone and the words all
+  // come from where the count is now, not where it is going. Exactly one
+  // zone is lit (rule F); the markup lights the one holding 12.
+  const draw = () => {
+    knob.setAttribute('cx', xOf(state.shown.x).toFixed(1));
+    const count = Math.round(state.shown.x);
+    LivingUI.focusOne(svg, zones[zoneOf(count)]);
+    words.say(`${jobs(count)} · ${phaseOf(count)}`);
+  };
+
+  const run = LivingUI.loop(stage, (dt, calm) => {
+    const moving = LivingUI.settle(state.shown, state.target, dt, 0.4, calm);
+    draw();
+    return moving;
+  });
+
+  // Input sets the target; the count follows it.
+  const aim = (count) => {
+    const next = Math.min(MAX, Math.max(0, Math.round(count)));
+    if (next === state.target) return;
+    const before = phaseOf(state.target);
+    state.target = next;
+    // The state changed, so assistive tech hears it once, never per frame.
+    stage.setAttribute('aria-valuenow', String(next));
+    words.describe(`${jobs(next)}, ${phaseOf(next)}`);
+    // A phase word goes to the polite live region once input pauses.
+    if (phaseOf(next) !== before) words.phase(phaseOf(next));
+    run.kick();
+  };
+
+  stage.addEventListener('keydown', (event) => {
+    const step = event.shiftKey ? 5 : 1;
+    const to = {
+      ArrowRight: state.target + step,
+      ArrowUp: state.target + step,
+      ArrowLeft: state.target - step,
+      ArrowDown: state.target - step,
+      Home: 0,
+      End: MAX,
+    }[event.key];
+    if (typeof to !== 'number') return;
+    event.preventDefault();
+    aim(to);
+  });
+
+  const fromPointer = (event) => {
+    const box = svg.getBoundingClientRect();
+    aim((((event.clientX - box.left) / box.width) * 320 - 10) / 10);
+  };
+  stage.addEventListener('pointerdown', (event) => {
+    stage.setPointerCapture(event.pointerId);
+    fromPointer(event);
+  });
+  stage.addEventListener('pointermove', (event) => {
+    if (stage.hasPointerCapture(event.pointerId)) fromPointer(event);
+  });
+
+  stage.addEventListener('focus', () => {
+    words.phase(phaseOf(state.target));
+  });
+})();
+</script>

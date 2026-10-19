@@ -952,7 +952,7 @@ async def test_with_the_crew_log_off_no_scan_runs_and_no_row_has_a_parent(
 ) -> None:
     # The store is optional and this module is on the boot path: with the flag
     # off the scanner is never built, so the storage package is never loaded
-    # on its account (the launch-level pin is test_crew_log_emit's).
+    # on its account (the launch-level pin is test_crew_log_emit_redaction_and_flag's).
     _crew_log_with_parent(monkeypatch, tmp_path, creator_running=True)
     monkeypatch.setenv("KIROCREW_CREW_LOG", "0")
     sampler = sm.SessionMemorySampler()

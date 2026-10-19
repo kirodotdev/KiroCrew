@@ -15,1325 +15,58 @@ The entropy machinery behind them answers a different question from the
 alternation: a bare high-entropy run carries no marker to anchor on, so it is
 judged by shape -- length, character classes, entropy, decodability -- and every
 gate is a separate predicate so a refusal can name which one fired.
+
+The alternation and its pre-filter live in ``redaction_patterns`` and the
+entropy machinery in ``redaction_entropy``, owner modules beside this one.
+This module is the import path of every name they define, and keeps the batch
+redactor with its pass plan and records, the pass-4 token-parameter grammar,
+the redaction tags, the binary masker and the path passes. A read through this
+module answers with the owner's object, and a write reaches every owner that
+binds the name (:mod:`kiro_crew._facade_mirror`).
 """
 
 from __future__ import annotations
 
-import base64
 import bisect
 import contextvars
 import functools
 import hashlib
 import hmac
-import json
-import math
+import importlib as _importlib
 import os
 import posixpath
 import re
 import secrets
-import zlib
-from collections import Counter
-from collections.abc import Callable, Iterator
-from typing import NamedTuple
+import sys as _sys
+from collections.abc import Callable
+from typing import TYPE_CHECKING, NamedTuple
 
-import kiro_crew.security.pem_scan as pem_scan
-from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
+from kiro_crew.credential_patterns import AWS_KEY_ID
 from kiro_crew.security.redaction_switch import bare_secret_pass_enabled, credential_pass_bypassed
 
-# ── Credential Output Redaction ──
-# Catches raw credential patterns in LLM output / tool results,
-# including base64-encoded variants.  Applied on all output paths
-# alongside redact_exfiltration_urls().
-#
-# ⚠ THIS PATTERN HAS A DEPENDENT PRE-FILTER. `_might_contain_credential` below
-# gates the scan of this pattern on a cheap necessary condition, and
-# `redact_credentials` SKIPS the scan entirely when that gate returns False. The
-# gate is therefore part of the redaction boundary, not an optimisation detail:
-# any input a branch here accepts but the gate rejects is a silent leak.
-#
-# So EDITING A BRANCH IS A TWO-SITE CHANGE:
-#   * ADDING a branch     -> register a sample in `test_credential_prefilter.py`
-#                            and an anchor in `_might_contain_credential`.
-#                            `test_every_pattern_branch_has_a_prefilter_anchor`
-#                            fails on the branch count until you do.
-#   * WIDENING a branch   -> widen the corresponding anchor to match, because the
-#                            anchor must stay a SUPERSET of the branch. A widened
-#                            branch does NOT change the branch count, so the count
-#                            assertion cannot see it. Two tests cover this:
-#                            `test_a_widened_branch_cannot_outgrow_its_anchor`
-#                            enumerates each branch's own alternatives, so a NEW
-#                            alternative (a second token prefix) is caught; and
-#                            `test_widening_a_branch_cannot_outgrow_its_anchor`
-#                            perturbs each sample, so a case-fold or homoglyph
-#                            relaxation is caught.
-#   * Making a branch CASE-INSENSITIVE -> the anchor MUST use the same regex
-#                            engine. A case-sensitive literal cannot gate a
-#                            `(?i:…)` branch, and neither can `str.lower()` —
-#                            see `_CREDENTIAL_PREFILTER_AUTHORIZATION_RE` for the
-#                            bypass that cost.
-_CREDENTIAL_PATTERNS = re.compile(
-    r"(?:"
-    # ── AWS ──
-    f"{AWS_KEY_ID}"  # AWS access key ID (shared spelling: credential_patterns)
-    # key-value forms: tolerate an optional closing quote after the key name and an
-    # optional opening quote before the value so JSON (`"aws_secret_access_key": "v"`)
-    # is redacted, not just bare `key=v` / `key: v`. Without the `["']?` the closing
-    # quote in JSON sits between the key and `:` and defeats the match → secret leaks.
-    # The value class is [^\s"',}]+ (NOT \S+): \S+ is greedy and, in compact JSON
-    # like {"aws_secret_access_key":"SECRET","region":"x"}, swallows everything
-    # through the closing brace (`"`, `,`, `}` all match \S) — destroying adjacent
-    # fields and consuming a following credential key so it's never matched/counted.
-    # Stopping at JSON structural delimiters bounds the value while still matching
-    # bare key=value forms.
-    r'|(?:SecretAccessKey|aws_secret_access_key)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
-    r'|(?:SessionToken|aws_session_token)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
-    r'|(?:AccessKeyId|aws_access_key_id)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
-    # PEM private key: match the ENTIRE block (header + base64 body), not just
-    # the header phrase. redact_credentials() replaces the matched SPAN, so a
-    # header-only match (the original form) left the secret base64 body verbatim.
-    # Two mutually exclusive tails after the header:
-    #   1. Full block — ``[\s\S]*?`` (any char, incl. newlines) spans the body
-    #      lazily to the first END marker. ``[\s\S]`` (not a base64 char class)
-    #      is required so encrypted keys — whose ``Proc-Type:``/``DEK-Info:``
-    #      headers carry ``:`` and ``,`` — are fully spanned rather than cut
-    #      short at the first non-base64 char.
-    #   2. Truncated block (no END) — consume only *subsequent* PEM body lines:
-    #      each continuation must start with a newline and be a base64 line or a
-    #      ``Proc-Type:``/``DEK-Info:`` metadata header. This deliberately does
-    #      NOT use ``$``/``\Z``: without re.MULTILINE ``$`` means end-of-STRING,
-    #      so a lazy ``[\s\S]*?`` with a ``|$`` fallback swallowed everything
-    #      from a header mentioned inline in prose (LLM output, docs) to the end
-    #      of the string — silently deleting all trailing lines. Requiring a
-    #      leading newline per line means an inline header in prose (real key
-    #      material always begins on the line *after* the header) matches only
-    #      the header phrase, leaving trailing content intact, while a genuine
-    #      truncated key still has its body lines redacted.
-    #      The final ``(?=\r?\n[A-Za-z0-9+/=])`` lookahead alternative lets the
-    #      run cross a SINGLE blank line when the *next* line begins with base64
-    #      material. RFC 1421 ENCRYPTED PEMs put a MANDATORY blank line between
-    #      the ``DEK-Info:`` header and the base64 body; without this lookahead
-    #      the per-line "every continuation must contain a base64 char" rule
-    #      stopped at that blank line and leaked the whole encrypted body (for
-    #      both a truncated key AND a complete encrypted key whose body exceeds
-    #      the full-block cap). Because the lookahead consumes nothing, TWO+
-    #      consecutive blank lines still terminate the run — trailing prose is
-    #      preserved (no over-redaction).
-    f"|{pem_scan.HEADER}"
-    r"(?:"
-    f"{pem_scan.FULL_BLOCK}"
-    r"|(?:\r?\n(?:Proc-Type:[^\n]*|DEK-Info:[^\n]*|[A-Za-z0-9+/=]+(?=\r?\n|\Z)"
-    r"|(?=\r?\n[A-Za-z0-9+/=])))*"
-    r")"
-    r"|xox[bpas]-[0-9a-zA-Z-]{10,}"  # Slack token
-    # Telegram bot token: ``<bot_id>:<secret>`` — bot_id is 6+ digits, secret is
-    # ~35 URL-safe base64 chars. The ``{30,}`` floor sits deliberately below the
-    # real length so shortened/rotated test tokens are still caught. Analogue to
-    # the Slack token above. Telegram tokens can live in ``config.json``
-    # (agent-readable), so an echoed config would otherwise leak a full
-    # bot-control credential unredacted. The value class ``[A-Za-z0-9_-]`` stops
-    # at structural delimiters (space, quote, comma, brace), so it can't swallow
-    # adjacent fields; over-redacting a rare ``digits:token`` lookalike is the
-    # safe direction.
-    r"|[0-9]{6,}:[A-Za-z0-9_-]{30,}"  # Telegram bot token
-    # Discord bot token: three base64url segments — ``base64(application_id)``,
-    # a 6-char timestamp, and an HMAC. The first segment is base64 of a decimal
-    # snowflake, so its leading character is fixed by the id's first digit
-    # (``M``/``N``/``O`` for the 1-9 range every live snowflake starts with), and
-    # the timestamp segment is always EXACTLY 6 characters. Both anchors matter:
-    # the same rule written as three open-ended runs matches an ordinary dotted
-    # identifier or a base64 blob with periods in it, and a redactor that eats
-    # arbitrary text is a different bug. Length floors sit below the real ones so
-    # a shortened/rotated test token is still caught. Same reasoning as Telegram
-    # above — ``discord.bot_token`` can live in ``config.json``, which the agent
-    # can read, so an echoed config would otherwise leak bot control verbatim.
-    # The boundary guards keep the leading ``[MNO]`` from landing mid-run inside
-    # a longer base64 blob and redacting an arbitrary tail of it, the same way
-    # the link-token branch below guards its own ``eyJ`` anchor.
-    r"|(?<![A-Za-z0-9_-])[MNO][A-Za-z0-9_-]{22,30}"
-    r"\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{25,}(?![A-Za-z0-9_-])"  # Discord bot token
-    # ── Third-party developer credentials ──
-    # Distinctive, fixed-case prefixes → very low false-positive risk.  Minimum
-    # lengths are kept slightly below the real token lengths so shortened test /
-    # rotated variants are still redacted (over-redaction on a prefix match is the
-    # safe direction).  Case-sensitive by design (these prefixes are issued in a
-    # fixed case); do NOT fold — folding would broaden false positives.
-    r"|gh[opsur]_[A-Za-z0-9]{30,255}"  # GitHub PAT (ghp_) + oauth/user/server/refresh
-    r"|github_pat_[A-Za-z0-9_]{40,}"  # GitHub fine-grained PAT
-    r"|glpat-[A-Za-z0-9_-]{16,}"  # GitLab PAT
-    r"|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}"  # Stripe secret / restricted keys
-    r"|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}"  # SendGrid API key
-    r"|sk-proj-[A-Za-z0-9_-]{16,}"  # OpenAI project key
-    r"|sk-ant-[A-Za-z0-9_-]{16,}"  # Anthropic API key
-    r"|npm_[A-Za-z0-9]{24,}"  # npm access token
-    r"|pypi-[A-Za-z0-9_-]{16,}"  # PyPI API token
-    r"|do[opr]_v1_[A-Za-z0-9]{40,}"  # DigitalOcean PAT/OAuth/refresh
-    r"|GOCSPX-[A-Za-z0-9_-]{20,}"  # Google OAuth client secret
-    # Connection/fetch URIs with embedded credentials — redact the
-    # ``scheme://user:pass@`` prefix (the password lives here). http(s)/ftp(s)
-    # are included because URL userinfo is a credential wherever it appears
-    # (e.g. a token-bearing artifact CDN base quoted by an update-failure
-    # message); the user:pass@ shape cannot false-positive on a bare URL — a
-    # port (``:8080``) is never followed by ``@`` within the authority.
-    r"|(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis(?:s)?|amqp(?:s)?"
-    r"|https?|ftps?)"
-    # User portion is `*` (not `+`): an empty-user string (`mongodb+srv://:secret@…`) still redacts.
-    # Password segment allows ``@`` (``[^\s/]`` not ``[^\s/@]``): an unencoded
-    # ``@`` inside a password is common, and stopping the match at the FIRST
-    # ``@`` would redact only the head and leak the rest (``…ss@host``) to
-    # logs. ``/`` still bounds the authority, so greedy ``+`` consumes through
-    # the FINAL ``@`` — the real userinfo/host separator — and never past it.
-    r"://[^\s:/@]*:[^\s/]+@"
-    # ── JWT / JWE / OAuth Bearer tokens ──
-    # `eyJ` is the base64url encoding of every JWT header's `{"` prefix; a signed
-    # JWT (JWS) is three `.`-separated base64url segments (header.payload.sig), an
-    # encrypted JWT (JWE, RFC 7516) is five (header.key.iv.ciphertext.tag), and our
-    # OWN dashboard link token is two — `base64url(payload).base64url(hmac_sig)`,
-    # see `dashboard.token_auth.generate_token`. The 3-and-5-segment shapes are
-    # matched by the `{2,4}` quantifier below; the 2-segment link token has its
-    # OWN separately bounded alternative.
-    #
-    # The floor stays at 2 because the two-segment dashboard token is what a higher
-    # floor drops: it would not match here at all and would fall through to the
-    # bare-secret entropy pass, whose run class `[A-Za-z0-9+/]` is STANDARD base64
-    # and excludes base64url's `-`/`_`. That makes redaction depend on which
-    # characters a random HMAC signature happens to contain. That rate is derivable,
-    # so it is stated as a closed form rather than as a sample. HMAC-SHA256 is 256
-    # bits and base64url-unpadded gives 43 chars. The first 42 each carry a full 6
-    # bits, so each is uniform over the 64-char alphabet, of which exactly 2 are
-    # `-`/`_`. The 43rd carries only the leftover 4 bits (256 - 42*6), and they
-    # land in the HIGH bits of its 6-bit
-    # group with the low 2 bits zero, so it spans exactly the 16 alphabet indices
-    # divisible by 4 (`048AEIMQUYcgkosw`) and can never be `-`/`_`, which sit at
-    # 62/63. Hence P(no `-`/`_`) = (62/64)^42 = 26.4%, verified by encoding all
-    # 256 possible final digest bytes.
-    # So roughly a quarter of tokens would have only the signature replaced (leaving
-    # the payload claims verbatim in a URL that still looks complete but is not
-    # authenticated), and the other ~74% would stream out entirely unredacted.
-    # Matching the whole token here makes the outcome deterministic and replaces it
-    # as one unit. The 2-segment token gets its OWN alternative rather than
-    # relaxing the segment floor to `{1,4}`. Relaxing
-    # the floor over-redacts ordinary code and prose, because the pattern has no left
-    # boundary and post-header segments allow an EMPTY match: `keyJson.get(raw)` then
-    # redacts to `k[REDACTED…](raw)`, and a JWT quoted at the end of a sentence loses
-    # its trailing period. The 3-to-5-segment alternative (`credential_patterns.JWT_MULTI_SEGMENT`,
-    # `*` on post-header segments so an empty JWE segment matches) consumes such a period too, an
-    # accepted over-redaction cost. The 2-segment alternative therefore carries a left boundary
-    # (`(?<![A-Za-z0-9_.-])`: base64url's `-`/`_` plus `.` so `obj.eyJ…` is excluded too;
-    # `_BARE_SECRET_RUN_RE` uses `(?<![A-Za-z0-9+/])`) and per-segment lengths taken from
-    # the generator, not from guesswork, because a length FLOOR alone is beatable by a
-    # sufficiently verbose identifier: at `{40,}` the 40-char
-    # `eyJsonSerializerConfigurationFactoryBuilder.deserializeFromStringValue` matched.
-    #
-    # `token_auth._sign` is HMAC-SHA256 base64url-unpadded, so the signature is
-    # EXACTLY 43 chars for every token ever minted; that is a property of the digest,
-    # not of the payload, so it is pinned as `{43}` rather than a floor. See
-    # `test_link_token_signature_is_43_chars`, which fails loudly if `_sign` changes
-    # digest, instead of letting redaction silently stop matching.
-    #
-    # `generate_token` always emits 6 claims (`sub`/`exp`/`session_exp`/`iat`/`nonce`/
-    # `gen`), with a 16-hex-char nonce and float timestamps; `app`, `prompt` and
-    # `extra` only ADD. Payload length is NOT fixed. It scales with `len(sub)`, and
-    # `json.dumps` writes each float timestamp at its own repr width, which base64
-    # then quantises into 4-char steps. So the floor is derived, not sampled: a
-    # 1-char `sub` (the narrowest a caller passes: the app validator requires at
-    # least one char and the other call sites supply a literal fallback), `gen=0`,
-    # and all three timestamps at their shortest 12-char repr (an exactly-integral
-    # `time.time()` in the current 10-digit epoch era) measures 145 chars past
-    # `eyJ`, which leaves the `{96,}` floor 49 chars of headroom against a future
-    # shorter claim set while still excluding `eyJ2IjoxfQ.json`. ONLY that derived
-    # floor is pinned, by `test_link_token_payload_clears_the_96_char_floor`, which
-    # reads the bound from the compiled pattern and the claim keys from a real mint
-    # so a dropped claim fails loudly instead of silently disabling redaction. Live
-    # payloads are much larger and are NOT pinned, because the exact spread moves
-    # with float reprs and caller mix: measured 168-185 for the mandatory-only
-    # callers and 192-223 for the two that also pass `app=` (`handlers/core.py`,
-    # `token_auth.py`), which adds an `"app"` claim.
-    #
-    # Order matters: the 3-to-5-segment
-    # alternative is tried first at each position, so a real JWS still redacts whole
-    # instead of matching `header.payload` and leaving `.signature` exposed.
-    # The 3-to-5-segment alternative keeps `*` (not `+`) on post-header segments so an
-    # EMPTY segment still counts: a compact JWE with direct
-    # (`alg:dir`) or key-agreement (`ECDH-ES`) key management has an empty Encrypted
-    # Key (2nd) segment — shape `header..iv.ciphertext.tag` — which a `+` quantifier
-    # would fail to match, leaking the ciphertext + tag.
-    # The HTTP `Authorization: Bearer <token>` header carries opaque or JWT bearer
-    # creds. The JWT alternative is case-sensitive (`eyJ` is a fixed base64url
-    # prefix). The header name + scheme are matched case-insensitively via scoped
-    # `(?i:…)` groups because HTTP header names are case-insensitive (RFC 7230
-    # §3.2), HTTP/2 mandates lowercase names, and the `Bearer` scheme is
-    # case-insensitive (RFC 6750 §2.1) — so `authorization: bearer …` emitted by
-    # requests / net/http / HTTP2 frame logs is redacted too. The separator is
-    # JSON-aware: an optional quote may precede the
-    # `:`/`=` and the token, so a serialized header `{"Authorization": "Bearer
-    # <tok>"}` in a structured-log/JSON request dump is redacted as well. Both
-    # alternatives are scoped tightly: the JWT segment class cannot cross the
-    # literal `.` separators and the Bearer token class (`[A-Za-z0-9._~+/-]`, RFC
-    # 6750 `b64token`) stops at whitespace/quotes, so neither over-captures. A
-    # Bearer header carrying a JWT redacts as one match (the Bearer class subsumes
-    # the JWT); a bare JWT is still caught independently (defense in depth).
-    f"|{JWT_MULTI_SEGMENT}"  # JWS (3-seg) / JWE (5-seg incl. dir/ECDH-ES), shared spelling
-    r"|(?<![A-Za-z0-9_.-])eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"  # 2-seg link token
-    r"|(?i:Authorization)[\"\']?\s*[:=]\s*[\"\']?(?i:Bearer)\s+[A-Za-z0-9._~+/-]+=*"  # HTTP/JSON bearer
-    r")",
+from .redaction_entropy import (  # noqa: F401
+    _B64_CHUNK_RE,
+    _CS_DARWIN_USER_TEMP_DIR,
+    _DARWIN_USER_DIR_PREFIX_RE,
+    _DARWIN_USER_DIR_SUFFIX_RE,
+    _DARWIN_USER_TEMP_DIR_RE,
+    _DOCUMENT_LINK_RE,
+    _IN_DIAGRAM_SCAN,
+    _PLANTUML_RATIO_CAP,
+    _PLANTUML_SOURCE_CAP,
+    _RUN_PIECE_RES,
+    _SECRET_KEY_LEN,
+    _bare_secret_window_starts,
+    _contains_bare_secret,
+    _contains_fixed_credential,
+    _decode_b64_chunk,
+    _is_code_literal,
+    _looks_like_secret_key,
+    _plantuml_source,
+    _text_contains_bare_secret,
 )
-
-
-def get_credential_patterns() -> list[re.Pattern[str]]:
-    """Public accessor for the canonical credential regexes.
-
-    Lets other modules (e.g. deploy-web's pre-publish content scan) reuse the
-    same patterns without coupling to the private ``_CREDENTIAL_PATTERNS`` name,
-    so a future rename here can't silently turn a downstream scan into a no-op.
-    Returns a list so callers can iterate uniformly; the fork keeps a single
-    combined compiled regex, so the list has one element.
-    """
-    return [_CREDENTIAL_PATTERNS]
-
-
-# The JWS/JWE branch is shape-only (it matches `honeyJar.example.com`), so its hits need a
-# JSON-object header. Only it and the one-dot link token start with `eyJ`: two dots mark them.
-_CREDENTIAL_PATTERNS_SANS_JWT = re.compile(
-    _CREDENTIAL_PATTERNS.pattern.replace(f"|{JWT_MULTI_SEGMENT}", "", 1)
-)
-
-# Telegram bot token, as `_CREDENTIAL_PATTERNS` spells it.
-_TELEGRAM_BRANCH = r"[0-9]{6,}:[A-Za-z0-9_-]{30,}"
-_TELEGRAM_AT_RE = re.compile(_TELEGRAM_BRANCH)
-
-# Leftmost start of a non-JWT branch, found in linear time. Unguarded, the Telegram
-# branch re-walks a digit run from every digit in it. A later digit has fewer digits
-# before the same ``:``, so only the run's first digit can win; `_sans_jwt_start`
-# checks the one exception, a run that begins before the scan position.
-#
-# It also drops the PEM full-block tail. A header starts a match whether or not an
-# END marker follows (the truncated tail beside it can be empty), so every start is
-# unchanged, and the tail would send each header with no END after it to the end of
-# the text: quadratic over a text that repeats the header. See `pem_scan`.
-_CREDENTIAL_STARTS_SANS_JWT = re.compile(
-    _CREDENTIAL_PATTERNS_SANS_JWT.pattern.replace(f"{pem_scan.FULL_BLOCK}|", "", 1).replace(
-        f"|{_TELEGRAM_BRANCH}", f"|(?<![0-9]){_TELEGRAM_BRANCH}", 1
-    )
-)
-
-# `_CREDENTIAL_PATTERNS` for a PEM header that no END marker follows: only the
-# truncated tail is left to try there.
-_CREDENTIAL_PATTERNS_NO_PEM_BLOCK = re.compile(
-    _CREDENTIAL_PATTERNS.pattern.replace(f"{pem_scan.FULL_BLOCK}|", "", 1)
-)
-
-
-def _sans_jwt_start(text: str, pos: int) -> int:
-    """Leftmost index >= *pos* where a non-JWT branch matches, else ``len(text) + 1``."""
-    if "0" <= text[pos - 1 : pos] <= "9" and _TELEGRAM_AT_RE.match(text, pos):
-        return pos
-    found = _CREDENTIAL_STARTS_SANS_JWT.search(text, pos)
-    return len(text) + 1 if found is None else found.start()
-
-
-def _is_json_object_segment(segment: str) -> bool:
-    """Whether *segment* base64url-decodes to a JSON object: JOSE, itsdangerous, Flask session."""
-    try:
-        header = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
-    except (ValueError, RecursionError):
-        return False
-    return isinstance(header, dict)
-
-
-_JWT_SEGMENT_RUN_RE = re.compile(r"[A-Za-z0-9_-]*")
-
-
-def _segment_run_end(text: str, pos: int) -> int:
-    """End of the run of JWT segment characters starting at *pos*."""
-    run = _JWT_SEGMENT_RUN_RE.match(text, pos)
-    return run.end() if run is not None else pos
-
-
-def _jwt_branch_matches_at(text: str, i: int, run_end: int) -> bool:
-    """Whether ``JWT_MULTI_SEGMENT`` matches at the ``eyJ`` at *i*, its run ending at *run_end*.
-
-    The branch needs one segment character after ``eyJ``, then two ``.`` separators with
-    a possibly empty run between them. Segment characters exclude ``.``, so the first
-    separator can only sit at *run_end*.
-    """
-    return (
-        run_end > i + 3
-        and text.startswith(".", run_end)
-        and text.startswith(".", _segment_run_end(text, run_end + 1))
-    )
-
-
-def _next_jwt_branch_start(text: str, pos: int, matched_run_end: int) -> tuple[int, int]:
-    """Leftmost index >= *pos* where the JWT branch matches, and that start's run end.
-
-    Every ``eyJ`` in one segment run shares the run's end, and a later one leaves fewer
-    characters before it, so one failure settles the whole run and the scan jumps past
-    it. ``search`` instead re-walks the run from each ``eyJ``, which is quadratic on a
-    long ``eyJ`` repeat. For the same reason one success settles every later ``eyJ`` with
-    a character after it in that run, so *matched_run_end*, the end of the run the last
-    start matched in, is reused rather than walked again when an overlapping match of
-    another branch moved *pos* past that start. No start: ``(len(text) + 1, -1)``.
-    """
-    if pos < matched_run_end:
-        i = text.find("eyJ", pos, matched_run_end - 1)
-        if i != -1:
-            return i, matched_run_end
-        pos = matched_run_end
-    while (i := text.find("eyJ", pos)) != -1:
-        run_end = _segment_run_end(text, i)
-        if _jwt_branch_matches_at(text, i, run_end):
-            return i, run_end
-        pos = run_end
-    return len(text) + 1, -1
-
-
-def _credential_search(text: str, pos: int, starts: list[int]) -> re.Match[str] | None:
-    """``_CREDENTIAL_PATTERNS.search(text, pos)``, in time linear over a whole scan.
-
-    The leftmost match starts at the earlier of the leftmost JWT-branch start and the
-    leftmost start of every other branch, and ``match`` there applies the alternation's
-    own branch order. *starts* caches both starts, and the JWT start's run end, across
-    calls with a rising *pos*; its last slot is the start of the text's last PEM END
-    marker, ``-2`` until first needed.
-
-    At a PEM header the full-block tail needs an END marker starting at or after the
-    header's end, so the last marker alone says whether one exists. When none does,
-    the match is made without that tail: it would fail only after reading to the end
-    of the text, once per header, and the result is the same.
-    """
-    if starts[0] < pos:
-        starts[0] = _sans_jwt_start(text, pos)
-    if starts[1] < pos:
-        starts[1], starts[2] = _next_jwt_branch_start(text, pos, starts[2])
-    first = min(starts[0], starts[1])
-    if first > len(text):
-        return None
-    if text.startswith(pem_scan.HEADER_PREFIX, first):
-        if starts[3] == -2:
-            starts[3] = pem_scan.last_end_start(text)
-        if pem_scan.has_no_end_after(text, first, starts[3]):
-            return _CREDENTIAL_PATTERNS_NO_PEM_BLOCK.match(text, first)
-    return _CREDENTIAL_PATTERNS.match(text, first)
-
-
-def _credential_matches(text: str) -> Iterator[re.Match[str]]:
-    """``_CREDENTIAL_PATTERNS.finditer(text)``, minus JWT-branch hits whose header is not JSON.
-
-    A rejected hit retries the other branches at its start, then resumes one character on,
-    so a credential nested inside the rejected span is still found. A header holding a
-    second ``eyJ`` stays a credential: rejecting it would rescan that header once per ``eyJ``.
-    """
-    pos = 0
-    starts = [-1, -1, -1, -2]
-    while (m := _credential_search(text, pos, starts)) is not None:
-        header = m.group().split(".", 1)[0]
-        if (
-            m.group().startswith("eyJ")
-            and m.group().count(".") >= 2
-            and header.find("eyJ", 1) == -1
-            and not _is_json_object_segment(header)
-        ):
-            alt = _CREDENTIAL_PATTERNS_SANS_JWT.match(text, m.start())
-            if alt is None:
-                pos = m.start() + 1
-                continue
-            m = alt
-        yield m
-        pos = max(m.end(), m.start() + 1)
-
-
-def _contains_credential_pattern(text: str) -> bool:
-    """Validated ``_CREDENTIAL_PATTERNS.search``: see :func:`_credential_matches`."""
-    return next(_credential_matches(text), None) is not None
-
-
-# ── Cheap pre-filter for `_CREDENTIAL_PATTERNS` (performance only) ──
-# `_CREDENTIAL_PATTERNS` is a 23-branch alternation, so `re` retries every branch
-# at essentially every position: measured 117 ns/char, and it is the single
-# hottest line in the gateway's event loop (38.2% of all py-spy samples, reached
-# per message per dirty-slot flush). The scan cost is paid in full even though
-# real text almost never contains a credential — measured 0 matches across 1,804
-# live session-history messages (1.47 MB).
-#
-# So `_might_contain_credential` answers the cheap question "could a match exist
-# at all?" and lets `redact_credentials` skip the expensive scan when the answer
-# is no. It is a strict SUPERSET of `_CREDENTIAL_PATTERNS`, i.e. for every string
-# the pattern matches, this returns True. That direction is the security
-# property: a false POSITIVE only costs a scan we would have run anyway, while a
-# false NEGATIVE would skip redaction and leak a credential into persisted chat
-# history. Every condition below is therefore a NECESSARY condition of a branch,
-# never a restatement of it — each is deliberately looser than the branch it
-# stands in for.
-#
-# THE MAINTENANCE HAZARD this is built against: adding a 24th branch to
-# `_CREDENTIAL_PATTERNS` without adding a matching anchor here would silently
-# disable redaction for it. Nothing about the pattern edit would look wrong, and
-# the failure is invisible in output — the branch simply stops firing. So
-# `test_credential_prefilter.py` splits `_CREDENTIAL_PATTERNS.pattern` on its
-# top-level `|`, asserts the branch count equals the number of registered sample
-# credentials, and asserts the pre-filter fires for each. A new branch fails that
-# count assertion loudly instead of quietly widening the leak.
-#
-# Literals are case-sensitive because the branches they stand for are (these
-# prefixes are issued in a fixed case); the sole case-insensitive branch
-# (`Authorization: Bearer`) is handled separately below.
-_CREDENTIAL_PREFILTER_LITERALS: tuple[str, ...] = (
-    "AKIA",  # AWS access key ID
-    "ASIA",  # AWS access key ID (STS)
-    "AccessKey",  # SecretAccessKey + AccessKeyId (shared substring)
-    "aws_secret_access_key",
-    "aws_session_token",
-    "aws_access_key_id",
-    "SessionToken",
-    "PRIVATE KEY-----",  # PEM header AND footer both carry it
-    "xox",  # Slack token
-    "github_pat_",
-    "glpat-",
-    "k_live_",  # sk_live_ / rk_live_ (shared substring)
-    "k_test_",  # sk_test_ / rk_test_ (shared substring)
-    "SG.",  # SendGrid
-    "sk-proj-",  # OpenAI
-    "sk-ant-",  # Anthropic
-    "npm_",
-    "pypi-",
-    "_v1_",  # do[opr]_v1_ DigitalOcean
-    "GOCSPX-",  # Google OAuth client secret
-    "eyJ",  # JWS / JWE / 2-segment link token
-)
-
-# Branches with no usable literal anchor. Each is the branch's own leading shape
-# with its expensive tail dropped, so it stays a superset while keeping a narrow
-# first-character set that `re` can skip on.
-#   `gh[opsur]_`     — GitHub PAT family; a bare "gh" literal matches ordinary
-#                      prose ("through", "might"), so the class is kept.
-#   `[0-9]{6,}:…{30}` — Telegram bot token. The trailing 30-char run matters: a
-#                      bare `[0-9]{6,}:` matches an epoch timestamp followed by a
-#                      colon, which fired on 29 of 614 real messages.
-#   `[MNO]…\.`        — Discord bot token (first segment is base64 of a snowflake).
-#   `://…:…@`         — URI userinfo. The scheme alternation is dropped, which is
-#                      what leaves a `://` literal prefix for `re` to search on;
-#                      a bare `://` would match every ordinary URL.
-#
-# Each anchor is written to START WITH A LITERAL, because that is the one shape
-# `re` searches at memchr speed; a pattern starting with a class or a
-# case-insensitive letter is tried at every position (measured 6-12 ns/char).
-# The literal is the rarest character every match must contain, and the rest of
-# the shape is checked around it with fixed-width look-behinds, so each anchor
-# accepts EXACTLY the strings its plain spelling does:
-#   Telegram `[0-9]{6,}:X{30}`     == `:` preceded by 6 digits, then X{30}.
-#   Discord  `[MNO]X{22,30}\.`     == `.` preceded by X{23} (cheap reject) and,
-#                                     for some n in 22..30, by [MNO]X{n}.
-# `test_rewritten_anchors_agree_with_their_plain_spelling` holds each one to
-# its plain spelling.
-_CREDENTIAL_PREFILTER_GH_RE = re.compile(r"gh[opsur]_")
-_CREDENTIAL_PREFILTER_TELEGRAM_RE = re.compile(r":(?<=[0-9]{6}:)[A-Za-z0-9_-]{30}")
-_CREDENTIAL_PREFILTER_DISCORD_RE = re.compile(
-    r"\.(?<=[A-Za-z0-9_-]{23}\.)(?:"
-    + "|".join(rf"(?<=[MNO][A-Za-z0-9_-]{{{n}}}\.)" for n in range(22, 31))
-    + ")"
-)
-_CREDENTIAL_PREFILTER_URI_RE = re.compile(r"://[^\s:/@]*:[^\s/]+@")
-
-# The `Authorization: Bearer` branch is the ONLY case-insensitive branch, and it is
-# spelled `(?i:Authorization)`. This anchor reuses that exact sub-pattern, so it is
-# a superset of the branch BY CONSTRUCTION — same engine, same folding rules.
-#
-# `"authorization" in text.lower()` is NOT a valid anchor for it, because
-# `str.lower()` and `re.IGNORECASE` are two DIFFERENT case-folding
-# implementations and they disagree. `re` folds via `sre_compile._equivalences`,
-# which treats U+0131 (LATIN SMALL LETTER DOTLESS I) and U+0130 (LATIN CAPITAL
-# LETTER I WITH DOT ABOVE) as equivalent to `i`/`I`; `str.lower()` leaves U+0131
-# unchanged and expands U+0130 to two code points. So the branch MATCHES
-# `Authorızation: Bearer <token>` while a `.lower()` anchor MISSES it, which skips
-# pass 1 and leaves the bearer token verbatim in persisted chat history. The same
-# disagreement holds for U+017F/`s` and U+212A/`k`, so it is a class of defect
-# rather than one homoglyph: a case-insensitive branch is only safely anchored by
-# the SAME regex engine, never by a hand-rolled fold.
-# Pinned by `test_unicode_case_folding_cannot_bypass_the_prefilter`.
-#
-# For speed the anchor is split on its `z`, the one letter `re.IGNORECASE` folds
-# onto nothing but `z` and `Z`: each half starts with that literal (searched at
-# memchr speed) and leaves every other letter to the same `(?i:…)` sub-pattern,
-# so the folding is still the engine's own. Together the two accept exactly what
-# `(?i:Authorization)` does.
-_CREDENTIAL_PREFILTER_AUTHORIZATION_RE = re.compile(r"z(?<=(?i:Authori)z)(?i:ation)")
-_CREDENTIAL_PREFILTER_AUTHORIZATION_UPPER_RE = re.compile(r"Z(?<=(?i:Authori)Z)(?i:ation)")
-
-
-def _might_contain_credential(text: str) -> bool:
-    """Return True if *text* could contain a `_CREDENTIAL_PATTERNS` match.
-
-    A strict superset of `_CREDENTIAL_PATTERNS.search(text) is not None`: it may
-    return True where the pattern would not match, but it MUST NOT return False
-    where the pattern would match. Callers use it only to skip a scan whose
-    result is already known to be empty, so output is unchanged either way.
-    """
-    for literal in _CREDENTIAL_PREFILTER_LITERALS:
-        if literal in text:
-            return True
-    return (
-        _CREDENTIAL_PREFILTER_GH_RE.search(text) is not None
-        or _CREDENTIAL_PREFILTER_TELEGRAM_RE.search(text) is not None
-        or _CREDENTIAL_PREFILTER_DISCORD_RE.search(text) is not None
-        or _CREDENTIAL_PREFILTER_URI_RE.search(text) is not None
-        or _CREDENTIAL_PREFILTER_AUTHORIZATION_RE.search(text) is not None
-        or _CREDENTIAL_PREFILTER_AUTHORIZATION_UPPER_RE.search(text) is not None
-    )
-
-
-# Minimum string length at which `_might_contain_credential` is cheaper than the
-# `_CREDENTIAL_PATTERNS` alternation it gates. The pre-filter has a fixed ~590 ns
-# floor (21 substring searches plus 5 anchored regex calls) that does not shrink
-# with the input, so on a very short string the alternation simply wins: measured
-# 684 ns against 494 ns at 8 characters, crossing over at 12 and reaching 3.4x by
-# 256. Callers scanning SHORT strings -- a decoded base64 blob is typically 16-30
-# characters -- must gate on this rather than assume the pre-filter is
-# unconditionally cheaper.
-#
-# Held at 16 rather than the measured crossover of 12, deliberately: the gate is
-# verdict-neutral (the pre-filter is a proven superset, so either route reaches the
-# same answer), which makes a conservative threshold cost at most one alternation
-# scan on a 12-15 character blob and makes it robust to the crossover drifting as
-# the pre-filter's own cost changes. It has already drifted once -- adding the
-# case-insensitive Authorization anchor moved it from 16 to 12.
-_PREFILTER_MIN_LEN = 16
-
-
-# Base64 alphabet: at least 40 chars of [A-Za-z0-9+/] ending with optional =
-_B64_CHUNK_RE = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
-
-
-# ── Label-independent bare-secret detection ──
-# A 40-char AWS *secret access key* (the value paired with an AKIA/ASIA access
-# key ID) is a bare run of the base64 alphabet with NO distinctive prefix and NO
-# key= label, so none of the labelled/prefixed patterns in _CREDENTIAL_PATTERNS
-# catch it when it appears standalone (e.g. echoed alone, in a log line, or in a
-# JSON array element). We add a conservative, entropy-gated detector for this
-# shape. This is the HIGHEST false-positive-risk redaction rule in the module, so
-# it is deliberately over-gated: a token must clear EVERY gate below to be
-# redacted. The gates are ordered cheapest-first.
-#
-# AWS secret access keys are exactly 40 base64 characters. We match ANY isolated
-# run of >=40 base64-alphabet chars (word-boundary look-arounds keep surrounding
-# prose intact and stop a longer high-entropy blob from being split and missed),
-# then require the *specific 40-char secret shape* per token.
-#
-# NOT CONSULTED BY `redact_credentials`. Pass 3 derives its runs from
-# `_B64_CHUNK_RE` instead (`run = chunk.rstrip("=")`), because that one scan feeds
-# both pass 2 and pass 3 and the two patterns select identical spans. The only
-# remaining consumer here is `_text_contains_bare_secret`. That split is a
-# desync hazard: WIDENING THIS PATTERN ALONE (adding base64url `-_`, say) would
-# change the URL scan and leave the redactor untouched, silently. Any edit to the
-# character class or the `{40,}` floor must be mirrored in `_B64_CHUNK_RE` above.
-# `test_the_two_base64_run_patterns_stay_structurally_coupled` pins both literals
-# so such an edit fails loudly rather than drifting.
-_BARE_SECRET_RUN_RE = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}(?![A-Za-z0-9+/])")
-
-# Exactly-40 is the AWS secret-key length. Keeping the shape check length-exact
-# (rather than ">=40") is what lets the structural gates below cleanly separate
-# real keys from 64-char sha256 hex, base64 document blobs, etc.
-_SECRET_KEY_LEN = 40
-
-#: Inside code text (``redaction_switch.code_text``) pass 3 leaves a run alone only when it is
-#: one of two things that can be told from a key by what they are, never by a name near them.
-#: A data URI payload: a run of ``_DATA_URI_PAYLOAD_MIN`` characters or more that follows
-#: ``data:<type>;base64,``. An alphabet: every 40-character window of the run has at least
-#: ``_ALPHABET_STEPS`` adjacent pairs that step up by one character code (``abc...``,
-#: ``ABC...``, ``012...``), which a table a program indexes into has and a random key does
-#: not. Everything else, a glued run included, is judged exactly as outside the scope.
-_DATA_URI_BEFORE_RE = re.compile(
-    r"data:[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+(?:;[A-Za-z0-9=.+-]+)*;base64,\Z", re.IGNORECASE
-)
-#: How far back from a run the data URI header may start.
-_DATA_URI_REACH = 128
-#: A payload shorter than this is judged, so a lone key behind a ``data:`` header is masked.
-_DATA_URI_PAYLOAD_MIN = 64
-#: An alphabet run longer than this is judged, which bounds the cost of reading one.
-_ALPHABET_RUN_MAX = 4096
-#: Adjacent pairs in a 40-character window (39) that must step up by one. A table of the
-#: letters and digits has 59 of 61 per 62; a random key has one such pair in about 64.
-_ALPHABET_STEPS = 30
-
-
-def _steps_up(run: str, at: int) -> int:
-    """1 when the character after ``run[at]`` is the next character code, else 0."""
-    return 1 if ord(run[at + 1]) == ord(run[at]) + 1 else 0
-
-
-def _is_code_literal(text: str, start: int, run: str) -> bool:
-    """Whether the run at *start* is a data URI payload or an ordered alphabet.
-
-    Both are read off the run and the few characters before it, and a run that is neither
-    stops the read at the first window that fails, so the cost of one run is fixed by
-    ``_DATA_URI_REACH`` and ``_ALPHABET_RUN_MAX`` whatever the text holds. A run this cannot
-    place is judged, which is the side that masks.
-    """
-    if len(run) >= _DATA_URI_PAYLOAD_MIN and _DATA_URI_BEFORE_RE.search(
-        text, max(0, start - _DATA_URI_REACH), start
-    ):
-        return True
-    if not _SECRET_KEY_LEN <= len(run) <= _ALPHABET_RUN_MAX:
-        return False
-    window = _SECRET_KEY_LEN - 1
-    total = sum(_steps_up(run, i) for i in range(window))
-    if total < _ALPHABET_STEPS:
-        return False
-    for i in range(window, len(run) - 1):
-        total += _steps_up(run, i) - _steps_up(run, i - window)
-        if total < _ALPHABET_STEPS:
-            return False
-    return True
-
-
-# Shannon-entropy floor (bits/char). A uniformly-random 40-char base64 string
-# averages ~4.78 bits/char and empirically almost never drops below ~4.4;
-# English-word identifiers, hex digests, and repeated/low-alphabet runs sit
-# below this. 4.3 is a conservative floor that admits real keys (the canonical
-# AWS example scores 4.66) while rejecting camelCase code identifiers and file
-# paths, which cluster around 4.0-4.3.
-_SECRET_ENTROPY_MIN = 4.3
-
-# Even after the entropy floor, camelCase / PascalCase code identifiers and
-# slash-delimited file paths (e.g. src/main/java/com/Example/FooBarBazClas1) can
-# survive on entropy ALONE. Two structural signals separate a random secret from
-# a word-based identifier or path: (a) a random key almost never contains a long
-# unbroken lowercase run, whereas identifiers/paths are built from dictionary
-# words that do; (b) a random key has a low vowel ratio, whereas English words
-# do not. NOTE: unlike a naive design we deliberately do NOT treat the presence
-# of '/' or '+' as a free pass to redact — 40-char mixed-case file paths contain
-# '/' yet are benign, so a '/' token must still clear both structural gates.
-# Neither gate can speak for a path LONGER than one window, though: its straddling
-# sub-windows are built from fragments of several components and clear both, which
-# is what `_SECRET_MAX_SLASHES` below is for.
-# Thresholds are chosen from measured distributions (see test_security.py) with a
-# wide margin toward NOT redacting.
-_SECRET_MAX_LOWER_RUN = 5
-_SECRET_MAX_VOWEL_RATIO = 0.30
-
-# Ceiling on the separators a window CUT OUT OF A LONGER RUN may hold, applied by
-# :func:`_contains_bare_secret`. A window straddling several path components is a
-# token nobody wrote, and it clears both gates above; its separator density is
-# what gives it away -- `/` is 1 base64 character in 64, so a real 40-char key
-# averages 0.6 of them, while a window spanning components carries one per
-# component. Measured on 200,000 uniformly random 40-char keys: this declines
-# 0.36% on its own, against 9.29% for the lowercase-run gate and 6.60% for the
-# vowel-ratio gate. Three is the knee: four leaves the reported paths redacted.
-_SECRET_MAX_SLASHES = 3
-
-# The second ceiling a window CUT OUT OF A LONGER RUN is held to: it may not cross
-# the opening `/` of a routed commit and take twelve of its digits. A commit
-# permalink is one run (`com/Owner/RepoName/blob/<commit>/src/file`), and its window
-# straddling `RepoName/blob/` and the start of the commit clears every gate on two
-# separators: capitals from the repository name, lowercase and digits from the hex.
-# A routed commit is a path segment of exactly 40 or 64 lowercase hex digits, as git
-# prints one, right after one of the code-host routes below and ending at a `/` or
-# the run's edge. The route is what keeps a key out: a key's own window crosses the
-# opening `/` of a routed commit only when the key itself holds that `/` and twelve
-# hex digits after it, which makes the text a permalink whose route runs into the
-# key. A window starting inside a commit is judged as before, and so is hex a key
-# carries anywhere else. Measured on ten commits of each of the 1,000 most-starred
-# GitHub repositories: 3.58% of their blob permalinks fire without this and 0.02%
-# with it, and none of 20,000 key-shaped random keys is lost glued before, after or
-# inside a commit, after a letter, after a route, or in a URL path. The residuals
-# are a repository name whose own capitals fill most of a window, a window that
-# starts inside the commit and runs into a path with capitals (1.08% of links to a
-# path like `src/File.py`, against 4.64% before), a key that carries a route word
-# and a `/` followed by twelve or more hex digits running to its end,
-# raw.githubusercontent.com links, which have no route word, and commits typed in
-# upper or mixed case, which git never prints.
-_ROUTED_COMMIT_RE = re.compile(
-    r"(?:(?<=/)|\A)(?:blob|tree|blame|raw|commits?|src)/"
-    r"(?P<commit>[0-9a-f]{64}|[0-9a-f]{40})(?=/|\Z)"
-)
-_ROUTED_COMMIT_PIECE_MIN = 12
-
-# A token that base64-decodes to >=85% printable ASCII is encoded *text*, not a
-# random key (random 40-char keys decode to mostly non-printable bytes). Such a
-# token is left to the existing base64 decode-and-scan path in redact_credentials
-# so we do not double-count or mis-classify it here.
-_SECRET_PRINTABLE_DECODE_RATIO = 0.85
-
-_VOWELS: frozenset[str] = frozenset("aeiouAEIOU")
-
-# All-hex runs are git SHAs (40 hex), sha256 (64 hex), md5 (32 hex), etc. — never
-# an AWS secret key (which uses the full base64 alphabet). Reject them outright.
-_HEX_ONLY_RE = re.compile(r"\A[0-9a-fA-F]+\Z")
-
-# The macOS per-user directory id: ``confstr`` names the temp and cache roots
-# ``/var/folders/<2>/<30>/T`` and ``.../C``, the two variable components an
-# OS-generated lowercase encoding of the user's UUID and uid. ``/`` is in the run
-# alphabet, so a path under them is one run whose window straddling the id and
-# the ``T`` clears every gate, and every temp path -- a computer-use screenshot
-# echoed as ``![](path)`` among them -- would read as a key. Pass 3 therefore
-# scans the original run, exempting only windows that share at least
-# ``_HOST_ID_EXEMPT_OVERLAP`` bytes IN PLACE with THIS host's OS-reported id. Any
-# other positive window overlapping the id is still a hit, and pass 3 redacts
-# every uncovered piece such a window touches; the id and the prefix stay
-# plaintext because they are withheld from the scan, not redacted. Fast paths,
-# the fragment separator ceiling and printable-base64 exclusion use whole-run
-# context. In free text a writer picks an id's bytes and could fill most of a
-# key-shaped window, while the host's id is chosen by nobody who writes text. The
-# prefix must start a path (no run-alphabet byte, ``/`` included, before it) and
-# the byte after the directory letter must not continue the run: ``/`` starts the
-# next component, and any byte outside the run alphabet ends the run there, so a
-# bare root printed, quoted, or followed by a newline is the same two-byte ``/T``
-# piece as one that ends the text. ``/Tevil`` is a chosen name and gets no
-# exemption. A key after ``/T_evil`` sits in the next run and is judged there;
-# the pieces the exemption leaves in this run are the prefix and the ``/T``, both
-# shorter than one key, so no key-shaped window survives in them.
-#: Least overlap at which a key-shaped window is exempted from the bare-secret
-#: scan: a key can occupy an exempt window only by sharing this many of its bytes
-#: IN PLACE with an id the OS chose, which no writer controls. 24 exempts the
-#: screenshot spooler path (32), the bare root (33) and an ``mkdtemp`` ``tmpXXXXXXXX``
-#: dir with a one-character leaf (24); a temp path whose run goes 15 or more run-alphabet
-#: bytes past the directory letter can still yield a positive window below 24 and stays
-#: redacted, as without the exemption. A key glued across the id with less overlap is judged.
-_HOST_ID_EXEMPT_OVERLAP = 24
-_DARWIN_USER_DIR_PREFIX_RE = r"(?<![A-Za-z0-9+/])(?:/private)?/var/folders/"
-_DARWIN_USER_DIR_SUFFIX_RE = r"/[CT](?![A-Za-z0-9+])"
-# ``_CS_DARWIN_USER_TEMP_DIR`` in Darwin's ``<unistd.h>``; Python has no name for
-# it, and its answer is the temp root with a trailing separator.
-_CS_DARWIN_USER_TEMP_DIR = 65537
-_DARWIN_USER_TEMP_DIR_RE = re.compile(
-    r"\A(?:/private)?/var/folders/(?P<id>[a-z0-9_]{2}/[a-z0-9_]{30})/T/?\Z"
-)
-
-# The Shannon term ``(c / _SECRET_KEY_LEN) * log2(c / _SECRET_KEY_LEN)``, indexed by
-# the character count ``c``. Element 0 is a ``0.0`` placeholder that keeps ``c``
-# usable as a direct index; it is never read, because a count of zero cannot appear
-# in a :class:`~collections.Counter` built from an iterable, and ``log2(0)`` would
-# raise.
-#
-# Built for ONE length rather than parameterised over lengths, because
-# :func:`_looks_like_secret_key` reaches the entropy gate only through its
-# exactly-``_SECRET_KEY_LEN`` check, so that is the only length any production call
-# can ask about. A per-length table would need a size cap and an eviction policy to
-# bound what an arbitrary caller could materialise -- machinery guarding a caller
-# that does not exist. Any other length falls through to the inline formula, which
-# is what this table was derived from, so the general path is exactly as it was
-# before the table existed.
-#
-# The terms are computed with the same operations the inline expression used, which
-# is what makes this a pure precomputation rather than a re-derivation.
-_ENTROPY_TERMS_KEY_LEN: tuple[float, ...] = (0.0,) + tuple(
-    (c / _SECRET_KEY_LEN) * math.log2(c / _SECRET_KEY_LEN) for c in range(1, _SECRET_KEY_LEN + 1)
-)
-
-
-def _shannon_entropy(token: str) -> float:
-    """Return the Shannon entropy of *token* in bits per character.
-
-    The result is compared against :data:`_SECRET_ENTROPY_MIN` by
-    :func:`_looks_like_secret_key`, so this is a gate on a redaction verdict and
-    NOT a statistic anybody displays. A one-ULP drift at the boundary flips that
-    verdict, and a flip in the permissive direction leaks a credential. The
-    optimisation below is therefore built to be BIT-IDENTICAL, not merely close,
-    and is pinned that way by ``TestShannonEntropyIsBitIdentical``.
-
-    Each addend is ``(c / length) * log2(c / length)``. The sole production caller
-    reaches this only through the exactly-``_SECRET_KEY_LEN`` check in
-    :func:`_looks_like_secret_key`, and reaches it over and over --
-    :func:`_contains_bare_secret` slides a 40-char window byte by byte across each
-    base64-alphabet run that clears its prefilters -- so at that one length every
-    addend is drawn from the fixed set :data:`_ENTROPY_TERMS_KEY_LEN` holds. That
-    retires TWO true divisions and one ``math.log2`` call per DISTINCT CHARACTER per
-    call -- ``c / length`` appears twice in the expression and CPython evaluates it
-    twice, and a 40-char base64 window holds ~30 distinct characters -- plus the
-    generator frames, in favour of a C-level ``map`` over a tuple index.
-
-    Any other length takes the inline formula, unchanged from before the table
-    existed. That keeps the fast path to the single length that is actually asked
-    for, so no size cap or cache-eviction policy is needed to bound what an
-    arbitrary caller could make this allocate.
-
-    Why this is bit-identical rather than approximately equal:
-
-    * Each addend is produced by the same three IEEE-754 operations on the same
-      operands as before -- divide, ``log2``, multiply -- so each addend carries
-      the same bit pattern. Precomputation changes WHEN a term is computed, never
-      HOW.
-    * ``Counter(token).values()`` still supplies the addends, in the same
-      first-occurrence order, and ``map`` is consumed in order, so ``sum``
-      accumulates identical addends in an identical sequence. The equality
-      therefore does not rest on float addition being associative, which it is
-      not. An algebraic rearrangement such as
-      ``log2(length) - sum(c * log2(c)) / length`` IS mathematically equal and is
-      measurably NOT bit-equal, which is why it is not used here.
-    """
-    if not token:
-        return 0.0
-    counts = Counter(token)
-    length = len(token)
-    if length != _SECRET_KEY_LEN:
-        return -sum((c / length) * math.log2(c / length) for c in counts.values())
-    return -sum(map(_ENTROPY_TERMS_KEY_LEN.__getitem__, counts.values()))
-
-
-def _has_all_three_char_classes(text: str) -> bool:
-    """Return True if *text* holds at least one lowercase, uppercase AND digit.
-
-    One pass with early exit, rather than three ``any()`` scans. Semantically
-    identical, but this is the hottest predicate in the redaction path:
-    :func:`_contains_bare_secret` slides a 40-char window BYTE BY BYTE across a
-    base64-alphabet run that clears its prefilters, so a 512-char run reaching that
-    loop asks this question 473 times. Three ``any()`` scans build three generators
-    per call and cost the SUM of their three first-match offsets; one loop breaks on
-    completion and costs the MAX. Both forms short-circuit, so the saving is
-    generator frames plus that sum-vs-max difference.
-
-    Absence of a class is closed under substring, which is what lets
-    :func:`_contains_bare_secret` ask this about a whole run and retire every
-    window at once.
-    """
-    has_lower = has_upper = has_digit = False
-    for ch in text:
-        if not has_lower and ch.islower():
-            has_lower = True
-        elif not has_upper and ch.isupper():
-            has_upper = True
-        elif not has_digit and ch.isdigit():
-            has_digit = True
-        if has_lower and has_upper and has_digit:
-            return True
-    return False
-
-
-# The byte set counted as "printable" by :func:`_decodes_to_printable_text`: tab,
-# LF, CR and the printable ASCII range 0x20-0x7E. Held as ``bytes`` so the count
-# can be delegated to ``bytes.translate``, which runs in C.
-_PRINTABLE_BYTES: bytes = bytes(sorted({0x09, 0x0A, 0x0D} | set(range(0x20, 0x7F))))
-
-
-def _decodes_to_printable_text(token: str) -> bool:
-    """Return True if *token* base64-decodes to mostly-printable ASCII.
-
-    Encoded human-readable text (a base64 document blob) decodes to printable
-    bytes; a random 40-char secret key decodes to mostly non-printable bytes. We
-    use this to exclude encoded-text blobs from the bare-secret heuristic (they
-    are handled by the existing decode-and-scan pass instead).
-    """
-    try:
-        raw = base64.b64decode(token + "=" * (-len(token) % 4), validate=False)
-    except Exception:
-        return False
-    if not raw:
-        return False
-    # Count the printable bytes by DELETING them in C and measuring what is left,
-    # rather than testing every byte in a Python loop. ``translate(None, set)``
-    # returns exactly the bytes NOT in *set*, so ``len(raw) - len(...)`` is the
-    # member count -- an integer identity, so the ratio and the comparison below
-    # are bit-identical to the previous per-byte sum (asserted against a verbatim
-    # copy of that sum in ``test_printable_count_matches_the_per_byte_sum``,
-    # including all 256 single-byte inputs exhaustively).
-    #
-    # This is the single most expensive operation in pass 3, because the helper
-    # runs once per base64-alphabet run AND again per 40-char window as gate 7 of
-    # `_looks_like_secret_key`, and the old loop cost scaled with the DECODED byte
-    # count rather than with the 40-char window. Measured 14.6x at 48 bytes rising
-    # to 69x at 1500; a 2 KB encoded blob fell from 86.3 us to 1.2 us, which is
-    # 98% of what `_contains_bare_secret` spent on such a run.
-    printable = len(raw) - len(raw.translate(None, _PRINTABLE_BYTES))
-    return printable / len(raw) >= _SECRET_PRINTABLE_DECODE_RATIO
-
-
-def _lowercase_run_exceeds(token: str, cap: int) -> bool:
-    """Return True if any run of consecutive lowercase letters is longer than *cap*.
-
-    Dictionary-word identifiers and file-path segments contain long lowercase
-    word runs; a uniformly random base64 secret almost never does. This is the
-    primary discriminator that keeps camelCase identifiers and mixed-case file
-    paths out of the bare-secret heuristic.
-
-    The only question the caller asks is whether the longest run EXCEEDS a
-    threshold, so this stops at cap+1 rather than scanning the whole token to
-    find the true maximum. On the tokens this gate exists to reject -- the ones
-    with a long lowercase run -- it exits after a handful of characters instead
-    of all 40, which measured 3.97 -> 1.65 us per window.
-    """
-    current = 0
-    for ch in token:
-        if ch.islower():
-            current += 1
-            if current > cap:
-                return True
-        else:
-            current = 0
-    return False
-
-
-def _vowel_ratio(token: str) -> float:
-    """Return the fraction of alphabetic characters in *token* that are vowels.
-
-    Deliberately left in this two-pass comprehension form. A single-pass rewrite
-    measured 1.18x -- about 0.4 us on a 2.89 us gate -- which does not justify
-    replacing the clearest possible expression of "fraction of letters that are
-    vowels", and would owe its own independent-oracle test. Its neighbour
-    :func:`_lowercase_run_exceeds` WAS rewritten because that one measured 2.4x.
-    Do not optimise this unmeasured.
-    """
-    letters = [ch for ch in token if ch.isalpha()]
-    if not letters:
-        return 0.0
-    return sum(1 for ch in letters if ch in _VOWELS) / len(letters)
-
-
-def _looks_like_secret_key(token: str) -> bool:
-    """Return True if *token* has the shape of a bare AWS secret access key.
-
-    Conservative, multi-gate classifier for a label-less 40-char base64 secret.
-    Every gate must pass; the design bias is toward NOT
-    redacting (a false negative merely reverts to today's behavior, a false
-    positive corrupts benign output).
-
-    Gates are ordered by MEASURED cost per rejection, cheapest-per-reject first.
-    Every gate is a pure predicate whose failure returns False, so the order is
-    verdict-neutral and can be chosen purely for cost. Measured on a corpus of
-    1705 windows that clear gates 1-3 (cost per window, share of windows that
-    gate rejects on its own):
-
-        lowercase run   1.65 us   66.5%  ->  2.5 us per rejection
-        vowel ratio     2.89 us   62.3%  ->  4.6 us per rejection
-        entropy         8.48 us   54.5%  -> 15.5 us per rejection
-        decode          3.01 us    0.0%  ->  rejected nothing in that corpus
-
-    These numbers are a SNAPSHOT from one corpus on one machine: treat them as a
-    relative ranking, not a budget, and do not turn them into assertions (this
-    repo's CI enables coverage on 3.12 only, so absolute durations are not
-    comparable across shards). The ordering is the durable claim, and it is
-    guarded by a test that counts which gates get evaluated -- see
-    ``TestSecretGateOrderIsCostOrdered``.
-
-    Putting the two cheap structural gates ahead of the entropy computation, and
-    the decode check last, halves the cost of gates 4-7 and measured -47% on
-    ``redact_credentials`` end to end. Do not reorder these back into
-    "structural last" without re-measuring: the structural gates are both
-    cheaper AND higher-yield than entropy, which is the opposite of the
-    intuition that entropy is the primary discriminator.
-
-    1. Length is EXACTLY 40 (AWS secret-key length).
-    2. Contains all three of lower + upper + digit (rejects all-lower prose runs,
-       all-upper CONSTANT_NAMES, base32, digit strings).
-    3. Not an all-hex run (rejects git SHAs, sha256/md5 digests).
-    4. No lowercase run longer than _SECRET_MAX_LOWER_RUN.
-    5. Vowel ratio <= _SECRET_MAX_VOWEL_RATIO. Gates 4 and 5 are the
-       structural-randomness pair: they separate a random key from word-based
-       identifiers and slash-delimited file paths that survive the entropy
-       floor. Both apply to EVERY token (a '/' or '+' does not exempt a token,
-       so 40-char mixed-case file paths stay intact).
-    6. Shannon entropy >= _SECRET_ENTROPY_MIN (rejects low-entropy repeats/prose
-       and most code identifiers, which cluster below 4.3).
-    7. Does not base64-decode to printable text (rejects encoded-text blobs).
-       Last because it is the lowest-yield gate, not because it is optional --
-       it is what keeps legitimate OAuth ``code_challenge`` values in sign-in
-       URLs from being redacted (guarded by the OAuth-URL corpus).
-
-    BOUNDARY ASSUMPTION: this classifier deliberately evaluates an EXACTLY-40-char
-    window (gate 1). It does NOT itself scan longer runs — a real key glued to an
-    adjacent base64 char with no delimiter (e.g. ``X`` + key, key + ``A``,
-    ``SECRET=`` + key + ``ABC``, key + ``X`` + key) forms a 41+ char run that would
-    fail the exact-40 gate and leak verbatim. Callers that receive raw ``{40,}``
-    runs MUST use :func:`_contains_bare_secret`, which slides a 40-char window
-    across the run so a glued secret is still caught. Keep the exact-40 shape here:
-    it is what lets the structural gates cleanly separate real keys from 64-char
-    sha256 hex, base64 document blobs, etc.
-    """
-    if len(token) != _SECRET_KEY_LEN:
-        return False
-    if not _has_all_three_char_classes(token):
-        return False
-    if _HEX_ONLY_RE.match(token):
-        return False
-    if _lowercase_run_exceeds(token, _SECRET_MAX_LOWER_RUN):
-        return False
-    if _vowel_ratio(token) > _SECRET_MAX_VOWEL_RATIO:
-        return False
-    if _shannon_entropy(token) < _SECRET_ENTROPY_MIN:
-        return False
-    return not _decodes_to_printable_text(token)
-
-
-def _contains_bare_secret(run: str) -> bool:
-    """Return True if any 40-char window of *run* looks like a bare secret key.
-
-    :func:`_looks_like_secret_key` only accepts an EXACTLY-40-char token, but the
-    ``_BARE_SECRET_RUN_RE`` boundary look-arounds capture the longest possible run
-    of base64-alphabet chars. A genuine 40-char secret glued to an adjacent
-    base64 char with no delimiter (``X`` + key, key + ``A``, ``SECRET=`` + key +
-    ``ABC``, key + ``X`` + key) produces a 41+ char run that would fail the
-    exact-40 gate and leak verbatim. We slide a 40-char window across the run and
-    report a hit if ANY window clears every gate. This stays linear in the run
-    length (the regex yields disjoint spans), so cost is bounded overall.
-
-    ENCODED-TEXT-BLOB EXCLUSION: if the WHOLE run base64-decodes to printable
-    text it is a cohesive encoded blob (e.g. an OAuth/PKCE ``code_challenge``,
-    which is ``base64(sha256-hex)``), not a bare secret — those are handled by
-    the decode-and-scan pass instead. We must skip it here because sliding a
-    40-char window byte-by-byte across such a blob creates base64-*misaligned*
-    sub-windows whose garbage decode looks high-entropy and would clear every
-    per-window gate, wrongly redacting a legitimate sign-in URL (regression
-    guarded by the OAuth-URL corpus). This is the same bias-toward-not-redacting
-    that :func:`_looks_like_secret_key` already applies per-window (gate 7),
-    lifted to run granularity so a misaligned window cannot defeat it. A genuine
-    glued secret (``X`` + key, key + ``ABC``, key + ``X`` + key) does NOT decode
-    cleanly as a whole run, so it still reaches the sliding window below.
-
-    SEPARATOR AND COMMIT CEILINGS FOR A FRAGMENT. ``/`` is in the run alphabet, so
-    a deep absolute path, or a permalink carrying a commit hash, is one run whose
-    straddling sub-windows clear every per-window gate. A key-shaped window
-    carrying a path's separator density (``_SECRET_MAX_SLASHES``) or crossing into a
-    routed commit (``_ROUTED_COMMIT_RE``, ``_ROUTED_COMMIT_PIECE_MIN``) is declined,
-    on two conditions that keep this a gate rather than a hole: only when the run is
-    LONGER than one whole key (a 40-char run IS the token somebody wrote, so a
-    standalone key is never subject to it), and only AFTER
-    :func:`_looks_like_secret_key` has answered, so every offset is still classified
-    and a glued key is still found at its own offset.
-    """
-    return next(_bare_secret_window_starts(run), None) is not None
-
-
-def _bare_secret_window_starts(
-    run: str, skip_spans: tuple[tuple[int, int], ...] = ()
-) -> Iterator[int]:
-    """Omit windows with >= _HOST_ID_EXEMPT_OVERLAP bytes in a run-relative *skip_spans* entry."""
-    if len(run) < _SECRET_KEY_LEN:
-        return
-    # RUN-LEVEL FAST PATH. Two of the per-window gates reject on a property that
-    # is closed under substring, so asking about the whole run once can retire
-    # every window without classifying any of them:
-    #   gate 2 -- a character class absent from the run is absent from all of its
-    #             substrings, so no window can hold all three;
-    #   gate 3 -- every substring of an all-hex run is itself all-hex.
-    # Both answers are False either way, so this only reorders WHICH check
-    # returns False, never the verdict. Guarded on a run longer than one window,
-    # because at exactly 40 chars the sole window pays the same two gates anyway
-    # and the pre-check would be pure duplicate work. This is what keeps the
-    # slide affordable on long non-secret runs (hex digests, lowercase blobs),
-    # which are the common shape in tool output.
-    is_fragment = len(run) > _SECRET_KEY_LEN
-    if is_fragment:
-        if not _has_all_three_char_classes(run):
-            return
-        if _HEX_ONLY_RE.match(run):
-            return
-    if _decodes_to_printable_text(run):
-        return
-    commit_starts = (
-        [match.start("commit") for match in _ROUTED_COMMIT_RE.finditer(run)] if is_fragment else []
-    )
-    for start in range(len(run) - _SECRET_KEY_LEN + 1):
-        if skip_spans and any(
-            min(start + _SECRET_KEY_LEN, end) - max(start, begin) >= _HOST_ID_EXEMPT_OVERLAP
-            for begin, end in skip_spans
-        ):
-            continue
-        window = run[start : start + _SECRET_KEY_LEN]
-        if not _looks_like_secret_key(window):
-            continue
-        if is_fragment and (
-            window.count("/") > _SECRET_MAX_SLASHES
-            or _crosses_into_a_routed_commit(start, commit_starts)
-        ):
-            # Key-shaped, but a fragment carrying a path's separators or a commit.
-            continue
-        yield start
-
-
-def _crosses_into_a_routed_commit(start: int, commit_starts: list[int]) -> bool:
-    """Whether the window at *start* crosses a routed commit's opening ``/`` and
-    takes ``_ROUTED_COMMIT_PIECE_MIN`` of its digits.
-
-    Commits are a whole window long and a route apart, so only the first one
-    starting after *start* can be crossed: one bisect, however many the run holds.
-    """
-    index = bisect.bisect_right(commit_starts, start)
-    return (
-        index < len(commit_starts)
-        and commit_starts[index] + _ROUTED_COMMIT_PIECE_MIN <= start + _SECRET_KEY_LEN
-    )
-
-
-def _decode_b64_chunk(chunk: str) -> str:
-    """Decode ONE `_B64_CHUNK_RE` match; return decoded credential text or ''.
-
-    Equivalent to `_decode_b64_safe(chunk)` when *chunk* is itself a
-    `_B64_CHUNK_RE` match, but without re-scanning it. `_decode_b64_safe` exists
-    to find chunks inside arbitrary text; re-running that scan over a string that
-    IS already one chunk can only rediscover the same single span —
-    `[A-Za-z0-9+/]{40,}` is greedy so it consumes the whole run, and `={0,2}`
-    takes the padding — so the inner `finditer` was pure duplicate work on the
-    hot path, once per base64-looking run in every redacted message.
-    """
-    # NO LENGTH SHORT-CIRCUIT HERE, deliberately. It is tempting to skip the decode
-    # when `len(chunk) % 4` is non-zero, on the reasoning that `validate=True`
-    # rejects a length that is not a multiple of 4. That reasoning is INTERPRETER
-    # DEPENDENT and would be a redaction bypass: `binascii.a2b_base64`'s padding
-    # leniency changed with `strict_mode`, so on Python 3.10 and 3.11 a chunk of 40
-    # data characters plus one `=` (length 41) DECODES, while on 3.12 it raises.
-    # Skipping it would leave a base64-encoded credential in that shape unredacted
-    # on exactly the interpreters CI still builds. No version-invariant form of the
-    # test exists either -- 43 data characters plus `==` decodes on 3.10 while
-    # failing both a total-length and a stripped-length predicate. Pinned by
-    # `test_a_decode_length_precondition_would_be_version_dependent`.
-    try:
-        decoded = base64.b64decode(chunk, validate=True).decode("utf-8", errors="ignore")
-    except Exception:
-        return ""
-    # Gate the alternation behind the cheap superset pre-filter, exactly as pass 1
-    # does. `_might_contain_credential` may return True where the pattern would not
-    # match but never False where it would, so the verdict cannot move -- only the
-    # cost. Real decoded blobs almost never look like credentials: 0 of 18 in the
-    # session corpus and 1 of 849 in a hash-heavy corpus reach the alternation.
-    #
-    # LENGTH-GATED, because here the pre-filter is NOT unconditionally cheaper. Its
-    # ~540 ns floor is fixed while the alternation's cost scales with length, so
-    # below `_PREFILTER_MIN_LEN` the alternation wins outright. A decoded blob is
-    # exactly the size where that matters -- 48 raw bytes from a 64-char run, and
-    # shorter once `errors="ignore"` drops invalid sequences, measured 12-31
-    # characters -- so this straddles the crossover instead of sitting above it.
-    if len(decoded) >= _PREFILTER_MIN_LEN and not _might_contain_credential(decoded):
-        return ""
-    return decoded if _contains_credential_pattern(decoded) else ""
-
-
-def _decode_b64_safe(text: str) -> str:
-    """Try to base64-decode chunks in text; return decoded content or ''.
-
-    Deliberately left UNOPTIMISED. `_decode_b64_chunk` above is the hot-path
-    single-chunk form, and this function is what pins it: the differential test
-    asserts the two agree on every chunk in the corpus, and the pre-optimisation
-    reference oracle calls this one. Applying the same gates here would make both
-    sides of that comparison share the change and the check would stop detecting
-    anything.
-    """
-    for m in _B64_CHUNK_RE.finditer(text):
-        try:
-            decoded = base64.b64decode(m.group(), validate=True).decode("utf-8", errors="ignore")
-            if _contains_credential_pattern(decoded):
-                return decoded
-        except Exception:
-            continue
-    return ""
-
-
-def _contains_fixed_credential(text: str) -> bool:
-    """Return True for canonical literal or base64-encoded credentials.
-
-    Deliberately excludes the bare 40-character entropy heuristic. OAuth
-    front-channel state and PKCE values are high-entropy by design, while the
-    canonical signatures and decoded credentials remain unambiguous.
-    """
-    return bool(_contains_credential_pattern(text) or _decode_b64_safe(text))
-
-
-def _text_contains_bare_secret(text: str) -> bool:
-    """Return True when *text* contains an isolated bare AWS-secret run."""
-    return any(_contains_bare_secret(match.group()) for match in _BARE_SECRET_RUN_RE.finditer(text))
-
-
-# ── Document links the bare-secret pass leaves alone ──
-# `/` is in the run alphabet, so in `https://docs.google.com/document/d/<id>/edit`
-# the whole of `com/document/d/<id>/edit` is ONE run, and a Google document id is
-# ~44 uniformly random base64url characters: a 40-char window inside it clears
-# every gate of `_looks_like_secret_key`. No entropy or structural gate can tell
-# that id from a key, so the decision is made on the link instead. Pass 3 skips a
-# run only when the run lies wholly inside a match of `_DOCUMENT_LINK_RE`, which
-# admits nothing but a fixed route on a fixed host:
-#   * HTTPS, a lowercase literal host right after the scheme (no userinfo, no
-#     port), `docs.google.com`, `drive.google.com`, `<tenant>.atlassian.net`, or
-#     a PlantUML server: a host whose first label is `plantuml` (after an
-#     optional `www.`), such as `www.plantuml.com`;
-#   * every path segment fixed or drawn from a closed class: a Google id is
-#     25-72 chars of `[A-Za-z0-9_-]`, a Confluence space key is alphanumeric, a
-#     page id is digits, a PlantUML diagram is `[/plantuml]/<png|svg|txt|uml>/`
-#     then its deflate text in PlantUML's `[0-9A-Za-z_-]` alphabet;
-#   * no piece of the link is a whole key: a piece exactly 40 characters long
-#     voids the match when `_looks_like_secret_key` accepts it. Pieces are cut
-#     twice, once at every non-run character (`/`, `-`, `_`, `%`, `.`, `~`)
-#     and once also at `+`, the space of a Confluence title slug, so a key
-#     pasted in as the id or as a title word is still redacted. A PlantUML
-#     diagram is random-looking by construction, so it is judged by decoding
-#     instead: it must inflate, whole, to printable text with nothing after the
-#     stream but the encoder's zero padding, and every credential pass must
-#     leave that text unchanged. The text inflated per call is capped (see
-#     `_PLANTUML_SOURCE_CAP`). A key as the diagram, glued to one, or written
-#     in its source voids the match;
-#   * the link ends where the route ends, with one optional trailing `/`: a
-#     further base64-alphabet character (a glued key, another `/segment`)
-#     fails the match.
-# The query and fragment are outside the match, so a key there, a `?token=`
-# value and every pass-1 and pass-2 hit are judged exactly as before.
-#
-# ACCEPTED RESIDUAL: a markerless key without `/` glued to more letters or
-# digits inside the id or the page title, or carrying its own `+` inside a
-# title, is indistinguishable from the text it sits in and is not redacted.
-# About 2% of real Google ids carry a key-shaped 40-char piece between their
-# random `-`/`_` and stay redacted. That placement is not an accidental leak,
-# and pass 3 is no control against a deliberate one: a single `-` already
-# splits any run.
-_DOCUMENT_ID = r"[A-Za-z0-9_-]{25,72}"
-_PLANTUML_DIAGRAM = r"[A-Za-z0-9_-]{1,16384}"
-_GOOGLE_USER = r"(?:u/[0-9]{1,2}/)?"
-_RUN_PIECE_RES = (re.compile(r"[A-Za-z0-9+]+"), re.compile(r"[A-Za-z0-9]+"))
-_DOCUMENT_LINK_RE = re.compile(
-    r"(?<![A-Za-z0-9+.-])https://(?:"
-    r"docs\.google\.com/(?:document|spreadsheets|presentation|drawings|forms)/"
-    + _GOOGLE_USER
-    + r"d/(?:e/)?"
-    + _DOCUMENT_ID
-    + r"(?:/(?:edit|view|preview|copy|viewform|pub|pubhtml|htmlview))?"
-    r"|drive\.google\.com/"
-    + _GOOGLE_USER
-    + r"(?:file/d/"
-    + _DOCUMENT_ID
-    + r"(?:/(?:view|edit|preview))?"
-    r"|drive/" + _GOOGLE_USER + r"folders/" + _DOCUMENT_ID + r")"
-    r"|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.atlassian\.net/wiki/spaces/~?[A-Za-z0-9]{1,64}/"
-    r"(?:overview|pages/(?:edit-v2/)?[0-9]{1,20}"
-    r"(?:/[A-Za-z0-9+%._~-]{1,255})?)"
-    r"|(?:www\.)?plantuml(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?:/plantuml)?/(?:png|svg|txt|uml)/"
-    r"(?P<diagram>" + _PLANTUML_DIAGRAM + r")"
-    r")/?(?![A-Za-z0-9+/_-])"
-)
-_PLANTUML_ALPHABET = {
-    c: i for i, c in enumerate("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_")
-}
-#: Decoded diagram text one call may inflate, in total, and per encoded
-#: character. Real diagrams stay under 10x; anything larger keeps its link
-#: masked, which is how it was judged before this route. The total bounds the
-#: extra scan a call can be made to do to that of a plain text this long.
-_PLANTUML_SOURCE_CAP = 16384
-_PLANTUML_RATIO_CAP = 16
-#: Set while a decoded diagram is being scanned, so a diagram link inside it is
-#: judged as any other link and decoding never nests.
-_IN_DIAGRAM_SCAN: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "_IN_DIAGRAM_SCAN", default=False
-)
-
-
-def _plantuml_source(encoded: str, limit: int) -> str | None:
-    """Return the diagram text *encoded* inflates to, whole, or None."""
-    if limit <= 0 or len(encoded) % 4:
-        return None
-    bits = [_PLANTUML_ALPHABET[c] for c in encoded]
-    raw = bytearray()
-    for i in range(0, len(bits), 4):
-        word = bits[i] << 18 | bits[i + 1] << 12 | bits[i + 2] << 6 | bits[i + 3]
-        raw += word.to_bytes(3, "big")
-    inflater = zlib.decompressobj(-zlib.MAX_WBITS)
-    try:
-        source = inflater.decompress(bytes(raw), limit).decode("utf-8")
-    except (zlib.error, UnicodeDecodeError):
-        return None
-    # The encoder emits whole 4-character groups and pads only the last one,
-    # with at most two zero bytes. A further group, a stream cut short, or one
-    # over the limit is not a whole diagram, so text glued after a diagram, or a
-    # diagram cut mid-group, is never kept.
-    padding = inflater.unused_data
-    if not inflater.eof or len(padding) > 2 or padding.strip(b"\0") or not source.strip():
-        return None
-    if not all(c.isprintable() or c in "\t\n\r" for c in source):
-        return None
-    return source
+from .redaction_patterns import _is_json_object_segment  # noqa: F401
+from .redaction_patterns import _credential_matches, _might_contain_credential
 
 
 def _plantuml_verdict(encoded: str, limit: int) -> tuple[bool, int]:
@@ -1601,7 +334,7 @@ CREDENTIAL_REDACTION_TAGS = (_REDACTED_CREDENTIAL_TAG, _REDACTED_ENCODED_CREDENT
 # ── `?token=` / `&token=` URL parameter values (pass 4) ──
 # Keyed on the parameter NAME, not the value's shape, so an OPAQUE bearer value
 # -- one that looks nothing like a JWT -- is redacted where every shape-based
-# pattern above sees ordinary text. A parameter name is a context: `?token=`
+# pattern in ``redaction_patterns`` sees ordinary text. A parameter name is a context: `?token=`
 # cannot match a filename, an identifier or a sourcemap name, so this adds
 # coverage without inheriting shape-based false positives (the five measured
 # `eyJ…` lookalikes recorded on the two-segment link-token alternative).
@@ -1618,7 +351,7 @@ CREDENTIAL_REDACTION_TAGS = (_REDACTED_CREDENTIAL_TAG, _REDACTED_ENCODED_CREDENT
 # `` ?token=` `` in markdown, `?token=<your-token>` in prose). Without the
 # exclusion, pass 4 matches the template placeholder and the chip-diff path
 # (`chat_runner.py`) redacts a snapshot of `dashboard/urls.py` IN PLACE with
-# no recovery -- the exact non-cosmetic false-positive surface this module
+# no recovery -- the exact non-cosmetic false-positive surface ``redaction_patterns``
 # cites as its reason for refusing to relax the JWT floor. A template whose
 # value starts with an excluded byte now yields an empty value and no match.
 #
@@ -2595,3 +1328,92 @@ def redact_path_segments(path: str, redactor: Callable[[str], str] | None = None
     if _redact(candidate) != candidate:
         return whole
     return candidate
+
+
+# This module is the import path of every name the output redactors offer. The batch
+# redactor, its pass plan and the path passes above stay here; the alternation and the
+# entropy machinery live in the owner modules below, and a write through this module (a
+# patch) reaches every module holding the name (:mod:`kiro_crew._facade_mirror`). The
+# header also binds the owner names ``text_redaction`` and ``display_safety`` read here.
+# Owners never import this module. New work goes to the owner of its responsibility:
+#   ``redaction_patterns`` -- the credential alternation and its pre-filter, one unit
+#   ``redaction_entropy`` -- the bare-secret shape gates, the base64 decode and the
+#   document-link grammar
+from kiro_crew import _facade_mirror  # noqa: E402
+
+#: Owner modules, lowest layer first: the first holder of a name answers its reads.
+_OWNERS = (
+    "kiro_crew.security.redaction_patterns",
+    "kiro_crew.security.redaction_entropy",
+)  # the loop below imports them in this order
+for _owner in _OWNERS:
+    _importlib.import_module(_owner)
+#: Name the facade serves but does not bind -> the owner that answers a read of it.
+_EXPORTS: dict[str, str] = {}
+_EXPORTS.update(_facade_mirror.install(_sys.modules[__name__], _OWNERS, excluded=()).served)
+_sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
+#: What a star import binds: every public name of the unsplit module's namespace, and the
+#: ``TYPE_CHECKING`` flag the glue imports.
+__all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
+if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.security.redaction_entropy import (  # noqa: F401
+        _ALPHABET_RUN_MAX,
+        _ALPHABET_STEPS,
+        _BARE_SECRET_RUN_RE,
+        _DATA_URI_BEFORE_RE,
+        _DATA_URI_PAYLOAD_MIN,
+        _DATA_URI_REACH,
+        _DOCUMENT_ID,
+        _ENTROPY_TERMS_KEY_LEN,
+        _GOOGLE_USER,
+        _HEX_ONLY_RE,
+        _HOST_ID_EXEMPT_OVERLAP,
+        _PLANTUML_ALPHABET,
+        _PLANTUML_DIAGRAM,
+        _PRINTABLE_BYTES,
+        _ROUTED_COMMIT_PIECE_MIN,
+        _ROUTED_COMMIT_RE,
+        _SECRET_ENTROPY_MIN,
+        _SECRET_MAX_LOWER_RUN,
+        _SECRET_MAX_SLASHES,
+        _SECRET_MAX_VOWEL_RATIO,
+        _SECRET_PRINTABLE_DECODE_RATIO,
+        _VOWELS,
+        _crosses_into_a_routed_commit,
+        _decode_b64_safe,
+        _decodes_to_printable_text,
+        _has_all_three_char_classes,
+        _lowercase_run_exceeds,
+        _shannon_entropy,
+        _steps_up,
+        _vowel_ratio,
+    )
+    from kiro_crew.security.redaction_patterns import (  # noqa: F401
+        _CREDENTIAL_PATTERNS,
+        _CREDENTIAL_PATTERNS_NO_PEM_BLOCK,
+        _CREDENTIAL_PATTERNS_SANS_JWT,
+        _CREDENTIAL_PREFILTER_AUTHORIZATION_RE,
+        _CREDENTIAL_PREFILTER_AUTHORIZATION_UPPER_RE,
+        _CREDENTIAL_PREFILTER_DISCORD_RE,
+        _CREDENTIAL_PREFILTER_GH_RE,
+        _CREDENTIAL_PREFILTER_LITERALS,
+        _CREDENTIAL_PREFILTER_TELEGRAM_RE,
+        _CREDENTIAL_PREFILTER_URI_RE,
+        _CREDENTIAL_STARTS_SANS_JWT,
+        _JWT_SEGMENT_RUN_RE,
+        _PREFILTER_MIN_LEN,
+        _TELEGRAM_AT_RE,
+        _TELEGRAM_BRANCH,
+        _contains_credential_pattern,
+        _credential_search,
+        _jwt_branch_matches_at,
+        _next_jwt_branch_start,
+        _sans_jwt_start,
+        _segment_run_end,
+        get_credential_patterns,
+    )
+if TYPE_CHECKING:  # project names it serves from outside its owners, from their homes
+    import kiro_crew.security.pem_scan as pem_scan  # noqa: F401
+    from kiro_crew.credential_patterns import (  # noqa: F401
+        JWT_MULTI_SEGMENT,
+    )

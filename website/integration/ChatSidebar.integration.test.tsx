@@ -514,7 +514,7 @@ describe('ChatSidebar confirmCloseSession', () => {
     const closeBtn = screen.getByText('Pipeline debug').closest('[draggable]')!.querySelector('[aria-label="Close session"]')!
     fireEvent.click(closeBtn)
 
-    expect(mockConfirm).toHaveBeenCalledWith('Close this session?')
+    expect(mockConfirm).toHaveBeenCalledWith(expect.stringContaining('Close this session?'))
     expect(deleteSpy).not.toHaveBeenCalled()
   })
 
@@ -526,7 +526,9 @@ describe('ChatSidebar confirmCloseSession', () => {
     const closeBtn = screen.getByText('Pipeline debug').closest('[draggable]')!.querySelector('[aria-label="Close session"]')!
     fireEvent.click(closeBtn)
 
-    expect(mockConfirm).toHaveBeenCalledWith('Close this session?')
+    expect(mockConfirm).toHaveBeenCalledWith(expect.stringContaining('Close this session?'))
+    // Nothing is running, so the prompt names the setting as its trigger.
+    expect(mockConfirm).toHaveBeenCalledWith(expect.stringContaining('Confirm Before Closing Session'))
   })
 })
 

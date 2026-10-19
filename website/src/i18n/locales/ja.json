@@ -400,6 +400,7 @@
     "k_run_a_command": "コマンドを実行",
     "open_command_bar": "Command Bar を開く",
     "focus_mode": "フォーカスモード",
+    "focus_mode_on_announce": "フォーカスモードがオンになりました。{{chord}} を押すとオフになります。",
     "focus_mode_title": "フォーカスモード · Alt+Shift+M",
     "focus_mode_title_mac": "フォーカスモード · ⌥⇧M",
     "connect_your_phone": "スマホを接続",
@@ -410,10 +411,12 @@
     "metrics_card_cores_other": "{{count}} コア",
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "チャット",
-    "tab_title_session": "{{session}} — {{panel}}"
+    "tab_title_session": "{{session}} — {{panel}}",
+    "release_notes_not_published_yet": "{{release}} のリリースノートはまだ公開されていません。代わりに {{shown}} のリリースノートを表示しています。"
   },
   "appSdk": {
     "chatEmbed": {
+      "delivery_seen_text_kept": "メッセージは上の会話に表示されています。再利用できるよう、テキストは入力欄に残してあります。",
       "agent_is_working": "エージェントが処理中…",
       "app_not_allowed_to_send_named": "{{app}} はチャットメッセージを送信できません。このアプリは権限にチャットへのアクセスを宣言していません。",
       "server_refused_with_status": "サーバーが拒否しました（HTTP {{status}}）。しばらくしてからもう一度お試しください。",
@@ -5804,7 +5807,6 @@
       "no_matches": "マッチするものがありません",
       "set_default_agent": "<agent/> を新しいセッションのデフォルトに設定",
       "group_templates_hint": "カスタムエージェントは再利用できるエージェント設定です。",
-      "group_templates_hint_default_workspace": "カスタムエージェントは再利用できるエージェント設定です。選ぶと既定のワークスペースと共有メモリを使います。新しいクルーメイトは作成されません。",
       "own_memory": "独自のメモリ",
       "shared_memory": "共有メモリ",
       "label_own_memory": "{{label}} · 独自のメモリ",
@@ -6280,6 +6282,10 @@
       "hold_to_talk": "押して話す",
       "release_to_cancel": "離してキャンセル",
       "slide_up_to_cancel": "上にスワイプでキャンセル",
+      "release_to_send": "離して送信",
+      "release_to_keep_draft": "離して下書きとして残す",
+      "slide_up_to_cancel_sideways_to_keep_draft": "上にスワイプでキャンセル、横にスライドで下書きとして残す",
+      "stop_and_send": "停止して送信（Shift キーを押しながらクリックで下書きとして残す）",
       "switch_to_keyboard": "キーボードに切り替え",
       "switch_to_voice": "音声に切り替え",
       "drop_to_attach": "ドロップして添付",
@@ -6319,6 +6325,7 @@
       "let_the_agent_read_one_of_your_files": "エージェントにファイルを読み込ませる",
       "message_input": "メッセージ入力",
       "message_placeholder": "{{bot}} にメッセージ… (/command · @file · $skill)",
+      "message_placeholder_crewmate": "{{bot}} にメッセージ…",
       "message_placeholder_terminal": "{{bot}} にメッセージ… (/command · @file · $skill · ! シェルコマンド)",
       "model": "モデル",
       "model_2": "モデル：{{name}}",
@@ -7175,7 +7182,14 @@
       "chat_folder_retry": "再試行",
       "chat_folder_retrying": "再試行中…",
       "chat_folder_none_yet": "フォルダーはまだありません。まずこのジョブを保存し、チャットサイドバーでフォルダーを作成してから、ジョブを開き直して選んでください。",
-      "chat_folder_was_deleted": "このジョブが振り分けていたフォルダーは削除されました。別のフォルダーを選んでください。保存すれば振り分けなくなります。"
+      "chat_folder_was_deleted": "このジョブが振り分けていたフォルダーは削除されました。別のフォルダーを選んでください。保存すれば振り分けなくなります。",
+      "runs_as": "実行方法",
+      "runs_as_custom_agent": "カスタムエージェント",
+      "runs_as_crewmate": "クルーメイト",
+      "runs_as_custom_agent_hint": "専用のチャットで、共有メモリを使って実行されます。",
+      "runs_as_crewmate_hint": "{{name}} のチャットで、{{name}} 自身のメモリとファイルを使って実行されます。クルーメイトページにも表示されます。",
+      "runs_as_fixed": "ジョブは作成後にカスタムエージェントとクルーメイトを切り替えられません。",
+      "runs_as_no_crewmates": "クルーメイトはまだいません。クルーメイトページで追加してください。"
     },
     "jobLogsView": {
       "cancel": "キャンセル",
@@ -7577,12 +7591,13 @@
       "remote_media_sites": "サイト: <host/>",
       "remote_media_gateway_refused": "メディアを読み込みませんでした。アドレスがこのダッシュボード自身のサーバーを経由するため、最終的にアクセスするサイトを表示できません。",
       "couldnt_copy_select_the_text_to_copy_it_manually": "コピーできませんでした — テキストを選択して手動でコピーしてください",
-      "the_copy_failed_ctrl_cmd_click_copies_the_full_session_id_for_label": "コピーできませんでした。Ctrl/Cmd+クリックで {{label}} の完全なセッション ID をコピーします。",
+      "couldnt_copy_the_full_session_id_for_label": "コピーできませんでした：{{label}} の完全なセッション ID",
+      "couldnt_copy_the_session_id_label": "コピーできませんでした：セッション ID {{label}}",
       "show_folder_chip_name": "フォルダー {{label}} をサイドバーに表示",
       "click_to_show_this_folder_in_the_sidebar": "クリックしてこのフォルダーをサイドバーに表示",
-      "the_copy_failed_ctrl_cmd_click_copies_the_folder_path_label": "コピーできませんでした。Ctrl/Cmd+クリックでフォルダーのパス {{label}} をコピーします。",
-      "couldnt_copy_the_image_path": "画像のパスをコピーできませんでした",
-      "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "コピーできませんでした。Ctrl/Cmd+クリックでパス {{label}} をコピーします。",
+      "couldnt_copy_the_folder_path_label": "コピーできませんでした：フォルダーのパス {{label}}",
+      "couldnt_copy_the_image_path_label": "コピーできませんでした：画像のパス {{label}}",
+      "couldnt_copy_the_path_label": "コピーできませんでした：パス {{label}}",
       "closed_session_open_failed": "{{name}} を開けませんでした。",
       "closed_session_try_again": "再試行",
       "unclosed_diff_warning": "ここで書式が崩れたため、返答の残りがこの差分の中に表示されている可能性があります。"
@@ -8453,7 +8468,8 @@
       "browser_reserved_hint": "ブラウザーのタブでは、これらのショートカットはページに届く前にブラウザーが処理します。代替の組み合わせはどこでも使え、デスクトップアプリでは両方が使えます。",
       "desktop_app_only": "デスクトップアプリのみ",
       "panel_toggles": "パネルの表示切り替え",
-      "unset": "未設定"
+      "unset": "未設定",
+      "save_refused": "保存されませんでした。ブラウザーのストレージがいっぱいです。空き容量を作ってからもう一度お試しください。"
     },
     "sidePanelLayout": {
       "more_below": "下にもあります",
@@ -8617,7 +8633,6 @@
     },
     "startupVideoModal": {
       "close": "閉じる",
-      "feature_intro": "機能紹介",
       "got_it": "了解しました",
       "media_failed": "機能紹介動画を読み込めませんでした",
       "share": "共有",
@@ -8855,6 +8870,7 @@
     },
     "voiceDictationPanel": {
       "esc_to_cancel_click_mic_to_finish": "Escキーでキャンセル、マイクをクリックして終了",
+      "esc_to_cancel_click_mic_to_send": "Escキーでキャンセル、Shift+クリックで下書きを保持、マイクをクリックして送信",
       "esc_to_cancel_enter_to_send": "Escキーでキャンセル、Enterキーで送信",
       "listening": "リッスン中"
     },
@@ -9149,9 +9165,7 @@
       "loading": "読み込み中…",
       "not_a_repository": "Git リポジトリではありません",
       "not_a_repository_help": "このプロジェクトフォルダーは Git リポジトリではありません。リポジトリがサブフォルダーにある場合は、メッセージボックスの下にあるフォルダー名をクリックしてください。",
-      "no_project": "このセッションにはプロジェクトフォルダーが設定されていません。",
       "refresh": "更新",
-      "title": "Git",
       "uncommitted": "{{count}} 件の未コミット",
       "branch_unavailable": "ブランチを利用できません",
       "status_failed": "リポジトリの状態を読み取れませんでした。コミット履歴が古い可能性があります。",
@@ -9169,7 +9183,20 @@
       "filter_refused_title_unreadable_changes": "Kiro は現在、変更を表示できません",
       "filter_refused_title_unreadable_history": "Kiro は現在、履歴を表示できません",
       "ask_agent_changes": "変更についてエージェントに質問",
-      "ask_agent_history": "履歴についてエージェントに質問"
+      "ask_agent_history": "履歴についてエージェントに質問",
+      "repos_empty": "表示できる Git リポジトリはありません。エージェントがリポジトリ内でファイルを編集するかコマンドを実行すると、ここに表示されます。",
+      "source_project": "プロジェクト",
+      "repos_failed": "このチャットのリポジトリを一覧表示できませんでした。",
+      "repos_refresh_failed": "このチャットのリポジトリを更新できませんでした。下のリストは最新ではない可能性があります。",
+      "repos_loading": "このチャットのリポジトリを読み込んでいます…",
+      "repos_incomplete": "エージェントが作業したリポジトリの一部が表示されない場合があります。各リポジトリは、エージェントが再びそこで作業すると、ここに表示されます。",
+      "repos_omitted_other": "エージェントは {{formattedTotal}} 件のリポジトリで作業しました。最近の {{formattedLimit}} 件を一覧表示しています。非表示の各リポジトリは、エージェントが再び作業すると再表示されます。",
+      "source_project_help": "このチャットを開始したリポジトリです。その他は、エージェントが作業したリポジトリです。",
+      "repos_caption": "このチャットでエージェントがファイルを編集したりコマンドを実行したりしたリポジトリです。",
+      "repos_caption_project_first": "プロジェクトのリポジトリが先頭に表示されます。",
+      "section_collapse_hint": "変更と履歴を非表示",
+      "section_expand_hint": "変更と履歴を表示",
+      "repos_retry": "再試行"
     },
     "workspaceTree": {
       "status_failed": "リポジトリの状態を読み取れませんでした。",
@@ -10093,7 +10120,6 @@
     },
     "useKeyboardShortcuts": {
       "chats_panel": "チャットパネル",
-      "close_this_session": "このセッションを閉じますか？",
       "cycle_agent": "エージェントをサイクル",
       "cycle_approval_mode": "承認モードをサイクル",
       "cycle_model": "モデルをサイクル",
@@ -10190,7 +10216,19 @@
       "working": "作業中"
     },
     "useSessionActions": {
-      "close_this_session": "このセッションを閉じますか？",
+      "close_confirm": {
+        "title": "このセッションを閉じますか？",
+        "reason_approval": "ツール呼び出しが承認を待っています。閉じるとキャンセルされます。",
+        "reason_turn": "まだ返信を作成中です。閉じるとその返信は停止します。",
+        "reason_subagents": "実行中または開始待ちのサブエージェントがあります。閉じるとそれらは停止します。",
+        "reason_queue": "送信待ちのメッセージがあります。送信はされず、セッションを再び開くと残っているので、送信または削除できます。",
+        "reason_workflow": "このセッションでワークフローが実行中です。閉じるとワークフローは停止します。",
+        "reason_goal_loop": "ゴールループが実行中です。閉じるとループは停止します。",
+        "reason_monitor": "変更を監視するモニターが動作しています。閉じるとモニターは停止します。",
+        "reason_work": "まだ実行中の作業があります。閉じるとその作業は停止します。",
+        "reason_setting": "実行中のものはありません。設定で「{{setting}}」がオンになっているため確認しています。",
+        "actions": "会話とメッセージ欄の下書きは保持され、後でセッションを再び開けます。"
+      },
       "reload_failed": "セッションの再読み込みに失敗しました。エージェントが応答中かゲートウェイに接続できない可能性があります。セッションがアイドルのときに再試行してください。",
       "duplicate_unreachable": "このセッションを複製できませんでした。{{productName}} に接続できませんでした。接続を確認してもう一度お試しください。",
       "reload_failed_subagents": "このセッションのサブエージェントがまだ動作中です。完了してから再試行してください。",
@@ -11162,6 +11200,13 @@
         "needs_active_chat": "このチャットを開き終えると利用できます",
         "needs_earlier_history_count_other": "選択すると以前の履歴を読み込みます（残り{{count}}件）",
         "share_message": "画像として共有",
+        "fork_earlier_messages": "以前のメッセージ付きでフォーク",
+        "fork_later_messages_only": "後のメッセージだけでフォーク",
+        "fork_earlier_messages_hint": "このメッセージとそれ以前のメッセージで新しい会話を始めます。この会話は変更されません。",
+        "fork_later_messages_only_hint": "このメッセージは含みません。これより後のメッセージだけが新しい会話に移ります。この会話は変更されません。",
+        "fork_no_later_messages": "このメッセージより後のメッセージはまだありません。",
+        "fork_in_progress": "フォーク中…",
+        "fork_other_in_progress": "別のフォークを開始しています。",
         "copy_failed": "コピーに失敗しました",
         "quote_message": "メッセージを引用"
       },
@@ -12402,6 +12447,7 @@
       "more_pull_request_in_this_session_other": "このセッションにはほかに {{count}} 件のプルリクエストがあります",
       "more_pull_request_or_issue_in_this_session_other": "このセッションにはほかに {{count}} 件のプルリクエストまたは Issue があります",
       "open_source_link_in_side_panel": "{{url}} をサイドパネルで開く ({{modifier}} するとブラウザーで開く)",
+      "open_named_source_link_in_side_panel": "{{provider}} {{ref}}：{{url}} をサイドパネルで開く ({{modifier}} するとブラウザーで開く)",
       "move_folder_to": "フォルダーの移動先",
       "needs_approval": "承認が必要です",
       "running_marker": "実行中",
@@ -16525,6 +16571,7 @@
         "configured_instances": "設定されたリモートクルー",
         "connect": "接続",
         "connect_failed": "{{id}} への接続に失敗しました: {{error}}",
+        "connect_needs_restart": "{{id}} への接続に失敗しました: 先にゲートウェイを再起動する必要があります。下の案内をご覧ください。",
         "connected_switch_from_tab_strip": "「{{name}}」に接続しました。上部ヘッダーのタブストリップから切り替えられます。",
         "connecting": "接続中…",
         "connection_did_not_complete_try_diagnose_for_det": "接続が完了しませんでした。詳細は診断を試してください。",
@@ -17171,6 +17218,8 @@
         "enabled": "有効",
         "endpointing": "話し終わったら自動送信",
         "endpointing_desc": "高速モデルを使用してリクエスト完了を検出し、自動的に送信します。ストリーミングプロバイダのみ。",
+        "submit_on_release": "録音を止めたら送信",
+        "submit_on_release_desc": "停止するとメッセージを送信します。下書きとして残すには、Shift キーを押したままにするか、スマートフォンで横にスライドします。",
         "failed_to_save_stt_config": "STT 設定を保存できませんでした",
         "input_device_used_to_capture_your_voice": "音声をキャプチャするために使用される入力デバイス",
         "language": "言語",
@@ -17299,7 +17348,8 @@
         "backend_encoder_only": "{{name}} — 一部のみ高速化、文字化の処理は CPU",
         "backend_cpu_only": "CPU で実行 — このビルドに GPU はありません",
         "last_recognition_value": "確定テキストまで {{duration}}、音声長の {{rtf}} 倍",
-        "decode_threads_value": "デコードスレッド {{n}}"
+        "decode_threads_value": "デコードスレッド {{n}}",
+        "ptt_save_refused": "保存されませんでした。ブラウザーのストレージがいっぱいです。空き容量を作ってからもう一度お試しください。"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "上記。Slack とは異なり、Bot Framework には\n              送信専用モードがありません。",

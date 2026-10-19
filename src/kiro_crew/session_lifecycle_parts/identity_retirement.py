@@ -181,7 +181,7 @@ async def retire_kiro_identity_sessions(
     owner = self._owner
     doomed: list[tuple[str, Any]] = []
     # The spare_children subset committed at the async teardown: (key, provider).
-    # Torn down in the ``maybe_spare`` finally, shielded, so a cancellation of
+    # Torn down in the method-level ``finally``, shielded, so a cancellation of
     # the sweep cannot leave a committed parent half torn down (its children
     # still running on a logged-out credential).
     committed_teardown: list[tuple[str, Any]] = []
@@ -193,8 +193,9 @@ async def retire_kiro_identity_sessions(
     maybe_spare: list[tuple[str, Any, "AbstractSet[str] | None"]] = []
     skipped = False
     waiting_on: list[str] = []
-    # One sweep at a time: the drain below is not re-entrant (a second
-    # concurrent drain raises), so a peer sweep waits here for this one.
+    # One sweep at a time: the permit barrier below (``_start_sem.drain()``) is
+    # not re-entrant (a second concurrent drain raises), so a peer sweep waits
+    # here for this one.
     # Wrapped in a try whose finally drains the committed retirements OUTSIDE
     # ``identity_sweep_lock`` (so a slow child shutdown cannot hold the lock
     # against a following account change) AND cancellation-safe (so a cancel
@@ -202,7 +203,6 @@ async def retire_kiro_identity_sessions(
     # already-unregistered parent's children running on the logged-out
     # credential). Both conditions must hold at once, which is why the drain
     # is a method-level finally after the lock rather than under it.
-    teardown_drained = False
     try:
         async with self._identity_sweep_lock:
             # Before the barrier, and before any key becomes claimable: every
@@ -375,7 +375,6 @@ async def retire_kiro_identity_sessions(
                 #     the store read ran is left alone -- the pop is guarded on the
                 #     session identity), then shut the provider down and run the
                 #     cancel, which stops nothing because there is no child.
-                committed_spare: list[str] = []
                 # Fences still held by candidates this loop has not resolved yet, so
                 # a cancellation (the chat closing mid-sweep) releases them in the
                 # ``finally`` rather than leaking a tentative fence that would keep
@@ -450,7 +449,7 @@ async def retire_kiro_identity_sessions(
                             # recorded any child since it opened, else promote it to
                             # the committed teardown fence so a concurrent /api/spawn
                             # is carried into the cancel's accepted_since rather than
-                            # cancelled (GPT F1). ``fence`` None (no store) commits.
+                            # cancelled. ``fence`` None (no store) commits.
                             committed = (
                                 handler is None
                                 or fence is None
@@ -480,7 +479,6 @@ async def retire_kiro_identity_sessions(
                                 teardown_children_by_key[key] = (
                                     handler.snapshot_teardown_children_only(key)
                                 )
-                            committed_spare.append(key)
                             unresolved_fences.pop(key, None)
                             # Record the end HERE, under the same lock hold that
                             # removed the session -- not batched after the loop. A
@@ -493,7 +491,7 @@ async def retire_kiro_identity_sessions(
                             # suspend the sweep, keeps it bound to this retirement.
                             await record_sessions_ended([key], end_reason=END_REASON_RETIRED)
                         owner._session_map.clear_sid(key)
-                        # Teardown is deferred to the finally, not this loop body,
+                        # Teardown is deferred to the method-level finally, not this loop body,
                         # so a cancellation between here and the drain cannot skip
                         # it: the finally always runs and drains it shielded.
                         committed_teardown.append((key, sess.provider))
@@ -512,56 +510,56 @@ async def retire_kiro_identity_sessions(
         # Runs after ``identity_sweep_lock`` is released (so a slow child
         # shutdown here never holds the lock against a following account
         # change) AND on cancellation (so the chat closing mid-sweep cannot
-        # abandon an already-unregistered parent). Both the stamp-dropped
-        # parents retired synchronously (``doomed``) and the spare candidates
-        # committed at the teardown (``committed_teardown``) are drained here:
-        # each is already unregistered, so leaving its children on the
-        # logged-out credential is exactly what this prevents. Guarded so the
-        # single drain runs once whether the sweep returns or is cancelled.
-        if not teardown_drained:
-            teardown_drained = True
-            # A cancel landing on one entry's drain must not abandon the
-            # entries after it: each is already unregistered and recorded
-            # ended, so skipping it leaves exactly the children this finally
-            # exists to end. Record the first ``CancelledError``, keep draining
-            # every remaining entry (each step already shielded below), and
-            # re-raise it after the loop so the cancel still propagates.
-            pending_cancel: asyncio.CancelledError | None = None
-            for key, provider in (*doomed, *committed_teardown):
-                children = teardown_children_by_key.get(key, ())
+        # abandon an already-unregistered parent). Both the parents retired
+        # synchronously under the registry lock (``doomed``: every idle
+        # candidate, or only the stamp-dropped ones when ``spare_children`` is
+        # set) and the spare candidates committed at the teardown
+        # (``committed_teardown``) are drained here: each is already
+        # unregistered, so leaving its children on the logged-out credential
+        # is exactly what this prevents.
+        #
+        # A cancel landing on one entry's drain must not abandon the
+        # entries after it: each is already unregistered and recorded
+        # ended, so skipping it leaves exactly the children this finally
+        # exists to end. Record the first ``CancelledError``, keep draining
+        # every remaining entry (each step already shielded below), and
+        # re-raise it after the loop so the cancel still propagates.
+        pending_cancel: asyncio.CancelledError | None = None
+        for key, provider in (*doomed, *committed_teardown):
+            children = teardown_children_by_key.get(key, ())
+            try:
                 try:
-                    try:
-                        await asyncio.shield(provider.shutdown())
-                    finally:
-                        # See ``destroy``: a shutdown that raises must not skip
-                        # the cancel. Shielded so a cancel of the sweep still
-                        # ends the children and releases the runtime before the
-                        # CancelledError propagates (we never swallow it).
-                        await asyncio.shield(
-                            self._cancel_parent_children(
-                                key,
-                                children,
-                                verb="retire_kiro_identity_sessions",
-                            )
+                    await asyncio.shield(provider.shutdown())
+                finally:
+                    # See ``destroy``: a shutdown that raises must not skip
+                    # the cancel. Shielded so a cancel of the sweep still
+                    # ends the children and releases the runtime before the
+                    # CancelledError propagates (we never swallow it).
+                    await asyncio.shield(
+                        self._cancel_parent_children(
+                            key,
+                            children,
+                            verb="retire_kiro_identity_sessions",
                         )
-                        await asyncio.shield(owner.release_subagent_runtime(key))
-                    retired.append(key)
-                except asyncio.CancelledError as exc:
-                    # Remember it and carry on draining the rest; this entry's
-                    # own steps already completed under their shields above.
-                    if pending_cancel is None:
-                        pending_cancel = exc
-                    retired.append(key)
-                except Exception:
-                    self._deps.logger.warning(
-                        "Failed to retire session %s after an identity change",
-                        key,
-                        exc_info=True,
                     )
-                    skipped = True
-                    waiting_on.append(f"{key} (shutdown failed)")
-            if pending_cancel is not None:
-                raise pending_cancel
+                    await asyncio.shield(owner.release_subagent_runtime(key))
+                retired.append(key)
+            except asyncio.CancelledError as exc:
+                # Remember it and carry on draining the rest; this entry's
+                # own steps already completed under their shields above.
+                if pending_cancel is None:
+                    pending_cancel = exc
+                retired.append(key)
+            except Exception:
+                self._deps.logger.warning(
+                    "Failed to retire session %s after an identity change",
+                    key,
+                    exc_info=True,
+                )
+                skipped = True
+                waiting_on.append(f"{key} (shutdown failed)")
+        if pending_cancel is not None:
+            raise pending_cancel
 
     # Warm-pool policy remains owned by the pool service; route through the
     # facade to retain direct manager monkeypatches and its fill-lock policy.

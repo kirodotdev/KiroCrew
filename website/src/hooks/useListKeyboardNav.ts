@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import { createImeLatch } from './useImeGuard'
+import { useLocalCrewHidden } from '../components/overlayRoot'
 
 /**
  * Shared list keyboard-navigation hook for picker-menu / palette surfaces
@@ -262,11 +263,14 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
     }
   }, [open])
 
+  // Behind a remote Crew the list is hidden with its Crew (components/overlayRoot);
+  // its keys belong to the Crew in front until it is back. Selection survives.
+  const crewHidden = useLocalCrewHidden()
   useEffect(() => {
-    if (!open) return
+    if (!open || crewHidden) return
     document.addEventListener('keydown', onKey, true)
     return () => document.removeEventListener('keydown', onKey, true)
-  }, [open, onKey])
+  }, [open, crewHidden, onKey])
 
   // Expose a synced setter that keeps selectedRef in lockstep with the state,
   // so external callers (e.g. resetting to 0 after new results) don't leave the

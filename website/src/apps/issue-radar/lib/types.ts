@@ -10,7 +10,7 @@ import type { SourceProvider } from '../api'
  * than on a self-managed instance. They are optional so a value persisted before
  * GitLab support still loads — absent means public GitHub.
  *
- * Structurally a `RepoRef` (see `api.ts`), so it can be passed straight to any
+ * Structurally a `RepoRef` (see `apiTypes.ts`), so it can be passed straight to any
  * API call without rebuilding it. */
 export interface ActiveRepo {
   owner: string

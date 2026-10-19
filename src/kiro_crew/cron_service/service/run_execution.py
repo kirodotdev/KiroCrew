@@ -9,9 +9,10 @@ patch of the member on the class or on an instance reaches every caller. A name
 tests patch on :mod:`kiro_crew.cron`, or one that module defines, is read through
 it on each call (``seams``).
 
-Instance fields written: ``_history``.
+Instance fields written: ``_history``, ``_timeout_alerts``.
 
-Instance fields read: ``_dir``, ``_on_job``, ``_push_refresh``, ``_running``, ``_runs``.
+Instance fields read: ``_dir``, ``_on_job``, ``_push_refresh``, ``_running``, ``_runs``,
+``_timeout_alert``.
 """
 
 from __future__ import annotations
@@ -374,10 +375,9 @@ async def _execute_with_timeout(
     try:
         await asyncio.wait_for(self._execute(job, claim), timeout=deadline)
     except asyncio.TimeoutError:
-        # NB: Timeout bypasses _cron_callback's except block entirely —
-        # which also means it bypasses all Slack notification logic. Adding
-        # a timeout Slack alert is a separate feature and is intentionally
-        # out of scope here.
+        # NB: Timeout bypasses _cron_callback's except block entirely, and
+        # with it every failure alert that block sends; _alert_timeout below
+        # is the one that reports this run.
         # Clear failure dedup state so a subsequent real error isn't
         # suppressed as a dup of the pre-timeout failure, and count the
         # timeout toward the auto-pause threshold for a run that actually
@@ -405,7 +405,8 @@ async def _execute_with_timeout(
         # already use: a state that PREVENTED the run is not a defect OF
         # the run. A genuine execution overrun still counts, because
         # _execute resets the marker to False before invoking the callback.
-        if not job.failure_recorded and not job.run_never_started:
+        counted = not job.failure_recorded and not job.run_never_started
+        if counted:
             job.record_failure()
         # The deadline cancelled _execute before its one-shot disable, so it
         # is done here (the result merge persists it). A delete_after_run
@@ -413,6 +414,11 @@ async def _execute_with_timeout(
         if run_parks_one_shot(job):
             job.enabled = False
         logger.error("Cron job '%s' timed out after %ds", job.name, deadline)
+        # Alerted on the count's own terms: a run that already recorded its
+        # failure was reported by the handler that recorded it, and a run whose
+        # payload never started is not a failure of the job.
+        if counted:
+            self._alert_timeout(job, job.last_error)
     finally:
         # A one-shot whose run FAILED (error or timeout) is auto-paused, not
         # consumed: the pause is execution-owned, so apply_run_record persists
@@ -423,6 +429,28 @@ async def _execute_with_timeout(
             if not (job.fire_time_denied or job.run_never_started):
                 job.enabled, job.auto_paused = False, True
                 job._audit_pause_change("auto_paused")
+
+
+def _alert_timeout(self: CronService, job: CronJob, detail: str) -> None:
+    """Start the timeout alert for *job*, whose deadline ended its run, and return.
+
+    Both arms that end a run on its deadline call this: the ``wait_for`` here
+    and the reaper's force-reap. The alert is the gateway's (see
+    ``set_timeout_alert``): it dedups, honours ``silent`` and reaches the bell
+    and the job's Slack or channel destination. It runs as its own task, never
+    awaited, so a slow delivery cannot hold the run's claim past its deadline
+    and into the reaper's. No alert set (the CLI, MCP, tests) is a no-op.
+    """
+    alert = self._timeout_alert
+    if alert is None:
+        return
+    try:
+        task: asyncio.Task[None] = asyncio.get_running_loop().create_task(alert(job, detail))
+    except Exception:
+        logger.warning("Cron '%s': could not start the timeout alert", job.name, exc_info=True)
+        return
+    self._timeout_alerts.add(task)
+    task.add_done_callback(self._timeout_alerts.discard)
 
 
 async def _execute(self: CronService, job: CronJob, claim: _RunClaim | None = None) -> None:

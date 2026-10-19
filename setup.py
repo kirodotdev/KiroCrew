@@ -126,7 +126,7 @@ class BuildWithFrontend(build_py):
         """Bundle the repo-root CHANGELOG.md into the package.
 
         Pip-wheel installs ship no source tree, so the dashboard's
-        ``/api/changelog`` endpoint (handlers/updates.py:_changelog_path) falls
+        ``/api/changelog`` endpoint (handlers/updates_channel.py:_changelog_path) falls
         back to a bundled ``kiro_crew/CHANGELOG.md``. Copy it in here rather than
         via package_data because it lives at the repo root, outside the
         ``src/kiro_crew`` package tree that setuptools globs.

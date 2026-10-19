@@ -6,6 +6,7 @@ import { MaybeGuideRevealScope } from '../../guide/GuideRevealScope'
 import { createTriggerContext, heldGuard, ProbeHoldContext, useProbeHold, useProbeTarget, useTriggerRef } from '../../guide/probeRegistry'
 import { useGuideTrustRootAttrs } from '../../guide/trustRoot'
 import type { GuideRevealScopeId } from '../../uiLocations/guidePlans.gen'
+import { MountAfterCommit, standDownWhileHidden, useInsideDialog, useLocalCrewHidden, useOverlayRoot } from '../overlayRoot'
 
 type PopoverProps = React.ComponentProps<typeof PopoverPrimitive.Root> & {
   /**
@@ -31,7 +32,10 @@ const PopoverTriggerSink = createTriggerContext()
  * It always holds the open state itself (an uncontrolled caller included), so
  * a guide's probe opens and closes it through that state, never by a press.
  */
-function Popover({ guideScope, guideProbe, open: openProp, defaultOpen, onOpenChange, ...rest }: PopoverProps) {
+function Popover({ guideScope, guideProbe, open: openProp, defaultOpen, onOpenChange, modal, ...rest }: PopoverProps) {
+  // Modal only inside a Radix dialog (components/overlayRoot): elsewhere a modal
+  // popover would lock the page, and keep it locked behind a remote Crew.
+  const insideDialog = useInsideDialog()
   const [inner, setInner] = React.useState(defaultOpen ?? false)
   const isControlled = openProp !== undefined
   const handleOpenChange = React.useCallback((next: boolean) => {
@@ -59,7 +63,7 @@ function Popover({ guideScope, guideProbe, open: openProp, defaultOpen, onOpenCh
     <MaybeGuideRevealScope id={guideScope} open={open}>
       <PopoverTriggerSink.Provider value={setTrigger}>
         <ProbeHoldContext.Provider value={probeHold.held}>
-          <PopoverPrimitive.Root open={open} onOpenChange={handleOpenChange} {...rest} />
+          <PopoverPrimitive.Root open={open} onOpenChange={handleOpenChange} modal={!!modal && insideDialog} {...rest} />
         </ProbeHoldContext.Provider>
       </PopoverTriggerSink.Provider>
     </MaybeGuideRevealScope>
@@ -85,14 +89,28 @@ const POPOVER_VARIANTS = {
   list: 'rounded-2xl p-1.5 shadow-lg',
 } as const
 
+// Portals into the owning pane's overlay root, so content opened in the local
+// dashboard hides with it behind a remote Crew (see components/overlayRoot).
+function PopoverPortal(props: React.ComponentProps<typeof PopoverPrimitive.Portal>) {
+  return (
+    <MountAfterCommit>
+      <PopoverPrimitive.Portal container={useOverlayRoot()} {...props} />
+    </MountAfterCommit>
+  )
+}
+
 const PopoverContent = React.forwardRef<
   React.ComponentRef<typeof PopoverPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof PopoverPrimitive.Content> & { variant?: keyof typeof POPOVER_VARIANTS }
->(({ className, align = 'center', sideOffset = 4, variant = 'default', onOpenAutoFocus, onCloseAutoFocus, onFocusOutside, onInteractOutside, ...props }, ref) => {
+>(({ className, align = 'center', sideOffset = 4, variant = 'default', onOpenAutoFocus, onCloseAutoFocus, onFocusOutside, onInteractOutside, onEscapeKeyDown, ...props }, ref) => {
   const held = React.useContext(ProbeHoldContext)
+  // A popover can hold unsaved input and work in flight, so a Crew switch hides
+  // it rather than closing it, and a key or click aimed at the Crew in front
+  // cannot dismiss it meanwhile (components/overlayRoot).
+  const crewHidden = useLocalCrewHidden()
   const trustRoot = useGuideTrustRootAttrs()
   return (
-  <PopoverPrimitive.Portal>
+  <PopoverPortal>
     <PopoverPrimitive.Content
       ref={ref}
       align={align}
@@ -100,7 +118,8 @@ const PopoverContent = React.forwardRef<
       onOpenAutoFocus={heldGuard(held, onOpenAutoFocus)}
       onCloseAutoFocus={heldGuard(held, onCloseAutoFocus)}
       onFocusOutside={heldGuard(held, onFocusOutside)}
-      onInteractOutside={heldGuard(held, onInteractOutside)}
+      onInteractOutside={standDownWhileHidden(crewHidden, heldGuard(held, onInteractOutside))}
+      onEscapeKeyDown={standDownWhileHidden(crewHidden, onEscapeKeyDown)}
       {...trustRoot}
       className={cn(
         // Entry animation only. Radix suspends unmount until an exit animation
@@ -113,7 +132,7 @@ const PopoverContent = React.forwardRef<
       )}
       {...props}
     />
-  </PopoverPrimitive.Portal>
+  </PopoverPortal>
   )
 })
 PopoverContent.displayName = PopoverPrimitive.Content.displayName

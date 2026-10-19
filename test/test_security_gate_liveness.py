@@ -407,7 +407,16 @@ def _url_payload_command(n: int) -> str:
 #: imports, owner list, install and two ``TYPE_CHECKING`` manifests. Every moved
 #: statement is unchanged bar one docstring phrase in ``_home_targets_tier``; no rule,
 #: threshold or pass moved.
-_PACKAGE_LINE_BUDGET = 31_038
+#:
+#: Raised again, from 31,038, for the rule catalog, output redaction and egress owner
+#: modules: ``denied_rules.py``, ``redaction.py`` and ``exfil.py`` are mirror facades over
+#: ``denied_rules_catalog`` and ``denied_rules_tables``, ``redaction_patterns`` and
+#: ``redaction_entropy``, and ``exfil_url_rules``, ``exfil_oauth`` and ``exfil_bash``. The
+#: 471 lines are glue: the owners' docstrings, imports and logger; the facades' docstring
+#: paragraphs, glue comments, owner imports, owner list, install, class swap and ``__all__``; and
+#: their ``TYPE_CHECKING`` manifests (two each in ``redaction`` and ``exfil``, one in
+#: ``denied_rules``). Every moved statement is unchanged; no rule, threshold or pass changed.
+_PACKAGE_LINE_BUDGET = 31_509
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

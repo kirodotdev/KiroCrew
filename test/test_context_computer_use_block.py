@@ -192,11 +192,13 @@ class TestTheShippedContract:
         assert not re.search(r"\{\{[A-Z_]+\}\}", prompt)
 
     def test_the_open_render_is_the_shipped_text_with_the_section_in_place(
-        self, gate: _Gate, builder: ContextBuilder
+        self, gate: _Gate, builder: ContextBuilder, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Gated on, the slot reproduces the file as it read before the move:
         the section sits between the Browser section and the widget slot."""
         gate.open = True
+        # The Browser section is there only while browsing is set up on the host.
+        monkeypatch.setattr("kiro_crew.browser_cli.install.available", lambda: True)
         prompt = self._resolve(builder)
         browser_tail = "`browser-auth` carries logged-in sessions.\n\n"
         assert browser_tail + _SECTION + "\n\n" in prompt + "\n\n"

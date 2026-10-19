@@ -625,9 +625,9 @@ class TestTheStructuredPathRefusesABrief:
 
     @staticmethod
     def _refusal_set() -> set[str]:
-        from kiro_crew.dashboard import session_directive_apply
+        from kiro_crew.dashboard import session_directive_apply_monitor
 
-        source = inspect.getsource(session_directive_apply)
+        source = inspect.getsource(session_directive_apply_monitor)
         line = next(ln for ln in source.splitlines() if "legacy_only = sorted(" in ln)
         return {
             token.strip().strip('"')

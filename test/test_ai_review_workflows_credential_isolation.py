@@ -16,6 +16,7 @@ import pytest
 import yaml
 from ai_review_workflows_helpers import (
     FORK_REVIEW_LANES,
+    REDACTOR_PATH,
     WORKFLOWS,
     _bash,
     _flat,
@@ -300,10 +301,10 @@ class TestForkLaneRedactsCredentialValues:
         self, tmp_path: Path, workflow: str, step: str, out: str, body: str, cred: str
     ):
         bash = _bash()
-        if bash is None or shutil.which("perl") is None or shutil.which("jq") is None:
-            pytest.skip("redaction test requires Bash, perl and jq")
+        if bash is None or shutil.which("jq") is None:
+            pytest.skip("redaction test requires Bash and jq")
         if os.name == "nt":
-            pytest.skip("the lanes' perl -i redaction is exercised on POSIX runners")
+            pytest.skip("the lanes' redaction step is exercised on POSIX runners")
 
         cwd = tmp_path / "ws"
         cwd.mkdir()
@@ -317,7 +318,7 @@ class TestForkLaneRedactsCredentialValues:
         script_file.write_text(
             _step_script(_workflow(workflow), step), encoding="utf-8", newline="\n"
         )
-        env = {**os.environ, "EXEC_FILE": str(exec_file)}
+        env = {**os.environ, "EXEC_FILE": str(exec_file), "REDACTOR": REDACTOR_PATH}
         # Absent means "not configured", which must be a no-op rather than an
         # empty pattern -- so the caller can ask for the unset case explicitly.
         for name in ("AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_ACCESS_KEY_ID"):

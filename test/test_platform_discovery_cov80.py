@@ -24,6 +24,7 @@ from typing import Any, List
 
 import pytest
 
+from kiro_crew.config.validation import extension_config_keys, replace_extension_config_keys
 from kiro_crew.platform import discovery as discovery_mod
 from kiro_crew.platform.admission import MODE_OPEN, AdmissionPolicy, PluginManifest
 from kiro_crew.platform.context import PROFILE_STANDALONE, PlatformCompositionError
@@ -32,6 +33,8 @@ from kiro_crew.platform.discovery import (
     PluginAdmissionError,
     discover_companion_context,
     plugin_entry_points,
+    refresh_installed_plugin_config_keys,
+    refresh_plugin_config_keys,
 )
 
 #: The companion builder never touches the config, so no real one is needed.
@@ -122,6 +125,103 @@ class TestStandaloneAndAmbiguity:
             discover_companion_context("zibble", _NO_CFG)
         assert "ambiguous" in str(excinfo.value)
         assert "one" in str(excinfo.value) and "two" in str(excinfo.value)
+
+
+def test_plugin_config_keys_refresh_uses_admitted_manifests_without_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _must_not_run(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("plugin config-key publication repeated discovery")
+
+    monkeypatch.setattr(discovery_mod, "plugin_entry_points", _must_not_run)
+    monkeypatch.setattr(discovery_mod, "evaluate_admission", _must_not_run)
+    replace_extension_config_keys("plugins", ())
+    try:
+        manifest = PluginManifest(name="zibble", config_keys=["aim_update"])
+        assert refresh_plugin_config_keys([manifest]) == frozenset({"aim_update"})
+        assert extension_config_keys("plugins") == frozenset({"aim_update"})
+    finally:
+        replace_extension_config_keys("plugins", ())
+
+
+def test_startup_plugin_refresh_publishes_only_admitted_manifest_without_loading_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry_point = _FakeEntryPoint(
+        "zibble",
+        loaded=lambda _cfg: (_ for _ in ()).throw(AssertionError("plugin code loaded")),
+    )
+    manifest = PluginManifest(name="zibble", config_keys=["aim_update"])
+    monkeypatch.setattr(discovery_mod, "plugin_entry_points", lambda: [entry_point])
+    monkeypatch.setattr(discovery_mod, "read_policy_trust_root", lambda: AdmissionPolicy())
+    monkeypatch.setattr("kiro_crew.platform.admission._read_plugin_manifest", lambda _ep: manifest)
+    replace_extension_config_keys("plugins", ())
+    try:
+        assert refresh_installed_plugin_config_keys() == frozenset({"aim_update"})
+        assert extension_config_keys("plugins") == frozenset({"aim_update"})
+
+        monkeypatch.setattr(
+            discovery_mod,
+            "read_policy_trust_root",
+            lambda: AdmissionPolicy(banned=["zibble"]),
+        )
+        assert refresh_installed_plugin_config_keys() == frozenset()
+        assert extension_config_keys("plugins") == frozenset()
+    finally:
+        replace_extension_config_keys("plugins", ())
+
+
+def test_companion_discovery_refreshes_from_existing_entry_point_snapshot(
+    monkeypatch: pytest.MonkeyPatch, open_policy: AdmissionPolicy
+) -> None:
+    entry_point = _FakeEntryPoint("zibble", loaded=lambda _cfg: object())
+    scans: list[int] = []
+
+    def _entry_points() -> List[Any]:
+        scans.append(1)
+        return [entry_point]
+
+    monkeypatch.setattr(discovery_mod, "plugin_entry_points", _entry_points)
+    manifest_reads: list[str] = []
+
+    def _read_manifest(ep: Any) -> PluginManifest:
+        manifest_reads.append(ep.name)
+        return PluginManifest(name=ep.name, config_keys=["aim_update"])
+
+    monkeypatch.setattr("kiro_crew.platform.admission._read_plugin_manifest", _read_manifest)
+    replace_extension_config_keys("plugins", ())
+    try:
+        assert discover_companion_context("zibble", _NO_CFG, policy=open_policy) is not None
+        assert extension_config_keys("plugins") == frozenset({"aim_update"})
+        assert scans == [1]
+        assert manifest_reads == ["zibble"]
+    finally:
+        replace_extension_config_keys("plugins", ())
+
+
+def test_rejected_plugin_does_not_publish_its_config_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry_point = _FakeEntryPoint("zibble", loaded=lambda _cfg: object())
+    monkeypatch.setattr(discovery_mod, "plugin_entry_points", lambda: [entry_point])
+    monkeypatch.setattr(
+        "kiro_crew.platform.admission._read_plugin_manifest",
+        lambda ep: PluginManifest(name=ep.name, config_keys=["rejected_key"]),
+    )
+    replace_extension_config_keys("plugins", ())
+    try:
+        policy = AdmissionPolicy(mode=MODE_OPEN, banned=["zibble"])
+        with pytest.raises(PluginAdmissionError):
+            discover_companion_context("zibble", _NO_CFG, policy=policy)
+        assert extension_config_keys("plugins") == frozenset()
+
+        assert (
+            discover_companion_context("zibble", _NO_CFG, policy=AdmissionPolicy(mode=MODE_OPEN))
+            is not None
+        )
+        assert extension_config_keys("plugins") == frozenset({"rejected_key"})
+    finally:
+        replace_extension_config_keys("plugins", ())
 
 
 class TestDenyAudit:

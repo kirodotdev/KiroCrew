@@ -367,6 +367,11 @@ class AcpSessionHandle:
         # BEFORE end_turn). wait_for_compaction() consumes it first so the
         # drain never strands a caller into a spurious 120s timeout.
         self._compact_result: dict[str, str] | None = None
+        # Credits kiro reported while no turn was running (a compaction
+        # waited on between turns). ``_track_metadata`` adds to it and
+        # ``_run_turn`` moves it onto the next turn's stats, so it is billed
+        # exactly once.
+        self._between_turn_credits = 0.0
         # Set when a codex compaction's ``started`` frame is seen inside a turn,
         # cleared by its terminal. It guards TWO directions. A LOADED session
         # replays a past compaction as a ``tool_call`` that is already

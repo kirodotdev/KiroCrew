@@ -174,6 +174,22 @@ source with a `kiro_crew DIVERGENCE FROM UPSTREAM` comment, so
   `(n_batch, n_vocab)` float32, which for the shipped Qwen3-Embedding-0.6B is
   ~1.24 GB that the embedding path never reads. `test/test_embed_scores_buffer.py`
   parses this file and fails if the divergence goes missing.
+- `llama_cpp/llama.py`, `Llama.embed` and the module-level
+  `_kiro_crew_batch_offset` — a bounded decode for last-token pooling. In
+  embedding mode llama.cpp makes every token an output and reserves
+  `n_vocab + n_embd` floats per output in a native buffer that grows to the
+  largest batch ever decoded and never shrinks (1.19 GB after one 2,048-token
+  input for the shipped model). When the host sets
+  `kiro_crew_max_decode_tokens` on the `Llama` (`kiro_crew.embeddings`'
+  `_install_bounded_decode` sets it to the context's `n_ubatch`, for a causal
+  context with a KV cache), a LAST-pooled batch longer than that is decoded as
+  consecutive slices of at most that many tokens, and each sequence's vector
+  is read after the slice holding its last token. At `n_ubatch` each slice is
+  exactly one of the micro-batches llama.cpp splits a single call into
+  (`split_simple`), so the buffer holds at most `n_ubatch` rows and the
+  vectors are unchanged. Unset, the method is upstream's.
+  `test/test_embed_bounded_decode.py` runs the shipped method against a fake
+  runtime and fails if the divergence goes missing.
 - `llama_cpp/llama_cpp.py`, module level — the library directory is resolved
   from the process-local seam first (`sys.modules["_kiro_crew_llama_cpp_lib_path"].LIBS_DIR`,
   registered by `kiro_crew.embeddings._publish_lib_path_for_import`), then from
@@ -204,6 +220,19 @@ After a legitimate vendored bump:
    python scripts/verify_vendor_manifest.py --write
    python scripts/verify_vendor_manifest.py          # confirm a green --check
    ```
+3. Re-prove the bounded decode byte-identical on the new runtime. CI has no
+   model, so `test_the_byte_identity_proof_covers_the_vendored_runtime` pins
+   a digest of the manifest's native-library and embed-path entries and fails
+   on the new manifest. Run, with the shipped GGUF (its sha256 is
+   `_GGUF_SHA256`):
+
+   ```
+   KIROCREW_TEST_EMBED_MODEL=<path to the GGUF> python -m pytest -n0 \
+       test/test_embed_bounded_decode.py::TestRealModel
+   ```
+
+   and, when it passes, set `_PROVEN_RUNTIME_DIGEST` in that test file to the
+   value the failure printed.
 
 The manifest lives outside `_vendor/` on purpose: a manifest change shows up
 in the reviewable diff, which is the whole point of the gate. It is

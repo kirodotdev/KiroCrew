@@ -492,6 +492,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "whether a settings file is re-seeded on a model switch. Invisible when "
         "right, a stale model when wrong"
     ),
+    "ACP_BACKENDS_EFFORT_OVERLAY": (
+        "which channel carries a reasoning-effort level to the engine at spawn -- the "
+        "workspace cli.json overlay for this set, a config option or a slash command "
+        "for the rest. The card's effort line already says whether effort can be "
+        "changed, and every channel applies the level the user chose. A wrong "
+        "membership is a defect: the level is written where the engine never reads "
+        "it, or a session is started at a level another session left in that file"
+    ),
     "ACP_BACKENDS_TOOL_SEARCH_OVERLAY": (
         "which channel carries the Tool Search setting to the engine -- the "
         "workspace cli.json overlay for this set, the initialize handshake for "
@@ -649,6 +657,24 @@ class UnmeasuredLine:
 #: are stated only when they HOLD, so an unmeasured one is already absent rather than
 #: crossed out, and a third level would have nothing to correct.
 DECLARED_UNMEASURED: Mapping[Tuple[str, str], UnmeasuredLine] = {}
+
+#: Card lines the runtime also gates on a field the adapter advertises, with that
+#: field. For these lines a membership set is not the whole answer: the runtime
+#: refuses the line when the session's handshake lacks the field.
+#:
+#: ``test_backend_cards_advertised`` counts the runtime sites that gate one of these
+#: lines on a deciding set instead, against a shrink-only allowlist, so a new site
+#: reads the field rather than adding another set test.
+ADVERTISED_FIELD_BY_LINE: Mapping[str, str] = {
+    # claude only, in ``acp.client_turn_control._steering_request_ready``.
+    LINE_MID_TURN_STEER: "initialize._meta.steering.supported",
+    # KAS only, in ``acp.session_handle_compaction._kas_compact_advertised``.
+    LINE_MANUAL_COMPACT: "initialize.agentCapabilities._meta.kiro.extensionMethods",
+    # The effort option's values, in ``acp.client_model_selection.get_valid_effort_levels``.
+    LINE_REASONING_EFFORT: "session.configOptions[effort option].options",
+    # The model select, in ``acp.session_handle_model_selection.model_select_envelope``.
+    LINE_MODEL_SWITCH: "session.configOptions[model] or session.models.availableModels",
+}
 
 
 @dataclass(frozen=True)

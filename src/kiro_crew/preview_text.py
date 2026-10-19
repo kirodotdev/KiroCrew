@@ -88,10 +88,15 @@ def drop_format_chars(text: str) -> str:
     path is sound, not an approximation: the ASCII range holds no Cf code
     point (the C0 controls are Cc), so ordinary traffic never pays for the
     per-character walk.
+
+    Each DISTINCT character is categorized once and ``str.translate`` removes
+    the Cf ones: a long message repeats a few dozen code points, so this drops
+    exactly the characters a per-character walk would, in C.
     """
     if text.isascii():
         return text
-    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    drop = {ord(ch): None for ch in set(text) if unicodedata.category(ch) == "Cf"}
+    return text.translate(drop) if drop else text
 
 
 #: The one length a roster preview is cut to. Both spellings of a member's

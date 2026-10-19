@@ -14,6 +14,22 @@ from instances_helpers import _FakeTunnel
 from kiro_crew.testing.wait import async_wait_until
 
 
+def _forwarder_listener_gone(port: int) -> bool:
+    """Whether nothing accepts connections on ``127.0.0.1:<port>`` any more.
+
+    The reclaim question is "did OUR forwarder let go of the port it held", and
+    the stand-in forwarder listens on ``127.0.0.1`` alone, the way an ``ssh -L``
+    child does. ``_is_port_free`` answers a different one, whether a new forward
+    could bind the port on every loopback address, so another xdist worker that
+    holds the same number on ``::1``, or as the ephemeral source port of an
+    unrelated loopback connection, would fail it after a correct reclaim. A
+    refused connect is the listener's own absence and nothing else's.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(5)
+        return s.connect_ex(("127.0.0.1", port)) != 0
+
+
 def _route_pinned_kill_to_kill_pid(monkeypatch):
     """Send the Windows pinned kill through the test's ``kill_pid`` double.
 
@@ -172,7 +188,6 @@ class TestOrphanForwarderReclaim:
         and its port released; connect then succeeds."""
         import kiro_crew.instances.ssh_tunnel_manager as stm
         from kiro_crew import platform_compat as pc
-        from kiro_crew.instances.port_allocator import _is_port_free
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         proc, port, argv = self._spawn_port_holder()
@@ -211,11 +226,11 @@ class TestOrphanForwarderReclaim:
             assert proc.wait(timeout=10) is not None
             # …and its port is released.
             await async_wait_until(
-                lambda: _is_port_free(port),
+                lambda: _forwarder_listener_gone(port),
                 off_loop=True,
-                describe=lambda: f"port {port} is still bound",
+                describe=lambda: f"port {port} still has a listener",
             )
-            assert _is_port_free(port), "reclaimed forwarder's port was not released"
+            assert _forwarder_listener_gone(port), "reclaimed forwarder's port was not released"
             # The connect succeeds regardless of which loopback port it lands on.
             # It asserts only that a valid port was recorded, not a DIFFERENT one:
             # the recorded port is PREFERRED for origin stability, so reclaiming
@@ -559,7 +574,6 @@ class TestOrphanForwarderReclaim:
         """
         import kiro_crew.instances.ssh_tunnel_manager as stm
         from kiro_crew import platform_compat as pc
-        from kiro_crew.instances.port_allocator import _is_port_free
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         proc, port, rebuilt = self._spawn_shebang_port_holder(tmp_path)
@@ -595,8 +609,7 @@ class TestOrphanForwarderReclaim:
             assert st.state == TunnelState.CONNECTED
             assert proc.wait(timeout=10) is not None, "the drifted orphan was not reclaimed"
             # "reclaimed" is only reported once the port let go.
-            # flake-ok: real two-loopback probe of the reaped child's released port; moved verbatim, tracked for a de-flake pass
-            assert _is_port_free(port)
+            assert _forwarder_listener_gone(port)
         finally:
             self._cleanup(proc)
 

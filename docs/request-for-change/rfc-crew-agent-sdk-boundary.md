@@ -660,7 +660,7 @@ every call site; and the fact being reported is about the deployment, not about 
 supervisor instance, so hanging it off the supervisor would imply per-instance
 variation that does not exist.
 
-`cli_doctor.py` compares `== ACP_BACKEND_KAS` against a config load with no
+`cli_doctor_parts/kas_relay.py` compares `== ACP_BACKEND_KAS` against a config load with no
 session, and is the same pre-session shape. Both it and `session.py`'s reads route
 through this function; §7 records which phase pays each off.
 
@@ -1235,7 +1235,7 @@ package it is supposed to delete. The gate prints the live split on every run �
 read it there rather than from this paragraph.
 
 One spelling deserves naming because it is easy to miss: `config/loader_config.py`
-constructs `AcpProvider` (through `agent_sdk.acp_provider_class()`), and that construction **is**
+constructs `AcpProvider` (through `agent_sdk.drivers.acp.build_acp_provider()`), and that construction **is**
 `create_provider_factory`. Other files import the name without constructing it,
 so "route it through the factory" is already true — what PR 5 has to change is
 which module they import the name *from*, not how they build it.

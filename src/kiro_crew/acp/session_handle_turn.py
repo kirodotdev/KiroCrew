@@ -7,7 +7,7 @@ Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` 
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_abandoned_prompt_id``, ``_awaiting_permission``,
+Instance fields written: ``_abandoned_prompt_id``, ``_awaiting_permission``, ``_between_turn_credits``,
 ``_cancel_ts``, ``_cancelled``, ``_compaction_terminal_seen``, ``_input_wait_emitted``,
 ``_kas_compact_turn``, ``_kas_subagent_roster``, ``_last_stop_reason``,
 ``_native_child_overflow``, ``_native_child_sids``, ``_native_child_tool_call_ids``,
@@ -627,6 +627,10 @@ async def _run_turn(
         )
 
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
+    # Credits reported between turns belong to no turn's window; this turn
+    # bills them (see ``_track_metadata``).
+    self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
+    self._between_turn_credits = 0.0
 
     # send_request must be inside the turn-state guard: _turn_done was just
     # cleared above, so if the request raises (e.g. AcpRuntimeDead on a

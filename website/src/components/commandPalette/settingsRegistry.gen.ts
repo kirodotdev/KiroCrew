@@ -2722,6 +2722,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "settingId": "voice.provider-2"
   },
   {
+    "id": "voice.send-when-i-stop-recording",
+    "label": "Send when I stop recording",
+    "labelKey": "pages.settings.sttSettings.submit_on_release",
+    "hint": "Stopping sends the message. Hold Shift, or slide sideways on the phone, to keep a draft.",
+    "tab": "voice",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "stt.submit_on_release"
+  },
+  {
     "id": "voice.shortcut-key",
     "label": "Shortcut key",
     "labelKey": "pages.settings.sttSettings.ptt_key",

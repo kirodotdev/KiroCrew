@@ -1314,7 +1314,14 @@ async def test_patch_definition_refuses_an_ambiguous_name(agents_dir):
     for body in ({"prompt": "rewritten"}, {"model": "claude-x"}):
         resp = await api_agent_detail(_request("PATCH", "atlas", body))
         assert resp.status == 409, resp.text
-        assert (await _body(resp))["code"] == "ambiguous_template_name"
+        payload = await _body(resp)
+        assert payload["code"] == "ambiguous_template_name"
+        # The refusal names both claimants by file name, never the absolute path.
+        assert payload["error"] == (
+            "'atlas' matches more than one template file in ~/.kiro/agents/ "
+            "(SomePkg-atlas.json, atlas.json); rename one first."
+        )
+        assert str(agents_dir) not in payload["error"]
     for f in ("atlas.json", "SomePkg-atlas.json"):
         spec = json.loads((agents_dir / f).read_text(encoding="utf-8"))
         assert spec["prompt"] != "rewritten" and "model" not in spec
@@ -1340,8 +1347,33 @@ async def test_patch_revalidates_ambiguity_under_the_write_lock(agents_dir, monk
     monkeypatch.setattr(agents_module, "_agent_detail_candidates", _scan_then_install)
     resp = await api_agent_detail(_request("PATCH", "atlas", {"prompt": "rewritten"}))
     assert resp.status == 409, resp.text
-    assert (await _body(resp))["code"] == "ambiguous_template_name"
+    payload = await _body(resp)
+    assert payload["code"] == "ambiguous_template_name"
+    # The locked re-check names what it found, the late claimant included.
+    assert "(SomePkg-atlas.json, atlas.json)" in payload["error"]
     assert json.loads((agents_dir / "atlas.json").read_text(encoding="utf-8"))["prompt"] == "mine"
+
+
+def test_ambiguous_refusal_text_without_scanned_paths():
+    """A raiser that did not scan the files keeps the bare sentence, no empty list."""
+    from kiro_crew.dashboard.handlers.agents import _AmbiguousTemplateName
+
+    assert _AmbiguousTemplateName("atlas").refusal_text() == (
+        "'atlas' matches more than one template file; rename one first."
+    )
+
+
+def test_ambiguous_refusal_text_masks_a_credential_shaped_file_name(tmp_path):
+    """File names are written by whoever writes the agents directory, so a
+    credential-shaped one is masked like every other agents-directory string."""
+    from kiro_crew.dashboard.handlers.agents import _AmbiguousTemplateName
+    from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
+
+    probe = "AKIAIOSFODNN7EXAMPLE"
+    exc = _AmbiguousTemplateName("atlas", (tmp_path / "atlas.json", tmp_path / f"{probe}.json"))
+    text = exc.refusal_text()
+    assert probe not in text
+    assert _SENSITIVE_MASK in text and "atlas.json" in text
 
 
 @pytest.mark.asyncio

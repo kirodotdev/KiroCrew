@@ -1,6 +1,6 @@
 import type { NavigateFunction } from 'react-router-dom'
 import type { RefObject, Dispatch, SetStateAction, MutableRefObject } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from '../../../components/overlayRoot'
 import { Undo2 } from 'lucide-react'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../../../chat-core/composer/Composer'
 import type { ComposerPasteSlice } from '../../../chat-core/composer/composerPastes'
@@ -649,7 +649,7 @@ export default function ComposerDockView({
               </Composer>
             </div>
             {/* Agent dropdown portal — triggered from input bar */}
-            {agentDropdown && agentBtnRect && createPortal(
+            {agentDropdown && agentBtnRect && <OverlayPortal>{
               // The keydown handler routes arrow/Enter navigation to the inner
               // role="listbox"; the dialog is a focus container (tabIndex={-1}),
               // not an interactive widget itself, so this delegation is intentional.
@@ -668,11 +668,10 @@ export default function ComposerDockView({
                 {/* The default for new sessions is a template; a crewmate's chat offers no such write. */}
                 {!embedded && !isCrewmateChat(currentSlot?.agent_kind, activeAgentName, installedAgents) && <DefaultAgentRow agentName={activeAgentName} isDefault={activeAgentName === defaultAgent} memoryTag={sessionMemoryTag(currentSlot?.agent, currentSlot?.agent_kind, defaultAgent, effectiveAgents)} onSetDefault={() => toggleDefaultAgent(activeAgentName, defaultWriteKind(currentSlot?.agent_kind))} />}
                 {!embedded && <ManageAgentsFooter error={defaultAgentFailed} onManage={() => { setAgentDropdown(false); navigate('/capabilities?tab=crews') }} />}
-              </div>,
-              document.body
-            )}
+              </div>
+            }</OverlayPortal>}
             {/* Model dropdown portal — triggered from input bar */}
-            {modelDropdown && modelBtnRect && createPortal(
+            {modelDropdown && modelBtnRect && <OverlayPortal>
               <ModelEffortDropdown
                 anchorRect={modelBtnRect}
                 dropdownRef={modelDropdownRef}
@@ -717,9 +716,8 @@ export default function ComposerDockView({
                     model: _modelPinActive === 'auto' ? '' : _modelPinActive,
                   })
                 }}
-              />,
-              document.body
-            )}
+              />
+            </OverlayPortal>}
             {/* Project picker — triggered from input bar */}
             <ProjectPicker
               open={projectPickerOpen}

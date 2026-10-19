@@ -409,6 +409,11 @@ export function useHoverIntent(options: Options = {}): HoverIntent {
   // not the WCAG 3.2.1 trigger-focus trap documented on triggerProps: focus is
   // already inside the surface, so revealing it discloses the focused control's
   // own container rather than moving the user anywhere.
+  //
+  // NOT reached by focus mode's top bar and nav rail: those surfaces are `inert`
+  // while hidden (shell/focus/focusChrome.ts, hiddenChromeProps), so Tab cannot
+  // land in them and this path never fires for them. It stays for any
+  // non-inert surface that keeps its controls in the tab order while closed.
   const onFocusIn = useCallback(() => {
     if (!enabled || open) return
     cancelPending()

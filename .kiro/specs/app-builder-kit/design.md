@@ -78,7 +78,7 @@ are composition shells mirroring the meetings app (`MeetingsPage`/`MeetingView`/
 - **Encoding + producer (see Requirement 8 — the load-bearing prerequisite).** This codebase
   has **no typed `tool-<name>` part stream**: the chat transport is markdown + `<mcwidget>`
   (`useBlockAssembler.ts`) and tool I/O is opaque strings (`input?/output?: string`,
-  `tool_input: string` in `types/index.ts`). So the kit does NOT borrow AI-SDK's wire model
+  `tool_input: string` in `types/index.chat.ts`). So the kit does NOT borrow AI-SDK's wire model
   literally. Instead:
   - **Encoding:** a fenced `tool-view` JSON block carried in the agent's message text —
     `{"tool":"<name>","schemaVersion":1,"data":{...}}` — parsed by `ContentRenderer` exactly

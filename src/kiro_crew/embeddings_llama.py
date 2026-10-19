@@ -20,7 +20,7 @@ import time
 import weakref
 from pathlib import Path
 
-from kiro_crew.embeddings_gguf import _model_context_policy
+from kiro_crew.embeddings_gguf import _GGUF_CAUSAL_SUFFIX, _model_context_policy
 from kiro_crew.embeddings_model import (
     _is_sensitive_model_path,
     _model_file_stamp,
@@ -33,6 +33,7 @@ from kiro_crew.embeddings_settings import (
     _COLD_LOAD_WAIT_SECS,
     _DEFAULT_DIM,
     _EMBED_WAIT_LOG_MS,
+    _ENCODER_ARCHITECTURES,
     _EVICT_POLL_MAX_SECS,
     _INFER_STOP_TIMEOUT_SECS,
     _INTERACTIVE_QUEUE_RESERVE,
@@ -120,6 +121,60 @@ def _install_metadata_kv_clear(llm: object) -> bool:
         memory_clear(memory, False)
 
     ctx.kv_cache_clear = kv_cache_clear
+    return True
+
+
+def _install_bounded_decode(llm: object) -> bool:
+    """Cap the tokens one native decode handles at the context's physical micro-batch.
+
+    In embedding mode llama.cpp makes every token of a batch an output and
+    reserves ``n_vocab + n_embd`` floats per output -- the logits are reserved
+    and computed although nothing here reads them -- in a buffer that grows to
+    the largest batch ever decoded and is never shrunk: 610,772 bytes per token
+    for the shipped model, 1.19 GB after one 2,048-token input, held until the
+    model unloads. The vendored ``Llama.embed`` is told to decode a longer batch
+    as consecutive slices of at most ``n_ubatch`` tokens (its
+    ``kiro_crew_max_decode_tokens`` divergence), so the buffer never holds more
+    than ``n_ubatch`` rows: 298 MiB for the shipped model's 512.
+
+    ``n_ubatch`` and not anything smaller, because a unified-cache decode splits a
+    batch into consecutive ``n_ubatch`` slices in batch order (``split_simple``):
+    each bounded call is then exactly one of the micro-batches the single call
+    runs -- the same tokens, positions and cache contents, in the same order -- so
+    every backend runs the same kernels on the same inputs and the vectors are
+    byte-identical by construction, not by a measurement on one platform.
+
+    Set only for a context that decodes causally through a KV cache, where the
+    cache carries the earlier slices; ``Llama.embed`` itself slices only under
+    last-token pooling. A cache-less encoder, or a GGUF declaring
+    ``<architecture>.attention.causal = false``, needs every token of an input in
+    one micro-batch. ``_model_context_policy`` already gives such a file
+    ``n_ubatch == n_batch``, which no batch can exceed -- but only when its own
+    bounded header parser reads the file. A header it refuses and llama.cpp
+    loads (over ``_GGUF_MAX_METADATA_ITEMS`` entries, an array over
+    ``_GGUF_MAX_ARRAY_ITEMS``, a captured string over
+    ``_GGUF_MAX_DECODED_STRING_BYTES``) gets the decoder sizes whatever the model
+    is, so this reads the loaded runtime's own view instead: its ``memory``
+    handle and the metadata llama.cpp parsed. A context whose shape cannot be
+    read keeps the single decode. Returns True when set.
+    """
+    ctx = getattr(llm, "_ctx", None)
+    if ctx is None or getattr(ctx, "memory", None) is None:
+        return False
+    metadata = getattr(llm, "metadata", None)
+    if not isinstance(metadata, dict):
+        return False
+    architecture = str(metadata.get("general.architecture") or "").strip().lower()
+    if not architecture or architecture in _ENCODER_ARCHITECTURES:
+        return False
+    # Absent, the runtime defaults to causal attention (as _model_context_policy reads it).
+    causal = metadata.get(architecture + _GGUF_CAUSAL_SUFFIX)
+    if causal is not None and str(causal).strip().lower() != "true":
+        return False
+    n_ubatch = getattr(getattr(llm, "context_params", None), "n_ubatch", 0)
+    if not isinstance(n_ubatch, int) or isinstance(n_ubatch, bool) or n_ubatch <= 0:
+        return False
+    llm.kiro_crew_max_decode_tokens = n_ubatch  # type: ignore[attr-defined]
     return True
 
 
@@ -533,7 +588,9 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 # the vendored constructor skips the ~1.24 GB per-token logits
                 # buffer this would otherwise size (see the `n_score_rows`
                 # divergence comment in src/kiro_crew/_vendor/llama_cpp/llama.py),
-                # so n_batch does not trade memory against input length. Both are
+                # and _install_bounded_decode below keeps llama.cpp's own output
+                # buffer at its load size, so n_batch does not trade memory
+                # against input length. Both are
                 # clamped to the trained position count the GGUF declares, at
                 # most 2,048 (see _model_context_policy). Decoder models keep the
                 # lower-RSS 512-token micro-batch, bounded by that batch; non-causal
@@ -552,6 +609,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 verbose=False,
             )
             _install_metadata_kv_clear(llm)
+            _install_bounded_decode(llm)
             try:
                 unchanged = _model_file_stamp(self._model_path) == stamp
             except OSError:

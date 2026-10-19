@@ -92,7 +92,7 @@ JWT_MULTI_SEGMENT = r"eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*){2,4}"
 #: whatever ``\b`` / word-boundary shape its site needs. Kept here so the builder's
 #: subset has ONE home: a set restated at each call site drifts silently, because
 #: the copies must be edited together to stay right and no test sees a one-sided
-#: omission. The credential scrubber (``security/redaction.py``) carries its own
+#: omission. The credential scrubber (``security/redaction_patterns.py``) carries its own
 #: spelling of these vendor forms; only ``AWS_KEY_ID`` and ``JWT_MULTI_SEGMENT``
 #: above are imported by both. The bounds here are chosen to MATCH the scrubber's
 #: for the same format (see the note below), so the builder never ships a short

@@ -1280,6 +1280,29 @@ jobs:
             with the HEAD sha copied verbatim from your system prompt:
             [UX-REVIEWED] <HEAD sha>
 
+      # The outbound scrub is `scripts/scope_redact.py`, staged from the BASE
+      # commit. A redactor taken from the change under review could
+      # rewrite the scrub of its own published output. Every model step after
+      # this one is read-only, so nothing can rewrite the staged copy.
+      - name: Stage the base-owned redactor
+        id: redactor
+        if: always() && steps.pr.outputs.obsolete != 'true'
+        env:
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        run: |
+          set -uo pipefail
+          dir="${RUNNER_TEMP:-/tmp}/scope-redact"
+          # Remove before creating: a symlink at this path would redirect the write.
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          dest="$dir/scope_redact.py"
+          git show "$BASE_SHA:scripts/scope_redact.py" > "$dest" 2>/dev/null || true
+          if [ ! -s "$dest" ]; then
+            echo "::error::scripts/scope_redact.py is missing or empty on the base commit ($BASE_SHA). Refusing to publish text no base-owned scrubber could redact."
+            exit 1
+          fi
+          echo "redactor=$dest" >> "$GITHUB_OUTPUT"
+
       # Capture the UX verdict for humans (best-effort, NON-gating). Reads the
       # summary from the action's execution_file — not a model-posted comment —
       # so it works even if the model never calls a posting tool. On a UI-scope
@@ -1291,6 +1314,7 @@ jobs:
         id: post
         if: always() && steps.pr.outputs.obsolete != 'true'
         env:
+          REDACTOR: ${{ steps.redactor.outputs.redactor }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.pr.outputs.pr }}
@@ -1583,7 +1607,14 @@ jobs:
           # from whatever we post. Combined with the "no raw text unless a
           # verdict parsed" gate above, this keeps internal detail out of the
           # public PR comment. Mirrors ux-review.yml's redaction step.
-          perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' "${RUNNER_TEMP:-/tmp}/ux-comment.md"
+          # No redactor, or a scrub that fails, is a refusal: the file is removed so
+          # no later `always()` step can publish it raw.
+          if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ] \
+            || ! python3 "$REDACTOR" --mode text "${RUNNER_TEMP:-/tmp}/ux-comment.md"; then
+            echo "::error::the base-owned redactor could not scrub ${RUNNER_TEMP:-/tmp}/ux-comment.md. Refusing to publish it raw."
+            rm -f "${RUNNER_TEMP:-/tmp}/ux-comment.md"
+            exit 1
+          fi
           # Name the description revision this verdict read, so staleness is
           # readable without comparing timestamps: `created_at` is frozen at the
           # comment's first revision and `updated_at` moves on every in-place

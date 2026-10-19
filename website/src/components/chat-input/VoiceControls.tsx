@@ -1,4 +1,4 @@
-import { ArrowUp, Keyboard, Loader2, Mic, MicOff, X } from 'lucide-react'
+import { ArrowUp, Keyboard, Loader2, Mic, MicOff, PenLine, X } from 'lucide-react'
 import VoiceStatusBar from '../VoiceStatusBar'
 import VoiceDictationPanel from '../VoiceDictationPanel'
 import { Btn } from '../ui'
@@ -18,9 +18,11 @@ const noopSelectDevice = () => {}
 
 /** Above the editor: the hold gesture's cancel cue while a press is live, then
  *  the dictation panel while recording, else the thin status bar. */
-export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, showDictation, value, voicePartial, voiceDeviceLabel, voiceDeviceId, onSelectVoiceDevice, voiceDeviceSwitchIsLive, voiceStreaming, voiceDownload, voiceRecording, voiceLevel, voiceError, voiceKeptRecording, onClearVoiceError, voiceDrainCancellable, cancelVoiceDrain, onVoiceToggle, micHeldElsewhere, micHeldElsewhereLabel, micHeldElsewhereAction, voiceHeldLanded }: {
+export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, draftZone = false, showDictation, value, voicePartial, voiceDeviceLabel, voiceDeviceId, onSelectVoiceDevice, voiceDeviceSwitchIsLive, voiceStreaming, voiceDownload, voiceRecording, voiceLevel, voiceError, voiceKeptRecording, onClearVoiceError, voiceDrainCancellable, cancelVoiceDrain, onVoiceToggle, micHeldElsewhere, micHeldElsewhereLabel, micHeldElsewhereAction, voiceHeldLanded }: {
   voiceHoldMode: boolean
   touchPtt: TouchPtt
+  /** The hold gesture offers its sideways keep-as-draft zone (`stt.submit_on_release`). */
+  draftZone?: boolean
   showDictation: NonNullable<VoiceInput['voiceSampleRef']> | null
   value: string
   voicePartial: string
@@ -55,11 +57,23 @@ export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, showDictation, val
           data-testid="hold-cancel-cue"
           aria-live="polite"
           className={`flex items-center justify-center gap-1.5 py-1.5 text-[11.5px] font-medium transition-colors ${
-            touchPtt.armedCancel ? 'bg-danger text-danger-fg' : 'text-muted border-b border-dashed border-border-strong'
+            touchPtt.armedCancel
+              ? 'bg-danger text-danger-fg'
+              : touchPtt.armedDraft
+                ? 'bg-accent-subtle text-accent'
+                : 'text-muted border-b border-dashed border-border-strong'
           }`}
         >
           {touchPtt.armedCancel ? (
             <><X size={12} className="shrink-0" />{i18nT('components.chatInput.release_to_cancel')}</>
+          ) : touchPtt.armedDraft ? (
+            /* Keep-draft is not a discard, so it never borrows the danger
+               colour or the X: the words stay, unsent. */
+            <><PenLine size={12} className="shrink-0" />{i18nT('components.chatInput.release_to_keep_draft')}</>
+          ) : draftZone ? (
+            /* Both ways out, named once the press is live: release now sends,
+               so the person needs to know how not to. */
+            <><ArrowUp size={12} className="shrink-0" />{i18nT('components.chatInput.slide_up_to_cancel_sideways_to_keep_draft')}</>
           ) : (
             <><ArrowUp size={12} className="shrink-0" />{i18nT('components.chatInput.slide_up_to_cancel')}</>
           )}
@@ -76,7 +90,7 @@ export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, showDictation, val
            keyboard hint stays suppressed for exactly the drain the finger
            just committed — and stays SHOWN for a keyboard-binding capture,
            where Esc/Enter genuinely work. */
-        <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} streaming={voiceStreaming} gestureDriven={voiceHoldMode || touchPtt.bar === 'settling'} download={voiceDownload} />
+        <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} streaming={voiceStreaming} gestureDriven={voiceHoldMode || touchPtt.bar === 'settling'} submitOnRelease={draftZone} download={voiceDownload} />
       ) : (
         <VoiceStatusBar
           recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} error={voiceError} keptRecording={voiceKeptRecording} onDismissError={onClearVoiceError} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} download={voiceDownload}
@@ -150,9 +164,11 @@ export function HoldToTalkBar({ manualHeight, setHoldTarget, touchPtt, disabled,
         className={`flex-1 min-h-[44px] justify-center rounded-xl font-semibold select-none ${
           touchPtt.bar === 'armed-cancel'
             ? 'border-dashed border-danger bg-danger-subtle text-danger-text'
-            : touchPtt.bar === 'holding'
-              ? ''
-              : 'border-border-strong bg-card text-text-strong'
+            : touchPtt.bar === 'armed-draft'
+              ? 'border-dashed border-accent bg-accent-subtle text-accent'
+              : touchPtt.bar === 'holding'
+                ? ''
+                : 'border-border-strong bg-card text-text-strong'
         }`}
         disabled={disabled || micBlocked || optimizing || voiceSettling}
         aria-label={holdBarLabel}

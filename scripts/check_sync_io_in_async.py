@@ -63,17 +63,29 @@ blocks the calling thread:
   what keeps ``.get(`` away from ``dict.get``. ``httpx.AsyncClient`` is excluded
   on purpose: its verbs are awaitable and correct.
 * **sleep** -- ``time.sleep``.
+* **fs** -- a stat or resolve: ``os.stat`` / ``lstat`` / ``listdir`` /
+  ``scandir`` / ``walk``, ``os.path.realpath`` / ``isfile`` / ``isdir`` /
+  ``exists``, the builtin ``open`` as a bare call, and the ``pathlib`` methods
+  ``.resolve()`` / ``.stat()`` / ``.lstat()`` / ``.exists()`` / ``.is_file()`` /
+  ``.is_dir()`` with no positional argument (#10517). Each is microseconds on a
+  healthy disk, and that is the trap: the cost belongs to the mount, not the
+  call. On an NFS or FUSE mount that stopped answering, it blocks in the kernel
+  for as long as the mount takes. Offload it, or mark a path that cannot hang
+  (one under the data home, say). ``security/paths_resolver.py``'s
+  ``_resolved_forms_bounded`` is the bounded resolver for the gate that must
+  stay callable anywhere; no gated name runs lexically there.
 
-The set is deliberately the high-severity end (seconds to minutes per call), not
-everything that touches a descriptor. A local ``read_text()`` is microseconds
-and gating it would bury the calls that actually reach the watchdog budget under
-thousands of harmless entries.
+The set is deliberately the high-severity end, not everything that touches a
+descriptor. Pathlib reads and writes (``read_text()``, ``read_bytes()``,
+``write_text()``, ``.open()``) open the file too and can hang on the same
+mount, yet they are not gated here: no stat need precede them, so this is a
+gap, not a guarantee, and gating them is follow-up work.
 
 ## What is NOT a violation, and why
 
 * **NOT an exemption: `await`.** Nothing gated here is awaitable in this tree --
-  the dependencies carry no async DB driver, and no awaitable
-  requests/httpx-sync/subprocess/``time.sleep`` exists at all -- so ``await
+  the dependencies carry no async DB driver and no async path library, and no
+  awaitable requests/httpx-sync/subprocess/``time.sleep`` exists at all -- so ``await
   cur.execute(...)`` or ``await requests.get(url)`` performs the entire blocking
   call on the loop and only then raises ``TypeError`` on the non-awaitable
   result. The stall is identical, so the awaited spelling is reported too. If an
@@ -106,7 +118,9 @@ runtime guard (``history.py``'s ``OnLoopPersistError``, which is #3057's remedy 
 tracked at #7078 -- until it lands this gate is the whole defence and it does not
 cover that shape). Matching is by NAME, so an aliased
 ``from requests import get as fetch`` escapes; the ratchet's job is to stop the
-ordinary spelling from growing back, not to outrun a determined author.
+ordinary spelling from growing back, not to outrun a determined author. The
+``fs`` path methods are matched by name AND arity: a zero-argument
+``.exists()`` on an object that is not a path is flagged, and takes the marker.
 
 ## The opt-out marker
 
@@ -137,7 +151,10 @@ that rewrite regardless. The escape is NOT a row of semantically false markers.
 ## The ratchet
 
 The repository predates this gate, so existing sites are recorded as legacy in
-``.github/sync-io-in-async-baseline.txt`` as ``<count> <path>`` lines. The rules
+``.github/sync-io-in-async-baseline.txt`` as ``<count> <path>`` lines. The
+``fs`` family keeps its own ledger, ``.github/sync-io-in-async-fs-baseline.txt``,
+judged by the same rules: its sites predate the family, and a separate file
+means an fs entry can never cover an older family's call. The rules
 mirror ``check_subprocess_encoding.py`` and ``check_black_formatting.py`` (same
 problem -- a large pre-existing set that must only shrink):
 
@@ -176,6 +193,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = ROOT / ".github" / "sync-io-in-async-baseline.txt"
+# The `fs` family keeps its own ledger: its legacy sites predate the family, and
+# a separate file means no fs entry can ever stand in for an older family's call.
+FS_BASELINE = ROOT / ".github" / "sync-io-in-async-fs-baseline.txt"
 SCAN_ROOT = "src"
 MARKER = "on-loop-io-ok"
 # The comment must OPEN with the marker and carry a reason. A bare marker, or the
@@ -193,7 +213,18 @@ MODULE_FUNCS: dict[str, dict[str, str]] = {
         "check_call": "subprocess",
         "check_output": "subprocess",
     },
-    "os": {"system": "subprocess", "popen": "subprocess"},
+    "os": {
+        "system": "subprocess",
+        "popen": "subprocess",
+        "stat": "fs",
+        "lstat": "fs",
+        "listdir": "fs",
+        "scandir": "fs",
+        "walk": "fs",
+    },
+    # Reached as `os.path.<attr>` through an `os` alias, through `import os.path as
+    # p` / `from os import path`, or as a bare `from os.path import isdir`.
+    "os.path": {"realpath": "fs", "isfile": "fs", "isdir": "fs", "exists": "fs"},
     "time": {"sleep": "sleep"},
     "requests": {
         "get": "http",
@@ -226,6 +257,23 @@ NAME_FUNCS: dict[str, str] = {
     "urlopen": "http",
     "run_limited": "subprocess",
     "popen_limited": "subprocess",
+}
+
+# Matched as a bare call only: `zipfile.open(...)`, `webbrowser.open(...)` and
+# `self.open()` are not the builtin.
+BUILTIN_FUNCS: dict[str, str] = {"open": "fs"}
+
+# `pathlib.Path` methods that stat or resolve the path, matched on ANY receiver
+# but only with no positional argument. The receiver's type is unknowable to a
+# name-based scan; the arity is what keeps `store.exists(key)` and
+# `cache.stat(name)` out, and every zero-argument receiver in this tree is a path.
+PATH_METHODS: dict[str, str] = {
+    "resolve": "fs",
+    "stat": "fs",
+    "lstat": "fs",
+    "exists": "fs",
+    "is_file": "fs",
+    "is_dir": "fs",
 }
 
 # Verbs that perform a request, checked on a receiver PROVEN to be a synchronous
@@ -271,6 +319,12 @@ FAMILY_REMEDY = {
         "aiohttp (already a dependency), or `await asyncio.to_thread(...)`"
     ),
     "sleep": "`time.sleep` blocks the loop; `await asyncio.sleep(...)` does not",
+    "fs": (
+        "a stat, resolve or open on a mount that stopped answering blocks the loop "
+        "for as long as the kernel takes -- run it off the loop: "
+        "`await asyncio.to_thread(...)`, or `dashboard/file_api/path_probe.py`'s "
+        "bounded `_run_path_probe` for a path the request chose"
+    ),
 }
 
 HEADER = """\
@@ -339,6 +393,9 @@ def _import_names(
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
             for alias in node.names:
+                # `from os import path` binds a module, not a function.
+                if module == "os" and alias.name == "path":
+                    aliases[alias.asname or "path"] = "os.path"
                 # Async constructors are recorded too, purely to DISAMBIGUATE a
                 # name that another scope also binds to a sync client.
                 origin = (module, alias.name)
@@ -523,6 +580,18 @@ def _family(
             module = aliases.get(fn.value.id)
             if module and fn.attr in MODULE_FUNCS[module]:
                 return MODULE_FUNCS[module][fn.attr], None
+        # `os.path.isdir(...)`: the receiver is the `path` attribute of an os alias.
+        recv = fn.value
+        if (
+            isinstance(recv, ast.Attribute)
+            and recv.attr == "path"
+            and isinstance(recv.value, ast.Name)
+            and aliases.get(recv.value.id) == "os"
+            and fn.attr in MODULE_FUNCS["os.path"]
+        ):
+            return MODULE_FUNCS["os.path"][fn.attr], None
+        if fn.attr in PATH_METHODS and not node.args:
+            return PATH_METHODS[fn.attr], None
         if fn.attr in NAME_FUNCS:
             return NAME_FUNCS[fn.attr], None
         if fn.attr in HTTP_VERBS:
@@ -536,7 +605,7 @@ def _family(
         origin = from_names.get(fn.id)
         if origin is not None:
             return MODULE_FUNCS[origin[0]][origin[1]], None
-        family = NAME_FUNCS.get(fn.id)
+        family = NAME_FUNCS.get(fn.id) or BUILTIN_FUNCS.get(fn.id)
         return None if family is None else (family, None)
     return None
 
@@ -701,6 +770,14 @@ def _write_baseline(path: Path, entries: dict[str, int]) -> None:
     path.write_text(HEADER + body, encoding="utf-8")
 
 
+def _split(
+    violations: dict[str, list[tuple[int, str, int | None]]], *, fs: bool
+) -> dict[str, list[tuple[int, str, int | None]]]:
+    """Only the `fs` sites (``fs=True``) or only the other families' sites."""
+    kept = {rel: [v for v in found if (v[1] == "fs") == fs] for rel, found in violations.items()}
+    return {rel: found for rel, found in kept.items() if found}
+
+
 def _shrunken_baseline(baseline: dict[str, int], current: dict[str, int]) -> dict[str, int]:
     """The refresh result: counts only ever lowered, clean/gone entries dropped."""
     survivors: dict[str, int] = {}
@@ -769,7 +846,18 @@ def _report_sites(found: list[tuple[int, str, int | None]], rel: str) -> None:
 
 
 def run_gate(baseline_path: Path, update: bool) -> int:
+    """Judge the older families against their baseline and `fs` against its own."""
     violations = _scan()
+    return max(
+        _run_ledger(baseline_path, update, _split(violations, fs=False)),
+        _run_ledger(FS_BASELINE, update, _split(violations, fs=True)),
+    )
+
+
+def _run_ledger(
+    baseline_path: Path, update: bool, violations: dict[str, list[tuple[int, str, int | None]]]
+) -> int:
+    print(f"-- {baseline_path.name}")
     current = {rel: len(found) for rel, found in violations.items()}
     baseline = _read_baseline(baseline_path)
 
@@ -985,9 +1073,55 @@ _FLAGGED: dict[str, str] = {
         "    async def g(self, url):\n"
         "        return await self._client.get(url)\n"
     ),
+    "os.path.realpath through an os alias": (
+        "import os\nasync def f(p):\n    return os.path.realpath(p)\n"
+    ),
+    "os.path module imported under its own alias": (
+        "import os.path as osp\nasync def f(p):\n    return osp.isdir(p)\n"
+    ),
+    "os.path taken with from os import path": (
+        "from os import path\nasync def f(p):\n    return path.exists(p)\n"
+    ),
+    "from-imported os.path function": (
+        "from os.path import isfile\nasync def f(p):\n    return isfile(p)\n"
+    ),
+    "os.stat": ("import os\nasync def f(p):\n    return os.stat(p)\n"),
+    "os.scandir": ("import os\nasync def f(p):\n    return list(os.scandir(p))\n"),
+    "builtin open": ("async def f(p):\n    with open(p) as fh:\n        return fh.read()\n"),
+    "Path.resolve with no argument": (
+        "from pathlib import Path\nasync def f(p):\n    return Path(p).resolve()\n"
+    ),
+    "Path.exists on a path name": ("async def f(path):\n    return path.exists()\n"),
+    "Path.is_file on a joined path": ("async def f(root):\n    return (root / 'a').is_file()\n"),
+    "Path.resolve with a strict keyword is still a resolve": (
+        "async def f(path):\n    return path.resolve(strict=True)\n"
+    ),
 }
 
 _CLEAN: dict[str, str] = {
+    "a store's exists(key) is not a path probe": (
+        "async def f(store, key):\n    return store.exists(key)\n"
+    ),
+    "an attribute open is not the builtin": (
+        "import zipfile\nasync def f(z, name):\n    return z.open(name)\n"
+    ),
+    "a path method handed to to_thread": (
+        "import asyncio\nasync def f(p):\n    return await asyncio.to_thread(p.resolve)\n"
+    ),
+    "a path probe inside a lambda": (
+        "import asyncio\n"
+        "async def f(p):\n"
+        "    return await asyncio.to_thread(lambda: p.exists() and p.is_dir())\n"
+    ),
+    "a read is not gated": ("async def f(p):\n    return p.read_text()\n"),
+    "a bounded probe pool takes the function": (
+        "from kiro_crew.dashboard.file_api.path_probe import _run_path_probe\n"
+        "async def f(check, p):\n"
+        "    return await _run_path_probe(check, p)\n"
+    ),
+    "a marked path that cannot hang": (
+        f"async def f(p):\n    return p.exists()  # {MARKER}: under the data home\n"
+    ),
     "an async driver opts out through the marker": (
         "async def f(db):\n" f"    await db.execute('SELECT 1')  # {MARKER}: aiosqlite, awaitable\n"
     ),

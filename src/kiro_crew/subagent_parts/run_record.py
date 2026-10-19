@@ -105,6 +105,10 @@ class SubagentInfo:
     memory_mode: str = field(default="persistent", kw_only=True)
     _memory_mode_ready: bool = field(default=True, init=False, repr=False)
     agent: str = ""
+    # The caller's display name for this run (``spawn_run``'s ``label``), already
+    # normalized to one bounded line; "" shows the task text instead. Display
+    # only: the run's prompt is ``task``.
+    label: str = ""
     # The app that spawned this child (empty for a non-app spawn). Persisted so
     # the child's per-tool-call gate can resolve the app's Level-2 profile, not
     # just the spawn-time decision — without it the profile constrains only
@@ -227,6 +231,15 @@ class SubagentInfo:
     # (retire_kiro_identity_sessions)", "reaped after 900s (reaped)").
     _reap_reason: str = ""
     _stop_origin: str = ""
+
+    def __post_init__(self) -> None:
+        # Every way into a record (a spawn, the queue drain, task-store recovery)
+        # holds the label to the one bounded display line the task box shows.
+        # Imported here: this class's methods run on the facade's globals.
+        if self.label:
+            from kiro_crew.spawn_label import normalize_spawn_label
+
+            self.label = normalize_spawn_label(self.label)
 
     @property
     def stop_is_neutral(self) -> bool:

@@ -282,6 +282,45 @@ def test_a_recording_is_marked_live_or_synthesized_honestly() -> None:
     ), "the corpus README must state which backends are synthesized rather than captured"
 
 
+def _init_agent_info(frames: list[dict]) -> dict | None:
+    for frame in frames:
+        result = frame.get("result")
+        if isinstance(result, dict) and "protocolVersion" in result:
+            info = result.get("agentInfo")
+            return info if isinstance(info, dict) else None
+    return None
+
+
+def test_a_live_header_names_the_agent_its_capture_answered_as() -> None:
+    """``_meta.agent_name`` and ``agent_version`` are read off the wire, not typed.
+
+    A live capture holding an ``initialize`` answer must agree with its
+    ``agentInfo``. One without (a slice taken later in a session) must name the
+    agent its directory's own handshake captures answer as. The pin gate in
+    ``test_real_adapter_fixture_pins.py`` keys on these two fields.
+    """
+    wire_names: dict[str, set[str]] = {}
+    headers = []
+    for path in fixture_files():
+        meta, frames = read_fixture(path)
+        if meta.get("recorded") != "live" or meta.get("backend") in _BACKENDS_WITHOUT_AGENT_VERSION:
+            continue
+        info = _init_agent_info(frames)
+        if info is not None:
+            wire_names.setdefault(path.parent.name, set()).add(info.get("name"))
+            # pi's header adds the host binary's release after a space: "0.0.34 (pi 1.2.0)".
+            assert (meta.get("agent_name"), str(meta.get("agent_version")).split(" ")[0]) == (
+                info.get("name"),
+                info.get("version"),
+            ), f"{path.parent.name}/{path.name}: _meta disagrees with its own initialize agentInfo"
+        headers.append((path, meta))
+    for path, meta in headers:
+        assert meta.get("agent_name") in wire_names.get(path.parent.name, set()), (
+            f"{path.parent.name}/{path.name}: _meta.agent_name {meta.get('agent_name')!r} is not "
+            f"what this directory's handshake captures answer as"
+        )
+
+
 def test_replaying_the_whole_corpus_modifies_no_committed_file() -> None:
     """Replay must leave the corpus byte-identical on disk.
 
