@@ -36,8 +36,12 @@ worker sessions it dispatched, keyed by work item rather than by session.
 
 ## Finishing
 
+While a ledger is open, a short snapshot of it is added to each monitor loop
+cycle and to the first turn after a context compaction, so the session sees its
+goal and next step again without being asked.
+
 A ledger is marked finished when its work is done or abandoned, which stops it
-being re-injected into later cycles. A stale ledger quietly steering a session
+being re-injected into later cycles and compactions. A stale ledger quietly steering a session
 that has moved on is the failure this avoids.
 
 ## Related docs

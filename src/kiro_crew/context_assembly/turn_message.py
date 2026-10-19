@@ -497,6 +497,14 @@ def build_message(
                 native_launch_sources=native_launch_sources,
             )
         )
+        # The session's durable work state, which a monitor cycle already gets
+        # and an interactive turn lost with the compaction. A minimal turn is
+        # read by other people, and a read-blocked (incognito) turn keeps no
+        # ledger, so neither gets it.
+        if not minimal_context and not blocks_reads:
+            _ledger_part = _turn.ledger_reinjection_part(session_key, text)
+            if _ledger_part:
+                parts.append(_ledger_part)
         # Member identity is session-start context too, so a compaction
         # dropped it along with the skills index: without this, the next
         # turn of a member DM thread runs with no identity, no working

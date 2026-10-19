@@ -365,21 +365,27 @@ re-adds, once:
    like the cap figure, read at session start only: the full section while
    browsing is set up on the host (or that cannot be read), a short pointer while
    it is not.
+6. `[REINJECTED AFTER COMPACTION — work ledger]` — the session's open
+   [`[work ledger]` snapshot](#the-work-ledger-snapshot), via
+   `context_assembly/turn.py` → `ledger_reinjection_part`; withheld on minimal and
+   read-blocked turns.
 
 If that turn does not land (cancelled, refused, errored), `rearm_reinjection` puts
 the flag back, so the context is never lost to a failed turn. A minimal-context turn
 gets back only the agent contract and the reply-style preferences; the memory index,
-skills index, folder steering and member section stay withheld
+skills index, folder steering, member section and work ledger stay withheld
 (`post_compaction_parts(minimal_context=True)`).
 
 ### The `[work ledger]` snapshot
 
-Not part of `build_message`. `session_ledger.py` → `render_snapshot` renders a
+`session_ledger.py` → `render_snapshot` renders a
 compact block (`goal`, `phase`, `next`, the last three `tried`, artifacts, bounded
 by `_SNAPSHOT_MAX_CHARS`) and `dashboard/handlers/autonudge.py` prepends it to a
 **monitor /
 auto-nudge cycle message**, so each cycle starts from durable state rather than
-transcript memory. It is empty when the session has no ledger or its phase is
+transcript memory. `build_message` adds the same block once on the first turn
+after a compaction (item 6 above), scrubbed of structural markers, unless that
+turn's text already carries it. It is empty when the session has no ledger or its phase is
 terminal. See [Session Ledger](../../src/kiro_crew/docs/session-ledger.md), [Monitor Loops](../../src/kiro_crew/docs/monitor-loops.md).
 
 ## 3. Sub-agent sessions (`spawn_run`)
@@ -710,7 +716,7 @@ per-member permission control; both exist today, in the forms above.
 | Which agents get skills | `src/kiro_crew/context.py` (`_skills_injection_plan`), `src/kiro_crew/agent_discovery.py` (`agent_skill_globs`, `expand_skill_uri`) |
 | Steering and hooks | `src/kiro_crew/context_assembly/agent_spec.py` (`_load_steering_resources`, `steering_target_admissible`), `src/kiro_crew/hooks.py` |
 | Post-compaction re-injection | `src/kiro_crew/messaging/turn_bracket.py` (`TurnBracket`, `consume_reinjection`, `rearm_reinjection`; re-exported by `messaging/dispatch.py`) |
-| Ledger snapshot on nudge turns | `src/kiro_crew/session_ledger.py` (`render_snapshot`), `src/kiro_crew/dashboard/handlers/autonudge.py` |
+| Ledger snapshot on nudge and post-compaction turns | `src/kiro_crew/session_ledger.py` (`render_snapshot`), `src/kiro_crew/dashboard/handlers/autonudge.py`, `src/kiro_crew/context_assembly/turn.py` (`ledger_reinjection_part`) |
 | Sub-agent context scope | `src/kiro_crew/subagent_parts/run_record.py` (`_context_groups_of`), `src/kiro_crew/mcp_tools/spawn.py`, `src/kiro_crew/mcp_tools/spawn_parts/schemas.py`, `src/kiro_crew/mcp_tools/spawn_parts/wave.py` |
 | Sub-agent prompt assembly, shared vs dedicated | `src/kiro_crew/subagent_manager/run_turn.py` (`_run_inner_impl`), `src/kiro_crew/subagent_manager/run_start.py` (`_should_use_session_sharing_impl`, `_sharing_plan_impl`) |
 | Scratch directories | `src/kiro_crew/agent_scratch.py` (`allocate_scratch`, `scratch_env`) |

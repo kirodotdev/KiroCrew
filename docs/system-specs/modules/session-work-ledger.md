@@ -187,6 +187,8 @@ Bounds are applied twice, and the reason is that a file's bytes are not the writ
 
 Every `_fire_*_nudge` adapter in `slack.gateway` calls `compose_nudge_body()`, including the messaging and dashboard transports. `test_gateway_fire_callbacks_use_the_composer` enumerates adapters rather than pinning their count, so a new transport cannot silently bypass the ledger snapshot.
 
+The first turn after a confirmed compaction carries the same snapshot. `context_assembly.turn.ledger_reinjection_part()`, called from the `needs_reinjection` branch of `build_message`, adds it under `[REINJECTED AFTER COMPACTION — work ledger]` with structural markers scrubbed, because the ledger is agent-written text. It adds nothing when the snapshot is empty, when the turn text already carries it (a nudge cycle that lands on that turn), on a minimal-context turn, and on a read-blocked turn, and a snapshot exception costs only the block. `test/test_context_ledger_reinjection.py` covers each case.
+
 ## 6. Failure behavior and scope
 
 A read failure yields the empty record. A ledger write fails explicitly when the live session lacks a crew log, when the crew log is disabled, or when the session id is absent; the route maps those cases to `crew_log_unavailable` (409), a refused crew-log fold to `crew_log_unreadable` (409), and a storage failure remains retryable. Both closing a tab and permanently deleting a session's history are deliberately different acts: the crew-log record goes with the unit the delete funnel removes, while the legacy ledger-store residue is left for the explicit sweep in [Cleanup](#cleanup), which reports rather than deletes any record it cannot parse. Snapshot failures are best-effort and never prevent the nudge from firing.
