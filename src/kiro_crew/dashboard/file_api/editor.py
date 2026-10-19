@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         _PathProbeBusy,
         _probe_busy_response,
         _probe_request_path,
+        _project_relative_stall_path,
         _read_request_path,
         _resolve_project_relative,
         _run_path_probe,
@@ -81,7 +82,11 @@ async def api_file_read(request: web.Request) -> web.Response:
     # the resolved string, so it cannot be folded into the probe.
     if request.query.get("resolve") == "1":
         try:
-            raw_path, _resolve_err = await _run_path_probe(_resolve_project_relative, raw_path)
+            raw_path, _resolve_err = await _run_path_probe(
+                _resolve_project_relative,
+                raw_path,
+                stall_path=_project_relative_stall_path(raw_path),
+            )
         except _PathProbeBusy:
             return _probe_busy_response(resource=raw_path, tool_name="file_read")
         if _resolve_err == "cannot_resolve":
@@ -275,6 +280,7 @@ async def api_file_raw(request: web.Request) -> web.Response:
                 max_bytes=_MAX_UPLOAD_BYTES,
             ),
             transfer=True,
+            stall_path=request.query.get("path", ""),
         )
     except _PathProbeBusy:
         return _probe_busy_response(resource=request.query.get("path", ""), tool_name="file_raw")

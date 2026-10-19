@@ -595,7 +595,9 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 requested_cwd = request.query.get("cwd")
                 if requested_cwd:
                     cwd = await asyncio.wait_for(
-                        _run_path_probe(_resolve_cwd, cfg, requested_cwd),
+                        _run_path_probe(
+                            _resolve_cwd, cfg, requested_cwd, stall_path=requested_cwd
+                        ),
                         timeout=_TERMINAL_CWD_TIMEOUT_S,
                     )
                 else:

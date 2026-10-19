@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import errno
 import inspect
 import json
@@ -50,7 +51,7 @@ import kiro_crew.dashboard.handlers as _HANDLERS_PKG
 from kiro_crew import executors
 from kiro_crew.dashboard import file_api
 from kiro_crew.dashboard.handlers import files as f
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 #: The shared open-and-check prefix resolves the validator through the
 #: ``handlers`` package at call time -- a documented monkey-patch seam kept for
@@ -1270,6 +1271,156 @@ class TestWedgedPrefixRefusal:
         finally:
             release.set()
             pool.shutdown(wait=True)
+
+
+@contextlib.asynccontextmanager
+async def _stuck_under(monkeypatch: pytest.MonkeyPatch, path: str):
+    """Park two probes under the stall key of *path*, on a three-worker pool.
+
+    Every running probe counts as stuck (``_PATH_PROBE_STALL_SECS`` is zero), so
+    the stall is set by the test, not by a clock. The third worker stays free, so
+    a refusal that follows is the stall gate's and not the pool's capacity. An
+    ``async with`` helper, not a fixture, so the exit can await the parked
+    probes under a named bound before the pool is shut down.
+    """
+    pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix=_PROBE_THREAD_PREFIX)
+    monkeypatch.setattr(f, "_PATH_PROBE_ADMIT_TIMEOUT_SECS", 0.2)
+    monkeypatch.setattr(f, "_PATH_PROBE_STALL_SECS", 0.0)
+    monkeypatch.setattr(executors, "path_probe_executor", lambda: pool)
+    monkeypatch.setattr(executors, "path_transfer_executor", lambda: pool)
+    release = threading.Event()
+    wedged: list[asyncio.Future] = []
+    try:
+        key = f._path_probe_stall_key((path,))
+        assert key, path
+        for name in ("a", "b"):
+            entered = threading.Event()
+            wedged.append(
+                asyncio.ensure_future(
+                    f._run_path_probe(_wedge_on, os.path.join(path, name), entered, release)
+                )
+            )
+            await _until_entered(entered)
+        assert f._path_probe_prefix_wedged(key)
+        yield key
+    finally:
+        release.set()
+        if wedged:
+            await await_until(asyncio.gather(*wedged), what="the parked probes settling")
+        pool.shutdown(wait=True)  # every worker has returned: the join is immediate
+
+
+async def _third_worker_is_free() -> None:
+    """The pool still serves a call under no stuck key, so the refusal was the gate."""
+    assert await f._run_path_probe(lambda: "free") == "free"
+
+
+class TestStallKeyForCallersThatDoNotLeadWithThePath:
+    """Callers that hand the probe a closure, a list or a config first name their
+    path with ``stall_path``, so two probes stuck under it refuse the third."""
+
+    @pytest.mark.asyncio
+    async def test_reveal_open_is_refused_under_its_stuck_path(
+        self, a_file: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        launch = mock.MagicMock(return_value=False)
+        monkeypatch.setattr(f.platform_compat, "open_with_default_app", launch)
+        monkeypatch.setattr(f, "is_direct_local_request", lambda request: True)
+        req = make_mocked_request("POST", "/api/reveal", app=_app())
+        req["user"] = "test-user"
+        body = {"path": str(a_file), "action": "open"}
+        async with _stuck_under(monkeypatch, str(a_file.parent)):
+            with mock.patch.object(
+                f, "read_bounded_json", mock.AsyncMock(return_value=(body, None))
+            ):
+                resp = await f.api_reveal_path(req)
+
+            assert resp.status == 503, resp.text
+            assert _body(resp)["code"] == "path_probe_busy"
+            launch.assert_not_called()
+            await _third_worker_is_free()
+
+    @pytest.mark.asyncio
+    async def test_fallback_search_is_refused_under_its_stuck_roots(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path / "proj"))
+        monkeypatch.setattr(f, "data_home", lambda: tmp_path)
+        async with _stuck_under(monkeypatch, str(tmp_path)):
+            resp = await f.api_file_search(_req("/api/file-search", "q=note"))
+
+            assert resp.status == 503, resp.text
+            assert _body(resp)["code"] == "path_probe_busy"
+            await _third_worker_is_free()
+
+    @pytest.mark.asyncio
+    async def test_file_kinds_is_refused_when_its_batch_is_under_a_stuck_key(
+        self, a_file: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(a_file.parent))
+        req = make_mocked_request("POST", "/api/file-kinds", app=_app())
+        req["user"] = "local-app"
+        req["app"] = ""
+        body = {"paths": [str(a_file), "note.md"]}
+        async with _stuck_under(monkeypatch, str(a_file.parent)):
+            with mock.patch.object(
+                f, "read_bounded_json", mock.AsyncMock(return_value=(body, None))
+            ):
+                resp = await f.api_file_kinds(req)
+
+            assert resp.status == 503, resp.text
+            assert _body(resp)["code"] == "path_probe_busy"
+            await _third_worker_is_free()
+
+    @pytest.mark.asyncio
+    async def test_a_relative_path_is_refused_under_its_stuck_project_dir(
+        self, a_file: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The resolve itself is refused, before it realpaths inside the dead project."""
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(a_file.parent))
+        resolve = mock.MagicMock(side_effect=f._resolve_project_relative)
+        monkeypatch.setattr(f, "_resolve_project_relative", resolve)
+        async with _stuck_under(monkeypatch, str(a_file.parent)):
+            resp = await f.api_file_read(_req("/api/file-read", "path=note.md&resolve=1"))
+
+            assert resp.status == 503, resp.text
+            assert _body(resp)["code"] == "path_probe_busy"
+            resolve.assert_not_called()
+            await _third_worker_is_free()
+
+    @pytest.mark.parametrize(
+        "route",
+        ["file_raw", "file_download", "file_office_preview", "file_sheet"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_transfer_that_opens_the_path_itself_is_refused_under_its_key(
+        self, a_file: Path, monkeypatch: pytest.MonkeyPatch, route: str
+    ):
+        """These routes validate and open inside ONE transfer closure, with no keyed
+        probe before it, so the transfer carries the path's key itself."""
+        handler = getattr(f, f"api_{route}")
+        async with _stuck_under(monkeypatch, str(a_file.parent)):
+            resp = await handler(_req(f"/api/{route.replace('_', '-')}", f"path={a_file}"))
+
+            assert resp.status == 503, (route, resp.status, resp.text)
+            assert _body(resp)["code"] == "path_probe_busy"
+            await _third_worker_is_free()
+
+    def test_a_batch_is_keyed_only_when_every_path_shares_one_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A batch across mounts gets no key: keyed on one path, two batches stuck on
+        a dead mount listed later would refuse the healthy mount listed first."""
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        here = str(tmp_path / "x")
+        other = os.path.join(os.sep, "kc-other-mount", "share", "y")
+        assert f._path_probe_stall_key((here,)) != f._path_probe_stall_key((other,))
+        assert f._batch_stall_path([here, "rel.md"]) == here
+        assert f._batch_stall_path([here, other]) == ""
+        assert f._batch_stall_path(["rel.md"]) == str(tmp_path)
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR")
+        assert f._project_relative_stall_path("rel.md") == ""
+        assert f._project_relative_stall_path(here) == here
 
 
 class TestExecutorPools:

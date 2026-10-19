@@ -202,6 +202,7 @@ from kiro_crew.dashboard.file_api.path_probe import (  # noqa: F401
     _validate_dashboard_path,
 )
 from kiro_crew.dashboard.file_api.pinned_io import (  # noqa: F401
+    _batch_stall_path,
     _CheckedFile,
     _classify_request_paths,
     _file_write_blocking,
@@ -211,6 +212,7 @@ from kiro_crew.dashboard.file_api.pinned_io import (  # noqa: F401
     _OpenDenied,
     _OpenedFile,
     _OpenRefusal,
+    _project_relative_stall_path,
     _read_request_path,
     _resolve_project_relative,
     _TextRead,

@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         _OpenDenied,
         _PathProbeBusy,
         _probe_busy_response,
+        _project_relative_stall_path,
         _resolve_project_relative,
         _run_path_probe,
         _sel,
@@ -197,7 +198,11 @@ async def api_file_office_preview(request: web.Request) -> web.Response:
     # Off-loop: the resolution is a pair of realpath calls.
     if request.query.get("resolve") == "1":
         try:
-            raw_path, _resolve_err = await _run_path_probe(_resolve_project_relative, raw_path)
+            raw_path, _resolve_err = await _run_path_probe(
+                _resolve_project_relative,
+                raw_path,
+                stall_path=_project_relative_stall_path(raw_path),
+            )
         except _PathProbeBusy:
             return _probe_busy_response(resource=raw_path, tool_name="file_office_preview")
         if _resolve_err == "cannot_resolve":
@@ -340,7 +345,7 @@ async def api_file_office_preview(request: web.Request) -> web.Response:
         return payload
 
     try:
-        result = await _run_path_probe(_open_and_extract, transfer=True)
+        result = await _run_path_probe(_open_and_extract, transfer=True, stall_path=raw_path)
     except asyncio.CancelledError:
         # Gateway shutdown / client disconnect while the worker thread is
         # parsing: the access attempt already happened, so record it before

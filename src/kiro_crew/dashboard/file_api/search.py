@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         _WALK_SKIP_DIRS,
         _WALK_TIME_BUDGET_SECS,
         DashboardState,
+        _batch_stall_path,
         _PathProbeBusy,
         _probe_busy_response,
         _run_path_probe,
@@ -264,9 +265,14 @@ async def api_file_search(request: web.Request) -> web.Response:
             return bool(proj) and os.path.isdir(proj), os.path.isdir(mc_workspace)
 
         # Off-loop: two isdir probes on operator-configured paths, either of
-        # which may sit on a network mount.
+        # which may sit on a network mount. Keyed only when both roots share
+        # one mount, the batch rule: a key on either root alone would let a
+        # dead workspace mount refuse a healthy project dir, or the reverse.
         try:
-            proj_is_dir, workspace_is_dir = await _run_path_probe(_probe_fallback_roots)
+            proj_is_dir, workspace_is_dir = await _run_path_probe(
+                _probe_fallback_roots,
+                stall_path=_batch_stall_path([r for r in (proj, mc_workspace) if r]),
+            )
         except _PathProbeBusy:
             return _probe_busy_response(resource=proj, operation="file_search", caller=caller)
         if proj_is_dir:
@@ -457,7 +463,9 @@ async def api_file_search(request: web.Request) -> web.Response:
     # probe slot too: a walk into a dead mount would otherwise pin a
     # default-executor worker exactly as an unbounded stat does.
     try:
-        results = await _run_path_probe(_walk_file_search, transfer=True)
+        results = await _run_path_probe(
+            _walk_file_search, transfer=True, stall_path=_batch_stall_path(safe_roots)
+        )
     except _PathProbeBusy:
         return _probe_busy_response(resource=f"q={query}", operation="file_search", caller=caller)
 

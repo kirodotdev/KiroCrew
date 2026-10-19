@@ -1167,6 +1167,14 @@ never one) this gate keys one component deeper, so `/home/<user>/mnt/nas/x`
 keys to `/home/<user>/mnt` and a dead FUSE or sshfs mount inside the home does
 not refuse `/home/<user>/workspace`; the home itself keeps its own key. The rule
 is lexical, and the resolver's cooldown keeps the plain `_stall_prefix` key.
+A caller whose path is not the first argument names it with `stall_path=`,
+keyed by the same rule (`""` means no key): the reveal-and-open closure passes
+its path, the terminal passes the requested cwd, and the project-relative
+resolve passes `_project_relative_stall_path` (the project directory for a
+relative path, the path itself otherwise). Callers that touch several roots
+(`/api/file-kinds`, the unscoped file-search fallback) use `_batch_stall_path`:
+keyed only when every path shares one key, because a key on one of several
+mounts would let a dead mount refuse a healthy one.
 While `_PATH_PROBE_STUCK_TO_REFUSE` (2) probe-pool
 calls under that prefix have each run longer than `_PATH_PROBE_STALL_SECS` (2 s),
 any new call under it, probe or transfer, gets the same `503 path_probe_busy`
