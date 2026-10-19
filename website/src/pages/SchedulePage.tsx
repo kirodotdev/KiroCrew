@@ -95,7 +95,7 @@ const JOB_COLUMNS = {
   name: { base: 160, min: 80, max: 640 },
   type: { base: 116, min: 64, max: 480 },
   schedule: { base: 180, min: 80, max: 480 },
-  status: { base: 104, min: 72, max: 240 },
+  status: { base: 104, min: 60, max: 240 },
   lastRun: { base: 82, min: 56, max: 240 },
   nextRun: { base: 92, min: 56, max: 240 },
 } satisfies Record<string, TableColumnSpec>
