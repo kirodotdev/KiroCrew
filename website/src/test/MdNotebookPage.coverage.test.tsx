@@ -724,6 +724,8 @@ describe('MdNotebookPage', () => {
 
   it('creates a note at the top level and opens it', async () => {
     await renderPage()
+    // The create actions live behind one header trigger (a row holds at most two controls).
+    await userEvent.click(await screen.findByRole('button', { name: 'New note or folder' }))
     await userEvent.click(await screen.findByRole('button', { name: 'New note at the top level' }))
     await waitFor(() => expect(mockApi.newNote).toHaveBeenCalledWith('v1'))
     await waitFor(() => expect(mockApi.readNote).toHaveBeenCalledWith('v1', 'Untitled.md'))
@@ -732,6 +734,8 @@ describe('MdNotebookPage', () => {
   it('reports a failure to create a note', async () => {
     mockApi.newNote.mockRejectedValue(new Error('read-only vault'))
     await renderPage()
+    // The create actions live behind one header trigger (a row holds at most two controls).
+    await userEvent.click(await screen.findByRole('button', { name: 'New note or folder' }))
     await userEvent.click(await screen.findByRole('button', { name: 'New note at the top level' }))
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toContain('read-only vault')
@@ -775,8 +779,10 @@ describe('MdNotebookPage', () => {
     const field = await screen.findByRole('textbox', { name: 'Note name' })
     await userEvent.clear(field)
     await userEvent.type(field, '../etc/passwd{Enter}')
+    // Separators go, and so do the leading dots: the backend refuses a dotted
+    // component, so `..etcpasswd.md` would only have failed there.
     await waitFor(() =>
-      expect(mockApi.moveNote).toHaveBeenCalledWith('v1', 'One.md', '..etcpasswd.md'),
+      expect(mockApi.moveNote).toHaveBeenCalledWith('v1', 'One.md', 'etcpasswd.md'),
     )
   })
 
