@@ -3,16 +3,21 @@
 ``examples/build-queue.html`` is the widget the skill's rule V names as one that
 passes the visual self-check, so an author copies from it. Each check reads the
 example and the file that owns the rule: the toolkit blocks it copies
-(``toolkit/living-ui.js``, read through the block-copy script), the theme
-variables it may name (the widget frame's source) and the still-first rule
-(its markup alone shows the settled picture).
+(``toolkit/living-ui.js``, read through the block-copy script; SKILL.md carries
+the same blocks, which ``test_living_ui_toolkit.py`` pins), the theme variables
+it may name (the widget frame's source) and the still-first rule (its markup
+alone shows the settled picture).
 
-How it moves and how it looks are checked in a browser, through the harness.
+The one helper that words the count runs in Node. How the example moves and how
+it looks are checked in a browser, through the harness.
 """
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -25,6 +30,8 @@ SKILL_DIR = ROOT / "src" / "kiro_crew" / "builtin_skills" / "living-ui"
 EXAMPLE = SKILL_DIR / "examples" / "build-queue.html"
 COPIER = ROOT / "scripts" / "copy_living_ui_blocks.py"
 WIDGET_SRCDOC = ROOT / "website" / "src" / "lib" / "widgetSrcdoc.ts"
+#: The toolkit blocks the example carries, in SKILL.md's order.
+COPIED = ("loop", "settle", "readout", "focusOne")
 # `#rgb` through `#rrggbbaa`, and the functional colour notations.
 _COLOUR_LITERAL = re.compile(r"#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?)\(", re.I)
 
@@ -75,11 +82,15 @@ def _markup(example: str) -> list[tuple[str, dict[str, Any], str]]:
 def test_each_helper_it_uses_is_a_toolkit_block_copied_unchanged(
     blocks: dict[str, str], example: str
 ) -> None:
+    """The readout and the lit zone come from the blocks too, not from code written by
+    hand, so an author who starts from the example copies them, licence line included."""
     copied = re.findall(r"^LivingUI\.([A-Za-z]+) = ", example, re.M)
-    assert copied, "the example copies no toolkit helper; update this test"
+    assert copied == list(COPIED), f"the example copies {copied}; update this test"
     for name in copied:
         assert name in blocks, f"the example defines LivingUI.{name}, which the toolkit lacks"
-        assert blocks[name] in example, f"the example's {name} block differs from the toolkit's"
+        assert (
+            blocks[name] in example
+        ), f"the example's {name} block differs from SKILL.md's: copy it again, unchanged"
     called = set(re.findall(r"LivingUI\.([A-Za-z]+)\(", example))
     assert called <= set(copied), f"calls helpers it does not carry: {called - set(copied)}"
 
@@ -120,3 +131,28 @@ def test_the_markup_alone_is_the_settled_picture(example: str) -> None:
     assert stage[0]["aria-valuetext"] == f"{count} jobs, {phase}"
     live = [text for _, attrs, text in elements if attrs.get("aria-live") == "polite"]
     assert live == [""], "the polite live region must be one, and empty at load"
+
+
+def test_the_count_says_1_job_and_2_jobs_in_both_the_readout_and_the_value_text(
+    example: str,
+) -> None:
+    """The example's own jobs() helper runs in Node, and both places that word the
+    count call it instead of writing "jobs" after the number by hand."""
+    found = re.findall(r"^\s*(const jobs = \(count\) => .*;)$", example, re.M)
+    assert len(found) == 1, f"found {len(found)} jobs() definitions, not one; update this test"
+    node = shutil.which("node")
+    assert node is not None, "node is needed to run the example's jobs() helper; install Node.js"
+    done = subprocess.run(
+        [node, "-"],
+        input=f"{found[0]}\nconsole.log(JSON.stringify([0, 1, 2, 30].map(jobs)));\n",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == ["0 jobs", "1 job", "2 jobs", "30 jobs"]
+    assert "words.say(`${jobs(count)} · ${phaseOf(count)}`)" in example, "the readout"
+    assert "words.describe(`${jobs(next)}, ${phaseOf(next)}`)" in example, "the value text"
+    by_hand = re.findall(r"\$\{[^}]*\} jobs", example)
+    assert not by_hand, f"words a count without jobs(): {by_hand}"
