@@ -35,7 +35,9 @@ from kiro_crew import (
     platform_compat_files,
     platform_compat_identity,
     platform_compat_kill,
+    platform_compat_links,
     platform_compat_liveness,
+    platform_compat_metrics,
     platform_compat_native,
     platform_compat_ports,
     platform_compat_proctable,
@@ -58,6 +60,7 @@ _CARVED: dict[str, ModuleType] = {
         platform_compat_native,
         platform_compat_proctable,
         platform_compat_runtime,
+        platform_compat_links,
         platform_compat_files,
         platform_compat_trust,
         platform_compat_liveness,
@@ -67,6 +70,7 @@ _CARVED: dict[str, ModuleType] = {
         platform_compat_winproc,
         platform_compat_wintree,
         platform_compat_kill,
+        platform_compat_metrics,
     )
 }
 
@@ -173,14 +177,32 @@ _MOVED: dict[str, tuple[str, ...]] = {
         exit_after_failed_restart_exec _drain_event_log_for_exit _WINDOWS_ARM_MACHINES
         is_windows_on_arm BUNDLED_BACKEND_DIST_DIRNAME is_bundled_interpreter
         _PYTHON_OPTIONS_WITH_VALUES isolated_python_argv ensure_utf8_console
-        ensure_line_buffered_stdout process_alarm_available arm_process_alarm boottime_now
-        awake_now process_start_boot_secs process_age_secs
+        ensure_line_buffered_stdout _is_windows_store_python_stub find_python_interpreter
+        process_alarm_available arm_process_alarm boottime_now awake_now process_start_boot_secs
+        process_age_secs strftime raise_nofile_soft_limit nofile_soft_limit python_launcher_hops
+        """.split()),
+    "kiro_crew.platform_compat_links": tuple("""
+        symlink_or_junction _ISJUNCTION _FILE_ATTRIBUTE_REPARSE_POINT
+        _IO_REPARSE_TAG_MOUNT_POINT _is_junction_fallback _IO_REPARSE_TAG_NAME_SURROGATE
+        lstat_is_name_surrogate _StrOrPath strip_extended_length_prefix is_link_or_junction
+        first_linked_ancestor unlink_link_or_junction _WIN_GENERIC_READ _WIN_GENERIC_WRITE
+        _WIN_FILE_SHARE_READ_WRITE _WIN_FILE_SHARE_READ _WIN_OPEN_EXISTING
+        _WIN_FILE_FLAG_BACKUP_SEMANTICS _WIN_FILE_FLAG_OPEN_REPARSE_POINT
+        _WIN_FILE_ATTRIBUTE_DIRECTORY _WIN_FILE_ATTRIBUTE_REPARSE_POINT pin_directory
+        pinned_dir_flags PINNED_TREE_MAX_DEPTH PinnedDirectory pinned_directory
+        _win_open_without_following open_file_no_reparse _WIN_FILE_LIST_DIRECTORY
+        _WIN_OPEN_ALWAYS _WIN_FILE_ATTRIBUTE_TAG_INFO win_fd_is_link _win_reparse_refused
+        win_open_no_reparse open_create_no_reparse
         """.split()),
     "kiro_crew.platform_compat_files": tuple("""
         _RENAME_NOREPLACE_FN _RENAME_NOREPLACE_FLAG _SYS_RENAMEAT2_BY_MACHINE
         _build_renameat2_via_syscall RENAME_NOREPLACE_AVAILABLE TCC_PROTECTED_HOME_DIRS
         TCC_LIBRARY_WALKABLE_CHILDREN _LIBRARY_DIR rename_noreplace publish_dir_noreplace
-        tcc_protected_dirs_for_walk tcc_prune_walk_dirs
+        tcc_protected_dirs_for_walk tcc_prune_walk_dirs fchmod_safe chmod_safe
+        _clear_readonly_and_retry rmtree_force _WIN_FILE_SHARE_READ_WRITE_DELETE
+        open_log_file_for_tail open_lock_file_for_sweep path_volume_is_remote
+        _WINDOWS_RUNNABLE_HOOK_SUFFIXES is_executable_file is_readonly_filesystem
+        ensure_owner_rwx_dirs
         """.split()),
     "kiro_crew.platform_compat_trust": tuple("""
         _folded_env_allowlist env_key_allowed _TRUSTED_SYSTEM_BIN_DIRS _WINDOWS_BIN_SUFFIXES
@@ -241,6 +263,10 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _windows_process_query_diagnostic _windows_descendant_failure_details
         _windows_process_query_creation _windows_foreign_descendant_pids
         descendant_termination_handles close_process_handle descendant_termination_handles_async
+        _JOB_OBJECT_LIMIT_ACTIVE_PROCESS _JOB_OBJECT_LIMIT_JOB_MEMORY
+        _JOBOBJECT_EXTENDED_LIMIT_INFORMATION_CLASS apply_job_limits _TH32CS_SNAPTHREAD
+        _THREAD_SUSPEND_RESUME _INVALID_HANDLE_VALUE _RESUME_THREAD_FAILED
+        resume_process_main_thread
         """.split()),
     "kiro_crew.platform_compat_wintree": tuple("""
         _WINDOWS_TERMINATE_REFUSAL_WAIT_MS terminate_process_handle process_handle_active
@@ -253,6 +279,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         finish_windows_cleanup_owned_spawn _drain_windows_process_tree
         _advance_owned_windows_tree terminate_windows_process_tree_owned
         retry_pending_windows_process_trees terminate_windows_asyncio_tree
+        windows_tree_cleanup_pending _create_windows_subprocess_owned
         """.split()),
     "kiro_crew.platform_compat_kill": tuple("""
         pgroup_exists _raise_taskkill_error kill_pid kill_process_group kill_process_tree
@@ -260,6 +287,24 @@ _MOVED: dict[str, tuple[str, ...]] = {
         REAP_TIMEOUT_SECS _shares_own_process_group kill_popen_tree kill_and_reap
         _run_cleanup_shielded _isolated_group_of_live_child _discard_output_until_exit
         terminate_and_reap terminate_and_reap_sync
+        """.split()),
+    "kiro_crew.platform_compat_metrics": tuple("""
+        _MACH_TASK_BASIC_INFO _MachTimeValue _MachTaskBasicInfo _MACH_TASK_BASIC_INFO_COUNT
+        _scale_ru_maxrss _ru_maxrss_bytes _LINUX_STATUS_PATH _LINUX_PEAK_RSS_FIELD
+        _LINUX_PEAK_RSS_FLOOR _peak_rss_from_status _linux_peak_rss_bytes _posix_peak_rss_bytes
+        _linux_current_rss_bytes _macos_current_rss_bytes _windows_memory_counters
+        proc_rss_bytes HEAP_TRIM_INTERVAL_SECONDS HEAP_TRIM_RSS_THRESHOLD_BYTES
+        HEAP_TRIM_LOG_THRESHOLD_BYTES HEAP_TRIM_TIMEOUT_SECONDS _malloc_trim _M_ARENA_MAX
+        GATEWAY_MALLOC_ARENA_MAX MALLOC_ARENA_MAX_ENV _glibc_mallopt MallocArenaCap
+        limit_malloc_arenas log_malloc_arena_cap trim_heap_if_needed HeapTrimMaintainer
+        proc_peak_rss_bytes _FD_DIRS count_open_fds proc_rss_bytes_for_pid _SUBTREE_MAX_PROCS
+        proc_cpu_nanos_for_pid SubtreeSample _proc_pss_kb proc_subtree_sample
+        proc_rss_tree_mb_for_pid proc_cpu_seconds _prev_win_sys_cpu system_memory
+        system_cpu_percent _MIB_BYTES _NATURAL_T _HOST_VM_INFO64 _VMStatistics64
+        _EXTERNAL_PAGE_COUNT_ELEMENTS macos_vm_statistics _macos_available_mib
+        _linux_available_mib host_total_mib host_available_mib MEMORY_PRESSURE_NORMAL
+        MEMORY_PRESSURE_WARN MEMORY_PRESSURE_CRITICAL _MEMORY_PRESSURE_NAMES
+        _MEMORY_PRESSURE_SYSCTL memory_pressure_level memory_pressure_name
         """.split()),
 }
 
@@ -270,15 +315,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
 #: facade reaches both.
 _BOUND_HERE: frozenset[str] = frozenset("""
     IS_LINUX IS_MACOS IS_POSIX IS_WINDOWS _ACCESS_HONOURS_EFFECTIVE_IDS
-    _JobObjectExtendedLimitInformation _MemoryStatusEx _PENDING_WINDOWS_TREE_CLEANUPS
-    _PENDING_WINDOWS_TREE_CLEANUPS_LOCK _PROCESS_QUERY_LIMITED_INFORMATION
-    _PendingWindowsTreeCleanup _ProcessMemoryCounters _ThreadEntry32 _TokenUser
-    _WINDOWS_CAPTURE_MEASURED_VERSIONS _WINDOWS_TREE_ADMISSIONS _close_process_handle
-    _darwin_process_cpu_nanos _darwin_sysctl_handle _open_process_query_handle
-    _open_process_termination_handle _proc_children _proc_cpu_jiffies _proc_status_rss_kb
-    _windows_last_error _windows_process_handle_identity close_process_handle
-    descendant_termination_handles kill_pid process_matches process_thread_count
-    publish_dir_noreplace
+    _PROCESS_QUERY_LIMITED_INFORMATION _TokenUser is_link_or_junction kill_pid
+    publish_dir_noreplace unlink_link_or_junction
     """.split())
 
 #: Carved owner -> the owners it imports. Explicit, so a new edge between owners is a
@@ -287,7 +325,18 @@ _BOUND_HERE: frozenset[str] = frozenset("""
 _CARVED_IMPORTS: dict[str, frozenset[str]] = {
     "kiro_crew.platform_compat_proctable": frozenset({"kiro_crew.platform_compat_native"}),
     "kiro_crew.platform_compat_runtime": frozenset({"kiro_crew.platform_compat_native"}),
-    "kiro_crew.platform_compat_files": frozenset({"kiro_crew.platform_compat_native"}),
+    "kiro_crew.platform_compat_links": frozenset(
+        {
+            "kiro_crew.platform_compat_native",
+            "kiro_crew.platform_lock_compat",
+        }
+    ),
+    "kiro_crew.platform_compat_files": frozenset(
+        {
+            "kiro_crew.platform_compat_links",
+            "kiro_crew.platform_compat_native",
+        }
+    ),
     "kiro_crew.platform_compat_trust": frozenset({"kiro_crew.platform_compat_native"}),
     "kiro_crew.platform_compat_liveness": frozenset(
         {
@@ -340,6 +389,15 @@ _CARVED_IMPORTS: dict[str, frozenset[str]] = {
             "kiro_crew.platform_compat_trust",
             "kiro_crew.platform_compat_winproc",
             "kiro_crew.platform_compat_wintree",
+        }
+    ),
+    "kiro_crew.platform_compat_metrics": frozenset(
+        {
+            "kiro_crew.platform_compat_identity",
+            "kiro_crew.platform_compat_liveness",
+            "kiro_crew.platform_compat_native",
+            "kiro_crew.platform_compat_proctable",
+            "kiro_crew.platform_compat_winproc",
         }
     ),
 }

@@ -1,8 +1,9 @@
 """The interpreter and process image Kiro Crew runs as.
 
 The UTF-8 environment and console, the re-exec and exit seams, the process alarm
-and the boot and awake clocks, the desktop bundle's interpreter, and the argv a
-Python child is spawned with.
+and the boot and awake clocks, the open-file limit, ``strftime``, interpreter
+discovery and the launcher hops, the desktop bundle's interpreter, the isolated argv
+a Python child is spawned with, and Windows on Arm.
 
 One of the owners ``kiro_crew.platform_compat`` is split into: every name here stays
 readable and patchable as ``kiro_crew.platform_compat.<name>``.
@@ -17,16 +18,21 @@ import logging
 import ntpath
 import os
 import platform
+import shutil
 import signal
 import site
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Optional, Sequence
 
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.platform_compat_native import IS_WINDOWS
+from kiro_crew.platform_compat_native import IS_POSIX, IS_WINDOWS
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
+if IS_POSIX:
+    import resource
 
 # The whole compatibility layer logs under one name, which operator log filters and
 # the tests' caplog scopes key on.
@@ -179,7 +185,7 @@ def reexec_python_module(module: str, args: Sequence[str], executable: str | Non
 def execv_target_available(path: str) -> bool:
     """Whether ``execv`` has a file here it may attempt. Two metadata syscalls.
 
-    Distinct from ``is_executable_file`` further down, which answers a different
+    Distinct from ``is_executable_file`` (in ``platform_compat_files``), which answers a different
     question: that one decides whether to treat a file as a runnable HOOK, and on
     Windows it accepts a regular file by extension because there is no execute bit
     to read. A restart target is not a hook -- the process image itself depends on
@@ -497,6 +503,83 @@ def ensure_line_buffered_stdout() -> None:
         pass
 
 
+def _is_windows_store_python_stub(path: str) -> bool:
+    """True if *path* is the Microsoft Store ``python`` App Execution Alias stub.
+
+    On Windows, ``shutil.which("python"/"python3")`` resolves a 0-byte reparse
+    point under ``%LOCALAPPDATA%\\Microsoft\\WindowsApps`` when no real CPython
+    is installed/on PATH. Spawning it does NOT run Python — it prints "Python was
+    not found; run without arguments to install from the Microsoft Store…" and
+    exits 9009. Detect it by its WindowsApps location so callers never execute
+    it (which otherwise floods logs on every probe). Mirrors install.ps1's
+    Find-RealPython, which rejects the same stub.
+    """
+    if not IS_WINDOWS:
+        return False
+    norm = path.replace("/", "\\").lower()
+    return "\\microsoft\\windowsapps\\" in norm
+
+
+def find_python_interpreter(reject: Optional[Callable[[str], bool]] = None) -> str | None:
+    """Resolve a real CPython >= 3.12 interpreter, or None.
+
+    Single source of truth for "where is a usable system python" on every
+    platform. Prefers the exact tested version (``python3.12``), then bare
+    ``python``/``python3``, with free-threaded-prone ``python3.13`` LAST so a
+    usable 3.12 wins first. Rejects
+    Brazil-path/build interpreters and — critically on Windows — the Microsoft
+    Store alias stub (see :func:`_is_windows_store_python_stub`): running that
+    stub is what emits the "Python was not found" nag, so we must never spawn it.
+
+    ``reject`` is an optional predicate run against each >= 3.12 candidate path;
+    return True to skip it and FALL THROUGH to the next candidate (not abort).
+    Callers with extra constraints the shared resolver can't express — e.g. the
+    STT prereq probe needs pip and a non-free-threaded build — pass it here so a
+    single unusable interpreter does not short-circuit the whole search.
+
+    Returns the interpreter path, or None when none is usable. Callers that just
+    need *an* interpreter to re-exec Kiro Crew itself should prefer
+    ``sys.executable``; this is for finding a SEPARATE system python (e.g. STT /
+    whisper installs that must not land in the gateway's venv).
+    """
+    names = (
+        ("python3.12", "python", "python3")
+        if IS_WINDOWS
+        else ("python3.12", "python3", "python3.13")
+    )
+    for name in names:
+        p = shutil.which(name)
+        if not p or "brazil-path" in p or "build/private" in p:
+            continue
+        if _is_windows_store_python_stub(p):
+            continue
+        try:
+            # -I isolates the probe from the caller's environment: without it,
+            # ``site`` imports any ``sitecustomize.py`` found on the caller's
+            # PYTHONPATH at child startup, and that module can monkeypatch
+            # ``sys.version_info`` to steer WHICH interpreter this loop selects.
+            # Because -I implies -E (PYTHON* env vars ignored), the UTF-8 pin
+            # must ride the argv as ``-X utf8``, matching
+            # ``dep_sync._probe_interpreter``.
+            out = subprocess.check_output(
+                [p, "-I", "-X", "utf8", "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+                timeout=5,
+                stderr=subprocess.DEVNULL,
+                **UTF8_TEXT,
+            ).strip()
+            major, _, minor = out.partition(".")
+            if not (int(major) == 3 and int(minor) >= 12):
+                continue
+        except (OSError, ValueError, subprocess.SubprocessError):
+            continue
+        # >= 3.12 and resolvable. Let the caller veto it (e.g. free-threaded /
+        # no pip) and keep searching the remaining candidates.
+        if reject is not None and reject(p):
+            continue
+        return p
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Process alarm and the suspend-inclusive clock
 # ---------------------------------------------------------------------------
@@ -614,3 +697,111 @@ def process_age_secs(starttime_ticks: int, *, now: float | None = None) -> float
     if started is None or now is None:
         return None
     return max(0.0, now - started)
+
+
+# ---------------------------------------------------------------------------
+# strftime portability
+# ---------------------------------------------------------------------------
+
+
+def strftime(dt: "object", fmt: str) -> str:
+    """``dt.strftime(fmt)`` with the GNU/BSD no-pad directives made portable.
+
+    ``%-I`` / ``%-d`` / ``%-m`` etc. (strip leading zero) are glibc/BSD
+    extensions that raise ``ValueError`` on Windows' MSVCRT strftime, which
+    spells the same thing ``%#I``. Translate the POSIX form to the Windows
+    form on win32 so format strings written for macOS/Linux keep working.
+    """
+    if IS_WINDOWS:
+        out = []
+        i = 0
+        while i < len(fmt):
+            if fmt[i] == "%" and i + 1 < len(fmt):
+                nxt = fmt[i + 1]
+                if nxt == "-" and i + 2 < len(fmt):
+                    out.append("%#" + fmt[i + 2])
+                    i += 3
+                    continue
+                out.append(fmt[i : i + 2])
+                i += 2
+                continue
+            out.append(fmt[i])
+            i += 1
+        fmt = "".join(out)
+    return dt.strftime(fmt)  # type: ignore[attr-defined]
+
+
+def raise_nofile_soft_limit(target: int) -> None:
+    """Best-effort raise of the open-file soft limit toward ``target``.
+
+    POSIX: ``resource.setrlimit(RLIMIT_NOFILE)`` capped at the hard limit.
+    Windows: no-op — there is no per-process descriptor rlimit; the C runtime
+    uses a fixed handle table sized via ``_setmaxstdio`` which does not apply
+    to sockets, so nothing to do.
+    """
+    if not IS_POSIX:
+        return
+    try:
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft < target:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (min(target, hard), hard))
+    except (ValueError, OSError, ImportError):
+        logger.debug("Could not raise RLIMIT_NOFILE", exc_info=True)
+
+
+def nofile_soft_limit() -> int:
+    """This process's open-file soft limit, or ``0`` where there is none.
+
+    POSIX: ``resource.getrlimit(RLIMIT_NOFILE)`` soft value; ``RLIM_INFINITY``
+    reads as ``0``. Windows: ``0`` — there is no per-process descriptor rlimit
+    (see :func:`raise_nofile_soft_limit`), so a caller sizing an fd budget from
+    this value leaves the dimension unbounded, which matches the platform.
+    """
+    if not IS_POSIX:
+        return 0
+    try:
+        soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ValueError, OSError, ImportError):
+        return 0
+    if soft == resource.RLIM_INFINITY:
+        return 0
+    return max(0, int(soft))
+
+
+def python_launcher_hops() -> int:
+    """How many EXTRA processes a Python child spawned from ``sys.executable`` occupies.
+
+    On Windows a virtual environment's ``Scripts\\python.exe`` is not an
+    interpreter: it is the venv redirector, which reads ``pyvenv.cfg``,
+    ``CreateProcess``-es the base interpreter as its own child, and stays alive
+    as that child's parent until it exits. A ``-m`` child launched through
+    ``sys.executable`` from a venv-hosted gateway is therefore TWO live processes
+    in the child's Job, not one. A caller sizing an ``ActiveProcessLimit`` for
+    "this child and nothing else" has to count that hop, or the redirector's own
+    ``CreateProcess`` is what the limit refuses (``ERROR_NOT_ENOUGH_QUOTA``, which
+    the redirector reports as ``Unable to create process using ...`` and exit
+    101) and the child never runs at all.
+
+    Returns ``1`` when ``sys.executable`` is such a redirector -- the interpreter
+    Python actually runs is ``sys._base_executable`` and it is a different file --
+    and ``0`` everywhere else: on POSIX a venv's
+    ``bin/python`` is a symlink or a copy of the real interpreter and spawns
+    nothing. Over-counting is harmless (a ceiling of two instead of one still
+    bounds a fork bomb); under-counting is the defect this exists to remove.
+    """
+    if not IS_WINDOWS:
+        return 0
+    base = getattr(sys, "_base_executable", None)
+    if not base:
+        return 0
+    try:
+        same = os.path.normcase(os.path.realpath(sys.executable)) == os.path.normcase(
+            os.path.realpath(base)
+        )
+    except OSError:
+        # Cannot resolve either path: fall back to the unresolved spellings and
+        # fail toward the hop, since over-counting is harmless and under-counting
+        # is the defect this exists to remove.
+        same = os.path.normcase(sys.executable) == os.path.normcase(base)
+    return 0 if same else 1

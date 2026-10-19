@@ -1,7 +1,10 @@
 """Filesystem operations whose meaning differs by platform.
 
-The no-replace rename and directory publication, and the macOS TCC folders a
-home-rooted walk prunes.
+Permission changes that never raise, a tree removal that defeats Windows read-only
+files, the no-replace rename and directory publication, the log-tail and lock-sweep
+opens that leave the file renamable and deletable while held, owner access restored
+to every directory of a copied tree, the macOS TCC folders a home-rooted walk prunes,
+and the remote-volume, executable-file and read-only checks.
 
 One of the owners ``kiro_crew.platform_compat`` is split into: every name here stays
 readable and patchable as ``kiro_crew.platform_compat.<name>``.
@@ -12,11 +15,33 @@ from __future__ import annotations
 import contextlib
 import ctypes.util
 import errno
+import logging
 import os
 import platform
+import shutil
+import stat
+import sys
+from ctypes import wintypes
+from pathlib import Path
 from typing import Any
 
-from kiro_crew.platform_compat_native import IS_LINUX, IS_MACOS, IS_WINDOWS
+from kiro_crew import windows_acl
+from kiro_crew.platform_compat_links import (
+    _WIN_GENERIC_READ,
+    _WIN_GENERIC_WRITE,
+    _WIN_OPEN_EXISTING,
+    is_link_or_junction,
+    lstat_is_name_surrogate,
+)
+from kiro_crew.platform_compat_native import IS_LINUX, IS_MACOS, IS_POSIX, IS_WINDOWS
+
+if not IS_POSIX:
+    import msvcrt  # type: ignore[import-not-found]
+
+# The whole compatibility layer logs under one name, which operator log filters and
+# the tests' caplog scopes key on.
+logger = logging.getLogger("kiro_crew.platform_compat")
+
 
 # Python's os.rename() replaces an existing empty directory on POSIX. Directory
 # publication sometimes needs the stronger create-if-absent contract, which the
@@ -354,3 +379,331 @@ def tcc_prune_walk_dirs(root: str, dirpath: str, dirnames: list[str]) -> list[st
     if at_root:
         return [d for d in dirnames if d not in protected]
     return [d for d in dirnames if d in TCC_LIBRARY_WALKABLE_CHILDREN]
+
+
+# ---------------------------------------------------------------------------
+# File permissions
+# ---------------------------------------------------------------------------
+
+
+def fchmod_safe(fd: int, mode: int) -> None:
+    """Apply ``mode`` to ``fd``. Logs warning on failure.
+    No-op on Windows (no POSIX perms).
+    """
+    if IS_POSIX:
+        try:
+            os.fchmod(fd, mode)
+        except OSError:
+            logger.warning("Cannot set permissions on fd %d", fd)
+
+
+def chmod_safe(path: str | os.PathLike, mode: int) -> None:
+    """Apply ``mode`` to ``path``. Logs warning on failure.
+    No-op on Windows.
+    """
+    if IS_POSIX:
+        try:
+            os.chmod(path, mode)
+        except OSError:
+            logger.warning("Cannot set permissions on %s", path)
+
+
+def _clear_readonly_and_retry(func: Any, path: str, _exc: BaseException) -> None:
+    """``shutil.rmtree`` error hook: drop the read-only bit, then retry once.
+
+    Windows checks the read-only ATTRIBUTE on the file being deleted, whereas
+    POSIX consults the parent directory's write bit. So a mode-``444`` file — of
+    which a git checkout is full, since loose objects are written read-only —
+    cannot be unlinked on Windows even when its directory is writable.
+
+    Only Windows gets the chmod, and only for an entry that is not a link. On
+    POSIX the entry's own mode never decides whether it can be removed, so a
+    chmod there buys nothing, and ``os.chmod`` follows a symlink: a tree an
+    agent wrote could aim one at any file this process can reach and have its
+    mode rewritten. The write bit is ADDED to the current mode, never set in
+    its place, so a failed retry leaves a directory still listable.
+
+    Only a removal (``unlink``/``rmdir``) is retried. ``rmtree`` also reports a
+    directory it could not open or list (``os.open``, ``os.scandir``, ...);
+    the read-only bit is not why those failed, and ``os.open(path)`` called
+    with ``path`` alone raises ``TypeError``, which would unwind past
+    ``rmtree_force``'s "never raises" contract. Those are logged and left.
+    """
+    if func not in (os.unlink, os.remove, os.rmdir):
+        logger.warning("Cannot remove %s", path)
+        return
+    try:
+        if not IS_POSIX:
+            info = os.lstat(path)
+            if not (stat.S_ISLNK(info.st_mode) or lstat_is_name_surrogate(info)):
+                os.chmod(path, stat.S_IMODE(info.st_mode) | stat.S_IWRITE)
+        func(path)
+    except OSError:
+        logger.warning("Cannot remove %s", path)
+
+
+def rmtree_force(path: str | os.PathLike) -> bool:
+    """Remove a directory tree, defeating Windows read-only files. Never raises.
+
+    Returns True when *path* is gone afterwards.
+
+    ``shutil.rmtree(..., ignore_errors=True)`` is the usual spelling and is WRONG
+    for any tree that may contain a git checkout: on Windows the read-only loose
+    objects under ``.git/objects`` refuse to unlink, ``ignore_errors`` swallows
+    every one of those failures, and the caller reports success over a tree that
+    is still on disk — so the project name stays taken and the next create
+    answers 409.
+
+    The return value is what lets a caller tell a real deletion from a partial
+    one; the boolean is derived from the filesystem rather than from the hook,
+    because a surviving file is the only thing that actually matters.
+    """
+    # `onexc` replaced `onerror` in 3.12 and the old name warns; this project
+    # still supports 3.9+, so pick by capability rather than by version number.
+    kwarg = "onexc" if sys.version_info >= (3, 12) else "onerror"
+    try:
+        if kwarg == "onerror":  # pragma: no cover - exercised on Python < 3.12
+
+            def _legacy(func: Any, target: str, exc_info: Any) -> None:
+                _clear_readonly_and_retry(func, target, exc_info[1])
+
+            shutil.rmtree(path, onerror=_legacy)
+        else:
+            shutil.rmtree(path, onexc=_clear_readonly_and_retry)  # type: ignore[call-arg]
+    except FileNotFoundError:
+        # A missing ROOT is success. A nested entry can disappear during rmtree while
+        # the root survives, especially through the Python <3.12 onerror path.
+        return not os.path.lexists(path)
+    except OSError:
+        logger.warning("Cannot remove %s", path)
+        return False
+    return not os.path.lexists(path)
+
+
+_WIN_FILE_SHARE_READ_WRITE_DELETE = 0x00000001 | 0x00000002 | 0x00000004
+
+
+def open_log_file_for_tail(path: str | os.PathLike) -> int:
+    """Open a binary read fd without blocking the log writer's rename/rotation.
+
+    Windows CRT opens omit FILE_SHARE_DELETE. This separate log-only helper
+    permits rotation even during a read; security pinning helpers must not.
+    The caller owns the returned descriptor and must close it.
+    """
+    if IS_POSIX:
+        return os.open(os.fspath(path), os.O_RDONLY)
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(
+        os.fspath(path),
+        _WIN_GENERIC_READ,
+        _WIN_FILE_SHARE_READ_WRITE_DELETE,
+        None,
+        _WIN_OPEN_EXISTING,
+        0,
+        None,
+    )
+    if handle is None or handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined]
+    try:
+        return msvcrt.open_osfhandle(  # type: ignore[attr-defined]
+            handle, os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        )
+    except BaseException:
+        # Ownership transfers only when the CRT descriptor is created.
+        kernel32.CloseHandle(handle)
+        raise
+
+
+def open_lock_file_for_sweep(path: "str | os.PathLike[str]") -> int:
+    """Open an ``<alias>.lock`` for the sweeper to lock AND unlink while held.
+
+    The orphan-lock sweep removes a lock file only while holding its own
+    exclusive lock on it: the held lock is the proof no launcher owns the inode,
+    so a launcher that still holds (or re-takes) it is left alone, and the unlink
+    happens WITHOUT first releasing — releasing before the unlink reopens the
+    very race the proof closes (another launcher could lock a fresh inode at the
+    same name in the gap).
+
+    * POSIX: ``os.open(O_RDWR | O_NOFOLLOW)``. ``unlink`` of a file with open
+      descriptors is routine; the inode lives until the last fd closes, and the
+      held ``flock`` keeps a contender out meanwhile. This is exactly the open
+      the sweep was doing, named.
+    * Windows: ``os.open`` routes through the CRT, which opens with
+      ``FILE_SHARE_READ | FILE_SHARE_WRITE`` and **omits** ``FILE_SHARE_DELETE``
+      — so while that descriptor lives, ``os.unlink`` of the same name fails with
+      a sharing violation (``PermissionError``/``WinError 32``). The sweep then
+      declines to remove genuine residue, because its own verification handle is
+      what blocks the delete. ``CreateFileW`` with
+      ``FILE_SHARE_READ_WRITE_DELETE`` lets the delete land while this handle is
+      still open (and still holding the ``msvcrt`` byte-range lock), preserving
+      the hold-across-unlink guarantee on both platforms. ``OPEN_EXISTING``
+      never creates — the sweep only ever removes names already present. No
+      ``OPEN_REPARSE_POINT``: the sweep's caller has already refused a reparse
+      point at the name (``is_link_or_junction``) and re-checks identity under
+      the lock, and following here would still only reach a file this same user
+      owns.
+
+    Returns the raw integer fd; the caller owns it and must ``os.close`` it.
+    """
+    if IS_POSIX:
+        return os.open(os.fspath(path), os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(
+        os.fspath(path),
+        _WIN_GENERIC_READ | _WIN_GENERIC_WRITE,
+        _WIN_FILE_SHARE_READ_WRITE_DELETE,
+        None,
+        _WIN_OPEN_EXISTING,
+        0,
+        None,
+    )
+    if handle is None or handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined]
+    try:
+        return msvcrt.open_osfhandle(  # type: ignore[attr-defined]
+            handle, os.O_RDWR | getattr(os, "O_BINARY", 0)
+        )
+    except BaseException:
+        # Ownership transfers only when the CRT descriptor is created.
+        kernel32.CloseHandle(handle)
+        raise
+
+
+def path_volume_is_remote(path: str | os.PathLike) -> bool | None:
+    """Is *path* on a NETWORK volume? True, False for local, None for unknown.
+
+    The Windows half of "which kind of filesystem holds this file", for a caller
+    that already answers the question from ``/proc/mounts`` or ``statfs``
+    elsewhere: Windows exposes no mount table, so the volume ROOT's drive type
+    is the source (:func:`windows_acl.volume_is_remote`, ``GetDriveTypeW``),
+    which reports a UNC root and a mapped network drive alike as remote.
+
+    None -- never False -- for every case where nothing was established: off
+    Windows, where the caller has its own mount-table source and must not read
+    this as "local"; a volume the OS reports as ``DRIVE_UNKNOWN`` or
+    ``DRIVE_NO_ROOT_DIR``; and a failed query. Root-only, so it costs no SMB
+    round trip and is safe for a path that does not exist yet.
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        return windows_acl.volume_is_remote(path)
+    except (windows_acl.AclUnavailable, OSError, ValueError):
+        logger.debug("could not classify the volume holding a path", exc_info=True)
+        return None
+
+
+# Hook-script extensions treated as runnable on Windows (where there is no
+# POSIX execute bit). A hook is a small script Kiro Crew shells out to; on
+# Windows its runnability is decided by extension + interpreter at exec time,
+# not a filesystem bit.
+_WINDOWS_RUNNABLE_HOOK_SUFFIXES = (".sh", ".ps1", ".cmd", ".bat", ".py", ".exe")
+
+
+def is_executable_file(
+    path: str | os.PathLike,
+    *,
+    platform_name: str | None = None,
+) -> bool:
+    """Should this file be treated as a runnable hook/script for *this* platform?
+
+    POSIX: the file must carry an execute bit (``os.access(X_OK)``) — unchanged
+    behavior, so a ``chmod -x`` still disables a hook.
+
+    Windows: there is NO execute bit (every file reports the same mode), so a
+    POSIX X_OK check would reject EVERY hook and silently disable the whole
+    kiro-hooks autoimport (observed: no preToolUse hook ever registered). On
+    Windows we instead accept a regular file whose extension is a known script
+    type (``.sh``/``.ps1``/``.cmd``/``.bat``/``.py``/``.exe``) — runnability is
+    determined when Kiro Crew actually invokes it, not by a meaningless bit.
+    ``platform_name`` lets cross-platform discovery apply the target platform's
+    rules instead of the host's. A Windows host cannot represent POSIX execute
+    bits, so an existing regular file is accepted for an explicit POSIX target.
+    """
+    try:
+        if not os.path.isfile(path):
+            return False
+        target_is_windows = IS_WINDOWS if platform_name is None else platform_name == "win32"
+        if target_is_windows:
+            suffix = os.path.splitext(str(path))[1].lower()
+            return suffix in _WINDOWS_RUNNABLE_HOOK_SUFFIXES
+        return not IS_POSIX or os.access(path, os.X_OK)
+    except OSError:
+        return False
+
+
+def is_readonly_filesystem(path: Path) -> bool:
+    """Confirm a Linux readonly mount; absence or probe failure grants nothing."""
+    if sys.platform != "linux":
+        return False
+    try:
+        return bool(os.statvfs(path).f_flag & os.ST_RDONLY)
+    except OSError:
+        return False
+
+
+def ensure_owner_rwx_dirs(root: str | os.PathLike) -> None:
+    """OR owner read/write/execute onto *root* and every directory below it.
+
+    ``shutil.copytree`` preserves source modes verbatim. A copy made from a
+    hardened install source can therefore lack owner write or execute (for
+    example, mode ``0o455``). Creating a file needs a writable AND searchable
+    parent, so callers that write a marker into a fresh copy run this first.
+
+    Only directories are touched, and only by adding ``S_IRWXU``. Copied files
+    remain exactly as shipped, so a file-mode customization still diverges
+    skill fingerprints. On Windows ``os.chmod`` honours only the read-only
+    flag: adding owner write clears it, while the extra owner bits are a no-op.
+    Never raises: a directory this cannot repair surfaces as the original
+    ``PermissionError`` at the caller's write site, which every caller handles.
+    """
+
+    def _add_owner_rwx(entry: str) -> None:
+        try:
+            mode = os.lstat(entry).st_mode
+            if stat.S_ISDIR(mode) and mode & stat.S_IRWXU != stat.S_IRWXU:
+                os.chmod(entry, stat.S_IMODE(mode) | stat.S_IRWXU)
+        except OSError:
+            logger.debug("could not add owner rwx to %s", entry, exc_info=True)
+
+    top = os.fspath(root)
+    if is_link_or_junction(top):
+        return
+    _add_owner_rwx(top)
+    for dirpath, dirnames, _filenames in os.walk(top):
+        for dname in list(dirnames):
+            entry = os.path.join(dirpath, dname)
+            if is_link_or_junction(entry):
+                # os.walk(followlinks=False) skips POSIX symlinks, but a
+                # Windows junction lstats as a plain directory and WOULD be
+                # descended -- and chmodded THROUGH, touching its target
+                # tree. Prune both so the walk never leaves *root*.
+                dirnames.remove(dname)
+                continue
+            _add_owner_rwx(entry)

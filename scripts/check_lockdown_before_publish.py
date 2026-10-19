@@ -87,7 +87,7 @@ CHMOD_CALLS = frozenset({"chmod_safe", "chmod"})
 #: The path is recovered through the fd map, exactly as the content-write side
 #: already does for ``os.fdopen``/``os.write``. Without these, a writer that
 #: hardened through the descriptor recorded NO lockdown at all -- and
-#: ``fchmod_safe`` is the tree's own helper (platform_compat.py), not a
+#: ``fchmod_safe`` is the tree's own helper (platform_compat_files.py), not a
 #: hypothetical spelling.
 FCHMOD_CALLS = frozenset({"fchmod_safe", "fchmod"})
 
@@ -383,7 +383,7 @@ def _is_pathlib_chmod_form(node: ast.Call) -> bool:
     ``platform_compat.chmod_safe(p, 0o600)``), so the two are told apart by
     ARITY, as with the publish forms above. That is sound rather than merely
     convenient: ``mode`` is a REQUIRED parameter of both ``os.chmod`` and
-    ``chmod_safe`` (see platform_compat.py), so a one-argument attribute-form
+    ``chmod_safe`` (see platform_compat_files.py), so a one-argument attribute-form
     chmod cannot be either of them.
     """
     if not isinstance(node.func, ast.Attribute):

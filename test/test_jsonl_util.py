@@ -703,8 +703,8 @@ class TestBoundedRecordReaders:
 _KERNEL_PSEUDO_FILE_READERS = {
     ("dashboard/handlers_system.py", "/proc/meminfo"),
     ("dashboard/handlers_system.py", "/proc/net/dev"),
-    ("platform_compat.py", "/proc/meminfo"),
     ("platform_compat_liveness.py", "/proc/<pid>/status"),
+    ("platform_compat_metrics.py", "/proc/meminfo"),
     ("platform_compat_proctable.py", "/proc/locks"),
     ("platform_compat_proctable.py", "/proc/<pid>/status"),
 }

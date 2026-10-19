@@ -667,7 +667,8 @@ module scope** — `_ProcessEntry32`, `_ProcessMemoryCounters`, `_MemoryStatusEx
 `_JobObjectBasicLimitInformation`, `_JobObjectExtendedLimitInformation` and
 `_ThreadEntry32` in `platform_compat_native` (read through `platform_compat`), plus
 `_SecurityAttributes` in `mcp_gateway/transport.py` and `_VMStatistics64` in
-`subagent.py`. Declaring one inside the function that uses it is a **memory
+`platform_compat_metrics` (read through `platform_compat`).
+Declaring one inside the function that uses it is a **memory
 leak**, not a style question: `ctypes.POINTER(T)` memoises `T -> POINTER(T)` in a
 module-level dict inside ctypes that is never evicted, so a locally-declared
 Structure pins a brand-new pair of type objects on every call. The affected

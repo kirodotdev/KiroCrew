@@ -1,9 +1,10 @@
 """Windows process trees the gateway owns.
 
-The cleanup reservation charged before a physical spawn, the owned spawn itself,
-terminating an exact handle and probing whether it still runs, and the bounded
-drains that retire a tree only once every exact handle in it has exited, retrying
-the ones that outlive a pass.
+The cleanup reservation charged before a physical spawn, the owned spawn itself and
+its per-call creation capture, whether a tree's cleanup is still pending, terminating
+an exact handle and probing whether it still runs, and the bounded drains that retire
+a tree only once every exact handle in it has exited, retrying the ones that outlive
+a pass.
 
 One of the owners ``kiro_crew.platform_compat`` is split into: every name here stays
 readable and patchable as ``kiro_crew.platform_compat.<name>``.
@@ -14,9 +15,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ctypes.util
+import importlib
 import logging
+import subprocess
 import threading
 import time
+import types
+from asyncio import subprocess as aio_subprocess
 from ctypes import wintypes
 from typing import Any
 
@@ -674,3 +679,143 @@ async def terminate_windows_asyncio_tree(process: asyncio.subprocess.Process) ->
     if cancelled:
         raise asyncio.CancelledError
     return result
+
+
+def windows_tree_cleanup_pending(pid: int, start: str | None) -> bool:
+    """A pending pin outranks numeric liveness, including a dead root PID."""
+    if not IS_WINDOWS:
+        return False
+    try:
+        key = (pid, int(start)) if start is not None else None
+    except (TypeError, ValueError):
+        return False
+    with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+        if key is None:
+            return any(state.root_pid == pid for state in _PENDING_WINDOWS_TREE_CLEANUPS.values())
+        return key in _PENDING_WINDOWS_TREE_CLEANUPS
+
+
+async def _create_windows_subprocess_owned(
+    owner: _PendingWindowsTreeCleanup, program: str, *args: str, limit: int = 2**16, **kwargs: Any
+) -> asyncio.subprocess.Process:
+    """Run CPython's subprocess implementation with per-call creation capture.
+
+    Only this call sees the substituted native API and transport constructors.
+    The interpreter's functions, globals, event loop and Popen stay untouched.
+    Capture happens at CreateProcess return, BEFORE _close_pipe_fds, Handle
+    publication, thread-handle close, proactor registration or pipe connection.
+    """
+    # Private Windows APIs have no Linux typeshed declarations. Runtime identity
+    # checks below refuse a different transport implementation before creation.
+    windows_events: Any = importlib.import_module("asyncio.windows_events")
+    windows_utils: Any = importlib.import_module("asyncio.windows_utils")
+    loop = asyncio.get_running_loop()
+    make_transport = getattr(getattr(loop, "_make_subprocess_transport"), "__func__", None)
+    subprocess_exec = getattr(loop.subprocess_exec, "__func__", None)
+    if (
+        make_transport is not windows_events.ProactorEventLoop._make_subprocess_transport
+        or subprocess_exec is not asyncio.BaseEventLoop.subprocess_exec
+    ):
+        raise RuntimeError(
+            "Windows session start refused: this interpreter does not expose the CPython "
+            "Proactor subprocess path the tree-cleanup capture binds to; run the gateway on "
+            f"a measured interpreter ({_WINDOWS_CAPTURE_MEASURED_VERSIONS})"
+        )
+    execute_child = getattr(subprocess.Popen, "_execute_child")
+    start_transport = windows_events._WindowsSubprocessTransport._start
+    if (
+        not {"_winapi", "CreateProcess", "Handle"}.issubset(execute_child.__code__.co_names)
+        or not {"windows_utils", "Popen"}.issubset(start_transport.__code__.co_names)
+        or "_WindowsSubprocessTransport" not in make_transport.__code__.co_names
+    ):
+        # Same reasoning as the quarantine refusal: an operator meeting this sees a
+        # failed session start and no context, and the remedy is not guessable from
+        # the shape names. The interpreter is the whole cause, so it is the remedy.
+        raise RuntimeError(
+            "Windows session start refused: this interpreter's private subprocess bindings "
+            "differ from the shapes the tree-cleanup capture is measured against; run the "
+            f"gateway on a measured interpreter ({_WINDOWS_CAPTURE_MEASURED_VERSIONS})"
+        )
+    with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+        if owner not in _WINDOWS_TREE_ADMISSIONS or owner.retired or owner.handles:
+            raise RuntimeError("Windows subprocess requires an unused cleanup reservation")
+
+    def clone(function: Any, **bindings: Any) -> Any:
+        cloned = types.FunctionType(
+            function.__code__,
+            dict(function.__globals__, **bindings),
+            function.__name__,
+            function.__defaults__,
+            function.__closure__,
+        )
+        cloned.__kwdefaults__ = function.__kwdefaults__
+        return cloned
+
+    native = getattr(subprocess, "_winapi")
+    handle_type = getattr(subprocess, "Handle")
+
+    class CreationAPI:
+        def __init__(self) -> None:
+            self.thread_pin: Any = None
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(native, name)
+
+        def CloseHandle(self, value: int) -> None:
+            if self.thread_pin is not None and int(self.thread_pin) == value:
+                self.thread_pin.Close()
+                self.thread_pin = None
+            else:
+                native.CloseHandle(value)
+
+        def CreateProcess(self, *values: Any, **options: Any) -> Any:
+            result = native.CreateProcess(*values, **options)
+            hp, ht, pid, _tid = result
+            # Record the raw exact process value before wrapping handles: even
+            # a later wrapper/setup exception must leave the reservation owed.
+            owner.root_pid = pid
+            owner.key = (pid, 0)
+            owner.handles[pid] = hp
+            # If pipe-fd cleanup raises before CPython closes ht, this local
+            # reference-counted pin closes it when the failed launch unwinds.
+            self.thread_pin = handle_type(ht)
+            # Keep the reference-counted object itself. Popen receives THIS
+            # object below, not a second Handle owning the same native value.
+            pin = handle_type(hp)
+            owner.raw_root_pin = pin
+            return result
+
+    def shared_handle(value: int) -> Any:
+        if owner.raw_root_pin is not None and int(owner.raw_root_pin) == value:
+            return owner.raw_root_pin
+        return handle_type(value)
+
+    class OwnedPopen(windows_utils.Popen):
+        _execute_child = clone(
+            getattr(subprocess.Popen, "_execute_child"), _winapi=CreationAPI(), Handle=shared_handle
+        )
+
+    class OwnedTransport(windows_events._WindowsSubprocessTransport):
+        _start = clone(
+            windows_events._WindowsSubprocessTransport._start,
+            windows_utils=types.SimpleNamespace(Popen=OwnedPopen),
+        )
+
+    class SpawnLoop:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(loop, name)
+
+        _make_subprocess_transport = staticmethod(
+            types.MethodType(
+                clone(make_transport, _WindowsSubprocessTransport=OwnedTransport),
+                loop,
+            )
+        )
+
+    def protocol_factory() -> Any:
+        return aio_subprocess.SubprocessStreamProtocol(limit=limit, loop=loop)
+
+    transport, protocol = await subprocess_exec(
+        SpawnLoop(), protocol_factory, program, *args, **kwargs
+    )
+    return aio_subprocess.Process(transport, protocol, loop)

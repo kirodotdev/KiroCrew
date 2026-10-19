@@ -1593,7 +1593,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Read-only kernel socket attribution: trusted absolute lsof binary,
         # fixed flags and a validated numeric port, no shell/user command.
         "platform_compat_ports.py::_macos_tcp_peer_pid",
-        "platform_compat.py::find_python_interpreter",
+        "platform_compat_runtime.py::find_python_interpreter",
         "platform_compat_kill.py::kill_pid",
         "platform_compat_kill.py::kill_process_tree",
         "platform_compat_trust.py::reveal_in_file_manager",
@@ -1629,7 +1629,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # not agent-influenced. Same disposition as the systemctl wrapper.
         "pod/launchd.py::launchctl",
         # Windows interpreter discovery for the worktree venv, the same class as
-        # platform_compat.py::find_python_interpreter above. Fixed argv: the `py`
+        # platform_compat_runtime.py::find_python_interpreter above. Fixed argv: the `py`
         # launcher plus `-<version>` and a literal `-I -X utf8 -c` probe that
         # prints sys.executable. The only variable is the version string, built
         # by _python_candidates from this module's own MIN_PYTHON/_NAMED_MINORS
