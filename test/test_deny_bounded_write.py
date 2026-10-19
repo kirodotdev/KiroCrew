@@ -961,27 +961,34 @@ class TestWriteLock:
         # Flat buffer: the lock wait is judged a stall. If the holder releases
         # right as the verdict lands, the acquire may still complete -- and the
         # lock must not stay held by a caller that already returned False.
-        stdin = _stdin_with_buffer([3_000_000, 3_000_000, 3_000_000], drain_after=None)
+        # The holder releases INSIDE the verdict's own level poll, so the release
+        # and the verdict land in the same loop step on every run. Racing a
+        # timer against the window instead let the acquire win first; the frame
+        # was then written and its drain (flat, never draining) stalled, which
+        # also returns False and made the write assertion fail.
+        stdin = _stdin_with_buffer([3_000_000], drain_after=None)
         stdin.write = MagicMock()
         lock = asyncio.Lock()
         await lock.acquire()
+        level = stdin.transport.get_write_buffer_size.side_effect
 
-        async def _release_at_the_bound() -> None:
-            await asyncio.sleep(short_bound)
-            lock.release()
+        def _release_on_the_verdict_poll() -> int:
+            if stdin.polls["n"] == 1:  # poll 0 is the baseline, poll 1 the verdict
+                lock.release()
+            return level()
 
-        holder = asyncio.ensure_future(_release_at_the_bound())
+        stdin.transport.get_write_buffer_size.side_effect = _release_on_the_verdict_poll
         ok = await await_until(
             asyncio.ensure_future(
                 write_response_frame_bounded(stdin, lock, b"{}\n", bound_secs=short_bound)
             ),
             what="write_response_frame_bounded to resolve",
         )
-        await holder
         await asyncio.sleep(0)
-        assert not lock.locked()
-        if not ok:
-            stdin.write.assert_not_called()
+        assert ok is False
+        assert stdin.polls["n"] == 2, "the release did not land on the verdict poll"
+        assert not lock.locked(), "the stall verdict left the stdin lock held"
+        stdin.write.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_runtime_request_in_flight_does_not_mask_the_response_progress(
