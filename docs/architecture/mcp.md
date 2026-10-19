@@ -1054,7 +1054,14 @@ moment (`expected_launch`), the first approval of a name included: the UI reads
 `commands`, `envs`, `complete` and, only when the resolution is complete,
 `expected_launch`. This scrubbed, bounded GET follows the other dashboard
 read routes and does not require owner identity; the POST that records the choice
-remains owner-only. `POST /api/mcp-gateway/servers/stub` refuses a missing token
+remains owner-only. The bulk review reads every candidate at once with the
+owner-only `POST /api/mcp-gateway/servers/launch` and a `names` list of up to 200
+servers. It resolves the whole list in one rebuild and rewrite pass, plus one more
+pass for each extra name sharing a `target_stem` with another (`foo-mcp` and
+`FOO_MCP`), because one pass would merge their launches under the stem. It returns
+`launches` (the same display per name as the GET, through the shared
+`launch_resolve.launch_preview`) and `errors` (a code per name:
+`invalid_server_name`, `launch_over_cap` or `launch_unresolved`). `POST /api/mcp-gateway/servers/stub` refuses a missing token
 with 409 `expected_launch_required`, a truncated resolution with 409
 `launch_display_incomplete`, and a token that no longer matches the resolution
 with 409 `launch_changed_since_display`. A batch `stub: true` returns 400

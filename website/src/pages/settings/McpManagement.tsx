@@ -34,6 +34,7 @@ import {
   type GatewayStatus,
   launchIsApprovable,
   launchPreviewErrorKey,
+  readLaunchPreviews,
   stubErrorKey,
   type McpView,
   rowState,
@@ -305,14 +306,11 @@ export function McpManagement({
       // A read that failed is an error, not "cannot be approved": kept apart
       // so the confirm shows it through the error notice.
       const failed: string[] = []
-      for (const s of autoShareCandidates(fresh?.servers ?? [], freshStatus?.launch_refused)) {
-        try {
-          const preview = await api.mcpGatewayLaunchPreview(s.name)
-          if (preview && launchIsApprovable(preview)) auto.push({ name: s.name, expected: preview.expected_launch as string })
-          else skipped.push(s.name)
-        } catch {
-          failed.push(s.name)
-        }
+      const names = autoShareCandidates(fresh?.servers ?? [], freshStatus?.launch_refused).map(s => s.name)
+      for (const { name, preview } of await readLaunchPreviews(names)) {
+        if (!preview) failed.push(name)
+        else if (launchIsApprovable(preview)) auto.push({ name, expected: preview.expected_launch as string })
+        else skipped.push(name)
       }
       return { auto, skipped, failed }
     },
@@ -434,16 +432,11 @@ export function McpManagement({
       const plan: Array<{ name: string; expected: string }> = []
       const unreadable: string[] = []
       const failed: string[] = []
-      for (const name of candidates) {
-        try {
-          const preview = await api.mcpGatewayLaunchPreview(name)
-          if (preview && launchIsApprovable(preview)) {
-            plan.push({ name, expected: preview.expected_launch as string })
-          } else unreadable.push(name)
-        } catch {
-          // A failed read is an error, not "nothing to share".
-          failed.push(name)
-        }
+      for (const { name, preview } of await readLaunchPreviews(candidates)) {
+        // A failed read is an error, not "nothing to share".
+        if (!preview) failed.push(name)
+        else if (launchIsApprovable(preview)) plan.push({ name, expected: preview.expected_launch as string })
+        else unreadable.push(name)
       }
       return { pending: false as const, plan, unreadable, failed }
     },

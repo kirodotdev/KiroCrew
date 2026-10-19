@@ -1,6 +1,7 @@
 """Opting servers into the gateway stub.
 
-Which servers may be stubbed, recording each stub decision, and the set-stub route.
+Which servers may be stubbed, recording each stub decision, the set-stub route, and the
+batch launch preview the bulk stub review reads before it asks.
 
 Part of the ``kiro_crew.dashboard.handlers.mcp`` family: callers and tests reach every
 name here as ``kiro_crew.dashboard.handlers.mcp.<name>``, and a patch there reaches this
@@ -231,6 +232,56 @@ def _stub_eligibility(
             continue
         eligible.append(name)
     return eligible, skipped
+
+
+async def api_mcp_gateway_server_launches(request: web.Request) -> web.Response:
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "mcp_gateway_server_launches")
+    if denied is not None:
+        return denied
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    raw_names = body.get("names") if isinstance(body, dict) else None
+    if not isinstance(raw_names, list) or not all(isinstance(n, str) for n in raw_names):
+        return web.json_response(
+            {"error": "names must be a list of strings", "code": "names_not_string_list"},
+            status=400,
+        )
+    names = list(dict.fromkeys(n.strip() for n in raw_names if n.strip()))
+    if not names:
+        return web.json_response(
+            {"error": "names is required", "code": "names_required"}, status=400
+        )
+    if len(names) > _MAX_STUB_BATCH:
+        return web.json_response(
+            {
+                "error": f"names must hold at most {_MAX_STUB_BATCH} servers",
+                "code": "names_too_many",
+            },
+            status=400,
+        )
+    errors: dict[str, str] = {n: "invalid_server_name" for n in names if not _is_valid_mcp_name(n)}
+    valid = [n for n in names if n not in errors]
+    if not valid:
+        return web.json_response({"launches": {}, "errors": errors})
+    try:
+        launches = await asyncio.to_thread(launch_resolve.resolve_each_launch, valid)
+    except Exception as exc:
+        logger.warning("mcp launch resolution failed: %s", exc)
+        return web.json_response(
+            {"error": "could not resolve the launch", "code": "launch_resolve_failed"},
+            status=503,
+        )
+    previews: dict[str, Any] = {}
+    for name in valid:
+        code, preview = launch_resolve.launch_preview(name, launches)
+        if code is not None:
+            errors[name] = code
+        else:
+            previews[name] = preview
+    return web.json_response({"launches": previews, "errors": errors})
 
 
 async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:

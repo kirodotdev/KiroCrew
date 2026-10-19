@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
 import { McpManagement } from '../pages/settings/McpManagement'
+import { answerBatchPreviewsPerName } from './McpManagementTestUtils'
 
 const M = (key: string, vars?: Record<string, unknown>) => i18nT(`pages.mcpManagement.${key}`, vars)
 const rowName = (labelKey: string, name = 'alpha-mcp') => `${M(labelKey)} ${name}`
@@ -70,6 +71,7 @@ beforeEach(() => {
   vi.restoreAllMocks()
   // The hero's memory read: answered with no figures unless a test says otherwise.
   vi.spyOn(api, 'mcpGatewayFootprint').mockResolvedValue({ using_now_bytes: null, with_sharing_bytes: null, open_chats: 0, stale_chats: [] } as never)
+  answerBatchPreviewsPerName()
 })
 afterEach(cleanup)
 

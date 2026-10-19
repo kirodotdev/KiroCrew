@@ -402,6 +402,10 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "<default>",
         _BOUNDED_CONTROL_FIELDS,
     ),
+    "handlers/mcp_gateway_stubs.py::api_mcp_gateway_server_launches": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     # handlers/cron.py's owners: create/update carry the job's full agent message,
     # whose MAX_CRON_MESSAGE character bound can exceed the shared 64 KB
     # default in multibyte UTF-8 -- so they take a per-route ceiling sized to

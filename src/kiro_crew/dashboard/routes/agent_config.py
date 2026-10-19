@@ -120,6 +120,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/mcp-gateway/footprint", api_mcp_gateway_footprint)
     app.router.add_get("/api/mcp-gateway/servers", handlers.api_mcp_gateway_servers)
     app.router.add_get("/api/mcp-gateway/servers/launch", handlers.api_mcp_gateway_server_launch)
+    app.router.add_post("/api/mcp-gateway/servers/launch", handlers.api_mcp_gateway_server_launches)
     app.router.add_post("/api/mcp-gateway/servers/stub", handlers.api_mcp_gateway_set_stub)
     app.router.add_post("/api/mcp-gateway/resolve-refresh", handlers.api_mcp_resolve_refresh)
     # AIM integration

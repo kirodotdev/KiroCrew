@@ -14,6 +14,7 @@ import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-li
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { McpManagement } from '../pages/settings/McpManagement'
+import { answerBatchPreviewsPerName } from './McpManagementTestUtils'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
 /** The page's own English copy, so a wording change never breaks a test. */
@@ -106,6 +107,7 @@ beforeEach(() => {
   vi.restoreAllMocks()
   // The hero's memory read: answered with no figures unless a test says otherwise.
   vi.spyOn(api, 'mcpGatewayFootprint').mockResolvedValue({ using_now_bytes: null, with_sharing_bytes: null, open_chats: 0, stale_chats: [] } as never)
+  answerBatchPreviewsPerName()
   // The page-wide switch's confirm turns sharing on.
   vi.spyOn(api, 'mcpGatewayEnable').mockResolvedValue({ ok: true, enabled: true, ping_ok: true } as never)
 })
@@ -840,7 +842,7 @@ describe('stub every server the evidence allows', () => {
       fireEvent.click(screen.getByRole('button', { name: M('enable_all') }))
       await vi.advanceTimersByTimeAsync(2 * 1000)
 
-      // Chain: servers re-read -> one launch read per candidate -> the confirm button.
+      // Chain: servers re-read -> one batched launch read -> the confirm button.
       await vi.waitFor(() => screen.getByRole('button', { name: M('share_all_confirm', { count: 1 }) }), { timeout: 5000 })
       fireEvent.click(screen.getByRole('button', { name: M('share_all_confirm', { count: 1 }) }))
       await vi.waitFor(() => expect(setStub).toHaveBeenCalledWith('fresh-mcp', true, 'fresh-mcp-cmd:fresh-mcp-env', true), { timeout: 5000 })
@@ -873,7 +875,7 @@ describe('stub every server the evidence allows', () => {
     mount()
     await screen.findByText('good-mcp', undefined, { timeout: 5000 })
     fireEvent.click(await screen.findByRole('button', { name: M('enable_all') }, { timeout: 5000 }))
-    // Chain: servers re-read -> one launch read per candidate -> the confirm button.
+    // Chain: servers re-read -> one batched launch read -> the confirm button.
     fireEvent.click(await screen.findByRole('button', { name: M('share_all_confirm', { count: 3 }) }, { timeout: 5000 }))
 
     // Chain: one stub POST per listed server -> the result notice.
@@ -881,6 +883,31 @@ describe('stub every server the evidence allows', () => {
     // The skipped server is named, not just counted.
     expect(screen.getByText(M('enable_all_review_skipped_names', { names: 'ineligible-mcp' }), { exact: false })).toBeTruthy()
     expect(screen.getByText(M('enable_all_review_failed_names', { names: 'failed-mcp' }), { exact: false })).toBeTruthy()
+  })
+
+  it('reads every candidate launch in one request', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: true }) as never)
+    vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(idleProgress as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [
+        { ...server({ name: 'a-mcp' }), recommendation: declared },
+        { ...server({ name: 'b-mcp' }), recommendation: declared },
+      ],
+    } as never)
+    const single = vi.spyOn(api, 'mcpGatewayLaunchPreview')
+    const batch = vi.spyOn(api, 'mcpGatewayLaunchPreviews').mockResolvedValue({
+      launches: { 'a-mcp': preview('a-mcp'), 'b-mcp': preview('b-mcp') },
+      errors: {},
+    } as never)
+
+    mount()
+    await screen.findByText('a-mcp', undefined, { timeout: 5000 })
+    fireEvent.click(await screen.findByRole('button', { name: M('enable_all') }, { timeout: 5000 }))
+    await screen.findByRole('button', { name: M('share_all_confirm', { count: 2 }) }, { timeout: 5000 })
+
+    expect(batch).toHaveBeenCalledTimes(1)
+    expect(batch).toHaveBeenCalledWith(['a-mcp', 'b-mcp'])
+    expect(single).not.toHaveBeenCalled()
   })
 
   it('says so when sharing was turned on but did not come up', async () => {

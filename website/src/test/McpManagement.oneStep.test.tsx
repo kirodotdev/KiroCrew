@@ -23,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
 import { McpManagement } from '../pages/settings/McpManagement'
+import { answerBatchPreviewsPerName } from './McpManagementTestUtils'
 
 /** The page's own English copy. */
 const M = (key: string, vars?: Record<string, unknown>) => i18nT(`pages.mcpManagement.${key}`, vars)
@@ -96,6 +97,7 @@ beforeEach(() => {
   vi.restoreAllMocks()
   // The hero's memory read: answered with no figures unless a test says otherwise.
   vi.spyOn(api, 'mcpGatewayFootprint').mockResolvedValue({ using_now_bytes: null, with_sharing_bytes: null, open_chats: 0, stale_chats: [] } as never)
+  answerBatchPreviewsPerName()
 })
 afterEach(cleanup)
 
@@ -753,7 +755,7 @@ describe('enable all shareable', () => {
     const setStub = mountTwo()
     await pressEnableAll()
 
-    // Chain: servers re-read -> one launch read per candidate -> the list renders.
+    // Chain: servers re-read -> one batched launch read -> the list renders.
     const list = await findList()
     expect(list.textContent).toContain('alpha-mcp')
     expect(list.textContent).toContain('beta-mcp')
@@ -773,7 +775,7 @@ describe('enable all shareable', () => {
     })
     await pressEnableAll()
 
-    // Chain: servers re-read -> one launch read per candidate -> error + list.
+    // Chain: servers re-read -> one batched launch read -> error + list.
     expect(
       await screen.findByText(M('enable_all_review_failed_names', { names: 'beta-mcp' }), { exact: false }, { timeout: 5000 }),
     ).toBeTruthy()
@@ -786,7 +788,7 @@ describe('enable all shareable', () => {
     const setStub = mountTwo()
     await pressEnableAll()
 
-    // Chain: servers re-read -> one launch read per candidate -> the confirm button.
+    // Chain: servers re-read -> one batched launch read -> the confirm button.
     const confirm = await screen.findByRole('button', { name: M('share_all_confirm', { count: 2 }) }, { timeout: 5000 })
     expect(confirm.tagName).toBe('BUTTON')
     fireEvent.click(confirm)
@@ -866,7 +868,7 @@ describe('enable all shareable', () => {
     mountTwo()
     await pressEnableAll()
 
-    // Chain: servers re-read -> one launch read per candidate -> the list renders.
+    // Chain: servers re-read -> one batched launch read -> the list renders.
     // jsdom has no layout, so this pins the wrap rule the card's overflow-hidden needs.
     const list = await findList()
     expect(list.className).toContain('[overflow-wrap:anywhere]')

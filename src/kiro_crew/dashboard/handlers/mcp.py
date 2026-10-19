@@ -1038,6 +1038,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MAX_STUB_BATCH,
         _record_stub_decisions,
         _stub_eligibility,
+        api_mcp_gateway_server_launches,
         api_mcp_gateway_set_stub,
     )
     from kiro_crew.dashboard.handlers.mcp_probe import (  # noqa: F401
@@ -1547,7 +1548,7 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
 #   ``mcp_agent_sync`` -- Copying servers into the Kiro Crew agent spec; the agent-home refusal.
 #   ``mcp_probe`` -- The probe cache, quarantine, shareability measurement and the listing routes.
 #   ``mcp_gateway_routes`` -- The shared gateway's status, enable, refresh and per-server routes.
-#   ``mcp_gateway_stubs`` -- Which servers may be stubbed, and the set-stub route.
+#   ``mcp_gateway_stubs`` -- Which servers may be stubbed, the set-stub route, its launch preview.
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.dashboard.handlers.mcp_config_files",

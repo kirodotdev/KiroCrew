@@ -104,7 +104,7 @@ const API_KEY_ORDER = [
   'connectionsStatus', 'connectionsTest', 'connectionsCancel', 'connectionsDisconnect',
   'connectionsOAuthClients', 'connectionsOAuthClientSave', 'connectionsOAuthClientDelete', 'mcpGatewayStatus',
   'mcpGatewayEnable', 'mcpGatewayFootprint', 'mcpGatewayMetrics', 'mcpGatewayServers', 'mcpGatewayLaunchPreview',
-  'mcpGatewaySetStub', 'mcpResolveRefresh', 'mcpMeasureStart', 'mcpMeasureProgress',
+  'mcpGatewayLaunchPreviews', 'mcpGatewaySetStub', 'mcpResolveRefresh', 'mcpMeasureStart', 'mcpMeasureProgress',
   'mcpGatewaySetStubMany', 'agentConfig', 'saveAgentConfig', 'defaultAgent',
   'setDefaultAgent', 'kirocrewConfig', 'saveKirocrewConfig', 'patchConfig',
   'acpBackends', 'acpBackendRecheck', 'kiroUsage', 'capabilityMcpList',

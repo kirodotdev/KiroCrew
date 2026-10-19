@@ -32,11 +32,7 @@ from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_discovery import managed_server_is_session_bound, probe_metadata
 from kiro_crew.mcp_gateway import hazards, is_gateway_supported, launch_resolve
 from kiro_crew.mcp_gateway.hashing import hash_command
-from kiro_crew.mcp_gateway.launch_approval import (
-    display_launches,
-    refused_servers,
-    refused_shares,
-)
+from kiro_crew.mcp_gateway.launch_approval import refused_servers, refused_shares
 from kiro_crew.mcp_gateway.rewriter import records_dir
 from kiro_crew.mcp_gateway.shareability import ShareEvidence, ShareVerdict, assess
 from kiro_crew.mcp_gateway.verdict_cache import load_cache
@@ -744,14 +740,9 @@ async def api_mcp_gateway_server_launch(request: web.Request) -> web.Response:
             {"error": "could not resolve the launch", "code": "launch_resolve_failed"},
             status=503,
         )
-    if name in getattr(launches, "over_cap", ()):
+    code, preview = launch_resolve.launch_preview(name, launches)
+    if code is not None:
         return web.json_response(
-            {"error": "the launch set exceeds the approval limit", "code": "launch_over_cap"},
-            status=409,
+            {"error": launch_resolve.LAUNCH_PREVIEW_ERRORS[code], "code": code}, status=409
         )
-    if not launches.get(name):
-        return web.json_response(
-            {"error": "no launch resolves for this server", "code": "launch_unresolved"},
-            status=409,
-        )
-    return web.json_response(display_launches(name, launches[name]))
+    return web.json_response(preview)
