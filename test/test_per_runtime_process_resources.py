@@ -173,6 +173,22 @@ class TestScopeIsNamed:
             assert prop in plain and prop in named
 
 
+def _runtime_family_texts() -> list[str]:
+    """runtime.py and its owner modules (runtime_*.py), which hold code that was its own."""
+    import sys
+
+    from kiro_crew.acp import runtime
+
+    return [
+        Path(sys.modules[name].__file__).read_text(encoding="utf-8")
+        for name in (runtime.__name__, *runtime._RUNTIME_OWNERS)
+    ]
+
+
+def _runtime_family_text() -> str:
+    return "".join(_runtime_family_texts())
+
+
 class TestRuntimeNamesItsScope:
     @staticmethod
     def _launch(tmp_path, *, wrapped: bool) -> tuple[list[str], str, list[str], str]:
@@ -261,7 +277,7 @@ class TestRuntimeNamesItsScope:
         # The value the launch reports is the one the runtime keeps for its init log,
         # after the process exists -- where the capture above stops. Kept as a source
         # read with that reason.
-        body = (Path(sb.__file__).with_name("acp") / "runtime.py").read_text(encoding="utf-8")
+        body = _runtime_family_text()
         assert body.count("self._scope_unit = launched.scope_unit") == 1
 
     def test_the_child_environment_names_the_authored_agent(self, tmp_path):
@@ -288,10 +304,10 @@ class TestRuntimeNamesItsScope:
         text, so reformatting the call cannot break the pin and the pin cannot
         match its own assertion.
         """
-        src = Path(sb.__file__).with_name("acp") / "runtime.py"
-        tree = ast.parse(src.read_text(encoding="utf-8"))
+        trees = [ast.parse(text) for text in _runtime_family_texts()]
         calls = [
             node
+            for tree in trees
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and node.args
@@ -343,8 +359,7 @@ class TestRuntimeNamesItsScope:
         has ended -- which is the same false claim as naming a scope that never
         existed, just later.
         """
-        src = Path(sb.__file__).with_name("acp") / "runtime.py"
-        body = src.read_text(encoding="utf-8")
+        body = _runtime_family_text()
         token_clears = body.count('self._process_instance = ""')
         unit_clears = body.count('self._scope_unit = ""')
         assert token_clears >= 2, "control: the token is cleared on the teardown paths"

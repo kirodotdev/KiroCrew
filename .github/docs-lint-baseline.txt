@@ -270,9 +270,6 @@ line-ref	docs/request-for-change/rfc-perpetual-agent.md	cron.py:193
 line-ref	docs/request-for-change/rfc-perpetual-agent.md	dashboard/handlers/ask_question.py:127
 line-ref	docs/request-for-change/rfc-perpetual-agent.md	heartbeat.py:39
 line-ref	docs/request-for-change/rfc-perpetual-agent.md	mcp_core.py:758
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/runtime.py:1014,1030-1034
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/runtime.py:406-425
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/runtime.py:905-926
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/session_provider.py:126,138
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/session_provider.py:173
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/session_provider.py:180-200
@@ -287,7 +284,6 @@ line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	dashboardSli
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	governance_profiles.py:190
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	mcp_core.py:228,357,288,318
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	platform/governance_profiles.py:212-220
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	runtime.py:522
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	session_map.py:124-167
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	session_map.py:178-195
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	src/kiro_crew/subagent_persistence.py:4-6

@@ -584,7 +584,11 @@ def test_every_runtime_roster_handoff_records_the_launches():
 
     from kiro_crew.acp import runtime as runtime_mod
 
-    lines = inspect.getsource(runtime_mod).splitlines()
+    # runtime.py's owner modules (runtime_*.py) hold code that was its own.
+    lines = "".join(
+        inspect.getsource(sys.modules[name])
+        for name in (runtime_mod.__name__, *runtime_mod._RUNTIME_OWNERS)
+    ).splitlines()
     handoffs = [i for i, ln in enumerate(lines) if ".begin_session(" in ln]
     assert len(handoffs) == 2, "a runtime session-establishment path was added or removed"
     for i in handoffs:

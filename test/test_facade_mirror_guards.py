@@ -696,6 +696,7 @@ def test_discovery_agrees_with_an_independent_census_of_install_calls(tmp_path: 
 #: facade not listed has every name it serves censused here, its forwards included.
 _OWN_CREATE_GUARDS: dict[str, str] = {
     "kiro_crew.acp.client": "test/test_acp_refactor_create_guard.py",
+    "kiro_crew.acp.runtime": "test/test_acp_refactor_create_guard.py",
     "kiro_crew.sandbox": "test/test_sandbox_refactor_create_guard.py",
 }
 

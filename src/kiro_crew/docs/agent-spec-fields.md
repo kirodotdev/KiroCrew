@@ -123,7 +123,7 @@ shared translation in `acp/session_mcp.py` (`session_mcp_projection`):
 
 | Seam | Entry point | What it does |
 |---|---|---|
-| the runtime | `acp/runtime.py`, `AcpRuntime._mirrored_session_mcp` | called only when `has_mirror` says so — a synchronous registry read at the call site, not an await that returns nothing, so kiro-cli's own construction gains no step. Runs the projection off the event loop and hands the pooled broker stubs down as `stub_elements` |
+| the runtime | `acp/runtime_session_setup.py`, `AcpRuntime._mirrored_session_mcp` | called only when `has_mirror` says so — a synchronous registry read at the call site, not an await that returns nothing, so kiro-cli's own construction gains no step. Runs the projection off the event loop and hands the pooled broker stubs down as `stub_elements` |
 | the client | `acp/client_mcp_array.py`, `AcpClient._resolve_session_mcp_servers` | the same projection, resolved on the spawn path because it blocks on the spec read, then cached; `_session_mcp_servers` serves the shared `session/new` call site from that cache |
 
 Both call `AgentConfigMirror.session_projection` rather than `session_params`,
@@ -897,7 +897,7 @@ fence requirement, the JSON-twin precedence, and which backends run the form.
 | `model_managed`, `cc_model`, fork lineage | `src/kiro_crew/agent_state.py` |
 | the KAS wire projection | `src/kiro_crew/acp/kas_agents.py` |
 | the per-harness field rulings, and which backend has a mirror at all | `src/kiro_crew/providers/mirrors/` (`base.py`, `registry.py`, `identity.py`, `claude_code.py`, `codex.py`, `opencode.py`, `goose.py`) |
-| where a mirror runs at session establishment | `src/kiro_crew/acp/runtime.py` (`AcpRuntime._mirrored_session_mcp`), `src/kiro_crew/acp/client_mcp_array.py` (`AcpClient._resolve_session_mcp_servers`) |
+| where a mirror runs at session establishment | `src/kiro_crew/acp/runtime_session_setup.py` (`AcpRuntime._mirrored_session_mcp`), `src/kiro_crew/acp/client_mcp_array.py` (`AcpClient._resolve_session_mcp_servers`) |
 | `allowedTools` → `permissions` | `src/kiro_crew/acp/kas_permissions.py` |
 | `--agent` on the spawn argv, the freshness gate | `src/kiro_crew/acp/client_start.py`, `src/kiro_crew/acp/client_spawn_env.py` |
 | `excludedTools` for Tool Search | `src/kiro_crew/agent_sdk/tool_search.py` |

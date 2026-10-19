@@ -619,7 +619,13 @@ class TestKasSpawnWarnsOnVocabularyDrift:
             "warn_kas_vocabulary_drift(await asyncio.to_thread(installed_kiro_cli_version))"
             in spawn
         )
-        runtime_src = inspect.getsource(runtime_mod)
+        import sys
+
+        # runtime.py's owner modules (runtime_*.py) hold code that was its own.
+        runtime_src = "".join(
+            inspect.getsource(sys.modules[name])
+            for name in (runtime_mod.__name__, *runtime_mod._RUNTIME_OWNERS)
+        )
         assert "vocabulary_drift" not in runtime_src
         assert "installed_kiro_cli_version" not in runtime_src
 

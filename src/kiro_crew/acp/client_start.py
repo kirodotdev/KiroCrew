@@ -416,7 +416,7 @@ async def _spawn(self: AcpClient) -> None:
     # straight past it and its `finally` records metrics only.
     #
     # BaseException so a CancelledError mid-window cleans up too. Mirrors the
-    # twin guard in acp/runtime.py around reader startup + handshake.
+    # twin guard in acp/runtime_spawn_launch.py around reader startup + handshake.
     try:
         # Windows resource ceiling, applied while the child is still SUSPENDED,
         # then resumed. No-op on POSIX (CREATE_SUSPENDED is 0 there). OFFLOADED
@@ -438,7 +438,7 @@ async def _spawn(self: AcpClient) -> None:
         # reader it replaces there is nothing here to offload.
         self._start_time = platform_compat.get_process_start_id(self._pid)
         if self._scratch_dir is not None:
-            # Liveness anchor for the scratch sweeps -- see acp/runtime.py's
+            # Liveness anchor for the scratch sweeps -- see acp/runtime_spawn_launch.py's
             # twin block. Off-loop, and fail-open on a write that could not
             # happen: an unowned dir is covered by the grace-window rule.
             owner_outcome = await asyncio.get_running_loop().run_in_executor(
@@ -466,7 +466,7 @@ async def _spawn(self: AcpClient) -> None:
                     "the scratch owner marker still names the gateway after a failed update"
                 )
         if self._shared_scratch is not None:
-            # Twin of acp/runtime.py: join the tree's owner marker beside
+            # Twin of acp/runtime_spawn_launch.py: join the tree's owner marker beside
             # the parent, so the sweep keeps the tree while either lives.
             adopt_outcome = await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(),

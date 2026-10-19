@@ -1052,6 +1052,12 @@ def test_vocabulary_home_exempts_the_vocabulary_module_and_its_listed_owners_onl
 
 _RUNTIME_PATH_MODULES = (
     "src/kiro_crew/acp/runtime.py",
+    "src/kiro_crew/acp/runtime_tree_kill.py",
+    "src/kiro_crew/acp/runtime_spawn_launch.py",
+    "src/kiro_crew/acp/runtime_spawn_entry.py",
+    "src/kiro_crew/acp/runtime_session_setup.py",
+    "src/kiro_crew/acp/runtime_session_create.py",
+    "src/kiro_crew/acp/runtime_session_load.py",
     "src/kiro_crew/acp/session_handle.py",
     "src/kiro_crew/acp/session_handle_runtime_contract.py",
     "src/kiro_crew/acp/session_handle_watchdog.py",
@@ -1081,18 +1087,18 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "plus consent capability). No other harness sends it, and reading it elsewhere would "
     "mint a non-shell verdict from a shape that backend never promised.",
     (
-        "src/kiro_crew/acp/runtime.py",
+        "src/kiro_crew/acp/runtime_spawn_launch.py",
         "_spawn_admitted",
     ): "Only native Kiro loads the alias agent files and workspace resource-inheritance "
     "setting used to bound skill metadata. Other harnesses must keep their own spawn plans.",
     (
-        "src/kiro_crew/acp/runtime.py",
+        "src/kiro_crew/acp/runtime_session_setup.py",
         "_unpooled_control_planes",
     ): "Kiro alone loads its native agent spec without a mirror or wire agent. "
     "Its unpooled managed stdio declarations need a per-session token override; "
     "other harnesses already carry identity through their own projections.",
     (
-        "src/kiro_crew/acp/runtime.py",
+        "src/kiro_crew/acp/runtime_session_load.py",
         "load_session",
     ): "KAS alone must have its custom agents re-attached on resume, and no harness "
     "property means 'this host needs its agent re-sent'. Adding one would cost the "

@@ -144,6 +144,41 @@ forwarded in `_EXPORTS_BY_OWNER`, which `test_acp_refactor_facade.py` pins. New
 bound in the class (`acp/client_class.py`) under that owner's header, and a new timeout or turn budget to
 `acp/client_timeouts.py`.
 
+`AcpRuntime`'s behaviour moves into `acp/runtime_*.py` owner modules the same way, one
+responsibility each. A member's body is a module-level function there whose first parameter
+is `self` (annotated `AcpRuntime` for type checkers only), and the class binds it by name in
+one block above `__init__`, one comment header per owner. The constructor, the properties and
+the class constants stay in the class, and the runtime's state stays on the instance, so a
+patch of a method on the class or on an instance, an `AcpRuntime.__new__` build and an unbound
+`AcpRuntime.<member>(stub, ...)` call all reach the one function; each owner's docstring names
+the instance fields its members write and read. `_own_methods` names each bound function after
+its class attribute, so its `__qualname__` (what a coroutine's and a task's repr print) and
+`inspect.signature` read as before the move, and only its `__module__` names the owner. An
+exception class an owner defines keeps `kiro_crew.acp.runtime` as its `__module__`, so error
+chains name the path callers import it from; `_MirroredSessionMcp` keeps its owner's, which
+nothing reads. `_RUNTIME_OWNERS` lists the owners lowest layer first: an owner imports only
+owners listed before it. Owners log under the `kiro_crew.acp.runtime` logger and never import
+`acp/runtime.py` at run time. The facade keeps binding every name it bound before -- its own
+unused imports are exempt from flake8's F401, and an import check stands in for it: each
+import is a name the facade bound before, its mirror glue, a name an owner defines, or a name
+the facade's or an owner's code reads -- keeps forwarding the names in `_EXPORTS_BY_OWNER` to
+their owners, and a write through it reaches every owner binding the same object
+(`kiro_crew._facade_mirror`). `test/test_runtime_bindings.py` pins the member inventory, the
+binding, the reach and the import check.
+
+| Runtime owner | Owns |
+|---|---|
+| `acp/runtime_tree_kill.py` | the runtime's process tree and its teardown: proving the root is still the process it spawned, recording its descendants, signalling the tree, and `kill` with its reap and the release of what the process held |
+| `acp/runtime_spawn_launch.py` | launching the child and making it a runtime: the harness spawn plan and the spawn agent's projected spec, the sandboxed launch tail (`_launch_tools`, the retrying spawn factory, the private-state seed), the `initialize` handshake with the client capabilities it declares, and the failed-start guard that reaps what a broken start left |
+| `acp/runtime_spawn_entry.py` | `spawn` under the cold-start admission, the one re-derive retry after a stale spawn spec, and the revive of a runtime whose start failed |
+| `acp/runtime_session_setup.py` | what `session/new` and `session/load` are built from and checked against: the working directory, the MCP server array (the mirrored projection, the stub session, the pooled and unpooled control planes, the member panel), KAS custom agents, the derived-spec and member-projection checks, the unresolved-reference guard, the session-open mount check, the start budget and the copy of the native launch sources |
+| `acp/runtime_session_create.py` | `session/new` end to end: `create_session`, the collector hand-off of a start that outlives its budget and the late-session teardown, the finish every answered start shares, and the entitlement probe session |
+| `acp/runtime_session_load.py` | `session/load` end to end: resuming a prior session and waiting for its managed MCP servers |
+
+The members no row above names, and the module-level code they read, are still defined in
+`acp/runtime.py`. New `AcpRuntime` behaviour goes to the owner whose row names its
+responsibility, bound in the class under that owner's header.
+
 `acp/_dispatch.py`, the dispatch parser both transports share, is a mirror facade over
 the owners in `acp/_dispatch_parts/`. It keeps the session handshake -- the request shapes
 both transports send (`build_session_new_params`, `set_mode_params`, `set_model_params`),

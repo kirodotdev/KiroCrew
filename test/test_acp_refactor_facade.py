@@ -1799,8 +1799,9 @@ def test_the_launch_capture_patches_no_moved_name() -> None:
 
 
 #: Names a test patches through a facade that the facade AND an owner both bind, each
-#: importing its own: such a patch reaches only the facade's own code. Every entry is
-#: patched for code that stayed in the facade -- the client's stderr drain and session
+#: importing its own: such a patch reaches only the facade's own code, which a mirrored
+#: facade's write also reaches in the owner modules that code moved to. Every entry is
+#: patched for code of the facade's own family -- the client's stderr drain and session
 #: init (``logger``), ``AcpClient.send_command`` (``redact_exfiltration_urls``), the
 #: runtime's response bound and descendant snapshot -- or for the launch the driver
 #: starts: each driver hands the launch tail its OWN sandbox wrap, scrub and scratch
