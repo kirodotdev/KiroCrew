@@ -13,15 +13,18 @@ reports, counted by the prune's own rules.
 
 from __future__ import annotations
 
+import functools
+import gc
 import hashlib
 import json
 import logging
 import os
+import queue
 import secrets
 import stat
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
@@ -166,6 +169,64 @@ def _eager_prune_in(side_dir: Path, directory: Path, crew_home_id: str) -> None:
         _PINNED_SIDE_DIR.path = None
 
 
+# The thread running a cyclic collection right now, or None. A finalizer the
+# collector runs executes on whichever thread happened to allocate, at that
+# point in its code -- possibly inside a non-reentrant lock such as a stdlib
+# executor's ``submit`` lock. The end of a projection takes locks and calls into
+# the subprocess pool, whose bounded request goes through such an executor, so
+# run there it can wait on a lock its own thread already holds, forever. A
+# collection never nests and runs on one thread, so one slot is enough.
+_COLLECTING_THREAD: int | None = None
+
+
+def _note_collection(phase: str, _info: dict[str, int]) -> None:
+    """``gc.callbacks`` hook: record which thread is collecting. Takes no lock."""
+    global _COLLECTING_THREAD
+    _COLLECTING_THREAD = threading.get_ident() if phase == "start" else None
+
+
+gc.callbacks.append(_note_collection)
+
+# Ends of projections the cyclic collector freed, run in order by the reaper
+# thread. ``SimpleQueue.put`` is reentrant: safe from inside a collection.
+_COLLECTED_ENDS: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
+_REAPER_LOCK = threading.Lock()
+_REAPER: threading.Thread | None = None
+
+
+def _ensure_projection_reaper() -> None:
+    """Start the thread that ends collected projections, if it is not running.
+
+    Called where a lease finalizer is armed -- ordinary code, never a collection,
+    which must not start a thread. A fork leaves the parent's thread dead in the
+    child, so the next arm there starts a new one; one that cannot start
+    (interpreter shutdown) leaves the queue to the next arm.
+    """
+    global _REAPER
+    with _REAPER_LOCK:
+        if _REAPER is not None and _REAPER.is_alive():
+            return
+        reaper = threading.Thread(
+            target=_reap_collected_projections, name="kirocrew-skill-view-reaper", daemon=True
+        )
+        try:
+            reaper.start()
+        except RuntimeError:
+            logger.debug("skill projection: reaper thread not started", exc_info=True)
+            return
+        _REAPER = reaper
+
+
+def _reap_collected_projections() -> None:
+    """Run each collected projection's end, one at a time, forever."""
+    while True:
+        end = _COLLECTED_ENDS.get()
+        try:
+            end()
+        except Exception:
+            logger.warning("skill projection: ending a collected projection failed", exc_info=True)
+
+
 def _end_projection(
     lease_stack: ExitStack, directory: Path, crew_home_id: str, side_dir: Path
 ) -> None:
@@ -173,8 +234,10 @@ def _end_projection(
 
     Called by :meth:`NativeSkillProjection.release` (the client's shutdown path
     calls that on the event-loop thread) or, for a projection that was merely
-    dropped, by garbage collection -- which can run on that thread too. Off the
-    loop the whole sequence runs inline. On the loop ALL of it goes to a daemon
+    dropped, when its last reference goes or the cyclic collector frees it.
+    Inside a collection nothing runs here: the end is queued for the reaper
+    thread (:data:`_COLLECTING_THREAD` says why). Otherwise, off the loop the
+    whole sequence runs inline. On the loop ALL of it goes to a daemon
     thread: the prune waits on a file lock (up to the publication lock's
     ceiling), and the lease release itself unlocks and closes the holder, then
     stats, opens and unlinks two files -- blocking calls whose cost on a slow or
@@ -183,6 +246,13 @@ def _end_projection(
     inline, the two unlinks the finalizer always did, and drops the prune: the
     next spawn's prune covers it.
     """
+    if _COLLECTING_THREAD == threading.get_ident():
+        _COLLECTED_ENDS.put(
+            functools.partial(
+                _end_projection_off_loop, lease_stack, side_dir, directory, crew_home_id
+            )
+        )
+        return
     if on_event_loop():
         try:
             threading.Thread(

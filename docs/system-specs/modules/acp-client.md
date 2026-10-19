@@ -776,9 +776,14 @@ bounded prune, under the same lock and gates (lease scan, `_per_spawn_prune_due`
 spacing, time budget), so this home's now-unleased views leave the agents
 directory at once instead of waiting for the next spawn. The eager prune never
 queues behind this process's own in-process lock (a start holding it runs its
-own prune), and when the finalizer runs on an event-loop thread the lease release
-stays inline while the prune goes to a daemon thread, so no session start is
-stalled behind a file-lock wait. Pruning runs ONE bounded lease scan for the whole
+own prune), and when the end runs on an event-loop thread the lease release and
+the prune both go to a daemon thread, so no session start is stalled behind a
+file-lock wait. A finalizer the cyclic collector runs does none of that work on
+the collecting thread: the collector fires on whatever thread allocated, possibly
+inside a non-reentrant lock such as a `ThreadPoolExecutor.submit` lock the prune's
+own path checks need, so the end is only queued (`SimpleQueue`, safe inside a
+collection) for one daemon reaper thread started when the finalizer is armed. A
+`gc.callbacks` hook records which thread is collecting. Pruning runs ONE bounded lease scan for the whole
 run -- not one scan per candidate, which multiplied the candidate cap by the
 scan cap into a quadratic sweep under the held publication lock -- streaming lease
 records without materializing the directory and stopping at a fixed scan ceiling.

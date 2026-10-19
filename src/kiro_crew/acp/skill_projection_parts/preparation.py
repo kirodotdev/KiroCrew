@@ -23,6 +23,7 @@ from typing import Any
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp.skill_projection_parts.alias_reclaim import (
     _end_projection,
+    _ensure_projection_reaper,
     _prune_stale_managed_aliases,
 )
 from kiro_crew.acp.skill_projection_parts.inheritance_overlay import (
@@ -563,6 +564,8 @@ def prepare_native_skill_projection(
                         crew_home_id,
                         _projection_side_dir(),
                     )
+                    # The thread a collected projection's end is queued for.
+                    _ensure_projection_reaper()
                 except BaseException:
                     lease_stack.close()
                     raise

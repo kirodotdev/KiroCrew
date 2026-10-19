@@ -934,6 +934,60 @@ def test_a_dropped_projection_prunes_too_and_spares_what_another_projection_hold
     assert live.agent("custom") == live_alias.stem
 
 
+def test_a_projection_the_cyclic_collector_frees_ends_on_the_reaper_not_the_collector(
+    native_tree, monkeypatch
+):
+    """A cyclic collection runs finalizers on whichever thread allocated at that
+    moment, inside whatever that thread holds -- in the Windows hang, a stdlib
+    executor's ``submit`` lock. The end takes locks and calls back into that same
+    executor, so run there it waits on a lock its own thread holds, forever. A
+    lock this test holds across ``gc.collect()`` stands in for that one: the end
+    must run on the reaper thread, which gets it once the collection returns."""
+    monkeypatch.setattr(projection, "_eager_prune", _REAL_EAGER_PRUNE)
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    prepared = projection.prepare_native_skill_projection(project)
+    alias = _alias_file(agents, prepared)
+    lease_dir = projection._projection_lease_dir()
+    held_by_collector = threading.Lock()
+    ran: list[tuple[bool, bool]] = []
+    done = threading.Event()
+    real_end = projection._end_projection_off_loop
+
+    def end(*args):
+        on_collector = threading.get_ident() == collector
+        # Bounded so a regression fails here instead of hanging the worker.
+        got = held_by_collector.acquire(timeout=5)
+        try:
+            ran.append((on_collector, got))
+            real_end(*args)
+        finally:
+            if got:
+                held_by_collector.release()
+            done.set()
+
+    monkeypatch.setattr(projection, "_end_projection_off_loop", end)
+    collector = threading.get_ident()
+    # Only the cyclic collector can free it: a list that holds itself and it.
+    cycle: list[object] = [prepared]
+    cycle.append(cycle)
+    del prepared
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        del cycle
+        with held_by_collector:
+            gc.collect()
+    finally:
+        if was_enabled:
+            gc.enable()
+
+    assert done.wait(10), "the collected projection was never ended"
+    assert ran == [(False, True)], "the end ran on the collecting thread, under its lock"
+    assert not list(lease_dir.iterdir()), "the lease was not released"
+    assert not alias.exists(), "the collected projection's view was not pruned"
+
+
 def test_two_gateways_still_cannot_both_own_a_view(native_tree, monkeypatch):
     """The lease protocol, after the lease moved under the data home: while
     ANOTHER process of this home holds a lease naming a view, this process

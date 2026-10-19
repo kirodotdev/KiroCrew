@@ -326,6 +326,14 @@ async def _settle_projection_ends() -> None:
             f"{_ends_in_flight()} {_END_THREAD!r} thread(s) still releasing a projection lease"
         ),
     )
+    # A projection the cyclic collector freed is ended on the reaper thread
+    # instead, in queue order: once a marker queued now has run, so have they.
+    reached = threading.Event()
+    projection._COLLECTED_ENDS.put(reached.set)
+    await async_wait_until(
+        reached.is_set,
+        describe=lambda: "the reaper never reached the ends queued before the census",
+    )
 
 
 def _census(agents: Path) -> dict[str, int]:

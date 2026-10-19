@@ -53,6 +53,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CHURNING_GROUPS_MAX,
         _CHURNING_KEYS_PER_GROUP_MAX,
         _CHURNING_LABEL_MAX_CHARS,
+        _COLLECTED_ENDS,
+        _COLLECTING_THREAD,
         _DRAIN_BATCH_PAUSE_SECS,
         _DRAIN_IDLE_BATCHES,
         _DRAIN_MAX_BATCHES,
@@ -60,19 +62,24 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PROJECTION_PRUNE_WORK_LIMIT,
         _PRUNE_MAX_RECLAIMS_PER_RUN,
         _PRUNE_MAX_SECONDS_PER_RUN,
+        _REAPER,
+        _REAPER_LOCK,
         _SIDECAR_SWEEP_MAX_PER_RUN,
         _eager_prune,
         _eager_prune_in,
         _end_projection,
         _end_projection_off_loop,
+        _ensure_projection_reaper,
         _migrate_legacy_side_files,
         _move_sidecar,
+        _note_collection,
         _note_env_values,
         _projection_prune_candidates,
         _prune_excluding_older_publishers,
         _prune_stale_managed_aliases,
         _prune_start_offset,
         _read_alias_spec_bounded,
+        _reap_collected_projections,
         _reclaim_prune_candidate,
         _sweep_orphan_alias_locks,
         _sweep_orphan_sidecars,
@@ -244,9 +251,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import asyncio  # noqa: F401
     import errno  # noqa: F401
+    import functools  # noqa: F401
+    import gc  # noqa: F401
     import hashlib  # noqa: F401
     import json  # noqa: F401
     import os  # noqa: F401
+    import queue  # noqa: F401
     import re  # noqa: F401
     import secrets  # noqa: F401
     import stat  # noqa: F401
