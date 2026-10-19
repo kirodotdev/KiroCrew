@@ -255,6 +255,12 @@ _KAS_TRIGGER_CANONICAL = {
 # ``PostFileSave``, ``PostFileDelete``, ``Manual``) have no kiro-cli event name, so
 # a document carrying one stays in Crew's stored spec and is left out of the
 # kiro-cli emission.
+#
+# plugin_import.AGENT_HOOK_EVENT_EQUIVALENT is the same map minus ``SessionStart``.
+# This map has it because ``agentSpawn`` is kiro-cli's name for that trigger. Plugin
+# import reports a source ``SessionStart`` as having no counterpart; whether it
+# should is an open maintainer question. test_plugin_import pins that one-row
+# difference.
 _KAS_TRIGGER_TO_EVENT = {
     "PreToolUse": "preToolUse",
     "PostToolUse": "postToolUse",
