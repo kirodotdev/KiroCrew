@@ -295,10 +295,6 @@ class WorkflowScope:
     memory_mode: str = "persistent"
     execution_context: ExecutionContext | None = None
 
-    @property
-    def anchor(self) -> str:
-        return f"wf-scope:{self.run_id}"
-
     @classmethod
     async def admit(
         cls,
