@@ -360,7 +360,12 @@ async def create_session(
 
         # The conductor test the worker hand-off below uses, off the loop: it
         # reads the config and may rescan the installed agents inline.
-        conductor = await asyncio.to_thread(_conducts_for_a_worker, caller_slot, caller_execution)
+        # A code channel's worker is filed in the channel's own folder (set above),
+        # never moved home by a mate's conductor rule; a mate's home it would land
+        # in is still refused below.
+        conductor = not via_code_channel and await asyncio.to_thread(
+            _conducts_for_a_worker, caller_slot, caller_execution
+        )
         try:
             folder_id, project_folder_id = await mate_home_filing(
                 state, caller_execution, folder_id, conductor=conductor
@@ -377,12 +382,6 @@ async def create_session(
         )
         if not {folder_id, project_folder_id} <= {str(f.get("id") or "") for f in folder_snapshot}:
             raise SessionControlError("folder not found", code="folder_not_found")
-        if channel_folder and not _folder_within(folder_snapshot, folder_id, channel_folder):
-            raise SessionControlError(
-                "a code channel's workers are filed in the channel's own folder (or a "
-                "folder inside it)",
-                code="code_channel_folder",
-            )
         folder_project_raw, folder_project_error = _folder_declared_project(
             folder_snapshot, project_folder_id
         )
@@ -420,8 +419,14 @@ async def create_session(
     # resolution, which refuses a peer bound elsewhere.
     from kiro_crew.mate_worker import MATE_WORKER_AGENT
 
-    own_worker = agent_kind in ("", "template") and await asyncio.to_thread(
-        _hands_off_to_own_worker, caller_slot, caller_execution, agent.strip(), agent_kind
+    # Never for a code channel's session: its workers take the channel's own
+    # approval mode, not a crewmate Profile's.
+    own_worker = (
+        not via_code_channel
+        and agent_kind in ("", "template")
+        and await asyncio.to_thread(
+            _hands_off_to_own_worker, caller_slot, caller_execution, agent.strip(), agent_kind
+        )
     )
     if own_worker and caller_execution is None:
         # A conductor slot with no execution record (one from before records)
@@ -994,9 +999,6 @@ async def create_session(
         ) -> tuple[bool, str | None, str | None]:
             tree = _safe_folder_tree(folders)
             exists = any(str(folder.get("id") or "") == folder_id for folder in tree)
-            if exists and channel_folder and not _folder_within(tree, folder_id, channel_folder):
-                # Reparented out of the channel's folder while this create waited.
-                return exists, None, "the folder is no longer inside the code channel's folder"
             raw_project, error = _folder_declared_project(tree, project_folder_id)
             return exists, raw_project, error
 
@@ -1057,7 +1059,7 @@ async def create_session(
         )
     if via_code_channel and str(getattr(live_caller, "folder_id", "") or "") != channel_folder:
         # The conductor was refiled while this create waited: its worker must file
-        # beside it, where it is NOW, so the decision above no longer holds.
+        # beside it, where it is NOW, so the decision above does not hold.
         raise SessionControlError(
             "this code channel's session moved folder while its worker was being "
             "created; call again",
@@ -1578,23 +1580,6 @@ async def create_session(
         ),
         **({"guidance": CONDUCTOR_GUIDANCE} if via_code_channel else {}),
     }
-
-
-def _folder_within(folders: list[dict[str, Any]], folder_id: str, ancestor_id: str) -> bool:
-    """Whether *folder_id* is *ancestor_id* or nested (at any depth) inside it.
-
-    Walks ``parent_id`` up from *folder_id* over the snapshot; a cycle or a
-    dangling parent ends the walk as "not inside", the fail-closed answer.
-    """
-    parents = {str(f.get("id") or ""): str(f.get("parent_id") or "") for f in folders}
-    seen: set[str] = set()
-    current = folder_id
-    while current and current not in seen:
-        if current == ancestor_id:
-            return True
-        seen.add(current)
-        current = parents.get(current, "")
-    return False
 
 
 def _model_pin_refusal(model_name: str, backend: str) -> str | None:

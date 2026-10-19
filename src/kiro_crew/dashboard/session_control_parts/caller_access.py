@@ -376,10 +376,48 @@ def _caller_is_ownership_fenced(state: "DashboardState", caller_key: str) -> boo
         return True
     if getattr(slot, "_created_by", ""):
         return True
+    if _ran_a_code_channel(state, slot):
+        # A session a code channel runs or ran in, whose live binding is gone or
+        # did not read back (quarantined, retired): still not a person's own tab.
+        return True
     # A code channel's worker whose transcript ``created_by`` was edited away is
     # still fenced: its lineage is also recorded in the write-protected code-channel
     # store at birth (``code_channel_root``), which only answers from memory here.
     return bool(code_channel_root(state, slot))
+
+
+def _ran_a_code_channel(state: "DashboardState | Any", slot: Any) -> bool:
+    """*slot* is a session a code channel runs or ran in; True when that is unknown.
+
+    From the loaded snapshot (``session_keys``: live, retired and quarantined rows'
+    session keys), against every name (key, history key, transcript stem) of every
+    live slot sharing *slot*'s identity. A store that is
+    not loaded answers False, as for every other fence read here (callers load it
+    first); one whose file could not be read answers True, since it cannot show
+    the slot is not such a session.
+    """
+    keys: set[str] = set()
+    for same in _slots_sharing_identity(state, slot):
+        # Every name a caller key could resolve the slot by, not its key alone.
+        keys.add(str(getattr(same, "key", "") or ""))
+        try:
+            history = slot_history_key(same)
+            keys |= {history, transcript_stem(history)}
+        except Exception:
+            return True  # an identity that cannot be read is not shown to be no conductor's
+    keys.discard("")
+    if not keys:
+        return False
+    try:
+        from kiro_crew.slack.code_channels.store import store
+
+        current = store()
+        if not current.loaded:
+            return False
+        return bool(keys & current.session_keys())
+    except Exception:
+        logger.debug("code-channel session keys unavailable", exc_info=True)
+        return _code_channel_store_unreadable()
 
 
 def _delegation_lineage_fenced(state: "DashboardState", caller_key: str) -> bool:
@@ -1096,18 +1134,6 @@ async def load_code_channel_lineage() -> None:
             await asyncio.to_thread(current.load)
     except Exception:  # pragma: no cover - the store swallows its own read errors
         logger.debug("code-channel store load failed", exc_info=True)
-    # The dispatch switch's config-path reading, for the same reason: the gate that
-    # reads it is synchronous and must not stat files on the loop. Skipped (no
-    # thread hop) while code channels are off: the switch refuses before it looks.
-    from kiro_crew.dashboard.session_control_parts import code_channel_exemption as _cce
-    from kiro_crew.slack.code_channels.binding import code_channels_on
-
-    try:
-        on = code_channels_on(_cce._live_config())
-    except Exception:  # pragma: no cover - an unreadable config: the switch is off anyway
-        on = False
-    if on:
-        await _cce.refresh_config_path_check()
 
 
 #: What :func:`code_channel_root` answers when the code-channel store's file could
