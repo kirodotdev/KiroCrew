@@ -56,13 +56,13 @@ VETTED: frozenset[tuple[str, str]] = frozenset(
         # (``ensure_seeded`` and the two it calls), the maintenance pool's debounced write
         # (``_save_checkpoint``), or ``store.remove_unit`` (the two retention doors), none
         # of which hold a handle.
-        ("session_tree_projection.py", "_load_checkpoint"),
-        ("session_tree_projection.py", "_replay_tail"),
-        ("session_tree_projection.py", "_save_checkpoint"),
-        ("session_tree_projection.py", "ensure_seeded"),
         ("session_tree_projection.py", "forget_unit"),
         ("session_tree_projection.py", "reconcile_unit_edge"),
         ("session_tree_projection.py", "retract_unit_parent"),
+        ("session_tree_projection_checkpoint.py", "_load_checkpoint"),
+        ("session_tree_projection_checkpoint.py", "_save_checkpoint"),
+        ("session_tree_projection_seed.py", "_replay_tail"),
+        ("session_tree_projection_seed.py", "ensure_seeded"),
         ("store_removal.py", "remove_unit"),
         ("store_retention.py", "sweep_expired"),
     }

@@ -1396,6 +1396,29 @@ fail-soft, and is retried after `SEED_RETRY_COOLDOWN_SECS` (30 s) rather than la
 for the life of the process. The poll costs above (376 ms cold, 90-120 ms warm at the
 cap) are the cold seed's, not a poll's.
 
+**Where the projection's code lives.** `crew_log/session_tree_projection.py` is the module
+every caller imports and patches. It keeps `SessionTreeProjection`'s state, its reads,
+every delta (`apply`, `apply_edge`, `apply_spawned`, `retract_parent`, `reconcile_edge`,
+`forget`), the change announcement, the process-wide `projection()` and the emitter's doors
+(`record_opened` and its siblings). Two owners hold the rest, and new work goes to the owner
+of its responsibility:
+
+| Owner | Holds |
+|---|---|
+| `crew_log/session_tree_projection_checkpoint.py` | the checkpoint: `CHECKPOINT_NAME`, `CHECKPOINT_VERSION`, the store identity a payload is bound to (`_current_root`), the row codec with the string bounds every door into the state applies (`_within_bounds`, `_edge_within_bounds`), `_load_checkpoint`, `_save_checkpoint`, and the debounced write (`_schedule_checkpoint`, `flush_checkpoint`, `cancel_pending_checkpoint`) |
+| `crew_log/session_tree_projection_seed.py` | the cold start: `ensure_seeded`, the tail replay (`_replay_tail`, `_replay_spawned`), the install over commits made while the scan ran, and the timed re-attempt of a seed that raised (`SEED_RETRY_COOLDOWN_SECS`) |
+
+The module is a mirror facade (`kiro_crew._facade_mirror`). An owner function whose first
+parameter is `self` is bound as the `SessionTreeProjection` attribute of the same name, so
+its `__module__` and `__qualname__` name the owner. Their annotations resolve for type
+checkers only: both owners import `SessionTreeProjection`, and the seed owner
+`ScanIdentity` and `_ReplayResult`, under `TYPE_CHECKING`, so `typing.get_type_hints` or
+`inspect.signature(..., eval_str=True)` on any of the 15 bound members raises `NameError`
+at run time. A moved name the facade's own code reads (`_current_root`, `_within_bounds`,
+`_edge_within_bounds`, `ScanIdentity`) is bound in the facade by import, and every other
+one is served by the owner that binds it; a patch through the facade reaches every owner
+holding the name. Owners log under the facade's logger name and never import the facade.
+
 **The sidebar lineage push.** The dashboard's slot rows carry `parent` (in the bare slot
 key space) and `lineage_pending: true` while the projection is unseeded. The projection
 announces `TREE_ADVANCED` on every tree change and when its seed lands, and
@@ -1832,7 +1855,7 @@ There is ONE number per fold and no module-wide one beside it. A savepoint is wr
 with, and demanded back at, `fold_state_version(name)`, which is the only spelling either
 side of the round trip uses. A maximum over the folds was kept for a while on the grounds
 that `checkpoint.py` published it as `CHECKPOINT_VERSION` for its store's payload table;
-that was wrong -- `session_tree_projection.py` declares its own `CHECKPOINT_VERSION` and
+that was wrong -- `session_tree_projection_checkpoint.py` declares its own `CHECKPOINT_VERSION` and
 imports neither name -- so both are gone, and a fold's version is unreachable except
 through its own fold.
 
