@@ -414,6 +414,7 @@
   },
   "appSdk": {
     "chatEmbed": {
+      "delivery_seen_text_kept": "メッセージは上の会話に表示されています。再利用できるよう、テキストは入力欄に残してあります。",
       "agent_is_working": "エージェントが処理中…",
       "app_not_allowed_to_send_named": "{{app}} はチャットメッセージを送信できません。このアプリは権限にチャットへのアクセスを宣言していません。",
       "server_refused_with_status": "サーバーが拒否しました（HTTP {{status}}）。しばらくしてからもう一度お試しください。",

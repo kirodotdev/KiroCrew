@@ -442,6 +442,7 @@
   },
   "appSdk": {
     "chatEmbed": {
+      "delivery_seen_text_kept": "Ton message figure dans la conversation ci-dessus. Le texte reste dans le champ de saisie si tu veux le réutiliser.",
       "agent_is_working": "L’agent travaille...",
       "app_not_allowed_to_send_named": "{{app}} n'est pas autorisée à envoyer des messages de chat : elle ne déclare pas l'accès au chat dans ses autorisations.",
       "server_refused_with_status": "Le serveur l'a refusé (HTTP {{status}}) — réessaie dans un instant.",

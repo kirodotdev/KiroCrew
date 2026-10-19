@@ -414,6 +414,7 @@
   },
   "appSdk": {
     "chatEmbed": {
+      "delivery_seen_text_kept": "你的消息已在上方对话中。文字仍保留在输入框里，方便你再次使用。",
       "agent_is_working": "代理正在工作…",
       "app_not_allowed_to_send_named": "{{app}} 无权发送聊天消息：该应用未在其权限中声明聊天访问。",
       "server_refused_with_status": "服务器拒绝了它（HTTP {{status}}），请稍后再试。",

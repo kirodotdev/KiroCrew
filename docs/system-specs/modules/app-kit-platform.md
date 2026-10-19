@@ -101,7 +101,13 @@ unconfirmed one, a host `onSend` that rejects), its staged files come back with
 it, ahead of any staged since, so a retry needs no new upload; the files ride
 the parked receipt too, so an embed remounted for the slot gets them. Proof
 that an unconfirmed send was delivered unstages the handed-back files still in
-the composer, as it takes the text back, so they are not sent twice. A
+the composer, as it takes the text back, so they are not sent twice. That
+proof is the send's own `sendId`. A host `onSend` send carries none, so its
+only proof is its text arriving as a user row after the send's anchor row;
+text cannot say which send landed, so that proof never touches the composer:
+the warning becomes a calm line saying the message is in the conversation and
+its text is still in the composer, or simply goes away when there is no kept
+text left to explain (a chip send, or text the user has cleared or edited). A
 slot switch or unmount aborts in-flight
 uploads and drops their late results.
 

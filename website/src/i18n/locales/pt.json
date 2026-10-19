@@ -442,6 +442,7 @@
   },
   "appSdk": {
     "chatEmbed": {
+      "delivery_seen_text_kept": "Sua mensagem está na conversa acima. O texto continua na caixa de composição caso queira reutilizá-lo.",
       "agent_is_working": "O agente está trabalhando...",
       "app_not_allowed_to_send_named": "{{app}} não tem permissão para enviar mensagens de chat: o app não declara acesso ao chat em suas permissões.",
       "server_refused_with_status": "O servidor recusou (HTTP {{status}}) — tente novamente em instantes.",

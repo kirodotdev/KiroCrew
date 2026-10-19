@@ -35,12 +35,16 @@
  * drain it -- B would render A's composer text and delete A's only copy.
  */
 
+import type { HostSendProof } from './embedSendTails'
+
 export interface PendingEmbedRecovery {
   /** The transcript-tail row to show: a failure, or an unconfirmed notice. */
   tail: {
     role: 'error' | 'notice'
     content: string
     sendId: string
+    /** See `SendTail.hostProof`. */
+    hostProof?: HostSendProof
   }
   /** The composer text to hand back, as typed. Absent for a chip send, which
    *  never consumed the draft. */

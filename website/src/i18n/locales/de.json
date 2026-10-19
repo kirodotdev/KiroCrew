@@ -428,6 +428,7 @@
   },
   "appSdk": {
     "chatEmbed": {
+      "delivery_seen_text_kept": "Deine Nachricht steht oben im Verlauf. Der Text bleibt im Eingabefeld, falls du ihn wiederverwenden willst.",
       "agent_is_working": "Agent arbeitet...",
       "app_not_allowed_to_send_named": "{{app}} darf keine Chatnachrichten senden – die App deklariert in ihren Berechtigungen keinen Chat-Zugriff.",
       "server_refused_with_status": "Der Server hat sie abgelehnt (HTTP {{status}}) – versuche es gleich noch einmal.",
