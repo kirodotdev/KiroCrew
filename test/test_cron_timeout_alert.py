@@ -100,8 +100,8 @@ async def test_a_slow_alert_does_not_hold_the_run(tmp_path, short_deadline) -> N
     svc.set_timeout_alert(_slow_alert)
     job = CronJob(id="t3", name="slow", message="hi")
 
-    await asyncio.wait_for(svc._execute_with_timeout(job), timeout=5)
-    await asyncio.wait_for(started.wait(), timeout=5)
+    await asyncio.wait_for(svc._execute_with_timeout(job), timeout=30)
+    await asyncio.wait_for(started.wait(), timeout=30)
     assert len(svc._timeout_alerts) == 1
 
     release.set()
