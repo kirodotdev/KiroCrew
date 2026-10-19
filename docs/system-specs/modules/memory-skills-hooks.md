@@ -88,7 +88,8 @@ an edited or shortened prefix refuses acknowledgement. Receipts are not pruned.
   decoding the owning record, member ID lookup, session capture and inherited
   mode tightening. It carries routing data; ordinary auth remains independent.
 - `memory_stores.py` resolves configured store paths and explicit member creation.
-  `members.py` owns persisted member IDs and manual member documents.
+  `members.py` owns persisted member IDs and manual member documents, through its
+  `members_parts/member_space.py` and `members_parts/prompt_layers.py` owners.
 - `memory_schema.py` defines the authoritative member tables.
   `vector_memory_member.py` owns exclusive creation and strict open, and
   `VectorMemoryStore` (`vector_memory.py`) the store's one connection and lock.

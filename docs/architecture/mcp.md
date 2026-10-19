@@ -4033,7 +4033,7 @@ cannot arrive inside one whose grant was never meant to cover it.
 
 Per-agent scoping composes on top and needs no new mechanism: an agent spec's own
 `mcpServers` map decides which agents see a server at all
-(`agent_discovery.py`), so a server can be handed to an orchestrator-class agent
+(`agent_discovery_parts/agent_roster.py`), so a server can be handed to an orchestrator-class agent
 without every agent inheriting it.
 
 Adding a managed server is a **parity tax** — the name must appear in

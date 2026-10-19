@@ -484,7 +484,7 @@ it (steering, below, is the one block the backend does gate).
 | custom | none | **nothing** | the agent is expected to bring its own |
 | custom | mapped | only the mapped set, on **either** backend | bounded directory and scoped activation |
 
-The mapping is read by `agent_discovery.py` → `agent_skill_globs`, which pulls the
+The mapping is read by `agent_discovery_parts/skill_scope.py` → `agent_skill_globs`, which pulls the
 `skill://` entries out of the spec's `resources` (`skill_resource_uris`) and
 expands each into an fnmatch glob over real paths (`expand_skill_uri`:
 `skill://~/…` against the home dir, `skill:///abs/…` verbatim, a relative URI
@@ -565,7 +565,7 @@ item it was dispatched for, not from its spec.
 A **crew member** is an entry in `config.json` under `agents.<name>` binding a
 kiro-cli template (`kiro_agent`), a workspace, a memory store, a model and
 free-text `triggers`; `config/loader_agents.py` → `resolve_agent_bindings` turns the name
-into `ResolvedBindings`, and the member's own space lives in `members.py`.
+into `ResolvedBindings`, and the member's own space lives in `members.py` and its `members_parts/` owners.
 
 ### The member's DM session
 
@@ -629,7 +629,7 @@ is cut with a visible marker so the member prunes it. On Windows that
 read fails closed (`member_briefing_supported`) and the section says the layer is
 unavailable. Every variable payload runs through `_scrub_member_payload` first.
 
-`members.py` → `member_turn_context` is the single chokepoint deciding, per
+`members_parts/member_sessions.py` → `member_turn_context` is the single chokepoint deciding, per
 session lifecycle, whether the section is delivered and whether the rules gate
 runs: `FRESH` (session start), `WARM_REINJECTION` (post-compaction; a minimal
 turn stays `WARM`, gate only), `WARM` (gate only — the section is still live in
@@ -689,13 +689,13 @@ member writes one, and `[CURRENT ASSIGNMENT]` renders
 
 | Capability | Status | Evidence |
 |---|---|---|
-| Per-member markdown separate from `~/.kiro/agents/*.json` | **Not as a member-private file** | The only member-owned markdown is `briefing.md` (`members.py` → `member_briefing_path`), which is working memory, not a persona. Persona lives in the agent spec — and `agent_spec_format.py` does support a markdown spec (`<name>.md`, YAML frontmatter + body as the prompt, JSON wins when both exist) — but that file sits in the agents directory shared with every other tool, not in the member's private space. |
-| Per-member working memory (briefing) | **Implemented** | `members.py` → `member_briefing_path`, `read_member_briefing`, `member_briefing_supported`; injected as layer 4 by `context_assembly/member.py` → `build_member_section`. Agent-writable by design, with no dashboard endpoint — the member edits it with its own file tools. Capped at `MEMBER_BRIEFING_MAX_CHARS` on read. |
-| Per-member permanent rules | **Implemented** | `members.py` → `member_rules_path`, `read_member_rules`, `write_member_rules`; stored under `trust/member-rules/` so the member's file tools cannot rewrite its own boundary. `MEMBER_RULES_MAX_CHARS` cap enforced on write (a human dashboard action), never truncated on read. |
+| Per-member markdown separate from `~/.kiro/agents/*.json` | **Not as a member-private file** | The only member-owned markdown is `briefing.md` (`members_parts/prompt_layers.py` → `member_briefing_path`), which is working memory, not a persona. Persona lives in the agent spec — and `agent_spec_format.py` does support a markdown spec (`<name>.md`, YAML frontmatter + body as the prompt, JSON wins when both exist) — but that file sits in the agents directory shared with every other tool, not in the member's private space. |
+| Per-member working memory (briefing) | **Implemented** | `members_parts/prompt_layers.py` → `member_briefing_path`, `read_member_briefing`, `member_briefing_supported`; injected as layer 4 by `context_assembly/member.py` → `build_member_section`. Agent-writable by design, with no dashboard endpoint — the member edits it with its own file tools. Capped at `MEMBER_BRIEFING_MAX_CHARS` on read. |
+| Per-member permanent rules | **Implemented** | `members_parts/prompt_layers.py` → `member_rules_path`, `read_member_rules`, `write_member_rules`; stored under `trust/member-rules/` so the member's file tools cannot rewrite its own boundary. `MEMBER_RULES_MAX_CHARS` cap enforced on write (a human dashboard action), never truncated on read. |
 | Private per-member memory | **Implemented for explicitly created members** | Memory V2: one SQLite database per immutable `member_id`, resolved by `config/loader_agents.py` → `resolve_agent_bindings` and `execution_context.py` → `member_config_for_id`; bounded essentials from `member_essential_context.py`, recall through `memory_recall`. **Gap:** legacy and auto-discovered members remain on Global V1 and are not migrated, and a member cannot choose or rebind a shared store. |
-| Per-member activity log | **Implemented** | `members.py` → `record_activity`, `read_activity`, backed by the per-member event log (`eventlog/log.py`, a `member`-kind crew log); each record is one `activity/record` event under the caps that module applies per append. There is NO rotation, because a sequence-ordered reader cannot survive a file renamed out from under it or a dropped oldest row; the log is bounded per row and per value and accumulates over a member's lifetime. A legacy `activity.jsonl` is folded in once and retired to `activity.jsonl.migrated`. |
+| Per-member activity log | **Implemented** | `members_parts/member_activity.py` → `record_activity`, `read_activity`, backed by the per-member event log (`eventlog/log.py`, a `member`-kind crew log); each record is one `activity/record` event under the caps that module applies per append. There is NO rotation, because a sequence-ordered reader cannot survive a file renamed out from under it or a dropped oldest row; the log is bounded per row and per value and accumulates over a member's lifetime. A legacy `activity.jsonl` is folded in once and retired to `activity.jsonl.migrated`. |
 | Per-member permission control | **Partial** | Real and enforced, but keyed on the **template**, not the member: `agent_capabilities.py` resolves owner-reviewed intent over `agent_state.CAPABILITY_SECTIONS` (`mcpServers`, `tools`, `allowedTools`, `autoApprove`, `skills`, `prompt`, `model`, `resources`). A member gets its own permissions only through a **private copy** of its template (`private_to` lineage; `dashboard/agent_admin/template_lineage.py` → `_foreign_private_copy_owner`, `dashboard/agent_admin/crew_removal.py` → `_prune_private_copy_of_deleted_crew`), which is refused to a second crew. **Gaps:** two members sharing one template share its permissions; `[PERMANENT RULES]` is prompt-level guidance, not an enforced gate; and `agent.member_dispatch` is one global ceiling rather than a per-member one. |
-| Per-member DM binding | **Implemented** | `members.py` → `dm_binding_path`, `read_dm_binding`, `write_dm_binding`; under `trust/member-bindings/`, because the binding is the thread's identity authority. |
+| Per-member DM binding | **Implemented** | `members_parts/dm_bindings.py` → `dm_binding_path`, `read_dm_binding`, `write_dm_binding`; under `trust/member-bindings/`, because the binding is the thread's identity authority. |
 
 The stated purpose of the private-file direction is per-member private memory plus
 per-member permission control; both exist today, in the forms above.
@@ -713,7 +713,7 @@ per-member permission control; both exist today, in the forms above.
 | Lessons | `src/kiro_crew/learn.py`, `src/kiro_crew/vector_memory_runtime/lesson_write.py` (`write_lesson`), `src/kiro_crew/vector_memory_runtime/lessons.py` (the lesson readers, ranking and tiered rendering) |
 | Skill index, pinned bodies, discovery | `src/kiro_crew/skill_runtime/delivery.py` (`get_context`), `src/kiro_crew/skills_body_reads.py` (`load_skill`) |
 | Trigger matching, and its model-picked override | `src/kiro_crew/trigger_match.py`, `src/kiro_crew/skills_selection.py` (`get_triggered_skills`), `src/kiro_crew/skill_runtime/delivery.py` (`split_triggered`, `trigger_hint`), `src/kiro_crew/decisions/points/skills_select.py` |
-| Which agents get skills | `src/kiro_crew/context.py` (`_skills_injection_plan`), `src/kiro_crew/agent_discovery.py` (`agent_skill_globs`, `expand_skill_uri`) |
+| Which agents get skills | `src/kiro_crew/context.py` (`_skills_injection_plan`), `src/kiro_crew/agent_discovery_parts/skill_scope.py` (`agent_skill_globs`), `src/kiro_crew/agent_discovery_parts/spec_fields.py` (`expand_skill_uri`) |
 | Steering and hooks | `src/kiro_crew/context_assembly/agent_spec.py` (`_load_steering_resources`, `steering_target_admissible`), `src/kiro_crew/hooks.py` |
 | Post-compaction re-injection | `src/kiro_crew/messaging/turn_bracket.py` (`TurnBracket`, `consume_reinjection`, `rearm_reinjection`; re-exported by `messaging/dispatch.py`) |
 | Ledger snapshot on nudge and post-compaction turns | `src/kiro_crew/session_ledger.py` (`render_snapshot`), `src/kiro_crew/dashboard/handlers/autonudge.py`, `src/kiro_crew/context_assembly/turn.py` (`ledger_reinjection_part`) |
@@ -721,7 +721,7 @@ per-member permission control; both exist today, in the forms above.
 | Sub-agent prompt assembly, shared vs dedicated | `src/kiro_crew/subagent_manager/run_turn.py` (`_run_inner_impl`), `src/kiro_crew/subagent_manager/run_start.py` (`_should_use_session_sharing_impl`, `_sharing_plan_impl`) |
 | Scratch directories | `src/kiro_crew/agent_scratch.py` (`allocate_scratch`, `scratch_env`) |
 | The worker agent spec | `src/kiro_crew/agent_materialization/worker_agent.py` (`_write_worker_spec`) |
-| Member identity, rules, briefing, activity, V2 essentials | `src/kiro_crew/members.py`, `src/kiro_crew/context_assembly/member.py` (`build_member_section`, `build_v2_essentials`), `src/kiro_crew/member_essential_context.py` |
+| Member identity, rules, briefing, activity, V2 essentials | `src/kiro_crew/members.py` (the facade of the owners in `src/kiro_crew/members_parts/`), `src/kiro_crew/context_assembly/member.py` (`build_member_section`, `build_v2_essentials`), `src/kiro_crew/member_essential_context.py` |
 | Crew records, routing, binding | `src/kiro_crew/config/loader_pipeline.py`, `src/kiro_crew/config/loader_agents.py`, `src/kiro_crew/mcp_core_parts/crew.py` |
 | Per-member permissions | `src/kiro_crew/agent_capabilities.py`, `src/kiro_crew/agent_state.py` |
 | Session creation and agent inheritance | `src/kiro_crew/dashboard/session_control_parts/session_create.py` |

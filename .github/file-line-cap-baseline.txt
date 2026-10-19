@@ -16,7 +16,6 @@
 2666 scripts/docs_lint.py
 9026 src/kiro_crew/acp/runtime.py
 6697 src/kiro_crew/agent.py
-2265 src/kiro_crew/agent_discovery.py
 2683 src/kiro_crew/apps/builtins/code_review_sage/backend/routes.py
 5184 src/kiro_crew/apps/routes.py
 2579 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status.py
@@ -28,7 +27,6 @@
 2492 src/kiro_crew/dashboard/handlers/members.py
 2158 src/kiro_crew/dashboard/handlers/work_ledger.py
 2818 src/kiro_crew/dashboard/server.py
-2129 src/kiro_crew/members.py
 2646 src/kiro_crew/pinned_fs.py
 2787 src/kiro_crew/portability.py
 2284 src/kiro_crew/sandbox_launcher_program.py

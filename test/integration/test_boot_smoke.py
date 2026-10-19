@@ -471,7 +471,8 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.model_registry", "_OPERATOR_WINDOWS"): "rebound by every config apply",
     # Caches keyed by the thing they cache (a path, a server name), so a stale
     # entry is never returned for a different home.
-    ("kiro_crew.agent_discovery", "_LIST_AGENTS_CACHE"): "keyed cache",
+    ("kiro_crew.agent_discovery_parts.agent_roster", "_LIST_AGENTS_CACHE"): "keyed cache",
+    ("kiro_crew.agent_discovery_parts.spec_snapshot", "_LIST_AGENTS_CACHE"): "keyed cache",
     ("kiro_crew.apps.dev_mode", "_dev_apps_cache"): "keyed cache",
     ("kiro_crew.apps.manager_builtins", "_orphaned_builtins_cache"): "keyed cache",
     ("kiro_crew.autonudge", "_MAINTENANCE_LOCKS"): "keyed cache",
@@ -479,7 +480,7 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.dashboard.handlers.mcp_probe", "_mcp_probe_ts"): "keyed cache",
     ("kiro_crew.mcp_discovery_probe_state", "_probe_cache"): "keyed cache",
     ("kiro_crew.mcp_discovery_probe", "_probe_cache"): "keyed cache",
-    ("kiro_crew.agent_discovery", "_PARSED_SPECS_CACHE"): "keyed cache",
+    ("kiro_crew.agent_discovery_parts.spec_snapshot", "_PARSED_SPECS_CACHE"): "keyed cache",
     # Process-wide values resolved on first use, home-independent: the thread
     # pools, and the umask-derived default file mode (``0o666 & ~umask``) that
     # the first atomic write OUTSIDE the data home resolves -- inside the home

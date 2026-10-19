@@ -1833,7 +1833,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # `is_dispatchable_member_name` asks whether a stored Crew Member name
         # WOULD need redaction and refuses the pin when it would. Nothing is
         # emitted here; the chat routes that act on the answer are the sinks.
-        "members.py",
+        "members_parts/member_space.py",
+        "members_parts/self_edit.py",
         # Gate-side, like `link_meta.py` above: the UI-guide catalog asks whether
         # the redactor WOULD change a proposed crewmate name/goal or MCP command,
         # args or url, and REFUSES the guide when it would. Nothing it returns is
@@ -1918,7 +1919,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # gateway log, so a credential-shaped name never enters the log ring /
         # /api/logs stream. The parsed spec it returns is untouched; the surfaces
         # that emit text derived from it are the registered sinks.
-        "agent_discovery.py",
+        "agent_discovery_parts/spec_reads.py",
         # Capture-side, not egress: the per-session MCP report scrubs a server
         # name and a failing server's startup error as it RECORDS them, so a
         # credential never enters the accumulator at all. Deliberately earlier

@@ -30,7 +30,13 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/mcp_tools/control.py` | The `select_crew` tool handler and its `HANDLERS` row |
 | `src/kiro_crew/mcp_tools/control_parts/schemas.py` | The `select_crew` tool declaration |
 | `src/kiro_crew/validation_parts/messaging_session_schemas.py` | `SELECT_CREW_SCHEMA` — argument validation for that tool (imported through `kiro_crew.validation`) |
-| `src/kiro_crew/members.py` | Per-crew member space: activity log, DM-thread binding, permanent rules, self-maintained briefing, the member turn chokepoint |
+| `src/kiro_crew/members.py` | The per-crew member space's import and patch surface: a mirror facade over the `members_parts` owners below, so every name is still read and patched through `kiro_crew.members`; new member-space code goes to the owner whose responsibility it is |
+| `src/kiro_crew/members_parts/member_space.py` | The space's layout (every file and directory name), member display names and crew ids, slugs, the containment-checked member paths, the first-welcome marker |
+| `src/kiro_crew/members_parts/member_sessions.py` | A member's DM session: its key and alias, the backend it routes to, the session-level MCP mounts, the member turn chokepoint |
+| `src/kiro_crew/members_parts/dm_bindings.py` | The DM-thread binding under `trust/` and the identity it answers for a session |
+| `src/kiro_crew/members_parts/self_edit.py` | What a crewmate may change on its own record: cleaning, the update, its undo, the rename |
+| `src/kiro_crew/members_parts/prompt_layers.py` | The permanent rules and the self-maintained briefing |
+| `src/kiro_crew/members_parts/member_activity.py` | The activity log |
 | `src/kiro_crew/subagent_parts/agent_policy.py` | `_validate_agent` — what an `agent=` name is checked against, and `UNADVERTISED_AGENTS` (both read and patched through `kiro_crew.subagent`) |
 | `src/kiro_crew/dashboard/handlers/agents.py` | The agents handlers' import and patch surface: `GET /api/agents`, the model picker reads and the crew model-pin checks, composed with the `agent_admin` owners below |
 | `src/kiro_crew/dashboard/agent_admin/` | Crew CRUD on `/api/agents` (`crew_records.py`, `crew_update.py`, `crew_removal.py`), the roster row serializer (`roster.py`), the Custom agents tab's detail, fork, publish and reset (`agent_detail.py`, `fork_publish.py`, `template_lineage.py`) and the default-agent write (`default_agent.py`) |
