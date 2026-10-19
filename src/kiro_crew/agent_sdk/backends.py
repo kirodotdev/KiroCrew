@@ -101,7 +101,11 @@ with no row here.
    * - ``ACP_BACKENDS_STEERING_REQUEST``
      - pre-session registry query (whether a user steer travels on an awaited
        request instead: the ``_session/steering`` request of codex-acp,
-       claude-agent-acp and pi-acp, or goose's ``_goose/unstable/session/steer``)
+       claude-agent-acp and pi where its adapter advertises it, or goose's
+       ``_goose/unstable/session/steer``)
+   * - ``ACP_BACKENDS_STEERING_REQUEST_SHIPPED``
+     - pre-session registry query (which of those members' installed adapter
+       serves the steer; read by the harness card)
    * - ``ACP_BACKENDS_STEER_CONCURRENT_PROMPT``
      - pre-session registry query (whether a user steer travels as a second
        ``session/prompt`` that joins the running turn)
@@ -875,6 +879,7 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
     ACP_BACKENDS_STEERING_REQUEST,
+    ACP_BACKENDS_STEERING_REQUEST_SHIPPED,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
 )

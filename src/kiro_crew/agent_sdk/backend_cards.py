@@ -275,14 +275,16 @@ USER_FACING_LINES: Tuple[_LineSpec, ...] = (
     _LineSpec(LINE_MEMBER_THREAD_TOOLS, ("ACP_BACKENDS_MEMBER_DISPATCH",)),
     _LineSpec(LINE_SIDE_CHAT_TOOLS, ("ACP_BACKENDS_SIDE_READONLY",)),
     # Three verbs carry a user's mid-turn message: kiro-cli's ``_session/steer``,
-    # codex-acp's ``_session/steering``, and opencode's second ``session/prompt``
-    # that joins the running turn. A user asks "can I add to a running turn?", and
-    # any of them answers yes, so the line is their union.
+    # an awaited steering request, and opencode's second ``session/prompt`` that
+    # joins the running turn. A user asks "can I add to a running turn?", and any
+    # of them answers yes, so the line is their union. The steering-request half
+    # reads only the members whose INSTALLED adapter serves it, so the card does
+    # not promise a steer that every documented install queues instead.
     _LineSpec(
         LINE_MID_TURN_STEER,
         (
             "ACP_BACKENDS_STEER",
-            "ACP_BACKENDS_STEERING_REQUEST",
+            "ACP_BACKENDS_STEERING_REQUEST_SHIPPED",
             "ACP_BACKENDS_STEER_CONCURRENT_PROMPT",
         ),
     ),
@@ -361,6 +363,13 @@ OPERATOR_LINES: Tuple[_LineSpec, ...] = (
 #: DEFECT rather than an absent feature, and a card that listed defect classes in
 #: front of someone choosing a harness would be worse than one line shorter.
 OFF_CARD_SETS: Mapping[str, str] = {
+    "ACP_BACKENDS_STEERING_REQUEST": (
+        "which members may be sent an awaited steering request at all. The card's "
+        "mid-turn steer line reads its subset ACP_BACKENDS_STEERING_REQUEST_SHIPPED "
+        "instead, because a member here whose installed adapter never advertises the "
+        "request takes no steer, and an available mark would promise a steer that "
+        "queues on every documented install"
+    ),
     "ACP_BACKENDS_SERIAL_SESSION_STARTS": (
         "which backend's process answers session starts and mode switches one at a "
         "time. It decides only what a timed-out start's error says about the "

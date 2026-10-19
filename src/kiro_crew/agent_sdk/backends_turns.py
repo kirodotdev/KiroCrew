@@ -47,9 +47,9 @@ from kiro_crew.agent_sdk.backends import (
 # opencode is not a member either: it has no steer verb, and a deny it is handed
 # ends its turn. It takes a user's mid-turn message as a second ``session/prompt``
 # instead (``ACP_BACKENDS_STEER_CONCURRENT_PROMPT`` below).
-# pi takes a user's mid-turn message over ``_session/steering`` instead (see
-# ``ACP_BACKENDS_STEERING_REQUEST``), so it is a non-member here for the same
-# reason codex is: the deny-notice path needs a steer that survives the refusal.
+# pi is not a member: its user steer is ``_session/steering``, and only where the
+# adapter advertises it (see ``ACP_BACKENDS_STEERING_REQUEST``), which is a
+# user-steer channel, not a deny-notice one.
 # deepseek is not a member: it advertises close, list and resume only, and permits
 # one in-flight prompt per session, so a mid-turn steer has no verb to travel on.
 # goose is not a member: its steer is its own request, and it is not shown to
@@ -71,8 +71,9 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 # Backends that take a USER's mid-turn message over a REQUEST whose answer is
 # awaited, rather than kiro-cli's fire-and-forget ``_session/steer``, and that can
-# Two verbs: ``_session/steering``, which ``AcpSessionHandle`` speaks for
-# codex-acp and ``AcpClient`` for claude-agent-acp and pi-acp, and goose's
+# drop an accepted steer with its turn. Two verbs: ``_session/steering``, which
+# ``AcpSessionHandle`` speaks for codex-acp and ``AcpClient`` for
+# claude-agent-acp and pi (only where its adapter advertises it), and goose's
 # ``_goose/unstable/session/steer``, spoken by ``AcpClient``
 # (``_CLIENT_STEERING_REQUEST_METHODS``).
 #
@@ -142,20 +143,40 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # session, so ``AcpClient`` speaks the request for it, and only when the handshake
 # advertised it.
 #
-# pi-acp takes the same request, on its own evidence: read from the shipped
-# 0.1.8 bundle and driven live on ``@openma/pi-acp`` 0.1.8 with pi 1.3.0.
-# ``initialize`` advertises ``_meta.steering.supported: true`` (older adapters
-# advertise nothing). Driven live: a ``_session/steering`` sent during a
-# tool-free model call returned ``injected``, and the steered word was in the
-# reply before ``end_turn``.
+# pi takes the same request only where its adapter advertises it, and the
+# adapter Crew installs does not. Crew installs npm ``pi-acp`` (svkozak/pi-acp,
+# 0.0.34 at the time of writing; see ``acp/harness/pi.py``), which has no
+# ``_session/steering`` and advertises no steering. The verb ships only in
+# ``@openma/pi-acp`` (openma-ai/pi-acp, 0.1.8), a separate package that Crew
+# does not install or launch: it runs pi in-process with no
+# ``PI_ACP_PI_COMMAND``, so Crew's pi gate extension would never load there.
+# The evidence for the code path is that package's source and a live drive of
+# it with pi 1.3.0: ``initialize`` advertises ``_meta.steering.supported:
+# true``, and a ``_session/steering`` sent during a tool-free model call was
+# answered ``injected`` with the steered word in the reply before ``end_turn``.
 # ``steer()`` delivers after the current assistant turn finishes its tool
 # calls, before the next model call, answering ``injected``; with no running
-# turn it answers ``promptRequired`` and starts nothing. A concurrent
-# ``session/prompt`` steers the same way. There is no ``steering_consumed``
-# echo, so the request's own answer is the delivery evidence and a cancelled
-# or failed turn queues the text, exactly as for claude above.
+# turn it answers ``promptRequired`` and starts nothing. The turn stays open
+# for an accepted steer because pi-coding-agent's post-run loop
+# (``_handlePostAgentRun``) re-checks ``agent.hasQueuedMessages()`` and
+# continues before the agent settles, which is what makes consumed-at-
+# ``end_turn`` honest for pi. There is no ``steering_consumed`` echo, so the
+# request's own answer is the delivery evidence and a cancelled or failed turn
+# queues the text, as for claude above. A stock pi-acp session never
+# advertises, so ``AcpClient`` sends it no steer and the text queues; the card
+# reads :data:`ACP_BACKENDS_STEERING_REQUEST_SHIPPED` and says not available.
 ACP_BACKENDS_STEERING_REQUEST = frozenset(
     {ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE, ACP_BACKEND_PI}
+)
+
+# The members of ``ACP_BACKENDS_STEERING_REQUEST`` whose adapter, as Crew
+# installs it, serves the steer. Read by the harness card's ``mid_turn_steer``
+# line, so the card does not promise a steer the installed adapter cannot take.
+# pi is left out: the stock pi-acp Crew installs has no steering verb (see
+# above). Opt-in like every other set: a new steering member is not on the card
+# until it is added here.
+ACP_BACKENDS_STEERING_REQUEST_SHIPPED = frozenset(
+    {ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE}
 )
 
 # Backends that take a USER's mid-turn message as a second ``session/prompt`` sent

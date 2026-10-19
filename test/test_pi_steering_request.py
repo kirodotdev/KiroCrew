@@ -1,13 +1,16 @@
 """pi user steer over ``_session/steering`` (``ACP_BACKENDS_STEERING_REQUEST``).
 
-pi-acp runs one adapter per session, so ``AcpClient`` speaks the request for
-it, exactly as for claude-agent-acp. pi-acp 0.1.8 advertises
+pi runs one adapter per session, so ``AcpClient`` speaks the request for it,
+exactly as for claude-agent-acp, and only when the handshake advertised it.
+The npm ``pi-acp`` Crew installs (svkozak/pi-acp, 0.0.34) has no steering verb
+and advertises none, so a stock session takes no steer and the harness card
+says not available. The verb ships only in ``@openma/pi-acp`` 0.1.8, a separate
+package Crew does not install or launch: it advertises
 ``initialize._meta.steering.supported: true`` and answers ``injected`` while a
-turn runs (delivered after the current tool calls, before the next model
-call) or ``promptRequired`` with no running turn. Older adapters advertise
-nothing, so there is no version floor: the advertisement alone gates it. A
-steer is reported consumed only when the turn ends with ``end_turn``; anything
-else queues the text.
+turn runs (delivered after the current tool calls, before the next model call)
+or ``promptRequired`` with no running turn. There is no version floor: the
+advertisement alone gates it. A steer is reported consumed only when the turn
+ends with ``end_turn``; anything else queues the text.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_PI,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEERING_REQUEST,
+    ACP_BACKENDS_STEERING_REQUEST_SHIPPED,
 )
 from kiro_crew.testing.wait import async_wait_until, await_until
 
@@ -290,8 +294,9 @@ async def test_a_steer_past_the_text_bound_sends_nothing():
     ],
 )
 def test_supports_steer_needs_the_advertisement_and_no_floor(version, advertised, expected):
-    """pi has no version floor: steering first appears in 0.1.8 already behaving,
-    and older adapters never advertise it, so the advertisement alone gates it."""
+    """pi has no version floor: the stock pi-acp never advertises the request,
+    and the one adapter that does (``@openma/pi-acp`` 0.1.8) behaves from its first
+    release, so the advertisement alone gates it."""
     client = _client(version, advertised=advertised)
     assert client.supports_steer is expected
     assert client.supports_refusal_steer is False
@@ -300,7 +305,7 @@ def test_supports_steer_needs_the_advertisement_and_no_floor(version, advertised
 
 @pytest.mark.asyncio
 async def test_unadvertised_a_steer_sends_nothing():
-    """An old pi-acp answers ``_session/steering`` with method-not-found, so an
+    """The stock pi-acp answers ``_session/steering`` with method-not-found, so an
     unadvertised adapter is never sent the request."""
     async with _Tasks() as spawned:
         client = _client(advertised=False)
@@ -355,3 +360,18 @@ async def test_no_steer_is_sent_while_the_turn_is_parked_on_an_approval():
 def test_pi_joins_the_steering_request_set_and_not_the_steer_set():
     assert ACP_BACKEND_PI in ACP_BACKENDS_STEERING_REQUEST
     assert ACP_BACKEND_PI not in ACP_BACKENDS_STEER
+
+
+def test_the_card_says_no_mid_turn_steer_for_stock_pi():
+    """The stock pi-acp never advertises the request, so the card must not
+    promise a steer that every documented install queues instead."""
+    from kiro_crew.agent_sdk import backend_cards
+
+    assert ACP_BACKEND_PI not in ACP_BACKENDS_STEERING_REQUEST_SHIPPED
+    assert ACP_BACKENDS_STEERING_REQUEST_SHIPPED < ACP_BACKENDS_STEERING_REQUEST
+    line = next(
+        line
+        for line in backend_cards.card_for(ACP_BACKEND_PI).capabilities
+        if line.id == backend_cards.LINE_MID_TURN_STEER
+    )
+    assert line.available is False

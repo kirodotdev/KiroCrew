@@ -418,8 +418,10 @@ def _steering_request_ready(self: AcpClient) -> bool:
     sends it: advertised at the handshake, and claude-agent-acp at or above
     :data:`CLAUDE_ACP_STEERING_MIN_VERSION`. The floor is that adapter's own
     release history (0.64.x answers ``injected`` and then drops the text).
-    pi-acp carries no floor: steering first appears in 0.1.8 already behaving,
-    and older adapters never advertise it. Any other member fails closed here."""
+    pi carries no floor: the stock pi-acp Crew installs never advertises the
+    request, and it ships only in ``@openma/pi-acp`` (0.1.8), which Crew does not
+    launch, so the advertisement alone gates it. Any other member fails closed
+    here."""
     if self._is_claude and getattr(self, "_steering_advertised", False) is True:
         return _adapter_version_at_least(
             getattr(self, "_agent_version", ""), CLAUDE_ACP_STEERING_MIN_VERSION
@@ -464,9 +466,10 @@ async def _steer_via_steering_request(self: AcpClient, text: str) -> bool:
     """Deliver a user steer over the adapter's ``_session/steering`` request.
 
     See ``ACP_BACKENDS_STEERING_REQUEST`` for what claude-agent-acp does with
-    it. The request carries ``idleBehavior: "promptRequired"``, so a steer that
-    reaches the adapter after its turn settled is answered ``promptRequired``
-    and runs nothing. The answer is read by the running turn's read loop and
+    it, and what keeps pi's turn open for an accepted steer (pi-coding-agent's
+    post-run ``hasQueuedMessages()`` loop). The request carries
+    ``idleBehavior: "promptRequired"``, so a steer that reaches the adapter
+    after its turn settled is answered ``promptRequired`` and runs nothing. The answer is read by the running turn's read loop and
     awaited here until it arrives, the turn ends, or
     ``STEERING_ANSWER_WAIT_SECS`` pass.
 
@@ -575,9 +578,10 @@ def _release_accepted_steers(self: AcpClient, req_id: int, reason: str, refusal:
     """Echo text for the steers accepted into turn *req_id*, at a clean end only.
 
     claude-agent-acp settles a steered turn only once a result answers the
-    steer, so a turn that ends with ``end_turn``, uncancelled and unrefused,
-    has run every steer it accepted. On any other ending nothing is reported
-    and the caller's pending entry for each is queued instead. The turn
+    steer, and pi-coding-agent re-checks ``agent.hasQueuedMessages()`` and
+    continues before it settles, so a turn that ends with ``end_turn``,
+    uncancelled and unrefused, has run every steer it accepted. On any other
+    ending nothing is reported and the caller's pending entry for each is queued instead. The turn
     stops taking steers here, before its terminal is yielded, so a steer
     answered after this point is not accepted into a turn that has ended.
     """
