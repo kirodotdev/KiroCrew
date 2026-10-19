@@ -887,8 +887,8 @@ async def api_connections_premint(request: web.Request) -> web.Response:
 
     # Off the loop: the scan reads the user's MCP config and stats kiro-cli's OAuth
     # artifact directory, either of which can sit on a network mount where a stat is
-    # unbounded. warm.py routes the same call through a thread for this reason and
-    # pins it with a drift guard.
+    # unbounded. warm_runtime's table_flow and rearms route the same call through a thread for
+    # this reason, pinned by test/test_connections_warm_off_loop.py.
     candidates, audit_recorded = await asyncio.to_thread(_audited_mintable_providers)
     slugs = [str(provider["slug"]) for provider in candidates]
     if not slugs:

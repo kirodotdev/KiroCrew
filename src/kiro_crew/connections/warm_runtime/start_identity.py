@@ -7,7 +7,7 @@ destructively -- ``warm._recorded_runtime_is_dead`` releases a generation tree a
 POSITIVE proof of death or reuse reads as ``False``. Every other shape reads as ``None``,
 which every caller turns into "keep the tree".
 
-The marker's schema, its writer and its reader stay with the generation lifecycle in the facade;
+The marker's schema and its writer live in ``generation_tree`` and its reader stays in the facade;
 this module owns only the identity those records carry and the comparison that judges it. Every
 platform call goes through the :mod:`kiro_crew.platform_compat` module attribute, so a patch on
 ``warm.platform_compat`` -- the same module object -- still reaches it.

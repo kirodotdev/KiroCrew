@@ -315,7 +315,7 @@ approval URL: ~7.5s per card. `kiro_crew.connections.warm` serves the whole gall
 process, and every rule below answers an observed failure.
 
 **Placement.** `src/kiro_crew/connections/warm.py` is the warm engine's one import and patch
-surface, and it composes three private owners under `kiro_crew.connections.warm_runtime`; the
+surface, and it composes eight private owners under `kiro_crew.connections.warm_runtime`; the
 dashboard handler adds only endpoint wiring -- `expire_dead_mints` on the status path,
 `_audited_mintable_providers` plus `warm_mint_all` on the premint path, and `adopt_shared_mint`
 on the mint path. The dashboard server registers two lifecycle hooks in both full and headless
@@ -329,13 +329,23 @@ no boot-path module loads a `warm_runtime` owner either.
 | `src/kiro_crew/connections/warm_runtime/spec_plan.py` | `_WarmSpecPlan`; the reuse rules `_plan_is_servable` and `_resident_roster_is_asked_for`; per-provider entry derivation (`_registry_server_entry`, `_operator_oauth_client`, `_auth_shape`, `_warm_mintable_entry`); `_wanted_aliases` | rules over registry and configured entries; `_operator_oauth_client` reads config, env and the vault on every call, so callers reach it only from sync helpers behind `asyncio.to_thread` |
 | `src/kiro_crew/connections/warm_runtime/start_identity.py` | `_process_identity_live` and the start-identity helpers it compares with | the tri-state PID-reuse verdict both generation readers act on |
 | `src/kiro_crew/connections/warm_runtime/shared_rows.py` | the two-axis predicates (`_warm_table_row`, the counts built on it, `_mint_is_cold_held`, `_mint_is_adopted`); the atomic `_claim_shared_mints`, `_dispose_displaced_rows` and `_release_shared_claims` | one claim transaction over the cold engine's table, bound from `mint` exactly as the facade binds it |
-| `src/kiro_crew/connections/warm.py` | the public API; every patch seam; the provider scan; `_warm_spec_plan`; spec ownership (sentinel, judge, gated writer); the generation-directory lifecycle and its owner marker; `_WarmMintRuntime`; adoption, absorb, expiry, drain, reaper and re-arms | pinned to the file by the link-screen baseline, the agent-spec call-site ratchet, the session-registry gate and the security spec's citation of `warm._credential_bearing_slugs`, or a caller of a seam patched on this module |
+| `src/kiro_crew/connections/warm_runtime/spec_body.py` | the fixed warm names (`_WARM_AGENT_PREFIX`, `_WARM_NAME_RE`, `_WARM_BASE_AGENT`, `_WARM_ALL_AGENT`) and `_WARM_SPEC_SENTINEL`; the sentinel-first body (`_warm_spec_description`, `_warm_spec_body`) with `connections_tool_aliases`; the stale-name predicate `_is_stale_warm_spec` and the ownership marks `_warm_ownership_marks` | the text a plan writes and the ownership judge compares; the judge and its private-scope reader stay in the facade as link-screen sites, and the gated writer stays beside them as a seam tests substitute |
+| `src/kiro_crew/connections/warm_runtime/generation_tree.py` | the generation root and its marker constants; the owner-marker writer (`_warm_generation_owner`, `_write_warm_generation_owner`); `_create_warm_generation_dir`, `_bind_warm_generation` and `_remove_warm_generation_dir`; the proven release (`_spawn_left_no_process`, `_release_runtime_generation`) | one directory's lifetime; the marker reader, the plain-directory screen, the death verdict and the boot scavenger stay in the facade |
+| `src/kiro_crew/connections/warm_runtime/mint_process.py` | `_acp_runtime_factory`, `_warm_session_mcp_servers` and `_runtime_alive`; the `_WarmSession` and `_WarmMintResult` records; `_collect_oauth_requests`; the reporting teardown `_destroy_session_quietly` and `_kill_quietly` | the primitives `_WarmMintRuntime` calls; the timeouts and drain bounds stay in the facade's tunables, some of which tests substitute |
+| `src/kiro_crew/connections/warm_runtime/rearms.py` | `_rearm_dead_warm_mint`; the per-provider invalidation re-arms (`rearm_invalidated_provider`, `_rearm_invalidated_provider`, the `_invalidation_rearms` registry, `_forget_invalidation_rearm`) and their teardown `_settle_invalidation_rearms` | automatic replacement, which re-enters the ordinary scan and `warm_mint_all` |
+| `src/kiro_crew/connections/warm_runtime/table_flow.py` | `warm_mint_all`; `_absorb_warm_requests`; the handoff (`adopt_shared_mint`, `_adopt_shared_row`); late-frame recovery (`_recover_redrained_requests`, `_providers_with_requests`) | the premint and mint request paths over the table |
+| `src/kiro_crew/connections/warm.py` | the public API; every patch seam and tunable; the provider scan; `_warm_spec_plan`; spec ownership (judge, private-scope reader, gated writer); the generation marker reader, plain-directory screen, death verdict and boot scavenger; `_WarmMintRuntime` and its singleton; `_warm_row_alive`, expiry, `_warm_activate`, the drain and the reaper; `_credential_bearing_slugs` | pinned to the file by the link-screen baseline, the agent-spec call-site ratchet, the session-registry gate, the security spec's citation of `warm._credential_bearing_slugs` and the composition contract's pinned-construct list (the death verdict and the boot scavenger), or the runtime and the seams the owners call into |
 
 `warm.py` re-exports every owner name as the same object, and no owner imports the facade,
-`kiro_crew.acp` or `kiro_crew.providers` at module scope. One facade name is reached at call
-time: `shared_rows` disposes a row through `warm._dispose_mint`, the binding the warm engine's
-callers substitute. `test/test_connections_warm_mint_composition_contract.py` pins all four
-properties. The cold engine stays whole in `mint.py`: every rule there either reads the
+`kiro_crew.acp` or `kiro_crew.providers` at module scope. An owner reads every name the facade
+defines, and every name a test or caller substitutes on it, through `_warm_facade()` at call
+time and never by its bare name: `shared_rows` disposes a row through `warm._dispose_mint`,
+and the other owners reach the runtime singleton, the tunables, the generation screens and
+the request-path seams the same way. `test/test_connections_warm_mint_composition_contract.py`
+pins the first three properties and the facade names each owner calls;
+`test/test_warm_runtime_patch_reach.py` pins the rest of the fourth, deriving the substituted
+names from the test trees' own patch targets and refusing a bare read of one in any owner.
+The cold engine stays whole in `mint.py`: every rule there either reads the
 module-level table and seams its callers substitute on `mint`, or is held in the file by the
 agent-spec call-site ratchet and the agent-SDK boundary baseline, so an owner split out of it
 would only forward.
