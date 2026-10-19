@@ -5,6 +5,7 @@ import { MessageSquareQuote, MessageCircleQuestionMark, MessageSquarePlus, X, Co
 import { copyToClipboard } from '../utils/clipboard'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { containedSelectionRange } from '../utils/selectionContainment'
+import { codePassagePosition, plainCodeFenceAtRangeStart, shadowSelectionRange } from '../utils/pierreShadow'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { measureAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 import ErrorNotice from './ErrorNotice'
@@ -409,6 +410,14 @@ interface SelectionToolbarProps {
    * action rows only -- a `composer` host keeps its floating box.
    */
   dock?: boolean
+  /**
+   * The host can anchor text selected inside a code block. Pierre draws a code
+   * block into a shadow root, where a drag reaches the document as a collapsed
+   * selection that a host's anchor resolver rejects (a remote artifact comment
+   * would post pinned at offset 0), so a host keeps ignoring such a selection
+   * until it opts in.
+   */
+  codeSelection?: boolean
 }
 
 /** Gap between the docked row and whatever it sits on (composer or screen edge). */
@@ -447,7 +456,7 @@ function safeAreaBottomPx(): number {
 
 /** Generic floating toolbar that appears when user selects text within a container.
  *  Extensible — pass any actions (quote, copy, etc.) via the `actions` prop. */
-export default function SelectionToolbar({ containerRef, actions, externalSelection, composer, suspended: suspendedProp = false, externalOnly = false, dock: dockProp = false }: SelectionToolbarProps) {
+export default function SelectionToolbar({ containerRef, actions, externalSelection, composer, suspended: suspendedProp = false, externalOnly = false, dock: dockProp = false, codeSelection = false }: SelectionToolbarProps) {
   // Behind a remote Crew the toolbar is hidden with its Crew (components/overlayRoot)
   // and suspends like a hidden tab, so a key aimed at the Crew in front cannot
   // reach it. The draft survives and returns with the Crew.
@@ -464,6 +473,8 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   suspendedRef.current = suspended
   const externalOnlyRef = useRef(externalOnly)
   externalOnlyRef.current = externalOnly
+  const codeSelectionRef = useRef(codeSelection)
+  codeSelectionRef.current = codeSelection
   // The composer's draft text lives HERE, not in `ComposerBox`, so it survives
   // a suspension (the box unmounts while its tab is hidden) and comes back
   // with the tab. Reset on submit and on every close.
@@ -528,6 +539,8 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   // The selection as text offsets in the container, saved BEFORE `onOpen` so
   // Escape can put it back (see `rangeFromTextOffset`).
   const savedSelectionRef = useRef<{ start: number; length: number } | null>(null)
+  // The live range of a selection inside a code block, which has no text offset to rebuild it from.
+  const codeRangeRef = useRef<Range | null>(null)
   // Bumped when the input auto-grows, so the clamp/flip below re-measures and
   // a box that grew past the bottom edge flips above the selection.
   const [composerGrowTick, setComposerGrowTick] = useState(0)
@@ -592,7 +605,13 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     // stays where it is until the draft is submitted or discarded.
     if (visibleRef.current && composerRef.current && composerDraftRef.current) return
     const sel = window.getSelection()
-    if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+    const container = containerRef.current
+    // Text selected inside a code block's shadow root is reported collapsed (both
+    // ends move to the host's parent) while `toString()` still holds it; the
+    // composed range is where it really is. Only a host that opts in takes it, and
+    // only that odd shape pays for the lookup.
+    const inCode = codeSelectionRef.current && sel && container && sel.isCollapsed && sel.toString().trim() ? shadowSelectionRange(sel, container) : null
+    if (!sel || (sel.isCollapsed && !inCode) || !sel.toString().trim()) {
       // Only dismiss if toolbar was shown by DOM selection (not external/editor).
       // An OPEN composer is the exception: its selection is collapsed by design
       // (focus, or the host's <mark> wrapping), so an empty selection is not a
@@ -601,7 +620,6 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       return
     }
 
-    const container = containerRef.current
     if (!container) { setVisible(false); return }
 
     // Ensure selection is within our container. Containment cannot be judged by
@@ -612,8 +630,9 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     // returns it clamped to the container: an accepted overhang's boundary point
     // would otherwise pull the next block's line box into the rect and park the
     // toolbar one line below the selection on the touch/keyboard paths.
-    const range = sel.getRangeAt(0)
-    const measureRange = containedSelectionRange(range, container)
+    // A code block's own range needs no such test: it is inside the container because
+    // its host is (`shadowSelectionRange` looked only under the container).
+    const measureRange = inCode ?? containedSelectionRange(sel.getRangeAt(0), container)
     if (!measureRange) {
       setVisible(false)
       return
@@ -671,6 +690,17 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
         savedSelectionRef.current = { start: pre.toString().length + lead, length: raw.trim().length }
       } catch {
         savedSelectionRef.current = null
+      }
+      // Code selections have no stable text offset in the container: a plain
+      // fallback is replaced during highlighting, and a shadow range is outside
+      // the light-DOM text. Their shared passage position keys the draft while
+      // the live range follows scroll; zero length prevents Escape rebuilding a
+      // selection over unrelated light-DOM text.
+      const inPlainCode = !inCode && codeSelectionRef.current && plainCodeFenceAtRangeStart(measureRange) != null
+      const codePosition = inCode || inPlainCode ? codePassagePosition(container, measureRange) : null
+      codeRangeRef.current = inCode ?? (inPlainCode ? measureRange : null)
+      if (inCode || inPlainCode) {
+        savedSelectionRef.current = { start: codePosition == null ? -1 : -codePosition, length: 0 }
       }
       // A re-open over an already-open composer (the user re-selected) is a
       // fresh open for the host too: it resolves the new anchor and re-paints.
@@ -1014,6 +1044,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       // one (and the scroll-follow from moving the box), while the host's
       // `start` keys the draft slot exactly as a container offset would.
       savedSelectionRef.current = { start: externalSelection.start ?? -1, length: 0 }
+      codeRangeRef.current = null
       composerClosedRef.current = false
       setComposerAutoFocus(!isTouchDevice())
       setCopyFailed(false)
@@ -1192,7 +1223,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
         const saved = savedSelectionRef.current
         const container = containerRef.current
         if (!saved || !container) return
-        const range = rangeFromTextOffset(container, saved.start, saved.length)
+        const range = codeRangeRef.current ?? rangeFromTextOffset(container, saved.start, saved.length)
         if (!range) return
         const rect = range.getBoundingClientRect()
         if (rect.width === 0 && rect.height === 0) return
