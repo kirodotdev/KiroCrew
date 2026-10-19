@@ -275,7 +275,7 @@ def test_newly_refused_golden_path_is_a_regression(staged):
 def test_a_regression_on_a_non_catalog_tier_is_caught_and_named(staged, tier):
     """The exfil shapes are a deny tier too, and this gate runs on them.
 
-    A catalog-only differential reads a tightening of ``paths.py`` or ``exfil.py``
+    A catalog-only differential reads a tightening of ``paths.py`` or ``exfil_bash.py``
     as clean -- both are inside this workflow's trigger paths -- and the green then
     stands as evidence the question was asked.
     """

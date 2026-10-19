@@ -56,9 +56,6 @@
 2787 src/kiro_crew/portability.py
 2258 src/kiro_crew/safety_override.py
 2284 src/kiro_crew/sandbox_launcher_program.py
-3203 src/kiro_crew/security/denied_rules.py
-2296 src/kiro_crew/security/exfil.py
-2483 src/kiro_crew/security/redaction.py
 3181 src/kiro_crew/security_posture.py
 2232 src/kiro_crew/service/linux.py
 2421 src/kiro_crew/session_ledger.py

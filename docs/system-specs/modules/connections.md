@@ -1028,7 +1028,7 @@ banner allowlist stays registry-derived while the admission is pursued.
    realm-substitution boundary the strict comparison exists for. Pre-registered
    entries record the vendor's DCR value but are not held to it.
 4. **Banner allowlist.** The issuer's `authorization_endpoint` is added to
-   `security.exfil._OAUTH_AUTHORIZATION_ENDPOINTS` and the consent-URL corpus,
+   `security.exfil_oauth._OAUTH_AUTHORIZATION_ENDPOINTS` and the consent-URL corpus,
    or the fail-closed banner blocks every connect.
 5. **Manual launch gate (L2).** A human walks Connect → consent → Connected →
    Test → Disconnect on a pod and records the revoke surface; only then does

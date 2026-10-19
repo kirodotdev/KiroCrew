@@ -3292,7 +3292,7 @@ _CONTROLS: tuple[PostureControl, ...] = (
             "off. The count is the SHIPPED catalogue -- the set actually enforced is "
             "this minus any rule disabled below, so it can be smaller."
         ),
-        source="src/kiro_crew/security/denied_rules.py",
+        source="src/kiro_crew/security/denied_rules_catalog.py",
         items_fn=_denied_command_items,
     ),
     PostureControl(
@@ -3344,7 +3344,7 @@ _CONTROLS: tuple[PostureControl, ...] = (
             "Credential classes the redaction scanner recognizes, in plaintext and "
             "base64-encoded form."
         ),
-        source="src/kiro_crew/security/redaction.py",
+        source="src/kiro_crew/security/redaction_patterns.py",
         items_fn=_credential_family_items,
     ),
     PostureControl(
