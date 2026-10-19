@@ -16003,7 +16003,10 @@
       "retried_n_times_many": "{{count}} nuovi tentativi",
       "retried_n_times_one": "{{count}} nuovo tentativo",
       "retried_n_times_other": "{{count}} nuovi tentativi",
-      "jobs_table": "Attività pianificate"
+      "jobs_table": "Attività pianificate",
+      "type_crewmate": "Compagno",
+      "filter_by_crewmate": "Filtra per compagno",
+      "all_crewmates": "Tutti i compagni"
     },
     "servicesTab": {
       "channels": "Piattaforme di chat",

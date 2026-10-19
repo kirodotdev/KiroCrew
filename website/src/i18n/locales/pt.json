@@ -16003,7 +16003,10 @@
       "retried_n_times_many": "{{count}} novas tentativas",
       "retried_n_times_one": "{{count}} nova tentativa",
       "retried_n_times_other": "{{count}} novas tentativas",
-      "jobs_table": "Tarefas agendadas"
+      "jobs_table": "Tarefas agendadas",
+      "type_crewmate": "Colega",
+      "filter_by_crewmate": "Filtrar por colega",
+      "all_crewmates": "Todos os colegas"
     },
     "servicesTab": {
       "channels": "Plataformas de chat",

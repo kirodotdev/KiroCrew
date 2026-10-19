@@ -8822,7 +8822,10 @@
       "type": "Type",
       "type_verb_to_confirm": "Type",
       "no_owning_session": "No owning session",
-      "owning_session": "Owning session"
+      "owning_session": "Owning session",
+      "type_crewmate": "Crewmate",
+      "filter_by_crewmate": "Filter by crewmate",
+      "all_crewmates": "All crewmates"
     },
     "servicesTab": {
       "connected": "Connected",

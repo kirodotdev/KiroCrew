@@ -15746,7 +15746,10 @@
       "secrets_revoke_all_confirm": "সব প্রত্যাহার করবেন?",
       "retried_n_times_one": "{{count}} বার পুনরায় চেষ্টা করা হয়েছে",
       "retried_n_times_other": "{{count}} বার পুনরায় চেষ্টা করা হয়েছে",
-      "jobs_table": "নির্ধারিত জব"
+      "jobs_table": "নির্ধারিত জব",
+      "type_crewmate": "ক্রুমেট",
+      "filter_by_crewmate": "ক্রুমেট অনুযায়ী ফিল্টার",
+      "all_crewmates": "সব ক্রুমেট"
     },
     "servicesTab": {
       "channels": "চ্যাট প্ল্যাটফর্ম",

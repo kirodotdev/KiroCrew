@@ -15746,7 +15746,10 @@
       "secrets_revoke_all_confirm": "Alle widerrufen?",
       "retried_n_times_one": "{{count}} Mal erneut versucht",
       "retried_n_times_other": "{{count}} Mal erneut versucht",
-      "jobs_table": "Geplante Jobs"
+      "jobs_table": "Geplante Jobs",
+      "type_crewmate": "Crew-Kamerad",
+      "filter_by_crewmate": "Nach Crew-Kamerad filtern",
+      "all_crewmates": "Alle Crew-Kameraden"
     },
     "servicesTab": {
       "channels": "Chat-Plattformen",

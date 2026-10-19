@@ -15489,7 +15489,10 @@
       "secrets_revoke_all": "撤销全部密钥",
       "secrets_revoke_all_confirm": "撤销全部？",
       "retried_n_times_other": "已重试 {{count}} 次",
-      "jobs_table": "计划任务"
+      "jobs_table": "计划任务",
+      "type_crewmate": "队友",
+      "filter_by_crewmate": "按队友筛选",
+      "all_crewmates": "所有队友"
     },
     "servicesTab": {
       "channels": "聊天平台",

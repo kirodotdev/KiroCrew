@@ -15489,7 +15489,10 @@
       "secrets_revoke_all": "모든 시크릿 회수",
       "secrets_revoke_all_confirm": "모두 철회하시겠습니까?",
       "retried_n_times_other": "{{count}}회 재시도했습니다",
-      "jobs_table": "예약된 작업"
+      "jobs_table": "예약된 작업",
+      "type_crewmate": "크루메이트",
+      "filter_by_crewmate": "크루메이트로 필터",
+      "all_crewmates": "모든 크루메이트"
     },
     "servicesTab": {
       "channels": "채팅 플랫폼",

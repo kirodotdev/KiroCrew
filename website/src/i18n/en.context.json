@@ -822,6 +822,9 @@
     "components.gitPanel.repos_failed": "Error shown in the Git tab when the list of repositories this chat works in could not be loaded.",
     "components.gitPanel.repos_refresh_failed": "Notice above a repository list that is still shown after its background refresh failed; says the refresh failed and that the shown list may be stale. Not an action.",
     "app.release_notes_not_published_yet": "Notice in the post-update \"What's new\" dialog. {{release}} is the release the user is running (e.g. 0.8.0) whose notes are not written yet; {{shown}} is the older release (e.g. 0.7.1) whose notes are displayed instead. Both are bare version numbers.",
-    "app.focus_mode_on_announce": "Spoken by a screen reader when focus mode turns on and the chrome becomes unreachable. {{chord}} is the user's live key chord in ARIA spelling (e.g. Alt+Shift+M); keep it verbatim."
+    "app.focus_mode_on_announce": "Spoken by a screen reader when focus mode turns on and the chrome becomes unreachable. {{chord}} is the user's live key chord in ARIA spelling (e.g. Alt+Shift+M); keep it verbatim.",
+    "pages.schedulePage.type_crewmate": "Line 1 of the Type cell in the Schedule list for a job that is a crewmate's own schedule (runs in that crewmate's chat). Singular noun, same word as the Crewmates page.",
+    "pages.schedulePage.filter_by_crewmate": "Accessible name of the dropdown next to the Schedule list's search box that narrows the list to one crewmate's schedules.",
+    "pages.schedulePage.all_crewmates": "First row of that dropdown, which shows every job (no crewmate filter)."
   }
 }

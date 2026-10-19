@@ -1409,6 +1409,23 @@ Default response is a compact one-line-per-job summary (id, name, status, schedu
 
 Security: sanitize-then-truncate ordering enforced for all user-controlled fields (message <=80 chars, last_error <=200 chars, last_result <=120 chars) so credentials straddling truncation boundaries cannot leak as partial fragments.
 
+### Schedule list: crewmate schedules
+
+A job carrying `member_id` is a crewmate's own schedule. The Schedule page resolves it
+against the members roster (`membersRosterQuery`, `GET /api/members`): creation stores
+the crewmate's durable id in `member_id` (`bind_cron_memory`), which is the roster
+row's `slug`, so `crewmateForJob` matches on the slug alone, as `wakesCrew` does; a
+slug two rows share names nobody. The list's Type cell shows
+such a job as **Crewmate**, with the crewmate's face and name linking to
+`/members?member=<name>`; with no roster row (still loading, or the crewmate is gone)
+it shows the raw id, unlinked; a failed roster read is reported by an inline
+`ErrorNotice` with Retry above the list (hidden while the job dialog is open). A
+**by crewmate** dropdown beside the search box, shown
+only when a listed job resolves to a crewmate, narrows the list to one crewmate's
+schedules; it applies only while its crewmate still owns a listed job, so deleting that
+crewmate's last job shows every job again. While it or the search is active, folder
+collapse is bypassed as for the search alone. `GET /api/crons` is unchanged.
+
 ### Schedule Page Templates (Featured Row + Gallery)
 
 Schedule templates live in `SCHEDULE_PRESETS` (`website/src/utils/schedulePresets.tsx`). Each `SchedulePreset` carries an id, icon (lucide), title, description, human-readable cadence, a `category` (`hygiene | quality | security | ops | comms | knowledge` — section order and labels exported as `PRESET_CATEGORIES`), an optional `featured` flag, and a `CronPrefill` payload (name, message, and schedule mode + values). Preset prompts follow two authoring rules: a **silence-on-no-signal** clause ("if none, end silently") so polling-style jobs don't spam notifications — paired with `CronPrefill.silent = true`, without which the saved job still auto-delivers an empty-reply placeholder every quiet run (`cron_verdict._GateTally.empty_reply_placeholder`: `_Silent run completed -- delivery attempted via send_message (N tool calls ran)._` when an approved `send_message` ran, `_Completed with no reply text -- N tool calls ran._` when other tools ran, and `_No response._` only when no tool call was approved), so those prompts deliver positive findings via `send_message`, and **stateless trigger anchors** (a fixed time window like "failed within the last 30 minutes", a state predicate like "has no reply from this agent yet", or search-before-acting dedup) rather than "since the last run", because cross-run session memory is best-effort and prompt text is copied into the user's saved job at save time. Guardrail sentences in prompts (never push to the default branch, never merge, never echo secret values) are advisory instructions to the agent, not an enforced security boundary.

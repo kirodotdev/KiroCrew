@@ -15746,7 +15746,10 @@
       "secrets_revoke_all_confirm": "सब निरस्त करें?",
       "retried_n_times_one": "{{count}} बार पुनः प्रयास किया गया",
       "retried_n_times_other": "{{count}} बार पुनः प्रयास किया गया",
-      "jobs_table": "शेड्यूल किए गए जॉब"
+      "jobs_table": "शेड्यूल किए गए जॉब",
+      "type_crewmate": "क्रूमेट",
+      "filter_by_crewmate": "क्रूमेट के अनुसार फ़िल्टर",
+      "all_crewmates": "सभी क्रूमेट"
     },
     "servicesTab": {
       "channels": "चैट प्लेटफ़ॉर्म",

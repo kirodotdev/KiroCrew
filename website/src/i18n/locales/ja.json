@@ -15489,7 +15489,10 @@
       "secrets_revoke_all": "すべてのシークレットを取り消す",
       "secrets_revoke_all_confirm": "すべて取り消しますか？",
       "retried_n_times_other": "{{count}}回再試行しました",
-      "jobs_table": "スケジュール済みのジョブ"
+      "jobs_table": "スケジュール済みのジョブ",
+      "type_crewmate": "クルーメイト",
+      "filter_by_crewmate": "クルーメイトで絞り込み",
+      "all_crewmates": "すべてのクルーメイト"
     },
     "servicesTab": {
       "channels": "チャットプラットフォーム",

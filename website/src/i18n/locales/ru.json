@@ -16260,7 +16260,10 @@
       "retried_n_times_many": "{{count}} повторных попыток",
       "retried_n_times_one": "{{count}} повторная попытка",
       "retried_n_times_other": "{{count}} повторные попытки",
-      "jobs_table": "Запланированные задания"
+      "jobs_table": "Запланированные задания",
+      "type_crewmate": "Товарищ по команде",
+      "filter_by_crewmate": "Фильтр по товарищу по команде",
+      "all_crewmates": "Все товарищи по команде"
     },
     "servicesTab": {
       "channels": "Чат-платформы",
