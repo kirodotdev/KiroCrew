@@ -659,6 +659,11 @@ async def restore_open_slots_async(state: DashboardState) -> int:
     # await for the reason the finally gives: the awaits ahead of the per-tab loop
     # are suspension points too, and at the first of them not even the seed is read.
     enumerated = False
+    # Tab-id backfills this restore mints. Drained (its os.replace committed)
+    # before we return, so a caller's immediate on-loop transcript read cannot
+    # race a backfill still in flight on Windows. See _apply_restored_open_slot's
+    # pending_backfills note, and restore_recent_sessions_async's equivalent drain.
+    pending_backfills: list[tuple[str, dict]] = []
     try:
         # No conversation log means persistence is a no-op this process, but the
         # restore has still "run": fall through to the finally so the latch
@@ -757,6 +762,9 @@ async def restore_open_slots_async(state: DashboardState) -> int:
                         preserve_remote_only=preserve_remote_only,
                         tail=tail,
                         dropped=dropped,
+                        # Collect the tab-id backfill this slot mints instead of
+                        # firing it off the loop; drained below before we return.
+                        pending_backfills=pending_backfills,
                     )
                 except Exception:
                     logger.debug("restore_open_slots: rehydrate failed for %s", key, exc_info=True)
@@ -796,6 +804,42 @@ async def restore_open_slots_async(state: DashboardState) -> int:
             restored=restored,
             kept=dropped,
         )
+        # Commit the tab-id backfills this restore minted BEFORE returning. Each
+        # is an os.replace of a session file; left in flight (the fire-and-forget
+        # off-loop helper), it would still be mid-replace when a caller reads the
+        # same transcript on the loop right after restore, and on Windows that
+        # open() is a sharing violation the on-loop read cannot wait out, so the
+        # read re-raises PermissionError (the intermittent dropped-tab / read
+        # error on restart). Awaited one at a time off the loop so the
+        # flock/os.close/os.replace stay off the event-loop thread.
+        #
+        # Through ``update_metadata_if(require_existing=True)``, NOT the plain
+        # upserting ``update_metadata``: deferring every backfill to here widens
+        # the gap between a tab restoring and its write landing, and a
+        # ``DELETE /api/sessions/{key}`` can fall inside it. The checked variant
+        # re-reads existence UNDER the write lock, so a session unlinked during
+        # the restore window is left deleted instead of being recreated as a
+        # metadata-only transcript the next restore reopens as an empty tab. The
+        # guard always proceeds; existence is the only gate, and the minted
+        # tab_id has no on-disk siblings so a backfill that is correctly skipped
+        # loses nothing. Best-effort: a backfill is metadata already reflected in
+        # the restored slot, so a lock timeout / I/O error / a skipped (deleted)
+        # write is logged, not raised. Mirrors restore_recent_sessions_async.
+        for _bk_key, _bk_fields in pending_backfills:
+            try:
+                await asyncio.to_thread(
+                    conv_log.update_metadata_if,
+                    _bk_key,
+                    _bk_fields,
+                    lambda _meta: True,
+                    require_existing=True,
+                )
+            except Exception:  # noqa: BLE001 - best-effort metadata backfill
+                logger.warning(
+                    "restore_open_slots: tab-id backfill failed for %s",
+                    _bk_key,
+                    exc_info=True,
+                )
     finally:
         # Always clear, even if a rehydrate raises — a stuck flag would silently
         # disable open-tab persistence for the rest of the process's life.
