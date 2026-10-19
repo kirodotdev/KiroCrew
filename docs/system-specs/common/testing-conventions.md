@@ -3246,7 +3246,7 @@ went red, or the fix lands in the wrong file and the leak stays.
   `monkeypatch.chdir(tmp_path)` in the fixture closes the process-cwd hazard; adding
   `cwd=` to the product would turn git's rc=128 for a missing clone into a Python
   `FileNotFoundError` before git runs, which every caller reads off `returncode`, so that
-  descriptor is deliberately left. One production change: `browser_cli/install.py`'s
+  descriptor is deliberately left. One production change: `browser_cli/install_launcher.py`'s
   staged node launcher now runs from the managed leaf its docstring already promised, and
   `test_browser_cli_install_gateway_command.py` pins the `cwd` it is handed.
 - **`fd_leak` at +3 per unclosed SQLite handle, and why refcounting never reclaims it.**

@@ -21,7 +21,6 @@
 2683 src/kiro_crew/apps/builtins/code_review_sage/backend/routes.py
 2449 src/kiro_crew/apps/builtins/spec_builder/backend/repository.py
 5184 src/kiro_crew/apps/routes.py
-2317 src/kiro_crew/browser_cli/install.py
 2579 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status.py
 2232 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/push_guard.py
 2058 src/kiro_crew/change_card_catalog.py

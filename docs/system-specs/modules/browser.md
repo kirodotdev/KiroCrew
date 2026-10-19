@@ -221,6 +221,31 @@ The next install writes the vetted managed copy. A launcher left by an older
 release at `~/.local/bin/playwright-cli` is left untouched and ignored; no cleanup
 or fallback executes it.
 
+#### Installer modules
+
+`browser_cli/install.py` is the import path every caller and test uses. It keeps
+detection (`detect`, `available`, the installed CLI version and the
+standalone-installer command) and the install steps (`install`, `install_browser`
+and the `_step` runner they share). What those stand on lives in sibling modules,
+and new work for one of these responsibilities goes to its module:
+
+| Module | Owns |
+|---|---|
+| `browser_cli/install_runner.py` | Running an installer child: the time budgets, `cli_env`, `InstallScope` and `run_in_scope`, the one spawn (`_run`), and `redact_install_output` |
+| `browser_cli/install_launcher.py` | Which `playwright-cli` runs: the managed tools leaf and the Node staged into it, candidate vetting (`cli_path`, `legacy_launcher_refused`, `bootstrap_tool_provenance`), the Node version probes, `@playwright/cli` package attribution, and the direct argv (`cli_command`) |
+| `browser_cli/install_seams.py` | The upstream seam verdicts: `SeamSupport`, `cli_lifecycle_env_support` and `cli_dashboard_socket_support` |
+| `browser_cli/install_browsers.py` | The browser cache: where the CLI downloads browsers, the revision it requires, `browser_status` and `browsers_present` |
+
+`kiro_crew.browser_cli.install` is a mirror facade (`kiro_crew._facade_mirror`) over
+those four owners, lowest layer first in the order of the table. It keeps its whole
+import block, so every name it held before the split still resolves as
+`kiro_crew.browser_cli.install.<name>` and is the same object, and a patch through it
+reaches every owner that binds the name. An owner never imports the facade, and
+imports another owner only from a row above its own. The owners log as
+`kiro_crew.browser_cli.install`, and `SeamSupport` and `InstallScope` keep that
+module name. `browser_cli/install_job.py` is the dashboard's job record, a caller of
+the facade rather than an owner. `test/test_install_facade.py` pins the contract.
+
 ### Install jobs
 
 The gateway owns one install slot. The CLI setup above and a single-engine

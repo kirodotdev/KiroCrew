@@ -1134,7 +1134,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # (npm/npx/node) plus the ``playwright install <engine>`` subcommand,
         # ``browser_cli`` spawns the Playwright CLI toolchain on fixed argv that
         # the AGENT never contributes to, which is what makes them benign here:
-        #   * ``install.py::_run`` runs the three install steps
+        #   * ``install_runner.py::_run`` runs the three install steps
         #     (``npm install -g @playwright/cli@latest``,
         #     ``playwright-cli install-browser``, ``playwright-cli install
         #     --skills agents --global``). Every token is a constant in our code
@@ -1160,7 +1160,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # The agent's OWN browser commands are not spawned by us at all -- it
         # runs them as ordinary shell tool calls through the standard approval
         # path.
-        "browser_cli/install.py::_run",
+        "browser_cli/install_runner.py::_run",
         # The KAS engine installer (`kirocrew kas install`, operator terminal, outside
         # the sandbox). `_open_tar` runs the host's `zstd -d -c` on an archive whose
         # name the manifest validated as a bare object name and whose bytes were
