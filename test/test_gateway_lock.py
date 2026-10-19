@@ -6,6 +6,7 @@ both start.
 """
 
 import errno
+import importlib.util
 import json
 import os
 import socket
@@ -33,6 +34,8 @@ from kiro_crew.gateway_lock import (
     _directory_locks_supported,
     _DirectoryLockSupport,
     _is_same_file,
+    _lock_is_held,
+    _open_probe_descriptor,
     _read_pid,
     lock_holder,
 )
@@ -1270,6 +1273,60 @@ class TestLockHolder:
             platform_compat.release_lock(anchor)
             os.close(anchor)
 
+    @pytest.mark.skipif(
+        importlib.util.find_spec("fcntl") is None, reason="needs a shared flock (POSIX)"
+    )
+    def test_two_overlapping_probes_of_a_free_lock_file_both_read_nobody(
+        self, tmp_path, monkeypatch
+    ):
+        # The idle home `release()` leaves: `gateway.lock` exists and is free.
+        # Each reader keeps its probe of the lock FILE until the other has
+        # probed it too, so the second probe lands inside the first. Neither
+        # reads the other as a holder, nor names the other's pid.
+        (tmp_path / LOCK_FILENAME).write_text("", encoding="utf-8")
+        real_try = platform_compat.try_acquire_lock
+        both_probing = threading.Barrier(2, timeout=30)
+        parked = threading.local()
+
+        def held_until_both_probed(fd, *, exclusive=False):
+            taken = real_try(fd, exclusive=exclusive)
+            if not getattr(parked, "done", False):
+                parked.done = True
+                both_probing.wait()
+            return taken
+
+        monkeypatch.setattr(platform_compat, "try_acquire_lock", held_until_both_probed)
+        answers: list[LockHolder] = []
+        errors: list[Exception] = []
+
+        def read():
+            try:
+                answers.append(lock_holder(tmp_path))
+            except Exception as exc:
+                errors.append(exc)
+
+        readers = [threading.Thread(target=read) for _ in range(2)]
+        for reader in readers:
+            reader.start()
+        for reader in readers:
+            reader.join(timeout=30)
+            assert not reader.is_alive()
+        assert errors == []
+        assert answers == [LockHolder(pid=None, alive=False, source="none")] * 2
+
+    def test_the_shared_lock_file_probe_still_reads_a_held_lock_as_held(self, tmp_path):
+        # A gateway holds `gateway.lock` exclusive for its lifetime, which the
+        # probe's shared attempt cannot take.
+        held = GatewayLock(tmp_path).acquire()
+        try:
+            fd = _open_probe_descriptor(tmp_path / LOCK_FILENAME)
+            try:
+                assert _lock_is_held(fd, tmp_path / LOCK_FILENAME) is True
+            finally:
+                os.close(fd)
+        finally:
+            held.release()
+
     def test_the_windows_arm_answers_without_probing_the_home(self, tmp_path, monkeypatch):
         # Windows takes no home anchor, so the read side answers before it opens
         # or locks the home directory.
@@ -1487,10 +1544,10 @@ class TestTheLockFileIsARegularFile:
 
     @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="the POSIX open flags")
     def test_lock_holder_probes_through_a_read_write_descriptor(self, tmp_path, monkeypatch):
-        # Where flock is emulated with record locks (Linux NFS), an exclusive
-        # lock needs a descriptor open for writing: a read-only probe would read
-        # every free lock as held. Read-write, no-follow, never non-blocking and
-        # never creating; read-only only when writing is refused.
+        # Read-write so a FIFO swapped in never blocks the open without
+        # O_NONBLOCK, which would fail a lease break. No-follow, never
+        # non-blocking and never creating; read-only only when writing is
+        # refused, which the shared probe can still lock.
         lock_file = tmp_path / LOCK_FILENAME
         lock_file.write_text("", encoding="utf-8")
         real_open = os.open
