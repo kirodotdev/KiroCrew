@@ -428,7 +428,6 @@ X_CAPTURE_ALLOWLIST: dict[tuple[str, str], str] = {
     ("ACP_BACKENDS_SIDE_READONLY", "goose"): "goose side session read-only turn",
     ("ACP_BACKENDS_MEMBER_CAPABILITIES", "kiro"): "kiro-cli saved member spec session",
     ("ACP_BACKENDS_MEMBER_CAPABILITIES", "kas"): "KAS saved member spec session",
-    ("ACP_BACKENDS_MEMBER_CAPABILITIES", "claude"): "claude saved member spec session",
     ("ACP_BACKENDS_MEMBER_CAPABILITIES", "codex"): "codex saved member spec session",
     ("ACP_BACKENDS_MEMBER_CAPABILITIES", "deepseek"): "deepseek saved member spec session",
     ("ACP_BACKENDS_MARKDOWN_AGENT_SPECS", "kas"): "KAS markdown agent spec session",
