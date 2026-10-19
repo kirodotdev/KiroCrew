@@ -36,6 +36,7 @@ from kiro_crew.autonudge_authz import (  # noqa: F401 - re-exported
     resolve_stop_sentinel,
 )
 from kiro_crew.autonudge_service.model import SERVICE_SHUTTING_DOWN_MESSAGE
+from kiro_crew.autonudge_service.store_loader import ADDRESSING_FIELDS
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers import source_providers
 from kiro_crew.dashboard.handlers.source_providers import (
@@ -130,7 +131,45 @@ def _redact_monitor_value(value: Any) -> Any:
     return value
 
 
+def _scrub_serialized_field(key: str, value: Any) -> Any:
+    """The ONE per-field projection rule, shared by every reader of a loop.
+
+    Three arms project a loop: ``_serialize``, the reducing arm of
+    ``_serialize_for_legacy_reader``, and the gateway's ``autonudge_state``
+    broadcast. All call HERE rather than assembling a payload of their own,
+    because a second independent assembly serves raw whatever this rule scrubs --
+    and ``stopped_reason`` is the field that exposes: agent-supplied free text,
+    neither withheld nor mapped out of the reduced row, on a route with no owner
+    gate.
+
+    ``_redact_monitor_value`` carries the walk, and two of its properties are
+    load-bearing here rather than incidental: a dict or list is WALKED instead of
+    scrubbed as a unit, so ``judge`` and ``judge_last_verdict`` reach the popover
+    as the objects it reads; and nested keys are walked WITHOUT the exemption
+    below, because a nested key sharing one of those names addresses nothing.
+
+    ``ADDRESSING_FIELDS`` is the loader's own set rather than a local copy,
+    because two copies could drift the hole open, and a scrubbed id addresses
+    nothing. ``goal_token`` is random hex the popover sends back as
+    ``expect_fingerprint``, so a scrubbed token would refuse every save as a
+    stale baseline. ``monitor`` is settled by the caller from the typed record
+    through the same walk.
+    """
+    if key in ADDRESSING_FIELDS or key in ("goal_token", "monitor"):
+        return value
+    return _redact_monitor_value(value)
+
+
 def _serialize(loop: Any) -> dict[str, Any]:
+    """Serialize a loop for the REST surface, credential-scrubbing its text.
+
+    DENYLIST, not allowlist: every field is scrubbed unless exempted by
+    ``_scrub_serialized_field``, so a free-text field added to ``NudgeLoop`` later
+    is covered without a scrub of its own. Non-string values are NOT skipped -- an
+    agent-written store has no type discipline, so an ``isinstance(value, str)``
+    early-out would serve a list of credentials verbatim. Redaction is shape-based
+    and idempotent, so ordinary text round-trips unchanged.
+    """
     payload = asdict(loop)
     # Read positions, dropped on EVERY projection rather than only the structured
     # one. A cursor is bookkeeping with no surface: it says nothing a reader could
@@ -146,6 +185,8 @@ def _serialize(loop: Any) -> dict[str, Any]:
     # which is the watched subject's discussion by another name. No surface renders
     # it, so no reader is worse off without it.
     payload.pop("judge_pr_seen", None)
+    for key, value in payload.items():
+        payload[key] = _scrub_serialized_field(key, value)
     if loop.monitor is None:
         # Legacy clients predate structured monitors and require their exact shape.
         payload.pop("monitor", None)
@@ -322,7 +363,7 @@ def _serialize_for_legacy_reader(loop: Any) -> dict[str, Any]:
     # field on the dataclass is ``monitor``, and it is withheld. A test pins the
     # surviving key set so a new field cannot silently join or skip this route.
     payload = {
-        field.name: getattr(loop, field.name)
+        field.name: _scrub_serialized_field(field.name, getattr(loop, field.name))
         for field in fields(loop)
         if field.name not in _MONITOR_WITHHELD_LEGACY_FIELDS
     }
@@ -331,7 +372,7 @@ def _serialize_for_legacy_reader(loop: Any) -> dict[str, Any]:
         value: Any = monitor
         for attr in path:
             value = getattr(value, attr)
-        payload[name] = value
+        payload[name] = _scrub_serialized_field(name, value)
     return payload
 
 
@@ -358,7 +399,7 @@ def _autonudge_loop_reading(loop: Any) -> dict[str, Any]:
         "last_fire_ts": loop.last_fire_ts,
         "created_ts": loop.created_ts,
         "next_due_ts": loop.next_due_ts,
-        "stopped_reason": loop.stopped_reason,
+        "stopped_reason": _scrub_serialized_field("stopped_reason", loop.stopped_reason),
         # Active but holding: a cycle's approval went unanswered and it fires
         # nothing until a person answers one, sends a message or fires it.
         "paused_for_approval": bool(loop.approval_stalled) and not is_structured_monitor_loop(loop),
