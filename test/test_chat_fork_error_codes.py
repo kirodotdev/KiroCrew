@@ -421,6 +421,30 @@ async def test_the_over_capacity_refusal_names_no_numbers(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_a_corpus_whose_markers_push_the_copy_over_capacity_refuses(
+    tmp_path, monkeypatch
+) -> None:
+    """The guard counts the rows the fork COPIES, not only the visible turns.
+
+    A section marker travels with the turns it sits between, so a corpus of turns
+    that fits can still overflow the destination once its markers are added, and the
+    front-trim would drop the oldest copied turns."""
+    from kiro_crew.session_directive import SECTION_MARKER_ROLE
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_fork._MAX_SLOT_MESSAGES", 5)
+    state = _seeded_state(tmp_path)
+    slot = state._slots["forkable"]
+    slot.append("user", "q0", "msg msg-u")
+    slot.append("assistant", "a0", "msg msg-a")
+    slot.append("user", "q1", "msg msg-u")
+    slot.append(SECTION_MARKER_ROLE, "— End of section: item —", "", meta={"label": "item"})
+    status, body = await _fork(state, "forkable", {})
+    assert status == 400, body
+    assert body["code"] == "fork_corpus_too_large"
+
+
+@pytest.mark.asyncio
 async def test_a_corpus_within_capacity_still_forks(tmp_path, monkeypatch) -> None:
     """Negative control: the guard must fire on size alone, not on every fork."""
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)

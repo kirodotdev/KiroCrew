@@ -299,6 +299,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.validation_parts.core_turn_schemas import (  # noqa: F401
         _ABSOLUTE_PATH_RE,
         _GIT_RESERVED_REFS,
+        _SECTION_LABEL_FORBIDDEN,
         _WF_RUN_ID_RE,
         CHAT_TAG_SCHEMA,
         DELETE_MESSAGE_SCHEMA,
@@ -312,6 +313,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         NOTHING_TO_DO_SCHEMA,
         REQUEST_SERVER_SCHEMA,
         RESET_CONVERSATION_SCHEMA,
+        SECTION_MARKER_SCHEMA,
         SET_PROJECT_SCHEMA,
         SKILL_DISCOVER_SCHEMA,
         SKILL_FETCH_SCHEMA,
@@ -325,8 +327,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         WORKFLOW_RUN_SCHEMA,
         _validate_chat_tag,
         _validate_followup_items,
+        _validate_section_label,
         _validate_set_project,
         is_valid_followup_branch,
+        max_section_label,
     )
     from kiro_crew.validation_parts.cron_schemas import (  # noqa: F401
         CRON_ADD_SCHEMA,
