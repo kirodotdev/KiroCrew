@@ -58,7 +58,8 @@
  3 test_approval_decide_owner_bound.py
  1 test_apps_backend_coverage_dispatch.py
  2 test_apps_registry_coverage_characterization.py
- 2 test_apps_routes_coverage.py
+ 1 test_apps_routes_coverage.py
+ 1 test_apps_routes_coverage_enable_disable.py
  1 test_artifacts_refactor_store_contract.py
  5 test_auto_research_campaign_contract.py
  3 test_auto_research_handlers_coverage.py

@@ -1365,7 +1365,7 @@ class TestRefreshRegistries:
 # branch) and threads it into ``_fetch_git_blob``; there is no
 # ``routes._registry_git_url`` helper to unit-test in isolation.  The URL-form /
 # no-bundled-entry resolution boundary is exercised through the handler in
-# test_apps_routes_coverage.py, not in this section.
+# test_apps_routes_coverage_blob_proxy.py, not in this section.
 # ---------------------------------------------------------------------------
 
 

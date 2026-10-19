@@ -1538,7 +1538,7 @@ feeds the confirm dialog, and it is **additive**: a client that skips it and
 POSTs straight to uninstall gets the same safe default (clean removable, keep
 everything else). The route is registered by `register_app_routes` and
 exercised by the dashboard client; `TestUninstallPreview` in
-`test/test_apps_routes_coverage.py` drives it over the router with an HTTP
+`test/test_apps_routes_coverage_update_uninstall.py` drives it over the router with an HTTP
 test client, so removing the registration fails that test rather than
 degrading silently. The frontend still treats the fetch as best-effort: on
 failure the dialog renders without the dependency panel.
