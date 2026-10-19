@@ -160,16 +160,48 @@ def _glob_with_prefix(pattern: str, head: str | None) -> str:
     return str(Path(glob_module.escape(head), *parts[literal:]))
 
 
-def _canonical_glob(pattern: str, project_dir: str | Path | None = None) -> str:
-    """*pattern* with its literal prefix resolved by :func:`_canonical_prefix`."""
-    return _glob_with_prefix(pattern, _canonical_prefix(pattern, project_dir))
+def _canonical_glob(
+    pattern: str,
+    project_dir: str | Path | None = None,
+    cache: dict[tuple[str, str], str] | None = None,
+) -> str:
+    """*pattern* with its literal prefix resolved by :func:`_canonical_prefix`.
+
+    *cache* memoises the resolution across the calls of one pass. The result
+    depends only on ``(pattern, project_dir)`` and the filesystem at that
+    instant, so a caller that canonicalises the same glob many times in one
+    pass — the dashboard annotation, where many agents name the same skill
+    path — resolves each distinct glob once instead of once per mention, and so
+    submits one ``validate_file_path`` (``realpath`` + the pooled
+    ``is_sensitive_path``) per distinct glob rather than per mention. Omit it
+    for a one-off call: the memo is a pass's scratch space, never a store that
+    outlives the filesystem state it was built against.
+    """
+    if cache is None:
+        return _glob_with_prefix(pattern, _canonical_prefix(pattern, project_dir))
+    key = (pattern, str(project_dir) if project_dir is not None else "")
+    hit = cache.get(key)
+    if hit is None:
+        hit = _glob_with_prefix(pattern, _canonical_prefix(pattern, project_dir))
+        cache[key] = hit
+    return hit
 
 
-def _with_canonical_globs(globs: list[str], project_dir: str | Path | None = None) -> list[str]:
-    """*globs* plus each one's canonical spelling, original order first, no duplicates."""
+def _with_canonical_globs(
+    globs: list[str],
+    project_dir: str | Path | None = None,
+    cache: dict[tuple[str, str], str] | None = None,
+) -> list[str]:
+    """*globs* plus each one's canonical spelling, original order first, no duplicates.
+
+    Pass *cache* to share one canonicalisation memo across a pass that calls
+    this for many glob lists (the dashboard annotation, once per agent): a glob
+    spelled the same way across agents is then resolved once, not once per
+    agent. See :func:`_canonical_glob`.
+    """
     out = list(globs)
     for glob in globs:
-        canonical = _canonical_glob(glob, project_dir)
+        canonical = _canonical_glob(glob, project_dir, cache)
         if canonical not in out:
             out.append(canonical)
     return out

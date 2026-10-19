@@ -17,6 +17,7 @@ root), are pinned in ``test_skill_browser_containment.py``; the shared helpers l
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -33,6 +34,8 @@ from kiro_crew.dashboard.handlers._shared import (
     SKILL_FILE_MAX_BYTES,
     SKILL_TREE_MAX_ENTRIES,
     _agent_loads_skill,
+    _agents_loading_skill_indexed,
+    _build_agent_match_index,
     _expand_agent_globs,
     _expand_resource_uri,
     _load_parsed_agents,
@@ -667,6 +670,131 @@ class TestExpandAgentGlobs:
         annotate_skills_with_agents(skills)
         for p, s in zip(paths, skills):
             assert s["loaded_by_agents"] == _resolve_loaded_by_agents(p)
+
+    def test_shared_cache_resolves_a_repeated_glob_once(self, fake_home, monkeypatch):
+        """A skill path named by many agents is canonicalised once, not per agent."""
+        import kiro_crew.skills as skills_module
+
+        skills_root = fake_home / ".kiro" / "skills"
+        shared = _write_skill(skills_root, "shared") / "SKILL.md"
+        agents_dir = fake_home / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        parsed = [
+            (f"a{j}", {"name": f"a{j}", "resources": [f"skill://{shared}"]}, agents_dir / f"a{j}.json")
+            for j in range(5)
+        ]
+        resolved: list[str] = []
+        real_validate = skills_module.validate_file_path
+
+        def recording_validate(raw: str) -> str | None:
+            resolved.append(raw)
+            return real_validate(raw)
+
+        monkeypatch.setattr(skills_module, "validate_file_path", recording_validate)
+        _expand_agent_globs(parsed)
+
+        # Five agents name the one path; it resolves exactly once.
+        assert resolved.count(str(shared)) == 1
+
+
+# ── _build_agent_match_index / _agents_loading_skill_indexed ──
+
+
+class TestAgentMatchIndex:
+    """The indexed matcher keeps the fnmatch semantics it replaces, in order."""
+
+    def test_exact_path_glob_lands_in_the_exact_set(self, fake_home):
+        skills_root = fake_home / ".kiro" / "skills"
+        demo = _write_skill(skills_root, "demo") / "SKILL.md"
+        agents_dir = fake_home / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        expanded = _expand_agent_globs(
+            [("a", {"resources": [f"skill://{demo}"]}, agents_dir / "a.json")]
+        )
+
+        index = _build_agent_match_index(expanded)
+
+        [(name, exact, wildcard)] = index
+        assert name == "a"
+        # Stored normcase-folded, the same fold fnmatch applies.
+        assert os.path.normcase(str(demo)) in exact
+        assert wildcard == ()
+        assert _agents_loading_skill_indexed(str(demo), index) == ["a"]
+
+    def test_exact_match_is_case_insensitive_where_fnmatch_is(self, fake_home, monkeypatch):
+        """On a case-insensitive filesystem an exact glob still matches a re-cased path.
+
+        ``fnmatch`` folds both sides through ``os.path.normcase``; the exact-set
+        lookup must fold too, or a mapped ``skill.md`` listed by the catalog as
+        ``SKILL.md`` would drop its loading agents from ``/api/skills``.
+        """
+        import ntpath
+
+        # Simulate a case-insensitive filesystem by folding to lowercase, as
+        # Windows' os.path.normcase does, without needing that OS.
+        monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
+        agents_dir = fake_home / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        mapped = fake_home / ".kiro" / "skills" / "demo" / "skill.md"
+        listed = fake_home / ".kiro" / "skills" / "demo" / "SKILL.md"
+        index = _build_agent_match_index(
+            _expand_agent_globs([("a", {"resources": [f"skill://{mapped}"]}, agents_dir / "a.json")])
+        )
+
+        assert _agents_loading_skill_indexed(str(listed), index) == ["a"]
+
+    def test_wildcard_glob_stays_on_fnmatch(self, fake_home):
+        skills_root = fake_home / ".kiro" / "skills"
+        demo = _write_skill(skills_root, "demo") / "SKILL.md"
+        agents_dir = fake_home / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        expanded = _expand_agent_globs(
+            [("a", {"resources": ["skill://~/.kiro/skills/*/SKILL.md"]}, agents_dir / "a.json")]
+        )
+
+        index = _build_agent_match_index(expanded)
+
+        [(_name, exact, wildcard)] = index
+        assert exact == frozenset()
+        assert any("*" in g for g in wildcard)
+        assert _agents_loading_skill_indexed(str(demo), index) == ["a"]
+
+    def test_index_matches_expected_names_across_a_mixed_set(self, fake_home):
+        skills_root = fake_home / ".kiro" / "skills"
+        names = ["alpha", "beta", "gamma"]
+        paths = [_write_skill(skills_root, n) / "SKILL.md" for n in names]
+        agents_dir = fake_home / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        parsed = [
+            # one agent uses a wildcard (loads all three),
+            ("wild", {"resources": ["skill://~/.kiro/skills/*/SKILL.md"]}, agents_dir / "w.json"),
+            # one names two exact paths (alpha and gamma),
+            (
+                "exact",
+                {"resources": [f"skill://{paths[0]}", f"skill://{paths[2]}"]},
+                agents_dir / "e.json",
+            ),
+            # one loads nothing here.
+            ("none", {"resources": ["skill://~/.kiro/skills/missing/SKILL.md"]}, agents_dir / "n.json"),
+        ]
+        index = _build_agent_match_index(_expand_agent_globs(parsed))
+
+        assert _agents_loading_skill_indexed(str(paths[0]), index) == ["wild", "exact"]
+        assert _agents_loading_skill_indexed(str(paths[1]), index) == ["wild"]
+        assert _agents_loading_skill_indexed(str(paths[2]), index) == ["wild", "exact"]
+
+    def test_matched_order_follows_agent_order(self, fake_home):
+        skills_root = fake_home / ".kiro" / "skills"
+        demo = _write_skill(skills_root, "demo") / "SKILL.md"
+        agents_dir = fake_home / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        parsed = [
+            (name, {"resources": [f"skill://{demo}"]}, agents_dir / f"{name}.json")
+            for name in ("zeta", "alpha", "mu")
+        ]
+        index = _build_agent_match_index(_expand_agent_globs(parsed))
+
+        assert _agents_loading_skill_indexed(str(demo), index) == ["zeta", "alpha", "mu"]
 
 
 # ── list_skill_tree ──

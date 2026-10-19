@@ -2128,8 +2128,9 @@ def _agent_loads_skill(agent_json: dict[str, Any], agent_path: Path, skill_md: P
 
     One-off helper (single skill vs single agent). For annotating *many*
     skills against *many* agents, prefer :func:`_expand_agent_globs` +
-    :func:`_agents_loading_skill` so each agent's globs are expanded once
-    instead of once per skill.
+    :func:`_build_agent_match_index` + :func:`_agents_loading_skill_indexed`,
+    which expand each agent's globs once and match every skill against a
+    prebuilt index instead of re-expanding and re-walking per skill.
     """
     resources = agent_json.get("resources") or []
     if not isinstance(resources, list):
@@ -2158,9 +2159,14 @@ def _expand_agent_globs(
     Agents with no skill:// resources are dropped (they can match nothing).
     Each glob is paired with its canonical spelling, as the loader's scope
     match does, so a ``~`` mapping under a symlinked ``$HOME`` still matches
-    the resolved catalog path the loader injects.
+    the resolved catalog path the loader injects. The canonicalisation memo is
+    shared across every agent in one call: a skill path named by many agents
+    (one real home lists thousands of ``skill://`` paths across its specs)
+    canonicalises once, so the pass submits one ``realpath`` + pooled
+    ``is_sensitive_path`` per DISTINCT glob rather than one per mention.
     """
     expanded: list[tuple[str, list[str]]] = []
+    canonical_cache: dict[tuple[str, str], str] = {}
     for name, data, agent_path in parsed_agents:
         resources = data.get("resources") or []
         if not isinstance(resources, list):
@@ -2173,17 +2179,56 @@ def _expand_agent_globs(
             if g
         ]
         if globs:
-            expanded.append((name, _with_canonical_globs(globs)))
+            expanded.append((name, _with_canonical_globs(globs, cache=canonical_cache)))
     return expanded
 
 
-def _agents_loading_skill(
-    skill_md: Path, expanded_agents: list[tuple[str, list[str]]]
+def _build_agent_match_index(
+    expanded_agents: list[tuple[str, list[str]]],
+) -> list[tuple[str, frozenset[str], tuple[str, ...]]]:
+    """Split each agent's pre-expanded globs into exact paths and wildcards.
+
+    One ``(name, exact_paths, wildcard_globs)`` per agent, agents kept in their
+    original order so the matched-name order is unchanged. A per-file
+    ``skill://`` URI expands to a wildcard-free path, so on a real host most
+    globs land in ``exact_paths`` and a skill is matched by one set membership
+    test instead of an ``fnmatch`` against every agent's globs — turning the
+    O(skills × globs) match into O(skills × agents) for that common case.
+
+    A glob holding a wildcard metacharacter (``_GLOB_CHARS``, including a
+    ``glob.escape``d literal such as ``[[]``) stays on ``fnmatch``, which both
+    matches it correctly and, for the escaped case, still matches only the
+    literal. Exact paths are stored ``os.path.normcase``-folded, the same fold
+    ``fnmatch`` applies, so on a case-insensitive filesystem a glob spelled
+    ``skill.md`` still matches a catalog path listed as ``SKILL.md`` — keeping
+    the set lookup equivalent to the ``fnmatch`` it replaces.
+    """
+    index: list[tuple[str, frozenset[str], tuple[str, ...]]] = []
+    for name, globs in expanded_agents:
+        exact = frozenset(
+            os.path.normcase(g) for g in globs if not any(c in g for c in _GLOB_CHARS)
+        )
+        wildcard = tuple(g for g in globs if any(c in g for c in _GLOB_CHARS))
+        index.append((name, exact, wildcard))
+    return index
+
+
+def _agents_loading_skill_indexed(
+    target: str,
+    index: list[tuple[str, frozenset[str], tuple[str, ...]]],
 ) -> list[str]:
-    """Return names of agents whose pre-expanded globs match *skill_md*."""
-    target = str(skill_md)
+    """Agents whose globs match *target*, using a :func:`_build_agent_match_index`.
+
+    An exact-path glob is matched by set membership (both sides
+    ``os.path.normcase``-folded) and a wildcard glob by ``fnmatch``, which
+    together cover exactly what matching every glob with ``fnmatch`` did, in
+    the same agent order.
+    """
+    folded = os.path.normcase(target)
     return [
-        name for name, globs in expanded_agents if any(fnmatch.fnmatch(target, g) for g in globs)
+        name
+        for name, exact, wildcard in index
+        if folded in exact or any(fnmatch.fnmatch(target, g) for g in wildcard)
     ]
 
 
@@ -2241,21 +2286,22 @@ def annotate_skills_with_agents(skills: list[dict[str, Any]]) -> None:
     """Annotate each skill dict in-place with ``loaded_by_agents``.
 
     Parses the agent JSONs ONCE and pre-expands each agent's ``skill://``
-    globs ONCE, then matches every skill against that in-memory set —
-    O(agents × resources) expansion + O(skills × globs) matching, instead of
-    re-expanding every agent glob per skill. Synchronous and filesystem-heavy
+    globs ONCE, then matches every skill against a prebuilt index —
+    O(agents × resources) expansion + O(skills × agents) matching for the
+    common wildcard-free case, instead of re-expanding every agent glob per
+    skill or walking every glob per skill. Synchronous and filesystem-heavy
     (the parse walks ~/.kiro/agents) — callers on the asyncio event loop MUST
     run this off the loop. Per-skill failures isolate to an empty list (the
     documented default) rather than blanking the whole response.
     """
-    expanded = _expand_agent_globs(_load_parsed_agents())
+    index = _build_agent_match_index(_expand_agent_globs(_load_parsed_agents()))
     for s in skills:
         path = s.get("path") or ""
         if not path:
             s["loaded_by_agents"] = []
             continue
         try:
-            s["loaded_by_agents"] = _agents_loading_skill(Path(path), expanded)
+            s["loaded_by_agents"] = _agents_loading_skill_indexed(str(Path(path)), index)
         except Exception:
             s["loaded_by_agents"] = []
 
