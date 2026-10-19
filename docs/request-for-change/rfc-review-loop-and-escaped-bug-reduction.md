@@ -379,7 +379,7 @@ count.
 | Override record with a class | `/ai-review override <lane> <sha> <class>[ #N]: <reason, 20 to 500 characters>`. The class table is in Appendix C. The workflow stores the class, the issue and whether the actor is the PR author in a second hidden line of the bot comment; the first line keeps today's shape so every reader of the marker keeps working (`OVERRIDE_MARKER_RE`, `_review_contract.py` line 176). |
 | Deferral | Class `deferred`. The same command names `#N`, and the workflow checks in that run that the issue is open, labelled `deferred-finding`, assigned and dated (the four tests already in `disposition-deferral-check.yml`, moved into a shared `issue_problems()` function). Otherwise the override is refused. |
 | Sensitive classes | A BLOCK anchored `residual/security`, `residual/crash-data-loss-corruption` or `residual/guard-removal` needs an override from a repository writer who is not the PR author. An `agent:` reason is refused on these anchors. |
-| Fallback for the sensitive classes | If no independent writer acts within a stated time (proposed: 24 hours), an owner may record class `owner-decision` instead. It links the owner's own decision comment, and the weekly audit lists each one. The 24 hours is a placeholder; the real wait time for a second writer is not in the data (open question 4). |
+| Fallback for the sensitive classes | If no independent writer acts within a stated time (proposed: 24 hours), an owner may record class `owner-decision` instead. The actor is a CODEOWNERS member, and the record links that owner's own decision comment. The handler allows the actor to be the author of the linked comment. Whether that owner may also be the PR author is open question 4. The weekly audit lists each one. The 24 hours is a placeholder; the real wait time for a second writer is not in the data (open question 4). |
 
 A downgrade by the adjudication pass (path a2 in section 3.5, two of nine
 cases) stays as a mechanism for non-sensitive BLOCKs, but it must print a
@@ -738,7 +738,7 @@ The old grammar stays valid for six weeks, with a warning.
 | `infra-failure` | The lane failed, not the pull request | A workflow run URL |
 | `reissue` | The same ruling for a new head | The source comment id of the earlier record |
 | `deferred` | A real risk, fixed later | `#N`, open, labelled `deferred-finding`, assigned, with a `Due: YYYY-MM-DD` line or a milestone date, checked in the same run; otherwise refused. For a sensitive class, also a pin test (open question 6) |
-| `owner-decision` | A named person accepted the risk | A link to a comment by a CODEOWNERS member who is neither the actor nor the PR author; the fallback after the time box of 4.1.4 |
+| `owner-decision` | A named person accepted the risk | The actor is a CODEOWNERS member, and the value is a link to that owner's own decision comment (the actor may be its author); the fallback after the time box of 4.1.4. Whether the owner may be the PR author is open question 4 |
 
 Refusals added to the handler: an unknown class or a missing requirement;
 the independence rule for the sensitive anchors; an `agent:` reason on those
