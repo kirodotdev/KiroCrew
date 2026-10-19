@@ -359,7 +359,7 @@ class TestCase275RoutesThroughSharedBudgetBody:
     Mutation check in reverse: forcing the shared body to refuse retries
     changes this surface's attempt count — proof the budget is not re-encoded
     locally. The sub-agent ladder has the mirror pin in
-    test_subagent_turn_resilience.py.
+    test_subagent_turn_resilience_retry.py.
     """
 
     _TRANSIENT = "Prompt error: {'message': 'Internal error: API Error: Internal server error'}"

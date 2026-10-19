@@ -119,6 +119,14 @@ class TestTheSpawnHostMemoryPinRatchet:
         # ``pytestmark`` here would mark no test. Its importers, the five
         # ``test_queue_depth_reconcile*.py`` modules, each carry the pin.
         "queue_depth_reconcile_helpers.py": "harness; its importers pin the host readings",
+        # A shared harness, not a collected test module: a module-level
+        # ``pytestmark`` here would mark no test. Its importers, the three
+        # ``test_subagent_turn_resilience*.py`` modules, each carry the pin.
+        "subagent_turn_resilience_helpers.py": "harness; its importers pin the host readings",
+        # A shared harness, not a collected test module: the helper methods the
+        # ``test_admission_gate*.py`` spawn-gate classes share. Like
+        # ``test_admission_gate.py``, its importers drive the floor themselves.
+        "admission_gate_helpers.py": "harness; its importers drive the floor themselves",
     }
 
     def test_every_spawning_module_is_pinned_or_excluded(self) -> None:

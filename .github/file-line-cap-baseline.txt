@@ -79,7 +79,6 @@
 2250 src/kiro_crew/ui_index.py
 2096 src/kiro_crew/webex/transport_dispatch.py
 2641 test/conftest.py
-2780 test/test_admission_gate.py
 5531 test/test_apps_routes_coverage.py
 3299 test/test_artifacts_handlers.py
 2475 test/test_chat_mirror.py
@@ -90,10 +89,8 @@
 3175 test/test_dashboard_approval.py
 2718 test/test_dashboard_server_composition_contract.py
 2478 test/test_dashboard_updates_coverage.py
-2765 test/test_fargate_launch_engine.py
 4437 test/test_github_pull_request_monitor.py
 3102 test/test_handlers_memory_coverage.py
-2809 test/test_history_consolidation_retry.py
 4353 test/test_hooks.py
 4427 test/test_job_sdk.py
 2631 test/test_llm_pool.py
@@ -116,7 +113,6 @@
 2641 test/test_spawn_audit.py
 3093 test/test_subagent.py
 3177 test/test_subagent_scale.py
-2820 test/test_subagent_turn_resilience.py
 2460 test/test_taskq_runner_adapter.py
 5831 test/test_vector_memory.py
 2169 website/src/apps/command-bar/CommandBarOverlay.test.tsx

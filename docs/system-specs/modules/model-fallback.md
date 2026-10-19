@@ -342,7 +342,7 @@ sub-agents) keep the terminal refusal behavior.
 `test/test_llm_helpers_fallback_chain.py` and
 `test/test_llm_helpers_fallback_restore.py` cover chain derivation, candidate
 selection, retry state, story handling, and unattended restore. `test/test_dashboard_chat.py`
-covers dashboard fallback and slot restore. `test/test_subagent_turn_resilience.py`
+covers dashboard fallback and slot restore. `test/test_subagent_turn_resilience_retry.py`
 and `test/test_cron_gateway_integration_llm.py` cover sub-agent and gateway wiring.
 `test/test_config_loader_agent_section.py`, `test/test_role_models.py`, and
 `test/test_dashboard_handlers_core_coverage_agent_settings.py` cover configuration
