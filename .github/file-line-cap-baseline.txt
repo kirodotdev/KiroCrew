@@ -78,7 +78,6 @@
 2475 test/test_chat_mirror.py
 10498 test/test_cli.py
 2744 test/test_cli_server_more_coverage.py
-6406 test/test_crew_log_emit.py
 3125 test/test_cron_script.py
 3175 test/test_dashboard_approval.py
 2718 test/test_dashboard_server_composition_contract.py
@@ -97,7 +96,6 @@
 12647 test/test_security.py
 5509 test/test_sel.py
 9530 test/test_session.py
-6415 test/test_session_transfer.py
 3082 test/test_skills.py
 2650 test/test_slack_handler_composition_contract.py
 2629 test/test_slack_handler_coverage.py

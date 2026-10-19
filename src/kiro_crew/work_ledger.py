@@ -106,7 +106,7 @@ def rebuild_from_projection(slot_key: str) -> dict[str, Any]:
     # Imported here, not at module scope, on purpose: ``ledger_sweep`` imports this
     # module at boot, so a module-scope import would load the crew log's storage
     # subsystem on a flag-off launch. That is not a style preference -- it is pinned
-    # by ``test_crew_log_emit.py::test_a_flag_off_launch_does_not_load_the_storage_subsystem``,
+    # by ``test_crew_log_emit_redaction_and_flag.py::test_a_flag_off_launch_does_not_load_the_storage_subsystem``,
     # which fails when these move up. The ``top-level-imports`` convention is
     # advisory; this boot-path invariant is enforced, so the invariant wins.
     from kiro_crew.crew_log import emit as crew_log_emit

@@ -293,7 +293,9 @@
  1 test_session_start_queued_behind.py
  1 test_session_storage_api.py
  1 test_session_terminated_reap.py
- 5 test_session_transfer.py
+ 2 test_session_transfer.py
+ 2 test_session_transfer_import_body.py
+ 1 test_session_transfer_outbound.py
  1 test_session_tree_push.py
  3 test_session_usage.py
  1 test_session_usage_refresh_routes.py
