@@ -70,7 +70,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.metrics import work as work_metrics
 from kiro_crew.validation import WORK_LEDGER_RECORD_SCHEMA, ValidationError, validate_tool_args
 from kiro_crew.work_ledger import WorkLedgerError
-from kiro_crew.work_vocab import WORK_CONDUCTOR_FIELDS, WORK_MAX_DEPTH_MAX
+from kiro_crew.work_vocab import WORK_CONDUCTOR_FIELDS, WORK_MAX_DEPTH_MAX, WORK_MAX_DEPTH_MIN
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.work_ledger")
 
@@ -274,6 +274,13 @@ async def _record_conductor_write(
             )
         )
         if dispatch:
+            # A code channel's worker never conducts, so it is refused before any
+            # ledger it may hold is let through, as at a goal or create.
+            drefusal = _refuse_code_channel_worker(
+                key, _is_code_channel_worker(state, caller_sk), "dispatch"
+            )
+            if drefusal is not None:
+                return drefusal
             # Under the lock, so a purge cannot land between this read and the
             # write; the store's own header check refuses one that lands later.
             drefusal = await _refuse_dispatch_without_ledger(key)
@@ -847,6 +854,36 @@ def _is_code_channel_worker(state: DashboardState, sk: str) -> str:
     return session_control.code_channel_root(state, slot) if slot is not None else ""
 
 
+def _refuse_code_channel_worker(
+    key: str, code_channel_worker: str, resources: str
+) -> web.Response | None:
+    """``depth_exceeded`` for a code channel's worker (or an unknowable lineage)."""
+    if code_channel_worker == session_control.LINEAGE_UNAVAILABLE:
+        _audit(
+            key,
+            "work_ledger_record",
+            "denied",
+            resources=resources,
+            error="code_channel_lineage_unavailable",
+        )
+        return _refuse_409(
+            work_ledger.CODE_DEPTH_EXCEEDED,
+            "The Slack code-channel store (slack-code-channels.json) could not be read, "
+            "so this session cannot be shown not to be a code-channel worker. Repair "
+            "the file and restart the gateway.",
+        )
+    if code_channel_worker:
+        _audit(
+            key, "work_ledger_record", "denied", resources=resources, error="code_channel_worker"
+        )
+        return _refuse_409(
+            work_ledger.CODE_DEPTH_EXCEEDED,
+            "This session was dispatched from a Slack code channel, and code-channel "
+            "dispatch is one level deep: it may work and report, never conduct.",
+        )
+    return None
+
+
 async def _bootstrap(
     key: str, *, code_channel: bool = False, code_channel_worker: str = ""
 ) -> None | web.Response:
@@ -861,40 +898,21 @@ async def _bootstrap(
     rather than later when it tries to create an item.
 
     A Slack code channel's conductor (*code_channel*, admitted through the
-    dispatch exemption) opens its ledger at the LAST conducting level,
-    ``MAX_DEPTH - 1``: its workers may work but never conduct, and because the
-    depth is written into the ledger it holds across restarts and whatever
-    happens to the channel's session later. ``ensure_conductor`` never rewrites
-    an existing depth, and such a slot could not have opened a ledger before the
-    exemption existed.
+    dispatch exemption) opens its ledger at ``WORK_MAX_DEPTH_MIN - 1``, the last
+    conducting level under the LOWEST cap ``work_ledger.max_depth`` allows, so
+    no later lowering of the cap leaves the channel unable to dispatch.
+    ``ensure_conductor`` never rewrites an existing depth, and such a slot could
+    not have opened a ledger before the exemption existed.
 
-    A session a code channel's session created (*code_channel_worker*) may not
-    conduct at all, bound or not: it is refused ``depth_exceeded`` here, at the
-    first goal or create, rather than relying on a binding it may not have yet.
+    The depth is not what keeps its workers from conducting (a raised cap would
+    admit one more level): their lineage is. A session a code channel's session
+    created (*code_channel_worker*) may not conduct at all, bound or not, at any
+    cap: it is refused ``depth_exceeded`` here, at the first goal or create, and
+    before an existing ledger is let through.
     """
-    if code_channel_worker == session_control.LINEAGE_UNAVAILABLE:
-        _audit(
-            key,
-            "work_ledger_record",
-            "denied",
-            resources="bootstrap",
-            error="code_channel_lineage_unavailable",
-        )
-        return _refuse_409(
-            work_ledger.CODE_DEPTH_EXCEEDED,
-            "The Slack code-channel store (slack-code-channels.json) could not be read, "
-            "so this session cannot be shown not to be a code-channel worker. Repair "
-            "the file and restart the gateway.",
-        )
-    if code_channel_worker:
-        _audit(
-            key, "work_ledger_record", "denied", resources="bootstrap", error="code_channel_worker"
-        )
-        return _refuse_409(
-            work_ledger.CODE_DEPTH_EXCEEDED,
-            "This session was dispatched from a Slack code channel, and code-channel "
-            "dispatch is one level deep: it may work and report, never conduct.",
-        )
+    worker_refusal = _refuse_code_channel_worker(key, code_channel_worker, "bootstrap")
+    if worker_refusal is not None:
+        return worker_refusal
     # A ledger that already exists keeps working whatever the cap has become since it
     # opened: lowering ``work_ledger.max_depth`` refuses NEW ledgers and new items past
     # the cap (``child_depth`` below, ``create`` in the store), never a ``goal`` update
@@ -902,9 +920,7 @@ async def _bootstrap(
     # falls through to the normal path and its strict re-read.
     if await asyncio.to_thread(work_ledger.read_conductor, key) is not None:
         return None
-    # The last conducting level under the cap in force: its children may work, never
-    # conduct. Off the loop: the cap comes from the config file.
-    depth = (await asyncio.to_thread(work_ledger.max_depth)) - 1 if code_channel else 0
+    depth = WORK_MAX_DEPTH_MIN - 1 if code_channel else 0
     parent_item: str | None = None
     binding = await asyncio.to_thread(work_ledger.read_binding, key)
     if binding is not None:

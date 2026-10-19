@@ -102,6 +102,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _forward_remote_decide,
         _is_code_channel_worker,
         _record_conductor_write,
+        _refuse_code_channel_worker,
         _refuse_dispatch_without_ledger,
         _refuse_dispatched_worker,
         _refuse_unowned_worker,
@@ -254,4 +255,5 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.work_vocab import (  # noqa: F401
         WORK_CONDUCTOR_FIELDS,
         WORK_MAX_DEPTH_MAX,
+        WORK_MAX_DEPTH_MIN,
     )

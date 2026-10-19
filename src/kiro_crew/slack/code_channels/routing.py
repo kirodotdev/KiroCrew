@@ -292,6 +292,17 @@ async def _inbound_gate(
     if not code_channels_on(cfg) or not recognition.could_be_code_channel(channel):
         return PASS
     binding = store().get_binding(channel)
+    if binding is None and store().is_quarantined(channel):
+        # Its binding row could not be read: the channel is fenced, so nothing in
+        # it reaches a session (the kickoff thread's link included) until repaired.
+        _audit(
+            sender_id,
+            "slack.code_channel.message",
+            "denied",
+            f"channel={channel}",
+            "the channel's binding row could not be read",
+        )
+        return DROP
     if binding is not None:
         # A bound channel answers to its stored origin before anything else:
         # every path that passes from here (a trusted bot, a failed lookup)
@@ -722,6 +733,10 @@ async def _bind_channel(
     existing = store().get_binding(channel)
     if existing is not None and not replace:
         return existing
+    if store().is_quarantined(channel):
+        # Its binding row could not be read: the channel stays fenced until the
+        # file is repaired, rather than gaining a new session over that row.
+        raise BindingUnavailable("the channel's binding row could not be read")
     state = _dashboard_state()
     if state is None:
         raise BindingUnavailable("no dashboard")
@@ -863,7 +878,11 @@ def options_answer_permitted(channel: str, sender: str = "") -> bool:
         if not code_channels_on(cfg) or not recognition.could_be_code_channel(channel):
             return True
         binding = store().get_binding(channel)
-        if binding is None:
+        if binding is None and store().is_quarantined(channel):
+            # Its binding row does not read back whole: the channel is fenced, so
+            # nothing in it -- a kickoff-thread control included -- reaches a session.
+            origin, error = "", "code channel binding row unreadable"
+        elif binding is None:
             if not store().was_revoked(channel):
                 return True
             # Unbound because Slack does not list us here: a control its
