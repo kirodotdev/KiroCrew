@@ -22,7 +22,18 @@ from skill_script_helpers import load_skill_script
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "copy_living_ui_blocks.py"
-HELPERS = ("loop", "follow", "spring", "settle", "smooth", "burst", "readout", "focusOne", "css")
+HELPERS = (
+    "loop",
+    "follow",
+    "spring",
+    "settle",
+    "smooth",
+    "burst",
+    "tour",
+    "readout",
+    "focusOne",
+    "css",
+)
 _REMEDY = "Run `python3 scripts/copy_living_ui_blocks.py` and commit SKILL.md."
 
 

@@ -189,6 +189,15 @@ LivingUI.settle(s = { x, v }, target, dt, seconds = 0.4, calm = false) -> boolea
 LivingUI.smooth(a, b, x) -> number // smoothstep, 0 to 1
 LivingUI.burst(age, rise = 0.08, fall = 0.13) -> number // event envelope, 0 to 1
 
+// The idle tour (rule L). Each frame it calls at(t): t is the ms since the
+// current loop began, from 0 up to period, the length of one loop in ms. It
+// starts once the stage has been in view for `start` ms, pauses at once on
+// input inside the stage, resumes `resume` ms after the last one, and rests
+// after `loops` loops with one last call, at(period). active is true only
+// while it drives.
+LivingUI.tour(stage, at: (t) => void, { start = 1400, resume = 3600, period, loops = 3 } = {})
+  -> { readonly active, play(), pause(), takeOver() }
+
 // The figure's words. say() writes the visible readout and may run every
 // frame; describe() writes target's aria-valuetext, on a state change only;
 // phase() writes the live region once 700 ms pass with no newer phase.
@@ -223,6 +232,18 @@ markup. `focusOne` moves the lit element (rule F): hover, the keyboard and the
 tour each call it with the part they pick, or with `null` when none is picked.
 It takes `data-lui-on` from every other element inside `root`, so a part lit
 in the still markup steps down with the rest when another part is picked.
+
+`tour` is for an explainer, never a Dashboard page. Its `at(t)` acts as an
+input would: it sets the targets for time `t`, calls the loop's `kick()` and
+calls `focusOne` to pick the lit element. Leave `phase` out of `at`, since the
+idle tour never writes the live region. Give `tour` a `period` above 0, since
+without one it never runs, and start and end each loop on the settled state
+the markup shows: the last call, `at(period)`, lands the figure there when the
+tour rests. Input inside the stage pauses the tour, so put the play/pause
+button outside the stage and have it call `pause()` and `play()`. It says
+Pause while the tour is on, even while the tour waits out an input, and Play
+once its own click pauses the tour or `at` gets `t === period`. Any other
+control outside the stage that moves the figure calls `takeOver()`.
 
 A value that follows the pointer, with its readout:
 
@@ -397,6 +418,85 @@ LivingUI.burst = (age, rise = 0.08, fall = 0.13) => {
   const t = Math.min(1, age / rise);
   const level = t * t * (3 - 2 * t) * Math.exp(Math.min(0, rise - age) / fall);
   return age > rise && level < 1e-3 ? 0 : level;
+};
+```
+
+#### `tour`
+
+```js
+// Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.
+var LivingUI = LivingUI || {};
+// The idle tour of an explainer (rule L). Each frame it calls at(t), and at
+// sets the same targets an input would. t is the tour's own time in ms since
+// the current loop began, from 0 up to period, and it stands still whenever
+// the tour does not drive. The tour starts once the stage has been in view
+// for `start` ms and rests after `loops` loops, with at(period) as its last
+// call, so the figure lands on the loop's end. Pointer, keyboard focus and
+// key input inside the stage pause it at once, and it resumes `resume` ms
+// after the last one; takeOver() pauses it the same way, for a control
+// outside the stage. pause() holds it until play(), and play() after a rest
+// starts the loops over. It never calls at offscreen, in a hidden tab, under
+// reduced motion or without a period above 0, and active is true only while
+// it drives. It never moves keyboard focus and writes nothing to the page.
+LivingUI.tour = (stage, at, { start = 1400, resume = 3600, period, loops = 3 } = {}) => {
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)');
+  const end = loops * period;
+  // delay is how long the tour waits before it drives: `resume` after an input
+  // until it drives again, even across a spell offscreen, and `start` otherwise.
+  let frame = 0, timer = 0, last = -1, time = 0, delay = start, inView = false, held = false;
+  const ready = () => inView && !held && !reduce.matches && !document.hidden && time < end;
+  const stop = () => {
+    cancelAnimationFrame(frame);
+    clearTimeout(timer);
+    frame = timer = 0;
+  };
+  // The first frame after a wait counts no time, and a gap counts 1/30 s at most.
+  const step = (now) => {
+    time += last < 0 ? 0 : Math.min(now - last, 100 / 3);
+    last = now;
+    frame = time < end ? requestAnimationFrame(step) : 0;
+    at(frame ? time % period : period);
+  };
+  const drive = () => {
+    stop();
+    if (!ready()) return;
+    delay = start;
+    last = -1;
+    frame = requestAnimationFrame(step);
+  };
+  // Stops at once, then drives after `delay` ms unless something stops it first.
+  const wait = () => {
+    stop();
+    if (ready()) timer = setTimeout(drive, delay);
+  };
+  const takeOver = () => {
+    delay = resume;
+    wait();
+  };
+  for (const type of ['pointerdown', 'pointermove', 'focusin', 'keydown']) {
+    stage.addEventListener(type, takeOver);
+  }
+  // In view means in the viewport itself, with no margin, so the reader sees
+  // the still figure first. Only the newest entry says where the stage is now.
+  new IntersectionObserver((entries) => {
+    inView = entries[entries.length - 1].isIntersecting;
+    wait();
+  }).observe(stage);
+  reduce.addEventListener('change', wait);
+  document.addEventListener('visibilitychange', wait);
+  return {
+    get active() { return frame > 0; },
+    play() {
+      held = false;
+      if (time >= end) time = 0;
+      if (!frame) drive();
+    },
+    pause() {
+      held = true;
+      stop();
+    },
+    takeOver,
+  };
 };
 ```
 
