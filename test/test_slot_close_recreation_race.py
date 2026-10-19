@@ -68,6 +68,8 @@ from slot_close_recreation_race_helpers import (
 from kiro_crew import autonudge
 from kiro_crew.autonudge import AutoNudgeService
 from kiro_crew.dashboard import chat_handlers as handlers
+from kiro_crew.dashboard.snapshot_commit import slots_with_a_close_in_flight
+from kiro_crew.testing.wait import await_until
 
 
 def _state_with_slot(tmp_path, name: str = NAME):
@@ -542,6 +544,55 @@ async def test_delete_ordinary_close_still_saves_and_removes(tmp_path, monkeypat
 # --------------------------------------------------------------------------- #
 # api_chat_slots_cleanup (bulk archive)
 # --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_cleanup_publishes_its_popped_slot_to_vocabulary_sweeps(
+    tmp_path, monkeypatch
+) -> None:
+    """The bulk archive's popped slot must stay reachable by a concurrent vocabulary delete.
+
+    The pop holds the slot out of ``_slots`` for the whole archive save, and the failure
+    arm puts the SAME object back. A folder or tag delete whose sweep captures inside that
+    window reads ``_slots`` plus the in-flight-close registry, so a frame missing from the
+    registry is in NEITHER view -- and the restore then returns a slot still naming the id
+    that was just deleted, which the periodic flush makes durable with no sweep to follow.
+    """
+    state = _state_with_slot(tmp_path)
+    original = _make_stale(state)
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    seen: list[list[tuple[str, object]]] = []
+
+    async def _persist(*_a, **_kw) -> None:
+        seen.append(slots_with_a_close_in_flight(state))
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
+
+    close = asyncio.create_task(handlers.api_chat_slots_cleanup(_Req(state, NAME)))
+    await _reached(entered, close)  # parked inside the archive save, slot already popped
+    assert state._slots.get(NAME) is None, (
+        "premise check: the archive save is supposed to run with the slot popped, so a "
+        "sweep reading _slots alone cannot see it"
+    )
+    release.set()
+    try:
+        await await_until(close, what="the bulk archive to finish after its save was released")
+    finally:
+        if not close.done():
+            close.cancel()
+
+    assert seen and (NAME, original) in seen[0], (
+        "the bulk archive's popped slot was in no view a vocabulary sweep can read, so a "
+        "concurrent folder or tag delete misses it and the failure arm restores the id"
+    )
+    assert slots_with_a_close_in_flight(state) == [], (
+        "the bulk archive left its slot published after returning, so every later delete "
+        "force-saves an object no longer being closed"
+    )
 
 
 @pytest.mark.asyncio

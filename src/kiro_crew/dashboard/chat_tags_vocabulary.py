@@ -33,17 +33,21 @@ from kiro_crew.dashboard.chat_tags_policy import _AGENT_TAG_POLICIES, _DEFAULT_C
 from kiro_crew.dashboard.chat_tags_store import (
     TagGrantStoreBlocked,
     _bump_slot_tags_revision,
+    _commit_tags_snapshot,
     _order_key,
     _tag_by_id,
     _tags_write_lock,
     _valid_color,
-    _write_tags_snapshot,
     create_tag_definition_off_loop,
 )
-from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.dashboard.chat_utils import run_to_completion, slot_history_key
 from kiro_crew.dashboard.create_rate_limit import TAG_CREATE, allow_create
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response, read_bounded_json
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.snapshot_commit import (
+    VocabularyDeleteCancellations,
+    slots_with_a_close_in_flight,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import (
     MEMBER_CHAT_PRINCIPAL_KEY,
@@ -346,7 +350,7 @@ async def api_chat_tag_adopt(request: web.Request) -> web.Response:
             pre_snapshot = [dict(t) for t in state._tags]
             tag["status"] = status
             try:
-                await asyncio.to_thread(_write_tags_snapshot, state, [dict(t) for t in state._tags])
+                await _commit_tags_snapshot(state, [dict(t) for t in state._tags])
             except Exception:
                 state._tags = pre_snapshot
                 logger.warning("tag adoption: status normalization failed for %s", tid)
@@ -581,7 +585,7 @@ async def api_chat_tag_update(request: web.Request) -> web.Response:
 
         snapshot = [dict(t) for t in state._tags]
         try:
-            await asyncio.to_thread(_write_tags_snapshot, state, snapshot)
+            await _commit_tags_snapshot(state, snapshot)
         except Exception:
             state._tags = pre_snapshot
             await _restore_prev_grant()
@@ -613,9 +617,7 @@ async def api_chat_tag_update(request: web.Request) -> web.Response:
                     await _restore_prev_grant()
                     state._tags = pre_snapshot
                     try:
-                        await asyncio.to_thread(
-                            _write_tags_snapshot, state, [dict(t) for t in pre_snapshot]
-                        )
+                        await _commit_tags_snapshot(state, [dict(t) for t in pre_snapshot])
                     except Exception:
                         logger.warning("tag update: vocab rollback persist failed for %s", tid)
                     logger.warning("tag update: grant mint failed for %s", tid, exc_info=True)
@@ -685,13 +687,27 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
             )
 
         # ── Single durable commit: remove from vocabulary and persist ────
+        # Reaches the two slots the strip pass cannot see: one a concurrent close pops
+        # DURING this delete, one it popped BEFORE this line. Either way a failed save
+        # puts it back still carrying tid. Read-only, so safe here.
+        closing: list[tuple[Any, str, str]] = [
+            (s, slot_history_key(s), name)
+            for name, s in [*state._slots.items(), *slots_with_a_close_in_flight(state)]
+            if tid in s.tags
+        ]
+        # Captured, not propagated: a cancellation here can arrive before any write, and
+        # propagating would skip the cleanup sweep and the only audit emission below.
+        cancels = VocabularyDeleteCancellations()
         state._tags = [t for t in state._tags if t.get("id") != tid]
         snapshot = [dict(t) for t in state._tags]
-        try:
-            await asyncio.to_thread(_write_tags_snapshot, state, snapshot)
-        except Exception:
-            # Restore memory AND the revoked grant, then abort. Existence-
-            # keyed: a ("none", False) row is protected state too.
+        committed = False
+
+        def _confirm_committed() -> None:
+            nonlocal committed
+            committed = True
+
+        async def _restore_memory_and_grant() -> None:
+            # Existence-keyed: a ("none", False) row is protected state too.
             state._tags.append(removed_tag)
             if prev_row_exists:
                 try:
@@ -700,26 +716,49 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
                     )
                 except Exception:
                     logger.warning("tag delete: grant restore failed for %s", tid, exc_info=True)
+
+        try:
+            with cancels.capturing_commit():
+                await _commit_tags_snapshot(state, snapshot, on_committed=_confirm_committed)
+        except Exception:
+            await _restore_memory_and_grant()
             logger.warning("tag delete: vocab persist failed for %s", tid)
             return web.json_response(
                 {"error": "persist failed", "code": "persist_failed"}, status=500
             )
+        if cancels.commit is not None and not committed:
+            # An unfired hook leaves the removal unproven while memory already reads
+            # deleted, so a later snapshot write would make it durable with no strip.
+            # Restoring is what the failure arm does; the append lands before any await,
+            # so a cancellation during the grant re-mint cannot skip it.
+            await _restore_memory_and_grant()
+            raise cancels.commit
 
         # ── Best-effort cleanup: strip the (now nonexistent) id ──────────
         # Failures here are tolerable: a dangling id on disk is pruned on
         # the next load; mark the slot dirty so the periodic flush retries.
         # The grant row was already revoked BEFORE the vocabulary commit
         # (see above) — deletion must never outlive the authority it removes.
-        for slot in state._slots.values():
-            if tid in slot.tags:
-                # Pin the write to the transcript this iteration's membership
-                # check covered: the save awaits inside the loop, so a rebind
-                # can land mid-persist and the save would otherwise resolve
-                # its target from the moved routing at write time. No await
-                # between this capture and the strip below.
-                authorized_history_key = slot_history_key(slot)
-                slot.tags = [t for t in slot.tags if t != tid]
-                _bump_slot_tags_revision(slot)
+
+        # Two passes: pass one strips with no yield point, pass two awaits. Awaiting while
+        # iterating ``_slots`` raises RuntimeError the moment a tab closes concurrently.
+        stripped_slots: list[tuple[Any, str, str]] = []
+        # A slot in both lists is visited twice harmlessly: the first visit removes the id,
+        # so the second takes the ``continue``.
+        for slot, key_at_capture, slot_name in [
+            *closing,
+            *((s, None, name) for name, s in list(state._slots.items())),
+        ]:
+            if tid not in slot.tags:
+                continue
+            slot.tags = [t for t in slot.tags if t != tid]
+            _bump_slot_tags_revision(slot)
+            # Pinned to the transcript this pass's membership check covered, since pass two
+            # awaits and a rebind would otherwise move the save's target mid-persist.
+            stripped_slots.append((slot, key_at_capture or slot_history_key(slot), slot_name))
+
+        async def _persist_stripped() -> None:
+            for slot, authorized_history_key, slot_name in stripped_slots:
                 try:
                     applied = await save_slot_off_loop(
                         state,
@@ -727,6 +766,7 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
                         force=True,
                         best_effort=False,
                         expected_history_key=authorized_history_key,
+                        expected_slot_name=slot_name,
                     )
                 except Exception:
                     slot._dirty = True
@@ -773,30 +813,43 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
                     changed = True
             return changed, None
 
-        try:
-            await state.mutate_folders(_strip_folder_tag)
-        except Exception:
-            # Dangling folder reference — pruned on next load.
-            logger.warning("tag delete: folder strip persist failed for %s", tid, exc_info=True)
-
-        # Strip from sidebar columns (flat list of column dicts).
-        changed_boards = False
-        for col in state._tag_boards:
-            tag_ids = col.get("tag_ids") or []
-            filtered = [t for t in tag_ids if t != tid]
-            if len(filtered) != len(tag_ids):
-                col["tag_ids"] = filtered
-                changed_boards = True
-        if changed_boards:
+        async def _sweep_after_commit() -> None:
+            await _persist_stripped()
             try:
-                boards_snapshot = [dict(c) for c in state._tag_boards]
-                await asyncio.to_thread(state.save_tag_boards_snapshot, boards_snapshot)
+                await state.mutate_folders(_strip_folder_tag)
             except Exception:
-                # Dangling board reference — pruned on next load.
-                logger.warning("tag delete: board strip persist failed for %s", tid, exc_info=True)
+                # Dangling folder reference — pruned on next load.
+                logger.warning("tag delete: folder strip persist failed for %s", tid, exc_info=True)
 
-    state.bump_tags_generation()
-    state.push_slots_update()
+            # Strip from sidebar columns (flat list of column dicts).
+            changed_boards = False
+            for col in state._tag_boards:
+                tag_ids = col.get("tag_ids") or []
+                filtered = [t for t in tag_ids if t != tid]
+                if len(filtered) != len(tag_ids):
+                    col["tag_ids"] = filtered
+                    changed_boards = True
+            if changed_boards:
+                try:
+                    boards_snapshot = [dict(c) for c in state._tag_boards]
+                    await asyncio.to_thread(state.save_tag_boards_snapshot, boards_snapshot)
+                except Exception:
+                    # Dangling board reference — pruned on next load.
+                    logger.warning(
+                        "tag delete: board strip persist failed for %s", tid, exc_info=True
+                    )
+            # Inside the shielded unit so other clients still learn of the delete even
+            # when this handler is going away.
+            state.bump_tags_generation()
+            state.push_slots_update()
+
+        # CAPTURED, not propagated: the helper drains the sweep and then RE-RAISES, which
+        # would skip the only audit emission for this operation below.
+        with cancels.capturing_sweep():
+            await run_to_completion(_sweep_after_commit())
+
+    # The only SEL emission for the operation, and the removal is already durable here, so
+    # re-raising first would lose the record entirely.
     sel().log_api_access(
         caller="dashboard",
         operation="chat.tag_delete",
@@ -804,4 +857,5 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
         source="dashboard",
         resources=tid,
     )
+    cancels.reraise_in_order()
     return web.json_response({"ok": True})

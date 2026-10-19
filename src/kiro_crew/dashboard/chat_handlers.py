@@ -500,6 +500,7 @@ from kiro_crew.dashboard.slot_retention import (  # noqa: F401
     loop_slot_keys,
     select_idle_slot_keys,
 )
+from kiro_crew.dashboard.snapshot_commit import close_in_flight  # noqa: F401
 from kiro_crew.dashboard.state import (  # noqa: F401
     _MAX_DISMISSED_SOURCE_LINKS,
     DashboardState,

@@ -986,6 +986,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.chat_tags_store import (  # noqa: F401
         _TAGS_WRITE_LOCKS,
         TagGrantStoreBlocked,
+        _commit_tags_snapshot,
         _reconcile_failed_tag_create,
         _tag_by_id,
         _valid_color,
@@ -1020,6 +1021,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         revoke_grant,
         store_write_blocked,
     )
+    from kiro_crew.dashboard.chat_utils import (  # noqa: F401
+        run_to_completion,
+    )
     from kiro_crew.dashboard.create_rate_limit import (  # noqa: F401
         TAG_CREATE,
     )
@@ -1028,6 +1032,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
         is_owner_dashboard_request,
+    )
+    from kiro_crew.dashboard.snapshot_commit import (  # noqa: F401
+        VocabularyDeleteCancellations,
+        slots_with_a_close_in_flight,
     )
     from kiro_crew.dashboard.state import (  # noqa: F401
         mint_tags_revision,
