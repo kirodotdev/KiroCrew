@@ -20,6 +20,7 @@ from kiro_crew.apps.execution import repository_bound_grant_denied
 from kiro_crew.apps.manager_builtins import _builtin_owns_install
 from kiro_crew.apps.manager_records import (
     APP_MANIFEST_FILENAME,
+    INSTALLED_META_FILENAME,
     AppResult,
     InstalledApp,
     _approved_grants_after_manifest_change,
@@ -305,6 +306,11 @@ def register_external_app(
         prior_manifest_text = (
             manifest_path.read_text(encoding="utf-8") if manifest_path.is_file() else None
         )
+        # The record as it is on disk, restored byte for byte on rollback. A
+        # rewrite of ``existing`` would add a consent key that a record from
+        # before the key existed never had, and could record no consent needed.
+        meta_path = dest / INSTALLED_META_FILENAME
+        prior_meta_text = meta_path.read_text(encoding="utf-8") if meta_path.is_file() else None
         manifest_text = json.dumps(manifest_data, indent=2) + "\n" if manifest_data else ""
         try:
             if manifest_data:
@@ -328,7 +334,10 @@ def register_external_app(
                 # while a set file is present.
                 if manifest_data:
                     _write_approved_grants(name, prior_grants if prior_grants_present else None)
-                _write_installed(name, existing)
+                if prior_meta_text is not None:
+                    atomic_write(meta_path, prior_meta_text)
+                else:
+                    _write_installed(name, existing)
             except OSError as rollback_exc:
                 rollback_errors.append(f"metadata rollback failed: {rollback_exc}")
             try:

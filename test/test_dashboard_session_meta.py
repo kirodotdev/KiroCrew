@@ -61,6 +61,12 @@ def state(tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.apps.manager.get_app_manifest", _MANIFESTS.get)
     monkeypatch.setattr("kiro_crew.apps.permissions.get_app_manifest", _MANIFESTS.get)
     monkeypatch.setattr("kiro_crew.apps.permissions.is_app_enabled", _MANIFESTS.__contains__)
+    from kiro_crew.apps.manager import InstalledApp
+
+    monkeypatch.setattr(
+        "kiro_crew.apps.permissions._read_installed",
+        lambda name, **_kw: InstalledApp(name=name) if name in _MANIFESTS else None,
+    )
     st = _make_state(tmp_path)
     st.broadcast_ws = MagicMock()
     st.push_slots_update = MagicMock()

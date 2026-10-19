@@ -1,6 +1,7 @@
 """Tests for kiro_crew.apps.permissions — permission validation and enforcement."""
 from __future__ import annotations
 
+from kiro_crew.apps.manager import InstalledApp
 from kiro_crew.apps.manifest import AppManifest, Permissions
 from kiro_crew.apps.permissions import (
     PermissionCheck,
@@ -116,8 +117,25 @@ class TestSessionApprovalPermission:
         )
         monkeypatch.setattr("kiro_crew.apps.permissions.is_app_enabled", lambda name: name == "test")
         monkeypatch.setattr("kiro_crew.apps.permissions.get_app_manifest", lambda _name: manifest)
+        monkeypatch.setattr(
+            "kiro_crew.apps.permissions._read_installed", lambda name, **_kw: InstalledApp(name=name)
+        )
 
         assert app_can_manage_session_approvals("test") is True
+
+    def test_unreadable_record_is_denied_even_when_enabled_reads_true(self, monkeypatch):
+        manifest = AppManifest(
+            name="test",
+            version="1.0.0",
+            displayName="T",
+            description="T",
+            permissions=Permissions(sessionApproval=True),
+        )
+        monkeypatch.setattr("kiro_crew.apps.permissions.is_app_enabled", lambda _name: True)
+        monkeypatch.setattr("kiro_crew.apps.permissions.get_app_manifest", lambda _name: manifest)
+        monkeypatch.setattr("kiro_crew.apps.permissions._read_installed", lambda _name, **_kw: None)
+
+        assert app_can_manage_session_approvals("test") is False
 
     def test_disabled_app_is_denied(self, monkeypatch):
         monkeypatch.setattr("kiro_crew.apps.permissions.is_app_enabled", lambda _name: False)

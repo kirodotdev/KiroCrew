@@ -499,7 +499,15 @@ def update_app(
         )
         return AppResult(ok=False, name=name, error=f"blocked by admission policy: {denied}")
 
-    existing = _read_installed(name)
+    # Consent to session-approval control is captured at install/enable, but the
+    # route guard reads the LIVE manifest. Without this check a routine update
+    # that adds ``permissions.sessionApproval`` would gain control of the user's
+    # sessions with no consent moment. Read the old manifest BEFORE the tree is
+    # replaced so the old grant remains the consent boundary, and read the record
+    # against that same manifest: the replacement record lands in a new tree, so
+    # the record's pending state must not depend on a second manifest read.
+    old_manifest = get_app_manifest(name)
+    existing = _read_installed(name, manifest=old_manifest)
     if not existing:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
 
@@ -521,12 +529,6 @@ def update_app(
         )
 
     old_version = existing.version
-    # Consent to session-approval control is captured at install/enable, but the
-    # route guard reads the LIVE manifest. Without this check a routine update
-    # that adds ``permissions.sessionApproval`` would gain control of the user's
-    # sessions with no consent moment. Read the old manifest BEFORE the tree is
-    # replaced so the old grant remains the consent boundary.
-    old_manifest = get_app_manifest(name)
     requested_session_approval = bool(manifest.permissions.sessionApproval)
     widened_session_approval = bool(
         requested_session_approval

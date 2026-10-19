@@ -1912,6 +1912,28 @@ tree until the replacement and its metadata are durable, so a failed update
 restores the old manifest and enabled state together. A replacement manifest
 that removes the flag clears any lingering `sessionApprovalConsentPending` bit.
 
+A record with no `sessionApprovalConsentPending` key is consent-pending. Every
+record this host writes carries the key, so one without it comes from a host
+that ignored `permissions.sessionApproval` and never had a consent moment.
+`_read_installed` reads such a record as pending when the live manifest
+declares the grant, so `app_can_manage_session_approvals` refuses it; that
+check decides from one manifest read and one record read, and also refuses a
+record it cannot read. `_write_installed` judges the record on disk, not the
+caller's copy: it never turns one that is key-less or already pending into
+"no consent needed" unless the write is `enable_app`'s consent write or the
+live manifest is readable and does not declare the grant, so no save path (a
+disable, an unreadable manifest, an early update, a stale copy written back by
+a rollback) records a consent that was not given. After `KIROCREW_READY`, `apps/session_consent.reconcile_after_ready`
+(a tracked background task started from `service_boot.run`) handles each such
+record, and any record that reads both enabled and pending, under
+`app_lifecycle_lock`: it re-checks the record, runs the disable route's bounded
+startup-hook preflight (a hook still running defers the app to the next
+start), runs `teardown_app_runtime` for an enabled app, then writes it disabled
+and pending and audits `session_approval_widened` with SEL caller `app_boot`.
+It rebuilds the agent spec once when it disabled anything. Nothing waits for
+it, because the read-side refusal already holds; the owner re-enables through
+the same consent step.
+
 `permissions.api` and `permissions.events` are read live as well, and an update
 that adds any entry to either is held back rather than disabled. Each app stores
 the entries the owner has approved in `approved-grants.json`

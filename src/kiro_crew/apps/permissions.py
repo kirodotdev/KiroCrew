@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from kiro_crew.apps.manager import get_app_manifest, is_app_enabled
+from kiro_crew.apps.manager import _read_installed, get_app_manifest, is_app_enabled
 from kiro_crew.apps.manifest import AppManifest
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,15 @@ def app_can_manage_session_approvals(app_name: str) -> bool:
     try:
         manifest = get_app_manifest(app_name)
         if not (manifest and manifest.permissions.sessionApproval):
+            return False
+        # One record read, judged against the manifest read above, decides
+        # consent and enablement together. A grant still waiting for its
+        # consent moment is not held: a record written before the consent
+        # marker existed reads as pending (``_session_approval_consent_unrecorded``).
+        # An unreadable record is not evidence of consent either. The later
+        # enablement read can only refuse, never grant.
+        meta = _read_installed(app_name, manifest=manifest)
+        if meta is None or meta.sessionApprovalConsentPending or not meta.enabled:
             return False
         return is_app_enabled(app_name)
     except Exception:

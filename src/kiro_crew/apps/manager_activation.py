@@ -10,19 +10,25 @@ as ``kiro_crew.apps.manager.<name>``, and a patch there reaches this module too
 
 from __future__ import annotations
 
+import json
 import logging
 
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import app_execution_denied, shipped_builtin_app_root
 from kiro_crew.apps.manager_records import (
+    INSTALLED_META_FILENAME,
+    SESSION_APPROVAL_PENDING_KEY,
     STAGED_GRANT_FAMILIES,
     AppResult,
     _declared_grant_entries,
     _effective_approved_grants,
     _now_iso,
     _read_installed,
+    _session_approval_consent_unrecorded,
     _write_approved_grants,
     _write_installed,
+    app_dir,
+    apps_dir,
     get_app_manifest,
 )
 from kiro_crew.apps.manager_tree import _check_path_safety
@@ -173,7 +179,9 @@ def enable_app(
 
     current_grants = _effective_approved_grants(name, meta) if grants_consent is not None else None
     approve_grants = grants_consent is not None and current_grants is not None
-    if meta.enabled and not approve_grants:
+    # A pending record still needs the consent written, even when it reads
+    # enabled (one from before the consent marker existed).
+    if meta.enabled and not approve_grants and not meta.sessionApprovalConsentPending:
         return AppResult(ok=True, name=name, message=f"{name} is already enabled")
 
     still_staged = False
@@ -207,7 +215,7 @@ def enable_app(
     meta.enabled = True
     meta.sessionApprovalConsentPending = False
     meta.updatedAt = _now_iso()
-    _write_installed(name, meta)
+    _write_installed(name, meta, session_approval_consent=session_approval_consent)
 
     logger.info("Enabled app %s", name)
     return AppResult(
@@ -215,6 +223,83 @@ def enable_app(
         name=name,
         message=f"enabled {name}",
     )
+
+
+def _session_approval_consent_unrecorded_on_disk(name: str) -> bool:
+    """Whether *name*'s record on disk still owes a ``sessionApproval`` consent step.
+
+    Either the record has no consent key while its manifest needs one, or it
+    reads both enabled and pending. Every path that sets pending also disables
+    the app, so the second shape comes only from a key-less record that another
+    writer read (``_read_installed`` marks it pending) and saved before this
+    reconcile ran.
+    """
+    try:
+        raw = json.loads((app_dir(name) / INSTALLED_META_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if (
+        isinstance(raw, dict)
+        and raw.get("enabled", True) is not False
+        and raw.get(SESSION_APPROVAL_PENDING_KEY)
+    ):
+        manifest = get_app_manifest(name)
+        return bool(manifest and manifest.permissions.sessionApproval)
+    return _session_approval_consent_unrecorded(name, raw)
+
+
+def session_approval_consent_candidates() -> list[str]:
+    """Installed apps whose ``sessionApproval`` grant was never consented to.
+
+    A host upgrade changes the parser, not the manifest: an app installed when
+    ``permissions.sessionApproval`` was still ignored may already declare it,
+    and its record has no consent marker. Read-only; the caller marks each one
+    with :func:`mark_session_approval_consent_pending` under the app's
+    lifecycle lock.
+    """
+    try:
+        entries = sorted(apps_dir().iterdir())
+    except OSError:
+        return []
+    return [
+        entry.name
+        for entry in entries
+        if not entry.name.startswith(".")
+        and _check_path_safety(entry.name)
+        and _session_approval_consent_unrecorded_on_disk(entry.name)
+    ]
+
+
+def mark_session_approval_consent_pending(name: str) -> bool:
+    """Disable *name* and mark its ``sessionApproval`` grant pending, then audit it.
+
+    Re-checks the record first, so a record uninstalled, consented or rewritten
+    since :func:`session_approval_consent_candidates` is left alone. The caller
+    holds ``app_lifecycle_lock(name)``, so no install, update or uninstall runs
+    between this check and the write. The write adds the marker, so each record
+    is handled once. Re-enabling goes through the disclosure surface.
+    """
+    if not _session_approval_consent_unrecorded_on_disk(name):
+        return False
+    meta = _read_installed(name)
+    if meta is None:
+        return False
+    meta.enabled = False
+    meta.sessionApprovalConsentPending = True
+    meta.updatedAt = _now_iso()
+    _write_installed(name, meta)
+    try:
+        sel().log_api_access(
+            caller="app_boot",
+            operation="session_approval_widened",
+            outcome="disabled",
+            resources=f"name={name!r}",
+            error="install predates the consent record for permissions.sessionApproval; "
+            "re-enable to consent",
+        )
+    except Exception:  # noqa: BLE001 - the disable already happened
+        logger.warning("could not audit session approval reconcile for %r", name, exc_info=True)
+    return True
 
 
 def disable_app(name: str) -> AppResult:

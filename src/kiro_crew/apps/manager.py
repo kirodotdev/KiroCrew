@@ -55,8 +55,11 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.apps.manager_activation import (  # noqa: F401
         _app_activation_denied,
+        _session_approval_consent_unrecorded_on_disk,
         disable_app,
         enable_app,
+        mark_session_approval_consent_pending,
+        session_approval_consent_candidates,
     )
     from kiro_crew.apps.manager_builtins import (  # noqa: F401
         _BUILTIN_APPS,
@@ -128,6 +131,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         APP_MANIFEST_FILENAME,
         APPROVED_GRANTS_FILENAME,
         INSTALLED_META_FILENAME,
+        SESSION_APPROVAL_PENDING_KEY,
         STAGED_GRANT_FAMILIES,
         AppResult,
         InstalledApp,
@@ -145,6 +149,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _read_approved_grants,
         _read_installed,
         _scan_installed_app_config_keys,
+        _session_approval_consent_unrecorded,
+        _session_approval_save_rule,
         _SwapState,
         _tree_swap,
         _tree_swap_guard,

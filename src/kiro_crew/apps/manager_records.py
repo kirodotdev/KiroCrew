@@ -228,17 +228,46 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _read_installed(name: str) -> InstalledApp | None:
-    """Read installed.json for an app, or None if not installed."""
+def _read_installed(name: str, *, manifest: AppManifest | None = None) -> InstalledApp | None:
+    """Read installed.json for an app, or None if not installed.
+
+    *manifest* is the live manifest the caller already read. A permission
+    check passes it so the pending decision uses the same manifest that
+    showed the grant, rather than a second read that could differ.
+    """
     meta_path = app_dir(name) / INSTALLED_META_FILENAME
     if not meta_path.is_file():
         return None
     try:
         data = json.loads(meta_path.read_text(encoding="utf-8"))
-        return InstalledApp.from_dict(data)
+        meta = InstalledApp.from_dict(data)
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("Failed to read %s: %s", meta_path, exc)
         return None
+    if _session_approval_consent_unrecorded(name, data, manifest=manifest):
+        meta.sessionApprovalConsentPending = True
+    return meta
+
+
+SESSION_APPROVAL_PENDING_KEY = "sessionApprovalConsentPending"
+
+
+def _session_approval_consent_unrecorded(
+    name: str, data: Any, *, manifest: AppManifest | None = None
+) -> bool:
+    """Whether a record predates the consent marker while its manifest needs one.
+
+    Every record this host writes carries ``sessionApprovalConsentPending``
+    (``to_dict`` keeps every bool), so a record without the key was written by a
+    host that ignored ``permissions.sessionApproval``. If the live manifest
+    declares that grant, nobody ever consented to it. Key absence is only read
+    in this fail-closed direction: it makes the grant pending, never approved.
+    """
+    if isinstance(data, dict) and SESSION_APPROVAL_PENDING_KEY in data:
+        return False
+    if manifest is None:
+        manifest = get_app_manifest(name)
+    return bool(manifest and manifest.permissions.sessionApproval)
 
 
 def _credential_free_source_metadata(value: str) -> str:
@@ -253,8 +282,55 @@ def _credential_free_source_metadata(value: str) -> str:
     return _strip_git_target_userinfo(candidate)
 
 
-def _write_installed(name: str, meta: InstalledApp) -> None:
+def _session_approval_save_rule(
+    name: str, meta: InstalledApp, *, session_approval_consent: bool
+) -> str:
+    """How a save writes *name*'s ``sessionApprovalConsentPending``.
+
+    ``"as_is"`` writes the caller's value, ``"pending"`` writes True and
+    ``"unrecorded"`` leaves the key out. One read of the record ON DISK and one
+    look for the manifest decide it, so two observations can never disagree.
+
+    When the disk copy has no consent key (it never had a consent moment) or
+    already says pending, a save may record "no consent needed" only when the
+    owner just consented, or when the live manifest is readable and does not
+    declare the grant. A manifest that cannot be read keeps it pending. With no
+    manifest at all a pending record stays pending and a key-less one stays
+    key-less, so a manifest that returns with the grant still asks for consent.
+    So an unreadable or missing manifest, an early save, a stale copy written
+    back by a rollback, or two writers overlapping never record a consent that
+    was not given.
+    """
+    if meta.sessionApprovalConsentPending or session_approval_consent:
+        return "as_is"
+    try:
+        raw = json.loads((app_dir(name) / INSTALLED_META_FILENAME).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "as_is"  # a new record; its writer decides from the manifest
+    except (OSError, ValueError):
+        return "pending"
+    if not isinstance(raw, dict):
+        return "pending"
+    on_disk = raw.get(SESSION_APPROVAL_PENDING_KEY, None)
+    if SESSION_APPROVAL_PENDING_KEY in raw and on_disk is not True:
+        return "as_is"
+    if not os.path.lexists(app_dir(name) / APP_MANIFEST_FILENAME):
+        return "pending" if on_disk is True else "unrecorded"
+    manifest = get_app_manifest(name)
+    if manifest is None or manifest.permissions.sessionApproval:
+        return "pending"
+    return "as_is"
+
+
+def _write_installed(
+    name: str, meta: InstalledApp, *, session_approval_consent: bool = False
+) -> None:
     """Write credential-free installed.json metadata for an app.
+
+    ``session_approval_consent`` is True only on the write that records the
+    owner's consent (``enable_app``). Without it, a record that has no consent
+    key on disk keeps ``sessionApprovalConsentPending`` (see
+    ``_session_approval_save_rule``).
 
     A raw clone/source URL is a transport capability, not durable app identity.
     Registry callers already pass credential-free provenance, but the external
@@ -273,16 +349,23 @@ def _write_installed(name: str, meta: InstalledApp) -> None:
     """
     from kiro_crew.apps.registry import _strip_git_target_userinfo
 
+    rule = _session_approval_save_rule(
+        name, meta, session_approval_consent=session_approval_consent
+    )
     credential_free_meta = replace(
         meta,
         approvedGrantsStored=meta.approvedGrantsStored or _approved_grants_path(name).is_file(),
+        sessionApprovalConsentPending=meta.sessionApprovalConsentPending or rule == "pending",
         source=_credential_free_source_metadata(str(meta.source or "")),
         sourceUrl=_strip_git_target_userinfo(str(meta.sourceUrl or "")),
         sourceRegistry=_credential_free_source_metadata(str(meta.sourceRegistry or "")),
     )
+    body = credential_free_meta.to_dict()
+    if rule == "unrecorded":
+        body.pop(SESSION_APPROVAL_PENDING_KEY, None)
     meta_path = app_dir(name) / INSTALLED_META_FILENAME
     meta_path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(meta_path, json.dumps(credential_free_meta.to_dict(), indent=2) + "\n")
+    atomic_write(meta_path, json.dumps(body, indent=2) + "\n")
 
 
 # Grant families held back on a widening update. ``sessionApproval`` is a flag
@@ -693,8 +776,9 @@ def _scan_installed_app_config_keys(root: Path) -> frozenset[str]:
     for entry in root.iterdir():
         if not entry.is_dir():
             continue
+        manifest = get_app_manifest(entry.name)
         try:
-            installed = _read_installed(entry.name)
+            installed = _read_installed(entry.name, manifest=manifest)
         except Exception:
             # InstalledApp.from_dict performs real coercion and can raise for a
             # malformed field. One damaged record must not freeze every other
@@ -705,7 +789,6 @@ def _scan_installed_app_config_keys(root: Path) -> frozenset[str]:
             continue
         if installed is None:
             continue
-        manifest = get_app_manifest(entry.name)
         if manifest is not None and not manifest.config_keys_error:
             keys.update(manifest.config_keys)
     return frozenset(keys)

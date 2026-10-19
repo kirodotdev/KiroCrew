@@ -972,6 +972,17 @@ async def run(self: GatewayOrchestrator) -> None:
         self._background_tasks.add(_checkout_task)
         _checkout_task.add_done_callback(self._background_tasks.discard)
 
+    # Disable and mark pending any app whose sessionApproval grant was never
+    # consented to. Past KIROCREW_READY (no-new-work-on-gateway-boot-path):
+    # the grant is refused on read already, so readiness need not wait.
+    # Fire-and-forget, file work off-loop, per-app lifecycle lock, never raises.
+    if not self._test_mode:
+        from kiro_crew.apps.session_consent import reconcile_after_ready
+
+        _consent_task = asyncio.create_task(reconcile_after_ready())
+        self._background_tasks.add(_consent_task)
+        _consent_task.add_done_callback(self._background_tasks.discard)
+
     # The run directories a PREDECESSOR gateway of this data home left behind
     # (session_work_dir). Ordered after ``cleanup_orphaned_sessions`` above,
     # which reaped this home's pid ledger -- the ledger's remaining entries
