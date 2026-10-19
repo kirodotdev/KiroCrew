@@ -3721,6 +3721,12 @@ Folder-per-agent persistence at `~/.kiro/crew/subagents/{id}/`:
   tombstone.json  # {error, elapsed, timestamp} (written on failure/orphan)
 ```
 
+`state.json` carries no run status. Nothing rewrites it when the run ends, so a
+status written at creation would read as running for every finished run; how a
+run ended is the tombstone's `outcome`, then its `cause`
+(`classify_persisted_ending`), and a folder with no tombstone has recorded no
+ending yet.
+
 ### Gateway Restart Reconciliation
 
 On startup, `SubagentManager` scans `~/.kiro/crew/subagents/` and reconciles:

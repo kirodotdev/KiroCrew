@@ -662,7 +662,9 @@ def create_agent_folder(
         "parent_session": parent_session,
         "started": time.time(),
         "max_turns": max_turns,
-        "status": "running",
+        # No run status: nothing rewrites this file when the run ends, so a
+        # status here would read as running forever. How a run ended is the
+        # tombstone's (``classify_persisted_ending``).
         "pid": None,
         "turns": 0,
         "last_tool": "",
