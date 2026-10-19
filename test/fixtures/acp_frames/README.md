@@ -26,6 +26,15 @@ The first line is not a frame. It is a provenance header the test requires:
   whose provenance is unstated is a corpus nobody can weigh.
 - `agent_version` is the backend's own version, or `unmeasured` when it was never
   run.
+- `agent_name` (live captures) is the `agentInfo.name` the backend answered
+  `initialize` with. Both it and `agent_version` must agree with the capture's own
+  `initialize` answer when it carries one. KAS sends no `agentInfo`, so its
+  captures carry no name. For an adapter pinned in `test/real_adapters/package.json`,
+  `test/test_real_adapter_fixture_pins.py` fails when `agent_version` differs from
+  the pin: a bump means re-capturing, not editing the header. On a red bump PR,
+  either re-capture each listed fixture at the new release and delete its
+  `_STALE` entry, or accept it as stale by editing its pin in both `_STALE` and
+  `_STALE_CEILING` in that test, which a reviewer then sees.
 
 Each `<name>.jsonl` has a `<name>.expected.json` beside it holding the event
 stream it replays into. That file is the actual gate: it is what fails when a
