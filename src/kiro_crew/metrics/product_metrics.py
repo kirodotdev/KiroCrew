@@ -9,10 +9,12 @@ question each release has to answer.
 
 Two rules this set obeys, both enforced by ``test_product_metrics.py``:
 
-* **Counters and gauges only.** A fixed-bucket histogram's buckets may not survive
-  a receiving backend, so a distribution is exported as a bucket-labelled counter
-  instead. An up/down counter is excluded for the same reason a gauge replaces it:
-  "how many right now" is read from live state, not accumulated.
+* **Counters, gauges and histograms; no up/down counters.** A histogram is
+  exported as a native OTLP histogram (explicit buckets, delta temporality), the
+  way other Kiro clients send distributions to the same endpoint, so no
+  bucket-labelled counter stands in for one. An up/down counter is excluded
+  because a gauge replaces it: "how many right now" is read from live state, not
+  accumulated.
 * **Every name is a real instrument.** Each entry is a full instrument name,
   ``kirocrew.`` prefix included, that some module actually declares. The test
   resolves each one against the declaring constant, so a typo or a renamed
@@ -35,6 +37,7 @@ from __future__ import annotations
 _SESSIONS = frozenset(
     {
         "kirocrew.session.started",
+        "kirocrew.session.duration",
         "kirocrew.session.idle_expired",
         "kirocrew.subagent.spawned",
         "kirocrew.context.compactions",
@@ -62,6 +65,7 @@ _INVENTORY = frozenset(
         "kirocrew.inventory.knowledge.documents",
         "kirocrew.inventory.lessons",
         "kirocrew.inventory.mcp.servers",
+        "kirocrew.inventory.members",
         "kirocrew.inventory.config.toggle",
         "kirocrew.inventory.probe.failures",
     }
@@ -83,6 +87,9 @@ PRODUCT_METRICS: "frozenset[str]" = _SESSIONS | _FEATURES | _INVENTORY
 #     this one waits for a bucketed or enumerated stand-in for those two. A
 #     negative guard in test_product_metrics.py keeps it out, so putting it back
 #     is a deliberate change rather than an edit nobody reads.
+#   kirocrew.turn.duration -- the same `model` and `provider` attributes, so the
+#     same reason. kirocrew.session.duration (end_reason, session_source) is the
+#     histogram that is exported.
 #
 # Held on a missing instrument -- a name here with no instrument would export
 # nothing while reading as if it did:

@@ -999,6 +999,8 @@ def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
         retention_days=section.read("retention_days", _safe_int),
         max_total_mb=section.read("max_total_mb", _safe_int),
         otlp_endpoint=str(section.get("otlp_endpoint")),
+        kiro_export=bool(section.get("kiro_export")),
+        kiro_export_region=str(section.get("kiro_export_region")),
         beacon_enabled=bool(section.get("beacon_enabled")),
         beacon_endpoint=str(section.get("beacon_endpoint")),
     )

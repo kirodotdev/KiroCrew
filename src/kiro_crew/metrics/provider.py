@@ -1101,25 +1101,40 @@ def otlp_egress_active(cfg: "TelemetryConfig") -> bool:
     locked_cfg = _edition_locked_view(cfg)
     if locked_cfg is None:
         return False
-    return bool(_filter_metric_destinations(resolve(locked_cfg)))
+    # A DESCRIPTION of posture, asked on every Privacy panel refetch and by the
+    # config route before it lets collection be enabled as local-only. Under
+    # this marker the Kiro destination answers as CONFIGURED: the shared gate
+    # is a temporary "no" that can lift with no change by the person, so it
+    # must not read as "nothing leaves". Every other resolve (the recorder
+    # build, the per-export recheck) asks it and is audited.
+    from kiro_crew.metrics import kiro_export
+
+    with kiro_export.disclosure_only():
+        return bool(_filter_metric_destinations(resolve(locked_cfg)))
 
 
 def _edition_locked_view(cfg: "TelemetryConfig") -> "Optional[TelemetryConfig]":
     """*cfg* as a provider may read it in this build, or ``None`` for no egress at all.
 
-    An enterprise build blanks ``otlp_endpoint`` (:mod:`kiro_crew.edition_locks`,
-    RFC D3): no governance key names an OTLP host yet, so no remote rule allowed the
-    local value. Done here, before any provider sees it, so an edition's own
-    provider cannot read the local endpoint either; destinations it declares itself
-    stay. A config this cannot copy answers ``None`` rather than pass the value on.
+    An enterprise build blanks ``otlp_endpoint`` and turns ``kiro_export`` off
+    (:mod:`kiro_crew.edition_locks`, RFC D3): no governance key names an OTLP host
+    yet, so no remote rule allowed either local value. Done here, before any
+    provider sees it, so an edition's own provider cannot read the local values
+    either; destinations it declares itself stay. A config this cannot copy answers
+    ``None`` rather than pass the values on.
     """
     from kiro_crew.edition_locks import local_enable_locked
 
-    if not getattr(cfg, "otlp_endpoint", "") or not local_enable_locked("telemetry.otlp_hosts"):
+    local_egress: "dict[str, Any]" = {
+        key: value
+        for key, value in (("otlp_endpoint", ""), ("kiro_export", False))
+        if getattr(cfg, key, None)
+    }
+    if not local_egress or not local_enable_locked("telemetry.otlp_hosts"):
         return cfg
     if not dataclasses.is_dataclass(cfg) or isinstance(cfg, type):
         return None
-    return dataclasses.replace(cfg, otlp_endpoint="")
+    return dataclasses.replace(cfg, **local_egress)
 
 
 #: A process that does not install a platform context names where its telemetry
@@ -1323,7 +1338,11 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
     how often to send. TEMPORALITY is a core decision for the same reason: both
     of this provider's readers describe the same instruments, so they must encode
     them the same way unless the operator says otherwise
-    (:func:`kiro_crew.metrics.temporality.otlp_preference`).
+    (:func:`kiro_crew.metrics.temporality.otlp_preference`). The one exception is
+    a destination with ``OtlpDestination.delta_temporality`` set: its receiving
+    side expects delta-sending clients, so that reader is built on
+    :func:`~kiro_crew.metrics.temporality.otel_delta_preset`, and no other reader
+    changes.
     """
     endpoint = dest.endpoint
     # This core emits the metrics signal only. An endpoint whose path is another
@@ -1389,8 +1408,14 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
         # entirely when the operator has set the OTel temporality variable: the
         # exporter applies an explicit dict ON TOP of whichever base that
         # variable chose, so passing it unconditionally would override an
-        # operator who asked for CUMULATIVE. See metrics.temporality.
-        preference = temporality.otlp_preference()
+        # operator who asked for CUMULATIVE. A destination that asks for the
+        # delta preset gets it with every kind pinned, whatever the variable
+        # says. See metrics.temporality.
+        preference: "Optional[dict[type, Any]]"
+        if getattr(dest, "delta_temporality", False):
+            preference = temporality.otel_delta_preset()
+        else:
+            preference = temporality.otlp_preference()
         if preference is not None:
             kwargs["preferred_temporality"] = preference
         # Passed only when supplied so the exporter keeps its own defaults (and

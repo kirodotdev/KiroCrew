@@ -221,11 +221,133 @@ in full control: the exporter applies an explicit dict ON TOP of whichever base
 the variable chose (`OTLPMetricExporterMixin._get_temporality` in the
 `otlp-proto-common` package — the reader lives there, not in the SDK tree or the
 http exporter tree), so passing the map unconditionally would silently override an
-operator who asked for CUMULATIVE.
+operator who asked for CUMULATIVE. The one exception is a destination with
+`OtlpDestination.delta_temporality` set: its reader is built on
+`metrics.temporality.otel_delta_preset`, the OpenTelemetry delta preset with every
+instrument kind pinned, so the variable cannot move it. `False`, the default and
+what the operator destination carries, is exactly the path above.
+
+**The built-in Kiro destination (`telemetry.kiro_export`, default false).** Beside
+the operator destination, `DefaultTelemetryProvider.otlp_destinations` returns a
+second one named `kiro-telemetry`, pointed at
+`https://telemetry.<region>.kiro.dev/v1/metrics`, which is how product usage
+reaches the people who build Kiro Crew. Everything specific to it lives in
+`metrics/kiro_export.py`; the operator destination is untouched beside it, and
+every switch below removes the Kiro destination only.
+
+It exists only when ALL of these hold, and `kiro_export.endpoint_for(cfg)` is the
+one place that decides:
+
+- `telemetry.kiro_export` is `true` (default `false`; flipping that default is a
+  separate change, gated on the consent work);
+- the environment sets neither `DO_NOT_TRACK` (read inclusively: anything but
+  `0`/`false`/`no`/`off`) nor `KIROCREW_TELEMETRY_KIRO_EXPORT` to an off value;
+- the process is not a `--test-mode` one. Read from the `KIROCREW_TEST_MODE`
+  environment marker that `cli_server._gateway` sets, NOT from the `test_mode`
+  argument: the processes that build their own recorder (spawned agents, installed
+  apps) inherit the environment and not the gateway's arguments;
+- `telemetry.kiro_export_region` resolves to one of `us-east-1` (the default when
+  empty) or `eu-central-1`. Case and surrounding whitespace are normalised (a
+  region name differs from another by its letters, never its case), and anything
+  still outside the pair disables the destination with a debug line rather than
+  guessing. The region is compared against the closed set BEFORE it is
+  interpolated, so no setting can change the scheme, the host or the path.
+
+`telemetry.enabled` is deliberately NOT part of that gate even though nothing is
+sent without it. The core checks consent before it builds a recorder, and
+`otlp_egress_active` asks this same resolver the DIFFERENT question of whether
+enabling collection WOULD start egress, the question the `telemetry.enabled`
+config route refuses a `true` write on. Folding consent into the gate would answer
+that question "no" on exactly the host where flipping the switch starts sending.
+
+The destination declares all three narrowing fields: `allow=PRODUCT_METRICS`
+(`metrics/product_metrics.py`), `point_attributes={"ClientType": "kiro-crew"}`,
+and `resource_allow={"service.name", "service.version", "os.type",
+"process.pid"}`. It also sets `delta_temporality=True`: DELTA for Counter,
+ObservableCounter and Histogram,
+CUMULATIVE for UpDownCounter, which is how the other Kiro clients send to this
+endpoint. Only this destination's reader is built with it; the local sink and the
+operator destination keep the map above, and a test reads all three readers'
+resolved maps off one live build to prove it. The resource narrowing is load-bearing rather than tidiness: the
+shared resource carries `service.instance.id`, the persisted install id, plus
+the `host.*` readings, and a raw install id riding on every exported point would
+make the hashed machine-id header below pointless. The narrowing can only remove
+keys, and a test asserts each of the four really is set on the shared resource.
+
+**Disclosure answers with the configured destination.** Under
+`kiro_export.disclosure_only()` (`provider.otlp_egress_active`, asked by the
+Privacy panel and by the config route before it lets collection be enabled as
+local-only) `endpoint_for` returns the endpoint once the config switch, the
+edition lock, the environment switches, test mode and the region allow it. The
+shared gate is not asked there: it can change with no action by the person (a
+policy denial lifts, the first-run notice is acknowledged), and answering "no
+egress" while it holds would let collection be enabled as local-only and then
+start sending. The recorder build and every export still ask it, audited as
+above.
+
+**Identity: the existing sign-in, in headers only.** `KiroExportSession` resolves
+the identity per REQUEST, which is the reason it is a `Session` rather than a
+header frozen into the exporter: a sign-in that lands, lapses or changes account
+mid-process is reflected by the next export. The token is read from the store's
+cache (`auth.store.TokenStore.resolve`) and NEVER refreshed: a token that is
+missing, unreadable, or inside the engine's own refresh margin (`is_expired`)
+sends the request as not signed in. Signed in: `Authorization: Bearer <token>`,
+plus `x-kiro-token-type` (`EXTERNAL_IDP` for an external IdP, `API_KEY` for the
+`KIRO_API_KEY` bearer, omitted for Builder ID / Identity Center / social, which
+the endpoint defaults correctly) and `x-kiro-profile-arn` when the sign-in has
+one. Not signed in: `x-kiro-machineid` only, a SHA-256 of the existing
+`beacon.install_id` under a fixed prefix, read with `create=False` so no file is
+ever created for it. No fallback id exists: a constant would put every install
+into one rate limit and a per-process one would read a restart as a new machine,
+so an unreadable install id drops the interval instead. The token, the ARN and
+the machine id reach headers and nothing else: not a metric attribute, not a
+series, not the local sink, and no log line at any level.
+
+**Failure behaviour, at the destination boundary.** Every outcome that is not a
+real 2xx becomes an OK response the session answers itself, having sent nothing.
+That is deliberate and it is the whole mechanism: a retryable failure handed back
+to the exporter makes it sleep and post again inside the metrics reader thread the
+local JSONL sink also runs on, and a non-retryable one makes it log the endpoint's
+own response text at error level every single minute. Both are the costs this
+destination exists to avoid, and the batch is dropped either way, so the session
+owns the accounting instead:
+
+- **one invariant gates the export path**, and it is the WHOLE destination
+  decision rather than any subset: `destination_still_resolves(url)` asks
+  `endpoint_for` against freshly loaded configuration and compares the answer to
+  the URL in hand. Nothing rebuilds the metrics reader when a telemetry key
+  changes: it holds its session and its endpoint for the life of the process,
+  the gateway's config watcher is registered at boot only, and the periodic
+  consent recheck re-reads `telemetry.enabled` alone. So every switch that can
+  create this destination can also be turned off underneath a live reader. With
+  no enumeration this covers `telemetry.kiro_export` turned off, `DO_NOT_TRACK`
+  or `KIROCREW_TELEMETRY_KIRO_EXPORT` set in this process's own environment
+  afterwards (an export in another shell never reaches a running process, so
+  for an operator those two take effect at the next gateway start), a test-mode marker
+  appearing, a region changed (the old endpoint stops resolving, so an in-flight
+  reader cannot keep posting to a region nobody chose any more), a region that
+  became invalid, and every suppression `outbound_permitted` owns, the policy
+  ceiling included. A check that asked about one switch would need one more line
+  per switch, and each omission is the same defect: data still leaving after
+  someone turned it off. Costs one configuration read per export, a
+  fingerprint-cache hit, on the reader thread and nothing on the turn path. A
+  refusal here is a POLICY stop, not a failure: debug only, no warning, and it
+  spends neither the refusal streak nor the pause, because the endpoint did
+  nothing wrong;
+- one request per export, with a fixed 10s timeout that overrides whatever
+  `OTEL_EXPORTER_OTLP_METRICS_TIMEOUT` a host set;
+- a refusal (4xx, including an expired token's 401) is dropped and never retried
+  as not-signed-in, so one interval is never counted twice;
+- three refusals IN A ROW pause the destination for an hour; a success or a
+  server error in between breaks the streak, because a 5xx is weather and not a
+  configuration answer;
+- one warning per outage, then debug only, and one info line on recovery;
+- nothing is buffered between intervals and nothing is written to disk.
 
 A destination carries `name` (a non-secret label used in logs, because the
-endpoint value never is), `endpoint`, `signals`, and optionally an
-authenticated `session`. The session is why the seam exists: `requests`
+endpoint value never is), `endpoint`, `signals`, optionally an
+authenticated `session`, and the three narrowing fields `allow`,
+`point_attributes` and `resource_allow`. The session is why the seam exists: `requests`
 re-evaluates `Session.auth` per request, so a credential that rotates during
 process lifetime (an OIDC/SSO id_token, STS credentials) is re-read on every
 export, where `OTEL_EXPORTER_OTLP_HEADERS` — the only injection point before this
@@ -519,7 +641,10 @@ the wrapper sits:
   exporter's `_preferred_temporality` and `_preferred_aggregation`, which
   `PeriodicExportingMetricReader` reads at construction -- answering `None` there
   would silently put that destination back on the SDK's CUMULATIVE default while
-  the local sink stayed on DELTA.
+  the local sink stayed on DELTA. A destination's delta preset
+  (`OtlpDestination.delta_temporality`) reaches its reader the same way: the core
+  hands it to the wrapped exporter, and the wrapper mirrors what that exporter
+  resolved.
 
 **A point-attribute key is refused, not dropped.** Keys are checked at
 construction against `destination_filter.ALLOWED_POINT_ATTRIBUTE_KEYS`
@@ -538,12 +663,12 @@ destination exports under. Names are spelled as literals there because
 `metrics.turns` imports `metrics.provider` at module scope and the recorder reads
 the set, so importing the declaring modules would close a cycle;
 `test/metrics/test_product_metrics.py` resolves every name against its declaring
-constant instead, and fails on a name with no instrument or on one that is a
-histogram or an up/down counter. Counters and gauges only: a fixed-bucket
-histogram's boundaries may not survive a receiving backend, so a distribution is
-exported as a bucket-labelled counter.
+constant instead, and fails on a name with no instrument or on one that is an
+up/down counter. Counters, gauges and histograms: a histogram is exported as a
+native OTLP histogram (explicit bounds, delta counts on the product destination),
+so no bucket-labelled counter stands in for one.
 
-Being a real counter is not sufficient. Every attribute value on an exported
+Being a real instrument of an exportable kind is not sufficient. Every attribute value on an exported
 series has to come from a closed enum, which the kind check cannot see, so a
 metric carrying an open value is held out by name with its reason:
 `kirocrew.turn.tokens` is wanted and its instrument exists, but its `model` value

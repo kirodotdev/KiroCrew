@@ -1,4 +1,4 @@
-"""Guards on ``PRODUCT_METRICS``: every name is a real counter or gauge.
+"""Guards on ``PRODUCT_METRICS``: every name is a real counter, gauge or histogram.
 
 ``PRODUCT_METRICS`` is the allowlist a product destination exports under. It is
 spelled as literal strings so the module stays import-light (``metrics.turns``
@@ -7,8 +7,8 @@ a typo or a renamed instrument cannot be caught at import. These tests are where
 it is caught instead:
 
 * a name with no declaring constant fails ``test_every_name_is_a_declared_instrument``;
-* a histogram, an up/down counter, or an unknown name fails
-  ``test_every_name_is_a_counter_or_a_gauge``.
+* an up/down counter or an unknown name fails
+  ``test_every_name_is_an_exportable_kind``.
 
 Both run off the SAME resolver the selftest at the bottom feeds deliberate bad
 input to, so "nothing failed" here means the checks can actually see a failure
@@ -100,7 +100,10 @@ def _instrument_kind(
     return "counter"
 
 
-_EXPORTABLE_KINDS = frozenset({"counter", "gauge"})
+#: Histograms are exported as native OTLP histograms (the product destination's
+#: reader is delta), so a distribution needs no bucket-labelled counter in its
+#: place. Up/down counters stay out: a current-state reading is a gauge.
+_EXPORTABLE_KINDS = frozenset({"counter", "gauge", "histogram"})
 
 
 def test_every_name_is_a_declared_instrument():
@@ -115,12 +118,12 @@ def test_every_name_is_a_declared_instrument():
     )
 
 
-def test_every_name_is_a_counter_or_a_gauge():
-    """Histograms and up/down counters are not exportable.
+def test_every_name_is_an_exportable_kind():
+    """Up/down counters are not exportable; counters, gauges and histograms are.
 
-    A fixed-bucket histogram's boundaries may not survive the receiving backend,
-    so a distribution is exported as a bucket-labelled counter instead; an up/down
-    counter is excluded because a current-state reading is a gauge.
+    A histogram leaves as a native OTLP histogram, explicit buckets and all, so
+    the kind check accepts it; an up/down counter is excluded because a
+    current-state reading is a gauge.
     """
     declared = _declared_instrument_names()
     gauges = _gauge_names()
@@ -130,20 +133,7 @@ def test_every_name_is_a_counter_or_a_gauge():
         kind = _instrument_kind(name, declared=declared, gauges=gauges, histograms=histograms)
         if kind not in _EXPORTABLE_KINDS:
             offenders[name] = kind
-    assert not offenders, f"not a counter or a gauge: {offenders}"
-
-
-def test_no_name_is_a_histogram_by_the_providers_own_bucket_map():
-    """Stated separately from the kind check, against the oracle directly.
-
-    ``histogram_bounds()`` is the provider's complete histogram set -- every
-    histogram in the tree appears in it, asserted in both directions by
-    ``test_provider_bucket_views.py``. Intersecting it with the allowlist is
-    therefore a complete histogram check that does not depend on the resolver
-    above being right.
-    """
-    overlap = sorted(set(PRODUCT_METRICS) & set(histogram_bounds()))
-    assert not overlap, f"histograms in PRODUCT_METRICS: {overlap}"
+    assert not offenders, f"not an exportable instrument kind: {offenders}"
 
 
 #: Names deliberately held OUT of the allowlist because an attribute value on
@@ -157,6 +147,10 @@ _HELD_ON_OPEN_ATTRIBUTES = {
         "`model` is the configured model id -- on a non-Kiro backend it can be a "
         "provider resource id -- and `provider` is configured the same way, so "
         "neither is drawn from a set this repo controls"
+    ),
+    "kirocrew.turn.duration": (
+        "carries the same configured `model` and `provider` values as "
+        "turn.tokens; kirocrew.session.duration is the exported histogram"
     ),
 }
 
@@ -205,9 +199,9 @@ def test_process_gauges_are_not_product_metrics():
 def test_the_resolver_can_see_each_failure_it_is_asked_to_catch():
     """Selftest: prove the checks above are not passing by looking at nothing.
 
-    Each of the four rejections the kind check relies on is driven here with
-    deliberate input. Remove any one branch from ``_instrument_kind`` and the
-    matching line fails, so "no offenders" above is a real observation.
+    Each branch the kind check relies on is driven here with deliberate input.
+    Remove any one from ``_instrument_kind`` and the matching line fails, so "no
+    offenders" above is a real observation.
     """
     declared = {"kirocrew.a.counter": "x.A", "kirocrew.a.hist": "x.H"}
     gauges = frozenset({"kirocrew.a.gauge"})
@@ -219,9 +213,9 @@ def test_the_resolver_can_see_each_failure_it_is_asked_to_catch():
 
     # An unknown name: no instrument at all.
     assert kind("kirocrew.not.declared") is None
-    # A histogram, declared, and rejected on kind.
+    # A histogram, declared, resolved as one (and exportable, natively).
     assert kind("kirocrew.a.hist") == "histogram"
-    assert "histogram" not in _EXPORTABLE_KINDS
+    assert "histogram" in _EXPORTABLE_KINDS
     # An up/down counter, declared, rejected on kind. Driven through the injected
     # set because the tree declares none -- the branch is still live code.
     assert kind("kirocrew.a.updown") is None, "an undeclared updown name is unknown first"
@@ -236,7 +230,7 @@ def test_the_resolver_can_see_each_failure_it_is_asked_to_catch():
         == "up_down_counter"
     )
     assert "up_down_counter" not in _EXPORTABLE_KINDS
-    # And the two kinds that DO pass, so the resolver is not simply rejecting all.
+    # And the plain kinds that pass, so the resolver is not simply rejecting all.
     assert kind("kirocrew.a.counter") == "counter"
     assert (
         _instrument_kind(
@@ -250,13 +244,13 @@ def test_the_resolver_can_see_each_failure_it_is_asked_to_catch():
     )
 
 
-def test_a_real_histogram_name_is_rejected_by_the_real_oracle():
+def test_a_real_histogram_name_resolves_as_a_histogram():
     """The same proof against the live populations, not injected ones.
 
     Picks an actual histogram off ``histogram_bounds()`` and asserts the resolver
     calls it a histogram. If the oracle ever came back empty, every histogram
-    would silently resolve to "counter" and the allowlist check would pass on a
-    histogram -- this line is what makes that visible.
+    would silently resolve to "counter" and the kind check could not tell the two
+    apart -- this line is what makes that visible.
     """
     real_histograms = sorted(histogram_bounds())
     assert real_histograms, "histogram_bounds() is empty; the histogram oracle is dead"

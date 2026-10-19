@@ -16,6 +16,7 @@ collection, then egress.
 |---|---|---|
 | `telemetry.enabled` | `false` | Nothing is recorded. Metric call sites are cheap no-ops. |
 | `telemetry.otlp_endpoint` | `""` (empty) | Nothing leaves the machine. Local JSONL sink only. |
+| `telemetry.kiro_export` | `false` | Nothing is sent to the Kiro telemetry endpoint. See [Sending product metrics to Kiro](#sending-product-metrics-to-kiro). |
 | OTLP exporter package | not installed | The OTLP exporter is not importable until installed separately. |
 
 Collection and egress are deliberately separate switches. Enabling collection
@@ -134,7 +135,7 @@ OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=LOWMEMORY
 Set it in the gateway's environment, not the collector's — it governs how Kiro
 Crew *encodes* what it sends.
 
-Two things are unaffected by this setting, and knowing that saves debugging time:
+Three things are unaffected by this setting, and knowing that saves debugging time:
 
 - **Gauges have no temporality at all.** Every instrument reporting a
   point-in-time reading (thread counts, memory, CPU and GC totals, install
@@ -145,6 +146,12 @@ Two things are unaffected by this setting, and knowing that saves debugging time
 - **The local JSONL sink always uses delta** for counters and histograms,
   whatever this variable says. It is a separate reader with its own encoding, and
   the dashboard aggregator depends on it.
+- **The Kiro destination always uses the OpenTelemetry delta preset** (delta for
+  counters, observable counters and histograms; cumulative for up-down counters),
+  whatever this variable says. That is the encoding the Kiro endpoint receives
+  from every other Kiro client, so the variable stays a setting for your own
+  collector only. See
+  [Sending product metrics to Kiro](#sending-product-metrics-to-kiro).
 
 ### If you already export these metrics
 
@@ -379,6 +386,144 @@ across those processes, so publishing them from each one would count a single ho
 once per process. If you see process metrics from a host but no inventory metrics,
 the gateway on that host is not running or not exporting — that is the signal, not
 a gap in collection.
+
+## Sending product metrics to Kiro
+
+Everything above is about a collector *you* run. This section is about the one
+destination Kiro Crew ships with: the Kiro telemetry endpoint, which is how the
+people who build Kiro Crew see whether a feature is used and whether a release
+helped. It is a second, separate switch, it is off by default, and it sends a
+much smaller set of metrics than your own collector gets.
+
+| | Value |
+|---|---|
+| Switch | `telemetry.kiro_export` (default `false`), and `telemetry.enabled` must also be on |
+| Endpoint | `https://telemetry.<region>.kiro.dev/v1/metrics`, standard OTLP/HTTP over TLS |
+| Region | `telemetry.kiro_export_region`: `us-east-1` (default) or `eu-central-1` |
+| What is sent | Only the metrics in the table below, each with `ClientType=kiro-crew` |
+| Who you are | Your existing Kiro sign-in, when there is one |
+| Cadence | Once per `telemetry.export_interval_seconds` (60s), on the reader thread |
+| Temporality | Delta for counters, observable counters and histograms; cumulative for up-down counters. Fixed: `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` does not change it |
+
+The endpoint is a constant in the code. No setting can turn it into a plain HTTP
+URL or aim it at another host; the region chooses between the two spellings above
+and nothing else. A region that is neither of them switches the destination off
+rather than guessing which one was meant.
+
+### Turning it off
+
+Any one of these is enough. The first two take effect on the next export, with
+no restart:
+
+- `kirocrew config set telemetry.kiro_export false`
+- the recording switch in Settings -> Privacy, which turns off `telemetry.enabled`
+  and with it every destination
+
+The rest are read from the gateway's own environment, so they take effect when
+the gateway (and the processes it starts after that) next starts with them set.
+Exporting one in another shell does not reach a gateway that is already running:
+
+- `DO_NOT_TRACK=1` in the environment (any value other than `0`/`false`/`no`/`off`
+  counts, per the cross-product convention)
+- `KIROCREW_TELEMETRY_KIRO_EXPORT=0` in the environment
+- running the gateway with `--test-mode`, which switches it off unconditionally
+
+An operator's own `telemetry.otlp_endpoint` is unaffected by all of these, and
+the local JSONL sink still records everything either way, so you can always read
+on your own machine what was measured.
+
+### The exact metrics that leave the machine
+
+Nineteen names, and nothing else. Every other instrument stays in the local sink
+and in your own collector: most of them exist for local debugging. A histogram on
+this list is sent as a native OTLP histogram, with its explicit bucket bounds and
+delta counts, the way other Kiro clients send distributions;
+`kirocrew.session.duration` is one. `kirocrew.turn.duration` is not on the list:
+it carries the configured model id and provider, which are not a closed set.
+
+| Metric | Type | Attributes |
+|---|---|---|
+| `kirocrew.session.started` | counter | `session_source`, `harness` |
+| `kirocrew.session.duration` | histogram | `end_reason`, `session_source` |
+| `kirocrew.session.idle_expired` | counter | `turn_active`, `orphaned` |
+| `kirocrew.subagent.spawned` | counter | `concurrency`, `batched` |
+| `kirocrew.context.compactions` | counter | `success` |
+| `kirocrew.cron.fires` | counter | `kind`, `trigger` |
+| `kirocrew.artifact.created` | counter | `kind`, `source`, `kind_auto` |
+| `kirocrew.workflow.runs` | counter | `authored`, `replay` |
+| `kirocrew.approval.decisions` | counter | `decision`, `security_deny` |
+| `kirocrew.inventory.crons.active` | gauge | none |
+| `kirocrew.inventory.monitor_loops.active` | gauge | none |
+| `kirocrew.inventory.skills.installed` | gauge | none |
+| `kirocrew.inventory.memory.migrated` | gauge | none |
+| `kirocrew.inventory.knowledge.documents` | gauge | none |
+| `kirocrew.inventory.lessons` | gauge | none |
+| `kirocrew.inventory.mcp.servers` | gauge | `class` |
+| `kirocrew.inventory.members` | gauge | none |
+| `kirocrew.inventory.config.toggle` | gauge | `key` |
+| `kirocrew.inventory.probe.failures` | gauge | `probe` |
+
+Every attribute value above comes from a closed set fixed in the code. None of
+them is a name, a path, a URL, an id, a model identifier or any text you typed.
+`harness` names which agent harness ran the session (for example `kiro` or
+`claude_code`), from the closed vocabulary in `metrics/harness.py`.
+A name joins this table only in a reviewed change that also changes
+`PRODUCT_METRICS` in the code, and a test fails if the two ever disagree.
+
+Four resource attributes travel with the data, narrowed down from the fuller set
+your own collector receives: `service.name`, `service.version`, `os.type` and
+`process.pid`. The install id (`service.instance.id`) and the `host.*` readings
+are **not** sent to this destination: they identify a machine, and this
+destination counts none.
+
+### How you are identified
+
+If you are signed in to Kiro, the request carries that sign-in: an
+`Authorization: Bearer` header, plus `x-kiro-token-type` and
+`x-kiro-profile-arn` where your sign-in kind needs them. It is the same token
+Kiro Crew already holds for model calls, read from its cache. Exporting never
+starts a sign-in and never refreshes a token: one that is missing, unreadable or
+close enough to expiry that it would need renewing is treated as no sign-in at
+all.
+
+A headless host that authenticates with `KIRO_API_KEY` in the environment rather
+than an interactive sign-in sends that key the same way, as
+`Authorization: Bearer` with `x-kiro-token-type: API_KEY`. It is read only when
+no stored sign-in can serve the request, which is the order the rest of the
+product resolves the two in.
+
+If you are not signed in, the request carries one header instead,
+`x-kiro-machineid`, a one-way hash (SHA-256 under a fixed prefix) of the
+installation id Kiro Crew already keeps on disk. The endpoint requires one of the
+two headers, which is the only reason it exists; reading no installation id means
+no request is sent. Nothing is counted per machine from it, it is never a metric
+attribute, it never reaches the local sink, and the prefix means it cannot be
+matched against the same installation id used anywhere else.
+
+The token, the profile ARN and the machine id ride in headers only. None of the
+three is ever logged, at any log level.
+
+### What happens when the endpoint does not answer
+
+The worst case is a lost minute of numbers. There is no disk queue, nothing is
+held between intervals, and a long outage holds no growing data.
+
+| Case | What happens |
+|---|---|
+| Slow endpoint | The request times out after 10 seconds, on the reader thread. Nothing you type waits on it. |
+| Down or unreachable | The interval is dropped. The next one is a minute later. |
+| Refused (4xx, including an expired token's 401) | The interval is dropped, and never retried as not-signed-in. Three refusals in a row pause this destination for an hour, so a bad configuration does not retry every minute. |
+| Server error (5xx) | The interval is dropped. It does not count toward the pause: it is weather, not an answer. |
+| Any failure at all | Contained at this destination. Your own collector and the local sink keep working. |
+| Logging | One warning for the first failure, then debug only, and one info line when it starts working again. |
+
+### Why `telemetry.enabled` may refuse to turn on from the dashboard
+
+The Privacy panel's recording switch is offered as local-only, so the config
+route refuses to turn it on (HTTP 409) on a host where doing so would start
+egress. With `telemetry.kiro_export` set to `true` in the config file, that is
+such a host, and the switch says so instead of quietly sending. Turn collection
+on in the config file, which is where the destination was chosen.
 
 ### Traces are not exported
 

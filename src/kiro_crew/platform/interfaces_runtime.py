@@ -369,6 +369,15 @@ class OtlpDestination:
     (``metrics/destination_filter.py``), outside this descriptor: a destination
     declares the narrowing, the core performs it, and the wrapper rebuilds the
     batch rather than mutating SDK objects another exporter also reads.
+
+    ``delta_temporality`` builds THIS destination's reader on the OpenTelemetry
+    delta preset (``metrics.temporality.otel_delta_preset``: delta for counters,
+    observable counters and histograms, cumulative for up/down counters), every
+    instrument kind pinned so ``OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE``
+    cannot move it. For a receiving side built for delta-sending clients. ``False``
+    -- the default, and what the operator's own collector gets -- builds the
+    reader exactly as the core always has. It affects only this destination's
+    reader; the local sink and every other destination keep their own.
     """
 
     name: str
@@ -378,6 +387,7 @@ class OtlpDestination:
     allow: "Optional[frozenset[str]]" = None
     point_attributes: "Mapping[str, str]" = MappingProxyType({})
     resource_allow: "Optional[frozenset[str]]" = None
+    delta_temporality: bool = False
 
 
 class FeedbackTrackerProvider(Protocol):
