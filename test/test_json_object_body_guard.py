@@ -353,17 +353,23 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_api/slot_settings.py::api_chat_slot_color": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/pending_context.py::api_chat_slot_context": ("None", _UNBOUNDED_USER_CONTENT),
     "chat_api/slot_note.py::api_chat_slot_note": ("None", _UNBOUNDED_USER_CONTENT),
-    # handlers/mcp.py: identifier/flag mutations take the cap; a full server
-    # config (PUT detail) and per-server toolOverrides maps (apply) do not.
-    "handlers/mcp.py::api_mcp_quarantine_clear": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # handlers/mcp.py and its owners: identifier/flag mutations take the cap; a full
+    # server config (PUT detail) and per-server toolOverrides maps (apply) do not.
+    "handlers/mcp_probe.py::api_mcp_quarantine_clear": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_toggle": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_toggle_tool": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_toggle_all": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_remove": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_server_detail": ("None", _UNBOUNDED_USER_CONTENT),
     "handlers/mcp.py::_do_mcp_apply": ("_MCP_APPLY_MAX_BODY_BYTES", _BOUNDED_EXPLICIT),
-    "handlers/mcp.py::api_mcp_gateway_enable": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "handlers/mcp.py::api_mcp_gateway_set_stub": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/mcp_gateway_routes.py::api_mcp_gateway_enable": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
+    "handlers/mcp_gateway_stubs.py::api_mcp_gateway_set_stub": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     # handlers/cron.py's owners: create/update carry the job's full agent message,
     # whose MAX_CRON_MESSAGE character bound can exceed the shared 64 KB
     # default in multibyte UTF-8 -- so they take a per-route ceiling sized to

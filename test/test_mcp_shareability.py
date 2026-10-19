@@ -1237,11 +1237,18 @@ class TestNoBlockingRecordIoOnTheLoop:
         test states the rule instead of re-measuring a machine-dependent number.
         """
         import ast
+        import importlib
         import inspect
 
         from kiro_crew.dashboard.handlers import mcp as handler
 
-        tree = ast.parse(inspect.getsource(handler))
+        # The handler facade and its owners: the boot path imports every one of them.
+        tree = ast.parse(
+            "\n".join(
+                inspect.getsource(m)
+                for m in (handler, *map(importlib.import_module, handler._OWNERS))
+            )
+        )
         banned = {
             "kiro_crew.mcp_gateway.evaluate",
             "kiro_crew.mcp_gateway.preflight",

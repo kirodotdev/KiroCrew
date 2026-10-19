@@ -422,7 +422,7 @@ async def test_agent_config_write_goes_through_one_shielded_offload(tmp_path):
     act on it, and only then have the worker publish a change the transaction
     never saw. ``_offload_config_write`` exists for exactly this: it drains the
     worker before the lock is released (its own drain behaviour is pinned in
-    mcp.py).
+    mcp_config_files.py).
 
     This asserts the structural property that makes the window unrepresentable,
     in the form the invariant actually needs: there is exactly ONE dispatch

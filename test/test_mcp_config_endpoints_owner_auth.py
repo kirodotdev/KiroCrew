@@ -14,6 +14,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.dashboard.handlers import mcp as mcp_handlers
 from kiro_crew.dashboard.routes import agent_config as agent_config_routes
 
 pytestmark = pytest.mark.asyncio
@@ -26,6 +27,8 @@ _TARGET_HANDLER_MODULES = frozenset(
         "kiro_crew.dashboard.handlers.mcp_custom",
         "kiro_crew.dashboard.handlers.mcp_discover",
     }
+    # ``handlers/mcp.py``'s owners, every one its ``_OWNERS`` names, routes or not yet.
+    | set(mcp_handlers._OWNERS)
 )
 
 

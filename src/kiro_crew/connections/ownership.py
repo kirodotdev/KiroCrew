@@ -603,8 +603,8 @@ async def remove_provider_entry(
         if owned_scopes:
             # Shielded, not a bare to_thread: a cancelled request task would release
             # the MCP lock while the worker is still rewriting the store, letting a
-            # concurrent purge interleave with this stale snapshot. mcp.py ships this
-            # helper for exactly that, and its docstring names the hazard.
+            # concurrent purge interleave with this stale snapshot. mcp_config_files.py
+            # ships this helper for exactly that, and its docstring names the hazard.
             try:
                 await _offload_config_write(_purge_server_config, slug, scopes=owned_scopes)
             except SharedAgentHomeRefused:

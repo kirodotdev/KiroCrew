@@ -1458,10 +1458,15 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "MCP probe results",
-        "dashboard/handlers/mcp.py",
+        "dashboard/handlers/mcp_probe.py",
         "Cached MCP probe results returned by the dashboard HTTP API to the browser. "
         "Configured header values and reflected credentials in probe errors receive "
         "redaction before they cross that boundary.",
+    ),
+    (
+        "MCP apply errors",
+        "dashboard/handlers/mcp.py",
+        "Uninstall and agent-rebuild errors the apply route returns: URL, then credential.",
     ),
     (
         "MCP server metadata",

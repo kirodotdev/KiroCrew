@@ -1,7 +1,7 @@
 # MCP Probe-Failure Counter
 
 Status: implemented. The unmount half is deferred; see §6.
-Owners: `src/kiro_crew/mcp_quarantine.py` (durable counter and decision), `src/kiro_crew/dashboard/handlers/mcp.py` (verdict extraction, annotation, reset), `src/kiro_crew/mcp_discovery.py` (probe-spawn exclusion), and `website/src/pages/overview/McpTab.tsx` (surface).
+Owners: `src/kiro_crew/mcp_quarantine.py` (durable counter and decision), `src/kiro_crew/dashboard/handlers/mcp_probe.py` (verdict extraction, annotation, reset), `src/kiro_crew/mcp_discovery.py` (probe-spawn exclusion), and `website/src/pages/overview/McpTab.tsx` (surface).
 
 ## 1. Purpose
 

@@ -1114,12 +1114,12 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # One read: the configured-server mint resolves the server's URL from the
     # owner's main spec, so the caller never supplies it.
     "kiro_crew/dashboard/handlers/connections.py": [("connections_mint", "dashboard")],
-    "kiro_crew/dashboard/handlers/mcp.py": [
-        ("api_mcp_active", "dashboard"),
-        ("mcp_find_server_spec", "dashboard"),
+    "kiro_crew/dashboard/handlers/mcp_config_entries.py": [("mcp_find_server_spec", "dashboard")],
+    "kiro_crew/dashboard/handlers/mcp_gateway_routes.py": [
         ("mcp_server_rows", "dashboard"),
         ("mcp_stub_eligibility", "dashboard"),
     ],
+    "kiro_crew/dashboard/handlers/mcp_probe.py": [("api_mcp_active", "dashboard")],
     # The side chat's derived read-only spec reads the base agent's spec in
     # BOTH scopes, project first (kiro-cli resolves --agent there before the
     # user level); one label for both so a refusal attributes to the side turn.

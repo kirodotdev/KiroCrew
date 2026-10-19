@@ -712,7 +712,7 @@ ENABLED apps — so the resurrected bridge stayed live and callable.
 reserved *from this endpoint* — the raw editor is not one of its writers. Two paths
 legitimately put a colon-containing key here: `_register_mcp_servers` (every app
 bridge, as `<app>:<server>`) and the MCP page's
-`handlers/mcp.py::_sync_mcp_to_agent_unlocked` (a global mcp.json server copied in
+`handlers/mcp_agent_sync.py::_sync_mcp_to_agent_unlocked` (a global mcp.json server copied in
 under `mcp_server_alias`, which returns a slash-free name unchanged and so keeps a
 colon). A name either of them actually wrote is present on disk, and therefore
 untouched.

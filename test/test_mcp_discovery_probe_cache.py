@@ -542,7 +542,7 @@ class TestQuarantinedServersAreNotSpawned:
     async def _pass(self, monkeypatch, spawned: list[str]) -> list:
         """One discovery pass, folded back into the store like the dashboard's.
 
-        ``dashboard/handlers/mcp.py`` calls ``probe_all`` and then hands
+        ``dashboard/handlers/mcp_probe.py`` calls ``probe_all`` and then hands
         ``_record_probe_verdicts`` EVERY row it returned -- it does not know which
         ones were spawned. This helper must do the same, or it tests a caller that
         does not exist and hides what the real one does with an unprobed row.

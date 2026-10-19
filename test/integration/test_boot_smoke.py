@@ -469,8 +469,8 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.apps.dev_mode", "_dev_apps_cache"): "keyed cache",
     ("kiro_crew.apps.manager_builtins", "_orphaned_builtins_cache"): "keyed cache",
     ("kiro_crew.autonudge", "_MAINTENANCE_LOCKS"): "keyed cache",
-    ("kiro_crew.dashboard.handlers.mcp", "_mcp_probe_cache"): "keyed cache",
-    ("kiro_crew.dashboard.handlers.mcp", "_mcp_probe_ts"): "keyed cache",
+    ("kiro_crew.dashboard.handlers.mcp_probe", "_mcp_probe_cache"): "keyed cache",
+    ("kiro_crew.dashboard.handlers.mcp_probe", "_mcp_probe_ts"): "keyed cache",
     ("kiro_crew.mcp_discovery_probe_state", "_probe_cache"): "keyed cache",
     ("kiro_crew.mcp_discovery_probe", "_probe_cache"): "keyed cache",
     ("kiro_crew.agent_discovery", "_PARSED_SPECS_CACHE"): "keyed cache",
@@ -501,7 +501,7 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     # only the dead handle remains.
     ("kiro_crew.apps.builtins.auto_research.handlers", "_watchdog_task"): "reaped task handle",
     ("kiro_crew.apps.builtins.code_review_sage.backend.routes", "_TASKS"): "reaped task handles",
-    ("kiro_crew.dashboard.handlers.mcp", "_mcp_probe_task"): "reaped task handle",
+    ("kiro_crew.dashboard.handlers.mcp_probe", "_mcp_probe_task"): "reaped task handle",
     ("kiro_crew.sandbox_wrap", "_warm_thread"): "finished probe thread handle",
 }
 

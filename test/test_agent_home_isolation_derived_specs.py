@@ -248,8 +248,12 @@ class TestForeignHomeDerivedSpecWrites:
         [
             ("kiro_crew.dashboard.agent_admin.agent_detail", "api_agent_detail", True),
             ("kiro_crew.dashboard.side_readonly_spec", "publish_readonly_spec", False),
-            ("kiro_crew.dashboard.handlers.mcp", "_sync_mcp_to_agent_unlocked", True),
-            ("kiro_crew.dashboard.handlers.mcp", "_sync_mcp_to_agent_batch_unlocked", True),
+            ("kiro_crew.dashboard.handlers.mcp_agent_sync", "_sync_mcp_to_agent_unlocked", True),
+            (
+                "kiro_crew.dashboard.handlers.mcp_agent_sync",
+                "_sync_mcp_to_agent_batch_unlocked",
+                True,
+            ),
         ],
     )
     def test_person_facing_writers_report_the_refusal(self, module, function, needs_specific_arm):

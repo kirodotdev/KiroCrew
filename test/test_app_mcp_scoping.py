@@ -556,8 +556,14 @@ class TestBothWritePointsConsultTheCeiling:
         bridges_src = "\n".join(
             inspect.getsource(m) for m in (bridges, *map(importlib.import_module, bridges._OWNERS))
         )
+        # So does the MCP handler facade's.
+        mcp_src = "\n".join(
+            inspect.getsource(m)
+            for m in (mcp_handler, *map(importlib.import_module, mcp_handler._OWNERS))
+        )
         for mod in (bridges, mcp_handler, cli_doctor):
             src = bridges_src if mod is bridges else inspect.getsource(mod)
+            src = mcp_src if mod is mcp_handler else src
             src = _doctor_source() if mod is cli_doctor else src
             assert "may_skip_gate" in src, f"{mod.__name__} must use the shared predicate"
             assert "_BUILTIN_TOOL_SCOPES" not in src, (
@@ -1194,8 +1200,13 @@ class TestEveryWriterRevokesAStaleGrant:
         bridges_src = "\n".join(
             inspect.getsource(m) for m in (bridges, *map(importlib.import_module, bridges._OWNERS))
         )
+        # So does the MCP handler facade's.
+        mcp_src = "\n".join(
+            inspect.getsource(m)
+            for m in (mcp_handler, *map(importlib.import_module, mcp_handler._OWNERS))
+        )
         sources = [(agent.__name__, agent_src), (cli_doctor.__name__, _doctor_source())] + [
-            (mod.__name__, bridges_src if mod is bridges else inspect.getsource(mod))
+            (mod.__name__, bridges_src if mod is bridges else mcp_src)
             for mod in (bridges, mcp_handler)
         ]
         for name, src in sources:

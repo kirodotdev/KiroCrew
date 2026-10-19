@@ -59,8 +59,8 @@ extension point `McpToolingProvider.extra_mcp_scopes()`
   Kiro global only.
 - `mcp_discovery._extra_scope_sources()` yields no extra scopes, so discovery
   scans the two core files only.
-- `dashboard/handlers/mcp.py`'s apply and uninstall paths write the Kiro scope
-  only.
+- `dashboard/handlers/mcp.py`'s apply and uninstall paths (with
+  `mcp_config_purge.py`) write the Kiro scope only.
 
 The three stay symmetric on purpose. If discovery scanned a file that apply and
 uninstall could not manage, a server would show up in the dashboard that the

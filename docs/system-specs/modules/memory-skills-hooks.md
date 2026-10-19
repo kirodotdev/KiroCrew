@@ -5434,7 +5434,7 @@ Auto-sync runs at startup and on demand from the dashboard. `mcp_discovery.py` i
 3. `~/.kiro/settings/mcp.json` and `~/.kiro/crew/mcp.json` (scanned at startup and on-demand)
 4. Edition-contributed provider-global scopes from `extra_mcp_scopes()` (the public edition contributes none)
 
-**Startup behavior**: the config merge runs in `_init_services`, through `rebuild_agent_config()`; `_init_mcp_discovery()` (`slack/gateway_runtime/mcp_broker.py`) then only logs `list_servers()` for visibility, and a listing failure is caught and logged at debug. Additionally, `server.py` fires `_bg_mcp_probe()` as a background task at startup to populate the probe cache (`dashboard/handlers/mcp.py`).
+**Startup behavior**: the config merge runs in `_init_services`, through `rebuild_agent_config()`; `_init_mcp_discovery()` (`slack/gateway_runtime/mcp_broker.py`) then only logs `list_servers()` for visibility, and a listing failure is caught and logged at debug. Additionally, `server.py` fires `_bg_mcp_probe()` as a background task at startup to populate the probe cache (`dashboard/handlers/mcp_probe.py`).
 
 **sync_to_agent_config()**: delegates entirely to `install_agent()` — the single authoritative merge that reads all source files, resolves commands, normalizes each spec's `env` through `env.emit_env()` (a declared `PATH` is expanded to the full effective one), and atomically writes the agent config. There is deliberately no `kiro-cli mcp add` subprocess: it was an unsynchronized second writer of the same file whose output the rebuild overwrote moments later.
 

@@ -213,13 +213,19 @@
     },
     "dashboard/handlers/mcp.py": {
       "dynamic_status": 1,
-      "missing_code": 26
+      "missing_code": 17
     },
     "dashboard/handlers/mcp_custom.py": {
       "missing_code": 18
     },
     "dashboard/handlers/mcp_discover.py": {
       "missing_code": 19
+    },
+    "dashboard/handlers/mcp_gateway_routes.py": {
+      "missing_code": 4
+    },
+    "dashboard/handlers/mcp_gateway_stubs.py": {
+      "missing_code": 5
     },
     "dashboard/handlers/memory.py": {
       "dynamic_status": 1,

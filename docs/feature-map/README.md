@@ -64,6 +64,8 @@ A Handler cell that names a facade (`chat_handlers.py`, `handlers/agents.py`, `h
 
 `handlers/cron.py` is such a facade too: the cron job, run, lesson and cron-folder routes it names live in the `handlers/cron_<role>.py` owners beside it.
 
+`handlers/mcp.py` is such a facade too: it keeps the routes that take the mcp.json file lock (sync, toggle, remove, server detail and apply), and the other MCP server and gateway routes it names live in the owners beside it: `handlers/mcp_probe.py` (`/api/mcp`, `active`, `probe`, `measure`, `quarantine/clear`), `handlers/mcp_config_files.py` (`/api/mcp/scopes`), `handlers/mcp_gateway_routes.py` and `handlers/mcp_gateway_stubs.py` (`/api/mcp-gateway/*`, the stub route in the latter). `handlers/mcp_apps.py`, `handlers/mcp_custom.py` and `handlers/mcp_discover.py` are route modules of their own.
+
 ---
 
 ## Chat and sessions
