@@ -106,9 +106,9 @@ async def test_own_conversation_leg_numbers_the_choices(channel, caps, _quiet_se
     state.sessions.get_origin_link.return_value = link
 
     with patch.object(chat_runner, "_resolve_channel_target", return_value=(link, transport)):
-        ok = await mod._deliver_to_channel(state, f"{channel}:x", _TEXT, channel_type=channel)
+        answer = await mod._deliver_to_channel(state, f"{channel}:x", _TEXT, channel_type=channel)
 
-    assert ok is True
+    assert answer == (True, "", "")
     _assert_numbered(transport.sent)
 
 
