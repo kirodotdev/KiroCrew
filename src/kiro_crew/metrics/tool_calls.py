@@ -46,7 +46,7 @@ frame is ever seen by both layers, the first finish records it and the second is
 a no-op -- the layering cannot double-count.
 
 **Why not reuse the watchdog's existing dispatch clock.**
-``acp/liveness.py::ToolCallState`` already stamps ``dispatch_ts`` on a tool call,
+``acp/liveness_tool_state.py::ToolCallState`` already stamps ``dispatch_ts`` on a tool call,
 and ``AcpSessionHandle`` clears it on the result. It is deliberately NOT reused:
 ``_inflight_tool`` is a SINGLE SLOT holding the most recent call, which is the
 right shape for stall attribution (the oracle only asks "what are we waiting on
