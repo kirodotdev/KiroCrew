@@ -165,6 +165,7 @@ def _owner_functions() -> list[ast.FunctionDef]:
                 "discord",
                 "webex",
                 "imessage",
+                "signal",
                 "teams",
             )
         ]

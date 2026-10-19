@@ -43,6 +43,7 @@ _CHANNEL_SECTIONS = (
     "weixin",
     "teams",
     "imessage",
+    "signal",
 )
 
 #: Fields deliberately not read from the section, with the reason. Anything not

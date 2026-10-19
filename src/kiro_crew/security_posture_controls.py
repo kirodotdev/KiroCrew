@@ -295,6 +295,7 @@ _AUDIT_SURFACE_DETAIL: dict[str, str] = {
     "webex": "Webex messages, approvals, and owner-authorization decisions",
     "teams": "Microsoft Teams messages, approvals, and owner-authorization decisions",
     "imessage": "iMessage messages, approvals, and owner-authorization decisions",
+    "signal": "Signal messages, approvals, and owner-authorization decisions",
     "host": "In-process governance checks not driven by a user-facing surface",
     "unknown": "Events that carry no surface signal (classified rather than misattributed)",
 }

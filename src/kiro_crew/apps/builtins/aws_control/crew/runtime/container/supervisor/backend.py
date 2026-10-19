@@ -154,8 +154,8 @@ ENV_AUTHORITY_RESTORED: str = "KIROCREW_CONTAINER_AUTHORITY_RESTORED"
 #: comes up gives a crew an outbound channel to an owner's workspace that nobody
 #: chose to grant it.
 #:
-#: Written positively rather than by removing what arms a transport. Two of these
-#: need no credential at all (``imessage``, ``whatsapp`` -- their registry
+#: Written positively rather than by removing what arms a transport. Three of these
+#: need no credential at all (``imessage``, ``signal``, ``whatsapp`` -- their registry
 #: descriptors carry an empty credential tuple), so they start on their config flag
 #: alone and no amount of secret-stripping reaches them.
 #:
@@ -168,6 +168,7 @@ CHANNEL_SECTIONS: tuple[str, ...] = (
     "discord",
     "feishu",
     "imessage",
+    "signal",
     "slack",
     "teams",
     "telegram",

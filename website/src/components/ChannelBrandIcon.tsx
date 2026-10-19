@@ -3,6 +3,7 @@ import { Link2 } from 'lucide-react'
 import { DiscordIcon } from './DiscordIcon'
 import { FeishuLogo } from './FeishuLogo'
 import { IMessageIcon } from './IMessageIcon'
+import { SignalLogo } from './SignalLogo'
 import { SlackIcon } from './SlackIcon'
 import { TeamsIcon } from './TeamsIcon'
 import { TelegramLogo } from './TelegramLogo'
@@ -31,6 +32,7 @@ const BRAND_ICONS: Record<string, ComponentType<{ size?: number }>> = {
   feishu: FeishuLogo,
   weixin: WeixinLogo,
   imessage: IMessageIcon,
+  signal: SignalLogo,
   whatsapp: WhatsAppLogo,
 }
 

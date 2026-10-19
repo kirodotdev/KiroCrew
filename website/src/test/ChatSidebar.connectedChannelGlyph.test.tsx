@@ -203,6 +203,7 @@ describe('hasChannelBrandIcon', () => {
       expect(hasChannelBrandIcon(ch)).toBe(true)
     }
     expect(hasChannelBrandIcon('whatsapp')).toBe(true)
+    expect(hasChannelBrandIcon('signal')).toBe(true)
     expect(hasChannelBrandIcon('unified')).toBe(false)
     expect(hasChannelBrandIcon('')).toBe(false)
   })

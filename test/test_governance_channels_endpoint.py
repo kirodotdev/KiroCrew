@@ -49,6 +49,7 @@ EXPECTED_MEMBERS = {
     "teams",
     "weixin",
     "imessage",
+    "signal",
     "whatsapp",
     "feishu",
 }
