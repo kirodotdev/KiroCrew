@@ -24,6 +24,8 @@ layout below can change without touching a caller.
 * :mod:`.conductor_agents` -- the four conductor specs.
 * :mod:`.worker_agent` -- the worker's mirror of the default spec and its spawn-time
   freshness gate.
+* :mod:`.dashboard_author_agent` -- the managed dashboard-author spec: its install,
+  the foreign-spec guard and the ownership check.
 * :mod:`.guide_platform` -- the one-time platform guide grant on an existing
   default spec.
 * :mod:`.first_crewmate` -- the one-time first crewmate on the ordinary crewmate

@@ -21,6 +21,7 @@ from kiro_crew import agent
 from kiro_crew.agent_files import (
     AGENT_FILENAME,
     ASSISTANT_MEMBER_NAME,
+    MATE_CONDUCTOR_AGENT_FILENAME,
     WORKER_AGENT_FILENAME,
 )
 from kiro_crew.agent_materialization import first_crewmate, guide_platform
@@ -144,8 +145,9 @@ def test_every_crewmate_spec_mounts_the_same_guide_set(rebuildable: Path) -> Non
         assert _guide_grants(spec) == GRANTS
     # The first crewmate runs the very template a user-created crewmate gets.
     row = _saved()["agents"][ASSISTANT_MEMBER_NAME]
-    assert row["kiro_agent"] == "kirocrew"
-    assert sorted(p.name for p in rebuildable.glob("*mate*")) == []
+    assert row["kiro_agent"] == first_crewmate._ORDINARY_TEMPLATE
+    # The source-defined mate conductor spec is materialized on rebuild.
+    assert sorted(p.name for p in rebuildable.glob("*mate*")) == [MATE_CONDUCTOR_AGENT_FILENAME]
 
 
 def test_conductors_and_background_agents_do_not_mount_the_guide_set(rebuildable: Path) -> None:
@@ -219,7 +221,9 @@ def test_a_spec_without_the_guide_server_keeps_the_one_time_grant_for_later(
 # ── the first crewmate ──
 
 
-def _assert_private_first_crewmate(saved: dict, template: str = "kirocrew") -> str:
+def _assert_private_first_crewmate(
+    saved: dict, template: str = first_crewmate._ORDINARY_TEMPLATE
+) -> str:
     row = saved["agents"][ASSISTANT_MEMBER_NAME]
     # Its own workspace from the start, like every created crewmate.
     own_workspace = f"member-{ASSISTANT_MEMBER_NAME}"

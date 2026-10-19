@@ -26,7 +26,7 @@ import pytest
 
 from kiro_crew import agent, agent_state
 from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
-from kiro_crew.agent_materialization import skill_resources, worker_agent
+from kiro_crew.agent_materialization import dashboard_author_agent, skill_resources
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 
 
@@ -59,8 +59,8 @@ class _Rig:
 def _is_installers(path: Path) -> bool:
     """Does the file at *path* confirm as this installer's own write -- its bytes reproduce
     the installer-recorded ownership digest?"""
-    spec = worker_agent.agent_mod._read_spec_capped(path)
-    return worker_agent._is_confirmed_managed_dashboard_author(spec)
+    spec = dashboard_author_agent.agent_mod._read_spec_capped(path)
+    return dashboard_author_agent._is_confirmed_managed_dashboard_author(spec)
 
 
 # --------------------------------------------------------------------------- #
@@ -130,7 +130,7 @@ def test_the_prompt_and_description_come_from_the_shipped_spec(
     """The charter has ONE authoritative copy -- the shipped ``agent-spec.md`` -- so the
     installed spec's prompt and description are what ``parse_markdown_spec`` reads from
     it, never a Python constant held equal to it by nothing."""
-    from kiro_crew.agent_materialization.worker_agent import _DASHBOARD_AUTHOR_SPEC_PATH
+    from kiro_crew.agent_materialization.dashboard_author_agent import _DASHBOARD_AUTHOR_SPEC_PATH
     from kiro_crew.agent_spec_format import parse_markdown_spec
 
     rig = _Rig(tmp_path, monkeypatch)
@@ -266,7 +266,7 @@ def test_a_non_regular_pre_existing_file_is_left_untouched(
     elsewhere.write_text(json.dumps({"name": "x"}), encoding="utf-8")
     target.symlink_to(elsewhere)
 
-    worker_agent._install_dashboard_author_agent()
+    dashboard_author_agent._install_dashboard_author_agent()
 
     assert target.is_symlink()  # untouched, still points where it did
     assert target.resolve() == elsewhere.resolve()
@@ -287,7 +287,7 @@ def test_an_install_failure_runs_independent_repairs_then_fails_the_rebuild(
     def _boom() -> None:
         raise OSError("agents dir unwritable")
 
-    monkeypatch.setattr(worker_agent, "_install_dashboard_author_agent", _boom)
+    monkeypatch.setattr(dashboard_author_agent, "_install_dashboard_author_agent", _boom)
 
     repairs: list[str] = []
     real_refresh = agent.fork_refresh.refresh_after_rebuild
@@ -323,7 +323,7 @@ def test_the_reporting_wrapper_does_not_report_a_write_on_install_failure(
     def _boom() -> None:
         raise OSError("agents dir unwritable")
 
-    monkeypatch.setattr(worker_agent, "_install_dashboard_author_agent", _boom)
+    monkeypatch.setattr(dashboard_author_agent, "_install_dashboard_author_agent", _boom)
 
     with pytest.raises(OSError, match="agents dir unwritable"):
         agent.rebuild_agent_config_reporting()
@@ -594,7 +594,7 @@ def test_a_present_file_whose_read_fails_is_left_untouched(
     reader is NOT treated as 'ours to write'. The install now RAISES (fail-closed) rather
     than returning, so the rebuild cannot report success without rewriting the governed spec
     (GPT 6.1: an unreadable present spec must not be recorded as projected)."""
-    import kiro_crew.agent_materialization.worker_agent as wa
+    import kiro_crew.agent_materialization.dashboard_author_agent as wa
 
     rig = _Rig(tmp_path, monkeypatch)
     target = rig.agents / DASHBOARD_AUTHOR_AGENT_FILENAME
@@ -617,7 +617,7 @@ def test_a_user_markdown_spec_at_the_stem_blocks_the_install(
     ``kirocrew-dashboard-author.md`` (which the installer never writes -- it only writes the
     ``.json`` form) blocks the install: no ``.json`` is written and the user's ``.md`` is
     left untouched."""
-    import kiro_crew.agent_materialization.worker_agent as wa
+    import kiro_crew.agent_materialization.dashboard_author_agent as wa
 
     rig = _Rig(tmp_path, monkeypatch)
     md = rig.agents / "kirocrew-dashboard-author.md"
@@ -819,7 +819,7 @@ def test_a_markdown_sibling_still_blocks_a_first_time_install(
     """The sibling check is retained for first-time install: with NO confirmed ``.json``
     (none recorded), a user ``.md`` at the stem still blocks the install so the managed
     ``.json`` never shadows the user's markdown spec."""
-    import kiro_crew.agent_materialization.worker_agent as wa
+    import kiro_crew.agent_materialization.dashboard_author_agent as wa
 
     rig = _Rig(tmp_path, monkeypatch)
     md = rig.agents / "kirocrew-dashboard-author.md"
@@ -922,7 +922,7 @@ def test_an_author_install_write_failure_sets_the_hold_flag(
     def _boom() -> None:
         raise OSError("agents dir unwritable")
 
-    monkeypatch.setattr(worker_agent, "_install_dashboard_author_agent", _boom)
+    monkeypatch.setattr(dashboard_author_agent, "_install_dashboard_author_agent", _boom)
 
     # Reset the hold to False before the rebuild so we can confirm it flips.
     agent._conductor_spec_held = False

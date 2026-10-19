@@ -341,7 +341,7 @@ def test_an_unconfirmed_private_copy_at_the_dashboard_author_stem_is_governance_
     later tightened against is stripped rather than left live. When the install WOULD land,
     the owned installer handles it and the loop skips it."""
     name = fork_refresh._DASHBOARD_AUTHOR_STEM
-    from kiro_crew.agent_materialization import worker_agent
+    from kiro_crew.agent_materialization import dashboard_author_agent
 
     # The fork's OWN name equals the owned stem (a private copy at that filename), corroborated.
     _forks(monkeypatch, {name: {"private_to": "crew", "forked_from": name}})
@@ -358,14 +358,18 @@ def test_an_unconfirmed_private_copy_at_the_dashboard_author_stem_is_governance_
 
     # Install would NOT land (refused: unconfirmed, or a blocking .md) -> NOT skipped as
     # owned; governance runs and the config is written (re-filtered).
-    monkeypatch.setattr(worker_agent, "_managed_dashboard_author_install_lands", lambda p: False)
+    monkeypatch.setattr(
+        dashboard_author_agent, "_managed_dashboard_author_install_lands", lambda p: False
+    )
     agent._refresh_forked_templates_locked(gated_off=frozenset())
     assert [c["name"] for c in written] == [name], "unconfirmed stem copy must be filtered"
     assert agent._fork_refresh_failed == frozenset()
 
     # Install WOULD land -> the owned installer owns it; the loop skips it.
     written.clear()
-    monkeypatch.setattr(worker_agent, "_managed_dashboard_author_install_lands", lambda p: True)
+    monkeypatch.setattr(
+        dashboard_author_agent, "_managed_dashboard_author_install_lands", lambda p: True
+    )
     agent._refresh_forked_templates_locked(gated_off=frozenset())
     assert written == [], "a confirmed-owned stem spec is left to its owned writer"
     assert agent._fork_refresh_failed == frozenset()

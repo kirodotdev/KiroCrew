@@ -1333,10 +1333,15 @@ async def api_mcp_active(request: web.Request) -> web.Response:
         except Exception:
             pass
 
-    # Non-kirocrew agent: read from agent config. The lookup walks the agents
-    # directory and reads specs until the name matches, so it runs in a thread:
-    # a large directory must not stall every other request on the loop.
-    if agent and agent != "kirocrew":
+    # Non-default-surface agent: read from agent config. The lookup walks the
+    # agents directory and reads specs until the name matches, so it runs in a
+    # thread: a large directory must not stall every other request on the loop.
+    # The SURFACE predicate, not the identity one: the mate conductor is a Crew
+    # default for workspace/model, but its MCP list is its OWN narrowed set, so
+    # the panel must read its spec here, not report the global server list.
+    from kiro_crew.agent_files import renders_default_agent_surface
+
+    if agent and not renders_default_agent_surface(agent):
         agent_mcps = await asyncio.to_thread(_agent_mcp_server_names, agent)
         if agent_mcps is None:
             return web.json_response([])

@@ -1129,8 +1129,9 @@ Undo sends the mode the card wrote, and a profile save that landed in between an
 of a card made from an unset mode restores the unset-effective mode explicitly, since the
 route accepts no `""`.
 Crewmate proposals are
-`crewmate.create` cards; the card builds the crewmate from `kirocrew`
-(`change_card_catalog.DEFAULT_CREWMATE_TEMPLATE`, the Crewmates page's own default)
+`crewmate.create` cards; the card builds the crewmate from the mate conductor
+`kirocrew-mate-conductor` (`change_card_catalog.DEFAULT_CREWMATE_TEMPLATE`, the
+Crewmates page's own default)
 and sends `first_greeting`, so the crewmate opens its chat by asking about the
 proposed goal exactly as one created on the Crewmates page does (see the goal
 welcome below); the `/members?create=1&name=<encoded-name>&goal=<encoded-goal>`

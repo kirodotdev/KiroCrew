@@ -534,8 +534,14 @@ def _resolve_agent_prompt(
     that restores the block reuses the session's own.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.agent_files import renders_default_agent_surface
 
-    is_custom = bool(agent) and agent != "kirocrew"
+    # A prompt decision reads the SURFACE predicate, not the identity one: the
+    # mate conductor is a Crew default for workspace/model/docs but renders its
+    # OWN dispatch-only charter, not the shared persona prompt. Treating it as
+    # default here would inject the full persona as [AGENT SYSTEM PROMPT] and
+    # drop its charter (on CC the charter would never reach the model at all).
+    is_custom = bool(agent) and not renders_default_agent_surface(agent)
     agent_prompt: str
     if is_cc and not is_custom:
         # CC gets the same Kiro Crew persona prompt as kiro — including

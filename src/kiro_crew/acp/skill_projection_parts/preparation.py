@@ -206,6 +206,12 @@ def prepare_native_skill_projection(
     :class:`CrossProcessProjectionLockTimeout` another process holding the file
     lock, any other ``OSError`` a problem with the lock file itself.
     """
+    # Function-local import: a module-level import of this public name would be
+    # collected by the skill-projection facade mirror as a served export, so the
+    # facade's TYPE_CHECKING manifest would have to list it. Kept local so the
+    # owner module's surface is unchanged.
+    from kiro_crew.agent_discovery import is_kirocrew_default_agent
+
     directory = kiro_agents_dir()
     crew_home_id = data_home().absolute().as_posix()
     # Set only when the ceiling (not the env disable) is what turned projection
@@ -339,12 +345,12 @@ def prepare_native_skill_projection(
         # one keeps the view it had and gets no search: it never relied on it, and
         # it is not a search agent, so no session of it is refused either.
         inherited_only = (
-            agent.name != "kirocrew"
+            not is_kirocrew_default_agent(agent.name)
             and not mapped
             and bool(inherited_globs)
             and can_inherit_skills(spec)
         )
-        if agent.name == "kirocrew" or mapped or inherited_only:
+        if is_kirocrew_default_agent(agent.name) or mapped or inherited_only:
             refusal = skill_search_refusal(view)
             if refusal is not None:
                 errors[agent.name] = refusal

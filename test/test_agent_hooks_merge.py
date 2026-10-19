@@ -454,7 +454,7 @@ class TestKiroHooksFiltering:
         with (
             patch("kiro_crew.agent.KIRO_AGENTS_DIR", kiro_dir),
             patch(
-                "kiro_crew.agent_materialization.worker_agent."
+                "kiro_crew.agent_materialization.dashboard_author_agent."
                 "_foreign_dashboard_author_spec_reason",
                 return_value=None,
             ),

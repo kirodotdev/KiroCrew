@@ -3,7 +3,7 @@ import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
 import { api } from '../../api/client'
-import NewCrewmateDialog from './NewCrewmateDialog'
+import NewCrewmateDialog, { DEFAULT_CREWMATE_TEMPLATE } from './NewCrewmateDialog'
 import { POSE_IDS, seedIconPose } from '../../lib/avatarPoses'
 
 vi.mock('../../api/client', async importOriginal => {
@@ -70,7 +70,7 @@ describe('NewCrewmateDialog', () => {
     await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
     // Unasked, the create owes no first greeting.
     const body = vi.mocked(api.createKirocrewAgent).mock.calls[0][0] as Record<string, unknown>
-    expect(body).toMatchObject({ name: 'Scout', kiro_agent: 'kirocrew' })
+    expect(body).toMatchObject({ name: 'Scout', kiro_agent: DEFAULT_CREWMATE_TEMPLATE })
     expect(body).not.toHaveProperty('first_greeting')
     await waitFor(() => expect(props.onCreated).toHaveBeenCalledWith({ name: 'Scout', job: '' }), { timeout: 4000 })
   })
@@ -80,7 +80,7 @@ describe('NewCrewmateDialog', () => {
     const select = await screen.findByRole('combobox', { name: 'Built from' })
     // The label stays short enough to show "(default)" on a phone; what the
     // default is goes in the field's helper text instead.
-    expect(select.textContent?.trim()).toBe('kirocrew (default)')
+    expect(select.textContent?.trim()).toBe(`${DEFAULT_CREWMATE_TEMPLATE} (default)`)
     expect(fieldHint(select)).toHaveTextContent(/kirocrew/)
   })
 
@@ -160,7 +160,7 @@ describe('NewCrewmateDialog', () => {
       await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
       expect(vi.mocked(api.createKirocrewAgent).mock.calls[0][0]).toMatchObject({
         name: 'Scout',
-        kiro_agent: 'kirocrew',
+        kiro_agent: DEFAULT_CREWMATE_TEMPLATE,
         description: 'Watch PRs',
         first_greeting: true,
       })
@@ -180,7 +180,7 @@ describe('NewCrewmateDialog', () => {
       const body = vi.mocked(api.createKirocrewAgent).mock.calls[0][0] as Record<string, unknown>
       expect(body).toMatchObject({
         name: 'Scout',
-        kiro_agent: 'kirocrew',
+        kiro_agent: DEFAULT_CREWMATE_TEMPLATE,
         workspace: '',
         description: '',
         first_greeting: true,
@@ -403,7 +403,7 @@ describe('NewCrewmateDialog', () => {
       fireEvent.click(toggle())
       fireEvent.click(screen.getByTestId('crewmate-create-submit-end'))
       await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
-      expect(vi.mocked(api.createKirocrewAgent).mock.calls[0][0]).toMatchObject({ name: 'Scout', kiro_agent: 'kirocrew' })
+      expect(vi.mocked(api.createKirocrewAgent).mock.calls[0][0]).toMatchObject({ name: 'Scout', kiro_agent: DEFAULT_CREWMATE_TEMPLATE })
       // In flight: both Create buttons are locked, so no second POST leaves.
       await waitFor(() => expect(screen.getByTestId('crewmate-create-submit-end')).toBeDisabled())
       expect(screen.getByTestId('crewmate-create-submit')).toBeDisabled()

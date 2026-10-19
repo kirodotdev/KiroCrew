@@ -22,12 +22,13 @@ from kiro_crew import agent_state, kiro_cli
 from kiro_crew.agent import (
     OWNED_KIRO_AGENT_FILES,
     _is_confirmed_managed_dashboard_author,
+    _is_confirmed_managed_mate_conductor,
     _read_spec_capped,
     agents_spec_lock,
     kiro_agents_dir_path,
 )
 from kiro_crew.agent_capabilities_withheld import withheld_approvals as _withheld_approvals
-from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME
+from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME, MATE_CONDUCTOR_AGENT_FILENAME
 from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
 from kiro_crew.agent_spec_format import (
     agent_spec_candidates,
@@ -701,11 +702,12 @@ def _parent_is_owned(snap: dict) -> bool:
     """Is the capability projection's parent template one Crew owns?
 
     A global-scope parent whose filename is in ``OWNED_KIRO_AGENT_FILES`` -- except the
-    dashboard-author stem, which was a user-creatable template name before it became owned.
-    For that stem the owned classification holds ONLY when the on-disk spec POSITIVELY
-    confirms as this installer's own -- its bytes reproduce the installer-recorded ownership
-    digest; a pre-existing user template at the stem -- one whose bytes do not reproduce it,
-    or an absent/unreadable file -- is NOT an owned parent, so a capability save
+    two once-user-creatable stems (the dashboard-author and mate-conductor files), whose
+    names were user-creatable template names before they became owned. For those stems the
+    owned classification holds ONLY when the on-disk spec POSITIVELY confirms as this
+    installer's own -- its bytes reproduce the installer-recorded ownership digest; a
+    pre-existing user template at the stem -- one whose bytes do not reproduce it, or an
+    absent/unreadable file -- is NOT an owned parent, so a capability save
     (``_maintain_owned`` / ``_unvouched``) does not refresh its inherited custom guards away
     and publication does not bind the crew to that replacement. Fail-closed: unconfirmed is a
     user file. The install gate and the fork-governance origin check apply the same gate.
@@ -717,6 +719,9 @@ def _parent_is_owned(snap: dict) -> bool:
     if name == DASHBOARD_AUTHOR_AGENT_FILENAME:
         spec = _read_spec_capped(Path(parent_path))
         return _is_confirmed_managed_dashboard_author(spec)
+    if name == MATE_CONDUCTOR_AGENT_FILENAME:
+        spec = _read_spec_capped(Path(parent_path))
+        return _is_confirmed_managed_mate_conductor(spec)
     return True
 
 

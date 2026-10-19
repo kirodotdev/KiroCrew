@@ -18,12 +18,21 @@ from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME
 #: One-time marker for :func:`create_first_crewmate_once`, under the data home.
 FIRST_CREWMATE_MARKER = "mate_member_created.json"
 
-#: The template a crewmate gets when the config names no default one.
-_ORDINARY_TEMPLATE = "kirocrew"
+#: The template a crewmate gets when the config names no default one. On a fresh
+#: install this is the source-defined, dispatch-only mate conductor
+#: (rfc-mate-owned-agent-config.md §6 migration step 1). It now AGREES with
+#: ``change_card_catalog.DEFAULT_CREWMATE_TEMPLATE``: §6 step 1 moves all three
+#: creation defaults onto the conductor — this implicit fallback, the New
+#: Crewmate dialog's "Built from" default, and the ``crewmate.create`` card's
+#: template — so every crewmate created, through any door, runs the conductor.
+#: Still not imported from that module: it is dashboard-facing (change cards)
+#: and importing it here would pull dashboard code into boot-time crewmate
+#: creation, so the two name the same value independently.
+_ORDINARY_TEMPLATE = "kirocrew-mate-conductor"
 
 
 def _default_template(*sections: object) -> str:
-    """The configured ``agent.default_agent`` among *sections*, else ``kirocrew``.
+    """The configured ``agent.default_agent`` among *sections*, else the ordinary template.
 
     The last section that names one wins, so the ``config.local.json`` overlay,
     passed last, outranks ``config.json`` the way the loader merges them.

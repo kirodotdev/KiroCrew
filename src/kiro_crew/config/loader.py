@@ -52,6 +52,9 @@ from kiro_crew import (  # noqa: F401
     platform_compat,
     windows_acl,
 )
+
+# Leaf module (no kiro_crew imports) — no import cycle with config.
+from kiro_crew.agent_files import is_kirocrew_default_agent as _is_kirocrew_default_agent
 from kiro_crew.agent_sdk.backends import (  # noqa: F401
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     resolve_cc_permission_mode,
@@ -501,7 +504,7 @@ def _agent_tier_model(
         )
     if in_scope(model_pin):
         return model_pin
-    if kiro_agent and kiro_agent != "kirocrew":
+    if kiro_agent and not _is_kirocrew_default_agent(kiro_agent):
         pinned = normalize_agent_model(config._resolve_named_agent_model(kiro_agent))
         if in_scope(pinned):
             return pinned
@@ -535,7 +538,7 @@ def resolve_app_spawn_model(config: KiroCrewConfig, app_name: str, agent_name: s
     app_pin = in_scope(app_model_pin(config, app_name))
     if not app_pin:
         return ""
-    if agent_name and agent_name != "kirocrew":
+    if agent_name and not _is_kirocrew_default_agent(agent_name):
         if in_scope(normalize_agent_model(config._resolve_named_agent_model(agent_name))):
             return ""
     return app_pin

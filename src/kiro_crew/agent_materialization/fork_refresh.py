@@ -20,12 +20,20 @@ from typing import Literal
 
 from kiro_crew import agent as agent_mod
 from kiro_crew import agent_state, user_json
-from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
+from kiro_crew.agent_files import (
+    DASHBOARD_AUTHOR_AGENT_FILENAME,
+    MATE_CONDUCTOR_AGENT_FILENAME,
+    OWNED_KIRO_AGENT_FILES,
+)
 from kiro_crew.agent_materialization import auto_approve
 from kiro_crew.agent_spec_format import is_markdown_spec
 
 #: The dashboard-author origin stem, digest-gated in :func:`_origin_is_owned`.
 _DASHBOARD_AUTHOR_STEM = Path(DASHBOARD_AUTHOR_AGENT_FILENAME).stem
+
+#: The mate-conductor origin stem, digest-gated the same way: it too was user-creatable
+#: before it became owned, so a pre-upgrade private copy may sit at it with no owned writer.
+_MATE_CONDUCTOR_STEM = Path(MATE_CONDUCTOR_AGENT_FILENAME).stem
 
 #: The SEL operation :func:`_report_mcp_json_merge_pinned_off` records.
 MCP_JSON_MERGE_PINNED_OP = "fork_mcp_json_merge_disabled"
@@ -69,10 +77,10 @@ def _dashboard_author_file_is_installers(path: Path) -> bool:
     so this returns False and the fork refresh leaves the fork's custom ``preToolUse`` guards
     in place rather than replacing them with bundled hooks. A lazy import avoids an import
     cycle at module load."""
-    from kiro_crew.agent_materialization import worker_agent
+    from kiro_crew.agent_materialization import dashboard_author_agent
 
     spec = agent_mod._read_spec_capped(path)
-    return worker_agent._is_confirmed_managed_dashboard_author(spec)
+    return dashboard_author_agent._is_confirmed_managed_dashboard_author(spec)
 
 
 def refresh_after_rebuild(
@@ -268,10 +276,22 @@ def _owned_spec_has_its_own_writer(name: str, owned_names: "set[str]") -> bool:
     if name not in owned_names:
         return False
     if name == _DASHBOARD_AUTHOR_STEM:
-        from kiro_crew.agent_materialization import worker_agent
+        from kiro_crew.agent_materialization import dashboard_author_agent
 
         spec_path = agent_mod.kiro_agents_dir_path() / (name + ".json")
-        return worker_agent._managed_dashboard_author_install_lands(spec_path)
+        return dashboard_author_agent._managed_dashboard_author_install_lands(spec_path)
+    if name == _MATE_CONDUCTOR_STEM:
+        # Same exception as the dashboard-author stem: ``kirocrew-mate-conductor`` was a
+        # user-creatable template name before it became owned, so a pre-upgrade PRIVATE COPY
+        # can sit here with NO owned writer re-filtering it -- and the installer now REFUSES
+        # to rewrite such a copy. Skipping it as "owned" would leave its grants live against
+        # a tightened ceiling forever. Honour the skip ONLY when the managed install would
+        # actually land (the ``.json`` reproduces the installer-recorded ownership digest);
+        # any unconfirmed copy falls through to the governance passes below.
+        from kiro_crew.agent_materialization import service_agents
+
+        spec_path = agent_mod.kiro_agents_dir_path() / (name + ".json")
+        return service_agents._managed_mate_conductor_install_lands(spec_path)
     return True
 
 
@@ -304,6 +324,16 @@ def fork_origin_is_owned(name: str, forks: "dict | None" = None) -> bool:
     if name == _DASHBOARD_AUTHOR_STEM:
         origin_path = agent_mod.kiro_agents_dir_path() / (name + ".json")
         return _dashboard_author_file_is_installers(origin_path)
+    if name == _MATE_CONDUCTOR_STEM:
+        # Same digest-gate as the dashboard-author stem: a pre-upgrade fork can descend from
+        # a USER template at the mate-conductor stem (it was user-creatable before it became
+        # owned). Treating that origin as owned would overwrite the fork's own plumbing with
+        # the managed set. Count it as owned ONLY when the on-disk origin spec is confirmed
+        # the installer's own managed write.
+        from kiro_crew.agent_materialization import service_agents
+
+        origin_path = agent_mod.kiro_agents_dir_path() / (name + ".json")
+        return service_agents._managed_mate_conductor_install_lands(origin_path)
     return True
 
 

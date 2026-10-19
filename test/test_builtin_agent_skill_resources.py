@@ -37,9 +37,9 @@ from kiro_crew.agent_discovery import (
 )
 from kiro_crew.agent_materialization import (
     conductor_agents,
+    dashboard_author_agent,
     service_agents,
     skill_resources,
-    worker_agent,
 )
 from kiro_crew.context import _skills_injection_plan
 from kiro_crew.skills import SKILL_READ_CAPACITY, SkillsLoader
@@ -84,7 +84,7 @@ AGENTS: dict[str, tuple[object, tuple[str, ...]]] = {
         ("dashboard",),
     ),
     "kirocrew-dashboard-author": (
-        worker_agent._install_dashboard_author_agent,
+        dashboard_author_agent._install_dashboard_author_agent,
         ("kirocrew-dev/dashboard-template",),
     ),
 }

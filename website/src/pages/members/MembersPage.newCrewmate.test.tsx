@@ -287,7 +287,7 @@ vi.mock('react-router-dom', async (importOriginal) => {
 })
 
 import { api } from '../../api/client'
-import NewCrewmateDialog, { RECONCILE_BOUND_MS } from './NewCrewmateDialog'
+import NewCrewmateDialog, { RECONCILE_BOUND_MS, DEFAULT_CREWMATE_TEMPLATE } from './NewCrewmateDialog'
 import { resetDashboardOnLoad } from './dashboardOnLoad'
 import { resetFirstGreetingRequests } from './useFirstGreeting'
 import { __resetPanelTabs } from '../../hooks/usePanelTabs'
@@ -544,7 +544,7 @@ describe('New crewmate dialog', () => {
     // ask for a first greeting; no `model` key while inheriting.
     await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledWith({
       name: 'radar',
-      kiro_agent: 'kirocrew',
+      kiro_agent: DEFAULT_CREWMATE_TEMPLATE,
       // '' asks the server for a workspace of the crewmate's own.
       workspace: '',
       memory_store: 'default',
@@ -585,7 +585,7 @@ describe('New crewmate dialog', () => {
     await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
     expect(api.createKirocrewAgent).toHaveBeenCalledWith(expect.objectContaining({
       name: 'radar',
-      kiro_agent: 'kirocrew',
+      kiro_agent: DEFAULT_CREWMATE_TEMPLATE,
       description: '',
       first_greeting: true,
     }))

@@ -904,6 +904,119 @@ def test_a_current_create_cards_undo_finds_its_schedule_at_step_two():
     assert [s["path"] for s in undo] == ["/api/crons/j2", "/api/agents/scout"]
 
 
+def _create_card_on_template(store: CardStore, *, applied: bool, apply: list[dict]) -> dict:
+    """A crewmate.create card whose stored plan names an arbitrary template.
+
+    Built with ``apply`` spelled by the caller so the store keeps exactly those
+    template slots — the way a card persisted by an earlier build (before the
+    creation default moved to the mate conductor, RFC §6 step 1) still reads.
+    """
+    params = catalog.validate_params(
+        "crewmate.create",
+        {"name": "scout", "goal": "Watch the queue", "schedule": {"cron_expr": "0 9 * * 1"}},
+    )
+    before = {"exists": False, "inherited_auto_approve": []}
+    preview = catalog.build_preview("crewmate.create", params, before, {})
+    preview["apply"] = apply
+    rec = store.propose(
+        slot_key=SLOT,
+        session_key=SK,
+        kind="crewmate.create",
+        params=params,
+        reason="",
+        preview=preview,
+        before=before,
+        context={},
+    )
+    if applied:
+        evidence = [{"member_id": "scout", "name": "scout"}, {}, {"id": "job1"}]
+        for i, ev in enumerate(evidence[: len(apply)]):
+            store.begin_step(rec, revision=rec["revision"], op="apply", index=i)
+            store.record_success(rec, op="apply", index=i, evidence=ev)
+        undo, reason = catalog.build_undo(
+            "crewmate.create", params, before, evidence[: len(apply)], len(apply), {}
+        )
+        store.complete_apply(rec, after={"exists": True}, undo=undo, undo_reason=reason)
+    return json.loads(json.dumps(rec))
+
+
+@pytest.mark.parametrize("applied", [True, False], ids=["applied", "proposed"])
+@pytest.mark.parametrize(
+    "shape",
+    ["current", "legacy"],
+    ids=["current-shape", "legacy-shape"],
+)
+def test_a_create_card_stored_on_the_old_template_is_not_dropped_on_rebuild(applied, shape):
+    """RFC §6 step 1 moved the crewmate-creation default from ``kirocrew`` to the
+    mate conductor. A ``crewmate.create`` card saved by a build on the OLD default
+    has ``kirocrew`` baked into its stored ``plan.apply``; ``build_preview`` now
+    rebuilds the plan on the NEW default. Without accepting the legacy template in
+    plan MATCHING, ``rebuild_record`` would judge the card unverifiable and the
+    store would drop it — losing a pending card, or an applied card's Undo. Both
+    plan shapes stored on the legacy template must survive the rebuild."""
+    params = catalog.validate_params(
+        "crewmate.create",
+        {"name": "scout", "goal": "Watch the queue", "schedule": {"cron_expr": "0 9 * * 1"}},
+    )
+    if shape == "legacy":
+        apply = catalog.legacy_create_apply(params, template=catalog.LEGACY_CREWMATE_TEMPLATE)
+    else:
+        apply = catalog.current_create_apply(params, catalog.LEGACY_CREWMATE_TEMPLATE)
+    # The stored plan really names the old template, not the current default.
+    assert any(
+        catalog.LEGACY_CREWMATE_TEMPLATE in (s["body"].get("kiro_agent"), s["body"].get("agent"))
+        for s in apply
+    )
+    rec = _create_card_on_template(CardStore(None, clock=Clock()), applied=applied, apply=apply)
+    rebuilt = cards.rebuild_record(rec)
+    assert rebuilt is not None, "a card stored on the pre-move template must not be dropped"
+    if applied:
+        # Applied: it keeps the plan (and Undo) it actually ran with.
+        assert rebuilt["plan"]["apply"] == apply
+        assert rebuilt["plan"]["undo"]
+
+
+@pytest.mark.parametrize("applied", [True, False], ids=["applied", "proposed"])
+def test_an_import_card_stored_on_the_old_template_is_not_dropped_on_rebuild(applied):
+    """A ``crewmate.import`` card whose stored ``plan.apply`` step 0 names
+    ``LEGACY_CREWMATE_TEMPLATE`` must verify against the plan ``build_preview`` rebuilds on
+    ``DEFAULT_CREWMATE_TEMPLATE``. The template-fallback accepts the import kind, matching
+    the rebuilt plan with step 0's ``kiro_agent`` swapped, so the card (pending, or applied
+    with its Undo) survives the store reload rather than being dropped."""
+    params = catalog.validate_params(
+        "crewmate.import",
+        {"name": "scout", "format_version": 1, "description": "From a teammate"},
+    )
+    before = {"exists": False, "inherited_auto_approve": []}
+    preview = catalog.build_preview("crewmate.import", params, before, {})
+    # The stored plan as a build on the legacy default writes it: step 0 names that template.
+    legacy_apply = json.loads(json.dumps(preview["apply"]))
+    legacy_apply[0]["body"]["kiro_agent"] = catalog.LEGACY_CREWMATE_TEMPLATE
+    preview["apply"] = legacy_apply
+
+    store = CardStore(None, clock=Clock())
+    rec = store.propose(
+        slot_key=SLOT,
+        session_key=SK,
+        kind="crewmate.import",
+        params=params,
+        reason="",
+        preview=preview,
+        before=before,
+        context={},
+    )
+    if applied:
+        store.begin_step(rec, revision=rec["revision"], op="apply", index=0)
+        store.record_success(
+            rec, op="apply", index=0, evidence={"member_id": "scout", "name": "scout"}
+        )
+        store.complete_apply(rec, after={"exists": True}, undo=None, undo_reason="")
+    stored = json.loads(json.dumps(rec))
+
+    rebuilt = cards.rebuild_record(stored)
+    assert rebuilt is not None, "an import card stored on the legacy template must not be dropped"
+
+
 @pytest.mark.parametrize(
     "evidence, job_id",
     [

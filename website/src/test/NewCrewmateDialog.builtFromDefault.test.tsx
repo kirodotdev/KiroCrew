@@ -9,12 +9,12 @@
  * **Built from** field is "the default agent or a custom agent" — a default,
  * not a required pick. So converging both doors on this dialog retires that
  * guard: a crew created without touching **Built from** is built from the
- * default template, the built-in `kirocrew` agent.
+ * default template, the source-defined mate conductor `kirocrew-mate-conductor`.
  *
  * This pins that shipped behaviour (the positive inverse of the deleted guard):
  * creating with only a name issues the POST — it is NOT blocked — and sends
- * `kiro_agent: 'kirocrew'`. If someone restored a required-template refusal in
- * the dialog, `createKirocrewAgent` would never be called and the first
+ * `kiro_agent: 'kirocrew-mate-conductor'`. If someone restored a required-template
+ * refusal in the dialog, `createKirocrewAgent` would never be called and the first
  * assertion fails; if the `builtFrom || DEFAULT_CREWMATE_TEMPLATE` fallback were dropped,
  * the `kiro_agent` assertion fails.
  */
@@ -65,7 +65,7 @@ describe('NewCrewmateDialog — Built from is a default, not a required pick', (
   beforeEach(() => { mockApi.createKirocrewAgent.mockClear() })
   afterEach(() => { vi.restoreAllMocks(); cleanup() })
 
-  it('creates without touching Built from, defaulting kiro_agent to the built-in kirocrew agent', async () => {
+  it('creates without touching Built from, defaulting kiro_agent to the mate conductor', async () => {
     renderDialog()
     // Only a name is given; "Built from" is never opened.
     fireEvent.change(nameInput(), { target: { value: 'researcher' } })
@@ -75,7 +75,7 @@ describe('NewCrewmateDialog — Built from is a default, not a required pick', (
     // template), and it carries the default agent as `kiro_agent`.
     await waitFor(() => expect(mockApi.createKirocrewAgent).toHaveBeenCalledTimes(1))
     expect(mockApi.createKirocrewAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'researcher', kiro_agent: 'kirocrew' }),
+      expect.objectContaining({ name: 'researcher', kiro_agent: 'kirocrew-mate-conductor' }),
     )
   })
 
@@ -92,13 +92,13 @@ describe('NewCrewmateDialog — Built from is a default, not a required pick', (
     )
   })
 
-  it('the folded card never names the template; unfolding Advanced settings shows kirocrew as the default', async () => {
+  it('the folded card never names the template; unfolding Advanced settings shows the mate conductor as the default', async () => {
     renderDialog()
     const form = screen.getByTestId('crewmate-create-form')
     expect(screen.queryByRole('combobox', { name: 'Built from' })).toBeNull()
     expect(form).not.toHaveTextContent(/kirocrew/i)
     fireEvent.click(screen.getByTestId('crewmate-create-advanced-toggle'))
-    expect(await screen.findByRole('combobox', { name: 'Built from' })).toHaveTextContent('kirocrew')
+    expect(await screen.findByRole('combobox', { name: 'Built from' })).toHaveTextContent('kirocrew-mate-conductor')
   })
 
   it('still refuses a BLANK name — client-side name validation is independent of the retired template guard', async () => {

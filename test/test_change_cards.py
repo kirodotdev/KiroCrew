@@ -207,10 +207,10 @@ def test_crewmate_create_binds_its_schedule_to_the_created_identity():
         "/api/members/{{step0.member_id}}/goals/long-term",
         "/api/crons",
     ]
-    # Built from the Crewmates page's template, and owed the same first message.
-    assert plan[0]["body"]["kiro_agent"] == "kirocrew"
+    # Built from the Crewmates page's default template, and owed the same first message.
+    assert plan[0]["body"]["kiro_agent"] == catalog.DEFAULT_CREWMATE_TEMPLATE
     assert plan[0]["body"]["first_greeting"] is True
-    assert plan[2]["body"]["agent"] == "kirocrew"
+    assert plan[2]["body"]["agent"] == catalog.DEFAULT_CREWMATE_TEMPLATE
     assert plan[2]["fill"] == [
         {"field": "member_id", "source": "step", "step": 0, "key": "member_id"}
     ]

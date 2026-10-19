@@ -280,6 +280,23 @@ async def _run_inner_impl(
         ),
     )
     agent = info.agent or execution.template_id
+    # An unnamed spawn by a member bound to the dispatch-only mate conductor
+    # must run its worker on `kirocrew-worker`, not re-run the write-less,
+    # shell-less conductor as its own worker (rfc-mate-owned-agent-config.md
+    # §5.0). Only the inheritance path is routed: an explicit `info.agent`
+    # the caller named is always respected. ABSOLUTE import, not `..`:
+    # `_run_inner_impl` is rebound by `bind_component_globals` to run on
+    # `kiro_crew.subagent`'s globals (__package__ = "kiro_crew"), so a
+    # two-dot relative import resolves above the top-level package and raises
+    # ImportError on every unnamed spawn.
+    routed_worker = ""
+    if not info.agent:
+        from kiro_crew.agent_files import worker_route_for_template
+
+        routed = worker_route_for_template(agent)
+        if routed:
+            agent = routed
+            routed_worker = routed
     kind = _selection_kind(info)
     if info.crew or execution.member_id or (not info.agent and agent):
         policy_agent = info.crew or (execution.selection_name if kind == "member" else agent)
@@ -288,6 +305,20 @@ async def _run_inner_impl(
         )
         if denial:
             raise RuntimeError(f"spawn refused by governance: {denial}")
+        # A member spawn is vetted above against the member's own selected
+        # identity (`policy_agent`). When the worker ROUTE actually swapped the
+        # template to `kirocrew-worker`, that routed worker is the agent that
+        # launches and must ALSO clear `capabilities.spawn.scopes.agents`, so
+        # an operator allowlist excluding `kirocrew-worker` refuses the spawn —
+        # it cannot ride the member's own scope. Scoped to a genuine route
+        # (``routed_worker``), NOT any ``agent != policy_agent`` difference:
+        # a member's generated runtime generation is not a policy target.
+        if routed_worker and routed_worker != policy_agent:
+            routed_denial = await asyncio.to_thread(
+                _vet_spawn_governance, info.parent_session_key, routed_worker, app=info.app
+            )
+            if routed_denial:
+                raise RuntimeError(f"spawn refused by governance: {routed_denial}")
         sel().log_api_access(
             caller=f"subagent:{info.id}",
             operation="subagent.agent_inheritance",

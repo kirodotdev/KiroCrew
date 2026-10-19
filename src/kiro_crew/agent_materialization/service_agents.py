@@ -9,6 +9,9 @@ inherits the governance ceiling. Each is rewritten on every rebuild.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from kiro_crew import agent as agent_mod
 from kiro_crew import agent_state
 from kiro_crew.agent_files import (
@@ -17,6 +20,7 @@ from kiro_crew.agent_files import (
 from kiro_crew.agent_files import GUEST_AGENT_FILENAME as _GUEST_AGENT_FILENAME
 from kiro_crew.agent_files import KNOWLEDGE_AGENT_FILENAME as _KNOWLEDGE_AGENT_FILENAME
 from kiro_crew.agent_files import LITE_AGENT_FILENAME as _LITE_AGENT_FILENAME
+from kiro_crew.agent_files import MATE_CONDUCTOR_AGENT_FILENAME as _MATE_CONDUCTOR_AGENT_FILENAME
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
 from kiro_crew.agent_files import TEAM_LEAD_AGENT_FILENAME as _TEAM_LEAD_AGENT_FILENAME
 from kiro_crew.agent_materialization import auto_approve, managed_mcp, skill_resources
@@ -50,6 +54,297 @@ def _install_guest_agent() -> None:
     auto_approve.write_governed_spec(
         guest_path, guest_config, source="_install_guest_agent", kas_policy="none"
     )
+
+
+#: The agent NAME the mate-conductor spec declares and records ownership under. The
+#: governance loop recognises an owned write by the installer-recorded digest held for
+#: this name (:func:`kiro_crew.agent_state.managed_digest_matches`), not by the name alone.
+_MATE_CONDUCTOR_MANAGED_NAME = "kirocrew-mate-conductor"
+
+
+def _is_confirmed_managed_mate_conductor(spec: "dict | None") -> bool:
+    """Does *spec* POSITIVELY confirm as this installer's own managed mate conductor?
+
+    Confirmation is the installer-recorded OWNERSHIP DIGEST: *spec*'s canonical bytes
+    reproduce the value :func:`kiro_crew.agent_state.managed_digest_matches` holds for the
+    owned name. A ``None`` / non-dict spec (absent, unreadable, oversized, or not an object)
+    is confirmed as NOTHING -- it is treated as a user file, never as ours to rewrite. This
+    is the fail-closed companion the installer and the governance refresh both key off: the
+    name was user-creatable before it became owned, so a pre-upgrade private copy can sit at
+    the stem with no owned writer, and a copy that cannot even be parsed must still be
+    treated as foreign, not silently overwritten.
+    """
+    if not isinstance(spec, dict):
+        return False
+    return agent_state.managed_digest_matches(
+        _MATE_CONDUCTOR_MANAGED_NAME, agent_state.spec_digest(spec), strict=True
+    )
+
+
+def _mate_conductor_spec_blocks_install(candidate: Path) -> str | None:
+    """Why a file already at *candidate* (a ``.json`` or ``.md`` at the mate-conductor
+    stem) must block the managed install, or ``None`` when it does not.
+
+    ``None`` means: the candidate is ABSENT, or it is a ``.json`` that reproduces the
+    installer-recorded ownership digest (our own prior write, which the refresh may
+    overwrite). A reason string means leave everything untouched:
+
+    * a symlink / non-regular file -> never follow or clobber;
+    * a read failure (oversized, non-UTF-8, unparseable) -> provenance unconfirmable;
+    * a file that does not reproduce the recorded digest -> a user artefact or another
+      agent's spec (its ``.json`` is not our write; ANY ``.md`` is a user spec, since the
+      installer only ever writes ``.json``, so even a ``.md`` that reproduced the digest
+      would still be the user's and is left untouched).
+
+    This mirrors the dashboard-author installer's ``_present_spec_blocks_install``: the
+    digest-reproducing ``.json`` refresh is the ONE overwrite the installer makes.
+    """
+    if not os.path.lexists(candidate):
+        return None
+    if candidate.is_symlink() or not candidate.is_file():
+        return f"{candidate} is not a regular file"
+    current = agent_mod._read_spec_capped(candidate)
+    if current is None:
+        return f"the file at {candidate} could not be read, so its provenance cannot be confirmed"
+    if candidate.suffix.lower() != ".json":
+        return f"a user markdown spec exists at {candidate}"
+    if not _is_confirmed_managed_mate_conductor(current):
+        return f"a file at {candidate} is not this installer's own managed write"
+    return None
+
+
+def _managed_mate_conductor_install_lands(path: Path) -> bool:
+    """Would the managed mate-conductor install actually WRITE at *path* -- i.e. is the stem
+    owned by a live installer that re-filters its grants every rebuild?
+
+    True when the path is FREE, or the file there is CONFIRMED this installer's own managed
+    write AND no ``.md`` sibling blocks a refresh. A user spec the installer would refuse
+    (unconfirmed ``.json``, a ``.md`` user spec at the stem, or a file present but
+    unreadable) returns False, so the governance refresh does NOT skip it as owned and its
+    grants are filtered against the current ceiling instead of outliving it.
+
+    kiro-cli reads ``<stem>.json`` and the v3 engine also reads ``<stem>.md``, so a ``.json``
+    written beside a user's ``.md`` would SHADOW that markdown spec. The ``.md`` sibling
+    blocks only a FIRST-TIME install (unconfirmed ``.json``): once the ``.json`` is confirmed
+    this installer's own, it is refreshed in place and the ``.md`` is left untouched -- the
+    same three-branch rule the dashboard-author stem follows.
+    """
+    if _mate_conductor_spec_blocks_install(path) is not None:
+        return False
+    current = agent_mod._read_spec_capped(path) if path.is_file() else None
+    json_confirmed = _is_confirmed_managed_mate_conductor(current)
+    if not json_confirmed:
+        if _mate_conductor_spec_blocks_install(path.parent / (path.stem + ".md")) is not None:
+            return False
+    return True
+
+
+def _install_mate_conductor_agent() -> None:
+    """Generate and install the ``kirocrew-mate-conductor`` agent config.
+
+    The agent a crewmate's own chat runs on: a **dispatch-only conductor**. It
+    is derived from the default template (``build_agent_config()`` — for the
+    resolved MCP invocations, the security hooks and the operator's ``agent.json``
+    governance block), and then NARROWED to the shape
+    ``rfc-mate-owned-agent-config.md`` §5.0 / migration step 1 describes:
+
+    * Its ``prompt`` is the source charter ``_MATE_CONDUCTOR_SYSTEM_PROMPT`` —
+      plan, dispatch and report; never run a work item inline.
+    * Its ``tools`` are the fixed ``_MATE_CONDUCTOR_TOOLS`` set, NOT the default
+      template's surface. Every file-writing tool (``fs_write``, ``code``) and
+      the shell (``execute_bash``) are dropped, so the "never does the work
+      itself" charter is true against the tool list and not just the prose. A
+      read-only ``fs_read`` stays so the conductor can size a request before it
+      dispatches (noted in the description).
+    * Its ``mcpServers`` are narrowed to the member platform (``kirocrew-guide``,
+      ``kirocrew-mate`` — a crewmate IS what those serve), ``kirocrew-core``,
+      and the conductor's ``kirocrew-dashboard`` + ``kirocrew-work`` additions.
+      **No user-configured MCP server is mounted**, and ``kirocrew-cron`` /
+      ``kirocrew-computer`` are dropped — the conductor dispatches rather than
+      runs, so it carries neither a user server nor a shell-class server.
+
+    Steps 2 and 3 (the source-defined worker and the per-mate JSON file) are
+    separate follow-ups; this step does not read or write
+    ``~/.kiro/mates/agents/``. The worker a mate-conductor-bound member
+    dispatches to is ``kirocrew-worker`` — mapped at the two inheritance sites
+    in ``subagent_parts/agent_policy`` and ``subagent_manager/run`` so an unnamed
+    ``spawn_run`` does NOT re-run this write-less, shell-less conductor as its own
+    worker.
+
+    The operator's own ``permissions`` block is carried over from the installed
+    ``kirocrew.json`` (``_carry_installed_permissions``). ``build_agent_config()``
+    reads only the shipped defaults and ``agent.json``, never the installed
+    default spec, so a KAS deny an operator hand-wrote into ``kirocrew.json`` (a
+    ``web_fetch`` deny, say) would otherwise never reach the conductor and KAS
+    would silently auto-approve it for every crewmate chat. A
+    crewmate's chat must be bound by at least the same restrictions the default
+    it replaced carried.
+    """
+    config = agent_mod.build_agent_config()
+    _carry_installed_permissions(config)
+    config["name"] = "kirocrew-mate-conductor"
+    config["description"] = (
+        "The agent a crewmate's own chat runs on. A dispatch-only conductor: it "
+        "plans, dispatches work to a worker, and reports back, and never does a "
+        "work item's work itself. It has read-only file access (no fs_write, no "
+        "code), no shell, and no user-configured MCP server."
+    )
+    config["prompt"] = agent_mod._MATE_CONDUCTOR_SYSTEM_PROMPT
+    # The two skills the charter leans on are reachable from a custom template
+    # only when mapped: ``dashboard`` (how it changes the page it shows the
+    # person) and ``goal-conductor`` (the dispatch/ledger operating procedure).
+    skill_resources.map_prompt_skills(config, "goal-conductor", "dashboard")
+    config["tools"] = list(agent_mod._MATE_CONDUCTOR_TOOLS)
+    config["mcpServers"] = _mate_conductor_mcp_servers(config)
+    # ``allowedTools`` = the conductor's own core verbs (spawn/dispatch + the
+    # read/create-only rest) plus the member platform grants a crewmate already
+    # carries (guide + mate + the member dashboard/work verbs). Filtered through
+    # the governance ceiling by ``write_governed_spec`` -> the usual
+    # ``_apply_allowed_tools_ceiling`` path, so a grant above the operator's
+    # ceiling is dropped, not shipped.
+    config["allowedTools"] = [
+        "tool_search",
+        *agent_mod._MATE_CONDUCTOR_CORE_GRANTS,
+        *agent_mod._GUIDE_AUTO_GRANTS,
+        *agent_mod._MATE_AUTO_GRANTS,
+        *agent_mod._MEMBER_DASHBOARD_GRANTS,
+        *agent_mod._LEDGER_CONDUCTOR_WORK_GRANTS,
+    ]
+    agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
+    path = agent_mod.kiro_agents_dir_path() / _MATE_CONDUCTOR_AGENT_FILENAME
+    agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
+    # The name ``kirocrew-mate-conductor`` was a user-publishable template stem before this
+    # step reserved it (the publish handler only rejected names already in
+    # ``OWNED_KIRO_AGENT_FILES``). A user who published a custom template under it before
+    # upgrading would otherwise have it silently and irrecoverably overwritten here. So
+    # attribute any file already at the path by the INSTALLER-RECORDED OWNERSHIP DIGEST, the
+    # same guard the dashboard-author installer uses: write only when the path is FREE or the
+    # file there reproduces the digest we recorded for our own last managed write. A spec we
+    # cannot positively confirm is our own (no digest recorded, hand-edited, or another
+    # agent's spec renamed on) is left untouched and logged. The whole read -> attribute ->
+    # write runs under ``agents_spec_lock`` so the attribution and the write are one atomic
+    # step, as the sibling installers do.
+    agents_dir = agent_mod.kiro_agents_dir_path()
+    with agent_mod.agents_spec_lock(agents_dir):
+        # Refuse on EXISTENCE, not on parse success: a file present at the stem that this
+        # installer cannot positively confirm is its own (no digest recorded, hand-edited,
+        # another agent's spec renamed on, OR present but unreadable/oversized so
+        # ``_read_spec_capped`` returns ``None``) is left untouched. Keying off ``is_file``
+        # rather than ``current is not None`` is what keeps a corrupt user spec from slipping
+        # past the guard and being overwritten. BOTH candidate forms are weighed: kiro-cli
+        # reads ``<stem>.json`` and the v3 engine also reads ``<stem>.md``, so a first-time
+        # ``.json`` written beside a user's ``.md`` would SHADOW that markdown spec -- the
+        # ``.md`` blocks the install exactly as an unconfirmed ``.json`` does, the same guard
+        # the dashboard-author installer uses. Once the ``.json`` is confirmed ours it is
+        # refreshed in place and the ``.md`` is left untouched.
+        current = agent_mod._read_spec_capped(path) if path.is_file() else None
+        json_confirmed = _is_confirmed_managed_mate_conductor(current)
+        json_blocked = _mate_conductor_spec_blocks_install(path)
+        md_blocked = (
+            None
+            if json_confirmed
+            else _mate_conductor_spec_blocks_install(path.parent / (path.stem + ".md"))
+        )
+        blocked = json_blocked or md_blocked
+        if blocked is not None:
+            agent_mod.logger.warning(
+                "Not installing the managed %s: %s. Leaving it untouched; remove or "
+                "rename that file to let the managed agent install.",
+                _MATE_CONDUCTOR_AGENT_FILENAME,
+                blocked,
+            )
+            return
+        # ``build_agent_config`` carries the operator's ``agent.json`` block -- the same
+        # one a crewmate on ``kirocrew.json`` runs under today -- so keep its ``deny``/``ask``
+        # rules and derive the allows from the (now narrowed) ``allowedTools``. The
+        # default ``"derive"`` would replace the operator's KAS deny/ask with allows
+        # derived from ``allowedTools``, silently loosening the crewmate's own ceiling.
+        #
+        # Two-phase digest commit so a crash never leaves the bytes and the record out of
+        # step: record the NEW bytes' digest as PENDING (inside the governed write, after the
+        # one governance pass, so it is the digest of exactly the bytes that land), replace
+        # the file, then finalize. At every instant the file reproduces either the old
+        # finalized digest or the pending one, so a later rebuild always re-confirms.
+        current_digest = agent_state.spec_digest(current) if isinstance(current, dict) else None
+
+        def _record_pending(governed: dict) -> None:
+            agent_state.begin_managed_write(
+                _MATE_CONDUCTOR_MANAGED_NAME,
+                agent_state.spec_digest(governed),
+                current=current_digest,
+            )
+
+        auto_approve.write_governed_spec(
+            path,
+            config,
+            source="_install_mate_conductor_agent",
+            kas_policy="inherit_narrowing",
+            before_write=_record_pending,
+        )
+        agent_state.finalize_managed_write(_MATE_CONDUCTOR_MANAGED_NAME)
+    agent_mod.logger.info("Installed mate conductor agent config: %s", path)
+
+
+def _mate_conductor_mcp_servers(config: dict) -> dict:
+    """The narrowed ``mcpServers`` map the mate conductor carries.
+
+    Keeps the member platform (``kirocrew-guide``, ``kirocrew-mate``) and
+    ``kirocrew-core`` from the derived default, drops every other server — most
+    importantly every user-configured one and the shell-class ``kirocrew-computer``
+    / scheduler ``kirocrew-cron`` — then adds the conductor's own
+    ``kirocrew-dashboard`` (widgets + session control) and ``kirocrew-work``
+    (the ledger) the same way ``conductor_agents._conductor_mcp_servers`` does.
+    A dispatch-only conductor carries no user server by design (§5.0): the user's
+    servers belong to the WORKER it spawns, never to it.
+    """
+    src = config.get("mcpServers", {}) or {}
+    keep = (agent_mod._GUIDE_SERVER, agent_mod._MATE_SERVER, "kirocrew-core")
+    narrowed: dict = {k: src[k] for k in keep if k in src}
+    dash_cmd, dash_args = agent_mod._kirocrew_mcp_invocation("mcp-dashboard")
+    dash_entry: dict = {"command": dash_cmd, "args": dash_args}
+    if managed_mcp._mcp_registry_mode():
+        dash_entry["type"] = managed_mcp._MCP_REGISTRY_TYPE
+    dash_env = managed_mcp._managed_mcp_env()
+    if dash_env:
+        dash_entry["env"] = dash_env
+    narrowed["kirocrew-dashboard"] = dash_entry
+    narrowed["kirocrew-work"] = managed_mcp._managed_opt_in_entry("mcp-work")
+    return narrowed
+
+
+def _carry_installed_permissions(config: dict) -> None:
+    """Carry the operator's ``permissions`` block from the installed
+    ``kirocrew.json`` into *config*, in place.
+
+    ``build_agent_config()`` reads only the shipped defaults and ``agent.json``;
+    it never reads the installed ``~/.kiro/agents/kirocrew.json``, where an
+    operator may have hand-written a ``permissions`` block (e.g. a KAS
+    ``web_fetch`` deny). A crewmate's chat replacing that default must be bound by
+    at least the same restrictions, or KAS would silently auto-approve calls the
+    operator denied. ``write_governed_spec``'s ``inherit_narrowing``
+    can only keep a deny already present in the config it is handed, so the block
+    must be merged in BEFORE the governed write.
+
+    The installed default's block takes precedence over the shipped one when both
+    name a key: the operator's edit is the stricter, intended rule. Read is
+    best-effort -- on a fresh install (no file yet) or an unreadable spec, the
+    shipped ``agent.json``-derived block build_agent_config already carries stands.
+    This runs AFTER ``write_default_spec`` in ``rebuild_agent_config``, so on a
+    normal boot the file is present and freshly assembled.
+    """
+    path = agent_mod.kiro_agents_dir_path() / agent_mod.AGENT_FILENAME
+    try:
+        installed = agent_mod.loads_user_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(installed, dict):
+        return
+    installed_perms = installed.get("permissions")
+    if not isinstance(installed_perms, dict):
+        return
+    merged = dict(config.get("permissions") or {})
+    merged.update(installed_perms)
+    config["permissions"] = merged
 
 
 def _install_lite_agent_fallback() -> None:

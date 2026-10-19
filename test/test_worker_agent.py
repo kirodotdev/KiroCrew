@@ -41,7 +41,7 @@ from kiro_crew.agent_files import (
     SECURITY_CONDUCTOR_AGENT_FILENAME,
     WORKER_AGENT_FILENAME,
 )
-from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
+from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions, narrowed_agent_permissions
 
 _INHERITED_PERMISSIONS = {"rules": [{"capability": "web_fetch", "effect": "deny"}]}
 
@@ -192,10 +192,32 @@ def test_the_worker_permissions_field_is_gated_on_the_installed_kiro_cli(tmp_pat
     _pin_spec_permissions_cli(monkeypatch, "accepts")
     accepting = _install()
     assert accepting.get("permissions"), "an accepting CLI must get the block"
-    assert accepting["permissions"] != _INHERITED_PERMISSIONS
-    assert accepting["permissions"] == derived_agent_permissions(
-        accepting["allowedTools"], WORKER_AGENT_FILENAME
+    # The operator's inherited deny SURVIVES onto the worker (narrowed), while the
+    # allows are still derived from the worker's grant list. A worker does the
+    # actual work a conductor delegates, so a ``web_fetch`` deny that binds the
+    # default must bind the worker too — otherwise an unnamed ``spawn_run`` routed
+    # to the worker performs the denied call. The block is therefore NOT a plain
+    # derive: it carries both the inherited deny and the derived allows.
+    #
+    # Asserted with EXACT equality against the narrowed block, not membership: a
+    # ratchet may only tighten, so an `in` check that admitted an extra underived
+    # allow would silently relax the guard. The expected block is reconstructed the
+    # way the installer builds it — the inherited deny narrowed over the allows
+    # derived from the worker's own grant list.
+    derived = derived_agent_permissions(accepting["allowedTools"], WORKER_AGENT_FILENAME)
+    expected = narrowed_agent_permissions(
+        json.loads(json.dumps(derived)),
+        _INHERITED_PERMISSIONS,
+        WORKER_AGENT_FILENAME,
+        audit_decision=lambda refs, outcome, reason: None,
     )
+    assert accepting["permissions"] == expected, (
+        "the worker block must be exactly the inherited deny narrowed over the "
+        "derived allows — no extra underived rules"
+    )
+    assert (
+        _INHERITED_PERMISSIONS["rules"][0] in accepting["permissions"]["rules"]
+    ), "the inherited web_fetch deny must survive onto the worker"
     assert accepting["allowedTools"], "the grant list is never withheld"
 
     for refusing in ("refuses", "unknown"):
@@ -419,6 +441,60 @@ def test_the_worker_mirrors_the_default_model(worker_from_installed_default):
     shipped sentinel it silently runs a weaker one than the session that dispatched
     it, on work the dispatcher sized against its own."""
     assert worker_from_installed_default()["model"] == "claude-opus-5"
+
+
+def test_the_worker_carries_the_operators_installed_deny(tmp_path, monkeypatch):
+    """An operator deny on the installed default spec on disk binds the worker too.
+
+    A worker does the ACTUAL work a conductor delegates, so a KAS deny the
+    operator hand-wrote into ``kirocrew.json`` (a ``web_fetch`` deny, say) must
+    bind the worker — otherwise an unnamed ``spawn_run`` routed to the worker
+    performs the denied call despite the deny the conductor preserves. The worker
+    is written ``inherit_narrowing``: the inherited deny survives while the allows
+    are still derived from the worker's own grant list.
+    """
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    on_disk = json.loads(json.dumps(_DEFAULT_SPEC_ON_DISK))
+    on_disk["permissions"] = {"rules": [{"capability": "web_fetch", "effect": "deny"}]}
+    (tmp_path / AGENT_FILENAME).write_text(json.dumps(on_disk), encoding="utf-8")
+    _pin_spec_permissions_cli(monkeypatch, "accepts")
+
+    agent._install_worker_agent()
+    worker = json.loads((tmp_path / WORKER_AGENT_FILENAME).read_text(encoding="utf-8"))
+
+    rules = worker.get("permissions", {}).get("rules", [])
+    assert {
+        "capability": "web_fetch",
+        "effect": "deny",
+    } in rules, "the operator's on-disk web_fetch deny must reach the worker"
+    # The derived allows for the worker's own grants are still present.
+    assert any(r.get("effect") == "allow" for r in rules), "derived allows must remain"
+
+
+def test_a_deny_added_to_the_default_moves_the_worker_fingerprint():
+    """A permission revocation on the default re-derives the stale cached worker.
+
+    The worker inherits the default's deny/ask at install, so the freshness
+    fingerprint must cover ``permissions`` — otherwise an operator who ADDS a
+    ``web_fetch`` deny to the default AFTER the worker was installed moves no
+    fingerprinted key, the mirror-freshness check passes, and the cached worker
+    keeps its pre-deny permissions (authorized for a now-denied call). The
+    fingerprint covering ``permissions`` is what forces the re-derive.
+    """
+    from kiro_crew.agent_materialization import worker_agent
+
+    without = json.loads(json.dumps(_DEFAULT_SPEC_ON_DISK))
+    without.pop("permissions", None)
+    with_deny = json.loads(json.dumps(without))
+    with_deny["permissions"] = {"rules": [{"capability": "web_fetch", "effect": "deny"}]}
+
+    fp_without = worker_agent._surface_fingerprint(without, worker_agent._WORKER_AGENT)
+    fp_with = worker_agent._surface_fingerprint(with_deny, worker_agent._WORKER_AGENT)
+    assert fp_without and fp_with
+    assert fp_without != fp_with, (
+        "adding a deny to the default must change the worker fingerprint so the "
+        "stale cached worker is re-derived"
+    )
 
 
 def test_the_worker_keeps_a_model_the_user_pinned_on_the_worker_itself(

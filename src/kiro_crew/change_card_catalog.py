@@ -109,7 +109,28 @@ OP_UNDO = "undo"
 #: The crewmate template a proposed crewmate is built from: the one the
 #: Crewmates page's New crewmate card builds from (``NewCrewmateDialog.tsx``
 #: ``DEFAULT_CREWMATE_TEMPLATE``).
-DEFAULT_CREWMATE_TEMPLATE = "kirocrew"
+#:
+#: The source-defined, dispatch-only mate conductor (``kirocrew-mate-conductor``,
+#: rfc-mate-owned-agent-config.md §6 step 1). This is one of the three creation
+#: defaults §6 binds to the conductor — the first crewmate's implicit template
+#: (``first_crewmate._ORDINARY_TEMPLATE``), this New-crewmate default, and the
+#: ``crewmate.create`` card's template — so EVERY crewmate created, through any
+#: door, runs the conductor rather than the full-surface ``kirocrew`` template.
+#: It is user-visible: the dialog's "Built from" dropdown default label and the
+#: ``POST /api/agents`` payload both read from here. A stored binding keeps its
+#: own template; this default governs only NEW crewmates.
+DEFAULT_CREWMATE_TEMPLATE = "kirocrew-mate-conductor"
+
+#: The legacy crewmate-creation default (RFC §6 step 1 names
+#: ``DEFAULT_CREWMATE_TEMPLATE`` as its successor). A ``crewmate.create`` card
+#: stored by a build on this default carries ``"kiro_agent": "kirocrew"`` in its
+#: ``plan.apply``; on reload ``rebuild_record`` rebuilds the plan with the
+#: CURRENT default, so the two differ and a stored card would fail verification
+#: and be dropped — taking a pending card, or an applied card's Undo, with it.
+#: Plan MATCHING (not new plans) therefore accepts this value too: a stored card
+#: is authentic if its plan matches the current default OR this one. New cards
+#: and any card that still runs use ``DEFAULT_CREWMATE_TEMPLATE``.
+LEGACY_CREWMATE_TEMPLATE = "kirocrew"
 
 REASON_MAX_CHARS = 500
 _NAME_MAX = 128
@@ -2061,13 +2082,20 @@ def _toggle_step(p: dict[str, Any], enabled: bool) -> dict[str, Any]:
     return step("POST", "/api/mcp/toggle", {"name": p["name"], "enabled": enabled})
 
 
-def _create_schedule_step(p: dict[str, Any]) -> dict[str, Any]:
-    """A ``crewmate.create`` card's work-schedule step, filled from step 0."""
+def _create_schedule_step(
+    p: dict[str, Any], template: str = DEFAULT_CREWMATE_TEMPLATE
+) -> dict[str, Any]:
+    """A ``crewmate.create`` card's work-schedule step, filled from step 0.
+
+    *template* is the crewmate template the schedule's worker runs; it defaults
+    to the current creation default. Matching a plan a previous build stored
+    passes ``LEGACY_CREWMATE_TEMPLATE`` so the stored shape still verifies.
+    """
     fills = [_step_fill("member_id", 0, "member_id")]
     body = {
         "name": f"{p['name']} schedule",
         "message": p["goal"],
-        "agent": DEFAULT_CREWMATE_TEMPLATE,
+        "agent": template,
         "silent": False,
         "hide_in_chat": False,
         "strict_schedule": True,
@@ -2077,7 +2105,10 @@ def _create_schedule_step(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def legacy_create_apply(
-    params: dict[str, Any], *, first_greeting: bool = True
+    params: dict[str, Any],
+    *,
+    first_greeting: bool = True,
+    template: str = DEFAULT_CREWMATE_TEMPLATE,
 ) -> list[dict[str, Any]]:
     """The apply plan a ``crewmate.create`` card was stored with before goal records.
 
@@ -2087,11 +2118,16 @@ def legacy_create_apply(
     schedule it made (:func:`_create_schedule_index`). Cards from builds whose
     create did not yet ask for a first greeting carry no ``first_greeting``
     key; ``first_greeting=False`` rebuilds that shape.
+
+    *template* is the crewmate template the stored plan named. It defaults to the
+    current creation default; matching a plan from a build BEFORE the default
+    moved (RFC §6 step 1) passes ``LEGACY_CREWMATE_TEMPLATE`` so the stored shape
+    still verifies instead of being dropped.
     """
     p = params
     body: dict[str, Any] = {
         "name": p["name"],
-        "kiro_agent": DEFAULT_CREWMATE_TEMPLATE,
+        "kiro_agent": template,
         "description": p["goal"],
         "source": "kirocrew",
     }
@@ -2099,7 +2135,47 @@ def legacy_create_apply(
         body["first_greeting"] = True
     apply = [step("POST", "/api/agents", body)]
     if p.get("schedule"):
-        apply.append(_create_schedule_step(p))
+        apply.append(_create_schedule_step(p, template))
+    return apply
+
+
+def current_create_apply(params: dict[str, Any], template: str) -> list[dict[str, Any]]:
+    """The current-shape (goal-record) ``crewmate.create`` plan for *template*.
+
+    Identical to what :func:`build_preview` builds for a ``crewmate.create``,
+    except the crewmate template is a parameter. Used ONLY to match a stored
+    card's plan against a non-current template: a card saved before RFC §6 step
+    1 moved the default has ``LEGACY_CREWMATE_TEMPLATE`` in its two template
+    slots, and ``build_preview`` now builds the plan with the current default,
+    so the matcher reconstructs the stored shape here to verify it rather than
+    drop it. Not an execution path — a verified card still runs the plan
+    ``build_preview`` produces, on the current default.
+    """
+    p = params
+    goal_fills = [
+        _step_path_fill("slug", 0, "member_id"),
+        _step_fill("member", 0, "name"),
+    ]
+    apply = [
+        step(
+            "POST",
+            "/api/agents",
+            {
+                "name": p["name"],
+                "kiro_agent": template,
+                "source": "kirocrew",
+                "first_greeting": True,
+            },
+        ),
+        step(
+            "PUT",
+            f"/api/members/{placeholder(goal_fills[0])}/goals/long-term",
+            _with_fills({"long_term": p["goal"], "expected": ""}, goal_fills[1:]),
+            fill=goal_fills,
+        ),
+    ]
+    if p.get("schedule"):
+        apply.append(_create_schedule_step(p, template))
     return apply
 
 

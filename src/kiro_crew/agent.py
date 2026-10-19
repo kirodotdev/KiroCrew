@@ -142,6 +142,16 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _install_pipeline_conductor_agent,
         _install_security_conductor_agent,
     )
+    from kiro_crew.agent_materialization.dashboard_author_agent import (  # noqa: F401
+        _DASHBOARD_AUTHOR_SPEC_PATH,
+        _MANAGED_OWNED_NAME,
+        _foreign_dashboard_author_spec_reason,
+        _install_dashboard_author_agent,
+        _is_confirmed_managed_dashboard_author,
+        _managed_dashboard_author_install_lands,
+        _present_spec_blocks_install,
+        _write_dashboard_author_spec,
+    )
     from kiro_crew.agent_materialization.default_spec_commit import (  # noqa: F401
         _apply_operator_oauth_client,
         prune_dangling_tool_refs,
@@ -279,14 +289,17 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _GUEST_AGENT_FILENAME,
         _KNOWLEDGE_AGENT_FILENAME,
         _LITE_AGENT_FILENAME,
+        _MATE_CONDUCTOR_AGENT_FILENAME,
         _RESEARCH_AGENT_FILENAME,
         _TEAM_LEAD_AGENT_FILENAME,
         _install_dashboard_manager_agent,
         _install_guest_agent,
         _install_knowledge_agent,
         _install_lite_agent_fallback,
+        _install_mate_conductor_agent,
         _install_research_agent,
         _install_team_lead_agent,
+        _is_confirmed_managed_mate_conductor,
     )
     from kiro_crew.agent_materialization.skill_resources import (  # noqa: F401
         map_prompt_skills,
@@ -306,14 +319,11 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _drop_servers,
         _excluded_verb,
         _file_identity,
-        _foreign_dashboard_author_spec_reason,
         _foreign_worker_spec_reason,
         _glob_hits,
         _grant_reaches_excluded,
-        _install_dashboard_author_agent,
         _install_worker_agent,
         _installed_default_spec,
-        _is_confirmed_managed_dashboard_author,
         _pattern_reaches_excluded,
         _refuse_foreign_worker_spec,
         _require_fresh_worker_spec,
@@ -2232,12 +2242,15 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_install_guest_agent",
         "_install_lite_agent_fallback",
         "_install_knowledge_agent",
+        "_install_mate_conductor_agent",
         "_install_research_agent",
         "_install_team_lead_agent",
         "_install_dashboard_manager_agent",
+        "_is_confirmed_managed_mate_conductor",
         "_DASHBOARD_MANAGER_AGENT_FILENAME",
         "_GUEST_AGENT_FILENAME",
         "_KNOWLEDGE_AGENT_FILENAME",
+        "_MATE_CONDUCTOR_AGENT_FILENAME",
         "_LITE_AGENT_FILENAME",
         "_RESEARCH_AGENT_FILENAME",
         "_TEAM_LEAD_AGENT_FILENAME",
@@ -2277,8 +2290,6 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "DerivedSpecStale",
         "ForeignAgentSpec",
         "_foreign_worker_spec_reason",
-        "_foreign_dashboard_author_spec_reason",
-        "_is_confirmed_managed_dashboard_author",
         "_refuse_foreign_worker_spec",
         "default_spec_fingerprint",
         "_spec_fingerprint",
@@ -2289,8 +2300,17 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "require_unchanged_derived_spec",
         "_require_fresh_worker_spec",
         "rederive_worker_agent",
-        "_install_dashboard_author_agent",
         "_WORKER_AGENT_FILENAME",
+    ),
+    "kiro_crew.agent_materialization.dashboard_author_agent": (
+        "_DASHBOARD_AUTHOR_SPEC_PATH",
+        "_MANAGED_OWNED_NAME",
+        "_foreign_dashboard_author_spec_reason",
+        "_managed_dashboard_author_install_lands",
+        "_is_confirmed_managed_dashboard_author",
+        "_install_dashboard_author_agent",
+        "_write_dashboard_author_spec",
+        "_present_spec_blocks_install",
     ),
     "kiro_crew.agent_materialization.guide_platform": (
         "grant_guide_platform_once",
@@ -2980,9 +3000,9 @@ def migrate_relocated_skill_uris() -> int:
                 # recorded digest) is never stamped. ``worker_agent`` is the module global
                 # bound by the core's tail import, resolved at call time.
                 pre_migration_confirmed = (
-                    str(name) == worker_agent._MANAGED_OWNED_NAME
-                    and spec_path.stem == (worker_agent._MANAGED_OWNED_NAME)
-                    and worker_agent._is_confirmed_managed_dashboard_author(data)
+                    str(name) == dashboard_author_agent._MANAGED_OWNED_NAME
+                    and spec_path.stem == (dashboard_author_agent._MANAGED_OWNED_NAME)
+                    and dashboard_author_agent._is_confirmed_managed_dashboard_author(data)
                 )
                 pre_migration_digest = (
                     agent_state.spec_digest(data) if pre_migration_confirmed else None
@@ -3300,8 +3320,8 @@ def reset_agent_model(name: str) -> tuple[Path, str]:
         # Snapshot the PRE-edit bytes to decide ownership BEFORE this writer mutates them:
         # the digest is renewed below only when the file WAS already our confirmed managed
         # write, never for a user file at the once-user-creatable stem.
-        pre_write_confirmed = name == worker_agent._MANAGED_OWNED_NAME and (
-            worker_agent._is_confirmed_managed_dashboard_author(data)
+        pre_write_confirmed = name == dashboard_author_agent._MANAGED_OWNED_NAME and (
+            dashboard_author_agent._is_confirmed_managed_dashboard_author(data)
         )
         # Digest of the CURRENT on-disk bytes (pre-edit), captured before mutation so
         # ``begin_managed_write`` can keep the file confirmable if this write is interrupted.
@@ -4568,6 +4588,26 @@ def rebuild_agent_config(
                 exc_info=True,
             )
 
+        # Tracks a failed mate-conductor rewrite the way ``research_held`` and
+        # ``team_lead_held`` do: ``_install_mate_conductor_agent`` also derives
+        # from ``build_agent_config()``, so a failed rewrite under a tightening
+        # ceiling must hold the memo rather than let it advance over a stale
+        # grant list on disk. Folded into ``conductor_held`` below.
+        mate_conductor_held = False
+
+        # Install kirocrew-mate-conductor agent (the agent a crewmate's own chat
+        # runs on -- see rfc-mate-owned-agent-config.md, migration step 1).
+        try:
+            service_agents._install_mate_conductor_agent()
+        except Exception:
+            mate_conductor_held = True
+            logger.warning(
+                "kirocrew-mate-conductor agent install failed; marking the ceiling held so "
+                "a tightened ceiling is retried rather than recorded as synced over the "
+                "stale grant list left on disk",
+                exc_info=True,
+            )
+
         # Install kirocrew-dashboard-manager agent (the subagent a crewmate hands page
         # work to). Degrades to a debug line like the two above: with the spec absent a
         # crewmate still has `dashboard_fields` and `dashboard_write`, so the page it has
@@ -4639,9 +4679,10 @@ def rebuild_agent_config(
         # down must still leave the installers' verdict behind, not the previous one.
         # ``team_lead_held`` folds in here (not only into ``_conductor_spec_held``)
         # because the end-of-rebuild ``_held_out.append`` reads ``conductor_held``.
-        # ``research_held`` folds in for the same reason: both derive from
-        # ``build_agent_config`` and must not be recorded synced over a stale grant list.
-        conductor_held = conductor_held or team_lead_held or research_held
+        # ``research_held`` and ``mate_conductor_held`` fold in for the same reason:
+        # all three derive from ``build_agent_config`` and must not be recorded
+        # synced over a stale grant list.
+        conductor_held = conductor_held or team_lead_held or research_held or mate_conductor_held
         _conductor_spec_held = conductor_held
         _conductor_installers_held = conductor_held
 
@@ -4659,7 +4700,7 @@ def rebuild_agent_config(
         # installer records in the ``agent_state`` sidecar for this name.
         dashboard_author_install_error: Exception | None = None
         try:
-            worker_agent._install_dashboard_author_agent()
+            dashboard_author_agent._install_dashboard_author_agent()
         except Exception as exc:
             # Capture, do NOT swallow. An installer failure must not ABORT the independent
             # repairs below (fork governance refresh, hook repair) -- those run for every other
@@ -5207,6 +5248,130 @@ _MATE_AUTO_GRANTS = (
     f"@{_MATE_SERVER}/key_result_progress",
     f"@{_MATE_SERVER}/save_goal_report",
 )
+
+
+#: The dispatch-only mate conductor's ``tools`` — a minimal set fixed in code,
+#: NOT derived from the default template. The default agent mounts
+#: ``execute_bash``, ``fs_write`` and ``code`` (``config/defaults.json``); this
+#: spec omits every tool that can write a file or run a shell, because the whole
+#: point of the conductor (rfc-mate-owned-agent-config.md §5.0, migration step 1)
+#: is that it plans and dispatches and never does a work item's work inline. A
+#: conductor that could write a file or shell out could do the work itself, which
+#: is the case the tool set exists to exclude — the same invariant the goal
+#: conductor's ``_conductor_spec`` holds, taken one step further (the goal
+#: conductor keeps ``execute_bash`` for its bundled evaluator script; a mate
+#: conductor has no such script, so the shell is omitted entirely). The user's
+#: own MCP servers are narrowed out in the installer (``_install_mate_conductor_agent``);
+#: what stays is the member platform (``@kirocrew-guide`` + ``@kirocrew-mate`` —
+#: a crewmate IS the thing those serve), ``@kirocrew-core`` (spawn/dispatch,
+#: memory, send/ask), ``@kirocrew-dashboard`` (widgets + session control) and
+#: ``@kirocrew-work`` (the ledger it records dispatched items in). ``fs_read`` and
+#: ``web_fetch`` are the read-only tools it uses to understand a request before it
+#: dispatches; a long read it is told to hand to a worker (the prompt rule), but
+#: the spec keeps the read itself so the conductor can size the task.
+_MATE_CONDUCTOR_TOOLS: tuple[str, ...] = (
+    "fs_read",
+    "web_fetch",
+    "session",
+    "report",
+    "tool_search",
+    "@kirocrew-core",
+    "@kirocrew-guide",
+    "@kirocrew-mate",
+    "@kirocrew-dashboard",
+    "@kirocrew-work",
+)
+
+#: The ``@kirocrew-core`` verbs the mate conductor auto-approves. The spawn/dispatch
+#: verbs are load-bearing (dispatching work is its whole job); the rest mirror the
+#: goal conductor's read/create-only rule — memory, send/notify/ask, the session
+#: ledger, skill lookup. No verb here MUTATES a peer session the conductor does not
+#: own; the writes it needs against worker sessions it created travel on
+#: ``@kirocrew-dashboard`` (``_MEMBER_DASHBOARD_GRANTS``), which the server bounds to
+#: sessions this member opened.
+_MATE_CONDUCTOR_CORE_GRANTS: tuple[str, ...] = (
+    "@kirocrew-core/spawn_run",
+    "@kirocrew-core/spawn_sub_agents",
+    "@kirocrew-core/spawn_continue",
+    "@kirocrew-core/spawn_steer",
+    "@kirocrew-core/spawn_list",
+    "@kirocrew-core/spawn_status",
+    "@kirocrew-core/spawn_release",
+    "@kirocrew-core/select_crew",
+    "@kirocrew-core/route_crew",
+    "@kirocrew-core/memory_recall",
+    "@kirocrew-core/wait",
+    "@kirocrew-core/resource_status",
+    "@kirocrew-core/list_sessions",
+    "@kirocrew-core/session_ledger_read",
+    "@kirocrew-core/session_ledger_record",
+    "@kirocrew-core/skill_search",
+    "@kirocrew-core/skill_fetch",
+    "@kirocrew-core/send_message",
+    "@kirocrew-core/send_notification",
+    "@kirocrew-core/ask_question",
+    "@kirocrew-core/suggest_followup",
+)
+
+
+_MATE_CONDUCTOR_SYSTEM_PROMPT = """# Kiro Crew Mate — Conductor
+
+You are the agent a person chats with in a crewmate conversation. You are a
+**conductor**: you understand what the person wants, plan it, and dispatch the
+work to a worker. **You never do a work item's work yourself.**
+
+## Why you only dispatch
+
+You must be free to answer the person the moment they send a message. An agent
+that is busy doing a task AND trying to take new input at the same time serves
+neither well. So any substantive work — a code change, a research pass, a review,
+anything that takes more than a short reply — is handed to a worker session you
+spawn. You acknowledge, plan, dispatch, and report back; the worker does the
+work and reports to you.
+
+This is enforced, not just asked: you have **no tool that writes a file** (no
+`fs_write`, no `code`), **no shell** (`execute_bash` is not mounted), and **no
+user-configured MCP server**. You cannot run a build, a code change or a
+user-server task inline even if you tried — the right move is always to dispatch
+it. A long read (`fs_read`, `web_fetch`) or a long think, hand to a worker too,
+so your turn with the person stays short.
+
+## What you can do directly
+
+- **Talk with the person** — understand the request, ask a clarifying question
+  (`ask_question`), offer next steps (`suggest_followup`), send a message
+  (`send_message`).
+- **Show things** — render a widget or set up the person's Dashboard, keep
+  memory. These are Kiro Crew surfaces, not work items.
+- **Read to understand** — `fs_read` and `web_fetch`, only far enough to size the
+  task and write a good brief. If it turns into real reading, dispatch it.
+- **Manage your own crewmate record** — `@kirocrew-mate` (your name, model,
+  goal, and the capability change card, below).
+
+If the person wants a recurring job or reminder scheduled, that is work: brief a
+worker to set it up. You have no scheduling tool yourself.
+
+## How you dispatch a worker
+
+1. `spawn_run` (or `spawn_sub_agents` for several independent tasks) with a
+   bounded brief: the goal, the inputs the worker needs, what counts as done,
+   and where to report. Name the worker agent explicitly.
+2. The worker runs the task and reports back. You read its result, tell the
+   person what happened, and decide the next step.
+3. If the worker reports it lacks a capability, you tell the person what the
+   worker needs — you do not try to do the task yourself.
+
+Record longer-running work in the work ledger (`session_ledger_record`) so it
+survives a new turn.
+
+## What you never do
+
+- Run a work item inline. It goes to a worker.
+- Write or edit a file, run a shell command, or call a user MCP server — you
+  have no tool for any of these by design.
+- Promote yourself into a worker, or let a worker promote itself: a worker that
+  finds its task too large reports back, and you decide.
+"""
 
 
 _CONDUCTOR_SYSTEM_PROMPT = """# Kiro Crew Conductor
@@ -6609,8 +6774,8 @@ def _sanitize_agent_hooks() -> None:
         # and let the next rebuild overwrite them. ``worker_agent`` is a module global bound
         # by the tail import below (like ``kiro_hooks`` above), resolved at call time.
         stem = filename.removesuffix(".json")
-        pre_sweep_confirmed = stem == worker_agent._MANAGED_OWNED_NAME and (
-            worker_agent._is_confirmed_managed_dashboard_author(data)
+        pre_sweep_confirmed = stem == dashboard_author_agent._MANAGED_OWNED_NAME and (
+            dashboard_author_agent._is_confirmed_managed_dashboard_author(data)
         )
         pre_sweep_digest = agent_state.spec_digest(data) if pre_sweep_confirmed else None
         data["hooks"] = {
@@ -6678,6 +6843,7 @@ def __dir__() -> list[str]:
 from kiro_crew.agent_materialization import (  # noqa: E402, F401 -- the owners read the names bound above
     auto_approve,
     conductor_agents,
+    dashboard_author_agent,
     default_spec_commit,
     first_crewmate,
     fork_refresh,

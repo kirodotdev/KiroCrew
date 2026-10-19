@@ -86,6 +86,7 @@ from kiro_crew.agent_discovery import (
     project_agent_files,
     project_agent_name,
 )
+from kiro_crew.agent_files import is_kirocrew_default_agent
 from kiro_crew.agent_sdk import kas_engine_gap
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.agent_spec_format import (  # noqa: F401

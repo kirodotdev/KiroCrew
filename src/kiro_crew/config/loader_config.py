@@ -15,6 +15,7 @@ from pathlib import Path
 
 import kiro_crew.config.resolution as _resolution
 from kiro_crew import model_registry, model_scope, platform_compat
+from kiro_crew.agent_files import is_kirocrew_default_agent as _is_kirocrew_default_agent
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     resolve_cc_permission_mode,
@@ -962,7 +963,7 @@ class KiroCrewConfig:
         candidates: list[tuple[str, str]] = []
         if model_override:
             candidates.append((model_override, "model_override"))
-        if agent and agent != "kirocrew":
+        if agent and not _is_kirocrew_default_agent(agent):
             candidates.append((self._resolve_named_agent_model(agent), f"agent spec {agent}"))
         candidates.append((global_model, "agent.model"))
         # A pin says WHAT was picked, never for WHICH harness, so a backend switch

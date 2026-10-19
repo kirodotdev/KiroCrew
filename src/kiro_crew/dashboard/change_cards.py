@@ -980,6 +980,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CARD_ID_RE,
         _DERIVED_KEYS,
         _PRE_APPLY_STATUSES,
+        _apply_with_step0_template,
         _param_text_refusal,
         _same,
         check_param_text,

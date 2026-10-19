@@ -118,6 +118,29 @@ def test_parent_is_owned_confirmation_gates_the_dashboard_author_stem(tmp_path, 
     assert cap._parent_is_owned(snap) is True
 
 
+def test_parent_is_owned_confirmation_gates_the_mate_conductor_stem(tmp_path, monkeypatch):
+    """The mate-conductor stem, like the dashboard-author one, was a user-creatable template
+    name before it became owned. ``_parent_is_owned`` must hold the owned classification for
+    it ONLY when the on-disk spec POSITIVELY confirms as this installer's own managed write.
+    A pre-existing user template at the stem (no recorded digest, or absent/unreadable) is
+    NOT an owned parent, so a capability save does not refresh its custom guard hooks away."""
+    from kiro_crew import agent_capabilities as cap
+    from kiro_crew import agent_state
+
+    parent = tmp_path / "kirocrew-mate-conductor.json"
+    snap = {"parent": {"scope": "global", "path": str(parent)}}
+
+    # Mate-conductor stem, ABSENT file -> not confirmed -> NOT owned (fail-safe).
+    assert cap._parent_is_owned(snap) is False
+    # A user file at the stem with NO recorded ownership digest -> not confirmed -> NOT owned.
+    user_spec = {"name": "kirocrew-mate-conductor", "prompt": "my own", "hooks": {}}
+    parent.write_text(json.dumps(user_spec, indent=2) + "\n", encoding="utf-8")
+    assert cap._parent_is_owned(snap) is False
+    # Record the ownership digest of these exact bytes -> reproduces it -> owned.
+    agent_state.set_managed_digest("kirocrew-mate-conductor", agent_state.spec_digest(user_spec))
+    assert cap._parent_is_owned(snap) is True
+
+
 def cap_agent_state_for(cap):
     """`_parent_is_owned` imports agent_state locally; patch the module object itself."""
     from kiro_crew import agent_state

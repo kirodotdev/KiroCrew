@@ -287,7 +287,7 @@ vi.mock('react-router-dom', async (importOriginal) => {
 })
 
 import { api } from '../../api/client'
-import { CACHE_WARM_BOUND_MS } from './NewCrewmateDialog'
+import { CACHE_WARM_BOUND_MS, DEFAULT_CREWMATE_TEMPLATE } from './NewCrewmateDialog'
 import { resetDashboardOnLoad } from './dashboardOnLoad'
 import { resetFirstGreetingRequests } from './useFirstGreeting'
 import { __resetPanelTabs } from '../../hooks/usePanelTabs'
@@ -711,7 +711,7 @@ describe('New crewmate dialog', () => {
     await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
     // No hint, no refusal: the request left with the display name untouched.
     expect(screen.queryByTestId('crewmate-create-name-hint')).toBeNull()
-    expect(api.createKirocrewAgent).toHaveBeenCalledWith(expect.objectContaining({ name: sent, kiro_agent: 'kirocrew', first_greeting: true }))
+    expect(api.createKirocrewAgent).toHaveBeenCalledWith(expect.objectContaining({ name: sent, kiro_agent: DEFAULT_CREWMATE_TEMPLATE, first_greeting: true }))
     await waitFor(() => expect(threadMock).toHaveBeenCalledWith(slug), PANE_READY)
     await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent(`member-${slug}`), PANE_READY)
     // The URL names the exact display name (however the router encodes it).
@@ -738,7 +738,7 @@ describe('New crewmate dialog', () => {
   // selected and refused to submit until one was picked. The accepted
   // rfc-crewmates-launch.md rules the New crewmate dialog's "Built from" field
   // is "the default agent or a custom agent" — a default, not a required pick —
-  // so submitting the untouched field posts `kiro_agent: 'kirocrew'` and there
+  // so submitting the untouched field posts the default template and there
   // is no template-required refusal. If someone restores the old guard, this
   // fails on the missing request.
   it('a create that never touches "Built from" defaults to the built-in agent, with no template-required refusal (RFC-ruled retirement of #1684)', async () => {
@@ -758,7 +758,7 @@ describe('New crewmate dialog', () => {
     // not an unsatisfied requirement.
     expect(screen.queryByTestId('crewmate-create-name-hint')).toBeNull()
     // The request carries the built-in agent as the built-from value.
-    expect(api.createKirocrewAgent).toHaveBeenCalledWith(expect.objectContaining({ name: 'radar', kiro_agent: 'kirocrew' }))
+    expect(api.createKirocrewAgent).toHaveBeenCalledWith(expect.objectContaining({ name: 'radar', kiro_agent: DEFAULT_CREWMATE_TEMPLATE }))
   })
 
   it('a free-form name already on the roster is refused as taken before any request, by exact display name', async () => {
@@ -1127,7 +1127,7 @@ describe('New crewmate dialog', () => {
     await rosterRow('oncall')
     await openDialog()
     const dlg = within(screen.getByRole('dialog', { name: 'New crewmate' }))
-    await waitFor(() => expect(dlg.getByRole('combobox', { name: 'Built from' })).toHaveTextContent('kirocrew (default)'))
+    await waitFor(() => expect(dlg.getByRole('combobox', { name: 'Built from' })).toHaveTextContent(`${DEFAULT_CREWMATE_TEMPLATE} (default)`))
     // A crew alias (`default`) is not a template and must not be offered: a
     // record storing it as `kiro_agent` would boot a fallback, not that crew.
     expect(dlg.getByRole('combobox', { name: 'Built from' })).not.toHaveTextContent(/^default$/)
@@ -1140,7 +1140,7 @@ describe('New crewmate dialog', () => {
     fireEvent.keyDown(screen.getByRole('option', { name: 'kirocrew-research' }), { key: 'Escape' })
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Scout' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-    await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledWith(expect.objectContaining({ kiro_agent: 'kirocrew' })))
+    await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledWith(expect.objectContaining({ kiro_agent: DEFAULT_CREWMATE_TEMPLATE })))
   })
 
   it('Advanced settings folds the rest of the crew manager\'s form behind one disclosure in the New crewmate card', async () => {

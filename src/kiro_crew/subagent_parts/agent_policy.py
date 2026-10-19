@@ -307,6 +307,16 @@ def _inherited_member_agent(selection_kind: str, template_id: str, project_dir: 
         return ""
     if project_dir and cached_project_agent_names(project_dir) is None:
         return ""
+    # The mate conductor is dispatch-only (no file-write tool, no shell): a member
+    # bound to it must run its unnamed worker on `kirocrew-worker`, not re-run the
+    # write-less conductor as its own worker (rfc-mate-owned-agent-config.md §5.0).
+    # Local import: this module's functions run on the composed `subagent` globals
+    # (see `_facade_compose`), so a module-level name is not in scope at call time.
+    from kiro_crew.agent_files import worker_route_for_template
+
+    routed = worker_route_for_template(template_id)
+    if routed:
+        return routed
     return template_id
 
 
