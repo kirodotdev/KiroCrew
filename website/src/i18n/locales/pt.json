@@ -15010,6 +15010,7 @@
       "folder_created_unrecorded": "Nenhuma data de criação registrada — fica na sua ordem personalizada",
       "folder_order_unread_first": "Mover para o topo as pastas com chats não lidos",
       "folder_order_unread_first_note": "Não é possível arrastar pastas enquanto isto estiver ativo; desative para reordená-las",
+      "unfiled_sessions_above_folders": "Sessões sem pasta acima das pastas",
       "sort_sessions_by": "Ordenar sessões por",
       "sort_newest": "Mais recentes",
       "sort_oldest": "Mais antigas",

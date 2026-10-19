@@ -14657,6 +14657,7 @@
       "folder_created_unrecorded": "Kein Erstellungsdatum aufgezeichnet — bleibt in deiner eigenen Reihenfolge",
       "folder_order_unread_first": "Ordner mit ungelesenen Chats nach oben verschieben",
       "folder_order_unread_first_note": "Ordner lassen sich nicht an eine andere Stelle ziehen, solange dies an ist; zum Umsortieren ausschalten",
+      "unfiled_sessions_above_folders": "Nicht zugeordnete Sitzungen über den Ordnern",
       "sort_sessions_by": "Sitzungen sortieren nach",
       "sort_newest": "Neueste",
       "sort_oldest": "Älteste",

@@ -15010,6 +15010,7 @@
       "folder_created_unrecorded": "Nessuna data di creazione registrata — resta nel tuo ordine personalizzato",
       "folder_order_unread_first": "Sposta in alto le cartelle con chat non lette",
       "folder_order_unread_first_note": "Le cartelle non si possono trascinare mentre questa opzione è attiva; disattivala per riordinarle",
+      "unfiled_sessions_above_folders": "Sessioni non archiviate sopra le cartelle",
       "sort_sessions_by": "Ordina le sessioni per",
       "sort_newest": "Più recenti",
       "sort_oldest": "Più vecchie",

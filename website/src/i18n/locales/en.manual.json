@@ -6944,6 +6944,7 @@
       "folder_created_unrecorded": "No creation date recorded — kept in your Custom order",
       "folder_order_unread_first": "Move folders with unread chats to the top",
       "folder_order_unread_first_note": "Folders cannot be dragged into place while this is on",
+      "unfiled_sessions_above_folders": "Unfiled sessions above folders",
       "sort_sessions_by": "Sort sessions by",
       "clear_named_filter": "Clear {{filter}} filter",
       "pause_all_filters": "Pause all filters",

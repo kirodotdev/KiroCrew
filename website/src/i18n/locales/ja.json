@@ -14303,6 +14303,7 @@
       "folder_created_unrecorded": "作成日は記録されていません — カスタム順で表示されます",
       "folder_order_unread_first": "未読チャットのあるフォルダーを上に移動",
       "folder_order_unread_first_note": "オンの間はフォルダーをドラッグして別の位置に置くことはできません。並べ替えるにはオフにしてください",
+      "unfiled_sessions_above_folders": "未分類のセッションをフォルダーの上に表示",
       "sort_sessions_by": "セッションの並べ替え",
       "sort_newest": "新しい順",
       "sort_oldest": "古い順",
