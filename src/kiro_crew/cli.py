@@ -1121,6 +1121,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LOG_QUEUE_LISTENER,
         _LONG_LIVED_COMMANDS,
         _CliLogQueueHandler,
+        _fd_is_regular_file,
         _fd_targets_file,
         _FdTrackingRotatingFileHandler,
         _redirect_fds_to,

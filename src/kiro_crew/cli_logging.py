@@ -19,6 +19,7 @@ import errno
 import logging
 import os
 import queue
+import stat
 import sys
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
@@ -44,6 +45,20 @@ def _fd_targets_file(fd: int, path: Path) -> bool:
     except OSError:
         return False
     return (st_fd.st_dev, st_fd.st_ino) == (st_path.st_dev, st_path.st_ino)
+
+
+def _fd_is_regular_file(fd: int) -> bool:
+    """True when *fd* is open on a regular file (not a tty, pipe or socket).
+
+    A gateway whose stderr is a plain file was started by something that
+    keeps stderr on disk for it: a service manager's error file (launchd's
+    ``StandardErrorPath``) or a launcher's log. Nothing rotates that file.
+    Any failure answers ``False``.
+    """
+    try:
+        return stat.S_ISREG(os.fstat(fd).st_mode)
+    except OSError:
+        return False
 
 
 def _redirect_fds_to(path: Path, fds: tuple[int, ...] = (1, 2)) -> None:
@@ -299,6 +314,14 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
             format="%(asctime)s %(levelname)s %(name)s: %(message)s",
             datefmt="%H:%M:%S",
         )
+        if command == "gateway" and _fd_is_regular_file(2):
+            # stderr is a file nothing rotates (launchd's gateway.err, the
+            # Desktop launch log). Echo only warnings and errors there: those
+            # are what a start-failure dialog or a `tail` of it needs, and
+            # every record at the configured level is already in gateway.log.
+            for handler in logging.getLogger().handlers:
+                if type(handler) is logging.StreamHandler:
+                    handler.setLevel(logging.WARNING)
     # Kiro Crew loggers: --verbose CLI flag takes precedence, otherwise
     # fall back to the persistent log_level from config.
     if verbose == 0:

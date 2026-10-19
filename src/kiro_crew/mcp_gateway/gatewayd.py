@@ -178,6 +178,7 @@ from kiro_crew.mcp_gateway.daemon.control_plane import (  # noqa: F401
     _user_site_roots,
 )
 from kiro_crew.mcp_gateway.daemon.diagnostics import (  # noqa: F401
+    _ZOMBIE_DIAGNOSTIC_MAX_BYTES,
     _ZOMBIE_PROBE_INTERVAL_SECS,
     _collect_task_stacks,
     _count_open_fds,

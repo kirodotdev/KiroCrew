@@ -33,6 +33,7 @@ from kiro_crew import platform_compat
 from kiro_crew.code_fingerprint import code_fingerprint, warm_code_fingerprint
 from kiro_crew.config.paths import config_dir
 from kiro_crew.env import mcp_runtime_path, resolve_krb5_ccname
+from kiro_crew.jsonl_util import rotate_jsonl_at
 from kiro_crew.mcp_gateway import backend_record, transport
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES
 from kiro_crew.mcp_gateway.shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
@@ -46,6 +47,9 @@ from kiro_crew.recovery.ladder import L4_GATEWAYD, LADDER, default_ladder
 from kiro_crew.sandbox import _SENSITIVE_ENV_PREFIXES as _SANDBOX_SENSITIVE_ENV_PREFIXES
 
 logger = logging.getLogger(__name__)
+
+# Size past which a gatewayd spawn moves ``mcp-gatewayd.stdout`` to ``.1``.
+_GATEWAYD_LOG_MAX_BYTES = 10 * 1024 * 1024
 
 # Max time to wait for the gateway's unix socket to appear after spawn.
 _SOCKET_READY_TIMEOUT_SECS = 5.0
@@ -761,6 +765,9 @@ class GatewayManager:
             log_path.parent.chmod(0o700)
         except OSError:
             pass
+        # Nothing else rotates this file and every spawn appends to it, so bound
+        # it here: past the cap it moves to ``.1`` and this spawn starts fresh.
+        await asyncio.to_thread(rotate_jsonl_at, log_path, _GATEWAYD_LOG_MAX_BYTES)
         # 0600 from creation: this log captures every pooled backend's
         # stdout/stderr, which routinely includes tokens / API keys in error
         # output — never world-readable on a multi-user host. fchmod also

@@ -41,7 +41,16 @@ from kiro_crew.cli import (
     _stop_log_queue_listener,
     drain_log_queue_before_hard_exit,
 )
+from kiro_crew.cli_logging import _fd_is_regular_file as _real_fd_is_regular_file
 from kiro_crew.config import config_dir
+
+
+@pytest.fixture(autouse=True)
+def _stderr_is_not_a_file(_floor_monkeypatch):
+    """pytest's fd capture points fd 2 at a temp FILE, which a gateway reads as
+    a service manager's error file. Tests model a console unless they opt in
+    (TestSetupCliLoggingServiceErrorFile)."""
+    _floor_monkeypatch.setattr("kiro_crew.cli._fd_is_regular_file", lambda fd: False)
 
 
 @pytest.fixture(autouse=True)
@@ -607,6 +616,62 @@ class TestSetupCliLoggingDetached:
         monkeypatch.setattr("kiro_crew.cli._FdTrackingRotatingFileHandler", _deny)
         with pytest.raises(PermissionError):
             _setup_cli_logging("gateway", 1)
+
+
+class TestFdIsRegularFile:
+    def test_true_for_a_regular_file(self, tmp_path):
+        with open(tmp_path / "gateway.err", "w") as fh:
+            assert _real_fd_is_regular_file(fh.fileno()) is True
+
+    def test_false_for_a_pipe(self):
+        r, w = os.pipe()
+        try:
+            assert _real_fd_is_regular_file(w) is False
+        finally:
+            os.close(r)
+            os.close(w)
+
+    def test_false_for_a_closed_fd(self):
+        r, w = os.pipe()
+        os.close(r)
+        os.close(w)
+        assert _real_fd_is_regular_file(w) is False
+
+
+class TestSetupCliLoggingServiceErrorFile:
+    """A gateway whose stderr is a file nothing rotates (launchd's
+    ``gateway.err``, the Desktop launch log) echoes only warnings and errors
+    there; ``gateway.log`` keeps every record at the configured level."""
+
+    @pytest.fixture(autouse=True)
+    def _service_stderr(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
+        _floor_monkeypatch.setattr("kiro_crew.cli._fd_is_regular_file", lambda fd: True)
+        _floor_monkeypatch.setattr("kiro_crew.cli._redirect_fds_to", MagicMock())
+        # pytest's own capture handler on root turns the real basicConfig into
+        # a no-op, so stand in for it with the console handler it would add.
+        self.console = io.StringIO()
+
+        def _basic_config(**_kwargs):
+            logging.getLogger().addHandler(logging.StreamHandler(self.console))
+
+        _floor_monkeypatch.setattr(logging, "basicConfig", _basic_config)
+
+    def test_gateway_echoes_only_warnings_to_the_stderr_file(self):
+        _setup_cli_logging("gateway", 1)
+        logging.getLogger("kiro_crew.test_service").info("kc-info-record")
+        logging.getLogger("kiro_crew.test_service").warning("kc-warn-record")
+        _stop_log_queue_listener()
+        assert "kc-info-record" not in self.console.getvalue()
+        assert "kc-warn-record" in self.console.getvalue()
+        text = (config_dir() / "gateway.log").read_text(encoding="utf-8")
+        assert text.count("kc-info-record") == 1
+        assert text.count("kc-warn-record") == 1
+
+    def test_other_commands_keep_echoing_every_level(self):
+        _setup_cli_logging("status", 1)
+        logging.getLogger("kiro_crew.test_service").info("kc-info-record")
+        assert "kc-info-record" in self.console.getvalue()
 
 
 class TestSetupCliLoggingForeground:
