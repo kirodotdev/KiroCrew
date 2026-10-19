@@ -1071,7 +1071,9 @@ def main(argv: list[str]) -> int:
     base = os.environ.get("HARNESS_BASE_REF", "").strip()
     if base:
         lines = enforce_diff(base)
-        return enforce_x_captures(base) or lines
+        # The merge-base, as enforce_diff measures: main proving a member after this
+        # branch forked must not read as this branch adding an allowlist entry.
+        return enforce_x_captures(diff_base(base)) or lines
 
     found = [v for path in tracked_files() for v in scan_file(path)]
     lines = report(found, enforcing=False, base=None)

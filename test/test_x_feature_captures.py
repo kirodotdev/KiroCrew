@@ -129,3 +129,13 @@ def test_an_emptied_allowlist_is_read_back_as_empty(monkeypatch) -> None:
     monkeypatch.setattr(gate, "git", lambda args: source)
     _, pairs, _ = gate._base_allowlists("base")
     assert pairs == set()
+
+
+def test_the_shrink_check_reads_the_merge_base_not_the_base_tip(monkeypatch) -> None:
+    seen = []
+    monkeypatch.setenv("HARNESS_BASE_REF", "origin/main")
+    monkeypatch.setattr(gate, "diff_base", lambda base: "forkpoint")
+    monkeypatch.setattr(gate, "enforce_diff", lambda base: 0)
+    monkeypatch.setattr(gate, "enforce_x_captures", lambda base: seen.append(base) or 0)
+    assert gate.main([]) == 0
+    assert seen == ["forkpoint"]
