@@ -785,7 +785,9 @@ On Linux this writes `/etc/systemd/system/kirocrew.service` (sudo is prompted
 for the unit file and the `systemctl` calls; the gateway itself runs as your own
 user, never under sudo). When you are already root — a minimal container or
 `root` login — no `sudo` binary is required. On macOS it writes a launchd plist
-and needs no sudo.
+and needs no sudo. That plist is a per-user LaunchAgent, so on a Mac the gateway
+starts when you log in, not at boot; see
+[The gateway does not start after a reboot until someone logs in](macos-troubleshooting.md#the-gateway-does-not-start-after-a-reboot-until-someone-logs-in).
 
 The gateway runs untrusted agent tools, so it must run as a **non-root** user:
 the installer sets `User=` to the account behind `sudo` (`$SUDO_USER`, else

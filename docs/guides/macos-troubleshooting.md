@@ -1,6 +1,7 @@
 # macOS Troubleshooting
 
-Fixes for problems specific to the macOS desktop app (`KiroCrew.app`). For
+Fixes for problems specific to macOS: the desktop app (`KiroCrew.app`) and the
+gateway service that `kirocrew service install` sets up. For
 install and build steps see [install.md](install.md); for problems that are not
 macOS-specific, start with `kirocrew doctor`.
 
@@ -120,6 +121,51 @@ app once if a command is still missing.
   segment, is ignored.
 - A Gateway started from a terminal (`kirocrew gateway`) is unaffected — it
   inherits the shell's `PATH` directly and needs none of this.
+
+---
+
+## The gateway does not start after a reboot until someone logs in
+
+**Symptoms:** on a Mac with automatic login off (a headless Mac mini reached
+over SSH or Tailscale, say), the gateway is down after a reboot. Nothing
+answers on the gateway port (5476 by default) until someone logs in at the Mac's login window. Then it
+comes up on its own.
+
+This is expected. `kirocrew service install` sets up a **per-user
+LaunchAgent** (`~/Library/LaunchAgents/dev.kirocrew.gateway.plist`), not a
+system daemon. launchd loads it into your login session, the `gui/<uid>`
+domain, and that domain exists only once you log in at the Mac itself. An SSH
+login does not create it. Running in your login session means the gateway
+sees what your Terminal sees, such as the login Keychain, which is normally
+unlocked only after a login at the Mac. Before that login, it does not run.
+
+To check from SSH:
+
+```bash
+launchctl print "gui/$(id -u)/dev.kirocrew.gateway"
+lsof -nP -iTCP:5476 -sTCP:LISTEN
+```
+
+Before anyone logs in, the first command says it cannot find the `gui`
+domain, and the second prints nothing. After a login, the first shows the job
+with a `pid`, and the second shows the gateway listening. If your gateway uses
+another port (set by `dashboard.url` in the config or by `KIROCREW_PORT`), put
+yours in place of 5476. If you ran `kirocrew service install` over SSH while nobody
+was logged in, the job went into `user/<uid>` for that boot instead; check it
+with `launchctl print "user/$(id -u)/dev.kirocrew.gateway"`.
+
+If you need the gateway up after every reboot, turn on automatic login for
+that user (System Settings > Users & Groups), or log in once after each
+reboot.
+
+**A `gateway.lock` left over from the last boot is safe.** The file
+`~/.kiro/crew/gateway.lock` (or `$KIROCREW_HOME/gateway.lock`) keeps the pid of
+the gateway that last ran, but the lock itself is held by a running process,
+and a reboot drops it. The next gateway takes the file over and writes its own
+pid. Do not delete it. If a start is refused because the lock is held, some
+process really holds it, usually a running gateway, sometimes a leftover child
+of one. `lsof ~/.kiro/crew/gateway.lock` names it, and the refusal message says
+which case it found.
 
 ---
 
