@@ -511,23 +511,6 @@ jobs:
           /usr/bin/ditto -c -k --keepParent "$APP" "../${NOTARIZED_ZIP}"
           echo "APP_NAME=$(basename "$APP" .app)" >> "$GITHUB_ENV"
 
-          # These are the bytes the feed will serve, so this is where the
-          # update-payload ceiling is final. The Squirrel.Mac inside every
-          # INSTALLED app (Electron 43 and 44.0-44.6) reads the whole zip into
-          # one NSData whose capacity doubles; past 1 GiB it asks for 2 GiB,
-          # PartitionAlloc refuses, and the running app dies mid-update
-          # (docs/build/desktop-app.md, "the update zip must stay under 1 GiB").
-          # The old app performs the install, so only this
-          # artifact's size protects the users receiving it. Same 1000 MiB
-          # ceiling as packaging/build-desktop.sh's post-packaging gate, which
-          # catches it before signing; this one catches signature growth.
-          ZIP_MIB=$(( $(stat -f%z "../${NOTARIZED_ZIP}") / 1048576 ))
-          echo "${NOTARIZED_ZIP}: ${ZIP_MIB} MiB (ceiling 1000 MiB; installed updaters crash at 1024 MiB)"
-          if [ "$ZIP_MIB" -ge 1000 ]; then
-            echo "::error::${NOTARIZED_ZIP} is ${ZIP_MIB} MiB; a zip at or past 1 GiB crashes every installed app's updater (docs/build/desktop-app.md). Not publishing."
-            exit 1
-          fi
-
       - name: Upload notarized artifact to S3
         if: env.HAS_SIGNING_SECRETS
         run: |

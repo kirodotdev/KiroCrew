@@ -497,7 +497,7 @@ describe("first-download installer design contract", () => {
 
     assert.match(
       macBuilder,
-      /-m compileall -q -f -d kirocrew-backend\/lib \\\r?\n\s*--invalidation-mode checked-hash "\$out\/lib"/,
+      /-m compileall -q -f \\\r?\n\s*--invalidation-mode checked-hash "\$out\/lib"/,
       "the macOS backend ships no precompiled tree, so the runtime would have to " +
         "compile on first use — the write that breaks the signature"
     );

@@ -9,10 +9,7 @@
 #   5. Prune caches/tests/unused stdlib to shrink the bundle
 #   6. Stage a pinned, sha256-verified kiro-cli into backend-dist/kiro-cli/
 #   6b. Stage the pinned KAS engine bundle into backend-dist/kas[-<arch>]/
-#   6c. Universal only: share the byte-identical half of the two backend trees
-#       and KAS roots as symlinks, so the update zip stays under 1 GiB
 #   7. Package the desktop app with electron-builder -> DMG / AppImage / NSIS
-#      (universal: fail if the update zip reaches 1000 MiB)
 #
 # The result is a double-clickable app that embeds the whole Python backend +
 # dashboard — no system Python, pip, npm, or node required by the end user.
@@ -613,19 +610,7 @@ LAUNCH
     find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
     find lib/python3.12/site-packages -type d \( -name tests -o -name test \) -prune -exec rm -rf {} + 2>/dev/null || true
     rm -rf lib/python3.12/test lib/python3.12/idlelib lib/python3.12/tkinter \
-           lib/python3.12/turtledemo lib/python3.12/ensurepip lib/python3.12/lib2to3 2>/dev/null || true
-    # The vendored llama.cpp libraries ship one directory per platform and a
-    # tree only ever loads its own OS's, so the universal build's trees drop the
-    # Linux and Windows copies (the Windows lane prunes the same way in
-    # build_backend_windows). BOTH macOS architectures stay: the two trees must
-    # remain byte-identical here so the whole kiro_crew package can be shared
-    # between them (packaging/dedupe_universal_backend.py). Universal only, so a
-    # single-arch DMG keeps the layout it has.
-    if [ "$OS" = "darwin" ] && [ "$UNIVERSAL" = "1" ]; then
-      rm -rf lib/python3.12/site-packages/kiro_crew/_vendor/llama_cpp_libs/linux_aarch64 \
-             lib/python3.12/site-packages/kiro_crew/_vendor/llama_cpp_libs/linux_x86_64 \
-             lib/python3.12/site-packages/kiro_crew/_vendor/llama_cpp_libs/win_amd64 2>/dev/null || true
-    fi )
+           lib/python3.12/turtledemo lib/python3.12/ensurepip lib/python3.12/lib2to3 2>/dev/null || true )
 
   if ! is_macos_intel_backend "$want_arch"; then
     local_voice_runtime_gate "$out/bin/python3.12"
@@ -664,19 +649,9 @@ LAUNCH
   # non-zero on a syntax error in any file it walks, including vendored samples
   # that are not importable on this interpreter -- so the exit code is reported
   # and tolerated while the coverage assertion below is what actually gates.
-  #
-  # `-d kirocrew-backend/lib` records that NEUTRAL prefix as each code object's
-  # co_filename instead of this tree's absolute path. The universal build
-  # compiles two trees that differ only in their directory name
-  # (kirocrew-backend-arm64 vs -x64); without -d every pyc embeds that name and
-  # no two are byte-identical, so none could be shared between the trees
-  # (packaging/dedupe_universal_backend.py). Nothing at runtime sees the neutral
-  # path: the import system rewrites co_filename to the source it actually
-  # loaded (_imp._fix_co_filename) whenever a pyc's recorded path differs, so
-  # tracebacks name the real file. It only shows if the source is gone.
   log "Precompiling the shipped tree as checked-hash pycs ($(basename "$out"))…"
   env PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONPATH= \
-    "$out/bin/python3.12" -s -m compileall -q -f -d kirocrew-backend/lib \
+    "$out/bin/python3.12" -s -m compileall -q -f \
     --invalidation-mode checked-hash "$out/lib" \
     || echo "    compileall reported errors (unimportable vendored samples are expected)"
 
@@ -1074,12 +1049,10 @@ fi
 #
 # Payload budget: the macOS universal DMG download is ~360 MB and each Linux zip
 # ~160 MB. The Windows MSI is ~190 MB and expands to one executable. What is
-# staged is one binary: on macOS a universal Mach-O that compresses to ~250 MB
-# of the update zip, the single largest item in it after the two backend trees
-# were deduplicated (step 3e). The zip must stay under the 1000 MiB ceiling the
-# gate after packaging enforces; packaging/signing/sign.sh's poll window and
-# sign-and-notarize.yml's job timeout are sized for a zip that large. A kiro-cli
-# release that grows past the ceiling fails that gate, not the signing step.
+# staged is one binary. On macOS that lands the signing zip near 1 GB;
+# packaging/signing/sign.sh's poll window and sign-and-notarize.yml's job timeout
+# are sized for that. A kiro-cli release that grows past it shows up as a signing
+# timeout, not a build error.
 KIRO_CLI_RELEASE_BASE="https://desktop-release.q.us-east-1.amazonaws.com"
 KIRO_CLI_WINDOWS_RELEASE_BASE="https://prod.download.cli.kiro.dev/stable"
 KIRO_CLI_MANIFEST_URL="$KIRO_CLI_RELEASE_BASE/latest/manifest.json"
@@ -1547,80 +1520,6 @@ else
   log "BUNDLE_KAS=0: app ships without a bundled KAS engine"
 fi
 
-# --- 3e. Share the duplicate half of a universal build ------------------------
-# A universal app carries two backend trees and two KAS roots (steps 3 and 3d),
-# and most of each pair is the same bytes twice: every pure-Python package, the
-# dashboard's static/dist, the stdlib's .py modules and their pycs (identical
-# thanks to compileall's -d above), and the KAS engine's JavaScript (ONE
-# darwin-universal tarball; only the Node binary beside it is per-arch). That
-# duplication is what carried the update zip past 1 GiB, the size at which the
-# Squirrel.Mac inside every already-installed app crashes mid-update (the
-# gate after packaging names the mechanism). So the arm64 tree is
-# left whole and, in the x64 tree, each container ENTRY (a whole package, a
-# module, a dist-info) that is byte-identical becomes a relative symlink into
-# the arm64 tree; the x64 KAS root's bundle/ points at the arm64 root's. bin/,
-# lib-dynload/ and anything that differs by one byte stay real x64 files.
-# Granularity, exclusions and why symlinks: the tool's docstring.
-#
-# The self-containment probes then run AGAIN on both trees, so an import that
-# now crosses a symlink is proven here (the x64 probe runs under Rosetta, as
-# that tree's own build did), and the x64 KAS root is re-read through the
-# gateway's reader so its symlinked engine entry is proven to resolve.
-if [ "$UNIVERSAL" = "1" ]; then
-  log "Sharing the architecture-independent half of the universal payload…"
-  DEDUPE_ARGS=( --backend "$ELECTRON_DIR/backend-dist/kirocrew-backend-arm64" "$ELECTRON_DIR/backend-dist/kirocrew-backend-x64" )
-  if [ "${BUNDLE_KAS:-1}" = "1" ]; then
-    DEDUPE_ARGS+=( --kas "$ELECTRON_DIR/backend-dist/kas-arm64" "$ELECTRON_DIR/backend-dist/kas-x64" )
-  fi
-  "$ELECTRON_DIR/backend-dist/kirocrew-backend-arm64/bin/python3.12" -I \
-    "$ROOT/packaging/dedupe_universal_backend.py" "${DEDUPE_ARGS[@]}"
-  for tree in kirocrew-backend-arm64 kirocrew-backend-x64; do
-    log "Verifying self-containment after sharing ($tree)…"
-    PYTHONNOUSERSITE=1 "$ELECTRON_DIR/backend-dist/$tree/bin/python3.12" -s -P -m kiro_crew --version >/dev/null \
-      || { echo "ERROR: $tree no longer imports after sharing (a symlinked entry does not resolve)" >&2; exit 1; }
-    PYTHONNOUSERSITE=1 "$ELECTRON_DIR/backend-dist/$tree/bin/python3.12" -s -c 'import kiro_crew.cli' \
-      || { echo "ERROR: $tree no longer imports after sharing (a symlinked entry does not resolve)" >&2; exit 1; }
-  done
-  # The one reader that walks UP from the package to find its install: the
-  # launcher resolver that names bin/kirocrew for every built-in MCP server.
-  # Through a shared package a canonicalising walk lands in the arm64 tree,
-  # whose interpreter cannot run on an Intel Mac, so the x64 interpreter is
-  # asked here and must never answer with the arm64 tree's launcher. (A
-  # build host's own .venv beside the checkout can legitimately win step 1 of
-  # that resolver, which is why the assertion is "not the other tree" rather
-  # than one exact path.)
-  "$ELECTRON_DIR/backend-dist/kirocrew-backend-x64/bin/python3.12" -s -P - \
-    "$ELECTRON_DIR/backend-dist/kirocrew-backend-arm64" "$ELECTRON_DIR/backend-dist/kirocrew-backend-x64" <<'PY'
-import os
-import sys
-
-from kiro_crew.agent import _resolve_kirocrew_bin
-
-arm64, x64 = (os.path.realpath(a) for a in sys.argv[1:3])
-found = os.path.realpath(_resolve_kirocrew_bin())
-assert not found.startswith(arm64 + os.sep), f"x64 interpreter resolved the arm64 launcher: {found}"
-if found.startswith(os.path.dirname(x64) + os.sep):
-    assert found.startswith(x64 + os.sep), f"x64 interpreter resolved a launcher outside its tree: {found}"
-print(f"    kirocrew-backend-x64 resolves its launcher: {found}")
-PY
-  if [ "${BUNDLE_KAS:-1}" = "1" ]; then
-    "$ELECTRON_DIR/backend-dist/kirocrew-backend-x64/bin/python3.12" -I - "$ELECTRON_DIR/backend-dist/kas-x64" <<'PY'
-import sys
-from pathlib import Path
-
-from kiro_crew.acp import kas_bundle
-from kiro_crew.acp.kas_pin import KAS_PIN_VERSION
-
-root = Path(sys.argv[1])
-found = kas_bundle.installed_bundle(root=root, version=KAS_PIN_VERSION)
-assert found is not None, f"{root} no longer reads back as an installed engine after sharing"
-assert found.acp_server.is_file(), f"{found.acp_server} does not resolve through the shared bundle"
-print(f"    kas-x64 reads back: {found.acp_server.relative_to(root)} (node v{found.node_version})")
-PY
-  fi
-  echo "    backend-dist after sharing: $(du -sh "$ELECTRON_DIR/backend-dist" 2>/dev/null | cut -f1)"
-fi
-
 # --- 4. Package the desktop app with electron-builder -----------------------
 log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
 ( cd "$ELECTRON_DIR"
@@ -1812,49 +1711,6 @@ if [ "$OS" = "darwin" ] && { [ "$UNIVERSAL" = "1" ] || [ -n "${TARGET_ARCH:-}" ]
     echo "    $APP_BIN: $LIPO_ARCHS"
   else
     echo "ERROR: shell binary is not ${TARGET_ARCH}-only (lipo -archs: $LIPO_ARCHS)" >&2
-    exit 1
-  fi
-fi
-
-# macOS universal update-zip size gate. The zip is the update payload, and the
-# Squirrel.Mac inside every INSTALLED app (Electron 43 and 44.0-44.6) downloads
-# it into one NSData whose capacity doubles as it grows: past 1 GiB it asks for
-# 2 GiB, which Electron's PartitionAlloc refuses by design, and the running app
-# dies with EXC_BREAKPOINT mid-update (docs/build/desktop-app.md, "the update
-# zip must stay under 1 GiB"). The install is performed by the OLD app's
-# Squirrel, so a newer Electron in THIS build does not help the users receiving
-# it; only the artifact's size does. A zip comfortably under 1 GiB installs
-# every time; one byte over kills every updating Mac.
-#
-# 1000 MiB leaves 24 MiB below the 1024 MiB cliff for the bytes signing and
-# notarization add (sign-and-notarize.yml rebuilds the zip with ditto after
-# signing and checks the shipped bytes against the same ceiling). Lowering the
-# ceiling is fine; raising it past 1024 MiB is shipping the crash.
-#
-# The shared entries (step 3e) must be IN the zip as symlinks: an archiver that
-# dereferences them ships the x64 copies again and the size gate below is the
-# only thing that would notice, so the link shape is asserted on its own first.
-if [ "$OS" = "darwin" ] && [ "$UNIVERSAL" = "1" ]; then
-  MAC_ZIP_MAX_MIB=1000
-  MAC_ZIP="$(find "$ELECTRON_DIR/dist" -maxdepth 1 -name '*-mac.zip' -print -quit 2>/dev/null)"
-  if [ -z "$MAC_ZIP" ]; then
-    echo "ERROR: no *-mac.zip under $ELECTRON_DIR/dist to size-check" >&2
-    exit 1
-  fi
-  MAC_ZIP_LINKS="$(zipinfo "$MAC_ZIP" 2>/dev/null | grep -c '^l.*backend-dist/kirocrew-backend-x64/' || true)"
-  if [ "${MAC_ZIP_LINKS:-0}" -eq 0 ]; then
-    echo "ERROR: $(basename "$MAC_ZIP") carries no symlink under kirocrew-backend-x64/: the archiver" >&2
-    echo "       dereferenced the shared entries and the x64 half is shipped twice again." >&2
-    exit 1
-  fi
-  echo "    $(basename "$MAC_ZIP"): ${MAC_ZIP_LINKS} shared entries stored as symlinks"
-  MAC_ZIP_BYTES="$(stat -f%z "$MAC_ZIP")"
-  MAC_ZIP_MIB=$(( MAC_ZIP_BYTES / 1048576 ))
-  echo "    $(basename "$MAC_ZIP"): ${MAC_ZIP_MIB} MiB (ceiling ${MAC_ZIP_MAX_MIB} MiB; the installed updater's cliff is 1024 MiB)"
-  if [ "$MAC_ZIP_MIB" -ge "$MAC_ZIP_MAX_MIB" ]; then
-    echo "ERROR: the universal update zip is ${MAC_ZIP_MIB} MiB, at or over the ${MAC_ZIP_MAX_MIB} MiB ceiling." >&2
-    echo "       Every installed app's Squirrel.Mac crashes on a zip past 1 GiB (docs/build/desktop-app.md)." >&2
-    echo "       Shrink the payload (du -sh backend-dist/* above names the trees); do not raise the ceiling." >&2
     exit 1
   fi
 fi

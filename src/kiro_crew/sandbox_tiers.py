@@ -117,32 +117,13 @@ def _install_root_targets_cached(package_dir: str) -> tuple[str, ...]:
 
 @functools.lru_cache(maxsize=1)
 def _bundled_kas_targets_cached(bundled_kas_dir: str) -> tuple[str, ...]:
-    """Both spellings of the desktop app's staged KAS engine root, or empty.
-
-    Plus the canonical spelling of every entry of a version directory under it
-    that is a symlink. The universal macOS build shares the engine between its
-    two roots that way -- ``kas-x64/<version>/bundle`` is a link to
-    ``kas-arm64/<version>/bundle`` (``packaging/dedupe_universal_backend.py``) --
-    and a Seatbelt or namespace rule names the path a write RESOLVES to, so a
-    seal on the x64 root alone would leave the engine's JavaScript writable
-    where it actually lives. The gateway runs that JavaScript unsandboxed on
-    every bundle-route spawn, which is the whole reason the root is sealed.
-    """
+    """Both spellings of the desktop app's staged KAS engine root, or empty."""
     if not bundled_kas_dir:
         return ()
     lexical = os.path.normpath(os.path.abspath(bundled_kas_dir))
     spellings = [lexical]
     try:
         spellings.append(os.path.realpath(lexical))
-    except (OSError, ValueError):
-        pass
-    try:
-        for version_dir in os.scandir(lexical):
-            if not version_dir.is_dir():
-                continue
-            for entry in os.scandir(version_dir.path):
-                if entry.is_symlink():
-                    spellings.append(os.path.realpath(entry.path))
     except (OSError, ValueError):
         pass
     return tuple(dict.fromkeys(spellings))
