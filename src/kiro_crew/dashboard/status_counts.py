@@ -224,7 +224,7 @@ async def cached_status_snapshot(state: DashboardState) -> dict[str, Any]:
     skeleton) rather than an authoritative false 0. ``ws._status_frame`` was the
     only emitter with this shape before; now all three go through here.
     """
-    # Lazy import: handlers/updates.py imports this module at module level, so
+    # Lazy import: handlers/updates_streams.py imports this module at module level, so
     # a module-level import here would form a cycle.
     from kiro_crew.dashboard.handlers.updates import (
         prime_status_auto_update_effect,

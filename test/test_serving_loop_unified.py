@@ -212,7 +212,8 @@ def test_only_one_latched_serving_loop_field_remains() -> None:
     )
     offenders: dict[str, set[str]] = {}
     state_owners = sorted((Path(state_mod.__file__).parent / "state_parts").glob("[!_]*.py"))
-    for path in (Path(state_mod.__file__), *state_owners, Path(updates.__file__)):
+    update_owners = sorted(Path(updates.__file__).parent.glob("updates_*.py"))
+    for path in (Path(state_mod.__file__), *state_owners, Path(updates.__file__), *update_owners):
         src = path.read_text(encoding="utf-8")
         names = {m.group(1) for m in pattern.finditer(src)} - {"_serving_loop"}
         if names:
@@ -257,11 +258,13 @@ def test_no_latched_loop_held_across_a_closure() -> None:
     # And the state_parts owners state.py composes hold the code it held.
     state_owners = sorted((Path(state_mod.__file__).parent / "state_parts").glob("[!_]*.py"))
     assert state_owners, "expected the state_parts owners beside state.py"
+    update_owners = sorted(Path(updates.__file__).parent.glob("updates_*.py"))
     offenders: dict[str, list[str]] = {}
     for path in (
         *(Path(mod.__file__) for mod in (server_mod, state_mod, updates)),
         *owners,
         *state_owners,
+        *update_owners,
     ):
         name = path.name
         hits = [

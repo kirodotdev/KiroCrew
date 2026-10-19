@@ -59,7 +59,7 @@ def chat_message_frame(note: dict, *, include_metadata: bool) -> dict[str, Any]:
     """Serialise a broadcast note into the wire ``chat_message`` frame.
 
     ONE serialiser for both delivery doors — the WebSocket arm in
-    ``_broadcast_note`` and the SSE arm in ``handlers/updates.py:api_stream``.
+    ``_broadcast_note`` and the SSE arm in ``handlers/updates_streams.py:api_stream``.
     They are fed the same note by ``_broadcast()``, so a field added here
     reaches both; building the frame twice is how the SSE door drifts into
     dropping ``meta`` while the WS one carries it.

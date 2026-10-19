@@ -894,7 +894,7 @@ A manifest is portable data validated on whichever host installs the app, so all
 three must reach the same verdict everywhere. Both lexical checks are therefore
 written **flavour-explicitly** rather than via the running host's `os.path`
 (matching the `PurePosixPath|PureWindowsPath` idiom in
-`dashboard/handlers/knowledge.py`), and neither is deferred to `resolve()`:
+`dashboard/handlers/knowledge_sources.py`), and neither is deferred to `resolve()`:
 
 - **`is_absolute()` is flavour-bound.** It and `os.path.isabs` answer for the
   RUNNING host, and `os.path` **is** `ntpath` on Windows, so pairing the two in an
@@ -1775,7 +1775,7 @@ Four paths read the set and all four narrow: the gate, the `slots` payload
 filter, the subagent-batch payload filter, and the LOG fan-out. The log path is
 the odd one — `subscribe_logs` grants once and the ring handler then writes
 straight to `_ws_log_subscribers` without passing the chokepoint, so the re-check
-lives at the send (`handlers/updates._safe_ws_send`), which also drops the
+lives at the send (`handlers/updates_streams._safe_ws_send`), which also drops the
 subscription. That check must stay on the event loop: the handler's `emit()` runs
 on arbitrary threads, where a cold cache miss would fall back to a synchronous
 manifest read.

@@ -190,8 +190,26 @@
     "dashboard/handlers/kiro_prerequisite.py": {
       "missing_code": 1
     },
-    "dashboard/handlers/knowledge.py": {
-      "missing_code": 58
+    "dashboard/handlers/knowledge_agent_context.py": {
+      "missing_code": 1
+    },
+    "dashboard/handlers/knowledge_bundles.py": {
+      "missing_code": 1
+    },
+    "dashboard/handlers/knowledge_embeddings.py": {
+      "missing_code": 2
+    },
+    "dashboard/handlers/knowledge_ingest.py": {
+      "missing_code": 11
+    },
+    "dashboard/handlers/knowledge_library.py": {
+      "missing_code": 10
+    },
+    "dashboard/handlers/knowledge_sources.py": {
+      "missing_code": 26
+    },
+    "dashboard/handlers/knowledge_sync.py": {
+      "missing_code": 7
     },
     "dashboard/handlers/mcp.py": {
       "dynamic_status": 1,
@@ -263,8 +281,14 @@
       "dynamic_status": 4,
       "missing_code": 21
     },
-    "dashboard/handlers/updates.py": {
-      "missing_code": 8
+    "dashboard/handlers/updates_apply.py": {
+      "missing_code": 5
+    },
+    "dashboard/handlers/updates_channel.py": {
+      "missing_code": 1
+    },
+    "dashboard/handlers/updates_streams.py": {
+      "missing_code": 2
     },
     "dashboard/handlers/webapp_preview.py": {
       "missing_code": 1

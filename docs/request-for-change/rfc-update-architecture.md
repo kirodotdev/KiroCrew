@@ -212,8 +212,8 @@ All three backend entry points to the git path guard on roughly the same two
 conditions — `KIROCREW_PROJECT_DIR` set, and a `.git` present — and, as of
 `8861f89e`, with the **same** semantics:
 
-- `dashboard/handlers/updates.py` (`_do_update_check`) — `os.path.exists`
-- `dashboard/handlers/updates.py` (`api_update_apply`) — `os.path.exists`
+- `dashboard/handlers/updates_check.py` (`_do_update_check`) — `os.path.exists`
+- `dashboard/handlers/updates_apply.py` (`api_update_apply`) — `os.path.exists`
 - `cli_server.py` (the CLI update command) — `(proj_path / ".git").exists()`
 
 **Correction to the original draft.** This section previously said the third site
@@ -798,7 +798,7 @@ go in the same phase, or Phase 1 ships a switch over a key that governs nothing:
 
 - the raw-config toggle in `KiroCrewCfgTab.tsx`;
 - the AboutPanel toggle (`AboutPanel.tsx`);
-- `POST /api/update/auto` (`api_update_auto` in `dashboard/handlers/updates.py`), which
+- `POST /api/update/auto` (`api_update_auto` in `dashboard/handlers/updates_channel.py`), which
   writes it into `config.json`.
 
 The endpoint stays routed but becomes a no-op returning the contract's `mode`,

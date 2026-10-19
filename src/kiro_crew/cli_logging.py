@@ -268,7 +268,7 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
 
     In every shape the ``kiro_crew`` logger is the SINGLE level gate: the file
     handler and the queue handler carry no level of their own, so a runtime
-    ``agent.log_level`` change (``handlers/updates.py::apply_log_level``) that
+    ``agent.log_level`` change (``handlers/updates_streams.py::apply_log_level``) that
     moves the logger reaches ``gateway.log`` with nothing else to update.
 
     Only the ``gateway`` command rotates ``gateway.log``. Every other process

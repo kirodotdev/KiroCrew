@@ -1420,7 +1420,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "dashboard/file_api/editor.py::_diff_redacted_bodies",
         "dashboard/file_api/desktop.py::api_screenshot",
         "dashboard/file_api/desktop.py::api_upload",
-        "dashboard/handlers/knowledge.py::_run_folder_dialog",
+        "dashboard/handlers/knowledge_sources.py::_run_folder_dialog",
         # Terminal live-cwd probe on hosts without /proc (macOS/BSD): fixed
         # `lsof -a -p <pid> -d cwd -Fn` list-argv (no shell=True) where <pid>
         # is the gateway's own PTY child pid (an int from asyncio.subprocess),
@@ -1428,15 +1428,15 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # sandboxing would break lsof's access to host process state.
         "dashboard/handlers/terminal.py::_proc_cwd",
         "dashboard/handlers/terminal.py::api_terminal_ws",
-        "dashboard/handlers/updates.py::_apply",
+        "dashboard/handlers/updates_apply.py::_apply",
         # The update check's git side: fixed `git fetch` / `rev-parse` / `show` /
         # `diff` list-argv (no shell=True) run in KIROCREW_PROJECT_DIR, an operator
         # environment value, never agent input. Read-only version comparison —
         # nothing here writes to the tree.
-        "dashboard/handlers/updates.py::_check_git_checkout",
+        "dashboard/handlers/updates_check.py::_check_git_checkout",
         # (_venv_pip_install removed — it now delegates the install to
         # dep_sync.sync_or_reinstall and spawns nothing itself.)
-        "dashboard/handlers/updates.py::api_update_apply",
+        "dashboard/handlers/updates_apply.py::api_update_apply",
         "dashboard/handlers_system.py::_collect_system_metrics",
         # Split out of _collect_system_metrics above so the whole-machine process
         # walk can be cached on its own (much longer) TTL instead of the live

@@ -187,7 +187,7 @@ def _warn_refused_once(path: str) -> None:
     and are never reached in that state, so one line per refused request is
     not "the same order of magnitude as its siblings" — it is 570 lines/hour against
     their none. The dashboard log ring is ``deque(maxlen=1000)``
-    (``handlers/updates.py:1381``), which that rate churns end to end every ~1.8
+    (``handlers/updates_streams.py::_log_ring``), which that rate churns end to end every ~1.8
     hours, evicting the genuine diagnostics an operator came to read. A line meant to
     make the log trustworthy must not be the thing that empties it.
 

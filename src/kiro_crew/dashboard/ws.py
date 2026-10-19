@@ -1346,7 +1346,7 @@ async def _serve_ws(
                         # this replays the whole ring, so a scope revoked (or an
                         # app disabled) after connect must not be able to pull
                         # the buffered history. Mirrors the per-send re-check in
-                        # handlers/updates._safe_ws_send.
+                        # handlers/updates_streams._safe_ws_send.
                         _live = effective_allowed_events(ws_app, allowed_events)
                         if not ws.get("_is_dashboard_user", False) and not (
                             "log" in _live or "log:all" in _live

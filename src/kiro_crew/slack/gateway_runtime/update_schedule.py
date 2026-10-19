@@ -548,7 +548,7 @@ def _publish_provider_update_state(self: GatewayOrchestrator, result: object) ->
     """Mirror a provider's verdict into the dashboard's authoritative status.
 
     The SSE snapshot renders the update badge from
-    ``dashboard/handlers/updates.py::_update_info["update_available"]``, which
+    ``dashboard/handlers/updates_verdict.py::_update_info["update_available"]``, which
     only the LEGACY check writes. A provider carries its own
     :class:`UpdateCheckResult`, so notifying without this leaves the badge
     reading a stale (usually null) value and the operator never sees that a
@@ -1176,7 +1176,7 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
         elif info.get("error_code"):
             # A check that could not run is NOT "already on latest" — saying so
             # is the exact false reassurance the honesty pair in
-            # `handlers/updates.py` exists to prevent.
+            # `handlers/updates_check.py` exists to prevent.
             logger.info("Update check did not complete (%s)", info.get("error_code"))
         elif info.get("check_status") == CHECK_SUCCEEDED:
             print("👻 Already on latest version")

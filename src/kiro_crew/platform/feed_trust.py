@@ -2,7 +2,7 @@
 
 The channel feed is normally UNTRUSTED display metadata: the gateway takes
 nothing actionable from it, so it deliberately skips signature verification
-(see ``dashboard/handlers/updates.py``). The optional ``min_version`` floor is
+(see ``dashboard/handlers/updates_check.py``). The optional ``min_version`` floor is
 the one exception — it coerces the dashboard into a non-dismissible update
 prompt, so a tampered feed that could set it would hold every dashboard
 hostage while the signed installer (correctly) refuses the tampered bytes.

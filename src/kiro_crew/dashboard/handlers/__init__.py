@@ -618,7 +618,7 @@ from kiro_crew.dashboard.handlers.ui_prefs import (  # noqa: E402, F401
 )
 
 # ── Updates & Logs (extracted to handlers/updates.py) ──
-# NOTE: api_stream passes update_available= to status_snapshot (see updates.py)
+# NOTE: api_stream passes update_available= to status_snapshot (see updates_streams.py)
 from kiro_crew.dashboard.handlers.updates import (  # noqa: E402, F401
     _UPDATE_CHECK_INTERVAL,
     _do_update_check,

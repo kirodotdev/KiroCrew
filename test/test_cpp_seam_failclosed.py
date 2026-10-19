@@ -774,7 +774,7 @@ def test_default_jail_provider_noop() -> None:
 
 # ── R4-6: KnowledgeProvider extra_connectors seam (propagate / degrade / merge) ──
 #
-# The production merge in dashboard/handlers/knowledge.py is
+# The production merge in dashboard/handlers/knowledge_lifecycle.py is
 #   connectors.update(safe_context_call(lambda: ctx.knowledge.extra_connectors(ctx.cfg),
 #                                        fallback={}, ...))
 # with the built-ins set FIRST.  These tests reproduce that exact contract with an
@@ -945,9 +945,9 @@ def _read_source(modpath: str) -> str:
 
 
 def test_knowledge_extra_connectors_site_uses_safe_context_call() -> None:
-    """dashboard/handlers/knowledge.py must route extra_connectors through the
+    """dashboard/handlers/knowledge_lifecycle.py must route extra_connectors through the
     fail-closed shim (not a bare except that would swallow composition errors)."""
-    src = _read_source("kiro_crew.dashboard.handlers.knowledge")
+    src = _read_source("kiro_crew.dashboard.handlers.knowledge_lifecycle")
     assert "extra_connectors" in src
     assert "safe_context_call" in src
     # The merge must NOT have regressed to swallowing everything.

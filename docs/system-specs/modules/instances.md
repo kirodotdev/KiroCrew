@@ -530,7 +530,7 @@ Two persisted hints drive lazy reconnect:
   only reader and has no production caller.
 
 An in-place restart tears the tunnels down before it execs. The dashboard
-restart (`dashboard/handlers/updates.py::_restart_gateway`) and the update
+restart (`dashboard/handlers/updates_apply.py::_restart_gateway`) and the update
 restart (`slack/gateway_runtime/update_schedule.py::_restart_after_update_claimed`) replace the image
 with `os.execv`, which skips the cleanup hook that runs `shutdown()`. The exec
 keeps the pid, so a forwarder left running would still name the gateway as its

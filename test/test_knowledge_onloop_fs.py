@@ -117,8 +117,21 @@ def _scan_own_body(node: ast.AsyncFunctionDef) -> list[tuple[str, int, str]]:
     return found
 
 
+def _owner_files() -> list[Path]:
+    """The ``knowledge_<role>.py`` owners the handlers module serves."""
+    home = Path(inspect.getsourcefile(kh)).parent
+    return [home / f"{name.rpartition('.')[2]}.py" for name in kh._OWNERS]
+
+
 def _module_coroutines() -> list[ast.AsyncFunctionDef]:
+    """Every coroutine of the handlers module and its owners, read as one module.
+
+    The endpoints' bodies live in the owners, and ``knowledge`` is their import path
+    and patch surface, so the ratchet reads every one of those files.
+    """
     tree = ast.parse(Path(inspect.getsourcefile(kh)).read_text(encoding="utf-8"))
+    for path in _owner_files():
+        tree.body.extend(ast.parse(path.read_text(encoding="utf-8")).body)
     return [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)]
 
 

@@ -8,7 +8,8 @@ A distribution that repackages one core release as several builds of its own
 running process say which one it was: the About page's version chip,
 ``/api/status``, ``/api/health``, ``kirocrew --version`` and the diagnostics
 report all read ``kiro_crew.__version__``, several through an import-time copy
-(``dashboard/handlers/updates.py::_local_version``, ``ws.py``) that nothing
+(``dashboard/handlers/updates_verdict.py::_local_version``, ``updates_check.py``,
+``ws.py``) that nothing
 after import can reach. The stamp is a file BESIDE ``kiro_crew/__init__.py``,
 written at packaging time and resolved at import -- the one point that
 precedes every copy -- and deliberately not an environment variable, which the
@@ -464,7 +465,7 @@ def test_channel_move_compares_by_release_not_by_stamp() -> None:
 def test_the_feed_check_source_folds_the_stamp() -> None:
     """Pins the call site itself: the compare in ``_check_release_feed`` goes
     through ``release_of_build``, so a refactor cannot quietly revert it."""
-    src = (PKG_DIR / "dashboard" / "handlers" / "updates.py").read_text(encoding="utf-8")
+    src = (PKG_DIR / "dashboard" / "handlers" / "updates_check.py").read_text(encoding="utf-8")
     assert "channel_move_pending=_is_newer(release_of_build(_local_version), remote_version)" in src
 
 

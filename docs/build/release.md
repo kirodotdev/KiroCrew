@@ -107,7 +107,7 @@ mechanism:
   The contract:
 
   - *Fold rule*: `_display_version()` in
-    `src/kiro_crew/dashboard/handlers/updates.py` folds a version to its bare
+    `src/kiro_crew/dashboard/handlers/updates_verdict.py` folds a version to its bare
     `X.Y.Z` on the **stable** channel only (insider/nightly keep the full
     stamp, where the prerelease number is meaningful information). The SPA
     mirror for desktop-reported versions that never cross the gateway is
