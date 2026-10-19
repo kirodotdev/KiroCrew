@@ -52,7 +52,7 @@ const LINK_ERROR_KEYS = {
  * Renders one section per governed method the `/api/mobile-connect/methods`
  * endpoint returned (the CPP `mobile_connect` seam). The core draws two kinds
  * itself: `tailnet_qr` (server-rendered QR carrying a live session token,
- * minted ONLY on explicit click) and `login_link` (one-time sign-in URL). A
+ * minted ONLY on explicit click) and `login_link` (a sign-in URL, reusable inside its link window). A
  * downstream edition's kinds are drawn by the renderer seam in
  * `mobileConnectRenderers.tsx`, and those sections come first: a deployment
  * that contributes a method offers it as the primary way in, so the built-in
@@ -331,7 +331,7 @@ function TailnetQrSection({ onClose }: { onClose: () => void }) {
   )
 }
 
-/** One-time login link for the configured external origin. `standalone` means
+/** Sign-in link for the configured external origin. `standalone` means
  *  the QR section is absent (link-only editions / governance): no divider, and
  *  an intro that does not presuppose a camera alternative. */
 function LoginLinkSection({ standalone, onClose }: { standalone: boolean; onClose: () => void }) {
@@ -342,6 +342,7 @@ function LoginLinkSection({ standalone, onClose }: { standalone: boolean; onClos
   const sessionKey = activeSlot ? `dashboard:${activeSlot}` : undefined
   const createLink = useMutation({ mutationFn: () => api.mobileLoginLink(sessionKey) })
   const [linkCopyFailed, setLinkCopyFailed] = useState(false)
+  const showLinkQr = Boolean(createLink.data?.image)
 
   return (
     <div className={standalone ? '' : 'border-t border-border pt-3'}>
@@ -356,6 +357,19 @@ function LoginLinkSection({ standalone, onClose }: { standalone: boolean; onClos
             ? t('components.mobileConnect.creating')
             : t('components.mobileConnect.create_sign_in_link')}
         </Btn>
+      )}
+      {showLinkQr && (
+        <div className="flex justify-center mb-3">
+          <div className="bg-white p-2.5 rounded-lg leading-none">
+            {/* Same natural-size, pixelated rendering as TailnetQrSection's code:
+                a phone camera needs whole-pixel modules. Carries a live token. */}
+            <img
+              src={createLink.data?.image}
+              alt={t('components.mobileConnect.qr_code_for_the_sign_in_link')}
+              className="block max-w-full h-auto [image-rendering:pixelated]"
+            />
+          </div>
+        </div>
       )}
       {createLink.data && (
         <div className="flex items-center gap-2">
@@ -405,9 +419,12 @@ function LoginLinkSection({ standalone, onClose }: { standalone: boolean; onClos
       )}
       {createLink.data && (
         <p className="text-[11.5px] text-muted mt-2">
-          {t('components.mobileConnect.the_link_works_once_and_expires_in_about_minutes', {
-            minutes: Math.max(1, Math.round((createLink.data.expires_in ?? 900) / 60)),
-          })}
+          {t(
+            showLinkQr
+              ? 'components.mobileConnect.the_code_and_link_expire_in_about_minutes_minute'
+              : 'components.mobileConnect.the_link_works_once_and_expires_in_about_minutes',
+            { minutes: Math.max(1, Math.round((createLink.data.expires_in ?? 900) / 60)) },
+          )}
         </p>
       )}
     </div>

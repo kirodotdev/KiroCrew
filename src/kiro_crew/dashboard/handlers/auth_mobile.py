@@ -31,12 +31,14 @@ from aiohttp import web
 
 from kiro_crew.dashboard.handlers._shared import _caller_bounds, _is_restricted_session
 from kiro_crew.dashboard.handlers.mobile_connect import mint_denied_reason
+from kiro_crew.dashboard.handlers.tailnet_mobile import MOBILE_QR_BOX_SIZE
 from kiro_crew.dashboard.origin import check_origin
 from kiro_crew.dashboard.token_auth import (
     LINK_WINDOW_SECS,
     generate_token,
 )
 from kiro_crew.dashboard.urls import build_dashboard_url, dashboard_origin
+from kiro_crew.qr import render_qr_data_uri
 from kiro_crew.sel import sel as _sel_fn
 
 logger = logging.getLogger(__name__)
@@ -128,16 +130,25 @@ async def api_auth_mobile_link(request: web.Request) -> web.Response:
         peer_key=caller_peer_key,
         extra=carried or None,
     )
+    url = build_dashboard_url(external_origin, token, local_only=False)
+    body: dict[str, object] = {
+        "url": url,
+        # The live click window: generate_token clamps the link-click
+        # ``exp`` to the session TTL, so a caller lending less than the
+        # nominal window mints a link that dies with its own remaining
+        # lifetime — report that, not the constant, or the UI countdown
+        # overstates how long the link actually works.
+        "expires_in": min(LINK_WINDOW_SECS, ttl_ceiling),
+    }
+    # The same link as a scannable code, so a phone reaches a non-tailnet
+    # origin (a cloudflared tunnel, a reverse proxy) with one scan. Optional:
+    # the link alone is the working credential, so a failed encode drops the
+    # image and still returns it. The URL is never logged — it is a credential.
+    try:
+        body["image"] = await asyncio.to_thread(
+            render_qr_data_uri, url, box_size=MOBILE_QR_BOX_SIZE
+        )
+    except Exception:
+        logger.debug("mobile_auth: sign-in link QR encode failed", exc_info=True)
     await _audit_async(user_id, "issued")
-    return web.json_response(
-        {
-            "url": build_dashboard_url(external_origin, token, local_only=False),
-            # The live click window: generate_token clamps the link-click
-            # ``exp`` to the session TTL, so a caller lending less than the
-            # nominal window mints a link that dies with its own remaining
-            # lifetime — report that, not the constant, or the UI countdown
-            # overstates how long the link actually works.
-            "expires_in": min(LINK_WINDOW_SECS, ttl_ceiling),
-        },
-        headers={"Cache-Control": "no-store"},
-    )
+    return web.json_response(body, headers={"Cache-Control": "no-store"})

@@ -95,13 +95,24 @@ describe('MobileConnectModal', () => {
     mount(['tailnet_qr'])
     await waitFor(() =>
       expect(
-        screen.getByText(/Remote access is not set up yet/),
+        screen.getByText(/Tailscale setup is not complete yet/),
       ).toBeInTheDocument(),
     )
     expect(screen.queryByText('Show QR code')).not.toBeInTheDocument()
   })
 
-  it('login_link mints only on click and shows the one-time URL', async () => {
+  it('a not-ready step after Tailscale is installed never says Tailscale is not set up', async () => {
+    // restart_gateway: Tailscale is installed, signed in and configured; only a
+    // gateway restart is left, so "not set up" would be false here.
+    mocks.tailnetMobile.mockResolvedValue({ step: 'restart_gateway' })
+    mount(['tailnet_qr'])
+    expect(
+      await screen.findByText(/Tailscale setup is not complete yet/),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/not set up/i)).not.toBeInTheDocument()
+  })
+
+  it('login_link mints only on click and shows the URL', async () => {
     mocks.mobileLoginLink.mockResolvedValue({ url: 'https://ext/?token=once', expires_in: 300 })
     mount(['login_link'])
     expect(mocks.mobileLoginLink).not.toHaveBeenCalled()
@@ -109,6 +120,91 @@ describe('MobileConnectModal', () => {
     await waitFor(() =>
       expect(screen.getByDisplayValue('https://ext/?token=once')).toBeInTheDocument(),
     )
+    // No image in the response (a failed encode): link only, no broken <img>.
+    expect(screen.queryByAltText('QR code for the sign-in link')).not.toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'The link expires in about 5 minutes. Until then, anyone who has it can sign in.',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('login_link shows the minted link as a QR code when the server sends one', async () => {
+    mocks.mobileLoginLink.mockResolvedValue({
+      url: 'https://ext/?token=once',
+      expires_in: 300,
+      image: 'data:image/png;base64,QUJD',
+    })
+    mount(['login_link'])
+    fireEvent.click(screen.getByText('Create sign-in link'))
+    const qr = await screen.findByAltText('QR code for the sign-in link')
+    expect(qr).toHaveAttribute('src', 'data:image/png;base64,QUJD')
+    expect(screen.getByDisplayValue('https://ext/?token=once')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'The code and link expire in about 5 minutes. Until then, anyone who has them can sign in.',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('states that sign-in links remain usable until expiry', async () => {
+    mocks.mobileLoginLink.mockResolvedValueOnce({
+      url: 'https://ext/?token=qr',
+      expires_in: 300,
+      image: 'data:image/png;base64,QUJD',
+    })
+    const qrView = mount(['login_link'])
+    fireEvent.click(screen.getByText('Create sign-in link'))
+    expect(
+      await screen.findByText(
+        'The code and link expire in about 5 minutes. Until then, anyone who has them can sign in.',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/works? once/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/one-time/i)).not.toBeInTheDocument()
+    qrView.unmount()
+
+    mocks.mobileLoginLink.mockResolvedValueOnce({
+      url: 'https://ext/?token=link',
+      expires_in: 300,
+    })
+    mount(['login_link'])
+    fireEvent.click(screen.getByText('Create sign-in link'))
+    expect(
+      await screen.findByText(
+        'The link expires in about 5 minutes. Until then, anyone who has it can sign in.',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/works? once/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/one-time/i)).not.toBeInTheDocument()
+  })
+
+  it('names the sign-in link and its QR code for screen readers without a one-time claim', async () => {
+    mocks.mobileLoginLink.mockResolvedValue({
+      url: 'https://ext/?token=once',
+      expires_in: 300,
+      image: 'data:image/png;base64,QUJD',
+    })
+    const linkOnly = mount(['login_link'])
+    fireEvent.click(screen.getByText('Create sign-in link'))
+    expect(await screen.findByAltText('QR code for the sign-in link')).toBeInTheDocument()
+    expect(screen.getByLabelText('Sign-in link')).toHaveValue('https://ext/?token=once')
+    expect(screen.queryByLabelText(/one-time/i)).not.toBeInTheDocument()
+    expect(screen.queryByAltText('QR code for mobile access')).not.toBeInTheDocument()
+    linkOnly.unmount()
+
+    // With both methods minted, the two codes must not announce the same name.
+    mocks.tailnetMobileQr.mockResolvedValue({
+      url: 'https://host/?token=live',
+      image: 'data:image/png;base64,x',
+    })
+    mount(['tailnet_qr', 'login_link'])
+    fireEvent.click(await screen.findByText('Show QR code'))
+    fireEvent.click(screen.getByText('Create sign-in link'))
+    const tailnetQr = await screen.findByAltText('QR code for mobile access')
+    const linkQr = await screen.findByAltText('QR code for the sign-in link')
+    expect(tailnetQr).not.toBe(linkQr)
+    expect(tailnetQr.getAttribute('alt')).not.toBe(linkQr.getAttribute('alt'))
   })
 
   it('an unrecognised kind renders nothing (forward compat with edition methods)', () => {
@@ -134,7 +230,7 @@ describe('MobileConnectModal', () => {
     mocks.tailnetMobile.mockResolvedValue({ step: 'publish' })
     const onClose = vi.fn()
     mount(['tailnet_qr'], onClose)
-    fireEvent.click(await screen.findByText(/Remote access is not set up yet/))
+    fireEvent.click(await screen.findByText(/Tailscale setup is not complete yet/))
     expect(onClose).toHaveBeenCalled()
   })
 
