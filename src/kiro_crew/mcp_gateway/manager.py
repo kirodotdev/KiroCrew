@@ -33,7 +33,7 @@ from kiro_crew import platform_compat
 from kiro_crew.code_fingerprint import code_fingerprint, warm_code_fingerprint
 from kiro_crew.config.paths import config_dir
 from kiro_crew.env import mcp_runtime_path, resolve_krb5_ccname
-from kiro_crew.mcp_gateway import backend_record, transport
+from kiro_crew.mcp_gateway import agent_socket, backend_record, transport
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES
 from kiro_crew.mcp_gateway.shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 from kiro_crew.metrics.events import (
@@ -155,7 +155,9 @@ _GATEWAYD_MODULE = "kiro_crew.mcp_gateway.gatewayd"
 # (the previous hand-maintained tuple carried a stale
 # "Mirrors sandbox" comment that could silently drift). ``AWS_ACCESS`` is kept
 # on top because the daemon is more exposed than a credential_process-backed
-# session.
+# session. The scrub always runs; the one thing added back after it is the
+# gateway's boot-time ``SSH_AUTH_SOCK``, for the backends an operator names
+# (``agent_socket``), on its own channel and never through this list.
 #
 # We deliberately do NOT scrub ``sandbox._AGENT_DENIED_ENV_KEYS``
 # (SLACK_BOT_TOKEN/APP/USER, KIROCREW_OWNER_ID). config/loader_config.py seeds those
@@ -711,6 +713,14 @@ class GatewayManager:
         # with no ceiling on a slow or remote home, and this method already
         # offloads a single chmod.
         env["PATH"] = await asyncio.to_thread(mcp_runtime_path, env.get("PATH", ""))
+        # The agent socket this gateway was started with, for the shared backends
+        # the operator named in ssh_auth_sock_consent.json: added after the scrub,
+        # under a name the scrub matches, and only with a grant, so without one the
+        # daemon env is unchanged. Not argv: any local process can read a command
+        # line, only the owner an environment.
+        backend_agent_socket = await asyncio.to_thread(self._backend_agent_socket)
+        if backend_agent_socket:
+            env[agent_socket.DAEMON_ENV] = backend_agent_socket
         # ``-P``: the daemon inherits this process's cwd -- the home directory
         # under the service unit -- and ``-m`` would put it ahead of the stdlib.
         argv = platform_compat.isolated_python_argv(
@@ -832,6 +842,35 @@ class GatewayManager:
             fallback=[],
             log_message="identity.credential_watch_paths failed; no watcher",
         )
+
+    @staticmethod
+    def _backend_agent_socket() -> Optional[str]:
+        """The boot-time agent socket to offer named shared backends, or ``None``.
+
+        ``None`` on Windows, when the gateway recorded no socket at boot, when the
+        operator named no backend, and when the grant cannot be read: each leaves
+        the daemon env unchanged. BLOCKING (reads the consent leaf).
+        """
+        if platform_compat.IS_WINDOWS:
+            return None
+        from kiro_crew import ssh_auth_sock_consent
+
+        try:
+            granted = ssh_auth_sock_consent.mcp_gateway_backends_granted()
+        except Exception:
+            logger.debug("ssh-agent backend grant unreadable; offering no socket", exc_info=True)
+            return None
+        if not granted:
+            return None
+        socket_path = agent_socket.boot_agent_socket()
+        if not socket_path:
+            logger.warning(
+                "mcp-gateway: ssh_auth_sock_consent.json names %s, but this gateway was "
+                "started without a usable SSH_AUTH_SOCK, so no backend receives one",
+                ", ".join(sorted(granted)),
+            )
+            return None
+        return socket_path
 
     @staticmethod
     def _gatewayd_log_path() -> Path:
