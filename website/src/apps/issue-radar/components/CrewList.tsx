@@ -30,11 +30,11 @@ type CrewStatus = (typeof CREW_STATUSES)[number]
 /**
  * Read the route-derived `status` field off a crew record.
  *
- * `Crew` in `api.ts` mirrors the STORE record, and `status` is computed by the
+ * `Crew` in `apiCrewTypes.ts` mirrors the STORE record, and `status` is computed by the
  * crews ROUTE from each crew's open work items (`_crews_page`) — it exists so the
  * phase taxonomy stays in one language instead of `PARKED_PHASES` being re-encoded
  * in TypeScript. Read structurally, and validated against the list above, because
- * `api.ts` is owned elsewhere in this change: the moment `Crew` declares
+ * `apiCrewTypes.ts` is owned elsewhere in this change: the moment `Crew` declares
  * `status: CrewStatus` this collapses to `c.status`. Unknown/absent → `idle`,
  * which renders a neutral dot rather than claiming work that may not exist.
  */

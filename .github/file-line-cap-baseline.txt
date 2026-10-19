@@ -120,7 +120,6 @@
 5831 test/test_vector_memory.py
 2169 website/src/apps/command-bar/CommandBarOverlay.test.tsx
 2145 website/src/apps/design-tweak/DesignTweakPage.tsx
-2208 website/src/apps/issue-radar/api.ts
 2567 website/src/apps/mochi/src/renderer/ChatPanel.tsx
 2125 website/src/pages/AppDetailPage.tsx
 2117 website/src/pages/chat/SidePanel.tsx

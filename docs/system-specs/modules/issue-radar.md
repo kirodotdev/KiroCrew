@@ -326,6 +326,23 @@ per-repo store-scoping rule.
 | PUT | `/crew/work` | Record one work-item step and its progress event (the write behind `issue_radar_crew_record`) |
 | POST | `/crew/pause` | Pause or resume a crew |
 
+**`website/src/apps/issue-radar/api.ts` holds the dashboard's calls to these
+routes** (`issueRadarApi`), plus the base path and the AI-language hint that
+`/issue-ai`, `/pull-ai` and `/recommendations` take. The crews pipeline view
+reads `/crew/fabric` through its own client,
+`website/src/apps/issue-radar/pipeline/api.ts`. `api.ts` is also the one import
+path the app's modules use for these calls and their shapes, and the one module
+id their specs mock. The shapes live in two owners that `api.ts` re-exports, and
+a new shape goes to the owner for its routes:
+`website/src/apps/issue-radar/apiTypes.ts` for the repo, issue and pull-request
+routes (with the error classes the calls throw and the `RepoRef` query and body
+helpers), and `website/src/apps/issue-radar/apiCrewTypes.ts` for the crew routes
+(the records, the phase classifications and the event kinds that mirror the
+backend crew store). Neither owner imports `api.ts`, and no other module of the
+app imports an owner, so a spec's mock of `api.ts` replaces every call
+`issueRadarApi` makes for every importer.
+`website/src/apps/issue-radar/api.owners.test.tsx` pins that shape.
+
 ## GitLab groups
 
 A user who reviews across a large GitLab group follows the GROUP instead of
