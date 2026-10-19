@@ -113,6 +113,7 @@ DECLARED_SITES = frozenset(
         ("cron_inflight.py", "_readable_running_dir"),
         ("dashboard/chat_tag_grants.py", "_quarantine_store"),
         ("dashboard/chat_tag_grants.py", "_store_dir"),
+        ("dashboard/chat_turn/recovery.py", "_prompt_names_an_inlinable_image"),
         ("dashboard/handlers/__init__.py", "_prompt_dir_entry"),
         ("dashboard/handlers/discover.py", "api_skills_discover_install._write_bundle"),
         ("dashboard/handlers/prompts_authoring.py", "_api_prompt_write._apply_locked"),

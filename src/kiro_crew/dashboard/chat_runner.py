@@ -367,6 +367,7 @@ from kiro_crew.dashboard.chat_turn.recovery import (  # noqa: F401
     _note_cycle_failure,
     _note_cycle_start_failure,
     _notice_compaction_after_turn,
+    _prompt_names_an_inlinable_image,
     _purge_superseded_continuations,
     _rearm_allowances,
     _rearm_turn_episode,
@@ -950,6 +951,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     KIRO_CLI_MISSING_KIND,
     MCP_APP_MESSAGE_KIND,
     MODEL_UNENTITLED_KIND,
+    RECOVERY_PROVENANCE_META_KEY,
     SESSION_START_FAILED_KIND,
     SPEC_HOOKS_NOTICE_KIND,
     SUBAGENT_COMPLETION_KIND,
@@ -969,9 +971,12 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     USAGE_LIMIT_KIND,
     EmptyTurnActivity,
     RecoveryPayload,
+    RecoveryProvenance,
     app_inject_row,
     classify_empty_turn,
+    classify_provider_budget_banner,
     has_leaked_tool_call,
+    has_recovery_provenance,
     has_unfinished_progress_claim,
     is_false_current_tool_blocker,
     is_false_current_tool_blocker_near_miss,
@@ -986,6 +991,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     should_notice_leaked_tool_call,
     should_notice_mixed_turn_leak,
     should_recover_promise_only,
+    strip_provider_budget_banner,
     subagents_attached_async,
     synthesis_fire_verdict,
     tool_calls_are_read_only_preparation,
@@ -1492,6 +1498,11 @@ def _turn_reply_segments(turn: "_ChatTurn") -> list[str]:
     return [p for p in parts if p]
 
 
+# A banner-only turn publishes this structural stop reason; its value equals the
+# queued recovery's provenance tag so the producer and consumer cannot drift.
+_STOP_REASON_PROVIDER_BUDGET_ARTIFACT = RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT.value
+
+
 @_hands_off_queue_on_exit
 async def _run_chat(
     state: DashboardState,
@@ -1638,6 +1649,7 @@ async def _run_chat(
     _compaction_dropped_leak = turn._compaction_dropped_leak
     _compaction_notice_chunks = turn._compaction_notice_chunks
     _compaction_started = turn._compaction_started
+    _current_recovery_provenance = turn._current_recovery_provenance
     _current_replay_message = turn._current_replay_message
     _deferred_cut_text = turn._deferred_cut_text
     _escalation = turn._escalation
@@ -1651,9 +1663,12 @@ async def _run_chat(
     _native_tracker = turn._native_tracker
     _noticed_leak = turn._noticed_leak
     _person_steered_turn = turn._person_steered_turn
+    _provider_budget_banner = turn._provider_budget_banner
+    _provider_budget_recovery_owned = turn._provider_budget_recovery_owned
     _recovering_compaction = turn._recovering_compaction
     _recovering_infra = turn._recovering_infra
     _recovering_promise = turn._recovering_promise
+    _recovering_provider_artifact = turn._recovering_provider_artifact
     _refusal_notices = turn._refusal_notices
     _refusal_notices_settled = turn._refusal_notices_settled
     _refusal_reasons = turn._refusal_reasons
@@ -1662,6 +1677,7 @@ async def _run_chat(
     _responsive_recovery = turn._responsive_recovery
     _responsive_turn = turn._responsive_turn
     _retrying_empty = turn._retrying_empty
+    _rows_before_turn = turn._rows_before_turn
     _saw_terminal_event = turn._saw_terminal_event
     _saw_text_chunk = turn._saw_text_chunk
     _shell_tool_calls = turn._shell_tool_calls
@@ -1670,15 +1686,19 @@ async def _run_chat(
     _tcid_first_source = turn._tcid_first_source
     _terminal_synthetic = turn._terminal_synthetic
     _thinkred = turn._thinkred
+    _transient_recovery_owned = turn._transient_recovery_owned
     _ttft_t0 = turn._ttft_t0
     _ttft_visible = turn._ttft_visible
     _turn_billed = turn._turn_billed
     _turn_emitted = turn._turn_emitted
     _turn_flushed_visible_text = turn._turn_flushed_visible_text
+    _turn_input_texts = turn._turn_input_texts
     _turn_successful_tool_call_ids = turn._turn_successful_tool_call_ids
     _turn_thought = turn._turn_thought
     _turn_tool_calls = turn._turn_tool_calls
     _turn_tool_identities = turn._turn_tool_identities
+    _turn_tool_output_truncated = turn._turn_tool_output_truncated
+    _user_authority_text = turn._user_authority_text
     _wsred = turn._wsred
     _wt_pending_coding = turn._wt_pending_coding
     _wt_pending_dropped = turn._wt_pending_dropped
@@ -2461,6 +2481,7 @@ async def _run_chat(
                 await _on_tool_call_update(turn, event)
             elif event.kind == EVENT_TOOL_RESULT:
                 await _on_tool_result(turn, event)
+                _turn_tool_output_truncated = turn._turn_tool_output_truncated
             elif event.kind == EVENT_PERMISSION_REQUEST:
                 _flow = await _on_permission_request(turn, event)
                 _deferred_cut_text = turn._deferred_cut_text
@@ -2473,8 +2494,10 @@ async def _run_chat(
                 if _flow is _Flow.CONTINUE:
                     continue
             elif event.kind == EVENT_STEER_CONSUMED:
-                _had_person_steer = bool(getattr(slot, "_pending_steers", None))
+                _steers_before_settle = list(getattr(slot, "_pending_steers", None) or ())
+                _user_steers = [s for s in _steers_before_settle if slot._steer_user_origin.get(s)]
                 _settle_consumed_steers(slot, event.text or "", state)
+                _had_person_steer = bool(_steers_before_settle)
                 if _had_person_steer:
                     # A person's steer is in this turn (kiro-cli echoes
                     # consumption BEFORE the model's reply streams). Whether
@@ -2483,6 +2506,23 @@ async def _run_chat(
                     # before the settle, which clears the entry.
                     _person_steered_turn = True
                     turn._person_steered_turn = _person_steered_turn
+                # The origin record was read above, before the settle releases it. A
+                # steer this echo consumed that the session's own human typed extends
+                # the user authority the provider-budget capacity gate reads; a peer's
+                # or app's steer never does. Consumed means what the settle itself
+                # releases: registered before, gone after.
+                for _consumed_user_steer in _user_steers:
+                    if _consumed_user_steer not in slot._pending_steers:
+                        _user_authority_text += f"\n{_consumed_user_steer}"
+                        turn._user_authority_text = _user_authority_text
+                # Whoever sent it, a consumed steer is input the model read: a peer's
+                # ``session_send`` can ask for the banner's sentence as well as a
+                # person can. The echo carries the delivered text; the settled entries
+                # cover an echo that came back empty.
+                _turn_input_texts.append(event.text or "")
+                _turn_input_texts.extend(
+                    _steer for _steer in _steers_before_settle if _steer not in slot._pending_steers
+                )
                 if _refusal_notices:
                     # Same echo, same parser as the user-steer ledger: an
                     # empty echo is no evidence, and treating it as delivery
@@ -3559,6 +3599,7 @@ async def _run_chat(
                     # was the user's own — on a recovery turn it is the
                     # runner's continuation.
                     payload=payload_for_replay(_is_synthetic),
+                    provenance=_current_recovery_provenance,
                 )
                 # A recovery IS queued, so this notice is not terminal: the tag
                 # stops the UI offering a retry that re-runs itself. The
@@ -3615,6 +3656,7 @@ async def _run_chat(
                     _requeue_text,
                     kind=SYNTHETIC_RECOVERY_KIND,
                     payload=_requeue_payload,
+                    provenance=(_current_recovery_provenance if not _turn_emitted else None),
                 )
                 _emit_error(turn, f"⟳ Connection lost{_rc_suffix} — retrying...", will_retry=True)
             elif _death_attempts >= SESSION_RECOVERY_MAX_ATTEMPTS:
@@ -3745,6 +3787,177 @@ async def _run_chat(
                 # the next turn. On failure/timeout `used` is unchanged and still
                 # valid, so the same call re-sends the real counts as-is.
                 state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
+
+        # A model backend may leak its private weighted-token budget reminder as
+        # answer text. Classify it before answer detection, persistence, Stop
+        # hooks, and cross-surface delivery. If it was the whole final segment,
+        # finalize away the already-streamed chunks and recover below with a
+        # CONTINUE instruction rather than replaying completed tools. A token or
+        # budget topic in the human's words fails open so a requested answer
+        # stays visible, and a transient continuation may legitimately repeat
+        # the original answer, so only provider-budget ownership strips its
+        # prefix. The banner's count in the human's own words this turn (the
+        # message and each steer they typed, so a translation request in any
+        # language counts), in a tool result this turn delivered, in anything
+        # the model read as input this turn (the prompt as sent, a consumed
+        # steer from anyone), or in any row of an earlier turn, is echo evidence
+        # too: the result text is read off this turn's own tool rows, where the
+        # tool-result branch above recorded it, and the earlier rows' text and
+        # tool output off the rows that were there before this turn; lazily, so
+        # a turn with no banner never walks them. A result the parser cut or
+        # showed without one of its fields makes that evidence incomplete:
+        # absence of the count then proves nothing, and the ordinary-tail strip
+        # stands down.
+        raw_assistant_text = turn.assistant_text
+        turn.assistant_text, _provider_budget_banner = classify_provider_budget_banner(
+            turn.assistant_text,
+            _user_authority_text,
+            is_provider_recovery=_provider_budget_recovery_owned,
+            is_transient_recovery=_transient_recovery_owned,
+            prior_visible_output=_turn_flushed_visible_text,
+            tool_results=(
+                str((_m.get("meta") or {}).get("output") or "")
+                for _m in slot.messages
+                if _m.get("role") == "tool" and str(_m.get("ts") or "") not in _rows_before_turn
+            ),
+            # Whole evidence means every source the model could echo is
+            # readable here. Prompt-image pixels are not, restored rows before the
+            # 500-row live window are not, and a historical tool row is whole only
+            # when a new writer recorded that fact explicitly. Missing legacy
+            # metadata therefore fails open instead of proving the count absent.
+            # The image check reads what the provider received, not only the
+            # request the human typed: the slot's record covers an image file the
+            # prompt as sent named (a $skill body or another prepend can carry a
+            # screenshot), on this turn and every later one, and each steer the
+            # turn consumed is read like the request. ``_turn_input_texts`` holds
+            # the prompt as sent first, then the consumed steers.
+            echo_evidence_complete=not _current_turn_carries_image_ref(
+                "\n".join(
+                    (message, *_turn_input_texts[1:], *(str(_path) for _path in _attachments))
+                )
+            )
+            and getattr(slot, "_sent_prompt_image", False) is not True
+            and not bool(getattr(slot, "_disk_older_count", 0))
+            and not _turn_tool_output_truncated
+            and all(
+                (_m.get("meta") or {}).get("outputTruncated") is False
+                for _m in slot.messages
+                if _m.get("role") == "tool" and str(_m.get("ts") or "") in _rows_before_turn
+            )
+            # A skill an earlier turn loaded sent its whole body to the model, and
+            # the skill-load row is that body's only record here: a row that kept
+            # no readable body for a skill it loaded cannot show the count absent.
+            and all(
+                isinstance(_skills, list)
+                and all(
+                    isinstance(_skill, dict) and isinstance(_skill.get("body"), str)
+                    for _skill in _skills
+                )
+                for _m in slot.messages
+                if (_m.get("meta") or {}).get("kind") == "skill_load"
+                and str(_m.get("ts") or "") in _rows_before_turn
+                for _skills in ((_m.get("meta") or {}).get("skills"),)
+            )
+            # An earlier turn's prompt image stays in the model's conversation,
+            # so its pixels are as unreadable here as this turn's.
+            and not any(
+                _m.get("role") == "user"
+                and _current_turn_carries_image_ref(
+                    "\n".join(
+                        (
+                            str(_m.get("content") or ""),
+                            *(str(_f) for _f in (_m.get("meta") or {}).get("files") or ()),
+                        )
+                    )
+                )
+                for _m in slot.messages
+                if str(_m.get("ts") or "") in _rows_before_turn
+            ),
+            # Rows the banner's tail may be echoing, read lazily for the same
+            # reason as the tool rows: a request to repeat a previous answer, the
+            # human's own earlier message, a figure an earlier tool returned, or
+            # a sentence THIS turn already finalized is an echo of the
+            # transcript, and only a turn with a banner-shaped tail walks them.
+            # Every row before this turn counts, whoever wrote it (the text it
+            # shows, for a tool row the output it recorded, and for a skill-load
+            # row the bodies it recorded), AND every
+            # assistant segment this turn already finalized -- a consumed steer
+            # can ask the model to repeat its own first sentence, so that
+            # sentence has to be echo evidence too. The candidate being
+            # classified is NOT yet a row (it is still ``assistant_text``, its
+            # streamed ``chunk`` rows not finalized), so reading persisted
+            # assistant rows includes this turn's finalized segments and excludes
+            # the candidate's own streaming chunks -- the number cannot be its
+            # own evidence.
+            transcript_texts=(
+                _text
+                for _m in slot.messages
+                if str(_m.get("ts") or "") in _rows_before_turn
+                or (
+                    _m.get("role") == "assistant"
+                    and str(_m.get("ts") or "") not in _rows_before_turn
+                )
+                for _skills in (
+                    (
+                        (_m.get("meta") or {}).get("skills")
+                        if (_m.get("meta") or {}).get("kind") == "skill_load"
+                        else None
+                    ),
+                )
+                for _text in (
+                    str(_m.get("content") or ""),
+                    str((_m.get("meta") or {}).get("output") or ""),
+                    # The bodies an earlier skill load sent, as its row recorded them.
+                    *(
+                        _skill["body"]
+                        for _skill in (_skills if isinstance(_skills, list) else ())
+                        if isinstance(_skill, dict) and isinstance(_skill.get("body"), str)
+                    ),
+                )
+                if _text
+            ),
+            # The prompt as sent and every consumed steer, whoever wrote them: an
+            # ``@prompt`` body or a peer's steer asking for the banner's sentence
+            # is what the tail may be answering. Count evidence only.
+            turn_inputs=_turn_input_texts,
+        )
+        turn._provider_budget_banner = _provider_budget_banner
+        # A banner-only tail after an applied terminal directive is activity after
+        # the quiet end the model asked for (counted above), not a turn that gave
+        # no answer: the quiet end stands as a landed turn, so the unlanded mark
+        # is not set and the recovery arm below leaves it alone.
+        _recovering_provider_artifact = bool(
+            _provider_budget_banner
+            and not turn.assistant_text
+            and not turn._terminal_directive_applied
+        )
+        turn._recovering_provider_artifact = _recovering_provider_artifact
+        if _provider_budget_banner:
+            _wsred.reset()
+            if turn.assistant_text:
+                logger.warning("Suppressed provider budget banner for slot %s", slot.key)
+            else:
+                # A regeneration still holding its prior answers persists its
+                # selector row through this flush, and that append's own frame
+                # replaces the streamed banner on the live client.
+                _regeneration_row_persisted = bool(slot._pending_variants)
+                _flush_segment(
+                    state,
+                    slot,
+                    raw_assistant_text,
+                    broadcast=False,
+                    strip_provider_banner=True,
+                )
+                if not _regeneration_row_persisted:
+                    # The live client may already hold the streamed banner. An
+                    # authoritative empty assistant frame replaces that streaming
+                    # row before the queue boundary's chat_segment can finalize or
+                    # speak it; the continuation's chat_done refresh removes the
+                    # temporary empty row because no such row is persisted server-side.
+                    state.broadcast_ws(
+                        "chat_message",
+                        {"slot": slot.key, "role": "assistant", "content": ""},
+                    )
 
         # What the turn produced OF ITS OWN: `assistant_text` minus any backend
         # control notice that arrived as assistant text (the claude adapter's
@@ -3908,6 +4121,62 @@ async def _run_chat(
                     _refusal_card,
                     "msg msg-err",
                 )
+        elif _provider_budget_banner and not turn.assistant_text:
+            # The banner is provider metadata, not a user-facing answer. Publish
+            # a structural stop reason, then resume exactly once on the SAME live
+            # conversation using the established post-token continuation. An
+            # applied terminal directive (``nothing_to_do``) outranks all of it:
+            # the turn ended as sanctioned, so no stop reason, no recovery and no
+            # notice; the stripped banner is the only thing this arm does then.
+            if not turn._terminal_directive_applied:
+                slot._last_stop_reason = _STOP_REASON_PROVIDER_BUDGET_ARTIFACT
+            _can_recover_budget_banner = (
+                not turn._terminal_directive_applied
+                and _stop_reason == STOP_REASON_END_TURN
+                and _prompt_depth == 0
+                and not _refusal_reasons
+                and not _should_suppress_requeue(slot)
+                and not _stop_pressed(turn)
+                and not _has_user_queued_followup(slot)
+                and not getattr(slot, "_pending_steers", None)
+                and not slot._posttoken_retry_used
+            )
+            if _can_recover_budget_banner:
+                slot._posttoken_retry_used = True
+                _queue_recovery(
+                    turn,
+                    0,
+                    _POSTTOKEN_RECOVER_MSG,
+                    kind=SYNTHETIC_RECOVERY_KIND,
+                    payload=RecoveryPayload.CONTINUATION,
+                    provenance=RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT,
+                )
+                # Snapshot for the dispatch-point purge, same as the promise-only
+                # and compaction arms: a Stop, a rebind or a queued user message
+                # arriving before the drain purges it. The approval mode does not
+                # gate it: the continuation re-drives the same request a post-token
+                # 5xx retry re-drives, under the same modes.
+                replays_of(slot).arm(
+                    ReplayFamily.CONTINUATION,
+                    entry_id="",
+                    session_key=effective_session_key(slot),
+                    stop_gen=getattr(slot, "_stop_generation", 0),
+                    session_stop_gen=_session_stop_generation(turn),
+                )
+            elif (
+                not turn._terminal_directive_applied
+                and _stop_reason != STOP_REASON_CANCELLED
+                and not _should_suppress_requeue(slot)
+            ):
+                # One retry is the hard bound. If the recovery itself produces
+                # the same artifact, do not loop; make the missing answer explicit.
+                slot.append(
+                    "notice",
+                    "ℹ️ The model returned an internal status instead of an answer. "
+                    "The automatic continuation is unavailable or already spent — "
+                    "press Continue to finish the request.",
+                    "msg msg-info",
+                )
         elif not turn._terminal_directive_applied and should_continue_after_compaction(
             # A turn that ended on an applied terminal directive is answered by
             # that directive, whatever compaction happened before it: the empty
@@ -4058,6 +4327,7 @@ async def _run_chat(
                     # Verbatim replay: ORIGINAL only if the incoming text was the
                     # user's. On a recovery turn it is the runner's continuation.
                     payload=payload_for_replay(_is_synthetic),
+                    provenance=_current_recovery_provenance,
                 )
                 _retrying_empty = True
                 turn._retrying_empty = _retrying_empty
@@ -4822,6 +5092,7 @@ async def _run_chat(
             not _retrying_empty
             and not _recovering_promise
             and not _recovering_compaction
+            and not _recovering_provider_artifact
             and not _noticed_leak
             and not _recovering_infra
         ):
@@ -4943,6 +5214,7 @@ async def _run_chat(
             not _retrying_empty
             and not _recovering_promise
             and not _recovering_compaction
+            and not _recovering_provider_artifact
             and not _noticed_leak
             and not _recovering_infra
             and not _is_monitor_wake
@@ -4966,6 +5238,7 @@ async def _run_chat(
             and not _retrying_empty
             and not _recovering_promise
             and not _recovering_compaction
+            and not _recovering_provider_artifact
             and not _noticed_leak
             and not _recovering_infra
         ):
@@ -5072,12 +5345,19 @@ async def _run_chat(
                 if not _nudge_cap
                 else max(0, _nudge_cap - slot._hook_continuation_depth - _pending)
             )
-            # queue_insert(0, …) prepends, so insert in reverse to keep several
-            # hooks' instructions in firing order.
+            # A provider-budget recovery may already be queued at the head. It
+            # finishes the interrupted answer before Stop-hook instructions.
+            _hook_insert_index = 0
+            for _index, _item in enumerate(slot._queue):
+                if has_recovery_provenance(_item, RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT):
+                    _hook_insert_index = _index + 1
+                    break
+            # queue_insert at one fixed position prepends, so insert in reverse to
+            # keep several hooks' instructions in firing order.
             for _reason in reversed(_hook_reasons[:_room]):
                 _queue_recovery(
                     turn,
-                    0,
+                    _hook_insert_index,
                     f"{HOOK_CONTINUATION_RECOVERY_PREFIX}\n{_reason}",
                     kind=SYNTHETIC_RECOVERY_KIND,
                 )
@@ -5382,6 +5662,7 @@ async def _run_chat(
             _turn_actor=_turn_actor,
             _consumed_reported=turn._consumed_reported,
             _current_message=_current_message,
+            _provenance=_current_recovery_provenance,
             _queue_recovery=functools.partial(_queue_recovery, turn),
         )
         _auth_required = True
@@ -5474,6 +5755,7 @@ async def _run_chat(
                 _requeue_text,
                 kind=SYNTHETIC_RECOVERY_KIND,
                 payload=_requeue_payload,
+                provenance=(_current_recovery_provenance if not _turn_emitted else None),
             )
         elif _death_attempts > SESSION_RECOVERY_MAX_ATTEMPTS:
             # Two verdicts, because the user's next move differs. A session whose
@@ -5508,6 +5790,7 @@ async def _run_chat(
             _prompt_depth=_prompt_depth,
             _turn_emitted=_turn_emitted,
             _is_synthetic=_is_synthetic,
+            _provenance=_current_recovery_provenance,
             _queue_recovery=functools.partial(_queue_recovery, turn),
             _stop_pressed=functools.partial(_stop_pressed, turn),
         )
@@ -5657,6 +5940,7 @@ async def _run_chat(
                     _requeue_text,
                     kind=SYNTHETIC_RECOVERY_KIND,
                     payload=_requeue_payload,
+                    provenance=(_current_recovery_provenance if not _turn_emitted else None),
                 )
             else:
                 # depth>0 with budget remaining: session already reset + failure
@@ -5719,6 +6003,7 @@ async def _run_chat(
                     _requeue_text,
                     kind=SYNTHETIC_RECOVERY_KIND,
                     payload=_requeue_payload,
+                    provenance=(_current_recovery_provenance if not _turn_emitted else None),
                 )
                 replays_of(slot).arm(
                     ReplayFamily.SESSION_NOT_FOUND,
@@ -5878,6 +6163,7 @@ async def _run_chat(
                     _image_recovery_text,
                     kind=SYNTHETIC_RECOVERY_KIND,
                     payload=_image_recovery_payload,
+                    provenance=(_current_recovery_provenance if not _turn_emitted else None),
                 )
                 replays_of(slot).arm(
                     ReplayFamily.IMAGE_HISTORY,
@@ -6066,6 +6352,7 @@ async def _run_chat(
                         # the user's. On a recovery turn it is the runner's
                         # continuation.
                         payload=payload_for_replay(_is_synthetic),
+                        provenance=_current_recovery_provenance,
                     )
             else:
                 # depth>0 (nested turn): don't re-queue — surface a clean
@@ -6181,6 +6468,7 @@ async def _run_chat(
                     kind=SYNTHETIC_RECOVERY_KIND,
                     # Verbatim replay, same rule as the same-model retry above.
                     payload=payload_for_replay(_is_synthetic),
+                    provenance=_current_recovery_provenance,
                 )
         elif _turn_emitted and acp_error_is_transient(exc) and not slot._posttoken_retry_used:
             # Post-token transient 5xx: assistant tokens and/or tool calls
@@ -6560,6 +6848,7 @@ async def _run_chat(
                                     # transient/throttle retries.
                                     payload=payload_for_replay(_is_synthetic),
                                     extra_meta=_ma_replay_extra,
+                                    provenance=_current_recovery_provenance,
                                 )
                                 # Record THIS replay's queue id: it is the replay's
                                 # identity. The drain claims it for the replay turn
@@ -6747,8 +7036,16 @@ async def _run_chat(
                 )
                 # The verbatim requeue carries the retry identity forward via
                 # _queue_recovery itself (one mechanism for every recovery
-                # family), so this site needs no site-local re-stamp.
-                _queue_recovery(turn, 0, message, kind=SYNTHETIC_RECOVERY_KIND)
+                # family), so this site needs no site-local re-stamp. The
+                # recovery provenance is the current row's recognized owner,
+                # passed explicitly rather than reconstructed from the text.
+                _queue_recovery(
+                    turn,
+                    0,
+                    message,
+                    kind=SYNTHETIC_RECOVERY_KIND,
+                    provenance=_current_recovery_provenance,
+                )
                 # Fresh conversation ⇒ fresh ladder for the recovery cycle.
                 slot._transient_5xx_retries = 0
                 slot._infra_retries = 0

@@ -48,6 +48,7 @@ if TYPE_CHECKING:
         _deliver_cross_surface_user_message,
         _prepare_mirror_msg,
     )
+    from kiro_crew.dashboard.chat_turn.recovery import _prompt_names_an_inlinable_image
     from kiro_crew.dashboard.chat_turn.steer_queue import _has_user_queued_followup
     from kiro_crew.dashboard.chat_turn.turn_context import _detach_appended_context
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
@@ -240,6 +241,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     _mirror_thread = turn._mirror_thread
     _prompt_depth = turn._prompt_depth
     _provider_has_history = turn._provider_has_history
+    _rows_before_turn = turn._rows_before_turn
     _span_base_len = turn._span_base_len
     _span_probe = turn._span_probe
     _steer_possibly_delivered = turn._steer_possibly_delivered
@@ -250,6 +252,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     _trusted_prompt_tail = turn._trusted_prompt_tail
     _turn_msg_boundary = turn._turn_msg_boundary
     _turn_provenance_restored = turn._turn_provenance_restored
+    _turn_input_texts = turn._turn_input_texts
     _turn_t0 = turn._turn_t0
     _user_msg_for_mirror = turn._user_msg_for_mirror
     _user_prepend_offset = turn._user_prepend_offset
@@ -330,6 +333,30 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         turn._todo_recovery_carried = _todo_recovery_carried
         turn._todo_sync_rendered = _todo_sync_rendered
         turn.full_message = full_message
+
+    # Whether the prompt as sent (now final) names an image file the provider
+    # may inline, whatever part carried it: the request, a $skill body, a
+    # persona, a prepend. An earlier skill-load row's recorded bodies are
+    # read with it, so an image an earlier skill sent still counts after a
+    # restart cleared the slot's in-memory record. Read here, off the loop,
+    # because the dispatch below keeps no await between its closing gate and
+    # the stream.
+    _sent_prompt_names_image = await asyncio.to_thread(
+        _prompt_names_an_inlinable_image,
+        "\n".join(
+            (
+                message if is_slash else full_message,
+                *(
+                    str(_skill.get("body") or "")
+                    for _m in slot.messages
+                    if (_m.get("meta") or {}).get("kind") == "skill_load"
+                    and str(_m.get("ts") or "") in _rows_before_turn
+                    for _skill in (_m.get("meta") or {}).get("skills") or ()
+                    if isinstance(_skill, dict)
+                ),
+            )
+        ),
+    )
 
     # Slash commands use _kiro.dev/commands/execute for full native output;
     # regular messages use session/prompt.
@@ -766,4 +793,10 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     turn._crew_log_step = _crew_log_step
     _crew_log_step_t0 = time.monotonic()
     turn._crew_log_step_t0 = _crew_log_step_t0
+    _turn_input_texts.append(message if is_slash else full_message)
+    # The model's conversation keeps an image this prompt sends for every
+    # later turn, and the banner echo check cannot read its pixels, so the
+    # slot remembers it sent one.
+    if _sent_prompt_names_image:
+        slot._sent_prompt_image = True
     return None

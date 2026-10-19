@@ -22,7 +22,7 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_prestream_exhausted_cycles``, ``_promise_only_retries``, ``_prompt_busy_retries``,
 ``_refusal_client_pick_epoch``, ``_refusal_fallback_attempted``,
 ``_refusal_fallback_candidate``, ``_refusal_fallback_primary``,
-``_refusal_fallback_session_key``, ``_refusal_pick_gen``,
+``_refusal_fallback_session_key``, ``_refusal_pick_gen``, ``_sent_prompt_image``,
 ``_session_not_found_retry_used``, ``_stale_recovery_exhausted_emitted``,
 ``_stale_recovery_retries``, ``_steer_act_now``, ``_steer_admissions``,
 ``_steer_attachment_meta``, ``_steer_audience_fence_holders``,
@@ -205,6 +205,13 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # ONCE on a transient 5xx (and only when no tool call fired). Reset on a
     # completed turn alongside _transient_5xx_retries.
     self._posttoken_retry_used = False
+    # True once a prompt this slot sent named an image the provider inlines,
+    # whatever part of the prompt carried it (the request, a $skill body, a
+    # prepend). The model's conversation keeps those pixels, so the banner echo
+    # check reads every later turn's evidence as incomplete. Never cleared: an
+    # unneeded True only keeps a banner visible. Not persisted; a skill-load
+    # row's bodies cover a skill's image after a restart.
+    self._sent_prompt_image = False
     # True after the slot's LAST turn ended on a STRUCTURAL terminal error
     # (a malformed-request rejection: the backend refused the payload's
     # SHAPE, so re-sending the identical context reproduces it). Read by the
@@ -345,7 +352,10 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # that persists its own row stamps the id directly and drops this entry.
     self._steer_send_ids = {}
     # Whether an in-flight steer was typed by the session's OWN human, keyed by
-    # the same message text as the two maps above and kept in the same LOCKSTEP.
+    # the same message text as the two maps above. Unlike them it is held past
+    # the steer RPC's acknowledgement while the steer is still pending: the
+    # running turn reads it when the consumption echo settles the steer, to
+    # extend the turn's user authority, and that settle releases it.
     # The requeue reads it to decide `directive_user_origin`, which exempts a
     # queue entry from the drain's LINKED drop. That exemption exists because
     # "the author typed into the session's own surface" -- true of the composer,
