@@ -13,12 +13,14 @@ pins the halves that must stay true together:
 * the backend test suite (Linux and Windows) runs this file on every change,
   including the reduced runs: the leaf-test reduction treats it as a corpus gate,
   and the frontend-only reduction keeps it because it names the website tree;
-* the docs that state the rule name the guard and the number it enforces.
+* the docs that state the rule name the guard and the number it enforces, and
+  the six homes of the 1,600-line working target state one figure.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import warnings
@@ -1016,3 +1018,91 @@ class TestDocs:
     @pytest.mark.parametrize("doc", _DOCS)
     def test_the_documented_cap_is_the_enforced_one(self, doc: str) -> None:
         assert f"{CAP:,} lines" in (REPO_ROOT / doc).read_text(encoding="utf-8")
+
+
+class TestWorkingTarget:
+    """The 1,600-line working target says one figure in every place that states it.
+
+    The cap is enforced; the target is advice, so nothing but this test notices
+    when one of its homes moves and the others do not. The source is
+    ``code-style.md`` § Splitting a file, which every other home points to. Each
+    home is read down to the passage about the target (a section, a paragraph, a
+    table row, one review rule), never the whole file, so an unrelated
+    ``past 1,500 ms`` elsewhere cannot answer for it.
+    """
+
+    # Spelled out literally, so an edit to any home alone selects this test in the
+    # local related-test runner, which matches on the path text.
+    _SOURCE = "docs/system-specs/common/code-style.md"
+    _HOMES = (
+        "docs/system-specs/common/code-style.md",
+        "AGENTS.md",
+        "website/AGENTS.md",
+        "AUTOSDE.yaml",
+        "website/AUTOSDE.yaml",
+        "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md",
+    )
+    # Every phrasing the homes use for the target. A figure is \d,\d{3}: the
+    # homes write thousands with a comma, as they write the cap.
+    _FIGURE = re.compile(r"\b(?:past|already over|holds|working target is) (\d,\d{3})\b")
+
+    @staticmethod
+    def _flat(text: str) -> str:
+        return " ".join(text.split())
+
+    @classmethod
+    def _passage(cls, home: str) -> str:
+        text = (REPO_ROOT / home).read_text(encoding="utf-8")
+        if home.endswith("AUTOSDE.yaml"):
+            import yaml
+
+            rules = yaml.safe_load(text)["custom-rules"]
+            (rule,) = [r for r in rules if r["id"] == "keep-modules-small"]
+            return cls._flat(rule["rule"])
+        if home == "docs/system-specs/common/code-style.md":
+            start = text.index("### Splitting a file")
+            end = text.find("\n#", start + 1)
+            return cls._flat(text[start : end if end != -1 else None])
+        if home == "AGENTS.md":
+            start = text.index("**No hand-written file over")
+            return cls._flat(text[start : text.index("\n\n", start)])
+        # website/AGENTS.md's table row and the skill's checklist line are one line.
+        anchor = {
+            "website/AGENTS.md": "| a file nearing 2,000 lines",
+            "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md": (
+                "**Split a code file the diff takes past"
+            ),
+        }[home]
+        start = text.index(anchor)
+        return cls._flat(text[start : text.index("\n", start)])
+
+    @classmethod
+    def _figures(cls, passage: str) -> list[int]:
+        return [int(m.replace(",", "")) for m in cls._FIGURE.findall(passage)]
+
+    @classmethod
+    def _target(cls) -> int:
+        source = cls._passage(cls._SOURCE)
+        match = re.search(r"takes a code file past (\d,\d{3}) lines", source)
+        assert match, f"{cls._SOURCE} § Splitting a file no longer states the target"
+        return int(match.group(1).replace(",", ""))
+
+    def test_the_target_leaves_room_under_the_cap(self) -> None:
+        assert 0 < self._target() < CAP
+
+    @pytest.mark.parametrize("home", _HOMES)
+    def test_each_home_states_the_target_and_no_other_figure(self, home: str) -> None:
+        figures = self._figures(self._passage(home))
+        target = self._target()
+        assert figures, f"{home} no longer states the {target:,}-line working target"
+        assert set(figures) == {target}, (
+            f"{home} states {sorted(set(figures))}, but {self._SOURCE} says {target:,}: "
+            "update every home in the same change"
+        )
+
+    def test_a_stale_home_is_caught(self) -> None:
+        # The negative control: a home where one mention moved and one did not.
+        stale = "A change past 1,500 lines splits; a file already over 1,600 too."
+        assert set(self._figures(stale)) == {1500, 1600}
+        # The cap's own sentence is not a statement of the target.
+        assert self._figures("No hand-written file over 2,000 lines.") == []
