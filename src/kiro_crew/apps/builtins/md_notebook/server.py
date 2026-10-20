@@ -1459,8 +1459,35 @@ def create_app() -> web.Application:
     return app
 
 
+#: Canonical dotted name of this module. The backend launches it with
+#: ``runpy.run_module(run_name='__main__')``, which registers the running copy
+#: only under ``sys.modules['__main__']`` — not under this key. Any later
+#: ``from kiro_crew.apps.builtins.md_notebook import server`` (the one ``syncer``
+#: does) then misses and imports a SECOND copy with its own module-level locks
+#: and caches, so routes and the auto-sync loop guard different lock objects.
+_CANONICAL_NAME = "kiro_crew.apps.builtins.md_notebook.server"
+
+
+def _register_canonical_self() -> None:
+    """Alias the ``__main__`` launch copy under its canonical dotted name.
+
+    Run before ``create_app()`` imports ``syncer``: it makes the dotted import
+    resolve to this already-running module instead of loading a fresh copy, so
+    the whole process shares one set of module-level locks and caches.
+    """
+    running = sys.modules.get("__main__")
+    if running is None or getattr(running, "__name__", None) != "__main__":
+        return
+    existing = sys.modules.get(_CANONICAL_NAME)
+    if existing is running:
+        return
+    if existing is None:
+        sys.modules[_CANONICAL_NAME] = running
+
+
 def main() -> int:
     """Entry point when run as a module by the app backend system."""
+    _register_canonical_self()
     app = create_app()
     logger.info("Notes backend starting on 127.0.0.1:%d (home: %s)", PORT, _home())
     web.run_app(app, host="127.0.0.1", port=PORT, print=None)
