@@ -766,6 +766,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         VAULT_CHANNEL_CREDENTIAL_KEYS,
         EnvFileWideEncodingError,
         _is_env_credential_key,
+        _shadow_checked_env_keys,
         _warn_unresolved_env_credentials,
         _warned_env_keys,
         _warned_undecodable_env,

@@ -27,6 +27,7 @@ from kiro_crew.config.loader_credentials import (
     _JIRA_TOKEN_RE,
     CREDENTIAL_KEYS,
     EnvFileWideEncodingError,
+    _shadow_checked_env_keys,
     _warned_env_keys,
     env_path,
     read_env_text,
@@ -1189,6 +1190,50 @@ class KiroCrewConfig:
                         " -- it will propagate to child processes but is NOT"
                         " agent-isolated.",
                         uk,
+                    )
+
+            # The environment wins over .env (see the docstring), so a line whose
+            # key the process already holds with a different value never reaches
+            # the environment child processes inherit. Say so once per boot,
+            # naming the key only: either value may be a secret. Each key is
+            # checked only the first time a load sees it: after that,
+            # os.environ may hold this function's own seed or a dashboard
+            # write, and a mismatch is a .env edit waiting for a restart, not
+            # an outside variable. An in-app restart re-execs with this
+            # process's environment, seeds included, so the successor's first
+            # load reports an edited line too: the edit really is not applied
+            # until the gateway is stopped and started. Exempt:
+            # - a PATH line, which extends the PATH instead;
+            # - a ``secret://`` reference, because comparing it would take a
+            #   vault read on this path and its secret may equal the variable.
+            unchecked = {
+                k: v
+                for k, v in creds.items()
+                if v
+                and k not in _shadow_checked_env_keys
+                and not platform_compat.env_key_allowed(k, ("PATH",))
+            }
+            _shadow_checked_env_keys.update(unchecked)
+            shadowed = {
+                k
+                for k, v in unchecked.items()
+                if os.environ.get(k, v) != v and not v.startswith("secret://")
+            }
+            if shadowed:
+                for sk in sorted(shadowed):
+                    logger.warning(
+                        "Key %s in .env is not applied to the process environment:"
+                        " it already holds a different value, which child"
+                        " processes inherit instead. It was set before .env was"
+                        " read: by the shell, service or container that started"
+                        " the gateway, by Kiro Crew itself at startup (a CA"
+                        " bundle, for example), or by the older .env an in-app"
+                        " restart carried over. The .env line applies only when"
+                        " the gateway starts without that value: stop and start"
+                        " the gateway once it is gone. A value Kiro Crew sets"
+                        " itself never yields to .env; set that variable in the"
+                        " environment that starts the gateway instead.",
+                        sk,
                     )
 
         for key in CREDENTIAL_KEYS:

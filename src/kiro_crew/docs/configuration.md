@@ -881,6 +881,21 @@ expands; `$HOME` and other shell syntax do not, and an entry that is not an
 absolute directory is dropped with a warning in the log. Restart the gateway after
 editing the file.
 
+A variable the gateway already inherits (from your login shell, the desktop app,
+a service unit or a container) wins over the same key in `.env`. The `.env` line
+does not reach the processes the gateway starts, and the log warns once, naming
+the key but not either value. A `secret://` line is not compared. Unset the
+variable where it comes from, then stop and start the gateway.
+
+Kiro Crew sets a few variables itself at startup, such as a CA bundle in
+`SSL_CERT_FILE` when Python has no default CA file. A `.env` line for one of
+those never takes effect and is named the same way; set the variable in the
+environment that starts the gateway instead, where Kiro Crew keeps it.
+
+An in-app restart keeps the environment of the process it replaces, including the
+`.env` values that process loaded, so a `.env` edit only takes effect after the
+gateway is stopped and started; until then the same warning names the edited key.
+
 ## Denied Commands
 
 The built-in destructive-command deny rules are enforced at Kiro Crew's own

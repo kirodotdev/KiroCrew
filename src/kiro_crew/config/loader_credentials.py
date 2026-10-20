@@ -160,6 +160,10 @@ def jira_global_token_applicable(entries: Iterable[JiraAuthEntry]) -> bool:
 # Keys from .env that were already warned about (fire once per gateway boot).
 _warned_env_keys: set[str] = set()
 
+# .env keys already checked for a different value in the process environment
+# (checked once per gateway boot, the first time a load sees the key).
+_shadow_checked_env_keys: set[str] = set()
+
 
 _DEFAULT_PORT = 5476
 
