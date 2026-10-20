@@ -1190,18 +1190,18 @@ _WRITE_PROTECTED_HOME_PATHS += [
     # it. So an agent that can write this file can enter ``<path>: {size, sha256}``
     # for a settings file the USER hand-wrote — the file is readable, so both values
     # are computable — and the next session adopts it: the user's project settings
-    # are overwritten with Crew's seed and unlinked on reset. As with the alias
-    # record, the damage is done by Crew's own trusted writer, and the digest check
-    # cannot defend it because the forger reads the same bytes it does.
+    # are overwritten with Crew's seed and unlinked on reset. The digest check cannot
+    # defend it, because the forger reads the same bytes Crew's own writer does.
     #
     # WRITE-protected, not read+write sensitive: the record holds no secret (it
     # names work dirs and digests), so the file-READ tools keep working and an
     # operator can still see why a seed was or was not adopted. There is no
-    # legitimate agent WRITE at all — ``seed_provenance.record`` writes
-    # the path directly through ``atomic_write``, which does not route through this
-    # gate.
-    f"{prefix}/settings_seeds.json"
+    # legitimate agent WRITE at all — ``seed_provenance.record`` writes through
+    # ``atomic_write``, outside this gate. Both the record's directory and its old
+    # top-level name (read by a process started before the upgrade) are protected.
+    f"{prefix}/{leaf}"
     for prefix in _CREW_HOME_PREFIXES
+    for leaf in ("seed-provenance", "settings_seeds.json")
 ]
 
 

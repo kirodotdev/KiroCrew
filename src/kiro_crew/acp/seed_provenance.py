@@ -148,14 +148,28 @@ _LOCK = threading.Lock()
 # lock cannot deadlock.
 SETTLE_LOCK = threading.Lock()
 
-# Cross-process lock filename, BESIDE the sidecar rather than on it: ``atomic_write``
-# publishes by renaming a fresh inode over the sidecar, so a lock held on the
-# sidecar's own inode would guard nothing across that rename. Same placement and
-# reasoning as the ops-mission-control policy store.
+# Cross-process lock filename, a separate file rather than the sidecar itself:
+# ``atomic_write`` publishes by renaming a fresh inode over the sidecar, so a lock
+# held on the sidecar's own inode would guard nothing across that rename. It stays
+# at the data-home root, where it was before the sidecar moved into its directory,
+# so every writer keeps serializing on the same lock inode.
 _LOCK_FILENAME = ".settings_seeds.lock"
 _HOLDER_OWNERS = "owners"
 _HOLDER_SHARERS = "sharers"
 _HOLDER_KINDS = (_HOLDER_OWNERS, _HOLDER_SHARERS)
+
+
+#: The directory the sidecar lives in, and the name the sandbox seals read-only.
+#:
+#: A directory rather than the file itself because :func:`_persist` publishes through
+#: ``atomic_write``, which renames a NEW inode over the sidecar. The Linux launcher
+#: refuses a sealed name whose (dev, inode) changed after the pre-spawn pass recorded
+#: it, so a sealed FILE that Crew rewrites on every session seed or release made an
+#: unrelated sandboxed spawn fail whenever that write landed between the pass and the
+#: pin. A rename inside a directory leaves the directory's own inode alone, so the
+#: seal on it holds through every write, and a directory bind shows the live file.
+SIDECAR_DIR_NAME = "seed-provenance"
+_SIDECAR_FILENAME = "settings_seeds.json"
 
 
 def _sidecar_path() -> Path:
@@ -169,7 +183,15 @@ def _sidecar_path() -> Path:
     the host. The one writer, :func:`_persist`, creates the directory itself
     before taking its lock beside the sidecar.
     """
-    return peek_data_home() / "settings_seeds.json"
+    return peek_data_home() / SIDECAR_DIR_NAME / _SIDECAR_FILENAME
+
+
+# ``<data_home>/settings_seeds.json`` is the sidecar's legacy name. That file is
+# neither read nor written here, and its records are not carried over on purpose: a
+# process started before the upgrade keeps writing it, so copying it would leave two
+# live stores whose leases and revocations cannot see each other. A record that is
+# not read answers "not ours", the safe direction this module already takes for an
+# unreadable sidecar, so a seed left from before the move is left alone.
 
 
 def _key(path: Path | str) -> str:

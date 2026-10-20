@@ -243,6 +243,14 @@ do to a protected name while an agent is running. It is not derivable from the l
 list invented there would either break ordinary hosts or quietly reopen the hole, so the code
 carries none and says so at the comparison. This table is the list to choose from.
 
+A record Kiro Crew ITSELF rewrites often therefore lives inside a sealed DIRECTORY
+instead of being sealed as a file: an `atomic_write` inside a directory renames over the
+file and leaves the directory's inode unchanged, so the pin on the directory holds and the
+bind shows the live file. The settings-seed record (in `<data_home>/seed-provenance/`,
+rewritten on every claude-agent-acp seed and release) is sealed that way; sealed as a
+file it made an unrelated spawn refuse whenever a seed write landed between the pass and
+the pin.
+
 **The FIRST look does not follow, and a link is still followed once -- those are two
 different statements and both are needed.** A link occupying a protected name has two
 unrelated causes wanting opposite answers: an ordinary `stow` or `chezmoi` layout has had
