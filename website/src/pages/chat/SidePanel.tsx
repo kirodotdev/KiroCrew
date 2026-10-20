@@ -7,6 +7,7 @@ import { Reorder } from 'framer-motion'
 import { Plus, MoreHorizontal, Globe, PanelRight, PanelBottom } from 'lucide-react'
 import { SidePanelDockHost, SidePanelGlyph } from '../../components/SidePanelGlyph'
 import ActivityViewer from './ActivityViewer'
+import SessionsBody from './SessionsBody'
 // Loaded with its tab, not the shell: the panel (attention cards, tile lists,
 // the session card frame) is only mounted once a Dashboard tab exists.
 const CommandCenterPanel = lazy(() => import('./command-center/CommandCenterPanel'))
@@ -950,6 +951,17 @@ export default function SidePanel({
                   onOpenFolder={p => openFolder(p, t.slot ?? null)}
                   onExternalTerminalFailed={setExternalTerminalNote}
                 />
+              </div>
+            )
+          }
+          // The Sessions tab is its own body, not one of ActivityViewer's
+          // multiplexed session views: it reads the slots and runs mirrors
+          // directly and folds command-center states onto its own chips.
+          if (t.kind === 'sessions') {
+            if (!isActive || panelHidden) return null
+            return (
+              <div key={t.id} className="absolute inset-0">
+                <SessionsBody active={!panelHidden} />
               </div>
             )
           }

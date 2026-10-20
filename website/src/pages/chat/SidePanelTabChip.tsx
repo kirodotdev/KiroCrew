@@ -11,7 +11,7 @@ import TabCloseMenu, { openTabCloseMenu } from '../../components/TabCloseMenu'
 import type { ReactNode } from 'react'
 import { useLongPressReorder } from '../../hooks/useLongPressReorder'
 import { Reorder } from 'framer-motion'
-import { FileText, FileDiff, Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitCompare, GitPullRequest, GitBranch, History, X, Component, Globe, CircleDot, Folder, Folders, Link as LinkIcon, PanelRight, Layers, ListTree, Pin } from 'lucide-react'
+import { FileText, FileDiff, Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitCompare, GitPullRequest, GitBranch, History, X, Component, Globe, CircleDot, Folder, Folders, Link as LinkIcon, PanelRight, Layers, ListTree, Pin, LayoutDashboard } from 'lucide-react'
 import { useTerminalTitle } from '../../utils/terminalRegistry'
 import type { PanelTab, TabKind } from '../../hooks/usePanelTabs'
 import { usePanelTabDescriptors, panelTabDescriptor, isPanelTabKind, type PanelTabDescriptor } from '../../hooks/panelTabRegistry'
@@ -24,7 +24,7 @@ import { i18nT } from '../../i18n/t'
 type BuiltinTabKind = Exclude<TabKind, `app:${string}`>
 const KIND_ICON: Record<BuiltinTabKind, ReactNode> = {
   'command-center': <PanelRight size={16} />,
-  changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <Folders size={16} />, links: <LinkIcon size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
+  changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <Folders size={16} />, links: <LinkIcon size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, sessions: <LayoutDashboard size={16} />, workflows: <Workflow size={16} />,
   logs: <ScrollText size={16} />, crewlog: <History size={16} />, context: <Layers size={16} />, side: <MessageCircleQuestionMark size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
   summary: <ListTree size={16} />,
   pins: <Pin size={16} />,

@@ -198,6 +198,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   // the scope sentence one line under it reading as prose about every app (#6016).
   'components.appstore.trustAppModal.failed', // bare {{app}} #6016
   'components.appstore.trustAppModal.failed_generic', // bare {{app}} #6016
+  'pages.panelSessions.close_slot_confirm', // session-title operand, quoted per locale
   'components.appstore.trustAppModal.intro', // bare {{app}} #6016
   'components.appstore.trustAppModal.on_cancel', // bare {{app}} #6016
   'components.appstore.trustAppModal.scope', // bare {{app}} #6016
