@@ -133,8 +133,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("focus-mode:toggle", handler);
     return () => ipcRenderer.removeListener("focus-mode:toggle", handler);
   },
+  // Second argument: whether the macOS menu bar can slide over the window.
+  // Only an explicit `menuBarOverlap: false` from main turns it off, so a
+  // missing or malformed payload keeps the renderer's menu-bar band.
   onFullScreenChanged: (callback) => {
-    const handler = (_event, isFullScreen) => callback(!!isFullScreen);
+    const handler = (_event, isFullScreen, info) =>
+      callback(!!isFullScreen, !(info && info.menuBarOverlap === false));
     ipcRenderer.on("fullscreen-changed", handler);
     return () => ipcRenderer.removeListener("fullscreen-changed", handler);
   },

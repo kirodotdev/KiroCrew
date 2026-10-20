@@ -182,6 +182,7 @@
       "hide-to-tray.js",
       "html-fullscreen.js",
       "fullscreen-transition-watch.js",
+      "fullscreen-top-reserve.js",
       "gateway-stop.js",
       "gateway-wait.js",
       "sandbox-profile.js",
