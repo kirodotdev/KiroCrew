@@ -1,13 +1,16 @@
-"""The crew log health counters: labels, buckets, the catalogue gate, accrual.
+"""The crew log health counters: labels, buckets, the fold label set, accrual.
 
 What each group here locks in:
 
 *   Every attribute value is a closed enum and an unknown one COLLAPSES rather
     than passing through, because a fold name or a cause templated into a series
     is a cardinality bomb the recorder's instrument cache never evicts.
-*   The fold catalogue is checked AT IMPORT, in both directions. A fold the crew
-    log gained and a fold it lost are different mistakes with different fixes, so
-    the failure names both.
+*   The ``fold`` label set IS the crew log's own catalogue (``FOLD_NAMES``),
+    with no second copy, so there is no drift to check for, and importing this
+    module cannot fail over the catalogue.
+*   A fold pass reads the clock once when it closes, before any point is
+    recorded, so all folds of one pass share one bucket and building the
+    recorder is not charged to the fold.
 *   ``write.lost`` reports a monotonic total accumulated from the deltas it
     reads, so one lost entry is exactly one ``+1``, a reset of the subsystem's
     own counter re-counts nothing, and losses accrued before telemetry was
@@ -134,7 +137,7 @@ class TestDurationBuckets:
 
 
 # --------------------------------------------------------------------------- #
-# The fold catalogue, checked at import
+# The fold label set, read from the crew log's own catalogue
 # --------------------------------------------------------------------------- #
 
 
@@ -288,6 +291,54 @@ class TestFoldPassStamps:
             health.note_fold_pass("session", (), started)
             health.note_fold_pass("session", (), started)
         assert len(rec.attrs_for(health.FOLD_START)) == 1
+
+    def test_every_fold_of_one_pass_shares_one_clock_reading(self, rec, monkeypatch):
+        """One pass, one duration: its folds cannot straddle a bucket edge.
+
+        The clock moves 9ms on every read. Read once at the close, both folds
+        are 9ms (``lt_10ms``); read again per fold, the second lands at 18ms in
+        ``lt_100ms`` and the pass reports two durations for one walk.
+        """
+        reads: list[float] = []
+
+        def clock() -> float:
+            reads.append(len(reads) * 0.009)
+            return reads[-1]
+
+        monkeypatch.setattr(health, "_now", clock)
+        with as_fold_worker():
+            started = health.begin_fold_pass()
+            health.note_fold_origin("session", "cold")
+            health.note_fold_pass("session", ("status", "usage"), started)
+        assert [a["bucket"] for a in rec.attrs_for(health.FOLD_APPLY)] == ["lt_10ms", "lt_10ms"]
+        assert len(reads) == 2, "one read to open the pass, one to close it"
+
+    def test_building_the_recorder_is_not_charged_to_the_fold(self, monkeypatch):
+        """The first ``get_recorder()`` may build the provider; that is not folding.
+
+        The recorder here moves the clock 2s the first time it is used, as a
+        slow provider build would. The pass itself took 1ms, so its apply must
+        say ``lt_10ms``; timing it after the ``fold.start`` point was recorded
+        would say ``ge_1s``.
+        """
+        now = [0.0]
+        monkeypatch.setattr(health, "_now", lambda: now[0])
+        built = _Rec()
+
+        def get_recorder():
+            if not built.calls and now[0] < 2.0:
+                now[0] += 2.0  # the provider build
+            return built
+
+        monkeypatch.setattr("kiro_crew.metrics.provider.get_recorder", get_recorder)
+        with as_fold_worker():
+            started = health.begin_fold_pass()
+            health.note_fold_origin("slot", "cold")
+            now[0] += 0.001  # the fold itself
+            health.note_fold_pass("slot", ("work",), started)
+        assert built.attrs_for(health.FOLD_APPLY) == [
+            {"scope": "slot", "fold": "work", "bucket": "lt_10ms"}
+        ]
 
     def test_the_stamps_are_a_no_op_off_the_fold_worker_thread(self, rec):
         started = health.begin_fold_pass()

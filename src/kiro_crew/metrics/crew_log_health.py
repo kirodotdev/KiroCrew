@@ -688,9 +688,15 @@ def note_fold_pass(scope: str, folds: "Iterable[str]", started: float) -> None:
     No start was stamped means the fold raised before it chose one, and nothing
     is recorded: there was no pass to describe. A pass stamped IDLE advanced
     nothing, so it records its start and no apply.
+
+    The clock is read ONCE, here, before any point is recorded. Every fold the
+    pass applied shares that one duration, so they land in the same bucket, and
+    the first ``get_recorder()`` call -- which can build the whole telemetry
+    provider -- is not charged to the fold.
     """
     if not on_fold_worker_thread():
         return
+    elapsed_ms = (_now() - started) * 1000.0
     marks = getattr(_claim, "origin", None) or {}
     idle = getattr(_claim, "idle", None) or set()
     origin = marks.pop(scope, None)
@@ -705,7 +711,7 @@ def note_fold_pass(scope: str, folds: "Iterable[str]", started: float) -> None:
     if was_idle:
         return
     for fold in folds:
-        note_fold_apply(scope, fold, started)
+        _count_apply(scope, fold, elapsed_ms)
 
 
 def note_fold_apply(scope: str, fold: str, started: float) -> None:
@@ -717,11 +723,17 @@ def note_fold_apply(scope: str, fold: str, started: float) -> None:
     is how much folding is starting without producing a value.
 
     A NO-OP on every thread but the eager fold worker's, as :func:`note_fold_origin`
-    is and for the same reason.
+    is and for the same reason. :func:`note_fold_pass` does not call this: it
+    reads the clock once for the whole pass and records through
+    :func:`_count_apply` directly.
     """
     if not on_fold_worker_thread():
         return
-    elapsed_ms = (_now() - started) * 1000.0
+    _count_apply(scope, fold, (_now() - started) * 1000.0)
+
+
+def _count_apply(scope: str, fold: str, elapsed_ms: float) -> None:
+    """Record one ``fold.apply`` point for a duration already measured."""
     _count(
         FOLD_APPLY,
         {

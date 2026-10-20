@@ -1089,6 +1089,7 @@ class TestTheRealAppendPath:
         """The full chain this story ships: an append, the eager wake, the bus publish,
         this module's subscriber, and a real (stubbed-transport) recorder's ``.add()``.
         """
+        from kiro_crew.metrics.crew_log_health import FOLD_APPLY, FOLD_START
         from kiro_crew.metrics.recorder import MetricsRecorder
 
         recorded: list[tuple[str, Any, dict[str, Any]]] = []
@@ -1105,6 +1106,10 @@ class TestTheRealAppendPath:
 
         recorder = _Recorder()
         monkeypatch.setattr("kiro_crew.metrics.provider.get_recorder", lambda: recorder)
+        # The eager fold worker records its own crew log fold counters through the
+        # same recorder. Freeze their clock so every pass lands in one bucket and the
+        # whole stream below stays an exact equality.
+        monkeypatch.setattr("kiro_crew.metrics.crew_log_health._now", lambda: 0.0)
         assert export.install_otel_crew_log_subscriber() is True
         # Pin the "new" anchors BELOW any real now_ms() the appends below will stamp, so
         # the opening's opened_ts is deterministically > the anchor -- otherwise install
@@ -1133,9 +1138,33 @@ class TestTheRealAppendPath:
         self._wake(SESSION, "turn/started", int(started.seq))
         # The session was opened AFTER export install (its opened_ts is a fresh now_ms),
         # so its first sight counts session.started once; the next delivery (the turn)
-        # diffs against the baselined floor and counts the turn.
+        # diffs against the baselined floor and counts the turn. Around each sits the
+        # eager fold pass that delivered it: one ``fold.start`` (cold on the first
+        # pass, warm after) and one ``fold.apply`` per session fold that moved.
+
+        def fold_pass(origin: str, folds: tuple[str, ...]) -> list[Any]:
+            return [(FOLD_START, 1, {"scope": "session", "origin": origin})] + [
+                (FOLD_APPLY, 1, {"scope": "session", "fold": f, "bucket": "lt_10ms"}) for f in folds
+            ]
+
         assert recorded == [
+            *fold_pass(
+                "cold",
+                (
+                    "status",
+                    "usage",
+                    "timeline",
+                    "tools",
+                    "approvals",
+                    "subagents",
+                    "class",
+                    "outline",
+                    "otel_usage",
+                    "otel_session_tree",
+                ),
+            ),
             (export.SESSION_STARTED_METRIC, 1, {"agent_kind": "worker"}),
+            *fold_pass("warm", ("status", "timeline", "class", "outline", "otel_usage")),
             (export.TURN_STARTED_METRIC, 1, {"actor": "user", "agent_kind": "worker"}),
         ]
 
