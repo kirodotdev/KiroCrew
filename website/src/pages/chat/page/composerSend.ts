@@ -5,7 +5,7 @@ import type { ChatMessage, ChatSlot } from '../../../types'
 import { expandAll as expandPasteTokens, carryPastes, mergeCarriedDraft, type PasteBlock } from '../../../utils/pasteTokens'
 import { mergeSessionRefs, type SessionRef } from '../../../utils/sessionRefs'
 import type { PickedFileTokens } from './composerFileMentions'
-import { queuedSendStash } from '../../../hooks/useQueuedMessageActions'
+import { stashQueuedSend } from '../../../utils/queuedSendStash'
 import { syncSlotRunningFromServer, capturePendingAskId, createSlot, appendMessage, selectComposerBusy, startLocalTurn, endLocalTurn, appendSlotMessage, setSlotRunning, selectSendConfirmed, markSendUnconfirmed, confirmOptimisticSend, ageFolderSuggestion } from '../../../store/chatSlice'
 import { confirmedDelivered } from '../../../utils/sendDelivery'
 import { mintSendId, sendTurn } from '../../../chat-core/transport/sendTurn'
@@ -773,7 +773,7 @@ export function useComposerSend({
       // and are bounded by how many sends a single tab queues in one
       // session.
       if (typeof body.queue_id === 'string' && body.queue_id) {
-        queuedSendStash.set(body.queue_id, { raw, files: stagedFilesAtSend, sent: turn.wire, aliases: sentSlotTokens, ...(sentQuote ? { quote: sentQuote } : {}) })
+        stashQueuedSend(body.queue_id, { raw, files: stagedFilesAtSend, sent: turn.wire, aliases: sentSlotTokens, ...(sentQuote ? { quote: sentQuote } : {}) })
       }
     }
     if (receipt.status === 'refused') {

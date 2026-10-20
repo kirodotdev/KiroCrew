@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo, type RefObject } from 'react'
 import type { CrewmateIdentity } from '../pages/chat/CrewmateMessage'
-import { queuedSendStash } from '../hooks/useQueuedMessageActions'
+import { stashQueuedSend } from '../utils/queuedSendStash'
 import { store, type AppDispatch, type RootState } from '../store'
 import { capturePendingAskId, confirmOptimisticSend, markSendUnconfirmed, resolveOptimisticSteer, selectSendAccepted, selectSendConfirmed, appendSlotMessage, pendingQuestionFor } from '../store/chatSlice'
 import { readPaneDraft, writePaneDraft } from '../utils/chatPaneDrafts'
@@ -366,7 +366,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         // conservative shape ChatPage's cancel restores through), so the token
         // string alone would be a dead chip that sends literally on retry —
         // the pasted text itself is the lossless form of what the user put in.
-        stashDemoted: (queueId) => { if (!optionText) queuedSendStash.set(queueId, { raw: bubblePastes.length ? expandPasteTokens(text, bubblePastes) : text, files, sent: llm, ...(sentQuote ? { quote: sentQuote } : {}) }) },
+        stashDemoted: (queueId) => { if (!optionText) stashQueuedSend(queueId, { raw: bubblePastes.length ? expandPasteTokens(text, bubblePastes) : text, files, sent: llm, ...(sentQuote ? { quote: sentQuote } : {}) }) },
       })
       // -- doSend's send-machinery tail (not steer-receipt policy) --
       // Blocking ask resolution, owned by doSend and run on every accepted
@@ -482,7 +482,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         // chip gone (#560).
         // Expanded for the same reason as doSend's stash: no blocks travel
         // with the card, so the token alone would restore as a dead chip.
-        stashDemoted: (queueId) => queuedSendStash.set(queueId, { raw: steerPastes.length ? expandPasteTokens(raw, steerPastes) : raw, files, sent: txt, ...(sentQuote ? { quote: sentQuote } : {}) }),
+        stashDemoted: (queueId) => stashQueuedSend(queueId, { raw: steerPastes.length ? expandPasteTokens(raw, steerPastes) : raw, files, sent: txt, ...(sentQuote ? { quote: sentQuote } : {}) }),
       })
       // Release a blocking card only once the gateway accepted the steer, so the agent is told to read a message that arrived.
       if (askAtSteer && (receipt.status === 'dispatched' || receipt.status === 'queued')) {

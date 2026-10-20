@@ -6,41 +6,11 @@ import { restoreQueuedContent } from '../utils/fileTokens'
 import { quoteBlock, readMessageQuote, stripQuoteBlock, type MessageQuote } from '../chat-core/composer/messageQuote'
 import type { ChatMessage } from '../types'
 
-/** Pre-serialization composer state of a send the server QUEUED, written by the
- *  host's send path when the `queued: true` receipt names the entry. */
-export interface QueuedSendRecord {
-  /** The text exactly as the user typed it. */
-  raw: string
-  /** The staged file paths at send time. */
-  files: string[]
-  /** The exact POSTed LLM-facing text — the edit guard: an entry edited after
-   *  send keeps its queue id but fails this equality, so an edited card falls
-   *  to the parser instead of clobbering the edit with pre-edit state. */
-  sent: string
-  /** The slot's recorded `@rel` alias map for the sent files, captured before
-   *  the send-clear dropped it (fork GPT review): restoring text + files
-   *  WITHOUT the aliases re-created the pre-fix stuck chip — the restored
-   *  mention was invisible to reconciliation, so hand-deleting it left a
-   *  stale chip that the next send silently re-attached. */
-  aliases?: Record<string, string[]>
-  /** The whole-message quote the send consumed (`chat-core/composer/messageQuote`),
-   *  so a cancel puts it back as a staged card rather than leaving its `>` block
-   *  in the restored text -- or, without a stash hit, losing it (fork GPT review). */
-  quote?: MessageQuote
-}
-
-/** Queued-send stash, keyed by the `queue_id` the send receipt returns (the
- *  same id `queue_push` broadcasts and the card's cancel button carries).
- *  Queue identity is the ONLY sound key: the serialization is not injective
- *  (image @-tokens are erased from the LLM-facing text), so content-keyed
- *  records can collide across different captions, duplicate sends, and other
- *  tabs. Module-level so every host's send path (ChatPage, ChatPane) writes
- *  the one store this hook's cancel consumes — the same one-owner reasoning
- *  as the hook itself (#5891). Deliberately unevicted: an entry dies on the
- *  cancel that consumes it, and evicting a live entry would degrade that
- *  card's cancel to the parser fallback; orphans from normal delivery are
- *  three small strings bounded by queued sends per tab session. */
-export const queuedSendStash = new Map<string, QueuedSendRecord>()
+/** Re-exported, not re-declared: the store moved to `utils/queuedSendStash` so the chat slice can
+ *  reach it without importing this hook, which would close an import cycle. Both names stay
+ *  available here because every existing writer imports them from this module. */
+import { queuedSendStash, restashEditedSend } from '../utils/queuedSendStash'
+export { queuedSendStash, stashQueuedSend, restashEditedSend, type QueuedSendRecord } from '../utils/queuedSendStash'
 
 /** The four queue-card callbacks `QueueStack` takes, plus the in-flight set it
  *  disables its controls from. */
@@ -286,7 +256,15 @@ export function useQueuedMessageActions({
     if (!trimmed) return
     // Optimistically update the card; the WS event reconciles other clients.
     dispatch(editQueuedMessage({ slot, queue_id: queueId, content: trimmed }))
-    run(queueId, api.editQueuedMessage(slot, queueId, trimmed))
+    run(queueId, api.editQueuedMessage(slot, queueId, trimmed).then(data => {
+      // The entry keeps its queue id across an edit, so the stashed record now describes text the
+      // queue no longer holds and the cancel guard's `sent` equality fails -- which drops cancel to
+      // the parser, and the parser cannot recover a path containing a space. Re-pointed at the
+      // SERVER's text because an edit that removed a marker is renumbered and pruned server-side.
+      const display = (data as { content?: unknown } | undefined)?.content
+      restashEditedSend(queueId, trimmed, typeof display === 'string' ? display : trimmed)
+      return data
+    }))
   }, [slot, dispatch, run])
 
   const onReorder = useCallback((queueId: string, direction: 'next' | 'later') => {
