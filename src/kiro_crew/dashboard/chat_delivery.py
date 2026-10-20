@@ -1695,4 +1695,7 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
     # continue_slot_turn that checks RESTORED_QUEUE_KEY.
     if item.get(RESTORED_QUEUE_KEY):
         view.setdefault("meta", {})["restored"] = True
+    edit_rev = item.get("edit_rev")
+    if isinstance(edit_rev, int) and not isinstance(edit_rev, bool):
+        view["editRev"] = edit_rev
     return view

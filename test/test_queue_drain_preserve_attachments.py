@@ -825,5 +825,5 @@ class TestQueueEditPrunesAttachmentMeta:
             for c in state.broadcast_ws.call_args_list
             if c.args and c.args[0] == "queue_edit"
         )
-        assert frame == {"slot": "busy-chat", "queue_id": qid, "content": "just text"}
+        assert frame == {"slot": "busy-chat", "queue_id": qid, "content": "just text", "editRev": 1}
         assert "files" not in slot._queue[0]["meta"]
