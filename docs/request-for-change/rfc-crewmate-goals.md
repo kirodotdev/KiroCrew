@@ -234,6 +234,12 @@ came from a messaging channel still cannot, every other card kind stays refused,
 and `propose_change`, which names its crewmate in the request, stays user-turn
 only. As always, nothing changes until the user presses it.
 
+> **Accepted 2026-10-20 (product owner, rayrayxu):** a `capabilities` card whose
+> additions are only servers this gateway already runs joins the three kinds below,
+> so a worker report that names a missing capability can raise its card from a
+> turn the user did not send; a registry install, a skill or a raw draft stays
+> user-turn only.
+
 This amends [rfc-crewmate-guides-and-mate.md](rfc-crewmate-guides-and-mate.md)'s
 rule that a turn the user did not send gets `not_user_turn`, for these three card
 kinds in the crewmate's own thread. It is acceptable because a card is a
