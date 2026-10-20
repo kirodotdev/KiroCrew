@@ -416,7 +416,14 @@ def _url_payload_command(n: int) -> str:
 #: paragraphs, glue comments, owner imports, owner list, install, class swap and ``__all__``; and
 #: their ``TYPE_CHECKING`` manifests (two each in ``redaction`` and ``exfil``, one in
 #: ``denied_rules``). Every moved statement is unchanged; no rule, threshold or pass changed.
-_PACKAGE_LINE_BUDGET = 31_509
+#:
+#: Raised again, from 31,509, for the HTTP/JSON bearer branch keeping its non-secret
+#: prefix: a named ``bearer_prefix`` group captures the header name, separator, quote
+#: and ``Bearer`` scheme so pass 1 redacts only the token after it and a JSON/header
+#: document parses. 8 lines are the group's comment and split branch in
+#: ``redaction_patterns`` and 7 the value-only span comment in ``_credential_redaction_plan``.
+#: No credential branch, match or pass moved; only the Bearer branch's redacted span.
+_PACKAGE_LINE_BUDGET = 31_524
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
