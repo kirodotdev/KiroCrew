@@ -20,7 +20,7 @@ logger = logging.getLogger("kiro_crew.config.loader")
 # ---------------------------------------------------------------------------
 # SINGLE SOURCE OF TRUTH for the upper bounds on the config knobs that govern
 # host resource consumption. These same ceilings are enforced by the dashboard
-# config API (``dashboard/handlers/core.py`` for the agent knobs,
+# config API (``dashboard/handlers/core_config_view.py`` for the agent knobs,
 # ``session.py`` for ``pool_size``); they live HERE so the API-write gate and
 # the loader's load-time clamp cannot drift apart.
 #
@@ -110,7 +110,7 @@ MAX_SUBAGENTS_FIXED_FLOOR = 3
 
 # session.autocompact_pct — context-usage percentage at which the backend
 # autocompactor fires. SINGLE SOURCE OF TRUTH for the documented 5-90 range:
-# the dashboard config API (``dashboard/handlers/core.py``) validates writes
+# the dashboard config API (``dashboard/handlers/core_config_schema.py``) validates writes
 # against these same constants, and the load read clamps a hand-edited
 # config.json value into them, so the two ranges cannot drift as separate
 # literals. The autocompactor is the backstop that keeps a session's context

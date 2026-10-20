@@ -289,6 +289,36 @@ def catalog_row_would_drop(model_id: str, advertised: object) -> bool:
     return _impl(model_id, advertised)  # type: ignore[arg-type]
 
 
+def advertised_model_ids(entries: object) -> list[str]:
+    """The model ids out of an ``availableModels``-shaped list, or ``[]``.
+
+    Thin delegation to :func:`kiro_crew.acp.client.advertised_model_ids`, the shared
+    shape parser of a live session's advertised list, so the dashboard's model-pin
+    validator (``dashboard/handlers/core_config_models.py``) reads a session's
+    evidence through the SDK surface instead of importing the ACP layer (the
+    agent-sdk-boundary gate refuses a new edge). Plain data in, a list of strings
+    out. Function-local import for the same reason as :func:`resolve_pin_spelling`,
+    which also keeps a patch of the client's name visible to the caller.
+    """
+    from kiro_crew.acp.client import advertised_model_ids as _impl
+
+    return _impl(entries)
+
+
+def model_is_unusable(model_id: str, advertised: object) -> bool:
+    """Whether *advertised* is known and excludes *model_id*.
+
+    Thin delegation to :func:`kiro_crew.acp.client.model_is_unusable`, the one
+    entitlement predicate the session-start withhold also applies, so the
+    dashboard's model-pin validator (``dashboard/handlers/core_config_models.py``)
+    and the wire cannot disagree. Plain data in, a bool out. Function-local import
+    for the same reason as :func:`resolve_pin_spelling`.
+    """
+    from kiro_crew.acp.client import model_is_unusable as _impl
+
+    return _impl(model_id, advertised)  # type: ignore[arg-type]
+
+
 async def resolve_kiro_bin_for_spawn() -> str | None:
     """The Kiro CLI path to spawn, resolved off the event loop, or ``None``.
 

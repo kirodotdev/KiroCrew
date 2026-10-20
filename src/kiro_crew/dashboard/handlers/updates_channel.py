@@ -98,7 +98,7 @@ async def api_update_auto(request: web.Request) -> web.Response:
     # gateway interleaving here.
     #
     # But the flock is only ONE of the two generations that guard config.json. The legacy
-    # dashboard writers -- the agents endpoint, core.py's theme/settings PUT, security.py,
+    # dashboard writers -- the agents endpoint, the core theme and settings PUTs, security.py,
     # messaging.py, mcp.py, computer_use.py -- do a read-modify-write of this same file
     # while holding ONLY the loop-side `_get_config_lock()`, which the sidecar flock does
     # not exclude. So a theme save landing between this endpoint's read and its write

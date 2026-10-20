@@ -2862,7 +2862,7 @@ happens to notice — which is the bug class this closes.
 | `_atomic_json_write` | `agent.py` — via `_notify_if_config_write`, and ONLY when the target resolves to `config_path()`. A safety net rather than a route: no handler writes `config.json` through it — the per-channel savers (`messaging._LockedSectionWrite`), the STT PUT and the MCP gateway-enable toggle all go through `update_config_locked`, and `TestTheAtomicJsonWriteConfigFamilyIsRatcheted` pins that population to an empty baseline so a new saver cannot reopen it |
 
 A handler that must answer only after the new value is in force calls
-`ConfigWatch.refresh_now()` (`handlers/core.py::_hot_apply_after_write`), which
+`ConfigWatch.refresh_now()` (`handlers/core_config_view.py::_hot_apply_after_write`), which
 forces one cycle and is a no-op before the watcher is started. The config PUT
 and every per-channel saver (the `*_settings.py` owners in `dashboard/messaging_api/`,
 the WhatsApp saver in `handlers/whatsapp_setup.py`) do, because their writes carry authorization: a
@@ -3483,7 +3483,7 @@ a prompt-injected agent with file-write access) bypassed that gate entirely. Eac
 knob controls a resource-consumption dimension (concurrent subagent processes,
 per-subagent turn budget, pre-warmed pool processes), so an inflated on-disk value
 could exhaust host memory/CPU/the process table (DoS). The dashboard write gate
-(`dashboard/handlers/core.py`) and the runtime pool cap **import these same
+(`dashboard/handlers/core_config_view.py`) and the runtime pool cap **import these same
 constants**, so write-gate / load-clamp / runtime-cap cannot drift apart —
 closing the direct-config-edit DoS gap.
 

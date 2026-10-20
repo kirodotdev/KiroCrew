@@ -24,7 +24,6 @@
 2058 src/kiro_crew/change_card_catalog.py
 3161 src/kiro_crew/cron_script.py
 18473 src/kiro_crew/dashboard/chat_runner.py
-4286 src/kiro_crew/dashboard/handlers/core.py
 2492 src/kiro_crew/dashboard/handlers/members.py
 2158 src/kiro_crew/dashboard/handlers/work_ledger.py
 2818 src/kiro_crew/dashboard/server.py

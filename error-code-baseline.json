@@ -170,8 +170,21 @@
       "missing_code": 3
     },
     "dashboard/handlers/core.py": {
-      "dynamic_status": 3,
-      "missing_code": 13
+      "dynamic_status": 1,
+      "missing_code": 7
+    },
+    "dashboard/handlers/core_config_patch.py": {
+      "dynamic_status": 1,
+      "missing_code": 3
+    },
+    "dashboard/handlers/core_config_view.py": {
+      "dynamic_status": 1
+    },
+    "dashboard/handlers/core_local_token.py": {
+      "missing_code": 1
+    },
+    "dashboard/handlers/core_stt_settings.py": {
+      "missing_code": 2
     },
     "dashboard/handlers/cron_jobs.py": {
       "dynamic_status": 4,

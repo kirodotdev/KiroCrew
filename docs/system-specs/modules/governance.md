@@ -2894,7 +2894,7 @@ Consulted at **four** chokepoints — the send gate plus EVERY write path to
 | Chokepoint | Pinned-off behavior |
 |---|---|
 | `beacon.telemetry_permitted()` | Refuses both heartbeat and receipt egress. Ranked **above** the config flag so the reported reason names the policy, not the (now irrelevant) local value |
-| `PATCH /api/config/kirocrew` (`handlers/core.py`) | **403** on `telemetry.beacon_enabled=true` |
+| `PATCH /api/config/kirocrew` (`handlers/core_config_patch.py`) | **403** on `telemetry.beacon_enabled=true` |
 | `kirocrew telemetry enable` (`cli_commands.py`) | Exits **1** without writing config.json |
 | `kirocrew config set [--local] …` (`cli_config.py`) | Exits **1** without writing. The *generic* setter reaches the same key, and `--local` writes the overlay that takes PRECEDENCE over the base file |
 
@@ -2990,7 +2990,7 @@ half-control:
 |---|---|
 | `tailnet.resolve_tailnet_host()` | Contributes no origin **and does not spawn the CLI**, so the pin closes both halves an administrator objects to. Checked ahead of the daemon call |
 | `tailnet_serve.publish()` | Refuses to run `tailscale serve`, so the dashboard is never put on the tailnet in the first place. Checked before the spawn — refusing after publishing would be theatre |
-| `PATCH /api/config/kirocrew` (`handlers/core.py`) | **403** on `dashboard.tailscale.enabled=true` |
+| `PATCH /api/config/kirocrew` (`handlers/core_config_patch.py`) | **403** on `dashboard.tailscale.enabled=true` |
 | `kirocrew config set [--local] …` (`cli_config.py`) | Exits **1** without writing. The generic setter reaches the same key, and `--local` writes the overlay that takes PRECEDENCE over the base file |
 
 `tailnet_serve.unpublish()` is deliberately **not** gated, and the asymmetry is
@@ -3389,7 +3389,7 @@ its own — `resolve_selected_backend` degrades a now-denied persisted value to 
 floor with a logged reason on the next load, and the `PATCH
 /api/config/kirocrew` allowlist, `GET /api/config/schema`, `GET /api/acp-backends`
 and the provider factory all read the one derivation
-(`handlers/core.py::_selectable_acp_backends`). `bootstrap_context` additionally
+(`handlers/core_config_schema.py::_selectable_acp_backends`). `bootstrap_context` additionally
 re-runs that SAME gate over the config instance it is holding — that instance was
 normalised before the narrowing — rather than adding a second gate anywhere.
 

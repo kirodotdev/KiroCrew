@@ -2463,6 +2463,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/artifacts_parts/route_plumbing.py",
         "dashboard/handlers/artifacts_parts/session_documents.py",
         "dashboard/handlers/core.py",
+        "dashboard/handlers/core_config_view.py",
+        "dashboard/handlers/core_stt_speech.py",
         "dashboard/handlers/cron_board.py",
         "dashboard/handlers/cron_jobs.py",
         "dashboard/handlers/cron_lessons.py",

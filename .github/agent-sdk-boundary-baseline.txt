@@ -38,7 +38,6 @@
 1 src/kiro_crew/dashboard/chat_summary.py
 1 src/kiro_crew/dashboard/chat_utils.py
 1 src/kiro_crew/dashboard/handlers/agents.py
-2 src/kiro_crew/dashboard/handlers/core.py
 1 src/kiro_crew/dashboard/handlers/hooks.py
 1 src/kiro_crew/dashboard/handlers/optimizer.py
 2 src/kiro_crew/dashboard/handlers/sessions.py

@@ -26,7 +26,7 @@ notes). It is the recogniser's own artefact, so it is not applied to `apple` or
 The batch endpoint's response contract: a decode that heard nothing
 (`transcribe_audio` returns `""`) is `200 {"text": ""}`; a failed decode
 (`transcribe_audio` returns `None`) or an unexpected error is `500` with
-`code: "stt_transcription_failed"` (`handlers/core.py:_CODE_STT_FAILED`). The
+`code: "stt_transcription_failed"` (`handlers/core_stt_access.py:_CODE_STT_FAILED`). The
 meetings audio import folds both into one failure: any falsy transcript, including
 `""` and a segmented over-cap import where a segment failed or was silent, is a
 `502` with `code: "transcription_failed"`
@@ -318,7 +318,7 @@ The third is positive membership in a named tuple, never an inequality or a
 negation against one provider. Adding a name to that tuple grants it the
 endpointer, the caps and the `stt_stream_*` audit identity in one step, so the
 grant has to be an explicit edit to the set rather than a side effect of not
-matching some other provider. `handlers/core.py` serves the same tuple to the
+matching some other provider. `handlers/core_stt_settings.py` serves the same tuple to the
 settings page as `streaming_providers`, so the UI gates its streaming controls on
 that capability instead of on a hardcoded name.
 

@@ -414,7 +414,7 @@ its own once the cache refreshes with a list that carries it.
   every validated model pin (`agent.role_models.*`, `agent.fallback_model`,
   `agent.refusal_fallback_model`, the per-app `apps.<name>.model` and the
   `decisions.model_route` tiers) one
-  grammar, `_MODEL_PIN_PATTERN` in `dashboard/handlers/core.py`: a bare id, or the
+  grammar, `_MODEL_PIN_PATTERN` in `dashboard/handlers/core_config_schema.py`: a bare id, or the
   provider-qualified `provider/model` form OpenCode advertises, built from the
   same `QUALIFIED_MODEL_PATTERN` the spawn and cron model-name check uses (so
   `ollama/qwen3:8b` saves too). It refuses empty
