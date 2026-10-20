@@ -43,6 +43,10 @@ _GLOBAL_OPS = frozenset({"LOAD_GLOBAL", "LOAD_NAME", "STORE_GLOBAL", "DELETE_GLO
 
 #: Each moved function's kind and signature in the one-module file.
 _BASE_SURFACE: dict[str, tuple[bool, str]] = {
+    "_model_manual_title": (
+        True,
+        "(state: 'DashboardState', slot: '_ChatSlot', *, memory_gate: 'bool' = True) -> 'str'",
+    ),
     "generate_manual_title": (True, "(state: 'DashboardState', slot: '_ChatSlot') -> 'str'"),
     "apply_regenerated_title": (
         True,
