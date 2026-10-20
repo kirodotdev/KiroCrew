@@ -21,6 +21,7 @@ on a turn that runs either way.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -88,37 +89,211 @@ def _driver() -> AgentSessionStatus | None:
     return driver_for(_slack_provider()) if _slack_provider is not None else None
 
 
+#: Channels whose session Slack's own Stop ended: no agents.* call until the next
+#: turn starts (code channel lifecycle: Slack updates the status itself).
+_quiet: set[str] = set()
+
+
+def quiet_after_stop(channel_id: str) -> None:
+    """Slack's Stop button stopped *channel_id*: write nothing until a new turn.
+
+    Slack updates the status itself, so the driver's record is moved to what
+    Slack shows (no call): the next turn's ``processing`` is then sent again.
+    """
+    _quiet.add(channel_id)
+    try:
+        driver = _driver()
+        if driver is not None:
+            driver.settled_by_slack(channel_id, None)
+    except Exception:
+        logger.debug("code channel %s: stop bookkeeping failed", channel_id, exc_info=True)
+
+
+def lift_quiet(channel_id: str) -> None:
+    """Slack's Stop was declined (the session is compacting): the turn goes on.
+
+    The channel speaks again at once, not only at its next turn: the turn's
+    tools, its status writes and its turn-end publishing work as before.
+    """
+    _quiet.discard(channel_id)
+
+
+def is_quiet(channel_id: str) -> bool:
+    """Whether Slack's own Stop silenced *channel_id* and no turn has started since."""
+    return channel_id in _quiet
+
+
 async def set_status(channel_id: str, status: str) -> bool:
     """Move the channel's session to *status*; False when nothing was sent."""
+    if channel_id in _quiet:
+        return False
     driver = _driver()
     if driver is None:
         return False
-    return await driver.set_status(channel_id, None, status)
+    sent = await driver.set_status(channel_id, None, status)
+    if channel_id in _quiet:
+        # Slack's Stop landed while the call was out: the driver recorded what
+        # it sent, but Slack has moved the status since.
+        driver.settled_by_slack(channel_id, None)
+    return sent
 
 
 async def settle_after_stop(channel_id: str) -> None:
-    """Move a stopped channel to ``active`` (Slack never clears it after Stop)."""
+    """Move a channel Kiro Crew stopped to ``active`` (Slack did not stop it).
+
+    Nothing is sent while Slack's own Stop keeps the channel quiet: Slack set
+    the status then (a stale bar Stop or ``!stop`` clicked meanwhile).
+    """
+    if channel_id in _quiet:
+        return
+    from kiro_crew.slack.code_channels import surface
+
+    if await surface.write_refusal(channel_id):
+        return  # the channels policy, an archive or Slack's Stop
     driver = _driver()
     if driver is not None:
         await driver.settle_after_stop(channel_id, None)
 
 
+#: Channels whose bound session's turn ended and no new one started yet. Set by
+#: the end hook itself (which runs before the slot stops reading as running), so
+#: an approval status queued behind it never re-opens a finished turn.
+_ended: set[str] = set()
+#: One per channel: the turn hooks' and the approvals' statuses are sent one
+#: after the other, each decided when its turn to send comes, so a ``suspended``
+#: whose approval was answered meanwhile never lands after the ``processing``.
+_status_locks: dict[str, asyncio.Lock] = {}
+
+
+def _status_lock(channel_id: str) -> asyncio.Lock:
+    return _status_locks.setdefault(channel_id, asyncio.Lock())
+
+
+async def _refused(binding: Binding, *, activation: bool = True) -> str:
+    """The package's write gate for a status write (fails closed)."""
+    from kiro_crew.slack.code_channels import surface
+
+    try:
+        return await surface.write_refusal(binding.channel_id, binding, activation=activation)
+    except Exception:
+        logger.debug("code channel %s: status gate failed", binding.channel_id, exc_info=True)
+        return "error"
+
+
 async def _on_start(binding: Binding, _event: hooks.TurnEvent) -> None:
     _held.pop(binding.channel_id, None)
     _after_turn.pop(binding.channel_id, None)
-    await set_status(binding.channel_id, SESSION_STATUS_PROCESSING)
+    _quiet.discard(binding.channel_id)
+    _ended.discard(binding.channel_id)
+    async with _status_lock(binding.channel_id):
+        if await _refused(binding):
+            return  # the channels policy, an archive, Off or Review
+        await set_status(binding.channel_id, SESSION_STATUS_PROCESSING)
 
 
 async def _on_end(binding: Binding, _event: hooks.TurnEvent) -> None:
+    _approvals.pop(binding.session_key, None)
+    _ended.add(binding.channel_id)
     shown = _held.pop(binding.channel_id, SESSION_STATUS_ACTIVE)
     if len(_after_turn) > 4096:
         _after_turn.clear()
     _after_turn[binding.channel_id] = shown
-    await set_status(binding.channel_id, shown)
+    async with _status_lock(binding.channel_id):
+        # Not Off/Review: a turn end still clears a loader the channel was left
+        # on when it went Off mid-turn (else it sticks for Slack's hour).
+        if await _refused(binding, activation=False):
+            return  # the channels policy or an archive
+        await set_status(binding.channel_id, shown)
+
+
+# ── A tool approval waiting on a person: ``suspended`` ────────────────────
+
+#: Approvals pending per bound session key, by request id: one answered late
+#: (after its turn ended) or registered twice cannot skew the count.
+_approvals: dict[str, set[str]] = {}
+_approval_tasks: set[Any] = set()
+
+
+def _channel_of(session_key: str) -> Binding | None:
+    """The live binding whose session is *session_key* (in-memory read; None if none)."""
+    from kiro_crew.slack.code_channels.store import store
+
+    bindings = store().loaded_bindings()
+    for binding in bindings or ():
+        if binding.session_key == session_key and not binding.archived_at:
+            return binding
+    return None
+
+
+def note_approval(session_key: str, *, pending: bool, request_id: str = "") -> None:
+    """A tool approval was raised (*pending*) or answered on *session_key*.
+
+    Slack's lifecycle says a session that cannot go on until a person acts --
+    a tool approval among them -- is ``suspended``, not ``processing``
+    (`agents.sessions.setStatus`_). So the channel shows ``suspended`` while any
+    approval waits, and ``processing`` again once the last one is answered and
+    the turn is still running. Synchronous and cheap for a session no code
+    channel is bound to; never raises.
+
+    .. _agents.sessions.setStatus: https://docs.slack.dev/reference/methods/agents.sessions.setStatus#status-values
+    """
+    try:
+        if not _gate():
+            return
+        binding = _channel_of(session_key)
+        if binding is None:
+            return
+        waiting = _approvals.setdefault(session_key, set())
+        before = len(waiting)
+        if pending:
+            waiting.add(request_id)
+        elif request_id in waiting:
+            waiting.discard(request_id)
+        else:
+            return  # not one this turn raised: an earlier turn's, answered late
+        if not waiting:
+            _approvals.pop(session_key, None)
+        if pending and before == 0:
+            status = "suspended"
+        elif not pending and not waiting:
+            status = SESSION_STATUS_PROCESSING
+        else:
+            return
+        task = asyncio.ensure_future(_apply_approval_status(binding, status))
+        _approval_tasks.add(task)
+        task.add_done_callback(_approval_tasks.discard)
+    except Exception:
+        logger.debug("code channel approval status failed", exc_info=True)
+
+
+async def _apply_approval_status(binding: Binding, status: str) -> None:
+    async with _status_lock(binding.channel_id):
+        if binding.channel_id in _ended:
+            return  # the turn already ended: its end hook set the status
+        if status == SESSION_STATUS_PROCESSING and not _turn_running(binding):
+            return  # no turn running (a restart, or the slot already settled)
+        if await _refused(binding):
+            return  # the channels policy, an archive, Slack's Stop, Off or Review
+        waiting = bool(_approvals.get(binding.session_key))
+        if waiting != (status == "suspended"):
+            return  # answered (or raised) meanwhile: the later task sends its status
+        await set_status(binding.channel_id, status)
+
+
+def _turn_running(binding: Binding) -> bool:
+    try:
+        from kiro_crew.slack.code_channels.binding import bound_slot
+        from kiro_crew.slack.handler import get_dashboard_state
+
+        slot = bound_slot(get_dashboard_state(), binding)
+        return bool(slot is not None and getattr(slot, "running", False))
+    except Exception:
+        return False
 
 
 def install(slack_provider: Callable[[], Any]) -> None:
     """Subscribe the status hooks; *slack_provider* returns the live Slack client."""
     set_slack_provider(slack_provider)
+    _status_locks.clear()  # never a lock bound to an earlier boot's event loop
     hooks.on_turn_start(_on_start)
     hooks.on_turn_end(_on_end)
