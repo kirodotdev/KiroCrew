@@ -13,8 +13,8 @@ reports, counted by the prune's own rules.
 
 from __future__ import annotations
 
+import atexit
 import functools
-import gc
 import hashlib
 import json
 import logging
@@ -186,29 +186,72 @@ def _eager_prune_in(
         _PINNED_SIDE_DIR.path = None
 
 
-# The thread running a cyclic collection right now, or None. A finalizer the
-# collector runs executes on whichever thread happened to allocate, at that
-# point in its code -- possibly inside a non-reentrant lock such as a stdlib
-# executor's ``submit`` lock. The end of a projection takes locks and calls into
-# the subprocess pool, whose bounded request goes through such an executor, so
-# run there it can wait on a lock its own thread already holds, forever. A
-# collection never nests and runs on one thread, so one slot is enough.
-_COLLECTING_THREAD: int | None = None
-
-
-def _note_collection(phase: str, _info: dict[str, int]) -> None:
-    """``gc.callbacks`` hook: record which thread is collecting. Takes no lock."""
-    global _COLLECTING_THREAD
-    _COLLECTING_THREAD = threading.get_ident() if phase == "start" else None
-
-
-gc.callbacks.append(_note_collection)
-
-# Ends of projections the cyclic collector freed, run in order by the reaper
-# thread. ``SimpleQueue.put`` is reentrant: safe from inside a collection.
+# Ends of projections a finalizer freed, run in order by the reaper thread.
+# ``SimpleQueue.put`` is reentrant: safe from inside a cyclic collection, whose
+# finalizer runs on whichever thread happened to allocate -- possibly inside a
+# non-reentrant lock such as a stdlib executor's ``submit`` lock that the end's
+# own path re-enters, so the end is queued here rather than run on that thread.
 _COLLECTED_ENDS: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
 _REAPER_LOCK = threading.Lock()
 _REAPER: threading.Thread | None = None
+
+
+# Set by :func:`_release_queued_leases_at_exit` once the interpreter has begun
+# running its ``atexit`` handlers. From then on the daemon reaper is still alive
+# but may never get to a queued end before finalization stops it, so a
+# finalizer-driven end releases its lease inline instead of queueing it.
+_EXITING = threading.Event()
+
+# How long the exit handler waits for an end the reaper already took off the
+# queue to finish. That end released its lease as its first step; the wait
+# only covers the instant between the reaper taking it and that release.
+_EXIT_REAPER_WAIT_SECS = 2.0
+
+
+def _reaper_alive() -> bool:
+    """True when the reaper thread is running and can still drain a queued end.
+
+    A finalizer that lands during interpreter shutdown (the ``atexit`` weakref
+    sweep) may find the daemon reaper already gone; a queued end would then never
+    run. ``_end_projection`` consults this to fall back to an inline lease
+    release in that case, so the lock file is not left behind.
+    """
+    reaper = _REAPER
+    return reaper is not None and reaper.is_alive()
+
+
+def _release_queued_leases_at_exit() -> None:
+    """``atexit`` hook: no lease may wait on the reaper once the interpreter exits.
+
+    A daemon thread is still alive while ``atexit`` handlers run, so
+    :func:`_reaper_alive` cannot see the exit coming, yet the reaper may be
+    stopped by finalization before it drains the queue. Whichever order this
+    handler and ``weakref.finalize``'s own ``atexit`` sweep run in, every lease
+    is released before the process ends: setting :data:`_EXITING` makes any
+    finalizer firing after this point release its lease inline, and each end
+    already queued has its lease released here, on the exiting thread. Only the
+    lease is released; the prune is left to the next process's boot drain, as
+    on the other shutdown paths. An end the reaper took off the queue before
+    this ran is given :data:`_EXIT_REAPER_WAIT_SECS` to finish.
+    """
+    _EXITING.set()
+    while True:
+        try:
+            end = _COLLECTED_ENDS.get_nowait()
+        except queue.Empty:
+            break
+        if isinstance(end, functools.partial) and end.func is _end_projection_off_loop:
+            try:
+                end.args[0].close()
+            except Exception:
+                logger.debug("skill projection: lease release at exit failed", exc_info=True)
+    if _reaper_alive():
+        reached = threading.Event()
+        _COLLECTED_ENDS.put(reached.set)
+        reached.wait(_EXIT_REAPER_WAIT_SECS)
+
+
+atexit.register(_release_queued_leases_at_exit)
 
 
 def _ensure_projection_reaper() -> None:
@@ -245,16 +288,50 @@ def _reap_collected_projections() -> None:
 
 
 def _end_projection(
-    lease_stack: ExitStack, directory: Path, crew_home_id: str, side_dir: Path
+    lease_stack: ExitStack,
+    directory: Path,
+    crew_home_id: str,
+    side_dir: Path,
+    *,
+    from_release: bool = False,
 ) -> None:
     """The lease finalizer: release the lease, then prune eagerly.
 
-    Called by :meth:`NativeSkillProjection.release` (the client's shutdown path
-    calls that on the event-loop thread) or, for a projection that was merely
-    dropped, when its last reference goes or the cyclic collector frees it.
-    Inside a collection nothing runs here: the end is queued for the reaper
-    thread (:data:`_COLLECTING_THREAD` says why). Otherwise, off the loop the
-    whole sequence runs inline. On the loop ALL of it goes to a daemon
+    Reached two ways, told apart by ``from_release`` rather than any process
+    state: :meth:`NativeSkillProjection.release` detaches the finalizer and calls
+    this DIRECTLY with ``from_release=True`` (a known-safe call site), while the
+    ``weakref.finalize`` machinery calls it with the default ``from_release=False``
+    when the projection is merely dropped -- its last reference gone, or the
+    cyclic collector freeing it.
+
+    A finalizer fires on whichever thread last dropped the reference, at that
+    point in its code -- possibly deep inside a non-reentrant stdlib lock (a
+    ``ThreadPoolExecutor.submit`` holding ``_global_shutdown_lock`` while it
+    constructs the ``Future`` whose allocation freed this projection). The end
+    takes locks and calls the path-resolution subprocess pool, whose bounded
+    request re-enters that same executor, so run inline there it waits on a lock
+    its own thread already holds -- forever, until the test timeout kills the
+    xdist worker. So a finalizer-driven end (``from_release`` false) off the loop
+    is NEVER run inline: it is queued for the daemon reaper thread, which owns a
+    context holding none of those locks. One rule covers every finalizer path --
+    the refcount-zero drop and the cyclic collector alike -- so no gc-callback
+    bookkeeping of which thread is collecting is needed.
+
+    The one exception is interpreter shutdown: the ``atexit`` weakref sweep can
+    fire a finalizer for a projection never explicitly released (the shared
+    runtime holds some for its whole life). The daemon reaper may already be
+    gone, or still alive yet stopped by finalization before it reaches a queued
+    end. So when the reaper is not alive, or :data:`_EXITING` says the
+    ``atexit`` handlers have begun, the lease is released INLINE instead (the
+    prune, which re-enters the executor, is dropped and the next process's boot
+    drain covers it), and :func:`_release_queued_leases_at_exit` releases the
+    lease of every end still queued. The lease release is what must not be
+    lost: a retained lock file blocks the next process's view of this home. It
+    is not run inline in every finalizer, because it is not lock-free either: a
+    refused unlink reports through ``_UNLINK_WARNING_LOCK`` and the logging
+    handlers, the same kind of non-reentrant lock a dropping thread can hold.
+
+    On the loop ALL of it -- release and finalizer alike -- goes to a daemon
     thread: the prune waits on a file lock (up to the publication lock's
     ceiling), and the lease release itself unlocks and closes the holder, then
     stats, opens and unlinks two files -- blocking calls whose cost on a slow or
@@ -263,13 +340,6 @@ def _end_projection(
     inline, the two unlinks the finalizer always did, and drops the prune: the
     next spawn's prune covers it.
     """
-    if _COLLECTING_THREAD == threading.get_ident():
-        _COLLECTED_ENDS.put(
-            functools.partial(
-                _end_projection_off_loop, lease_stack, side_dir, directory, crew_home_id
-            )
-        )
-        return
     if on_event_loop():
         try:
             threading.Thread(
@@ -282,6 +352,26 @@ def _end_projection(
         except RuntimeError:
             logger.debug("skill projection: lease release thread not started", exc_info=True)
         lease_stack.close()
+        return
+    if not from_release:
+        # A finalizer fired off the loop (a refcount-zero drop OR the cyclic
+        # collector freeing it, not reached through ``release``): the thread it
+        # runs on may be deep inside a non-reentrant lock the prune re-enters, so
+        # the end must not run inline here. Hand it to the reaper, which holds
+        # none of those locks (``SimpleQueue.put`` is reentrant and safe from
+        # inside a collection). The one exception is interpreter shutdown, where
+        # the reaper is gone or may never reach a queued end before finalization
+        # stops it: the lease is released INLINE instead so the lock file is not
+        # left behind, and the prune -- which re-enters the executor -- is
+        # dropped for the next process's boot drain to cover.
+        if _reaper_alive() and not _EXITING.is_set():
+            _COLLECTED_ENDS.put(
+                functools.partial(
+                    _end_projection_off_loop, lease_stack, side_dir, directory, crew_home_id
+                )
+            )
+        else:
+            lease_stack.close()
         return
     _end_projection_off_loop(lease_stack, side_dir, directory, crew_home_id)
 
