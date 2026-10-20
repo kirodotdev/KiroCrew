@@ -338,6 +338,11 @@ async def post_wrap_up(binding: Binding, summary: str, *, caller: str) -> str:
             await client.set_summary_message(channel, ts)
         except CodeChannelApiError as exc:
             logger.info("code channel %s: summary_message not recorded: %s", channel, exc.code)
+        else:
+            try:
+                await update_async(channel, summary_message_ts=ts)
+            except Exception:
+                logger.debug("code channel %s: summary pointer not stored", channel)
     surface.audit(caller, "slack.code_channel.wrap_up", "allowed", f"channel={channel} ts={ts}")
     return ts
 

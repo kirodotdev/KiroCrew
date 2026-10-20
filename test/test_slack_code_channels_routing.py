@@ -17,7 +17,7 @@ from slack_code_channels_helpers import OWNER, SELF_USER, Env, FakeState, make_e
 from kiro_crew.config.loader import ACTIVATION_OFF
 from kiro_crew.slack import features
 from kiro_crew.slack.code_channels import binding as binding_mod
-from kiro_crew.slack.code_channels import routing
+from kiro_crew.slack.code_channels import routing, status
 from kiro_crew.slack.code_channels.classifier import RouteDecision
 from kiro_crew.slack.code_channels.creation import ORIGIN_CONTEXT_BLOCK_ID, session_id_for
 from kiro_crew.slack.code_channels.routing import Gate
@@ -624,18 +624,42 @@ async def test_native_stop_stops_the_bound_session(
     assert env.sel.ops("slack.code_channel.stop")[0]["outcome"] == "allowed"
 
 
-async def test_native_stop_when_idle_clears_the_status(
+async def test_native_stop_when_idle_leaves_the_status_to_slack(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Slack's lifecycle: after agent_session_stopped the app makes no agents.*
+    call for the channel; Slack updates the session status itself."""
     _bind(env)
     monkeypatch.setattr("kiro_crew.slack.handler.is_allowed_user", lambda u: True)
     event = {"type": "agent_session_stopped", "channel": "C0CODE", "user": OWNER}
+    assert await routing.handle_session_stopped(env.orch, event, OWNER) is True
+    assert not [m for m in env.api.methods() if m.startswith("agents.")]
+    assert env.slack.posts == []  # the button gets no "Nothing running." reply
+    assert status.is_quiet("C0CODE")
+    # Nothing the channel writes reaches Slack until a new turn starts.
+    assert await status.set_status("C0CODE", "active") is False
+    await status._on_start(routing.store().get_binding("C0CODE"), None)
+    assert not status.is_quiet("C0CODE")
+
+
+async def test_the_context_bar_stop_when_idle_settles_the_status(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bar's Stop is the app's own (Slack stopped nothing), so it settles like !stop."""
+    _bind(env)
+    monkeypatch.setattr("kiro_crew.slack.handler.is_allowed_user", lambda u: True)
+    event = {
+        "type": "agent_session_stopped",
+        "channel": "C0CODE",
+        "user": OWNER,
+        "event_ts": "code_channel_action:Ev1",
+    }
     assert await routing.handle_session_stopped(env.orch, event, OWNER) is True
     assert (
         "agents.sessions.setStatus",
         {"channel_id": "C0CODE", "status": "active"},
     ) in env.api.calls
-    assert env.slack.posts == []  # the button gets no "Nothing running." reply
+    assert not status.is_quiet("C0CODE")
 
 
 async def test_native_stop_from_a_stranger_is_denied(
@@ -686,10 +710,8 @@ async def test_whole_channel_stop_reaches_us_through_the_agent_session_runtime(
         assert await session_events.handle_stopped(env.orch, event) == "channel"
     finally:
         session_events.unregister_channel_stop_handler(routing.handle_session_stopped)
-    assert (
-        "agents.sessions.setStatus",
-        {"channel_id": "C0CODE", "status": "active"},
-    ) in env.api.calls
+    # Slack updates the status after its own Stop; the app calls nothing.
+    assert "agents.sessions.setStatus" not in env.api.methods()
 
 
 async def test_the_first_message_is_the_request_alone_with_the_framing_as_context(

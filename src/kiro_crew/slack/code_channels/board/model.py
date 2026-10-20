@@ -552,3 +552,31 @@ def work_aggregate(snapshot: BoardSnapshot | None) -> dict | None:
     else:
         state = "idle"
     return {"state": state, "label": clean_text(snapshot.aggregate, 200), "counts": counts}
+
+
+def bar_label(snapshot: BoardSnapshot) -> str:
+    """``"2 working · 1 needs you"`` / ``"3 of 3 done"``: the context bar's Workers item.
+
+    The board's own tally (:attr:`BoardSnapshot.counts`, the same rows the
+    board and the channel status read) in the bar's short words: every open
+    state that has rows, most urgent after "working", then the done count once
+    anything is done or nothing is left open. Counts only, so it changes exactly
+    when the board's tally does, never with a worker's summary text. ``""`` with
+    no rows.
+    """
+    if not snapshot.total:
+        return ""
+    counts = snapshot.counts
+    parts: list[str] = []
+    if counts[WORKING]:
+        parts.append(f"{counts[WORKING]} working")
+    if counts[WAITING_ON_YOU]:
+        parts.append(_plural(counts[WAITING_ON_YOU], "needs you", "need you"))
+    for state in (BLOCKED, LOST, IDLE):
+        if counts[state]:
+            parts.append(f"{counts[state]} {STATE_LABELS[state]}")
+    if counts[DONE] or not parts:
+        parts.append(f"{snapshot.done} of {snapshot.total} done")
+    if counts[CLOSED]:
+        parts.append(f"{counts[CLOSED]} closed")
+    return " · ".join(parts)

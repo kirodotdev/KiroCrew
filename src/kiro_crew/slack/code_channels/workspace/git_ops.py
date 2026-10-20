@@ -260,6 +260,18 @@ def short_head(cwd: str) -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
+def has_commits_since(cwd: str, base: str) -> bool:
+    """Whether HEAD has a commit *base* does not (``git rev-list base..HEAD``).
+
+    False when *base* is empty or unreadable: a PR is offered only for commits
+    that are known to be there.
+    """
+    if not base:
+        return False
+    proc = run_git(["rev-list", "--max-count=1", "--end-of-options", f"{base}..HEAD"], cwd)
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
 def default_branch_name(cwd: str) -> str:
     """The remote's default branch name (``main``) from ``origin/HEAD``, or ``""``."""
     proc = run_git(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], cwd)

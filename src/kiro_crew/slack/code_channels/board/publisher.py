@@ -12,7 +12,8 @@ reports costs one ``chat.update``.
 
 * **First publish** posts the board and pins it (``pins.add``; ``already_pinned``
   counts as pinned). The message ts, a digest of what it shows, and the pin
-  are kept on the channel's surface record.
+  are kept on the channel's surface record, with the message's permalink (read
+  once per message) that the context bar's Workers item links to.
 * **Later publishes** edit that message with ``chat.update`` only when the digest
   moved. A message Slack does not have any more (``message_not_found``,
   ``cant_update_message``) is reposted and pinned again.
@@ -221,6 +222,8 @@ async def publish(
             except Exception:
                 logger.debug("code channel %s: pin flag not stored", channel, exc_info=True)
     if ts:
+        await _record_link(slack, channel, ts)
+        await _record_summary(binding, ts)
         await _alert(slack, channel, ts, snapshot, _link, owner_id)
     if ts and active:
         # The stamp's own deadline, from the last EDIT: the caller re-arms the
@@ -307,6 +310,72 @@ def forget(channel: str) -> None:
     for table in (_last_edit, _failures, _pin_checked, _retry_at):
         table.pop(channel, None)
     _plan_refused.discard(channel)
+
+
+async def _record_link(slack: Any, channel: str, board_ts: str) -> None:
+    """Cache the board message's permalink: the context bar's Workers item links to it.
+
+    Read with ``chat.getPermalink`` once per board message (an edit keeps the
+    ts, so the link holds); a failed or unusable read is retried on the next publish.
+    """
+    record = await get_async(channel)
+    if record is not None and record.board_link_ts == board_ts:
+        return
+    try:
+        link = str(await slack.get_permalink(channel, board_ts) or "")
+    except Exception as exc:
+        logger.info("code channel %s: board permalink not read: %s", channel, _code(exc) or exc)
+        return
+    if not link.startswith("https://"):
+        return  # nothing usable: asked again on the next publish
+    try:
+        await update_async(channel, board_link=link, board_link_ts=board_ts)
+    except Exception:
+        logger.debug("code channel %s: board permalink not stored", channel, exc_info=True)
+
+
+async def _record_summary(binding: Binding, board_ts: str) -> None:
+    """Make the board the channel's ``summary_message`` while the session runs.
+
+    The board IS the conductor's running summary, so Slack can show it live
+    (`code channel properties`_), not only after the archive. A current wrap-up
+    (posted for this same session) is the summary instead and is never
+    displaced; it is recorded by :func:`..wrapup.post_wrap_up`, and stays the
+    summary for the rest of that session even as the board keeps changing. Sent
+    once per board message: an edit keeps the ts, so it stays the summary.
+
+    .. _code channel properties: https://docs.slack.dev/ai/slack-code/code-channel-properties#summary-message
+    """
+    channel = binding.channel_id
+    record = await get_async(channel)
+    if record is not None and record.summary_message_ts == board_ts:
+        return
+    if (
+        record is not None
+        and record.summary_ts
+        and record.summary_session_key == binding.session_key
+    ):
+        return
+    client = surface.client()
+    if client is None:
+        return
+    from kiro_crew.slack.code_channels.models import CodeChannelApiError
+
+    try:
+        await client.set_summary_message(channel, board_ts)
+    except CodeChannelApiError as exc:
+        logger.info("code channel %s: live summary not recorded: %s", channel, exc.code)
+        from kiro_crew.slack.code_channels.notices import NOTIFIED, notify_refusal
+
+        if exc.code in NOTIFIED:
+            # Slack will refuse it again: not asked once more for this message.
+            await notify_refusal(channel, exc.code, session_key=binding.session_key)
+            await update_async(channel, summary_message_ts=board_ts)
+        return
+    try:
+        await update_async(channel, summary_message_ts=board_ts)
+    except Exception:
+        logger.debug("code channel %s: summary pointer not stored", channel, exc_info=True)
 
 
 async def _pin(slack: Any, channel: str, ts: str) -> bool:

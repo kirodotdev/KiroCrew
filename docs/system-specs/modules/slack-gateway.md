@@ -185,7 +185,7 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 | `slack/thread_parent.py` | The first message of a thread a new Slack-born session was opened in: fetched once for the fenced prompt block and recorded once as a display-only `notice` transcript row (see "Thread parent for a new Slack-born session") |
 | `slack/thread_replies.py` | Thread replies a turn has not seen yet, bounded, redacted and injection-screened, for the fenced `[SLACK THREAD REPLIES — UNTRUSTED DATA]` prompt block (see "Thread replies since the last turn") |
 | `slack/code_channels/workspace/` | A code channel's workspace: per-channel git worktree, the Code-tab diff (`setView type=diff`), the context bar (repo/branch/PR/CI). See [Code-channel workspace](#code-channel-workspace) |
-| `slack/code_channels/board/` | A conductor-led code channel's work board: the pinned, edited-in-place board message, the per-worker context-bar items, the combined per-worker Code-tab diff and the wrap-up's worker outcomes. See [Conductor work board](#conductor-work-board) |
+| `slack/code_channels/board/` | A conductor-led code channel's work board: the pinned, edited-in-place board message, the context bar's Workers item, the combined per-worker Code-tab diff and the wrap-up's worker outcomes. See [Conductor work board](#conductor-work-board) |
 
 ## Composition
 
@@ -2102,11 +2102,13 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
   row is working or waiting, the watcher refreshes the board at least every 60 s
   (which also re-reads the workers' PRs and CI); it stops when all is idle or done.
   The first pass after a restart reads again every board the surface record names.
-- **Context bar.** After the channel's own items, the workers most urgent first: one
-  item per worker (`PR #n open · tests passing` linked to the PR, else its branch,
-  the title cut so the detail fits), in the slots left of five; the last slot says
-  "+N more workers" when they do not all fit, and a single free slot carries the
-  aggregate line instead.
+- **Context bar.** One **Workers** item leads the bar: the board's tally in short words
+  (`board.model.bar_label`: `2 working · 1 needs you`, `3 of 3 done`), linked to the
+  pinned board message (its `chat.getPermalink`, read once per board message and kept
+  on the surface record). Worker PRs share the bar's ONE PR slot: a single worker PR is
+  shown like the channel's own, several read `3 PRs open` linked to the board; every
+  per-worker PR is on the board itself. The label is counts only, so a worker's new
+  report line edits the board without resending the bar.
 - **Combined diff.** With workers that have commits on their own branches, the Code
   tab shows the channel's diff under `==== Channel branch <b> (conductor) ====`, then
   each worker's `merge-base(channel HEAD, worker)..worker` under `==== Worker i of n:
@@ -2194,10 +2196,71 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   repo / branch / PR / CI items by `agent_bar.merge` inside
   `WorkspaceService._publish_bar` (five items, keys unique, the workspace's keys
   reserved); `republish_bar` publishes at once when the agent changes them.
-  Action items are not offered: Slack's `code_channel_action` click event has no
-  documented payload and the manifest does not subscribe to it.
+  Slack keeps the FIRST five of a longer list and only warns
+  (`too_many_context_bar_items`), so the workspace budgets the bar itself
+  (`workspace/context_bar.py`), in priority order: **Workers** (a conductor-led
+  channel), repo, branch, the **Stop** action while the bound session's turn runs
+  (decided when the bar is SENT, so a refresh racing a turn start or end never sends a
+  stale one; `on_turn_start` adds it from the last published state with no git read,
+  the turn end's refresh drops it), then ONE PR slot: the channel's PR with its CI in
+  one label (once landed, only while no worker PR is open), else one worker PR the
+  board lists, else `N PRs open`, else the **Create PR** action when there is no PR at
+  all, `pr_capability` holds and the branch has commits past the Code tab's own base
+  (`_fork_point`). That is five at most; the agent's items and then **Open in
+  dashboard** (a `session_deep_link`, never a click token; only an https one) take only
+  a slot left free. A bar is not resent when it matches the last send that landed
+  (kept in memory per channel, whichever publisher sent it, and stored as `bar_hash`). The agent may not use any of those keys (`agent_bar.reserved`), and its
+  tool reports what the last built bar actually shows (`published_keys`). An action item
+  never carries a `url` (Slack would save it as info), and `set_context_bar` refuses
+  a list outside Slack's schema (five items, key 64, label 128, url 2048 https, the icon
+  set) before sending. The agent's own items stay links: the actions are Kiro Crew's.
+- **Actions (`actions.py`).** A click arrives as a `code_channel_action` event
+  (manifest-subscribed with `code_channels`; `events._on_event` hands it to
+  `actions.dispatch`). After the feature gate, a redelivery check (`event_id`), the
+  per-workspace origin gate and the `channels` inbound ceiling, the click must be in a
+  bound code channel. `create-pr` runs `commands.run_command` exactly as `/create-pr`
+  (`via=action` in its SEL row); `stop` builds an `agent_session_stopped` for the whole
+  channel (its own de-dup key) and calls `session_events.handle_stopped`, so the
+  native Stop's own check (owner or allowed user) and the code channel's stop handler
+  decide. A refused person gets an ephemeral; any other key is refused. SEL:
+  `slack.code_channel.action`. Slack does not yet document the event body, so
+  `actions.parse` reads the channel, user and key from the spellings its other events
+  use, refuses a body naming two different users, and logs the first body's field
+  names (never values).
+- **Plan-canvas comments (`comments.py`).** Slack sends no canvas-comment event, so
+  `agents.conversations.getCanvas` (open threads only) is read at each turn end of the
+  bound session (one that ended normally) and by a 60 s poll over idle channels with a
+  plan canvas (25 a pass, idle ones only, every skipped channel stamped so none
+  starves the rest). After Slack's own Stop nothing is read or published until the
+  next turn (`surface.channel_stopped` includes `status.is_quiet`).
+  New comments and replies (never our own) become one message per commenter, redacted
+  and framed as feedback, delivered through `routing._route_to_slot` like a typed
+  message; a commenter who may not use Kiro Crew, or an origin that no longer admits
+  the bot, is skipped and audited. Delivered ids are stored (kept to what Slack still
+  lists) only after the
+  delivery succeeded, so nothing repeats across restarts; a canvas created before
+  read-back has its existing comments baselined. At most 20 per read, 1,000 chars each.
+- **View tabs (`views.py`).** Every tab this gateway opens is recorded on the surface
+  record; that record is the only proof a view is ours (`listViews` carries no owner).
+  A `setView` refused `too_many_views` reads `listViews`, drops record entries Slack no
+  longer lists (a vanished Plan tab is re-attached on the next publish), removes the
+  least recently written listed view of OURS (never the Plan tab or the diff) and sends
+  the write once more; with nothing of ours to remove the tool says so. The diff
+  publish uses the same path.
+- **Resource and live summary.** A channel PR sets `agent_resource`
+  (`pull_request`, `github`, `<title> (#N[, merged|closed|draft])`, redacted, within
+  Slack's limits), resent only when it changes. The work board message is recorded as
+  `code_channel.summary_message` when it is posted (once per message), unless a current
+  wrap-up is the summary.
+- **Refusal notices (`notices.py`).** `not_agent_channel` / `not_authorized`, which
+  switch a channel's publishing or commands off, raise one dashboard notification per
+  channel; `feature_disabled` keeps its install-wide capability notification. The
+  agent's tools answer each of the three with a plain sentence.
 - **Status.** `code_channel_set_status("suspended")` holds through the turn end
-  (`status.hold_after_turn`); the next turn start clears it.
+  (`status.hold_after_turn`); the next turn start clears it. A tool approval raised on
+  the bound session (`slot_turns.register_approval` -> `status.note_approval`) shows
+  `suspended` until the last pending one is answered, then `processing` again while
+  the turn still runs (Slack's lifecycle: a session waiting on a person is suspended).
 - **Commands.** At each turn start (off the turn's path) `commands.sync_commands`
   registers `/summarize` and `/wrap-up`, plus `/create-pr` only while
   `pr_capability` holds (a worktree, a GitHub remote this install may reach, `gh`

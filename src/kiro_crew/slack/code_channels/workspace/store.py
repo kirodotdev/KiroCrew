@@ -62,6 +62,9 @@ class WorkspaceRecord:
     pr_url: str = ""
     pr_state: str = ""
     pr_ci: str = ""
+    pr_title: str = ""
+    #: Digest of the ``agent_resource`` last sent for the channel's PR.
+    resource_hash: str = ""
     #: A channel-specific Slack error that turned this channel's views off.
     slack_off: str = ""
     updated_at: float = field(default_factory=time.time)

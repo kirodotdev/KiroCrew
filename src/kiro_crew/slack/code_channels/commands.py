@@ -90,6 +90,8 @@ NO_PR_TEXT = {
     "gh_not_signed_in": "The GitHub CLI isn't signed in on this machine (`gh auth login`), so I can't open a pull request.",
 }
 ACK_TEXT = "Running `/{name}`…"
+#: How the prompt names a command the context bar ran.
+ACTION_LABELS = {CREATE_PR: "Create PR"}
 
 
 def _lock(channel_id: str) -> asyncio.Lock:
@@ -195,6 +197,9 @@ async def sync_commands(binding: Binding) -> None:
                 if exc.code in _DISABLING:
                     await surface_update(channel, commands_off=exc.code)
                     logger.info("code channel %s: commands off (%s)", channel, exc.code)
+                    from kiro_crew.slack.code_channels.notices import notify_refusal
+
+                    await notify_refusal(channel, exc.code, session_key=binding.session_key)
                 else:
                     logger.info("code channel %s: commands not set: %s", channel, exc.code)
                 return
@@ -239,8 +244,13 @@ async def _pr_target(binding: Binding) -> tuple[str, str]:
     return record.worktree, record.branch
 
 
-def _prompt(name: str, user: str, text: str, *, worktree: str = "", branch: str = "") -> str:
-    asked = f"<@{user}> ran /{name} in this Slack code channel."
+def _prompt(
+    name: str, user: str, text: str, *, worktree: str = "", branch: str = "", via: str = "command"
+) -> str:
+    if via == "action":
+        asked = f"<@{user}> pressed {ACTION_LABELS.get(name, name)} on this Slack code channel's context bar."
+    else:
+        asked = f"<@{user}> ran /{name} in this Slack code channel."
     extra = f"\nThey added: {text}" if text else ""
     if name == SUMMARIZE:
         body = (
@@ -290,28 +300,58 @@ async def handle_slash(
     channel = str(payload.get("channel_id") or "")
     user = str(payload.get("user_id") or "")
     text = str(payload.get("text") or "").strip()
-    operation = "slack.code_channel.command"
-    resources = f"channel={channel} command=/{command}"
     if not _first_delivery(payload):
         logger.info("code channel command /%s redelivered in %s; ignored", command, channel)
         return True
-    team = str(payload.get("team_id") or "")
+    await run_command(
+        orch,
+        command=command,
+        channel=channel,
+        user=user,
+        team=str(payload.get("team_id") or ""),
+        text=text,
+        respond=respond,
+    )
+    return True
+
+
+async def run_command(
+    orch: Any,
+    *,
+    command: str,
+    channel: str,
+    user: str,
+    team: str,
+    text: str,
+    respond: Callable[[str], Awaitable[None]],
+    via: str = "command",
+) -> None:
+    """Every gate and effect of one channel command, after its de-duplication.
+
+    The context bar's Create PR action (:mod:`.actions`) runs this same function
+    with ``via="action"``, so a click is authorized, audited and delivered exactly
+    as ``/create-pr`` is.
+    """
+    operation = "slack.code_channel.command"
+    resources = f"channel={channel} command=/{command}" + (
+        "" if via == "command" else f" via={via}"
+    )
     if not surface.workspace_admitted(team):
         surface.audit(
             user, operation, "denied", f"{resources} team_id={team}", "enterprise_origin_mismatch"
         )
-        return True
+        return
     from kiro_crew.messaging.identity import channel_inbound_permitted
 
     if not await channel_inbound_permitted("slack"):
         # The same ceiling the message path applies before any side effect.
         surface.audit(user, operation, "denied", resources, "channels governance policy")
-        return True
+        return
     binding = await asyncio.to_thread(store().get_binding, channel) if channel else None
     if binding is None:
         surface.audit(user, operation, "denied", resources, "not a bound code channel")
         await respond(NOT_A_CODE_CHANNEL_TEXT)
-        return True
+        return
     from kiro_crew.slack.code_channels.routing import (
         Gate,
         InboundResult,
@@ -324,7 +364,7 @@ async def handle_slash(
     if not is_allowed_user(user):
         surface.audit(user, operation, "denied", resources, "unauthorized sender")
         await respond(NOT_AUTHORIZED_TEXT)
-        return True
+        return
     origin = _origin_of(channel, binding, None)
     # The code channel's own activation applies on top of its origin's, exactly
     # as on the message path (routing.inbound_gate).
@@ -337,11 +377,11 @@ async def handle_slash(
             "channel or origin does not admit the bot",
         )
         await respond(NOT_AUTHORIZED_TEXT)
-        return True
+        return
     if await surface.is_archived(binding):
         surface.audit(user, operation, "denied", resources, "archived")
         await respond(ARCHIVED_TEXT)
-        return True
+        return
     target = ("", "")
     if command == CREATE_PR:
         can_pr, reason = await pr_capability(binding)
@@ -349,7 +389,7 @@ async def handle_slash(
             surface.audit(user, operation, "allowed", f"{resources} result={reason}")
             _spawn(sync_commands(binding))  # the set offered /create-pr: correct it
             await respond(NO_PR_TEXT.get(reason, NO_PR_TEXT["not_a_repo"]))
-            return True
+            return
         target = await _pr_target(binding)
     surface.audit(user, operation, "allowed", resources)
     from kiro_crew.slack.code_channels import wrapup
@@ -357,15 +397,17 @@ async def handle_slash(
     if command == WRAP_UP:
         # Armed before delivery: the turn it starts may begin before the call returns.
         await wrapup.request_wrap_up(channel, user)
-    await respond(ACK_TEXT.format(name=command))
+    if via == "action":
+        await respond(f"Running {ACTION_LABELS.get(command, command)}…")
+    else:
+        await respond(ACK_TEXT.format(name=command))
     event = {"channel": channel, "team": binding.team_id}
     delivered = await deliver_directed(
         orch,
         InboundResult(Gate.DIRECTED, binding=binding),
         event,
-        _prompt(command, user, text, worktree=target[0], branch=target[1]),
+        _prompt(command, user, text, worktree=target[0], branch=target[1], via=via),
         user,
     )
     if command == WRAP_UP and not delivered:
         await wrapup.cancel_wrap_up(channel)
-    return True

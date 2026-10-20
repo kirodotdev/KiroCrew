@@ -44,7 +44,6 @@ channel but the caller's own.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -58,6 +57,7 @@ from kiro_crew.slack.code_channels.models import (
     CodeChannelApiError,
     CodeChannelRequestError,
 )
+from kiro_crew.slack.code_channels.notices import CHANNEL_REFUSALS
 from kiro_crew.slack.code_channels.store import Binding
 from kiro_crew.slack.code_channels.surface_client import (
     CANVAS_ALREADY_EXISTS,
@@ -122,6 +122,19 @@ STOPPED_TEXT = (
 )
 GOVERNANCE_TEXT = "Error: this Kiro Crew's channels policy does not allow writing to Slack."
 NO_SLACK_TEXT = "Error: Slack is not connected right now; try again in a moment."
+TOO_MANY_VIEWS_TEXT = (
+    "Error: this channel already has Slack's maximum of five tabs and none of them is one "
+    "of your own views that could make room. Update one of your existing views (same "
+    "view_key) instead of adding a new one."
+)
+PLAN_TAB_FULL_TEXT = (
+    "The Plan tab could not be added: the channel already has five tabs and none of them "
+    "is one of your views. The canvas is still in the channel."
+)
+TOO_MANY_SECTIONS_TEXT = (
+    "Error: Slack could not update the plan canvas: it has too many sections to compare. "
+    "Use fewer paragraphs, headings and code blocks."
+)
 
 
 class ArgumentError(ValueError):
@@ -236,6 +249,12 @@ def _api_error_text(tool: str, exc: CodeChannelApiError) -> str:
         )
     if exc.maybe_applied:
         return f"Error: the call to Slack did not complete ({exc.code}); it may have applied."
+    if exc.code == "too_many_sections":
+        return TOO_MANY_SECTIONS_TEXT
+    if exc.code == "content_too_large":
+        return f"Error: Slack refused {tool}: the content is larger than Slack accepts."
+    if exc.code in CHANNEL_REFUSALS:
+        return f"Error: {CHANNEL_REFUSALS[exc.code]}"
     return f"Error: Slack refused {tool} ({exc.code})."
 
 
@@ -349,28 +368,41 @@ async def _set_view(call: Call, args: dict[str, Any]) -> str:
         )
     if view_key == PLAN_VIEW_KEY:
         raise ArgumentError(f"view_key {PLAN_VIEW_KEY!r} is the plan canvas's; choose another")
+    from kiro_crew.slack.code_channels import views
+
+    channel = call.binding.channel_id
     if kind == "html":
         content = args.get("content")
         if not isinstance(content, str) or not content.strip():
             raise ArgumentError("an html view needs content: a full, self-contained HTML document")
         _check_size(content, "content")
-        view_id = await call.client.set_view(
-            call.binding.channel_id,
-            type="html",
-            view_key=view_key,
-            content=_redact(content),
-            name=name,
-        )
+        safe = _redact(content)
+        _check_size(safe, "content")
+
+        def _write() -> Any:
+            return call.client.set_view(
+                channel, type="html", view_key=view_key, content=safe, name=name
+            )
+
     else:
-        view_id = await call.client.set_view(
-            call.binding.channel_id,
-            type="block_kit",
-            view_key=view_key,
-            blocks=_blocks(args),
-            name=name,
+        blocks = _blocks(args)
+
+        def _write() -> Any:
+            return call.client.set_view(
+                channel, type="block_kit", view_key=view_key, blocks=blocks, name=name
+            )
+
+    try:
+        view_id, removed = await views.write_view(
+            call.client, channel, key=view_key, type=kind, write=_write
         )
+    except CodeChannelApiError as exc:
+        if exc.code != views.TOO_MANY_VIEWS:
+            raise
+        raise ToolRefusal(TOO_MANY_VIEWS_TEXT, exc.code) from None
     label = name or view_key
-    return f"Published the {kind} view {label!r} in this channel (view {view_id})."
+    note = f" To make room, your older view {removed!r} was removed." if removed else ""
+    return f"Published the {kind} view {label!r} in this channel (view {view_id}).{note}"
 
 
 async def _publish_plan_canvas(call: Call, args: dict[str, Any]) -> str:
@@ -402,14 +434,16 @@ async def _publish_plan_canvas(call: Call, args: dict[str, Any]) -> str:
             ) from None
         if not canvas_id:
             raise CodeChannelApiError("conversations.canvases.create", "missing_canvas_id")
-        await surface_update(channel, plan_canvas_id=canvas_id)
+        await surface_update(channel, plan_canvas_id=canvas_id, canvas_baseline=canvas_id)
     if not created:
         await call.client.set_canvas_content(channel, canvas_id, markdown)
     view_note = ""
     record = await surface_get(channel)
     if record is None or not record.plan_view_id:
-        try:
-            view_id = await call.client.set_view(
+        from kiro_crew.slack.code_channels import views
+
+        def _attach() -> Any:
+            return call.client.set_view(
                 channel,
                 type="canvas",
                 view_key=PLAN_VIEW_KEY,
@@ -417,16 +451,25 @@ async def _publish_plan_canvas(call: Call, args: dict[str, Any]) -> str:
                 access_level="comment",
                 name="Plan",
             )
+
+        try:
+            view_id, removed = await views.write_view(
+                call.client, channel, key=PLAN_VIEW_KEY, type="canvas", write=_attach
+            )
             await surface_update(channel, plan_view_id=view_id)
             view_note = " It is the Plan tab; people can comment, only you edit it."
+            if removed:
+                view_note += f" To make room, your older view {removed!r} was removed."
         except CodeChannelApiError as exc:
             logger.info("code channel %s: plan tab not attached: %s", channel, exc.code)
+            if exc.code == views.TOO_MANY_VIEWS:
+                view_note = " " + PLAN_TAB_FULL_TEXT
     verb = "Created" if created else "Updated"
     return f"{verb} this channel's plan canvas.{view_note}"
 
 
 def _bar_items(args: dict[str, Any]) -> list[dict[str, str]]:
-    from kiro_crew.slack.code_channels.agent_bar import MAX_ITEMS, RESERVED_KEYS
+    from kiro_crew.slack.code_channels.agent_bar import MAX_ITEMS, reserved
 
     raw = args.get("items")
     if not isinstance(raw, list):
@@ -441,8 +484,8 @@ def _bar_items(args: dict[str, Any]) -> list[dict[str, str]]:
         extra = sorted(set(raw_item) - {"key", "label", "icon", "url"})
         if "item_type" in extra:
             raise ArgumentError(
-                "action items are not supported: Slack does not deliver their clicks to "
-                "Kiro Crew. Use a url item instead"
+                "action items are not supported: the context bar's actions are Kiro Crew's "
+                "own (Create PR, Stop). Use a url item instead"
             )
         if extra:
             raise ArgumentError(f"context bar items do not take {', '.join(extra)}")
@@ -451,7 +494,7 @@ def _bar_items(args: dict[str, Any]) -> list[dict[str, str]]:
             raise ArgumentError("a key is 1-64 lowercase letters, digits, '_' or '-'")
         if _redact(key) != key:
             raise ArgumentError("that key carries data redaction would remove; choose a plain name")
-        if key in RESERVED_KEYS:
+        if reserved(key):
             raise ArgumentError(f"key {key!r} is the workspace's own item; choose another")
         if key in keys:
             raise ArgumentError(f"key {key!r} appears twice")
@@ -500,37 +543,21 @@ async def _set_context_bar(call: Call, args: dict[str, Any]) -> str:
     elif result:
         await surface_update(channel, context_bar=previous.context_bar if previous else ())
         raise CodeChannelApiError("agents.conversations.setProperties", result)
-    base_keys = await asyncio.to_thread(_workspace_keys, call.binding)
-    _, dropped = agent_bar.merge([{"key": k} for k in base_keys], items)
-    shown = [i["key"] for i in items if i["key"] not in dropped]
+    published = (
+        service.published_keys(call.binding.team_id, channel) if service is not None else None
+    )
+    if published is None:
+        published = [i["key"] for i in agent_bar.merge([], items)[0]]
+    shown = [i["key"] for i in items if i["key"] in published]
+    dropped = [i["key"] for i in items if i["key"] not in published]
     if not items:
         return "Cleared your context-bar items; the workspace's items stay."
     note = (
-        f" Not shown (the bar holds five, the workspace's first): {', '.join(dropped)}."
+        f" Not shown (the bar holds five, the channel's own items first): {', '.join(dropped)}."
         if dropped
         else ""
     )
     return f"Context bar updated: {', '.join(shown) or 'none of your items'} shown.{note}"
-
-
-def _workspace_keys(binding: Binding) -> list[str]:
-    """The keys the workspace's own bar items take (best effort, for the reply)."""
-    try:
-        from kiro_crew.slack.code_channels.workspace.store import WorkspaceStore
-
-        record = WorkspaceStore().get(binding.team_id, binding.channel_id)
-    except Exception:
-        return []
-    if record is None:
-        return []
-    keys = ["repo" if record.repo_root else "folder"]
-    if record.branch:
-        keys.append("branch")
-    if record.pr_number:
-        keys.append("pr")
-        if record.pr_ci and record.pr_state in ("open", "draft"):
-            keys.append("ci")
-    return keys
 
 
 async def _rename(call: Call, args: dict[str, Any]) -> str:

@@ -440,14 +440,12 @@ def test_needs_you_text_mentions_the_owner_and_links():
     assert not render.needs_you_text(row, "", _link).startswith("<@")
 
 
-def test_worker_bar_items_fit_the_slots_and_say_how_many_more():
+def test_the_bar_label_counts_every_worker_in_short_words():
     snap = model.BoardSnapshot(
         rows=tuple(_row(f"it_0000000{i}", branch=f"b{i}") for i in range(1, 6))
     )
-    items = render.worker_bar_items(snap, 3)
-    assert [i["key"] for i in items] == ["worker-it_00000001", "worker-it_00000002", "workers-more"]
-    assert items[-1]["label"] == "+3 more workers"
-    assert render.worker_bar_items(snap, 0) == []
+    assert model.bar_label(snap) == "5 working"
+    assert model.bar_label(model.BoardSnapshot()) == ""
 
 
 # ── publisher ───────────────────────────────────────────────────────────────
@@ -724,10 +722,11 @@ def test_combined_diff_groups_each_workers_commits_under_a_header(tmp_path, repo
         h.published[-1].rows[0].pr_url.endswith("/pull/12")
         and h.published[-1].rows[0].pr_ci == "passed"
     )
-    # The context bar lists the worker after the channel's own items.
+    # The context bar: the board's counts first, then the channel's own items,
+    # and the one worker PR in the PR slot (its title stays on the board).
     labels = [i["label"] for i in h.client.last("set_context_bar")["items"]]
-    assert labels[:2] == ["acme/widgets", rec.branch]
-    assert "Fix login: PR #12 open · tests passing" in labels
+    assert labels[:3] == ["1 working · 1 idle · 1 of 3 done", "acme/widgets", rec.branch]
+    assert labels[-1] == "PR #12 is open · tests passing"
 
 
 _WORKER_PEM_BODY = ["MIIEowIBAAKCAQEA" + "A" * 48] + [f"{n:02d}" + "Qk" * 31 for n in range(20)]
@@ -1261,7 +1260,9 @@ def test_a_worker_is_filed_once_and_a_person_moving_it_out_wins(monkeypatch):
     assert state.slots["chat-w1"].folder_id == ""
 
 
-def test_bar_puts_urgent_workers_first_and_one_slot_is_the_aggregate():
+def test_bar_shows_the_board_in_one_item_and_keeps_worker_prs_on_the_board():
+    from kiro_crew.slack.code_channels.workspace.context_bar import BarState, build_items
+
     snap = model.BoardSnapshot(
         rows=(
             _row("it_00000001", model.DONE, title="Merged"),
@@ -1269,22 +1270,20 @@ def test_bar_puts_urgent_workers_first_and_one_slot_is_the_aggregate():
             _row("it_00000003", model.WORKING, title="Busy"),
         )
     )
-    assert [i["label"].split(":")[0] for i in render.worker_bar_items(snap, 3)] == [
-        "Asks you",
-        "Busy",
-        "Merged",
-    ]
-    one = render.worker_bar_items(snap, 1)
-    assert one == [
+    assert model.bar_label(snap) == "1 working · 1 needs you · 1 of 3 done"
+    items = build_items(BarState(board=snap, board_url="https://acme.slack.com/archives/C1/p1"))
+    assert items == [
         {
             "key": "workers",
-            "label": "3 workers · 1 working · 1 waiting on you · 1 of 3 done",
+            "label": "1 working · 1 needs you · 1 of 3 done",
             "icon": "hierarchy",
+            "url": "https://acme.slack.com/archives/C1/p1",
         }
     ]
     long = _row("it_00000004", title="x" * 120, pr_number=5, pr_state="open", pr_ci="failed")
-    label = render.worker_bar_items(model.BoardSnapshot(rows=(long,)), 2)[0]["label"]
-    assert label.endswith("PR #5 open · tests failing") and len(label) <= 128
+    items = build_items(BarState(board=model.BoardSnapshot(rows=(long,))))
+    assert [i["label"] for i in items] == ["1 working", "PR #5 is open · tests failing"]
+    assert not any("x" * 20 in i["label"] for i in items)  # titles stay on the board
 
 
 def test_worker_pr_cache_is_scoped_to_the_forge_host(tmp_path):
@@ -1619,9 +1618,15 @@ def test_the_approval_command_is_shown_redacted_and_only_on_the_board(monkeypatc
     others = [
         render.needs_you_text(first, "U1", _link),
         render.outcome_line(first),
-        " ".join(i["label"] for i in render.worker_bar_items(snap, 5)),
+        " ".join(i["label"] for i in _bar_of(snap)),
     ]
     assert not any("deploy" in text for text in others)
+
+
+def _bar_of(snap):
+    from kiro_crew.slack.code_channels.workspace.context_bar import BarState, build_items
+
+    return build_items(BarState(board=snap))
 
 
 @pytest.mark.parametrize(

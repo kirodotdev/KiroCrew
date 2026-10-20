@@ -9,7 +9,9 @@ workspace's own per-channel refresh (no second publisher):
   ("3 workers running · 1 waiting on you") in its header, then one row per worker
   -- title, state, last report line, branch, PR + CI, "Open in dashboard". A
   worker that waits on a person gets one threaded reply mentioning the owner.
-* **The context bar** (``workspace.context_bar``): one item per worker.
+* **The context bar** (``workspace.context_bar``): one Workers item with the
+  board's counts (:func:`.model.bar_label`), linked to the pinned board, and one
+  PR slot; every per-worker PR stays on the board.
 * **The Code tab** (``workspace.service._worker_groups``): the combined change,
   the channel's own diff then each worker's commits under a per-worker header.
 * **The wrap-up** (:func:`outcome_lines`): one outcome line per worker.

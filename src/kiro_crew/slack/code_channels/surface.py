@@ -12,6 +12,10 @@ Three parts, each in its own module, wired here:
   Socket Mode.
 * :mod:`.wrapup` -- the wrap-up summary with its Archive button, and the
   archive that follows a click.
+* :mod:`.actions` -- the context bar's Create PR and Stop buttons
+  (``code_channel_action``), each running the path its command or button runs.
+* :mod:`.comments` -- plan-canvas comments read back into the session.
+* :mod:`.views` -- the view tabs at Slack's five-tab cap.
 
 Everything here is inert while the code-channel gate
 (:func:`.binding.code_channels_on`) is shut: the hooks fire only for a bound
@@ -43,12 +47,14 @@ def install(slack_provider: Callable[[], Any]) -> None:
     _slack_provider = slack_provider
     if _INSTALLED:
         return
-    from kiro_crew.slack.code_channels import commands, hooks, wrapup
+    from kiro_crew.slack.code_channels import commands, comments, hooks, wrapup
 
     hooks.on_turn_start(commands.on_turn_start)
     # First: a /wrap-up arriving while a turn starts must see that turn as earlier.
     hooks.on_turn_start(wrapup.on_turn_start, first=True)
     hooks.on_turn_end(wrapup.on_turn_end)
+    hooks.on_turn_end(comments.on_turn_end)
+    comments.start_poll()
     _INSTALLED = True
 
 
@@ -200,9 +206,14 @@ def channel_stopped(channel_id: str) -> bool:
     """Whether Slack's Stop silenced a turn of *channel_id* that is still unwinding.
 
     Slack's rule after ``agent_session_stopped``: no further posts and no
-    ``agents.*`` calls for that context.
+    ``agents.*`` calls for that context. True as well from Slack's own Stop of
+    the whole channel until the next turn starts (:func:`.status.is_quiet`).
     """
     try:
+        from kiro_crew.slack.code_channels.status import is_quiet
+
+        if is_quiet(channel_id):
+            return True
         from kiro_crew.slack.agent_sessions import fence
 
         live = getattr(fence, "_LIVE", ())

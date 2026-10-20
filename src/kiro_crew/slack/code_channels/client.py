@@ -41,11 +41,18 @@ logger = logging.getLogger(__name__)
 ApiCall = Callable[..., Awaitable[Any]]
 
 #: Read-only methods: a transport failure on these means nothing was written.
-_READS = frozenset({"conversations.info"})
+_READS = frozenset(
+    {"conversations.info", "agents.conversations.listViews", "agents.conversations.getCanvas"}
+)
 
 #: ``agents.conversations.setView`` refuses ``content`` over this many bytes
 #: (``content_too_large``); checked here so the request never leaves.
 MAX_VIEW_CONTENT_BYTES = 1_000_000
+
+#: ``agent_resource`` limits (code channel properties): url, title, the rest.
+MAX_RESOURCE_URL = 2048
+MAX_RESOURCE_TITLE = 255
+MAX_RESOURCE_FIELD = 64
 
 
 def _response_data(resp: Any) -> dict[str, Any]:
@@ -144,12 +151,59 @@ class CodeChannelsClient:
     async def set_context_bar(self, channel_id: str, items: list[dict[str, str]]) -> None:
         """``agents.conversations.setProperties`` with ``code_channel.context_bar_items``.
 
-        A full replacement: the list sent is the whole bar. The caller builds
-        items within Slack's limits (at most five, unique keys, known icons).
+        A full replacement: the list sent is the whole bar. Refused locally when
+        it breaks Slack's schema (more than five, a duplicate key, a field over
+        its limit, an unknown icon, an action that also links), because Slack
+        would otherwise keep the first five or save the action as plain info.
         """
+        from kiro_crew.slack.code_channels.workspace.context_bar import MAX_ITEMS, conforms
+
         _check_id(channel_id, "channel_id")
+        keys = [i.get("key") for i in items]
+        if len(items) > MAX_ITEMS or len(set(keys)) != len(keys):
+            raise CodeChannelRequestError(f"at most {MAX_ITEMS} context-bar items, keys unique")
+        bad = [str(i.get("key"))[:64] for i in items if not conforms(i)]
+        if bad:
+            raise CodeChannelRequestError(f"context-bar items outside Slack's schema: {bad}")
         body = {"channel_id": channel_id, "code_channel": {"context_bar_items": list(items)}}
         await self._call("agents.conversations.setProperties", body)
+
+    async def set_agent_resource(
+        self, channel_id: str, *, url: str, resource_type: str, title: str, provider: str
+    ) -> None:
+        """``agents.conversations.setProperties`` with ``agent_resource``.
+
+        The external resource the channel's work centres on (its pull request).
+        Every field is checked against Slack's documented limit first.
+        """
+        _check_id(channel_id, "channel_id")
+        for value, limit, what in (
+            (url, MAX_RESOURCE_URL, "url"),
+            (resource_type, MAX_RESOURCE_FIELD, "resource_type"),
+            (title, MAX_RESOURCE_TITLE, "title"),
+            (provider, MAX_RESOURCE_FIELD, "provider"),
+        ):
+            if not isinstance(value, str) or not value.strip() or len(value) > limit:
+                raise CodeChannelRequestError(f"agent_resource {what} must be 1-{limit} characters")
+        if not url.startswith("https://"):
+            raise CodeChannelRequestError("agent_resource url must be https")
+        body = {
+            "channel_id": channel_id,
+            "agent_resource": {
+                "url": url,
+                "resource_type": resource_type,
+                "title": title,
+                "provider": provider,
+            },
+        }
+        await self._call("agents.conversations.setProperties", body)
+
+    async def list_views(self, channel_id: str) -> list[dict[str, Any]]:
+        """``agents.conversations.listViews``: every view tab (at most five)."""
+        _check_id(channel_id, "channel_id")
+        data = await self._call("agents.conversations.listViews", {"channel_id": channel_id})
+        views = data.get("views")
+        return [v for v in views if isinstance(v, dict)] if isinstance(views, list) else []
 
     async def set_diff_view(
         self, channel_id: str, content: str, *, base_branch: str = "", head_branch: str = ""
@@ -169,11 +223,16 @@ class CodeChannelsClient:
         data = await self._call("agents.conversations.setView", body)
         return str(data.get("view_id") or "")
 
-    async def remove_view(self, channel_id: str, view_id: str) -> None:
-        """``agents.conversations.removeView`` by ``view_id``."""
+    async def remove_view(self, channel_id: str, view_id: str = "", *, view_key: str = "") -> None:
+        """``agents.conversations.removeView`` by ``view_id`` or ``view_key`` (exactly one)."""
         _check_id(channel_id, "channel_id")
-        _check_id(view_id, "view_id")
-        body = {"channel_id": channel_id, "view_id": view_id}
+        if bool(view_id) == bool(view_key):
+            raise CodeChannelRequestError("removeView takes exactly one of view_id or view_key")
+        _check_id(view_id or view_key, "view_id" if view_id else "view_key")
+        body = {
+            "channel_id": channel_id,
+            **({"view_id": view_id} if view_id else {"view_key": view_key}),
+        }
         await self._call("agents.conversations.removeView", body)
 
     # ── Recognition ──────────────────────────────────────────────────────

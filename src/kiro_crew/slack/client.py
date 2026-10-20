@@ -178,6 +178,10 @@ class SlackClientOps(ABC):
         """List pinned messages in a channel as [{ts, text}, ...]."""
         return []
 
+    async def get_permalink(self, channel: str, ts: str) -> str:
+        """A message's permalink (``chat.getPermalink``), or ``""`` when unavailable."""
+        return ""
+
     @abstractmethod
     async def upload_file(
         self,
@@ -645,6 +649,12 @@ class RealSlackClient(SlackClientOps):
             if ts:
                 pins.append({"ts": ts, "text": msg.get("text", "")})
         return pins
+
+    async def get_permalink(self, channel: str, ts: str) -> str:
+        kwargs: dict[str, Any] = {"channel": channel, "message_ts": ts}
+        self._inject_team(channel, kwargs)
+        resp = await self._web.chat_getPermalink(**kwargs)
+        return str(resp.get("permalink") or "")
 
     async def views_publish(self, user_id: str, view: dict) -> None:
         await self._web.views_publish(user_id=user_id, view=view)

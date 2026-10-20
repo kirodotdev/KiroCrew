@@ -109,6 +109,8 @@ from kiro_crew.slack.blocks import (
     voice_config_modal,
 )
 from kiro_crew.slack.code_channels import install as install_code_channels
+from kiro_crew.slack.code_channels.actions import EVENT as CODE_CHANNEL_ACTION_EVENT
+from kiro_crew.slack.code_channels.actions import dispatch as dispatch_code_channel_action
 from kiro_crew.slack.code_channels.binding import no_reactions as code_channel_no_reactions
 from kiro_crew.slack.code_channels.routing import Gate as CodeChannelGate
 from kiro_crew.slack.code_channels.routing import dispatch as code_channel_dispatch
@@ -351,6 +353,11 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
         # ── Agent sessions: native Stop and user renames (agent_sessions) ──
         if event_type in AGENT_SESSION_EVENTS:
             dispatch_agent_session_event(orch, req.payload or {}, event)
+            return
+
+        # ── Code channels: a context-bar action item was clicked ──
+        if event_type == CODE_CHANNEL_ACTION_EVENT:
+            dispatch_code_channel_action(orch, req.payload or {}, event)
             return
 
         # ── Messages and mentions ──

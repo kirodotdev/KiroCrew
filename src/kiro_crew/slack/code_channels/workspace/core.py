@@ -15,6 +15,7 @@ import logging
 from typing import Any, Callable
 
 from kiro_crew.slack.code_channels.workspace.service import (
+    BarExtras,
     WorkspaceService,
     dashboard_project_reader,
     dashboard_project_setter,
@@ -46,6 +47,7 @@ def install(slack_provider: Callable[[], Any]) -> WorkspaceService:
         project_of=dashboard_project_reader(_dashboard_state),
         read_board=board.read,
         publish_board=board.publish,
+        extras=BarExtras.live(),
     )
     register(hooks, svc)
     hooks.on_turn_start(_watch_on_turn)

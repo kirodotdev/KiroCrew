@@ -3,8 +3,10 @@
 One small JSON document, ``routing/slack-code-channel-surface.json`` under the
 Kiro Crew data home, keyed by channel id. It holds pointers and
 digests only: the agent's own context-bar items, the plan canvas id, the digest of
-the command set last registered, which message is the current wrap-up, and the
-pinned work board's ts, digest and already-sent alert tokens. The
+the command set last registered, which message is the current wrap-up, the
+pinned work board's ts, digest and already-sent alert tokens, the view tabs this
+gateway opened, the plan-canvas comment ids already delivered, the message last
+recorded as the live summary and the refusals already told. The
 wrap-up and archive STAMPS live on the binding (``Binding.wrapped_up_at`` /
 ``archived_at``), not here. Never message
 content beyond the agent's short context-bar labels.
@@ -74,12 +76,30 @@ class SurfaceRecord:
     board_digest: str = ""
     board_pinned: bool = False
     board_alerts: tuple[str, ...] = ()
+    #: The board message's permalink (``chat.getPermalink``) and the ts it was
+    #: read for: read once per board message, which the context bar links to.
+    board_link: str = ""
+    board_link_ts: str = ""
     #: Worker sessions already filed into the channel's folder once.
     board_filed: tuple[str, ...] = ()
+    #: The view tabs this gateway opened (``key``/``view_id``/``type``/``at``):
+    #: the only views it may ever remove to make room (:mod:`.views`).
+    views: tuple[dict[str, str], ...] = ()
+    #: Plan-canvas comments and replies already handed to the session
+    #: (``<comment id>`` / ``<comment id>:<reply ts>``, newest last, bounded).
+    canvas_seen: tuple[str, ...] = ()
+    #: The plan canvas whose comments are read from its first one (set when this
+    #: gateway creates it); a canvas from before comment read-back is baselined.
+    canvas_baseline: str = ""
+    #: The message last recorded as the channel's ``summary_message`` live.
+    summary_message_ts: str = ""
+    #: Channel-level Slack refusals the people were already told about (once each).
+    notices: tuple[str, ...] = ()
     updated_at: float = field(default=0.0)
 
 
 _FIELDS = {f.name for f in fields(SurfaceRecord)}
+_STRING_TUPLES = ("board_alerts", "board_filed", "canvas_seen", "notices")
 
 
 def _default_path() -> Path:
@@ -99,11 +119,17 @@ def _from_dict(raw: Any) -> SurfaceRecord | None:
         for item in (bar if isinstance(bar, list) else [])
         if isinstance(item, dict)
     )
-    for name in ("board_alerts", "board_filed"):
+    for name in _STRING_TUPLES:
         values = data.get(name)
         data[name] = tuple(
             str(a) for a in (values if isinstance(values, list) else []) if isinstance(a, str)
         )
+    views = data.get("views")
+    data["views"] = tuple(
+        {str(k): str(v) for k, v in item.items()}
+        for item in (views if isinstance(views, list) else [])
+        if isinstance(item, dict)
+    )
     try:
         return SurfaceRecord(**data)
     except TypeError:
@@ -158,9 +184,10 @@ class SurfaceStore:
         unknown = set(changes) - _FIELDS
         if unknown:
             raise TypeError(f"unknown surface fields: {sorted(unknown)}")
-        if "context_bar" in changes:
-            changes["context_bar"] = tuple(dict(i) for i in changes["context_bar"])
-        for name in ("board_alerts", "board_filed"):
+        for name in ("context_bar", "views"):
+            if name in changes:
+                changes[name] = tuple(dict(i) for i in changes[name])
+        for name in _STRING_TUPLES:
             if name in changes:
                 changes[name] = tuple(str(a) for a in changes[name])
         with self._lock:

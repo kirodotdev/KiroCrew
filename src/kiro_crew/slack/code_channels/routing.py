@@ -1079,15 +1079,17 @@ async def _stop_bound(
     *,
     source: str,
     say_idle: bool = True,
+    settle: bool = True,
 ) -> str:
     state = _dashboard_state()
     slot = bound_slot(state, binding) if binding is not None else None
     if state is None or slot is None or not getattr(slot, "running", False):
         _audit(sender_id, source, "allowed", f"channel={channel} result=idle")
-        # Nothing to stop, but Slack never clears "processing" by itself.
-        from kiro_crew.slack.code_channels.status import settle_after_stop
+        if settle:
+            # Nothing to stop, and no Stop of Slack's to settle the status.
+            from kiro_crew.slack.code_channels.status import settle_after_stop
 
-        await settle_after_stop(channel)
+            await settle_after_stop(channel)
         if say_idle:
             await _post(orch, channel, "Nothing running.", None)
         return "idle"
@@ -1133,7 +1135,23 @@ async def handle_session_stopped(orch: Any, event: dict[str, Any], user: str) ->
             "origin activation does not admit a code channel",
         )
         return True
+    # Slack's own Stop button: Slack updates the session status itself, and the
+    # app must make no further agents.* call for the channel (code channel
+    # lifecycle, agent_session_stopped) until a new turn starts. The context
+    # bar's Stop (actions.py) is the app's own, so it settles the status as
+    # ``!stop`` does.
+    native = not str(event.get("event_ts") or "").startswith("code_channel_action:")
+    if native:
+        from kiro_crew.slack.code_channels.status import quiet_after_stop
+
+        quiet_after_stop(channel)
     await _stop_bound(
-        orch, binding, user, channel, source="slack.code_channel.stop", say_idle=False
+        orch,
+        binding,
+        user,
+        channel,
+        source="slack.code_channel.stop",
+        say_idle=False,
+        settle=not native,
     )
     return True

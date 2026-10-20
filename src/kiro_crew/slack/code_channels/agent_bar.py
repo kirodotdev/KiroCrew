@@ -15,8 +15,32 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-#: The keys the workspace publishes; the agent's items may not use them.
-RESERVED_KEYS = frozenset({"repo", "folder", "branch", "pr", "ci"})
+#: The keys the workspace publishes; the agent's items may not use them, nor any
+#: ``worker-`` key (:data:`RESERVED_PREFIXES`), so the agent can never pose as a
+#: channel action, the dashboard link or a worker row.
+RESERVED_KEYS = frozenset(
+    {
+        "repo",
+        "folder",
+        "branch",
+        "pr",
+        "ci",
+        "create-pr",
+        "stop",
+        "dashboard",
+        "workers",
+        "workers-more",
+        "prs",
+    }
+)
+RESERVED_PREFIXES = ("worker-",)
+
+
+def reserved(key: str) -> bool:
+    """Whether *key* belongs to the workspace's own items."""
+    return key in RESERVED_KEYS or key.startswith(RESERVED_PREFIXES)
+
+
 MAX_ITEMS = 5
 
 
@@ -30,7 +54,7 @@ def merge(
     for source, is_extra in ((base, False), (extra, True)):
         for item in source:
             key = str(item.get("key") or "")
-            if not key or key in seen or (is_extra and key in RESERVED_KEYS):
+            if not key or key in seen or (is_extra and reserved(key)):
                 if is_extra and key:
                     dropped.append(key)
                 continue

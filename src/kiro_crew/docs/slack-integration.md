@@ -287,9 +287,28 @@ exactly as with the switch off, and the page says why under the switch.
   you gets a threaded reply that mentions you, and the channel's status shows it is
   waiting on you. A code channel adds no reactions to your messages: its progress is
   the channel's status and the board. The diff tab shows the channel's
-  changes and then each worker's commits under its own heading, the context bar lists
-  each worker's pull request, and the wrap-up lists what became of each worker. In the
+  changes and then each worker's commits under its own heading, the context bar sums
+  up the workers in one item (for example "2 working · 1 needs you") that opens the
+  board, and the wrap-up lists what became of each worker. In the
   dashboard the workers sit under the conductor, in the channel's folder.
+  The context bar holds Slack's maximum of five items: the workers, the repository,
+  the branch, **Stop** while the channel's own session is working (it stops that turn,
+  as Slack's own Stop button does), and the pull request with its tests. With several worker pull requests it
+  shows how many are open and opens the board, where each one is listed. With no pull
+  request yet, once the branch has commits, the last item is a **Create PR** button
+  (it does what `/create-pr` does). **Open in dashboard** (a plain link, shown when your
+  dashboard has an https address; you need to be signed in to it) takes a slot only
+  when one is free; in a channel with a work board, the board links the conductor's
+  session instead.
+  A button answers only the people who may use Kiro Crew; anyone else is told so
+  privately. Comments people leave on the **Plan** tab reach the channel's agent as
+  feedback from the person who wrote them. When the channel already has Slack's maximum
+  of five tabs, the agent's tab it updated least recently makes room for a new one; the
+  Plan tab, the Code tab and tabs others added are never removed. The channel's
+  pull request is also its linked resource in Slack, and the work board is its live
+  summary until the wrap-up replaces it. If Slack stops accepting the channel's updates
+  (it is no longer a code channel, or Kiro Crew is no longer its agent), the dashboard
+  says so once.
   It adds the `code_channels:manage`, `chat:write.customize`, `canvases:write`,
   `channels:write.invites` and `groups:write.invites` scopes. Your workspace must have
   Slack code channels enabled.

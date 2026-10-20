@@ -622,9 +622,20 @@ def register_approval(
     from kiro_crew.slack.code_channels.board import note_session_turn
 
     note_session_turn(self.key)
+    # A code channel's own session: the channel shows suspended while it waits.
+    # A bystander as well: nothing it does may fail the registration.
+    try:
+        from kiro_crew.slack.code_channels.status import note_approval as _note
+    except Exception:  # pragma: no cover - a broken install must not block approvals
+        _note = None  # type: ignore[assignment]
+    note_approval = _note
+    if note_approval is not None:
+        note_approval(self.key, pending=True, request_id=request_id)
     add_done = getattr(future, "add_done_callback", None)
     if callable(add_done):
         add_done(lambda _done: note_session_turn(self.key))
+        if note_approval is not None:
+            add_done(lambda _done: note_approval(self.key, pending=False, request_id=request_id))
 
 
 def approval_instance(self: _ChatSlot, request_id: str, message: dict | None = None) -> str | None:

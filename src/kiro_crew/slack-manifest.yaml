@@ -31,7 +31,8 @@ features:
   agent_view:  #@agent_sessions
     agent_description: Your personal AI agent. Chat, run multi-step tasks unattended, schedule jobs, and keep memory across sessions.  #@agent_sessions
   # Code channels: one channel per coding task, with a context bar, a diff tab  #@code_channels
-  # and channel commands. Socket Mode delivers the commands, so no URL is set.  #@code_channels
+  # and channel commands. Socket Mode delivers the commands, so no            #@code_channels
+  # slash_command_url is set (Kiro Crew has no HTTP events endpoint).         #@code_channels
   code_channels:  #@code_channels
     enabled: true  #@code_channels
   bot_user:
@@ -95,6 +96,8 @@ settings:
       # processing), and a user's rename of a thread session.  #@agent_sessions|code_channels
       - agent_session_stopped  #@agent_sessions|code_channels
       - agent_session_title_changed  #@agent_sessions
+      # A click on a code channel's context-bar action (Create PR, Stop).  #@code_channels
+      - code_channel_action  #@code_channels
       - file_change
       - member_joined_channel
   interactivity:
