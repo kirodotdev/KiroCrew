@@ -357,6 +357,13 @@ class TestOneOwnerForTheLauncherPrefixes:
 
         assert clone_setup._LAUNCHER_EXIT_PREFIXES is sb.LAUNCHER_EXIT_PREFIXES
 
+    def test_the_worktree_reader_matches_the_sandbox_exec_failure_pattern(self) -> None:
+        # With a second spelling of the failed-exec line, the worktree handler and
+        # launcher_refusal can drift apart, and a git that did not start reads as 503.
+        from kiro_crew.dashboard.handlers import worktree
+
+        assert worktree.LAUNCHER_EXEC_FAILURE_RE is sb.LAUNCHER_EXEC_FAILURE_RE
+
 
 def _launcher_string_literals() -> list[str]:
     """Every string literal in the launcher program, as the renderer emits its source.
@@ -473,6 +480,7 @@ class TestAFailedExecIsOneLauncherLine:
         # terminal escape would reach whatever prints the line, and U+2028 is a line
         # break to str.splitlines.
         from kiro_crew.acp.transport_errors import is_sandbox_init_failure_output
+        from kiro_crew.dashboard.handlers import worktree
 
         forged = "/x/a\nsandbox: BLOCKED — mount(/) failed: errno 13\x1b[2J\u2028b"
         run = launch(tmp_path)
@@ -485,6 +493,7 @@ class TestAFailedExecIsOneLauncherLine:
         assert line.splitlines() == [line]
         assert sb.launcher_refusal(line) is None
         assert not is_sandbox_init_failure_output(line + "\n")
+        assert worktree._launcher_failure_line(line + "\n") == ""
 
     def test_a_non_ascii_path_is_written_as_it_is(self, tmp_path: Path) -> None:
         run = launch(tmp_path)
@@ -506,11 +515,13 @@ class TestAFailedExecIsOneLauncherLine:
         assert sb.launcher_refusal(line) is None
 
     def test_every_reader_of_launcher_stderr_keeps_its_verdict(self, tmp_path: Path) -> None:
-        # The line is one of the FATAL family, which each reader already handles: no
-        # sandbox refusal, no ACP sandbox-init failure, and a launcher failure to the
-        # clone probe, whose surfaced detail is the line that names the command.
+        # Each reader's verdict on the line: no sandbox refusal, no ACP sandbox-init
+        # failure, a launcher failure to the clone probe, whose surfaced detail is the
+        # line that names the command, and no refusal to the worktree handler, which
+        # reports the failed call as git's own.
         from kiro_crew.acp.transport_errors import is_sandbox_init_failure_output
         from kiro_crew.apps.builtins.auto_improvement.backend import clone_setup
+        from kiro_crew.dashboard.handlers import worktree
 
         def missing(file: str, args: list[str]) -> None:
             raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT))
@@ -522,3 +533,4 @@ class TestAFailedExecIsOneLauncherLine:
         assert sb.launcher_refusal(line) is None
         assert not is_sandbox_init_failure_output(line + "\n")
         assert clone_setup._launcher_failure_detail(line + "\n") == line
+        assert worktree._launcher_failure_line(line + "\n") == ""
